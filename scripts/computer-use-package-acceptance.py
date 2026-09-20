@@ -141,7 +141,7 @@ def stage(target):
             shutil.copy2(ROOT / f'target/{triple}/release/biorouter-authprompt', ROOT / 'target/release/biorouter-authprompt')
     source = ROOT / f'target/{triple}/release'
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    if platform != 'darwin' and (source / 'package-source-commit.txt').read_text().strip() != source_commit:
+    if platform != 'darwin' and (source / 'package-source-commit.txt').read_text(encoding='utf-8').strip() != source_commit:
         raise ValueError('Cross-build artifact came from a different source revision')
     bin_dir = DESKTOP / 'src/bin'
     shutil.rmtree(bin_dir, ignore_errors=True)
@@ -154,7 +154,8 @@ def stage(target):
         shutil.copy2(dll, bin_dir / dll.name)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     (OUTPUT / 'backends.json').write_text(json.dumps({'source_commit': source_commit, 'triple': triple,
-        'profile': 'release', 'backends': {name: digest(source / name) for name in names}}, indent=2))
+        'profile': 'release', 'backends': {name: digest(source / name) for name in names}}, indent=2),
+        encoding='utf-8')
     npm(['ci'], env)
     if platform == 'win32':
         run(['node', 'scripts/download-mingit.js'], cwd=DESKTOP, env=env)
@@ -176,7 +177,7 @@ def stage(target):
     npm(['run', 'make', '--', '--skip-package', '--platform=' + platform, '--arch=' + arch,
          '--targets', makers], env)
     if platform == 'linux':
-        version = json.loads((DESKTOP / 'package.json').read_text())['version']
+        version = json.loads((DESKTOP / 'package.json').read_text(encoding='utf-8'))['version']
         run(['bash', 'scripts/build-cli-linux-packages.sh', version], env=env)
     return target
 
@@ -327,7 +328,8 @@ def verify(target):
         receipts.append({'file': archive.name, 'sha256': digest(archive), 'bytes': archive.stat().st_size})
         shutil.copy2(archive, OUTPUT / archive.name)
     (OUTPUT / 'archives.json').write_text(json.dumps({'target': target, 'archives': receipts,
-        'notarized': False, 'published': False, 'signing': 'ad-hoc' if platform == 'darwin' else 'unsigned'}, indent=2))
+        'notarized': False, 'published': False, 'signing': 'ad-hoc' if platform == 'darwin' else 'unsigned'}, indent=2),
+        encoding='utf-8')
 
 
 if __name__ == '__main__':

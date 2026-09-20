@@ -8,6 +8,8 @@ from pathlib import Path
 import platform
 import plistlib
 import shutil
+import sys
+import stat
 import struct
 import subprocess
 import importlib.util as _importlib_util
@@ -15,7 +17,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "vendor/computer-use"
-PIN = json.loads((VENDOR / "pin.json").read_text())
+PIN = json.loads((VENDOR / "pin.json").read_text(encoding="utf-8"))
 OUTPUT = ROOT / "target/computer-use"
 SIGN_IDENTITY = "Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)"
 
@@ -74,11 +76,11 @@ def write_manifest(directory, target):
     manifest = {key: PIN[key] for key in ("schema_version", "upstream_commit", "upstream_version", "patch_revision")}
     manifest.update(target=target, executable=executable(target), args=["mcp"], patches=patches(),
                     files=payload_files(directory), linux_dependencies=PIN["linux_dependencies"])
-    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def verify(directory, target, signed=False):
-    manifest = json.loads((directory / "manifest.json").read_text())
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     for key in ("schema_version", "upstream_commit", "upstream_version", "patch_revision"):
         if manifest.get(key) != PIN[key]:
             raise ValueError(f"Helper {key} does not match the source pin")
@@ -100,6 +102,35 @@ def verify(directory, target, signed=False):
         if "TeamIdentifier=F3YYBXAFJ8" not in info or "Identifier=" + PIN["bundle_identifier"] not in info:
             raise ValueError("Helper is not signed with the BioRouter release identity")
     return manifest
+
+
+def remove_tree(path):
+    r"""`shutil.rmtree`, but able to delete a git checkout on Windows.
+
+    ⚠ A bare `shutil.rmtree` CANNOT remove a git clone on Windows. Git marks
+    pack files read-only, and Windows refuses to unlink a read-only file:
+
+        PermissionError: [WinError 5] Access is denied:
+          '...\source.noindex\.git\objects\pack\pack-9a1245af....idx'
+
+    On Linux and macOS the same tree deletes fine, because deletion is governed
+    by the *directory's* write bit and not the file's, so this is invisible off
+    Windows. The effect was that `computer-use-runtime.py build` worked exactly
+    once on a Windows machine and failed on every subsequent run, in the
+    clean-up of the PREVIOUS run -- which reads as a corrupted checkout rather
+    than as a permission bit.
+
+    Clearing the bit and retrying is the documented remedy; anything the retry
+    still cannot remove is re-raised rather than swallowed.
+    """
+    def drop_readonly(func, target, _exception):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=drop_readonly)
+    else:  # pragma: no cover - the repo pins 3.12; keeps older hosts working
+        shutil.rmtree(path, onerror=lambda f, target, _e: drop_readonly(f, target, None))
 
 
 def source_checkout(source):
@@ -125,7 +156,7 @@ def source_checkout(source):
     destination = OUTPUT / "source.noindex"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
-        shutil.rmtree(destination)
+        remove_tree(destination)
     if source:
         run(["git", "clone", "--no-checkout", source, destination])
         run(["git", "checkout", "--detach", PIN["upstream_commit"]], cwd=destination)
@@ -182,7 +213,7 @@ def build(target, source, signing_identity):
     destination = OUTPUT / target
     # Failed builds must never leave an older payload eligible for packaging.
     if destination.exists():
-        shutil.rmtree(destination)
+        remove_tree(destination)
     destination.mkdir(parents=True)
     binary = destination / executable(target)
     binary.parent.mkdir(parents=True, exist_ok=True)
@@ -249,7 +280,7 @@ def main():
         verify(source, args.target, args.require_signed)
         destination = args.directory or ROOT / "ui/desktop/src/computer-use"
         if destination.exists():
-            shutil.rmtree(destination)
+            remove_tree(destination)
         shutil.copytree(source, destination)
         verify(destination, args.target, args.require_signed)
         print(destination)

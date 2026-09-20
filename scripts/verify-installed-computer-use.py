@@ -68,7 +68,7 @@ def owned_app_agents(executable):
 
 def validate_doctor(document, helper, target, expected_status):
     report = document['computer_use']
-    manifest = json.loads((helper / 'manifest.json').read_text())
+    manifest = json.loads((helper / 'manifest.json').read_text(encoding='utf-8'))
     expected = (helper / manifest['executable']).resolve()
     if report.get('integrity') != 'verified' or report.get('development_override') is not False:
         raise ValueError('Installed runtime integrity/override assertion failed')
@@ -281,7 +281,7 @@ def tail_text(path, limit=4000):
     failure with its own.
     """
     try:
-        text = path.read_text(errors='replace').strip()
+        text = path.read_text(encoding='utf-8', errors='replace').strip()
     except OSError as error:
         return f'(stderr unreadable: {error})'
     if not text:
@@ -290,7 +290,7 @@ def tail_text(path, limit=4000):
     return text[-limit:]
 
 
-def run_doctor(cli, env, scratch):
+def run_doctor(cli, env, scratch, evidence=None):
     """Run the installed `doctor` twice, observing process exit independently of its pipes.
 
     Output goes to real files rather than pipes, and exit is observed with
@@ -306,7 +306,15 @@ def run_doctor(cli, env, scratch):
     timings = []
     document = None
     for attempt, budget in ATTEMPT_TIMEOUTS.items():
-        out, err = scratch / f'doctor-{attempt}.json', scratch / f'doctor-{attempt}.err'
+        # ⚠ Write the breadcrumbs somewhere DURABLE. They used to go into the
+        # caller's `TemporaryDirectory`, which is deleted on scope exit, so the
+        # phase trace for the run that actually finished -- the one that
+        # localises where the time went -- was discarded before anything could
+        # upload it. Downloading `installed-packages-win32-x64` from the run
+        # that measured 34.91 s yields `backends.json` and nothing else.
+        target_dir = evidence if evidence is not None else scratch
+        out = target_dir / f'doctor-{attempt}.json'
+        err = target_dir / f'doctor-{attempt}.err'
         started = time.monotonic()
         before = live_processes()
         with out.open('wb') as stdout, err.open('wb') as stderr:
@@ -323,6 +331,14 @@ def run_doctor(cli, env, scratch):
                 code = child.wait(timeout=budget)
             except subprocess.TimeoutExpired:
                 written = out.read_bytes()
+                # ⚠ Capture the tree BEFORE killing anything. This used to call
+                # `process_tree()` inside the message below, i.e. AFTER
+                # `stop_tree(child)` had already taken the process and its
+                # descendants down -- so the one diagnostic that exists to say
+                # WHAT was hung reported "(no Biorouter-related process alive)
+                # [0 relevant of 136 total processes]" every single time, at
+                # exactly the moment it mattered. Measured on run 35474721330.
+                hung_tree = process_tree()
                 stop_tree(child)
                 # ⚠ Read stderr too. stdout carries the JSON and is written only
                 # at the END, so on a timeout it is empty BY CONSTRUCTION and
@@ -341,7 +357,7 @@ def run_doctor(cli, env, scratch):
                     # instead of inferring it from what the warm run had left.
                     f'Completed attempts: {timings or "none"}. '
                     f'Phase trace (stderr):\n{trace}\n'
-                    f'Live processes:\n{process_tree()}') from None
+                    f'Live processes:\n{hung_tree}') from None
         elapsed = time.monotonic() - started
         # A descendant that outlives the CLI is the OTHER mechanism that can make
         # a doctor call look hung. Observing exit independently of the pipes stops
@@ -351,28 +367,34 @@ def run_doctor(cli, env, scratch):
         timings.append({'attempt': attempt, 'seconds': round(elapsed, 2), 'exit_code': code,
                         'processes_left_behind': left_behind})
         if code != 0:
-            raise ValueError(f'Installed doctor ({attempt}) exited {code}: {err.read_text()[:2000]}')
-        document = json.loads(out.read_text())
+            raise ValueError(f'Installed doctor ({attempt}) exited {code}: {err.read_text(encoding="utf-8", errors="replace")[:2000]}')
+        document = json.loads(out.read_text(encoding='utf-8'))
     return document, timings
 
 
 def check(cli, helper, target, expected_status, expected_backends, report_path):
     helper = helper.resolve()
     suffix = '.exe' if target.startswith('win32') else ''
-    expected = json.loads(expected_backends.read_text())
+    expected = json.loads(expected_backends.read_text(encoding='utf-8'))
     for name in ['biorouter', 'biorouterd']:
         binary = cli.parent / (name + suffix)
         if name == 'biorouterd' and target.startswith('win32') and not binary.exists():
             binary = helper.parent / 'bin' / (name + suffix)
         if digest(binary) != expected['backends'][name + suffix]:
             raise ValueError(f'Installed {name} differs from production build')
-    manifest = json.loads((helper / 'manifest.json').read_text())
+    manifest = json.loads((helper / 'manifest.json').read_text(encoding='utf-8'))
     agents = owned_app_agents(helper / manifest['executable']) if sys.platform == 'darwin' else nullcontext()
     with agents, tempfile.TemporaryDirectory(prefix='biorouter-installed-check-') as isolated:
         env = dict(os.environ, BIOROUTER_PATH_ROOT=isolated, BIOROUTER_DISABLE_KEYRING='true')
         for key in ['BIOROUTER_COMPUTER_USE_DIR', 'OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY']:
             env.pop(key, None)
-        document, doctor_timings = run_doctor(cli, env, Path(isolated))
+        # `report_path.parent` is `target/package-acceptance/`, which the
+        # workflow uploads with `if-no-files-found: error`. The isolated dir
+        # stays the config root; only the evidence moves somewhere that outlives
+        # the failure it documents.
+        evidence = report_path.parent
+        evidence.mkdir(parents=True, exist_ok=True)
+        document, doctor_timings = run_doctor(cli, env, Path(isolated), evidence)
         report = validate_doctor(document, helper, target, expected_status)
         tools = builtin_tools(cli, env)
         names = [tool['name'] for tool in tools]
@@ -386,7 +408,7 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
                'helper_manifest_sha256': digest(helper / 'manifest.json'),
                'desktop_actions_performed': False}
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(receipt, indent=2) + '\n')
+    report_path.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(receipt))
 
 
