@@ -20,7 +20,7 @@ import { ARTIFACT_WRAPPER_CSP, wrapArtifactForBrowser } from './artifactSecurity
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../../../..');
 
-const MERMAID_CDN_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+const MERMAID_CDN_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js';
 const VENDORED_MERMAID = resolve(
   repoRoot,
   'crates/biorouter-mcp/src/autovisualiser/templates/assets/mermaid.min.js'

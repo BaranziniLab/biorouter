@@ -77,19 +77,25 @@
     return '<svg viewBox="0 0 24 24" class="' + c.trim() + '">' + I[key] + '</svg>';
   }
 
-  /* Sidebar nav definition — order mirrors AppSidebar.tsx menuItems */
+  /* Sidebar nav definition. Labels and order mirror AppSidebar.tsx:
+     primaryItems (Home, New chat), then the six componentItems that sit behind
+     the `Components` disclosure, then settingsItem pinned to the footer. The
+     mockup shows the six expanded, which is one click away in the app.
+
+     There is no History row: History is reached from the Recents list, so the
+     history screen below passes a key that matches nothing and no row lights
+     up, the same as the app. */
   var NAV = [
     { k: 'home', label: 'Home', icon: 'home' },
     { sep: true },
-    { k: 'chat', label: 'Chat', icon: 'chat' },
-    { k: 'history', label: 'History', icon: 'history' },
+    { k: 'newchat', label: 'New chat', icon: 'plus' },
     { sep: true },
     { k: 'workflows', label: 'Workflows', icon: 'workflows' },
     { k: 'scheduler', label: 'Scheduler', icon: 'scheduler' },
     { k: 'extensions', label: 'Extensions', icon: 'extensions' },
     { k: 'skills', label: 'Skills', icon: 'skills' },
     { k: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
-    { k: 'apps', label: 'Apps', icon: 'apps' },
+    { k: 'apps', label: 'Built apps', icon: 'apps' },
     { sep: true },
     { k: 'settings', label: 'Settings', icon: 'settings' },
   ];
@@ -208,7 +214,7 @@
       '<div class="bw-bubble-time">4:52 PM</div>' + rows +
       '<div class="bw-working"><span class="code">&lt;/&gt;</span> <span class="shim">biorouter is working on it…</span></div>' +
       '</div>' + composer(true);
-    return win('chat', {}, main);
+    return win('newchat', {}, main);
   };
 
   SCREENS.tabs = function () {
@@ -266,7 +272,7 @@
 
     var main = '<div class="bw-split">' + left +
       '<div class="bw-splitter"></div>' + right + '</div>';
-    return win('chat', {}, main);
+    return win('newchat', {}, main);
   };
 
   SCREENS.history = function () {
@@ -325,9 +331,10 @@
       '<span class="bw-btn soft">' + svg(I.ext) + 'Browse Extensions</span>' +
       '<span class="bw-btn soft">' + svg(I.plus) + 'Add Custom Extension</span></div></div>' +
       '<div class="bw-sectionrule"></div>' +
-      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (6)</div>' +
+      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (7)</div>' +
       erow('Developer', 'General development tools useful for software engineering.', true) +
       erow('Computer Use', 'Native desktop observation and control after task approval.', true) +
+      erow('Web &amp; Documents', 'Read web pages and work with spreadsheets, documents, and PDFs.', true) +
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', true) +
       erow('Memory', 'Teach Biorouter your preferences as you go.', true) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +

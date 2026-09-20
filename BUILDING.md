@@ -35,6 +35,10 @@ Before building, ensure the following are installed and configured:
 | **npm** | bundled with Node.js |
 | **Docker Desktop** | https://www.docker.com/products/docker-desktop (required for Linux build) |
 | **Xcode Command Line Tools** | `xcode-select --install` |
+| **Go 1.26.8** | https://go.dev/dl. Builds the Computer Use helper for the Windows and Linux targets; this is the version `.github/workflows/computer-use-native.yml` pins |
+| **Swift 6.2+ / Xcode** | Required for the two macOS Computer Use helper targets; `computer-use-runtime.py` refuses to build them anywhere but macOS |
+| **Python 3** | Runs `scripts/computer-use-runtime.py`, the helper build driver |
+| **git** | The helper build stages the vendored source and applies its patches with `git apply` |
 
 > **Node 24.x means 24.x, not "24 or newer."** Under Node 26 `electron-forge package` exits 0 having produced no `.app` — a silent no-op that looks like a build succeeding — and the `appdmg` / `macos-alias` native modules the DMG maker needs do not build at all.
 
@@ -73,6 +77,27 @@ file ui/desktop/src/bin/biorouter
 ```
 
 > **Note:** Packaging requires **both** `biorouter` and `biorouterd` in `src/bin/` — `prepare-platform-binaries.js` aborts the build if either is missing (it also fetches the `llamacpp/llama-server` sidecar automatically). The ARM64 binaries are gitignored (they exceed GitHub's 100MB limit) and must be rebuilt on each machine.
+
+### Build the Computer Use helper for the target you are packaging
+
+`stageComputerUse()` is the **first** statement of `prepare-platform-binaries.js`, so every packaging
+command below (Steps 2, 3, 4, 6 and 7, and any bare `npm run bundle:*`) dies before it copies a
+single binary unless `target/computer-use/<target>/manifest.json` already exists. Nothing in the
+`Justfile` produces it, so a local packaging run needs the command below run by hand. The automated
+paths that build it for you are `scripts/release.sh`, the
+`.github/workflows/computer-use-native.yml` workflow, the root `Dockerfile` and
+`scripts/computer-use-package-acceptance.py`. Packaging bundles the helper, so there is no way to
+skip it.
+
+```bash
+# Run from the repo root, once per target you intend to package.
+python3 scripts/computer-use-runtime.py build darwin-arm64   # Step 2 and the arm64 DMG
+python3 scripts/computer-use-runtime.py build darwin-x64     # Step 3 and the Intel DMG
+python3 scripts/computer-use-runtime.py build linux-x64      # Step 4
+python3 scripts/computer-use-runtime.py build win32-x64      # Step 6
+```
+
+The upstream source is vendored in full at [`vendor/computer-use/source/`](vendor/computer-use), at the commit pinned in [`pin.json`](vendor/computer-use/pin.json), so this step needs no network and no upstream change can affect it. The vendored tree stays pristine: the reviewed patches in `vendor/computer-use/patches/` are applied to a throwaway copy at build time, never to the tree itself. Pass `--source <clone>` to build against an external checkout instead, which is how you try a candidate upstream before vendoring it.
 
 ---
 
@@ -171,7 +196,7 @@ Run it through the recipe, not by hand:
 just make-ui-linux
 ```
 
-That does both stages: it sources `scripts/cross-env.sh` and cross-compiles the Rust backend for `x86_64-unknown-linux-gnu`, then runs `ui/desktop/scripts/build-linux-deb.sh` in a `node:20-bookworm` container to produce the `.deb` and `.rpm`. `scripts/release.sh linux-backend <version>` is the stage-A-only equivalent, and it wipes the target dir first so nothing stale survives.
+That does both stages: it sources `scripts/cross-env.sh` and cross-compiles the Rust backend for `x86_64-unknown-linux-gnu`, then runs `ui/desktop/scripts/build-linux-deb.sh` in the container image pinned by digest in `ui/desktop/scripts/linux-native-baseline.json` (`node:24-bullseye`, glibc 2.31) to produce the `.deb` and `.rpm`. `scripts/release.sh linux-backend <version>` is the stage-A-only equivalent, and it wipes the target dir first so nothing stale survives.
 
 > **Never inline the cross-compile image into a command.** The glibc floor lives in exactly one place — `LINUX_RUST_IMG` in [`scripts/cross-env.sh`](scripts/cross-env.sh), pinned to `rust:1.92-bullseye` (glibc 2.31). The rolling `rust:latest` is now trixie (glibc 2.39) and produces a Linux backend that will not start on Debian 12, Ubuntu 22.04, or RHEL/Rocky 9. This recipe used to pin `rust:latest` and silently raised the floor; `scripts/check-no-cross-drift.sh` (part of `just check-everything`) and `scripts/check-glibc-floor.sh` now exist to stop it drifting back. A hand-rolled `docker run` bypasses both gates.
 
@@ -206,10 +231,12 @@ Also, the Docker `npm ci` inside the container corrupts the local `node_modules`
 
 ```bash
 cd ui/desktop
-rm -rf node_modules package-lock.json
-npm install
+rm -rf node_modules
+npm ci
 cd ../..
 ```
+
+> **`npm ci`, never `npm install`.** `package-lock.json` is a tracked file, and `install` rewrites it. The next Linux or Windows Docker build runs `npm ci` inside the container, which refuses a lockfile that disagrees with `package.json`, so deleting the lockfile here leaves the tree dirty and breaks the next cross build.
 
 ---
 
@@ -228,7 +255,9 @@ Under the hood `npm run bundle:windows` (via `prepare-platform-binaries.js`):
 4. Fetches the `llamacpp/llama-server.exe` sidecar and verifies `biorouter.exe` + `biorouterd.exe` are present (packaging aborts if either is missing)
 5. Runs `electron-forge make` for `win32/x64`
 
-Output: `out/make/zip/win32/x64/Biorouter-win32-x64-<version>.zip`
+Outputs (every win32 maker runs, so both are produced):
+- `out/make/zip/win32/x64/Biorouter-win32-x64-<version>.zip`
+- `out/make/squirrel.windows/x64/Biorouter-Setup-<version>.exe`, the installer that updates an existing install in place. The updater matches that exact filename, so a missing or misnamed one sends Windows back to the assisted download.
 
 After this, restore the ARM binary again:
 ```bash
@@ -302,7 +331,7 @@ A release carries **exactly 11 assets** — the list `release_assets()` in `scri
 | Linux Fedora / RHEL (GUI) | `Biorouter-<version>-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
 | Linux headless CLI (deb) | `biorouter-cli_<version>_amd64.deb` | `dist/cli/` |
 | Linux headless CLI (rpm) | `biorouter-cli-<version>-1.x86_64.rpm` | `dist/cli/` |
-| Linux headless (browser-served) | `biorouter-headless-linux-x64.tar.gz` | `dist/` |
+| Windows x64 (installer) | `Biorouter-Setup-<version>.exe` | `ui/desktop/out/make/squirrel.windows/x64/` |
 
 **Do not upload** `out/Biorouter-darwin-arm64/Biorouter.zip` or `out/Biorouter-darwin-x64/Biorouter_intel_mac.zip`. Those unversioned `ditto` archives are build intermediates.
 
@@ -363,7 +392,7 @@ security find-identity -v -p codesigning
 
 ```bash
 cd ui/desktop
-npm install
+npm ci
 ```
 
 ### Install the Intel Rust Target (for Intel macOS builds)
@@ -383,9 +412,11 @@ The Docker `npm ci` overwrites local `node_modules` with Linux versions, breakin
 **Fix:**
 ```bash
 cd ui/desktop
-rm -rf node_modules package-lock.json
-npm install
+rm -rf node_modules
+npm ci
 ```
+
+`npm ci`, never `npm install`: `install` rewrites the tracked `package-lock.json`, and the container's own `npm ci` then refuses it.
 
 ### `401 Unauthorized` during notarization
 

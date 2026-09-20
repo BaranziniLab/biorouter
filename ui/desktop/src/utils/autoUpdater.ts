@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { writeFileSync } from 'fs';
 import log from './logger';
+import { assistedUpdateInstructions } from './assistedUpdateInstructions';
 import { githubUpdater } from './githubUpdater';
 import { loadRecentDirs } from './recentDirs';
 import { scheduleUpdateChecks, type AutomaticUpdateCheckReason } from './updateCheckSchedule';
@@ -234,17 +235,10 @@ export function registerUpdateIpcHandlers() {
           throw new Error('Update file not found. Download the update first.');
         }
 
-        // ⚠ The instructions MUST match the platform. This dialog told every
-        // user to "drag the new Biorouter.app to your Applications folder" --
-        // on Windows, where the downloaded artifact is a .zip, there is no
-        // .app, and there is no Applications folder. The user was then asked to
-        // quit the app on the strength of instructions they could not follow.
-        const detail =
-          process.platform === 'win32'
-            ? `The update has been downloaded. Biorouter cannot replace itself while it is running on Windows, so the last step is manual:\n\n1. Click "Open Folder" to reveal the downloaded Biorouter zip\n2. Quit Biorouter (this app will close)\n3. Extract the zip and replace your existing Biorouter folder with it\n4. Launch Biorouter again\n\nYour settings, chats and extensions live outside the app folder and are preserved.`
-            : process.platform === 'linux'
-              ? `The update has been downloaded.\n\n1. Click "Open Folder" to reveal the downloaded package\n2. Quit Biorouter (this app will close)\n3. Install the .deb or .rpm with your package manager\n4. Launch Biorouter again\n\nYour settings, chats and extensions are preserved.`
-              : `The update has been downloaded and extracted. To complete the installation:\n\n1. Click "Open Folder" to view the new Biorouter.app\n2. Quit Biorouter (this app will close)\n3. Drag the new Biorouter.app to your Applications folder\n4. Replace the existing app when prompted\n\nThe update will be available the next time you launch Biorouter.`;
+        // The steps depend on WHICH artifact was downloaded, not just the
+        // platform: Windows now publishes an installer and a zip, and the
+        // updater prefers the installer. See assistedUpdateInstructions.ts.
+        const detail = assistedUpdateInstructions(updatePath, process.platform);
 
         const dialogResult = (await dialog.showMessageBox({
           type: 'info',

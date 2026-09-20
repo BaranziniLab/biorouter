@@ -1,0 +1,98 @@
+UCSF Biorouter
+Copyright 2025-2026 The Regents of the University of California
+
+This product includes software developed by Block, Inc.
+Copyright 2024 Block, Inc.
+
+Biorouter is a fork of Goose (https://github.com/block/goose), Block, Inc.'s
+open-source agent, licensed under the Apache License, Version 2.0. Goose
+supplied the agent loop, the extension model and the desktop shell that
+Biorouter's biomedical work is built on. A copy of the Apache License is in
+LICENSE.
+
+
+REDISTRIBUTED COMPONENTS
+========================
+
+Biorouter's installers and packages redistribute the components below. Each
+one's own licence text ships with it at the path named here. This file is a
+summary, not a substitute for those texts.
+
+
+Open Computer Use
+-----------------
+  Used for:  the native desktop helper behind Computer Use
+  Licence:   MIT
+  Copyright: Copyright (c) 2026 Leo
+  Upstream:  https://github.com/iFurySt/open-codex-computer-use
+  Version:   0.3.5, pinned at commit 547b4ffb8ed731a8f16486e6d8a3b215484267d3
+  Licence text and notice:
+    in this repository   vendor/computer-use/{LICENSE,NOTICE}
+    in an installed app  beside the helper binary, inside the payload
+
+  The upstream source is vendored in full at vendor/computer-use/source, so a
+  build needs no network. Biorouter's own changes are kept separately in
+  vendor/computer-use/patches and are applied to a throwaway copy at build
+  time, never to the vendored tree.
+
+  The build copies LICENSE and NOTICE into the shipped payload and records
+  their checksums in the payload manifest, and the verify step fails the build
+  if the manifest and the files on disk disagree. The notice cannot be dropped
+  by a packaging change without the build noticing.
+
+  Upstream's extracted cursor artwork is deliberately not vendored and not
+  distributed. It was extracted from another vendor's shipped application, and
+  MIT covers upstream's own work rather than somebody else's artwork. The
+  cursor Biorouter ships is drawn procedurally by its own build script.
+
+
+llama.cpp
+---------
+  Used for:  llama-server, the bundled local model runtime behind the
+             "Llama Server" provider
+  Licence:   MIT
+  Copyright: Copyright (c) 2023-2026 The ggml authors
+  Upstream:  https://github.com/ggml-org/llama.cpp
+  Version:   build b9611
+  Licence text:
+    in an installed app  next to llama-server, in the llamacpp directory
+
+  The macOS and Linux release archives carry upstream's LICENSE. The Windows
+  archive does not, so the packaging script fetches it from the repository at
+  the pinned build and refuses to package without it.
+
+
+JavaScript and CSS libraries compiled into the binary
+-----------------------------------------------------
+  Used for:  Auto Visualiser figures, which inline these so a figure works
+             offline and needs no network
+  Licence text:
+    in this repository   crates/biorouter-mcp/src/autovisualiser/templates/assets/LICENSES.md
+
+  D3 7.9.0                      ISC           Copyright 2010-2023 Mike Bostock
+  d3-sankey 0.12.3              BSD-3-Clause  Copyright 2015, Mike Bostock
+  Chart.js 4.5.0                MIT           Copyright (c) 2014-2024 Chart.js Contributors
+  Leaflet 1.9.4                 BSD-2-Clause  Copyright (c) 2010-2023, Volodymyr Agafonkin
+                                              Copyright (c) 2010-2011, CloudMade
+  Leaflet.markercluster 1.5.3   MIT           Copyright 2012 David Leaver
+  Mermaid 10.9.0                MIT           Copyright (c) 2014-2022 Knut Sveidqvist
+
+  Versions were confirmed by checksum against each library's own release, not
+  read off an in-file banner. Three of the seven files carry no banner at all.
+
+  Each generated figure carries a short attribution comment naming the
+  libraries it used and pointing at the full texts.
+
+
+OTHER DEPENDENCIES
+==================
+
+Biorouter also builds on third-party libraries that are not redistributed as
+standalone files but are compiled or bundled into its binaries in the ordinary
+way, including the Rust MCP SDK (rmcp), Axum, sqlx, tiktoken-rs, minijinja and
+the keyring crate on the Rust side, and Electron and React on the desktop side.
+Their licences are recorded in Cargo.toml, Cargo.lock,
+ui/desktop/package.json and ui/desktop/package-lock.json.
+
+Biorouter's design drew on Aider, Cline, OpenCode and ForgeCode. No code from
+those projects is included here.

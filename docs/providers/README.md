@@ -39,9 +39,9 @@ checks can be compared line for line.
   a mechanism rather than just a vendor, which is why they are documented together: no API
   key, no base URL, a credential BioRouter never touches, and a child process that is itself
   a complete agent whose own tools must be switched off and replaced over MCP. The folder has
-  its own index and holds six documents covering the mechanism, user setup, the generic tool
-  bridge, the child-isolation flags, the vendor-terms and PHI compliance position, and the
-  measured performance limits. **Read
+  its own index and holds seven documents covering the mechanism, user setup, the generic tool
+  bridge, the child-isolation flags, the vendor-terms and PHI compliance position, the
+  measured performance limits, and the streaming and tool-call parity design record. **Read
   [the compliance page](coding-agents/compliance.md) before using either provider for
   research data** — a consumer subscription carries no BAA and no zero-data-retention
   agreement, so both providers are `ProviderTier::Public` and the privacy bind gate refuses

@@ -3246,10 +3246,10 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
 ## 18. Relationship to BR-71
 
 BR-71 ([issue #30](https://github.com/BaranziniLab/biorouter/issues/30),
-[design](docs/agent-loop/designs/agent-workspace-control.md),
-[44-task execution plan](docs/agent-loop/designs/br71-execution-plan.md)) is the plan of record for
-agent workspace control and glass-box subagents. Its design doc's status line reads *"Current —
-proposal only; nothing below is implemented."*
+[design](../agent-loop/designs/agent-workspace-control.md),
+[44-task execution plan](../agent-loop/designs/br71-execution-plan.md)) is the plan of record for
+agent workspace control and glass-box subagents. Its design doc's status line now records all four
+slices as implemented.
 
 **This work must land before BR-71's cross-session tools ship.** Task 15's `workspace_set_tools
 { provider, model }` changes **another session's** provider and, per the plan's own table, takes
@@ -3440,8 +3440,8 @@ matrix cell.
 
 ## Related documentation
 
-- [Agent workspace control and glass-box subagents (BR-71)](docs/agent-loop/designs/agent-workspace-control.md) — the feature this must land ahead of.
-- [BR-71 execution plan](docs/agent-loop/designs/br71-execution-plan.md) — the 44-task plan whose Tasks 1, 4, 10, 12–17, 19, 22–28, 32 and 36 this design amends.
-- [Secret storage](docs/security/secret-storage.md) — the credential model the §9.3 A1 fix touches.
-- [Tool routing](docs/agent-loop/tool-routing.md) — the chatrecall/workspace split Gate D sits inside.
-- [Subagents](docs/agent-loop/subagents.md) — the inheritance behaviour §8 gates.
+- [Agent workspace control and glass-box subagents (BR-71)](../agent-loop/designs/agent-workspace-control.md) — the feature this must land ahead of.
+- [BR-71 execution plan](../agent-loop/designs/br71-execution-plan.md) — the 44-task plan whose Tasks 1, 4, 10, 12–17, 19, 22–28, 32 and 36 this design amends.
+- [Secret storage](secret-storage.md) — the credential model the §9.3 A1 fix touches.
+- [Tool routing](../agent-loop/tool-routing.md) — the chatrecall/workspace split Gate D sits inside.
+- [Subagents](../agent-loop/subagents.md) — the inheritance behaviour §8 gates.

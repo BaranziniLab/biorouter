@@ -1,7 +1,7 @@
 # Astryx UI adoption — comprehensive interface revision
 
 > **What this is.** The full design of record for rebuilding Biorouter's interface on the *construction* of Meta's Astryx design system while keeping Biorouter's own palette, theming architecture and calm register. It specifies every foundation, every element, every composition, and the order in which they land.
-> **Status:** Proposed — awaiting review. Nothing in this document is implemented.
+> **Status:** Current, approved and largely built. Phases 1–7, 9 and 10 have landed; phase 8 is partly landed. See the folder [README](README.md) for the per-phase status before reading any section as a description of the running app.
 > **Audience:** maintainers reviewing the direction; developers and agents who will execute it.
 
 Biorouter's interface is coherent in intent and inconsistent in fact. Three parallel audits of the shipped app found five row-title treatments, four error dialects, five spinner constructions, six modal shells, three durations for one hover, 140 hand-written `text-[11px]` classes, and a toast system that carries a 400-pixel scrollable report inside a surface designed for one line. None of this is decay from a bad plan — it is the residue of a design system whose *rules* were written down (`design.md`) but whose *parts* were never built, so every new view re-derived them.

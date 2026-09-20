@@ -78,6 +78,14 @@ The one-line form, which appears on the model chip and in `biorouter configure`:
 > renderer, for the same reason: four hand-written copies drift within one release, and the
 > drifted one is always the one somebody reads.
 
+**Computer Use widens this past the working directory.** The disclosure above bounds the
+exposure at files a chat can reach. With Computer Use approved for a request, the model also
+receives screenshots of the display and the text of other running applications, including
+anything on screen that has nothing to do with the task. A model that is not private is allowed
+this, with an extra sentence in the approval saying so; the approval itself covers one user
+request and ends when the reply finishes or you stop it. See
+[permission modes](permission-modes.md#what-still-asks-whatever-your-mode).
+
 ## The provider guidance on this page is now enforced
 
 Everything below used to be advice you could follow or ignore. Since **privacy tiers** shipped, the
@@ -231,6 +239,10 @@ device accordingly.
 **Do not share sessions containing sensitive data.** BioRouter supports sharing sessions and
 workflows. Do not share sessions that contain patient data or other sensitive information.
 
+**Close clinical windows before approving Computer Use.** An approval lets the model capture a
+whole display, not only the window you had in mind, so close or hide an EHR, imaging viewer or
+spreadsheet before you grant it.
+
 ## Summary by data type
 
 | Data type | Recommended approach |
@@ -239,6 +251,7 @@ workflows. Do not share sessions that contain patient data or other sensitive in
 | Patient data / PHI | A local model only, or institution-managed with explicit compliance approval |
 | Public / non-sensitive data | Any provider |
 | Proprietary unpublished research data | A local model or institution-managed — verify confidentiality requirements |
+| Anything visible on screen, once Computer Use is approved | Close or hide clinical and other sensitive windows first; the screenshot goes to whichever model the chat is bound to |
 
 **When in doubt: use a local model (Llama Server or Ollama) or check with your institution.**
 

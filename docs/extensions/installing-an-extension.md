@@ -178,7 +178,7 @@ cargo test -p biorouter --test catalog_inventory
 cargo test -p biorouter-server --lib -- routes::catalog
 cd ui/desktop && npx vitest run src/utils/catalogSubscription.test.ts
 cargo test -p biorouter-server --lib -- routes::action_required
-cargo test -p biorouter-cli --lib -- commands::extension   # needs an isolated HOME
+cargo test -p biorouter-cli --lib -- commands::extension
 cd ui/desktop && npx vitest run src/components/SecretRequestCard.test.tsx
 ```
 

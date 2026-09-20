@@ -15,9 +15,10 @@ This folder holds the end-user troubleshooting material: a catch-all reference o
 
 ## Where to start
 
-1. Search [Common problems and fixes](common-problems-and-fixes.md) for your error message or symptom. Most reported issues already have an entry there.
-2. If nothing matches, generate a diagnostics bundle as described in [Diagnostics and bug reports](diagnostics-and-bug-reports.md). It captures your app version, operating system, session messages, configuration, and recent logs in one ZIP file.
-3. Open an issue at [github.com/BaranziniLab/biorouter/issues](https://github.com/BaranziniLab/biorouter/issues) and attach the bundle.
+1. Run `biorouter doctor`. It checks the system prerequisites and the CLI install in about a second, and names the missing one directly; `biorouter doctor --fix <dependency>` hands a failing prerequisite to Biorouter. See [`doctor`](../cli/command-reference.md#doctor-options) in the CLI command reference.
+2. Search [Common problems and fixes](common-problems-and-fixes.md) for your error message or symptom. Most reported issues already have an entry there.
+3. If nothing matches, generate a diagnostics bundle as described in [Diagnostics and bug reports](diagnostics-and-bug-reports.md). It captures your app version, operating system, session messages, configuration, and recent logs in one ZIP file.
+4. Open an issue at [github.com/BaranziniLab/biorouter/issues](https://github.com/BaranziniLab/biorouter/issues) and attach the bundle.
 
 > **Warning.** A diagnostics bundle contains your session messages and configuration. Review it before posting it publicly.
 

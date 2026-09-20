@@ -54,7 +54,11 @@ biorouter doctor
 ```
 
 `doctor` reports optional prerequisites — `git`, `uv`, `node` — that some extensions need. The
-packages themselves depend only on `libxcb` and `zlib`.
+packages themselves depend on `libxcb` and `zlib` plus the Computer Use helper's runtime:
+`python3`, the GObject and AT-SPI introspection bindings, and GTK 3. The full list is declared in
+[`packaging/cli/nfpm.yaml`](../../packaging/cli/nfpm.yaml). They install on a host with no
+display; Computer Use itself still reports `desktop_unavailable` there (see
+[below](#computer-use-requires-a-desktop-session)).
 
 > **Note.** The Linux binaries are built against a glibc 2.31 baseline, which covers Debian 11,
 > Ubuntu 22.04 and Rocky 9 and anything newer. Do not install the **desktop** `biorouter_*.deb` /

@@ -26,28 +26,33 @@ prints the command to run next.
 
 ## Phase-by-phase (resumable)
 
-Each phase is a separate subcommand, so a failed release can be resumed rather than restarted:
+Each phase is a separate subcommand, so a failed release can be resumed rather than restarted.
+Resuming has preconditions. Every phase after `backends` refuses to run unless the tree is
+completely clean (untracked files included), `Cargo.toml` is still at the release version, and
+`HEAD` is exactly the commit `backends` built from, so a commit made mid-release forces a rebuild
+from the final commit. `draft` and `publish` additionally require `HEAD` to equal `origin/main`,
+with `origin/main` already at this version.
 
 | Phase | What it does |
 | ----- | ------------ |
-| `bump <ver\|major\|minor\|patch>` | Bump the version in the 6 release files and refresh `Cargo.lock` |
+| `bump <ver\|major\|minor\|patch>` | Bump the version in the 5 release files and refresh `Cargo.lock` |
 | `backends <ver>` | Compile release backends for all 4 targets (mac arm64, mac x64, windows-gnu, linux-gnu) |
 | `linux-backend <ver>` | Rebuild just the Linux backend from scratch (re-runnable) |
 | `mac-arm64 <ver>` | Package, sign, and **notarize** the Apple Silicon `.dmg` |
 | `mac-intel <ver>` | Package, sign, and **notarize** the Intel `.dmg` |
-| `windows <ver>` | Package the Windows `.zip` |
+| `windows <ver>` | Package the Windows `.zip` **and** the Squirrel `Biorouter-Setup-<ver>.exe` installer (the installer is what makes a Windows update in-place; the updater matches that exact filename) |
 | `linux <ver>` | Package the GUI `.deb` + `.rpm` — **run this last**, it leaves `node_modules` Linux-flavored |
 | `cli-linux <ver>` | Build the headless CLI-only `.deb` + `.rpm` (`biorouter` + `biorouterd`) |
-| `headless-linux <ver>` | Build the browser-served headless Linux artifact |
 | `mac-manifest <ver>` | Generate `latest-mac.yml` for electron-updater (also run by `draft`) |
-| `verify <ver>` | Assert all 10 artifacts are present, both macOS apps are stapled and Gatekeeper-accepted, the Intel bundle is really x86_64, and `latest-mac.yml` (if generated) names both arch zips — then run `scripts/check-brand-consistency.sh`, `scripts/verify-headless-artifact.sh`, and `scripts/smoke-test-release-artifacts.sh` |
+| `verify <ver>` | Assert all 10 artifacts are present, both macOS apps are stapled and Gatekeeper-accepted, the Intel bundle is really x86_64, and `latest-mac.yml` (if generated) names both arch zips — then run `scripts/check-brand-consistency.sh`, `scripts/check-auth-helper-bundled.sh` against each built `.app`, and `scripts/smoke-test-release-artifacts.sh` |
 | `draft <ver>` | Generate `latest-mac.yml`, assert all 11 release assets exist, and `gh release create --draft` with the notes |
 | `publish <ver>` | Re-run `verify`, require the release to already exist as a draft **and** a green `release-artifact-smoke.yml` run for this version, then `gh release edit --draft=false` |
 | `all <ver>` | Every build + verify phase, ending at the draft release — publication stays a separate step |
 
-A `verify` failure is not always about an artifact: it also fails on brand drift (a `productName`
-or logo mismatch caught by `check-brand-consistency.sh`) and on a broken headless tarball. The
-message names the failing check.
+A `verify` failure is not always about a missing artifact: it also fails on brand drift (a
+`productName` or logo mismatch caught by `check-brand-consistency.sh`), on a macOS app whose auth
+helper is not bundled, on an unstapled app, and on a failing release smoke test. The message names
+the failing check.
 
 The native Windows smoke workflow is a **hard gate between `draft` and `publish`**. `publish`
 looks for a successful `release-artifact-smoke.yml` run titled exactly `Release artifact smoke
@@ -59,8 +64,9 @@ failure, use the `release` workflow in [`.claude/workflows/release.js`](.claude/
 ## Version numbers
 
 The version lives in **one** source of truth: `[workspace.package].version` in `Cargo.toml`. The CLI,
-the daemon, and the core library all inherit it, so the three Rust binaries can never disagree. Six
-files carry the number in total — `Cargo.toml` plus five copies `bump` rewrites in lockstep:
+the daemon, and the core library all inherit it, so the three Rust binaries can never disagree.
+`bump` writes the number into five files. One is `Cargo.toml` itself; the other four hold six copies
+of it between them, because two of those four carry it twice:
 
 - `ui/desktop/package.json`
 - `ui/desktop/package-lock.json` (2 occurrences: `.version` and `.packages[''].version`)

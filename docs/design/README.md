@@ -19,12 +19,20 @@ of driving and debugging the real desktop app live in
 shipped or were overtaken by later work are filed under
 [`docs/history/`](../history/README.md), not here.
 
-There are no Markdown files directly in this folder. All specifications sit in the six
-topic subfolders below, alongside two top-level rendered pages.
+Most specifications sit in the six topic subfolders below, alongside two top-level rendered
+pages. Three documents sit directly in this folder:
+
+- **[Computer Use integration plan](computer-use-integration-plan.md)**: the design of record
+  for the native Computer Use capability and the split that moved the web, document and cache
+  tools out to Web & Documents.
+- **[Computer Use implementation status](computer-use-implementation-status.md)**: the
+  evidence ledger for that plan: what has been proven, and which acceptance gates remain.
+- **[Office context compatibility](office-context-compatibility.md)**: the Word, PowerPoint,
+  Excel and PDF contexts seeded from `crates/biorouter/src/agents/builtin_skills/office-*`.
 
 ## Subfolders
 
-- **[`astryx-adoption/`](astryx-adoption/README.md)** — the proposed comprehensive interface
+- **[`astryx-adoption/`](astryx-adoption/README.md)** — the adopted whole-interface
   revision, in three parts: the
   [design of record](astryx-adoption/astryx-ui-adoption-design.md) carrying the argument, the
   [implementation specification](astryx-adoption/astryx-implementation-spec.html) carrying every
@@ -33,8 +41,8 @@ topic subfolders below, alongside two top-level rendered pages.
   and switchable across all three theme families. Together they rebuild the app on the
   *construction* of Meta's Astryx design system — one control ladder, one easing, one state
   model, one radius ladder — while keeping Biorouter's palette, theming pipeline, calm register
-  and squared corners. **Proposed**: ten decisions (`A-01`…`A-10`) await sign-off, and no
-  implementation has started.
+  and squared corners. **Current**: the ten decisions (`A-01`…`A-10`) are settled and phases
+  1–7, 9 and 10 have landed; phase 8 is partly landed. See the folder README for what remains.
 - **[`branding/`](branding/README.md)** — the BioRouter identity. Holds the
   [logo and wordmark specification](branding/logo-and-wordmark-spec.md), which fixes the
   geometry, colour tokens and lockups of the two-colour `BioRouter` wordmark and the `BR`

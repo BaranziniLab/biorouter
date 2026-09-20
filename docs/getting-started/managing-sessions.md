@@ -10,7 +10,7 @@ This folder holds no guides of its own. Several pages elsewhere in the documenta
 
 ## Where sessions are stored
 
-Session history lives under `~/.config/biorouter/sessions/`.
+Session history lives under `~/.local/share/biorouter/sessions/sessions.db` on macOS and Linux. Run `biorouter info` for the authoritative path on your own machine.
 
 > **Note.** biorouter stores sessions in a SQLite database (`sessions.db`) rather than individual `.jsonl` files, a change introduced in version 1.10.0. Sessions that predate the change are automatically imported into the database. Legacy `.jsonl` files remain on disk but are no longer managed by biorouter.
 

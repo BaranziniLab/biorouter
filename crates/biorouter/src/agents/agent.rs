@@ -103,7 +103,14 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-const DEFAULT_MAX_TURNS: u32 = 100;
+/// Turns a reply may take without asking the user to continue.
+///
+/// ⚠ Public because two CLI surfaces have to agree with it, and both once did
+/// not: `--max-turns`' help text announced 1000, and `biorouter configure`
+/// pre-filled 1000 as the "current" value when nothing was set, so accepting
+/// the dialog WROTE 1000 and raised the real limit tenfold. Read this constant
+/// rather than restating the number.
+pub const DEFAULT_MAX_TURNS: u32 = 100;
 /// Absolute cap on the number of tool calls in a single reply, summed across all
 /// iterations. `max_turns` counts provider round-trips, but one round-trip can
 /// fan out many parallel tool calls, so a few iterations can run an unbounded

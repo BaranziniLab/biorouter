@@ -18,7 +18,7 @@ Come here when you want to know what a specific built-in capability can do, or w
 | [Memory](memory.md) | The trigger words that store, recall, and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards. Predates the Knowledge feature; the page explains how the two relate. |
 | [Skills](skills.md) | Where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent. |
 | [Todo](todo.md) | How BioRouter breaks multi-step work into a tracked checklist and reports progress as it goes. |
-| [Workspace Control](workspace.md) | The tools BioRouter uses to operate the workspace itself — list, open, read, steer and reconfigure other conversations, and delegate to subagents you can watch in a live tab. Ships in two tiers: delegation is automatic, the cross-session tools are an explicit opt-in. |
+| [Workspace Control](workspace.md) | The tools BioRouter uses to operate the workspace itself — list, open, read, steer and reconfigure other conversations, and delegate to subagents you can watch in a live tab. Ships enabled with its full surface, cross-session tools included; the narrowed six-tool delegation roster is what remains if you switch it off. |
 
 ## Related documentation
 

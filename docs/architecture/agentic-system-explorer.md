@@ -6,7 +6,7 @@
 
 Biorouter's agent runtime is a loop the *runtime* controls, not the provider. The provider supplies responses and tool requests; Biorouter decides what is admitted, what context is assembled, which tools are allowed to run, what is persisted, and whether a tool-free answer actually ends the turn. This document defines the implemented runtime and its harness contracts, in the same sixteen-part order as the explorer page.
 
-> **The diagrams live in the HTML.** Seventeen rendered SVG architecture diagrams — the turn lifecycle, entry paths, request assembly, inspection pipeline, vault substitution, dispatch, hook lanes, recovery paths, safety escalation, and transport lanes — are in [`agentic-system-explorer.html`](agentic-system-explorer.html) and must be opened in a browser to be seen. This companion carries the reasoning and the specifications, not the pixels.
+> **The diagrams live in the HTML.** Sixteen rendered SVG architecture diagrams — the turn lifecycle, entry paths, request assembly, inspection pipeline, vault substitution, dispatch, hook lanes, recovery paths, safety escalation, and transport lanes — are in [`agentic-system-explorer.html`](agentic-system-explorer.html) and must be opened in a browser to be seen. This companion carries the reasoning and the specifications, not the pixels.
 
 ## Turn lifecycle
 
@@ -305,7 +305,7 @@ Workflow and session configuration may narrow or extend these defaults.
 
 ## Related documentation
 
-- [Agentic system explorer (rendered page)](agentic-system-explorer.html) — the rendered explorer this file accompanies; open it for the seventeen architecture diagrams.
+- [Agentic system explorer (rendered page)](agentic-system-explorer.html) — the rendered explorer this file accompanies; open it for the sixteen architecture diagrams.
 - [Theme system explorer (rendered page)](../design/theming/theme-system-explorer.html) — the companion theme-system explorer, including the Parchment theme this page is rendered in.
 - [Design system gallery (rendered page)](../design/design-system-gallery.html) — the rendered design-system component and token gallery.
 - [Context engineering](../agent-loop/context-engineering.md) — how context is selected and budgeted, in depth.

@@ -110,7 +110,7 @@ pub struct SessionOptions {
     #[arg(
         long = "max-turns",
         value_name = "NUMBER",
-        help = "Maximum number of turns allowed without user input (default: 1000)",
+        help = "Maximum number of turns allowed without user input (default: 100)",
         long_help = "Set a limit on how many turns (iterations) the agent can take without asking for user input to continue."
     )]
     pub max_turns: Option<u32>,
@@ -3335,5 +3335,45 @@ mod cli_tests {
                 .unwrap_or_else(|e| panic!("`biorouter {name} list` does not parse: {e}"));
             assert!(matches!(parsed.command, Some(Command::Session { .. })));
         }
+    }
+}
+
+#[cfg(test)]
+mod default_max_turns_tests {
+    use biorouter::agents::DEFAULT_MAX_TURNS;
+
+    /// The `--max-turns` help text announced `(default: 1000)` while the real
+    /// default was 100, so the CLI told every user a number ten times the one it
+    /// would use. The number has to appear as a literal (clap's `help` takes a
+    /// `&'static str`), so this is what keeps the literal honest.
+    #[test]
+    fn the_help_text_announces_the_default_the_agent_actually_uses() {
+        let source = include_str!("cli.rs");
+        let line = source
+            .lines()
+            .find(|line| line.contains("Maximum number of turns allowed without user input"))
+            .expect("the --max-turns help string moved; update this test with it");
+        assert!(
+            line.contains(&format!("(default: {DEFAULT_MAX_TURNS})")),
+            "--max-turns help announces a different default from DEFAULT_MAX_TURNS ({DEFAULT_MAX_TURNS}): {line}"
+        );
+    }
+
+    /// `biorouter configure` pre-filled 1000 as the "current" value when nothing
+    /// was set, so a user who opened the dialog and pressed Enter silently wrote
+    /// 1000 into their config and raised the limit tenfold. The dialog must read
+    /// the constant, never restate a number.
+    #[test]
+    fn the_configure_dialog_falls_back_to_the_real_default() {
+        let source = include_str!("commands/configure.rs");
+        let fallback = source
+            .split("BIOROUTER_MAX_TURNS")
+            .nth(1)
+            .expect("the max-turns configure dialog moved; update this test with it");
+        assert!(
+            fallback.contains("DEFAULT_MAX_TURNS"),
+            "the configure dialog's max-turns fallback restates a literal instead of reading \
+             DEFAULT_MAX_TURNS; it read 1000 while the agent used 100"
+        );
     }
 }

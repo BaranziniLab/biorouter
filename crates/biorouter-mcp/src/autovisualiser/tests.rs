@@ -712,6 +712,409 @@ async fn standalone_figure_ignores_cdn_env_flag() {
     assert!(!html.contains("<script src="));
 }
 
+// ---------------------------------------------------------------------------
+// Third-party attribution.
+//
+// Every file in `templates/assets/` is `include_str!`d into the binary and
+// inlined into the figures BioRouter generates, so shipping a figure is
+// redistributing those libraries. MIT, BSD and ISC all require the copyright
+// notice and the licence text to travel with the copy. Nothing used to check
+// that, which is how four of the seven files came to ship with no notice at
+// all, so these tests are the part that stops the fix rotting.
+// ---------------------------------------------------------------------------
+
+/// Fails when a file is added to `templates/assets/` without a `LICENSES.md`
+/// entry, and when an entry names a file that is no longer there.
+#[test]
+fn every_vendored_asset_is_covered_by_the_licence_file() {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    // Resolved through the constant the generated notice points readers at, so a
+    // moved or misspelled path fails here rather than sending a user nowhere.
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/<crate> sits two levels below the repository root");
+    let licences_path = repo_root.join(common::LICENSES_PATH);
+    let licences = std::fs::read_to_string(&licences_path).unwrap_or_else(|e| {
+        panic!(
+            "{} is the notice BioRouter redistributes with every figure, and it \
+             could not be read: {e}",
+            licences_path.display()
+        )
+    });
+    let dir = licences_path
+        .parent()
+        .expect("LICENSES.md lives in the assets directory");
+
+    let on_disk: BTreeSet<String> = std::fs::read_dir(dir)
+        .expect("assets directory")
+        .map(|entry| entry.expect("assets directory entry"))
+        .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "LICENSES.md" && !name.starts_with('.'))
+        .collect();
+
+    assert!(
+        on_disk.len() >= 7,
+        "expected the vendored libraries to still be present, found {on_disk:?}"
+    );
+
+    // A section per file, so an entry cannot decay into a passing mention of the
+    // filename somewhere in the prose.
+    let documented: BTreeSet<String> = licences
+        .lines()
+        .filter_map(|line| line.strip_prefix("## `"))
+        .filter_map(|rest| rest.strip_suffix('`'))
+        .map(str::to_string)
+        .collect();
+
+    for name in &on_disk {
+        assert!(
+            documented.contains(name),
+            "{name} is inlined into generated figures, so BioRouter redistributes \
+             it, but {} has no '## `{name}`' section. Add the library, version, \
+             licence, copyright line and full licence text.",
+            common::LICENSES_PATH
+        );
+    }
+    for name in &documented {
+        assert!(
+            on_disk.contains(name),
+            "{} documents {name}, which is not in the assets directory. Remove \
+             the stale entry.",
+            common::LICENSES_PATH
+        );
+    }
+
+    // Each section must carry the four facts plus a fenced licence text. A URL
+    // is not a notice that travels, so the text has to be here.
+    for section in licences.split("\n## `").skip(1) {
+        let name = section.split('`').next().unwrap_or("<unnamed>").to_string();
+        for field in ["**Version:**", "**Licence:**", "**Copyright:**"] {
+            assert!(
+                section.contains(field),
+                "the {name} entry in {} is missing {field}",
+                common::LICENSES_PATH
+            );
+        }
+        let fenced: String = section
+            .split("\n```")
+            .nth(1)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        assert!(
+            fenced.len() > 400,
+            "the {name} entry in {} has no full licence text (found {} bytes in \
+             its code fence)",
+            common::LICENSES_PATH,
+            fenced.len()
+        );
+    }
+}
+
+#[test]
+fn attribution_comment_is_a_well_formed_html_comment() {
+    let notice = common::ATTRIBUTION_COMMENT;
+    assert!(notice.starts_with("<!--"));
+    assert!(notice.trim_end().ends_with("-->"));
+
+    let inner = notice
+        .trim_end()
+        .trim_start_matches("<!--")
+        .trim_end_matches("-->");
+    assert!(
+        !inner.contains("--"),
+        "'--' is illegal inside an HTML comment: {inner}"
+    );
+
+    for library in [
+        "Chart.js 4.5.0",
+        "D3 7.9.0",
+        "d3-sankey 0.12.3",
+        "Leaflet 1.9.4",
+        "Leaflet.markercluster 1.5.3",
+        "Mermaid 11.17.2",
+    ] {
+        assert!(
+            notice.contains(library),
+            "the notice does not name {library}"
+        );
+    }
+    for licence in ["MIT", "ISC", "BSD-3-Clause", "BSD-2-Clause"] {
+        assert!(notice.contains(licence), "the notice omits {licence}");
+    }
+    assert!(
+        notice.contains(common::LICENSES_PATH),
+        "the notice must say where the full texts live"
+    );
+    assert!(
+        notice.len() < 700,
+        "this rides in every figure and every dashboard panel, so keep it short: \
+         {} bytes",
+        notice.len()
+    );
+}
+
+/// Every `"X.Y.Z"` string literal in a minified bundle, for reading a library's
+/// own version back out of the bytes that ship rather than trusting a comment.
+fn quoted_semvers(source: &str) -> std::collections::BTreeSet<String> {
+    // Splitting on the quote is enough: a `"` byte cannot occur inside a
+    // multi-byte UTF-8 character, so every segment is a whole string, and the
+    // escaped quotes that break the strict inside/outside alternation only ever
+    // add candidates, never hide one.
+    source
+        .split('"')
+        .filter(|segment| is_semver(segment))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Exactly three dot-separated runs of ASCII digits, nothing else.
+fn is_semver(text: &str) -> bool {
+    let mut parts = text.split('.');
+    let three_numbers = (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    });
+    three_numbers && parts.next().is_none()
+}
+
+/// Every semver-shaped token in `text`, by splitting on anything that is not a
+/// digit or a dot.
+fn semvers_in(text: &str) -> std::collections::BTreeSet<String> {
+    text.split(|c: char| !c.is_ascii_digit() && c != '.')
+        .filter(|token| is_semver(token))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The versions a vendored bundle declares about itself.
+///
+/// Two places carry one, and which one it is varies by library: a `"x.y.z"`
+/// string literal in the code (Chart.js, D3, Leaflet) and the banner comment the
+/// minifier preserved at the top (d3-sankey has only that). Both are read, so no
+/// library needs a rule of its own.
+fn declared_versions(source: &str) -> std::collections::BTreeSet<String> {
+    /// Long enough for the longest banner here, short enough that this is not a
+    /// scan of a 3.5 MB bundle for tokens that are not version declarations.
+    const BANNER_CHARS: usize = 2048;
+
+    let banner: String = source.chars().take(BANNER_CHARS).collect();
+    let mut versions = quoted_semvers(source);
+    versions.extend(semvers_in(&banner));
+    versions
+}
+
+/// The exact `major.minor.patch` a jsdelivr npm URL pins, or `None` when it
+/// floats (`@11`, `@0.12`) or is not such a URL. A floating pin fails the test.
+fn exact_version_pinned_in(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://cdn.jsdelivr.net/npm/")?;
+    // `<package>@<version>/<path>`. A scoped package's leading `@scope` segment
+    // has its `@` at index 0, which is how it is told apart from the one that
+    // introduces the version.
+    let segment = rest
+        .split('/')
+        .find(|s| s.find('@').is_some_and(|i| i > 0))?;
+    let version = segment.split_once('@')?.1;
+    is_semver(version).then(|| version.to_string())
+}
+
+/// The two vendored files that carry no version string anywhere in their bytes,
+/// so the comparison below has nothing to read.
+///
+/// They are named rather than skipped silently: a new version-less asset has to
+/// be a decision someone took, not one this test took for them.
+const NO_VERSION_IN_THE_BYTES: &[&str] = &["leaflet.min.css", "leaflet.markercluster.min.js"];
+
+fn repo_root_for_tests() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/<crate> sits two levels below the repository root")
+        .to_path_buf()
+}
+
+/// `PINNED_LIBRARIES` must hold every file that ships inlined, or a library
+/// could be added on one delivery path and never checked against the other.
+#[test]
+fn every_shipped_library_has_a_pinned_cdn_row() {
+    use std::collections::BTreeSet;
+
+    let dir = repo_root_for_tests()
+        .join(common::LICENSES_PATH)
+        .parent()
+        .expect("LICENSES.md lives in the assets directory")
+        .to_path_buf();
+
+    let on_disk: BTreeSet<String> = std::fs::read_dir(&dir)
+        .expect("assets directory")
+        .map(|entry| entry.expect("assets directory entry"))
+        .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "LICENSES.md" && !name.starts_with('.'))
+        .collect();
+
+    let tabled: BTreeSet<String> = common::PINNED_LIBRARIES
+        .iter()
+        .map(|lib| lib.file.to_string())
+        .collect();
+
+    assert_eq!(
+        on_disk, tabled,
+        "PINNED_LIBRARIES and templates/assets/ have diverged. A vendored file \
+         with no row is a library whose CDN pin nothing compares against, which \
+         is how chart.js came to serve 4.5.1 against a vendored 4.5.0."
+    );
+}
+
+/// For every library, the vendored bytes, the CDN pin, the attribution notice
+/// and `LICENSES.md` must all name one release.
+///
+/// A library with two live delivery paths can disagree with itself without
+/// anything failing. A standalone figure loads the CDN URL (the desktop sets
+/// `BIOROUTER_AUTOVIS_CDN=1` by default) while a dashboard always inlines the
+/// vendored bytes, so a floating pin means the same figure is drawn by two
+/// different releases inside one app, and the licence notice every figure
+/// carries states a version that figure does not contain. Both happened:
+/// Mermaid's pin floated on `@11` against a vendored 10.9.0, and `chart.js@4`
+/// resolved to 4.5.1 against a vendored 4.5.0.
+///
+/// The vendored version is read back out of the bundle rather than written down
+/// a second time, because a hand-written constant is exactly what drifts. An
+/// inexact pin fails outright: a floating major cannot be compared to anything,
+/// which is how the drift went unnoticed for so long.
+#[test]
+fn vendored_and_cdn_pins_are_the_same_version() {
+    let licences = std::fs::read_to_string(repo_root_for_tests().join(common::LICENSES_PATH))
+        .expect("LICENSES.md is read by every_vendored_asset_is_covered_by_the_licence_file");
+
+    for lib in common::PINNED_LIBRARIES {
+        let file = lib.file;
+        let pinned = exact_version_pinned_in(lib.cdn_url).unwrap_or_else(|| {
+            panic!(
+                "the CDN pin for {file} must name an exact major.minor.patch so the \
+                 vendored copy can be compared against it, found {}. A floating \
+                 version silently changes what a figure loads, with no commit.",
+                lib.cdn_url
+            )
+        });
+
+        let declared = declared_versions(lib.vendored);
+        if declared.is_empty() {
+            assert!(
+                NO_VERSION_IN_THE_BYTES.contains(&file),
+                "{file} carries no version string, so its pin at {pinned} is \
+                 unverifiable. Either the file was replaced with a build that \
+                 dropped its banner, or it is a new asset that needs a line in \
+                 NO_VERSION_IN_THE_BYTES saying so."
+            );
+        } else {
+            assert!(
+                declared.contains(&pinned),
+                "the CDN pin for {file} names {pinned}, but the vendored bundle \
+                 does not carry that version string. The versions it does carry \
+                 are {declared:?}. Replace templates/assets/{file} with the {pinned} \
+                 build, or move the pin to match the file."
+            );
+        }
+
+        // The notice rides in every figure, so a stale version here is a licence
+        // statement about bytes the figure does not contain.
+        let named = format!("{} {pinned} ", lib.notice_name);
+        assert!(
+            common::ATTRIBUTION_COMMENT.contains(&named),
+            "the attribution notice must say '{named}', the version {file} now \
+             ships on both delivery paths: {}",
+            common::ATTRIBUTION_COMMENT
+        );
+
+        let section = licences
+            .split("\n## `")
+            .find(|s| s.starts_with(&format!("{file}`")))
+            .unwrap_or_else(|| panic!("{} has no {file} section", common::LICENSES_PATH));
+        assert!(
+            section.contains(&pinned),
+            "the {file} entry in {} must record version {pinned}",
+            common::LICENSES_PATH
+        );
+    }
+}
+
+#[test]
+fn a_floating_cdn_pin_is_rejected() {
+    // The shape the drift shipped in, kept as a negative control so the guard
+    // above cannot quietly stop distinguishing the two.
+    assert_eq!(
+        exact_version_pinned_in("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"),
+        None
+    );
+    assert_eq!(
+        exact_version_pinned_in("https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"),
+        None
+    );
+    assert_eq!(
+        exact_version_pinned_in("https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js").as_deref(),
+        Some("7.9.0")
+    );
+    assert_eq!(
+        exact_version_pinned_in("https://example.com/npm/d3@7.9.0/dist/d3.min.js"),
+        None
+    );
+}
+
+#[test]
+fn the_attribution_notice_lands_in_the_head_and_never_twice() {
+    let notice = common::ATTRIBUTION_COMMENT;
+
+    let once = common::assemble(
+        "<!DOCTYPE html><html><head>\n<title>t</title>\n</head><body></body></html>",
+        &[],
+        &[],
+    );
+    assert_eq!(once.matches(notice).count(), 1);
+    assert!(once.contains(&format!("<head>\n{notice}")));
+
+    // Re-assembling an assembled document must not stack notices.
+    assert_eq!(common::assemble(&once, &[], &[]).matches(notice).count(), 1);
+
+    // A template with no head still carries it.
+    assert!(common::assemble("<p>x</p>", &[], &[]).starts_with(notice));
+
+    // The combined report has its own template with no {{ASSETS}} slot, so it
+    // would be the easy one to miss.
+    let report = common::assemble(include_str!("templates/dashboard_template.html"), &[], &[]);
+    assert_eq!(report.matches(notice).count(), 1);
+}
+
+#[tokio::test]
+async fn a_generated_figure_carries_the_attribution_beside_the_libraries() {
+    let html = render_standalone_figure(
+        "show_chart",
+        json!({"data": {
+            "type": "line",
+            "labels": ["A"],
+            "datasets": [{"label": "S", "data": [1.0]}]
+        }}),
+    )
+    .await
+    .unwrap();
+
+    let notice = common::ATTRIBUTION_COMMENT;
+    assert_eq!(html.matches(notice).count(), 1);
+
+    let head = html.find("<head>").expect("figure has a head");
+    let at = html.find(notice).expect("figure carries the notice");
+    let body = html.find("<body").expect("figure has a body");
+    assert!(head < at && at < body, "the notice belongs in the head");
+
+    // The figure really does inline the library the notice covers.
+    assert!(html.contains("Chart.js v4.5.0"));
+}
+
 include!("tests_extra.rs");
 include!("tests_dashboard.rs");
 include!("tests_distributions.rs");

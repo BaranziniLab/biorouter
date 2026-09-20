@@ -221,6 +221,39 @@
       <h2>Latest updates</h2>
     </div>
     <div class="news-list">
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5" target="_blank" class="news-row">
+        <div class="news-date">
+          <div class="day">15</div>
+          <div class="mon">Sep</div>
+        </div>
+        <div class="news-body">
+          <h3>Biorouter v1.90.5: chats keep their place, responsive previews, scheduled work follows the caller&rsquo;s reach</h3>
+          <p>Closing a tab during a reply no longer leaves its chat stuck running, streamed text keeps repeated tokens at chunk boundaries, and mid-turn steering stays queued until the running turn consumes it. Queued follow-up messages survive a tab switch and send once. The artifact preview adapts between a side panel and a vertical layout in narrow panes, markdown, CSV/TSV, code, logs and notebooks share one paper surface and reading measure, and Reduce Motion turns the transitions off. Schedule writes and the <code>/schedule</code> and <code>/loop</code> commands now use one definition of private work, so a public chat cannot run, pause, resume or remove private work, and a scheduled run rechecks its authority when it starts.</p>
+          <div class="news-link">View the release notes &rarr;</div>
+        </div>
+      </a>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0" target="_blank" class="news-row">
+        <div class="news-date">
+          <div class="day">3</div>
+          <div class="mon">Sep</div>
+        </div>
+        <div class="news-body">
+          <h3>Biorouter v1.90.0: every tool driven across providers, and a review run before the drive</h3>
+          <p>Two campaigns landed in this minor release. Exercising all 419 tool and mode combinations in the running app found twenty-four issues: a knowledge base could wedge until restart because an abandoned transaction held its write lock, a tool call that asked for approval could hang forever, editing a <code>.docx</code> destroyed the images it already contained, and a Windows path bug made every existing raw file read as absent. A programming review run before the drive closed a set of security defects, among them a schedule id that went straight into a path join and wrote outside the managed directory, an MCP extension that could read the daemon secret out of a proxy frame URL, and a private chat that could write into a new public conversation with no crossing approval.</p>
+          <div class="news-link">View the release notes &rarr;</div>
+        </div>
+      </a>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.89.0" target="_blank" class="news-row">
+        <div class="news-date">
+          <div class="day">10</div>
+          <div class="mon">Aug</div>
+        </div>
+        <div class="news-body">
+          <h3>Biorouter v1.89.0: privacy tiers, Workspace Control, and several knowledge bases per chat</h3>
+          <p>This is the release where the app learns the difference between a model your institution has an agreement with and one it does not, and refuses to send your private work to the wrong one. Every model carries a privacy tier and an institution, and so does every chat, knowledge base and clinical connector. A chat that has touched PHI will not run on a commercial model, and its history will not reach one through recall, ingest, branching or summarisation. Alongside it, <strong>Workspace Control</strong> lets Biorouter work across your conversations instead of only inside one, and turns a delegated subagent into a tab you can read, steer and stop. A chat can use several knowledge bases at once with one marked primary, machine-wide memory is no longer injected into every chat&rsquo;s system prompt, and a message typed while Biorouter is working is no longer thrown away. Built-in skills moved out of the Skills count into their own <strong>Contexts</strong> section.</p>
+          <div class="news-link">View the release notes &rarr;</div>
+        </div>
+      </a>
       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.5" target="_blank" class="news-row">
         <div class="news-date">
           <div class="day">21</div>

@@ -1,11 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!--
+  Third-party libraries bundled in this figure, each under its own licence:
+    Chart.js 4.5.0 (MIT), D3 7.9.0 (ISC), d3-sankey 0.12.3 (BSD-3-Clause),
+    Leaflet 1.9.4 (BSD-2-Clause), Leaflet.markercluster 1.5.3 (MIT),
+    Mermaid 11.17.2 (MIT).
+  Copyright lines and the full licence texts ship with the BioRouter source at
+  crates/biorouter-mcp/src/autovisualiser/templates/assets/LICENSES.md
+-->
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mermaid Diagram</title>
 
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js" crossorigin="anonymous"></script>
 
     <script>/*
  * Shared runtime injected into every Auto Visualiser template via {{COMMON}}.

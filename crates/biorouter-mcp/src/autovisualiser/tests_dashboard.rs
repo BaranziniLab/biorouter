@@ -841,7 +841,7 @@ async fn test_shared_store_holds_each_library_once_across_types() {
 async fn test_dedup_keeps_the_report_far_smaller_than_naive_composition() {
     let router = AutoVisualiserRouter::new();
 
-    // A standalone Mermaid figure inlines the whole ~3.3 MB library.
+    // A standalone Mermaid figure inlines the whole ~3.6 MB library.
     let standalone = dashboard_html(
         &router
             .render_mermaid(Parameters(RenderMermaidParams {

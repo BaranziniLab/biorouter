@@ -12,6 +12,7 @@ biorouter ships a command-line interface (CLI) for managing sessions, configurat
 - [Core commands](#core-commands)
 - [Session management](#session-management)
 - [Task execution](#task-execution)
+- [Extensions, skills, and knowledge](#extensions-skills-and-knowledge)
 - [Project management](#project-management)
 - [Interface](#interface)
 - [Terminal integration](#terminal-integration)
@@ -106,6 +107,66 @@ Check the current biorouter version you have installed.
 biorouter --version
 ```
 
+### doctor [options]
+
+Check system prerequisites and the CLI install. It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain), says whether `biorouter` is on your PATH, and reports the local model sidecar. Run it first when an extension will not start or a package runner is missing.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default) or `json`
+- **`--no-update`**: Skip the networked self-update check
+- **`--fix [<DEPENDENCY>]`**: Hand a failing prerequisite to Biorouter. This opens a session briefed with the dependency, this machine's environment and what to verify. Pass a name (`--fix uv`), or leave it bare to take the first missing required one
+
+**Usage:**
+
+```bash
+biorouter doctor
+biorouter doctor --fix uv
+biorouter doctor --format json --no-update
+```
+
+### usage [options]
+
+Report token and cost usage, per day or per model, month-to-date.
+
+**Options:**
+
+- **`--from <YYYY-MM-DD>`**: Start of the range, local time. Defaults to 30 days ago
+- **`--to <YYYY-MM-DD>`**: End of the range, local time and inclusive. Defaults to today
+- **`--by-model`**: Group by model instead of by day
+- **`--json`**: Print machine-readable JSON
+
+**Usage:**
+
+```bash
+biorouter usage
+biorouter usage --by-model --from 2026-09-01
+```
+
+### setup-path
+
+Install the `biorouter` command onto your PATH. Alias: `install-cli`.
+
+**Usage:**
+
+```bash
+biorouter setup-path
+```
+
+### completion `<SHELL>`
+
+Generate the shell autocompletion script. `<SHELL>` is one of `bash`, `elvish`, `fish`, `powershell` or `zsh`.
+
+**Options:**
+
+- **`--bin-name <BIN_NAME>`**: Generate the script for a different binary name. Default is `biorouter`
+
+**Usage:**
+
+```bash
+biorouter completion zsh > ~/.biorouter-completion.zsh
+```
+
 ## Session management
 
 > **Note.** biorouter stores sessions in a SQLite database (`sessions.db`) rather than individual `.jsonl` files, a change introduced in version 1.10.0. Sessions that predate the change are automatically imported into the database. Legacy `.jsonl` files remain on disk but are no longer managed by biorouter.
@@ -123,7 +184,12 @@ Start or resume interactive chat sessions.
 - **`--history`**: Show previous messages when resuming a session
 - **`--debug`**: Enable debug mode to output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Set the maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops.
-- **`--max-turns <NUMBER>`**: Set the maximum number of turns allowed without user input (default: 1000)
+- **`--max-turns <NUMBER>`**: Set the maximum number of turns allowed without user input (default: 100)
+
+**Model Options:**
+
+- **`--provider <PROVIDER>`**: Override `BIOROUTER_PROVIDER` for this run. Available providers include `openai`, `anthropic`, `google`, `ollama`, `llamacpp` and `databricks`
+- **`--model <MODEL>`**: Override `BIOROUTER_MODEL` for this run. The model must be supported by the provider in use
 
 **Extension Options:**
 
@@ -544,6 +610,16 @@ biorouter session diverge -n migration-review --branch-name try-covering-index
 biorouter session --resume --session-id 20251108_7
 ```
 
+### session declassify
+
+Lower a session's privacy classification from private to public, so it may run on any model. The change is confirmed at the terminal and recorded in the classification ledger. It works by session id, including for sessions no listing shows: subagent runs, `--no-session` runs and terminal sessions.
+
+**Usage:**
+
+```bash
+biorouter session declassify 20251108_7
+```
+
 ## Task execution
 
 ### run [options]
@@ -577,7 +653,7 @@ Execute commands from an instruction file or stdin.
 
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
-- **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (default: 1000)
+- **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (default: 100)
 - **`--explain`**: Show a workflow's title, description, and parameters
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
@@ -730,12 +806,18 @@ This is always the case next to the desktop app. The app's own daemon uses a ran
 
 ### mcp
 
-Run an enabled MCP server specified by `<name>` (e.g. `'Google Drive'`). MCP is the Model Context Protocol, the standard biorouter extensions speak.
+Run one of the MCP servers bundled with Biorouter as a subprocess speaking MCP over stdio. MCP is the Model Context Protocol, the standard biorouter extensions speak. `<name>` is not an arbitrary extension name: it must be one of the five bundled servers below, and any other value is refused with `Invalid command: <name>`.
+
+- `autovisualiser` (Auto Visualiser)
+- `computercontroller` (the config key whose display name is "Computer Use")
+- `webdocuments` (the config key whose display name is "Web & Documents")
+- `developer` (Developer)
+- `memory` (Memory)
 
 **Usage:**
 
 ```bash
-biorouter mcp <name>
+biorouter mcp developer
 ```
 
 ### acp
@@ -751,6 +833,87 @@ biorouter acp
 ```
 
 > **Note.** This command is automatically invoked by ACP-compatible clients and is not typically run directly by users. The client manages the lifecycle of the `biorouter acp` process.
+
+## Extensions, skills, and knowledge
+
+### extension
+
+Install and manage extensions. Alias: `ext`.
+
+**Subcommands:**
+
+- **`install <PATH>`**: Install an extension from a `.brxt` bundle. `--env <KEY=VALUE>` sets a plain environment variable and `--secret <KEY=VALUE>` a secret one (repeatable). A secret passed this way is visible to `ps`, so prefer the interactive prompt, or `--secret-stdin` to read `KEY=VALUE` lines from stdin in an unattended run. `--no-enable` installs without enabling
+- **`list`**: List configured extensions
+- **`configure <NAME>`**: Configure an installed extension's credentials
+- **`remove <NAME>`**: Remove a configured extension
+
+**Usage:**
+
+```bash
+biorouter extension install ./SPOKEAgent.brxt
+biorouter ext list
+biorouter ext configure SPOKEAgent
+```
+
+### skill
+
+Install and manage skills.
+
+**Subcommands:**
+
+- **`install <SOURCE>`**: Install a skill or skill package from a `.zip` or a repository URL. `--force` replaces one already installed; `--as <bundle|individual>` answers the question a source that could be either one package or several separate skills raises
+- **`list`**: List installed skills and their enabled state
+- **`enable <NAME>`** / **`disable <NAME>`**: Turn a skill on or off without removing it. `<NAME>` is a skill name, a bundle name, or a slug as `skill list` shows it
+- **`remove <NAME>`**: Remove an installed skill
+
+**Usage:**
+
+```bash
+biorouter skill install https://github.com/BaranziniLab/biorouter-skills
+biorouter skill list
+biorouter skill disable code-review
+```
+
+### knowledge
+
+Manage personal knowledge bases. Alias: `kb`.
+
+**Subcommands:**
+
+- **`list`**: List knowledge bases
+- **`active`**: Show or set the primary base, which is the write target when no `--kb` is given. `--set <ID>` makes a base primary (it must not be hidden), `--clear` clears it, `--inherit` drops this scope's preference, and `--session <ID>` acts on one chat's primary instead of the machine-wide one
+- **`create <ID>`**: Create a base with a kebab-case id. `--name <NAME>` and `--color <HEX>` are optional
+- **`ingest`**: Ingest a source into a base. One of `--url`, `--file` or `--text`, with an optional `--kb <ID>`, `--focus <HINTS>`, `--provider` and `--model`
+- **`ingest-conversation`**: Digest chat history into a base
+- **`lint`**: Lint a base
+- **`query <QUESTION>`**: Ask a base a question. `--save` persists the answer as a knowledge page
+- **`hide`** / **`unhide`**: Hide a base from the agent, or bring it back
+
+**Usage:**
+
+```bash
+biorouter kb create ms-genetics --name "MS genetics"
+biorouter kb active --set ms-genetics
+biorouter kb ingest --url https://example.org/paper
+biorouter kb query "what is known about HLA-DRB1*15:01?"
+```
+
+### apps
+
+List, open, and serve the Biorouter apps built by Agent Drafter. `open` and `serve` reuse a `biorouterd` already listening on the configured port (`BIOROUTER_PORT`, default 3000) or start one for you, then open `http://127.0.0.1:<port>/apps/<id>/` in your browser. Apps open in a real browser; there is no in-terminal rendering.
+
+**Subcommands:**
+
+- **`list`**: List installed Biorouter apps
+- **`open <ID>`**: Open an app in your default browser
+- **`serve <ID>`**: Serve an app in the foreground until `Ctrl-C`
+
+**Usage:**
+
+```bash
+biorouter apps list
+biorouter apps open cohort-explorer
+```
 
 ## Project management
 
@@ -797,6 +960,7 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
+- **`--computer-use-approval`**: Interactively set a computer-use approval key for the browser session. Requires a terminal
 - **`--open`**: Open a browser once the server is ready
 
 **Usage:**
@@ -870,6 +1034,26 @@ While the web interface provides most core features, be aware of these limitatio
 - Configuration changes require a server restart
 
 ## Terminal integration
+
+### term
+
+Run a Biorouter session tied to your terminal window. Each terminal keeps its own persistent session and resumes it automatically. This is the command that installs the `@biorouter` and `@g` aliases described below.
+
+**Subcommands:**
+
+- **`init <SHELL>`**: Print the shell initialization script to evaluate from your shell profile. `--default` sends anything you type that is not a command to biorouter
+- **`run <PROMPT>...`**: Run a prompt in the terminal session. Multiple words need no quotes
+- **`info`**: Print compact session info (token usage, model) for prompt integration, for example `●○○○○ sonnet`
+
+**Usage:**
+
+```bash
+# Set up, once
+echo 'eval "$(biorouter term init zsh)"' >> ~/.zshrc
+source ~/.zshrc
+
+biorouter term run list files in this directory
+```
 
 ### @biorouter / @g
 

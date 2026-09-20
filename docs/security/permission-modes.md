@@ -32,6 +32,11 @@ to `/mode`; **Configure name** is how the mode appears in `biorouter configure`.
 
 > **Warning.** Completely Autonomous (`auto`) is applied by default.
 
+> **Note.** Chat Only is the one mode that switches Computer Use off outright: while it is
+> selected, any Computer Use tool call is refused with *"Chat mode does not run Computer Use
+> tools"* and any grant already held is revoked. The other three modes all still ask (see
+> below).
+
 > **Note.** In Manual Approval and Smart Approval modes you will see "Allow" and "Deny" buttons
 > in your session windows during tool calls. BioRouter only asks for permission for tools it
 > deems are 'write' tools — for example any 'text editor write', 'text editor edit', or
@@ -50,6 +55,7 @@ without asking would be irreversible, or would move your data somewhere you cann
 | Reading a **global** memory category | *"Cross-session memory read"*, naming the category | Global memories are shared by every BioRouter session on the computer, in every project. A session reading one is seeing text another conversation wrote, so you decide each time. |
 | Saving or deleting a **global** memory | *"Cross-session memory write"* / *"Cross-session memory change"*, naming the category | Marking a note global is what makes it follow you into every other project. |
 | Clearing **all** global memories | *"Deletes every global memory"* | It cannot be undone. |
+| Observing or controlling the desktop (Computer Use) | An approval naming the chat's model, where that model's data is sent, and the computer being controlled | Screenshots, open-window information and application text are sent to the bound model, including anything else visible on screen. The grant covers one user request and all its tool actions, and ends when the reply finishes or you stop it. |
 
 Four related notes on memory:
 
@@ -75,7 +81,10 @@ Two things these approvals are guaranteed against, so that "put to you" means wh
 - **Nothing can answer them for you.** In particular a `PermissionRequest`
   [hook](../agent-loop/hooks/hooks-reference.md) returning `allow` — the automation you write to
   stop being prompted for routine calls — is ignored on these, and the card is shown anyway. A
-  hook can still *deny* anything.
+  hook can still *deny* anything. The Computer Use approval goes further: the route that records
+  it takes a proof header that only the person at the app can produce, so a model or an ordinary
+  API credential holding the daemon's key is refused with *"Only the person using this chat may
+  approve Computer Use."*
 - **They never reopen a refusal.** If the same call was already refused — by your own "never
   allow" for that tool, by an administrator's [managed policy](managed-policy.md), or by the
   always-on catastrophic-command block — it stays refused and no card appears. An approval prompt

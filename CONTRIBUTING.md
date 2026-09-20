@@ -134,20 +134,31 @@ directory:
 
 ```
 npm run test:run    # vitest unit tests
-npm run lint:check  # typecheck + eslint (zero warnings) + theme codegen + contrast
+npm run lint:check  # typecheck + eslint (zero warnings) + theme codegen + contrast + token mirrors
 ```
 
 `npm run test:run` is **required to merge** — it is the `Unit tests (vitest)`
 status check on `main`, and it runs on every pull request whether or not you
-touched `ui/desktop`. `npm run lint:check` is the same set of gates as the CI
-`Static checks` job; that job runs on every pull request but is *not* a required
-check, so it will not block a merge on its own.
+touched `ui/desktop`. `npm run lint:check` covers most of the CI `Static checks`
+job; that job additionally runs the packaged-dependency isolation tests
+(`node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs`)
+and reports every gate rather than stopping at the first failure. It runs on
+every pull request but is *not* a required check, so it will not block a merge
+on its own.
+
+Rust changes are gated by the `test (ubuntu-latest)`, `test (macos-latest)` and
+`test (windows-latest)` checks from `.github/workflows/rust.yml`, which run
+`cargo test --workspace --lib --bins` on each OS. All three are required, so a
+failure on Windows alone blocks the merge; there is no way to run only the OS you
+develop on.
 
 ### Running every check at once
 
 `just check-everything` is the single precommit entry point. It chains
 `cargo fmt`, the clippy lint script, `npm run lint:check`, the OpenAPI schema
-check, and the version, brand, and cross-compile-drift consistency checks.
+check, the version, brand, and cross-compile-drift consistency checks, the
+Computer Use naming gate (which rejects the string "Computer Controller" anywhere
+a person reads it), and the two BAAM registry gates.
 
 ### Regenerating the OpenAPI schema
 
