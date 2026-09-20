@@ -215,7 +215,29 @@ impl Runtime {
             }
             Ok(result)
         };
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation).await;
+        // ⚠ This bound SUPERVISES a bound of the helper's own, and must exceed it
+        // or the inner one is dead code.
+        //
+        // The Windows helper runs its diagnostics through PowerShell under
+        // `context.WithTimeout(30*time.Second)`, and on expiry it answers
+        // honestly: `missing_dependency`, "Windows runtime timed out after 30s".
+        // That answer is worth having — it names PowerShell, which is what a
+        // user has to act on. But this timeout was ALSO 30 s, and it starts
+        // strictly earlier (spawn, process start and the helper's own setup all
+        // happen before its clock begins), so it always won. The helper's
+        // diagnosis could never be delivered, and the user was told only
+        // "could not check the native runtime".
+        //
+        // Measured on a Windows runner before this change: 34.91 s to fail,
+        // which is this 30 s plus the 5 s shutdown below — the outer bound
+        // firing, never the inner one.
+        //
+        // 45 s leaves room for the helper to answer at 30 s plus process start.
+        // The extra latency is only ever paid on a machine where the helper
+        // cannot talk to PowerShell at all, and there a real diagnosis is worth
+        // more than a fast non-answer.
+        const PROBE_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+        let result = tokio::time::timeout(PROBE_BOUND, operation).await;
         runtime.shutdown().await;
         result.context("computer_use_probe_timeout: native readiness probe did not complete")?
     }

@@ -421,3 +421,61 @@ async fn every_tool_a_shipped_skill_names_is_a_tool_that_exists() {
         "expected the office skills' tool references to be checked, saw {checked}"
     );
 }
+
+/// The readiness probe's bound must exceed every bound it supervises.
+///
+/// ⚠ This is a rule about NESTING, not about a number. `Runtime::doctor` wraps a
+/// helper that imposes its own deadline and answers honestly when it expires —
+/// the Windows helper runs PowerShell under `context.WithTimeout(30s)` and
+/// reports `missing_dependency`, "Windows runtime timed out after 30s". An outer
+/// bound equal to the inner one always wins, because it starts strictly earlier
+/// (spawn, process start and the helper's own setup all precede the inner
+/// clock), so the inner deadline becomes dead code and its diagnosis is never
+/// delivered. Both were 30 s, and a Windows runner reported only "could not
+/// check the native runtime" for it.
+///
+/// The bounds are read out of the two sources rather than restated, because a
+/// test carrying its own copy of a number passes while the real one drifts.
+#[test]
+fn the_probe_bound_exceeds_every_helper_bound_it_supervises() {
+    let runtime = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/computer_use/runtime.rs"),
+    )
+    .expect("runtime.rs");
+    let outer: u64 = runtime
+        .split_once("const PROBE_BOUND:")
+        .and_then(|(_, rest)| rest.split_once("from_secs("))
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .and_then(|(value, _)| value.trim().parse().ok())
+        .expect("PROBE_BOUND must be a literal `from_secs(N)` this test can read");
+
+    // The helper sources are fetched at build time, so read them only when a
+    // checkout is present; the rule is still pinned wherever one is.
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/computer-use/source.noindex/apps");
+    let mut checked = 0usize;
+    for app in ["OpenComputerUseWindows", "OpenComputerUseLinux"] {
+        let Ok(source) = std::fs::read_to_string(checkout.join(app).join("main.go")) else {
+            continue;
+        };
+        for (index, _) in source.match_indices("context.WithTimeout(context.Background(), ") {
+            let tail = &source[index..];
+            let seconds: u64 = tail
+                .split_once("), ")
+                .and_then(|(_, rest)| rest.split_once("*time.Second"))
+                .and_then(|(value, _)| value.trim().parse().ok())
+                .expect("a helper bound this test can read");
+            checked += 1;
+            assert!(
+                outer > seconds,
+                "{app} bounds its bridge at {seconds}s and the probe supervising it allows \
+                 {outer}s. An outer bound that does not EXCEED the inner one always wins — it \
+                 starts earlier — so the helper's own diagnosis can never be delivered."
+            );
+        }
+    }
+    if checked == 0 {
+        // Say so rather than passing quietly: with no checkout this asserted nothing.
+        eprintln!("no helper checkout present; the nesting rule was not exercised");
+    }
+}
