@@ -809,7 +809,7 @@ This is always the case next to the desktop app. The app's own daemon uses a ran
 Run one of the MCP servers bundled with Biorouter as a subprocess speaking MCP over stdio. MCP is the Model Context Protocol, the standard biorouter extensions speak. `<name>` is not an arbitrary extension name: it must be one of the five bundled servers below, and any other value is refused with `Invalid command: <name>`.
 
 - `autovisualiser` (Auto Visualiser)
-- `computercontroller` (the config key whose display name is "Computer Use")
+- `computercontroller` (the config key whose display name is "Biorouter Copilot"; the key kept its original spelling so existing configs and command lines keep working)
 - `webdocuments` (the config key whose display name is "Web & Documents")
 - `developer` (Developer)
 - `memory` (Memory)

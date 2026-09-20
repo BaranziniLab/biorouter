@@ -79,7 +79,7 @@ cd ui/desktop && npm run lint:check
 ./scripts/check-openapi-schema.sh
 ./scripts/check-version-consistency.sh    # CLI/daemon/GUI/README versions agree
 ./scripts/check-brand-consistency.sh      # productName "Biorouter" + brand assets
-./scripts/check-computer-use-naming.sh    # the capability is "Computer Use" wherever a person reads it
+./scripts/check-computer-use-naming.sh    # the capability is "Biorouter Copilot" wherever a person reads it
 ./scripts/check-no-cross-drift.sh         # cross-compile recipes / glibc floor pin
 just check-registry                       # the BAAM registry generator still refuses what it must
 just check-privacy-registry               # the BAAM private set agrees in all three committed copies

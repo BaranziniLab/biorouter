@@ -27,7 +27,7 @@
 //!
 //! `biorouter` depends on `biorouter-mcp`, which depends on this crate — never
 //! the reverse. The hottest spawn sites (`developer__shell`, background jobs,
-//! Computer Use, Agent Drafter) live in `biorouter-mcp`, so they cannot
+//! Biorouter Copilot, Agent Drafter) live in `biorouter-mcp`, so they cannot
 //! reach a helper defined in `biorouter` without a dependency cycle. That is
 //! precisely why they went without the flag for so long, and it is why the
 //! primitive belongs here, beside [`crate::environment`] — the other thing every

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ComputerUseControl } from './ComputerUseControl';
-import type { ComputerUseStatus } from './computerUseApi';
+import { CopilotControl } from './CopilotControl';
+import type { CopilotStatus } from './copilotApi';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(),
@@ -12,17 +12,17 @@ const mocks = vi.hoisted(() => ({
   // class the test throws must be the SAME object. Declaring it here and
   // returning it from the factory is what guarantees that; importing the real
   // module would also drag in the generated SDK this suite deliberately avoids.
-  NotApplicable: class ComputerUseNotApplicable extends Error {},
+  NotApplicable: class CopilotNotApplicable extends Error {},
 }));
-vi.mock('./computerUseApi', () => ({
-  computerUseStatus: mocks.status,
-  computerUseDecision: mocks.decision,
-  computerUseSetup: mocks.setup,
-  ComputerUseNotApplicable: mocks.NotApplicable,
+vi.mock('./copilotApi', () => ({
+  copilotStatus: mocks.status,
+  copilotDecision: mocks.decision,
+  copilotSetup: mocks.setup,
+  CopilotNotApplicable: mocks.NotApplicable,
 }));
 vi.mock('../../utils/surface', () => ({ isBrowserSurface: () => mocks.browser }));
 
-const status: ComputerUseStatus = {
+const status: CopilotStatus = {
   session_id: 'task-a',
   provider: 'public-provider',
   model: 'model-a',
@@ -45,17 +45,17 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-describe('ComputerUseControl', () => {
-  it('renders nothing and stops polling when the chat mode forbids Computer Use', async () => {
+describe('CopilotControl', () => {
+  it('renders nothing and stops polling when the chat mode forbids Biorouter Copilot', async () => {
     // `GET /agent/computer_use/status` answers 409 for a Chat-mode session
-    // ("Chat mode does not run Computer Use tools"). That is a fact about the
+    // ("Chat mode does not run Biorouter Copilot tools"). That is a fact about the
     // chat, not a transient fault: re-asking can never change it.
     mocks.status.mockRejectedValue(
-      new mocks.NotApplicable('Chat mode does not run Computer Use tools')
+      new mocks.NotApplicable('Chat mode does not run Biorouter Copilot tools')
     );
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
-    const { container } = render(<ComputerUseControl sessionId="task-a" />);
+    const { container } = render(<CopilotControl sessionId="task-a" />);
     await waitFor(() => expect(mocks.status).toHaveBeenCalled());
     await waitFor(() => expect(container).toBeEmptyDOMElement());
 
@@ -79,25 +79,25 @@ describe('ComputerUseControl', () => {
     // every failure, a genuinely transient error would silently hide the panel
     // instead of offering Retry.
     mocks.status.mockRejectedValue(new Error('network down'));
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     expect(await screen.findByRole('alert')).toHaveTextContent('network down');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
   });
 
   it('discloses destination and host before a public grant and retains a working Stop', async () => {
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
     expect(screen.getByText(status.destination, { exact: false })).toBeVisible();
     expect(screen.getByText(status.target)).toBeVisible();
     expect(screen.getByText(/including sensitive information/)).toBeVisible();
     expect(mocks.decision).not.toHaveBeenCalled();
     fireEvent.click(allow);
-    await screen.findByText('Computer use active');
+    await screen.findByText('Biorouter Copilot active');
     expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', '');
     expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
     mocks.decision.mockResolvedValueOnce({ ...status, state: 'stopped', requested: false });
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    await screen.findByRole('button', { name: 'Show Computer Use details' });
+    await screen.findByRole('button', { name: 'Show Biorouter Copilot details' });
     expect(mocks.decision.mock.calls[1][1]).toBe('revoke');
   });
 
@@ -110,7 +110,7 @@ describe('ComputerUseControl', () => {
       public_model: false,
       handoff_required: true,
     });
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     await screen.findByRole('button', { name: 'Allow for this task' });
     expect(screen.getAllByText(disclosure)).toHaveLength(1);
     expect(mocks.decision).not.toHaveBeenCalled();
@@ -118,11 +118,11 @@ describe('ComputerUseControl', () => {
 
   it('requires the terminal passphrase in a browser and names the backend target', async () => {
     mocks.browser = true;
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
     expect(allow).toBeDisabled();
     expect(screen.getByText(/computer running Biorouter/)).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Computer Use approval key', { exact: false }), {
+    fireEvent.change(screen.getByLabelText('Biorouter Copilot approval key', { exact: false }), {
       target: { value: 'human-passphrase' },
     });
     fireEvent.click(allow);
@@ -133,17 +133,20 @@ describe('ComputerUseControl', () => {
 
   it('clears the passphrase after approval and never carries it into another chat', async () => {
     mocks.browser = true;
-    const { rerender } = render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.change(await screen.findByLabelText('Computer Use approval key', { exact: false }), {
-      target: { value: 'human-passphrase' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Allow control and sharing' }));
-    await screen.findByText('Computer use active');
-    mocks.status.mockResolvedValue({ ...status, session_id: 'task-b' });
-    rerender(<ComputerUseControl sessionId="task-b" />);
-    expect(await screen.findByLabelText('Computer Use approval key', { exact: false })).toHaveValue(
-      ''
+    const { rerender } = render(<CopilotControl sessionId="task-a" />);
+    fireEvent.change(
+      await screen.findByLabelText('Biorouter Copilot approval key', { exact: false }),
+      {
+        target: { value: 'human-passphrase' },
+      }
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Allow control and sharing' }));
+    await screen.findByText('Biorouter Copilot active');
+    mocks.status.mockResolvedValue({ ...status, session_id: 'task-b' });
+    rerender(<CopilotControl sessionId="task-b" />);
+    expect(
+      await screen.findByLabelText('Biorouter Copilot approval key', { exact: false })
+    ).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Allow control and sharing' })).toBeDisabled();
   });
 
@@ -151,36 +154,36 @@ describe('ComputerUseControl', () => {
     mocks.decision.mockRejectedValue(
       new Error('The model destination changed. Review the new destination.')
     );
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Allow control and sharing' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('destination changed');
-    expect(screen.queryByText('Computer use active')).toBeNull();
+    expect(screen.queryByText('Biorouter Copilot active')).toBeNull();
     expect(screen.getByRole('button', { name: 'Allow control and sharing' })).toBeEnabled();
   });
 
   it('does not let a pre-consent poll overwrite an acknowledged grant', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    let resolvePoll!: (value: ComputerUseStatus) => void;
+    let resolvePoll!: (value: CopilotStatus) => void;
     mocks.status.mockResolvedValueOnce(status).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvePoll = resolve;
         })
     );
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
     await act(async () => vi.advanceTimersByTime(2000));
     fireEvent.click(allow);
-    await screen.findByText('Computer use active');
+    await screen.findByText('Biorouter Copilot active');
     await act(async () => resolvePoll(status));
     expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
   });
 
   it('keeps an approved task active across polls without prompting or approving again', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Allow control and sharing' }));
-    await screen.findByText('Computer use active');
+    await screen.findByText('Biorouter Copilot active');
     mocks.status.mockResolvedValue({ ...status, state: 'active', requested: false });
     await act(async () => vi.advanceTimersByTime(2000));
     await act(async () => vi.advanceTimersByTime(2000));
@@ -190,17 +193,17 @@ describe('ComputerUseControl', () => {
   });
 
   it('ignores late status responses from a previously displayed chat', async () => {
-    let resolveOld!: (value: ComputerUseStatus) => void;
+    let resolveOld!: (value: CopilotStatus) => void;
     mocks.status.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveOld = resolve;
         })
     );
-    const { rerender } = render(<ComputerUseControl sessionId="task-a" />);
+    const { rerender } = render(<CopilotControl sessionId="task-a" />);
     await waitFor(() => expect(mocks.status).toHaveBeenCalledWith('task-a'));
     mocks.status.mockResolvedValue({ ...status, session_id: 'task-b', model: 'model-b' });
-    rerender(<ComputerUseControl sessionId="task-b" />);
+    rerender(<CopilotControl sessionId="task-b" />);
     await screen.findByText(/model-b/);
     await act(async () => resolveOld({ ...status, state: 'active' }));
     expect(screen.getByText(/model-b/)).toBeVisible();
@@ -210,8 +213,8 @@ describe('ComputerUseControl', () => {
 
   it('does not interrupt a fresh chat with unsolicited consent', async () => {
     mocks.status.mockResolvedValue({ ...status, requested: false });
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
     expect(mocks.decision).not.toHaveBeenCalled();
@@ -228,8 +231,8 @@ describe('ComputerUseControl', () => {
       permissions: { accessibility: false, screen_recording: false },
       message: 'Grant Accessibility permission.',
     });
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     await screen.findByText('OS permission required');
     expect(screen.getByText('Grant Accessibility permission.')).toBeVisible();
@@ -240,19 +243,19 @@ describe('ComputerUseControl', () => {
 
   it('hides a disabled capability without granting or re-enabling it', async () => {
     mocks.status.mockResolvedValue({ ...status, enabled: false });
-    const { container } = render(<ComputerUseControl sessionId="task-a" />);
+    const { container } = render(<CopilotControl sessionId="task-a" />);
     await waitFor(() => expect(mocks.status).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
     expect(mocks.decision).not.toHaveBeenCalled();
   });
   it('collapses again from the chevron and keeps the panel on its own surface', async () => {
     mocks.status.mockResolvedValue({ ...status, requested: false });
-    render(<ComputerUseControl sessionId="task-a" />);
-    const open = await screen.findByRole('button', { name: 'Show Computer Use details' });
+    render(<CopilotControl sessionId="task-a" />);
+    const open = await screen.findByRole('button', { name: 'Show Biorouter Copilot details' });
     expect(open).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(open);
     expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
-    const close = screen.getByRole('button', { name: 'Hide Computer Use details' });
+    const close = screen.getByRole('button', { name: 'Hide Biorouter Copilot details' });
     expect(close).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(close);
     // The container stays mounted and is hidden, so aria-controls always
@@ -261,18 +264,18 @@ describe('ComputerUseControl', () => {
     // jsdom applies no Tailwind and computes no layout, so this asserts the
     // TOKEN CHOICE that separates the panel from the chat canvas, not the
     // painted pixel. The tokens themselves are audited by check-contrast.mjs.
-    const panel = screen.getByRole('region', { name: 'Computer Use' });
+    const panel = screen.getByRole('region', { name: 'Biorouter Copilot' });
     expect(panel.className).toContain('bg-background-muted');
     expect(panel.className).toContain('border-border-subtle');
     expect(panel.className).toContain('rounded-container');
   });
 
   it('withholds the collapse control while an approval is pending', async () => {
-    render(<ComputerUseControl sessionId="task-a" />);
+    render(<CopilotControl sessionId="task-a" />);
     await screen.findByRole('button', { name: 'Allow control and sharing' });
     // The Allow button lives inside the details block; a chevron that could hide
     // it would be a control that hides the decision it is waiting for.
-    expect(screen.queryByRole('button', { name: /Computer Use details/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Biorouter Copilot details/ })).toBeNull();
   });
 
   it('confirms a permission check that returns exactly what was already shown', async () => {
@@ -281,8 +284,8 @@ describe('ComputerUseControl', () => {
       status: 'ready',
       permissions: { accessibility: true, screen_recording: true },
     });
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     // The runtime detail is unchanged by the check, so the explicit result line
     // is the ONLY evidence the click did anything. That is the defect this pins.
@@ -296,8 +299,8 @@ describe('ComputerUseControl', () => {
       target: 'darwin-arm64',
       permissions: { accessibility: true, screen_recording: true },
     });
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     await screen.findByText('All OS permissions are allowed.');
     expect(
@@ -309,8 +312,8 @@ describe('ComputerUseControl', () => {
     mocks.status.mockResolvedValue({ ...status, requested: false, state: 'active' });
     // A probe that never settles: the decision must not wait on it.
     mocks.setup.mockImplementation(() => new Promise(() => {}));
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     // Stop is the safety control of a desktop-control feature. Sharing the probe
@@ -324,8 +327,8 @@ describe('ComputerUseControl', () => {
       status: 'ready',
       permissions: { accessibility: true, screen_recording: true },
     });
-    render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    render(<CopilotControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     expect(await screen.findByText('All OS permissions are allowed.')).toBeVisible();
     // Someone revokes Accessibility; the 2s poll brings back a worse runtime.

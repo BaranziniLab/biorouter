@@ -345,8 +345,8 @@ def run_doctor(cli, env, scratch, evidence=None):
                 # says nothing about where the time went -- which left the
                 # Windows job reporting "exceeded its 40s budget, stdout held no
                 # output" and no way to tell a slow dependency probe from a slow
-                # Computer Use probe from a wedged process. `doctor` writes one
-                # `[doctor] <phase> (+Ns)` breadcrumb per phase to stderr for
+                # Biorouter Copilot probe from a wedged process. `doctor` writes
+                # one `[doctor] <phase> (+Ns)` breadcrumb per phase to stderr for
                 # exactly this moment; the non-timeout failure path below already
                 # reported stderr, and only this path threw it away.
                 trace = tail_text(err)

@@ -10,7 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
-  - Validate native Computer Use, per-chat consent, isolation, and fixture-scoped desktop interaction
+  - Validate native Biorouter Copilot, per-chat consent, isolation, and fixture-scoped desktop interaction
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Verify session-anchored file links and live updates without losing preview edits
   - Exercise paper previews, syntax highlighting, and responsive panel motion
@@ -36,7 +36,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "standard"
-    description: "Testing depth: fixture_only (native Computer Use fixtures only; terminal report; no builds or other capabilities), quick (smoke tests), standard (normal coverage), deep (exhaustive)"
+    description: "Testing depth: fixture_only (native Biorouter Copilot fixtures only; terminal report; no builds or other capabilities), quick (smoke tests), standard (normal coverage), deep (exhaustive)"
   
   - key: workspace_dir
     input_type: string
@@ -99,7 +99,7 @@ instructions: |
   
   Execute only the selected phases ({{ test_phases }}). Unselected phases are not tasks.
   {% if test_depth == "fixture_only" %}
-  This run authorizes only native Computer Use against {{ computer_use_fixture }}.
+  This run authorizes only native Biorouter Copilot against {{ computer_use_fixture }}.
   Do not run repository tests, builds, shell commands, scripts, subagents, or other capabilities.
   Do not create a report file, alter configuration, restart helpers, switch providers, or enable tools.
   Use only synthetic content in those fixtures and report directly in the terminal.
@@ -157,7 +157,7 @@ instructions: |
   {% endif %}
 
   {% if test_phases == "all" or "computer_use" in test_phases %}
-  ### Phase 2D: Native Computer Use
+  ### Phase 2D: Native Biorouter Copilot
   Validate the ten-tool native roster, per-request approval, private/public isolation and
   sequential control against the explicitly supplied disposable app/window fixture. A missing
   fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
@@ -257,7 +257,7 @@ extensions:
 # {% endif %}
   - type: builtin
     name: computercontroller
-    display_name: Computer Use
+    display_name: Biorouter Copilot
     timeout: 300
     bundled: true
     description: Native application observation and control after per-chat task approval
@@ -422,10 +422,10 @@ prompt: |
   {% endif %}
 
   {% if test_phases == "all" or "computer_use" in test_phases %}
-  ## PHASE 2D: Native Computer Use
+  ## PHASE 2D: Native Biorouter Copilot
 
   {% if test_depth == "fixture_only" %}
-  1. Use only the ten native Computer Use tools loaded for this run. The only approved
+  1. Use only the ten native Biorouter Copilot tools loaded for this run. The only approved
      targets are {{ computer_use_fixture }}. Do not inspect or interact with unrelated apps.
   2. Wait for host task approval before observing the desktop. The workflow cannot approve itself.
      After approval, use list_apps to resolve the fixture to its exact running app name or bundle ID.
@@ -441,7 +441,7 @@ prompt: |
      and missing coverage in the terminal. Cross-chat isolation, helper restart, provider
      variants, and regression suites are NOT OBSERVABLE in this bounded run, not passes.
   {% else %}
-  1. Inspect the effective roster. Computer Use must expose exactly list_apps, get_app_state,
+  1. Inspect the effective roster. Biorouter Copilot must expose exactly list_apps, get_app_state,
      click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and
      screen_capture. Web & Documents must expose web_scrape, xlsx_tool, docx_tool, pdf_tool,
      and cache independently. Developer must expose no desktop capture/control tool.
@@ -465,7 +465,7 @@ prompt: |
      grants. Verify a private-to-public handoff pauses before capture; do not transfer real
      private observations into the test report or a public model.
   6. Repeat through native direct calls, code execution and a coding-agent provider where
-     available. Test Computer Use with Developer and Web & Documents disabled in an isolated
+     available. Test Biorouter Copilot with Developer and Web & Documents disabled in an isolated
      profile. Missing GUI/provider evidence is NOT OBSERVABLE, never PASS. Record target host,
      helper version, exact fixture, tool results and remaining gaps in
      {{ workspace_dir }}/phase2d_computer_use.md.

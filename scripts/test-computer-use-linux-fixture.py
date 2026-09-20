@@ -19,7 +19,7 @@ def fixture(work):
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk, GLib, Gdk, Atk
     GLib.set_prgname("biorouter-computer-use-fixture")
-    window = Gtk.Window(title="BioRouter Computer Use Fixture")
+    window = Gtk.Window(title="Biorouter Copilot Fixture")
     window.set_default_size(640, 480)
     window.connect("destroy", Gtk.main_quit)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -161,7 +161,7 @@ def eventually(predicate, timeout=20):
 
 
 
-FIXTURE_TITLE = "BioRouter Computer Use Fixture"
+FIXTURE_TITLE = "Biorouter Copilot Fixture"
 SENTINEL_TITLE = "BioRouter Unrelated Window Sentinel"
 
 
@@ -212,7 +212,7 @@ def main(directory, report):
         try:
             eventually(lambda: (work / "ready").exists())
             client = Client(directory / "ocu", env)
-            eventually(lambda: "BioRouter Computer Use Fixture" in json.dumps(client.call("list_apps", {}, allow_error=True)))
+            eventually(lambda: "Biorouter Copilot Fixture" in json.dumps(client.call("list_apps", {}, allow_error=True)))
             app = str(gui.pid)
             def state():
                 result = client.call("get_app_state", {"app": app, "max_tree_nodes": 100})

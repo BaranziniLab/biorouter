@@ -562,7 +562,7 @@ async fn call_computer_use(
         biased;
         _ = cancellation_token.cancelled() => {
             permit.cancel.cancel();
-            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use cancelled before acquiring desktop control", None));
+            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot cancelled before acquiring desktop control", None));
         },
         guard = permit.lock() => guard.map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e.to_string(), None))?,
     };
@@ -575,17 +575,17 @@ async fn call_computer_use(
         _ = permit.cancel.cancelled() => {
             call_cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
-            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use stopped. An action already delivered to the desktop may have completed; no result was shared.", None))
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared.", None))
         },
         _ = cancellation_token.cancelled() => {
             permit.cancel.cancel();
             call_cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
-            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use stopped; inspect the desktop before retrying a mutation.", None))
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot stopped; inspect the desktop before retrying a mutation.", None))
         },
         result = &mut call => {
             if permit.cancel.is_cancelled() {
-                Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use result withheld after revoke", None))
+                Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot result withheld after revoke", None))
             } else { result }
         }
     }
@@ -1168,17 +1168,17 @@ impl ExtensionManager {
             matches!(config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         anyhow::ensure!(
             builtin || !crate::security::computer_use::is_computer_use_tool(tool),
-            "The Computer Use namespace is reserved for BioRouter's reviewed built-in capability"
+            "The Biorouter Copilot namespace is reserved for BioRouter's reviewed built-in capability"
         );
         if !builtin {
             return Ok(None);
         }
         anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
-            "This legacy Computer Controller tool was removed. Use the Computer Use tools or Web & Documents capability.");
+            "This legacy Computer Controller tool was removed. Use the Biorouter Copilot tools or Web & Documents capability.");
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
-            "Computer Use caller differs from the approved model destination"
+            "Biorouter Copilot caller differs from the approved model destination"
         );
         Ok(Some(
             self.computer_use
@@ -1200,7 +1200,7 @@ impl ExtensionManager {
     ) -> Result<crate::security::computer_use::ComputerUseStatus> {
         anyhow::ensure!(
             self.is_extension_enabled("computercontroller").await,
-            "Enable Computer Use for this chat before allowing control"
+            "Enable Biorouter Copilot for this chat before allowing control"
         );
         self.computer_use
             .approve(session_id, challenge_id, &self.provider)
@@ -1293,8 +1293,7 @@ impl ExtensionManager {
             && !matches!(&config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller")
         {
             return Err(ExtensionError::ConfigError(
-                "The computercontroller name is reserved for BioRouter's Computer Use built-in"
-                    .into(),
+                "The computercontroller name is reserved for the Biorouter Copilot built-in".into(),
             ));
         }
 

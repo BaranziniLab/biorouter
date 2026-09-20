@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Switch } from '../../ui/switch';
-import { ComputerUseSetup } from '../../computer-use/ComputerUseSetup';
+import { CopilotSetup } from '../../copilot/CopilotSetup';
 import { useConfig, FixedExtensionEntry } from '../../ConfigContext';
 import { nameToKey } from '../extensions/utils';
 import { toggleExtensionDefault } from '../extensions';
@@ -38,7 +38,7 @@ function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
       <div className="min-w-0 flex-1">
         <p className="text-label text-text-default">{meta.label}</p>
         <p className="mt-0.5 max-w-md text-supporting text-text-muted">{meta.description}</p>
-        {meta.key === 'computercontroller' && <ComputerUseSetup />}
+        {meta.key === 'computercontroller' && <CopilotSetup />}
       </div>
 
       <div className="flex flex-shrink-0 items-center">

@@ -333,7 +333,7 @@
       '<div class="bw-sectionrule"></div>' +
       '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (7)</div>' +
       erow('Developer', 'General development tools useful for software engineering.', true) +
-      erow('Computer Use', 'Native desktop observation and control after task approval.', true) +
+      erow('Biorouter Copilot', 'Native desktop observation and control after task approval.', true) +
       erow('Web &amp; Documents', 'Read web pages and work with spreadsheets, documents, and PDFs.', true) +
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', true) +
       erow('Memory', 'Teach Biorouter your preferences as you go.', true) +

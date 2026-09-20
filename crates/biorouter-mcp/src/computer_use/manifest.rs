@@ -153,7 +153,7 @@ fn locate_executable(executable: &Path, verify_hashes: bool) -> Result<RuntimePa
             return inspect(&root, false, verify_hashes);
         }
     }
-    bail!("computer_use_missing_runtime: install BioRouter's matching bundled Computer Use payload; source builds may explicitly set BIOROUTER_COMPUTER_USE_DIR")
+    bail!("computer_use_missing_runtime: install the matching bundled Biorouter Copilot payload; source builds may explicitly set BIOROUTER_COMPUTER_USE_DIR")
 }
 
 fn payload_candidates(bin: &Path) -> Vec<PathBuf> {

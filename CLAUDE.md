@@ -210,7 +210,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Use, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
@@ -219,7 +219,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 Only five of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
 `biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `webdocuments`,
 `developer`, `memory` (the `McpCommand` enum in `mcp_server_runner.rs`).
-⚠ `computercontroller` is the **Computer Use** server: the extension key kept its
+⚠ `computercontroller` is the **Biorouter Copilot** server: the extension key kept its
 legacy spelling so existing `config.yaml` entries and per-chat tool overrides keep
 working, and only the display name changed. The web, document and cache tools that
 used to live under that key — `web_scrape`, `xlsx_tool`, `docx_tool`, `pdf_tool`,
@@ -718,7 +718,7 @@ was removed to make it true:
     never runs and the app renders as unstyled serif HTML that is fully
     functional — it looks like a broken app, it is a broken launcher. Always
     pass `--config vite.renderer.config.mts`.
-  - verify native desktop behavior with Computer Use after per-request consent.
+  - verify native desktop behavior with Biorouter Copilot after per-request consent.
     Inspect the target app and capture its window through the native helper;
     avoid collecting unrelated desktop content. The removed script/capture
     routes must never be used as a fallback.
@@ -1604,7 +1604,7 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 > Maintenance note: the authoritative, always-current catalog of extensions and skills is `landing/registry.json` in this repo (formerly the `biorouter-landing` repo). When agents/skills are added or versions change, that file (not this section) is the source of truth — re-derive this section from it if it drifts.
 
-### Native Computer Use
+### Native Biorouter Copilot
 
 **Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
 complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
@@ -1626,14 +1626,14 @@ happily produced a helper 28,672 bytes smaller from effectively unpatched upstre
 which of those files our patches also touch.
 
 
-`computercontroller` — the extension key Computer Use kept for config
+`computercontroller` — the extension key Biorouter Copilot kept for config
 compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
 `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
 `screen_capture`. The native helper owns all desktop observation/control; Developer has no
 capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,
 control and capture implementations and aliases are removed, not migrated or hidden.
 
-The host obtains one computer-use grant per task/chat/model/target before observation. Respect
+The host obtains one Biorouter Copilot grant per task/chat/model/target before observation. Respect
 Stop/revoke, avoid retry loops and script fallbacks, refresh stale state, and verify outcomes.
 Private/public chats retain separate observations and consent. Pause before private-to-public
 handoff because the physical desktop is shared. See `docs/design/computer-use-integration-plan.md`

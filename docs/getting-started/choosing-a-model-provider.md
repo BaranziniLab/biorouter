@@ -191,7 +191,7 @@ Access GPT, Claude, Gemini, and Grok models through GitHub Copilot infrastructur
 
 Default model: `gpt-5.3-codex`
 
-Copilot does not use an API key. During configuration an auth code is copied to your clipboard and a browser window opens for you to paste it. See the configuration walkthrough in [biorouter in 5 minutes](quickstart.md#cli).
+GitHub Copilot does not use an API key. During configuration an auth code is copied to your clipboard and a browser window opens for you to paste it. See the configuration walkthrough in [biorouter in 5 minutes](quickstart.md#cli).
 
 ### X.AI (Grok)
 

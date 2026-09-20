@@ -153,7 +153,7 @@ The Developer capability provides these tools:
 | `analyze` | Analyze code structure | Understanding codebase, finding dependencies | ✅ Low<br />Read-only code analysis |
 | `image_processor` | Process and resize images | Optimizing assets, format conversion | ✅ Low<br />Image manipulation only |
 
-Desktop observation and control belong exclusively to [Computer Use](computer-controller.md),
+Desktop observation and control belong exclusively to [Biorouter Copilot](computer-controller.md),
 which obtains a separate grant for each user request. Developer does not supply a desktop
 screenshot tool or an alternate native-control route.
 
@@ -207,6 +207,6 @@ As you become more comfortable with BioRouter's behavior, you can adjust these s
 
 - [Security guide](../../security/README.md) — the umbrella page for using BioRouter safely.
 - [Permission modes](../../security/permission-modes.md) — the full reference for approval modes and per-tool permissions.
-- [Computer Use capability](computer-controller.md) — the other high-privilege built-in capability; it automates your desktop rather than your project, and the same access controls apply.
+- [Biorouter Copilot capability](computer-controller.md) — the other high-privilege built-in capability; it automates your desktop rather than your project, and the same access controls apply.
 - [Code Execution capability](code-execution.md) — Code Mode scripts import `shell` and `text_editor` from this capability, so they inherit its blast radius.
 - [Configuration file reference](../../configuration/config-file-reference.md) — where `BIOROUTER_MODE` and other settings live in `config.yaml`.

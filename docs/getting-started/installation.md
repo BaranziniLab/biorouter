@@ -150,7 +150,7 @@ biorouter configure
 # Select "Add Extension" > "Built-in Extension"
 ```
 
-Available built-in capabilities: Developer, Computer Use, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, Code Execution, Extension Manager, Skills, Todo, and Workspace Control are enabled by default. Chat Recall ships disabled by default. You can change any of these choices in Settings → Chat → Capabilities.
+Available built-in capabilities: Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, Code Execution, Extension Manager, Skills, Todo, and Workspace Control are enabled by default. Chat Recall ships disabled by default. You can change any of these choices in Settings → Chat → Capabilities.
 
 ### Add external MCP servers
 

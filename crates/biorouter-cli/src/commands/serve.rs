@@ -15,7 +15,7 @@
 //! matches what the desktop application already does, so the product has one
 //! supervision model rather than two.
 //!
-//! # Scoped computer-use approvals
+//! # Scoped Biorouter Copilot approvals
 //!
 //! By default the daemon receives no human proof. The explicit interactive
 //! `--computer-use-approval` setup sends a scoped digest on stdin. The passphrase
@@ -202,8 +202,8 @@ pub async fn handle_serve(
         let url = browser_url(&host, port, browser_token.value());
         print_banner(&url, &host, port, &browser_token, bind_is_loopback);
         if computer_use_approval {
-            eprintln!("  Computer Use approval is configured. Enter your approval key in the browser when approving a task.");
-            eprintln!("  Computer Use controls this backend host's desktop, not a remote browser's device.");
+            eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
+            eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
         }
         if open_browser {
             let _ = webbrowser::open(&url);
@@ -263,16 +263,16 @@ fn configure_computer_use_approval(enabled: bool) -> Result<Option<String>> {
     }
     super::needs_terminal::require(
         super::needs_terminal::prompt_can_run(),
-        "Computer Use approval setup requires an interactive terminal; no flag, environment variable, or piped input can supply the approval key.",
+        "Biorouter Copilot approval setup requires an interactive terminal; no flag, environment variable, or piped input can supply the approval key.",
     )?;
-    eprintln!("Choose a separate Computer Use approval key (at least 16 characters). Keep it outside chats and enter it only in the browser approval field. It is never saved.");
+    eprintln!("Choose a separate Biorouter Copilot approval key (at least 16 characters). Keep it outside chats and enter it only in the browser approval field. It is never saved.");
     let key = zeroize::Zeroizing::new(
-        cliclack::password("Computer Use approval key")
+        cliclack::password("Biorouter Copilot approval key")
             .mask('▪')
             .interact()?,
     );
     if key.chars().count() < 16 {
-        bail!("Computer Use approval key must contain at least 16 characters.");
+        bail!("Biorouter Copilot approval key must contain at least 16 characters.");
     }
     let repeated = zeroize::Zeroizing::new(
         cliclack::password("Confirm approval key")
@@ -280,7 +280,7 @@ fn configure_computer_use_approval(enabled: bool) -> Result<Option<String>> {
             .interact()?,
     );
     if key.as_str() != repeated.as_str() {
-        bail!("Computer Use approval keys do not match.");
+        bail!("Biorouter Copilot approval keys do not match.");
     }
     use sha2::{Digest, Sha256};
     Ok(Some(format!("{:x}", Sha256::digest(key.as_bytes()))))

@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  ComputerUseNotApplicable,
-  computerUseDecision,
-  computerUseSetup,
-  computerUseStatus,
-} from './computerUseApi';
+import { CopilotNotApplicable, copilotDecision, copilotSetup, copilotStatus } from './copilotApi';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(),
@@ -44,16 +39,16 @@ beforeEach(() => {
   mocks.revoke.mockResolvedValue({ data: { ...status, state: 'stopped', requested: false } });
 });
 
-describe('generated Computer Use API adapter', () => {
+describe('generated Biorouter Copilot API adapter', () => {
   it('scopes status to the selected chat and never attaches the approval passphrase to reads or Stop', async () => {
-    const current = await computerUseStatus('task-a');
+    const current = await copilotStatus('task-a');
     expect(mocks.status).toHaveBeenCalledWith(
       expect.objectContaining({
         query: { session_id: 'task-a' },
         headers: { 'X-Caller-Provider': 'private-provider' },
       })
     );
-    await computerUseDecision(current, 'revoke', 'secret-passphrase');
+    await copilotDecision(current, 'revoke', 'secret-passphrase');
     expect(mocks.revoke).toHaveBeenCalledWith(
       expect.objectContaining({
         body: { session_id: 'task-a' },
@@ -64,8 +59,8 @@ describe('generated Computer Use API adapter', () => {
   });
 
   it('sends the reviewed challenge and separate human proof only for an explicit grant', async () => {
-    const current = await computerUseStatus('task-a');
-    await computerUseDecision(current, 'consent', 'secret-passphrase');
+    const current = await copilotStatus('task-a');
+    await copilotDecision(current, 'consent', 'secret-passphrase');
     expect(mocks.consent).toHaveBeenCalledWith(
       expect.objectContaining({
         body: { session_id: 'task-a', challenge_id: 'nonce' },
@@ -85,12 +80,12 @@ describe('generated Computer Use API adapter', () => {
         message: null,
       },
     });
-    expect(await computerUseSetup()).toMatchObject({
+    expect(await copilotSetup()).toMatchObject({
       status: 'os_permission_required',
       permissions: { accessibility: true, screen_recording: null },
     });
     mocks.setup.mockResolvedValue({ data: { unexpected: true } });
-    expect(await computerUseSetup()).toMatchObject({
+    expect(await copilotSetup()).toMatchObject({
       status: 'probe_failed',
       permissions: 'unknown',
     });
@@ -98,31 +93,31 @@ describe('generated Computer Use API adapter', () => {
 });
 
 describe('a refusal that re-asking cannot change', () => {
-  it('maps a 409 to ComputerUseNotApplicable so the caller can stop asking', async () => {
-    // The route answers 409 for a session whose mode forbids Computer Use.
+  it('maps a 409 to CopilotNotApplicable so the caller can stop asking', async () => {
+    // The route answers 409 for a session whose mode forbids Biorouter Copilot.
     // Losing the STATUS here is what made the panel show a permanent error and
     // keep polling a probe that re-spawns the native helper.
     mocks.status.mockResolvedValue({
-      error: { message: 'Chat mode does not run Computer Use tools' },
+      error: { message: 'Chat mode does not run Biorouter Copilot tools' },
       response: { status: 409 },
     });
-    await expect(computerUseStatus('task-a')).rejects.toBeInstanceOf(ComputerUseNotApplicable);
-    await expect(computerUseStatus('task-a')).rejects.toThrow(
-      'Chat mode does not run Computer Use tools'
+    await expect(copilotStatus('task-a')).rejects.toBeInstanceOf(CopilotNotApplicable);
+    await expect(copilotStatus('task-a')).rejects.toThrow(
+      'Chat mode does not run Biorouter Copilot tools'
     );
   });
 
   it('leaves every other failure an ordinary, retryable Error', async () => {
     // The discriminating control. A 500 or a 403 IS worth retrying, and must
-    // not be silently turned into "this chat has no Computer Use".
+    // not be silently turned into "this chat cannot run Biorouter Copilot".
     for (const code of [403, 500, 503]) {
       mocks.status.mockResolvedValue({
         error: { message: 'upstream unavailable' },
         response: { status: code },
       });
-      const failure = await computerUseStatus('task-a').catch((error: unknown) => error);
+      const failure = await copilotStatus('task-a').catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
-      expect(failure).not.toBeInstanceOf(ComputerUseNotApplicable);
+      expect(failure).not.toBeInstanceOf(CopilotNotApplicable);
     }
   });
 });

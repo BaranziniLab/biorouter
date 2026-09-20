@@ -1,4 +1,4 @@
-//! Host-owned, in-memory consent for one chat's current computer-use task.
+//! Host-owned, in-memory consent for one chat's current Biorouter Copilot task.
 use anyhow::{bail, ensure, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -12,12 +12,12 @@ use uuid::Uuid;
 use crate::agents::types::SharedProvider;
 
 /// The ONE refusal from [`ComputerUseConsent::status`] that re-asking can never
-/// change: this chat's MODE does not run Computer Use tools.
+/// change: this chat's MODE does not run Biorouter Copilot tools.
 ///
 /// ⚠ It is a TYPE and not a sentence because the caller that has to tell it
 /// apart is an HTTP route in another crate, and what it does with the answer is
-/// permanent: the interface renders a 409 as "this chat cannot use Computer
-/// Use", hides the panel, and tears down its poll for the life of the chat --
+/// permanent: the interface renders a 409 as "this chat cannot use Biorouter
+/// Copilot", hides the panel, and tears down its poll for the life of the chat --
 /// taking the **Stop** button, the safety control of a desktop-control feature,
 /// with it.
 ///
@@ -27,7 +27,7 @@ use crate::agents::types::SharedProvider;
 /// off forever. Matching on the message text instead would put that distinction
 /// in a string literal two crates apart.
 #[derive(Debug, thiserror::Error)]
-#[error("Chat mode does not run Computer Use tools")]
+#[error("Chat mode does not run Biorouter Copilot tools")]
 pub struct ModeForbidsComputerUse;
 
 pub const APPROVAL_REQUIRED: &str = "COMPUTER_USE_APPROVAL_REQUIRED";
@@ -159,11 +159,11 @@ impl ComputerUseConsent {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         ensure!(
             state.task.is_some(),
-            "Computer Use requires an active request"
+            "Biorouter Copilot requires an active request"
         );
         ensure!(
             state.task_binding.is_none(),
-            "Computer Use request model is already bound"
+            "Biorouter Copilot request model is already bound"
         );
         state.task_binding = Some(scope);
         Ok(())
@@ -173,7 +173,7 @@ impl ComputerUseConsent {
         let provider = provider.lock().await;
         let provider = provider
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Bind a model before starting Computer Use"))?;
+            .ok_or_else(|| anyhow::anyhow!("Bind a model before starting Biorouter Copilot"))?;
         let binding = serde_json::to_value(provider.restore_binding())?;
         let mut endpoints = Vec::new();
         collect_endpoints(&binding, &mut endpoints);
@@ -224,7 +224,7 @@ impl ComputerUseConsent {
                 .scope
                 .as_ref()
                 .is_none_or(|prior| prior.session == scope.session),
-            "Computer Use runtime belongs to a different chat"
+            "Biorouter Copilot runtime belongs to a different chat"
         );
         if state.scope.as_ref() != Some(&scope) {
             Self::release(&self.identity, &mut state, &mut desktop);
@@ -266,12 +266,12 @@ impl ComputerUseConsent {
             .is_some_and(|(owner, _)| owner != &self.identity);
         let handoff = (scope.public_model && !active) || switching;
         let mut disclosure = if scope.public_model {
-            format!("Allow computer use with {}/{} on {}? Screenshots, open-window information and app text may be sent to {}, including sensitive information visible on this computer. BioRouter can move the cursor, change focus, type, click and make changes on your behalf. Allow control and sharing for this user request, including all its tool actions, until the reply finishes or you stop it? {}", scope.provider, scope.model, scope.target, scope.destination, if handoff { "Content left visible by another task or person may be shared. Close or hide anything you do not want shared before allowing this chat to continue." } else { "The desktop, files, clipboard and app logins are shared with other tasks." })
+            format!("Let Biorouter Copilot use {}/{} to control {}? Screenshots, open-window information and app text may be sent to {}, including sensitive information visible on this computer. BioRouter can move the cursor, change focus, type, click and make changes on your behalf. Allow control and sharing for this user request, including all its tool actions, until the reply finishes or you stop it? {}", scope.provider, scope.model, scope.target, scope.destination, if handoff { "Content left visible by another task or person may be shared. Close or hide anything you do not want shared before allowing this chat to continue." } else { "The desktop, files, clipboard and app logins are shared with other tasks." })
         } else {
             format!("Allow BioRouter to view and control {} for this user request using {}/{} at {}? It can read screenshots and app content, move the cursor, change focus, type, click and make changes on your behalf. Private classification does not mean on-device processing. The desktop, files, clipboard and app logins remain shared. Approval ends when the reply finishes. You can stop it at any time.", scope.target, scope.provider, scope.model, scope.destination)
         };
         if switching {
-            disclosure.push_str(" Allowing switches control from the other active Computer Use task and stops its queued actions.");
+            disclosure.push_str(" Allowing switches control from the other active Biorouter Copilot task and stops its queued actions.");
         }
         ComputerUseStatus {
             runtime: biorouter_mcp::computer_use::diagnostics(),
@@ -309,16 +309,16 @@ impl ComputerUseConsent {
         let mut desktop = desktop().lock().unwrap_or_else(|e| e.into_inner());
         ensure!(
             state.task.is_some() && state.requested && !state.stopped,
-            "Computer Use approval requires a live request waiting to use the computer. Ask in this chat first; setup does not grant control."
+            "Biorouter Copilot approval requires a live request waiting to use the computer. Ask in this chat first; setup does not grant control."
         );
         ensure!(
             state.scope.as_ref() == Some(&scope)
                 && state.challenge == challenge
                 && !challenge.is_empty()
                 && state.desktop_epoch == desktop.epoch,
-            "Computer Use scope changed. Review the current acknowledgement and allow again."
+            "Biorouter Copilot scope changed. Review the current acknowledgement and allow again."
         );
-        ensure!(state.task_binding.as_ref() == Some(&scope), "The model changed during this request. Start a new request before approving Computer Use.");
+        ensure!(state.task_binding.as_ref() == Some(&scope), "The model changed during this request. Start a new request before approving Biorouter Copilot.");
         if desktop.lock.is_none() {
             let path = desktop_lock_path()?;
             std::fs::create_dir_all(path.parent().unwrap())?;
@@ -328,7 +328,7 @@ impl ComputerUseConsent {
                 .create(true)
                 .truncate(false)
                 .open(path)?;
-            file.try_lock_exclusive().map_err(|_| anyhow::anyhow!("Computer Use is busy in another BioRouter process. Stop its task before switching control."))?;
+            file.try_lock_exclusive().map_err(|_| anyhow::anyhow!("Biorouter Copilot is busy in another BioRouter process. Stop its task before switching control."))?;
             desktop.lock = Some(Arc::new(file));
         }
         if let Some((_, cancel)) = desktop.owner.take() {
@@ -398,7 +398,7 @@ impl ComputerUseConsent {
         provider: &SharedProvider,
         cancel: &CancellationToken,
     ) -> Result<ComputerUsePermit> {
-        ensure!(!crate::user_surface::no_human_surface(), "{APPROVAL_REQUIRED}: Computer Use must run within its approved chat request; an identity-free API call cannot consume a chat's grant");
+        ensure!(!crate::user_surface::no_human_surface(), "{APPROVAL_REQUIRED}: Biorouter Copilot must run within its approved chat request; an identity-free API call cannot consume a chat's grant");
         if !self.execution_allowed.load(Ordering::Acquire) {
             return Err(ModeForbidsComputerUse.into());
         }
@@ -407,13 +407,13 @@ impl ComputerUseConsent {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             ensure!(
                 state.task.is_some(),
-                "Computer Use requires an active chat request"
+                "Biorouter Copilot requires an active chat request"
             );
             ensure!(
                 !state.stopped,
-                "Computer Use is stopped. Use the chat's Allow control button to start a new task."
+                "Biorouter Copilot is stopped. Use the chat's Allow control button to start a new task."
             );
-            ensure!(state.task_binding == state.scope, "The model changed during this request. Start a new request before using Computer Use.");
+            ensure!(state.task_binding == state.scope, "The model changed during this request. Start a new request before using Biorouter Copilot.");
             state.requested = true;
             (state.scope.clone(), state.task.clone())
         };
@@ -424,14 +424,14 @@ impl ComputerUseConsent {
                 notified.as_mut().enable();
                 {
                     let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    ensure!(!state.stopped, "Computer Use was stopped or declined");
+                    ensure!(!state.stopped, "Biorouter Copilot was stopped or declined");
                     ensure!(
                         state.scope == expected_scope,
-                        "Computer Use destination changed while awaiting approval"
+                        "Biorouter Copilot destination changed while awaiting approval"
                     );
                     ensure!(
                         state.task == expected_task,
-                        "Computer Use request changed while awaiting approval"
+                        "Biorouter Copilot request changed while awaiting approval"
                     );
                     if let Some(grant) = state.grant.as_ref().filter(|g| !g.cancel.is_cancelled()) {
                         let desktop = desktop().lock().unwrap_or_else(|e| e.into_inner());
@@ -440,7 +440,7 @@ impl ComputerUseConsent {
                                 .owner
                                 .as_ref()
                                 .is_some_and(|(owner, _)| owner == &self.identity),
-                            "Computer Use control belongs to another task"
+                            "Biorouter Copilot control belongs to another task"
                         );
                         return Ok(ComputerUsePermit {
                             generation: grant.generation.clone(),
@@ -450,7 +450,7 @@ impl ComputerUseConsent {
                     }
                 }
                 tokio::select! {
-                    _ = cancel.cancelled() => { self.revoke(); bail!("Computer Use cancelled while awaiting consent") },
+                    _ = cancel.cancelled() => { self.revoke(); bail!("Biorouter Copilot cancelled while awaiting consent") },
                     _ = &mut notified => {}
                 }
             }
@@ -502,7 +502,7 @@ impl ComputerUsePermit {
         let _lease = &self.lease;
         tokio::select! {
             biased;
-            _ = self.cancel.cancelled() => bail!("Computer Use stopped; no further actions are authorized"),
+            _ = self.cancel.cancelled() => bail!("Biorouter Copilot stopped; no further actions are authorized"),
             guard = action_lock().lock_owned() => Ok(guard),
         }
     }

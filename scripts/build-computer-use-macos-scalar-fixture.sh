@@ -4,7 +4,7 @@
 #
 # It must be a bundle, not a bare executable: an accessibility client resolves a
 # target by bundle identifier, and a loose binary has none. The identifier below
-# is what a Computer Use acceptance run names as its fixture.
+# is what a Biorouter Copilot acceptance run names as its fixture.
 #
 #   scripts/build-computer-use-macos-scalar-fixture.sh [output-dir]
 #   open "<output-dir>/BioRouter Scalar Fixture.app"

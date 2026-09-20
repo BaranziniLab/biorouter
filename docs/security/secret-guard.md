@@ -5,7 +5,7 @@
 > judged, and the redaction of credential material in what a tool returns.
 > **Status:** Current. The argument scan was rebuilt and the output redaction added on
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code.
-> **Audience:** developers working on tool dispatch, the Developer and Computer Use
+> **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
 A model with a shell can read any file the user can. The secret guard is the part of BioRouter
@@ -35,7 +35,7 @@ gitignore negation (`!path`), because user patterns are layered after the floor.
 | Developer server, `validate_shell_command` | `developer__shell`'s command, from the directory it will actually run in. |
 | Developer server, `is_ignored` | `text_editor` and `image_processor` paths, after symlinks are resolved. |
 | `call_tool_withholding_secrets`, inside the dispatched future | Every tool **result** and error, before any model sees it. |
-| Computer Use tools | Nothing path-shaped for the argument scan to judge: their arguments name a display, an application or an element, not a file. The result redaction applies to their text, not to their screenshots. |
+| Biorouter Copilot tools | Nothing path-shaped for the argument scan to judge: their arguments name a display, an application or an element, not a file. The result redaction applies to their text, not to their screenshots. |
 
 The command argument checks share one resolver, so they cannot disagree about what a command means.
 
@@ -163,9 +163,9 @@ boundary against a determined adversary — the same ruling that governs
 - **Live shell output** streamed to the desktop as progress notifications is not redacted. It
   reaches only the user's own screen; the model receives the final, redacted result.
 - **Images are not redacted.** `redact_call_tool_result` handles text parts and text resources
-  only; every other content kind falls through untouched. A Computer Use `screen_capture` or
+  only; every other content kind falls through untouched. A Biorouter Copilot `screen_capture` or
   `get_app_state` screenshot therefore reaches the model as it was taken, so a credential visible
-  in a terminal or an editor is not withheld. The per-request Computer Use approval is the only
+  in a terminal or an editor is not withheld. The per-request Biorouter Copilot approval is the only
   control there.
 - **The deny set is editable by the agent**: a negation written into `.biorouterignore` reopens a
   file, as it always could.

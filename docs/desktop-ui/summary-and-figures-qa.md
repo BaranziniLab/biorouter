@@ -1,6 +1,6 @@
 # Chat summary and academic figure acceptance
 
-> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 ## Contract

@@ -243,7 +243,7 @@ build.
 - `ALPHA=true` enables alpha features. `BIOROUTER_SERVER__SECRET_KEY` sets the
   server auth key (the `__` form is only for nested config keys; the port is
   plain `BIOROUTER_PORT`).
-- Verify desktop UI behavior through the native Computer Use capability after its
+- Verify desktop UI behavior through the native Biorouter Copilot capability after its
   per-request approval. Inspect the target app and use the native window capture
   when an image is needed; refresh state after app changes. Do not revive removed
   script or Developer screenshot routes. Read

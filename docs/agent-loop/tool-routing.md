@@ -92,11 +92,11 @@ edit files at all.
   **local tool catalog** only and answers no questions. For a factual or web-research
   question, use a web tool or answer directly.
 
-### Native Computer Use and Web & Documents
+### Native Biorouter Copilot and Web & Documents
 - Use `computercontroller/list_apps` then `get_app_state` before native element actions.
   `screen_capture` is the sole built-in display/window capture tool. Follow the current schemas.
 - Obtain the host's per-chat task grant once, continue authorized work, and stop on denial or
-  revocation. Never use shell or another automation route to bypass a computer-use block.
+  revocation. Never use shell or another automation route to bypass a Biorouter Copilot block.
 - Keep desktop calls sequential and refresh observations after handoff, stale references, or
   uncertain completion. Never replay a timed-out mutation blindly.
 - Use `webdocuments/web_scrape` for a known URL and `webdocuments` document/cache tools for
@@ -219,7 +219,7 @@ The rule the matrix encodes: **the leftmost bold cell wins for a simple task**;
 
 The previous script-driven desktop tools and Developer capture implementation are removed.
 There are no compatibility aliases. Current model guidance, nested imports and bridge policy
-must use the native Computer Use roster and independent Web & Documents identity. Existing
+must use the native Biorouter Copilot roster and independent Web & Documents identity. Existing
 script workflows need an explicit rewrite; they do not authorize the new desktop capability.
 
 ## Tool-result logging (observability of every tool call)

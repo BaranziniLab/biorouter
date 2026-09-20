@@ -77,17 +77,17 @@ jobs:
         run: ./scripts/check-no-cross-drift.sh
       - name: Version consistency (CLI = daemon = GUI)
         run: ./scripts/check-version-consistency.sh
-      # The capability is "Computer Use" wherever a person reads it -- never the
-      # removed "Computer Controller", never vendor-qualified. The internal
+      # The capability is "Biorouter Copilot" wherever a person reads it -- never
+      # the removed "Computer Controller", never vendor-qualified. The internal
       # `computercontroller` identifier is deliberately exempt; see the script.
-      - name: Computer Use naming consistency
+      - name: Biorouter Copilot naming consistency
         run: ./scripts/check-computer-use-naming.sh
 
-      # The vendored upstream Computer Use source must match its manifest AND be
-      # fully committable. Repository-wide .gitignore rules matched 15 of its
+      # The vendored upstream Open Computer Use source must match its manifest AND
+      # be fully committable. Repository-wide .gitignore rules matched 15 of its
       # files when it was first vendored; a tree that verifies locally while
       # those files never reach a fresh clone is worse than one that fails here.
-      - name: Vendored Computer Use source
+      - name: Vendored Open Computer Use source
         run: ./scripts/check-vendored-computer-use.sh
 
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as

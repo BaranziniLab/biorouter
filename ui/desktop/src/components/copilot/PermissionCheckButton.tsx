@@ -1,6 +1,6 @@
 import { Check, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
-import type { RuntimeVerdict } from './ComputerUseSetup';
+import type { RuntimeVerdict } from './CopilotSetup';
 
 /**
  * The result sentence. Never colour alone: the icon and the words both carry the

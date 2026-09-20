@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify BioRouter's pinned native Computer Use payload (build-time only)."""
+"""Build and verify the pinned native Biorouter Copilot payload (build-time only)."""
 import argparse
 import hashlib
 import json
@@ -274,7 +274,7 @@ def main():
         build(args.target, args.source, args.signing_identity)
     elif args.action == "verify":
         verify(args.directory or OUTPUT / args.target, args.target, args.require_signed)
-        print(f"Verified Computer Use {args.target}")
+        print(f"Verified Biorouter Copilot {args.target}")
     else:
         source = OUTPUT / args.target
         verify(source, args.target, args.require_signed)

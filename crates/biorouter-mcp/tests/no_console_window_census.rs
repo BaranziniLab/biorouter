@@ -180,7 +180,9 @@ fn strip_literals(text: &str) -> String {
             }
             if j < bytes.len() && bytes[j] == '"' {
                 out.push(' ');
-                let close: String = std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
                 j += 1;
                 while j < bytes.len() {
                     if bytes[j] == '"'
@@ -273,13 +275,22 @@ fn split_top_level(list: &str) -> Vec<&str> {
             '(' => depth += 1,
             ')' => depth -= 1,
             ',' if depth == 0 => {
-                parts.push(list[start..i].trim());
+                // `get`, not `[..]`: clippy::string_slice is denied workspace
+                // wide because a byte index that is not a character boundary
+                // panics. These come from `char_indices`, so they are boundaries
+                // by construction, and `get` says that in the type rather than
+                // in a comment.
+                if let Some(part) = list.get(start..i) {
+                    parts.push(part.trim());
+                }
                 start = i + 1;
             }
             _ => {}
         }
     }
-    parts.push(list[start..].trim());
+    if let Some(rest) = list.get(start..) {
+        parts.push(rest.trim());
+    }
     parts
 }
 
@@ -435,7 +446,12 @@ fn is_fn_start(line: &str) -> bool {
     if let Some(after_pub) = rest.strip_prefix("pub") {
         rest = match after_pub.strip_prefix('(') {
             Some(scoped) => match scoped.find(')') {
-                Some(close) => scoped[close + 1..].trim_start(),
+                // `find` returns a character boundary and `)` is one byte,
+                // so `close + 1` is a boundary too. `get` enforces it.
+                Some(close) => match scoped.get(close + 1..) {
+                    Some(after) => after.trim_start(),
+                    None => return false,
+                },
                 None => return false,
             },
             None => after_pub.trim_start(),
@@ -450,8 +466,12 @@ fn is_fn_start(line: &str) -> bool {
         }
         // `extern "C" fn`
         if rest.starts_with('"') {
-            if let Some(close) = rest[1..].find('"') {
-                rest = rest[close + 2..].trim_start();
+            // `"` is one byte, so index 1 and `close + 2` are both boundaries.
+            if let Some(close) = rest.get(1..).and_then(|tail| tail.find('"')) {
+                match rest.get(close + 2..) {
+                    Some(after) => rest = after.trim_start(),
+                    None => break,
+                }
             }
         }
         if rest == before {
@@ -576,7 +596,7 @@ fn the_known_hot_paths_are_covered() {
         ),
         // Desktop control. This row used to name
         // `computercontroller/mod.rs`, which drove the desktop through
-        // PowerShell. Built-in Computer Use replaced that: the file is now a
+        // PowerShell. Built-in Biorouter Copilot replaced that: the file is now a
         // 128-line shim over `computer_use::SessionRuntime` and spawns nothing
         // at all, so the old row asserted a call in a file with no children to
         // prepare — a hot-path guard that could only ever pass vacuously.
@@ -649,13 +669,13 @@ fn a_gate_that_also_holds_outside_tests_is_not_treated_as_test_only() {
     for spelling in [
         "#[cfg(windows)]",
         "#[cfg(unix)]",
-        "#[cfg(not(test))]",                 // the exact inverse
-        "#[cfg(any(test, windows))]",        // holds on windows WITHOUT test
-        "#[cfg(all(not(test), windows))]",   // holds only outside test
-        "#[cfg(feature = \"test-utils\")]",  // merely contains the word "test"
+        "#[cfg(not(test))]",                // the exact inverse
+        "#[cfg(any(test, windows))]",       // holds on windows WITHOUT test
+        "#[cfg(all(not(test), windows))]",  // holds only outside test
+        "#[cfg(feature = \"test-utils\")]", // merely contains the word "test"
         "#[cfg(feature = \"integration-test\")]",
-        "let x = 1;",                        // not an attribute at all
-        "#[test]",                           // a test fn, not a module gate
+        "let x = 1;", // not an attribute at all
+        "#[test]",    // a test fn, not a module gate
     ] {
         assert!(
             !is_test_only_cfg(spelling),

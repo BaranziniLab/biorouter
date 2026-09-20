@@ -82,7 +82,7 @@ Ask for a tool and the agent builds a small **Biorouter app**: a TypeScript fron
 
 Underneath all three is `biorouterd`, a REST and WebSocket server with an OpenAPI-generated TypeScript client.
 
-## Computer Use
+## Biorouter Copilot
 
 Biorouter can observe and control the desktop of the machine running its backend, so an agent can drive applications that have no API: a licensed analysis package, an imaging viewer, an institutional client with no scripting interface.
 
@@ -105,7 +105,7 @@ Four things follow from how that consent is built, and they are the reason it is
 
 The native helper is **bundled with the app, not downloaded at runtime**. It is pinned to one upstream version and commit, every file is checksummed before it runs, and a payload that does not match is refused. The macOS helper is signed with UCSF's Developer ID and the release pipeline refuses an unsigned one.
 
-The extension's configuration key is still `computercontroller`, its original name, so existing configs and command lines keep working.
+The extension's configuration key is still `computercontroller`, the name it first shipped under, so existing configs and command lines keep working.
 
 ## Built-in MCP servers
 
@@ -114,7 +114,7 @@ Seven servers ship inside Biorouter and are enabled in a fresh install.
 | Extension | Tools |
 |---|---|
 | **Developer** | `text_editor`, `shell`, `shell_status`, `shell_kill`, `analyze`, `image_processor` |
-| **Computer Use** | The ten desktop tools above |
+| **Biorouter Copilot** | The ten desktop tools above |
 | **Web & Documents** | `web_scrape`, `xlsx_tool`, `docx_tool`, `pdf_tool`, `cache` |
 | **Auto Visualiser** | `render_figure`, `describe_figure`, `render_dashboard` |
 | **Memory** | `remember_memory`, `retrieve_memories`, `remove_memory_category`, `remove_specific_memory` |
@@ -235,7 +235,7 @@ Full documentation is at [biorouter.ucsf.edu/docs](https://biorouter.ucsf.edu/do
 | [Architecture](docs/architecture/system-overview.md) | Backend, frontend and the agent loop |
 | [Providers and models](docs/getting-started/choosing-a-model-provider.md) | The provider catalogue and how to switch |
 | [Extensions, skills and MCP](docs/extensions/extensions-and-skills-guide.md) | Adding tools, agents and reusable skills |
-| [Computer Use](docs/extensions/built-in/computer-controller.md) | Desktop control, consent and platform setup |
+| [Biorouter Copilot](docs/extensions/built-in/computer-controller.md) | Desktop control, consent and platform setup |
 | [Browser access](docs/deployment/browser-access.md) | Running Biorouter from a browser with `biorouter serve` |
 | [Workflows](docs/workflows/README.md) | Creating and sharing automated workflows |
 | [Scheduled jobs](docs/workflows/scheduled-jobs.md) | Running workflows on a schedule |
@@ -260,7 +260,7 @@ Biorouter also redistributes these, with their licences and notices shipped alon
 
 | Component | Licence | What it does here |
 |---|---|---|
-| [Open Computer Use](https://github.com/iFurySt/open-codex-computer-use) | MIT | The native desktop helper behind Computer Use. Vendored into this repository at a pinned commit, so a build needs no network and no upstream change can affect a release. |
+| [Open Computer Use](https://github.com/iFurySt/open-codex-computer-use) | MIT | The native desktop helper behind Biorouter Copilot. Vendored into this repository at a pinned commit, so a build needs no network and no upstream change can affect a release. |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | MIT | `llama-server`, the bundled local model runtime. |
 | [D3](https://d3js.org/), [d3-sankey](https://github.com/d3/d3-sankey), [Chart.js](https://www.chartjs.org/), [Leaflet](https://leafletjs.com/), [Leaflet.markercluster](https://github.com/Leaflet/Leaflet.markercluster), [Mermaid](https://mermaid.js.org/) | MIT, ISC and BSD | Compiled into the binary and inlined into every Auto Visualiser figure, so figures work offline. |
 

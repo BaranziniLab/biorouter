@@ -2934,7 +2934,7 @@
    Tailwind's scanner uses to notice new class strings). A clamp that fails to
    generate does not degrade — it prints the whole document, which is the defect
    the clamp exists to fix. */
-/* Computer Use permission check — the settled confirmation.
+/* Biorouter Copilot permission check — the settled confirmation.
    Authored here rather than as a Tailwind utility because a NEWLY written class
    can silently fail to generate: under BIOROUTER_NO_HMR the renderer runs
    `watch: { ignored: ['**'] }`, which is the same signal Tailwind's scanner uses

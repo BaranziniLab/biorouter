@@ -28,7 +28,7 @@ use Biorouter's file links and available Developer tools. When enabled, existing
 Web & Documents DOCX/XLSX/PDF tools handle supported lightweight operations;
 the contexts describe their limits and use portable libraries for richer authoring. Dependencies are discovered
 and installed only as needed in isolated environments through normal permissions.
-Native application inspection or interaction uses Computer Use with its per-chat task approval;
+Native application inspection or interaction uses Biorouter Copilot with its per-chat task approval;
 Developer does not provide desktop capture or automation.
 
 ## Loading contract

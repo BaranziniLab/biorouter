@@ -42,7 +42,7 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
     case 'retrieve_memories':
       return BookMarked;
 
-    // Computer Use Extension Tools
+    // Biorouter Copilot Extension Tools
     case 'list_apps':
     case 'get_app_state':
     case 'click':

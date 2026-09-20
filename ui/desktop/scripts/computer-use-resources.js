@@ -24,7 +24,7 @@ function verifyComputerUse(directory, target) {
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
   for (const key of ['schema_version', 'upstream_commit', 'upstream_version', 'patch_revision']) {
     if (manifest[key] !== pin[key])
-      throw new Error(`Computer Use ${key} mismatch; rebuild ${target}`);
+      throw new Error(`Biorouter Copilot ${key} mismatch; rebuild ${target}`);
   }
   const executable = target.startsWith('darwin-')
     ? 'BioRouter Computer Use.app/Contents/MacOS/ocu'
@@ -36,7 +36,7 @@ function verifyComputerUse(directory, target) {
     manifest.target !== target ||
     manifest.executable !== executable
   ) {
-    throw new Error(`Missing or foreign Computer Use helper: expected ${target}`);
+    throw new Error(`Missing or foreign Biorouter Copilot helper: expected ${target}`);
   }
   const expectedPatches = fs
     .readdirSync(path.join(vendor, 'patches'))
@@ -44,12 +44,12 @@ function verifyComputerUse(directory, target) {
     .sort()
     .map((p) => ({ path: p, sha256: hash(path.join(vendor, 'patches', p)) }));
   if (JSON.stringify(manifest.patches) !== JSON.stringify(expectedPatches)) {
-    throw new Error('Computer Use source patches changed; rebuild helper');
+    throw new Error('Biorouter Copilot source patches changed; rebuild helper');
   }
   const actualFiles = files(directory);
   const recordedFiles = [...manifest.files].sort((a, b) => a.path.localeCompare(b.path, 'en'));
   if (JSON.stringify(actualFiles) !== JSON.stringify(recordedFiles)) {
-    throw new Error('Computer Use files changed or are missing; rebuild helper');
+    throw new Error('Biorouter Copilot files changed or are missing; rebuild helper');
   }
   const data = fs.readFileSync(path.join(directory, executable));
   let valid = false;
@@ -64,7 +64,7 @@ function verifyComputerUse(directory, target) {
       .subarray(data.readUInt32LE(60), data.readUInt32LE(60) + 6)
       .equals(Buffer.from([80, 69, 0, 0, 100, 134]));
   }
-  if (!valid) throw new Error(`Computer Use binary architecture mismatch: ${target}`);
+  if (!valid) throw new Error(`Biorouter Copilot binary architecture mismatch: ${target}`);
   if (process.platform !== 'win32' && !target.startsWith('win32-')) {
     fs.accessSync(path.join(directory, executable), fs.constants.X_OK);
   }
@@ -87,7 +87,7 @@ function stageComputerUse(platform, arch) {
   // command that creates it.
   if (!fs.existsSync(path.join(source, 'manifest.json'))) {
     throw new Error(
-      `Computer Use helper payload missing for ${target}.\n` +
+      `Biorouter Copilot helper payload missing for ${target}.\n` +
         `  expected: ${source}\n` +
         `  build it: python3 scripts/computer-use-runtime.py build ${target}\n` +
         `            (needs Go; see .github/workflows/computer-use-native.yml)\n` +

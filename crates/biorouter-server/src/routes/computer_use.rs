@@ -31,7 +31,7 @@ fn conflict(error: anyhow::Error) -> ErrorResponse {
     }
 }
 
-/// Separate "this chat will never run Computer Use" from "not yet".
+/// Separate "this chat will never run Biorouter Copilot" from "not yet".
 ///
 /// ⚠ Only [`ModeForbidsComputerUse`] may be a 409 here. The interface treats a
 /// 409 from the status poll as a permanent verdict -- it hides the panel and
@@ -69,7 +69,7 @@ async fn agent(
         .await
         .ok_or_else(|| ErrorResponse {
             status: StatusCode::FAILED_DEPENDENCY,
-            message: "Load this chat and bind a model before setting up Computer Use".into(),
+            message: "Load this chat and bind a model before setting up Biorouter Copilot".into(),
         })
 }
 
@@ -100,7 +100,7 @@ pub async fn consent(
     {
         return Err(ErrorResponse {
             status: StatusCode::TOO_MANY_REQUESTS,
-            message: "Too many Computer Use approval attempts. Wait one minute and try again."
+            message: "Too many Biorouter Copilot approval attempts. Wait one minute and try again."
                 .into(),
         });
     }
@@ -117,8 +117,8 @@ pub async fn consent(
 fn require_human(proof: UserActionProof) -> Result<(), ErrorResponse> {
     match proof {
         UserActionProof::Proven => Ok(()),
-        UserActionProof::Unproven => Err(ErrorResponse { status: StatusCode::FORBIDDEN, message: "Only the person using this chat may approve Computer Use. A model or ordinary API credential cannot approve it.".into() }),
-        UserActionProof::NoKeyInstalled => Err(ErrorResponse { status: StatusCode::FORBIDDEN, message: "This backend has no Computer Use approval key. Use the desktop app or restart serve with interactive Computer Use approval setup.".into() }),
+        UserActionProof::Unproven => Err(ErrorResponse { status: StatusCode::FORBIDDEN, message: "Only the person using this chat may approve Biorouter Copilot. A model or ordinary API credential cannot approve it.".into() }),
+        UserActionProof::NoKeyInstalled => Err(ErrorResponse { status: StatusCode::FORBIDDEN, message: "This backend has no Biorouter Copilot approval key. Use the desktop app or restart serve with interactive Biorouter Copilot approval setup.".into() }),
     }
 }
 
@@ -158,7 +158,7 @@ mod tests {
     }
 
     /// ⚠ The interface acts on the STATUS CODE, not on the sentence: a 409 from
-    /// the status poll hides the Computer Use panel and stops polling for the
+    /// the status poll hides the Biorouter Copilot panel and stops polling for the
     /// rest of the chat, which removes the **Stop** button. So only the refusal
     /// that can never change may be a 409.
     ///
@@ -177,9 +177,9 @@ mod tests {
             StatusCode::CONFLICT
         );
         for transient in [
-            "Bind a model before starting Computer Use",
-            "Computer Use runtime belongs to a different chat",
-            "Computer Use is busy in another BioRouter process. Stop its task before switching control.",
+            "Bind a model before starting Biorouter Copilot",
+            "Biorouter Copilot runtime belongs to a different chat",
+            "Biorouter Copilot is busy in another BioRouter process. Stop its task before switching control.",
         ] {
             let answer = status_refusal(anyhow::anyhow!(transient));
             assert_eq!(
@@ -196,7 +196,7 @@ mod tests {
     /// a string comparison two crates apart.
     #[test]
     fn the_mode_refusal_is_a_type_not_a_sentence() {
-        let impostor = anyhow::anyhow!("Chat mode does not run Computer Use tools");
+        let impostor = anyhow::anyhow!("Chat mode does not run Biorouter Copilot tools");
         assert_eq!(
             status_refusal(impostor).status,
             StatusCode::SERVICE_UNAVAILABLE

@@ -19,7 +19,7 @@ These capabilities ship with Biorouter. Some are backed by bundled MCP servers a
 | Capability | Description | Default state |
 |---|---|---|
 | **Developer** | File operations, shell commands, text editing, code search — essential for software development | Enabled |
-| **Computer Use** | Native desktop observation and control after task approval | Enabled |
+| **Biorouter Copilot** | Native desktop observation and control after task approval | Enabled |
 | **Web & Documents** | URL fetching, document utilities, file caching | Enabled |
 | **Memory** | Remembers user preferences across sessions | Enabled |
 | **Auto Visualiser** | Automatically generates data visualizations in conversations | Enabled |

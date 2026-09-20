@@ -292,25 +292,25 @@ search found next, while the same path given as `--web-dir` was fatal. With neit
 resolver looks in a fixed order — locations relative to the executable, then a system-wide path
 for the Linux packages — and when it finds none, the error names every path it tried.
 
-## Computer Use approval in a browser
+## Biorouter Copilot approval in a browser
 
 Start `biorouter serve --computer-use-approval` from an interactive terminal to set a
 separate approval passphrase (at least 16 characters). Enter it again in the browser's
-Computer Use approval field when a task requests desktop access. Review the named model,
+Biorouter Copilot approval field when a task requests desktop access. Review the named model,
 data destination, and backend host before allowing the task. Public-model acknowledgement
 also covers visible sensitive information leaving the computer. Each new user request
 requires approval; internal tool calls continue under that request's grant. Stop revokes it.
 
 The launcher reads the passphrase without echoing it, sends only its SHA-256 digest on
 stdin with a `computer-use:` scope, and clears the raw passphrase from its own buffer.
-The browser sends `X-Computer-Use-Key` only for Computer Use consent; it does not save the
+The browser sends `X-Computer-Use-Key` only for Biorouter Copilot consent; it does not save the
 key. This proof is accepted only by the computer-use consent route. Browser cookies and
 the ordinary API secret do not establish human consent, and the scoped key cannot change
 providers, privacy tiers, or extension permissions. Ten unsuccessful approval attempts
 in one minute temporarily block further key checks; wait a minute before trying again.
 
 The controlled desktop belongs to the backend host, not the browser user's device.
-A server without an interactive desktop cannot provide Computer Use. Run
+A server without an interactive desktop cannot provide Biorouter Copilot. Run
 `biorouter doctor --no-update` for runtime and host diagnostics without capturing or
 controlling the desktop. Unattended launches cannot configure the approval key through
 argv, environment variables, a file, or piped input.

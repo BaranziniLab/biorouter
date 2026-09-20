@@ -13,6 +13,6 @@ The user manages Biorouter's shipped capabilities, such as Developer, Memory, an
 Settings under Capabilities. Third-party extensions are separate and can be managed from the
 Extensions page or browsed at <http://biorouter.ucsf.edu/baam>.
 
-Computer Use controls the backend host's desktop through native tools after task approval.
-The browser client of `serve` does not expose its own computer. Use the current Computer Use
+Biorouter Copilot controls the backend host's desktop through native tools after task approval.
+The browser client of `serve` does not expose its own computer. Use the current Biorouter Copilot
 status and approval UI; never infer a grant from the capability being enabled.

@@ -111,7 +111,7 @@ def sign_macos_candidate(app):
     manifest_before = digest(manifest)
     frameworks = app / 'Contents/Frameworks'
     # Electron x64 ships unsigned nested framework code; keep deep signing away
-    # from the separately sealed Computer Use runtime under Resources.
+    # from the separately sealed Biorouter Copilot runtime under Resources.
     for bundle in sorted(frameworks.glob('*.framework')):
         run(['codesign', '--force', '--deep', '--sign', '-', bundle])
     for bundle in sorted(frameworks.glob('*.app')):

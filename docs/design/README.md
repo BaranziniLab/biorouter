@@ -22,10 +22,10 @@ shipped or were overtaken by later work are filed under
 Most specifications sit in the six topic subfolders below, alongside two top-level rendered
 pages. Three documents sit directly in this folder:
 
-- **[Computer Use integration plan](computer-use-integration-plan.md)**: the design of record
-  for the native Computer Use capability and the split that moved the web, document and cache
+- **[Biorouter Copilot integration plan](computer-use-integration-plan.md)**: the design of record
+  for the native Biorouter Copilot capability and the split that moved the web, document and cache
   tools out to Web & Documents.
-- **[Computer Use implementation status](computer-use-implementation-status.md)**: the
+- **[Biorouter Copilot implementation status](computer-use-implementation-status.md)**: the
   evidence ledger for that plan: what has been proven, and which acceptance gates remain.
 - **[Office context compatibility](office-context-compatibility.md)**: the Word, PowerPoint,
   Excel and PDF contexts seeded from `crates/biorouter/src/agents/builtin_skills/office-*`.
