@@ -22,7 +22,7 @@
 export type AssistedUpdateKind = 'windows-installer' | 'windows-zip' | 'linux-package' | 'macos-app';
 
 /** Classify a downloaded update by its file extension. */
-export function assistedUpdateKind(updatePath: string, platform: NodeJS.Platform): AssistedUpdateKind {
+export function assistedUpdateKind(updatePath: string, platform: typeof process.platform): AssistedUpdateKind {
   const lower = updatePath.toLowerCase();
   if (platform === 'win32') {
     return lower.endsWith('.exe') ? 'windows-installer' : 'windows-zip';
@@ -42,7 +42,7 @@ const PRESERVED = 'Your settings, chats and extensions live outside the app fold
  * only the old zip still gets the old instructions and a release that ships the
  * installer gets the installer ones.
  */
-export function assistedUpdateInstructions(updatePath: string, platform: NodeJS.Platform): string {
+export function assistedUpdateInstructions(updatePath: string, platform: typeof process.platform): string {
   switch (assistedUpdateKind(updatePath, platform)) {
     case 'windows-installer':
       // Squirrel replaces the installed app directory and keeps the existing
