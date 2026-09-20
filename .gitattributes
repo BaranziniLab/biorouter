@@ -41,3 +41,18 @@ crates/biorouter/src/agents/snapshots/*.snap linguist-language=Text
 
 # Unified diff markers require spaces on blank context lines and before Go tab indentation.
 third_party/open-computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
+
+# ⚠ The vendored Computer Use tree is HASHED, file by file, into
+# `third_party/open-computer-use/source-manifest.json`, and the build verifies
+# those hashes before the bytes become build input. So its bytes must be
+# byte-identical on every platform, not merely equivalent.
+#
+# `-text` disables end-of-line conversion entirely — stronger than `text eol=lf`,
+# which still declares the file text and invites tooling to normalise it. The
+# rules above cover source by EXTENSION, and this tree is full of files that have
+# none: `LICENSE`, `Makefile`, `CODEOWNERS`, `.gitignore`, `.gitattributes`.
+# Measured on CI before this rule: a Windows checkout rewrote exactly those five
+# to CRLF and the manifest check failed with `changed=['.gitattributes',
+# '.gitignore', 'CODEOWNERS', 'LICENSE', 'Makefile']`, on a tree nobody had
+# edited.
+third_party/open-computer-use/source/** -text
