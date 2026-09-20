@@ -21,6 +21,7 @@ check-everything:
     ./scripts/check-brand-consistency.sh
     @echo "  → Checking the capability is called Computer Use everywhere a person reads it..."
     ./scripts/check-computer-use-naming.sh
+    ./scripts/check-vendored-computer-use.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
     @echo "  → Checking the BAAM registry generator still refuses what it must..."

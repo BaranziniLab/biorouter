@@ -1,0 +1,839 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
+function fail(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+function usage() {
+  process.stdout.write(`Usage:
+  node ./scripts/install-config-helper.mjs claude-mcp <config-path> <project-root> <server-name> <command-name>
+  node ./scripts/install-config-helper.mjs codex-mcp <config-path> <server-name> <command-name>
+  node ./scripts/install-config-helper.mjs gemini-mcp <config-path> <server-name> <command-name>
+  node ./scripts/install-config-helper.mjs opencode-mcp <primary-config-path> <secondary-config-path> <server-name> <command-name>
+  node ./scripts/install-config-helper.mjs dsh-mcp <profile-patch-path> <hooks-path> <command-path> <with-turn-ended-hook>
+  node ./scripts/install-config-helper.mjs probe-stdio-mcp <command-path> [<arg> ...]
+  node ./scripts/install-config-helper.mjs codex-plugin-version <plugin-manifest-path>
+  node ./scripts/install-config-helper.mjs codex-plugin-config <config-path> <repo-root> <marketplace-name> <plugin-name>
+  node ./scripts/install-config-helper.mjs copy-into-dir <target-dir> <source-path> [<source-path> ...]
+`);
+}
+
+function readTextIfExists(filePath) {
+  if (!existsSync(filePath)) {
+    return "";
+  }
+  return readFileSync(filePath, "utf8");
+}
+
+function ensureParentDir(filePath) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function readJSONObjectConfig(configPath, label) {
+  const raw = readTextIfExists(configPath);
+  if (raw.trim().length === 0) {
+    return {};
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    fail(`Existing ${label} is not valid JSON: ${error.message}`);
+  }
+
+  if (data === null || Array.isArray(data) || typeof data !== "object") {
+    fail(`Existing ${label} root is not a JSON object; refusing to modify it.`);
+  }
+
+  return data;
+}
+
+function ensureObjectField(parent, key, label) {
+  const value = parent[key] ?? {};
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    fail(label);
+  }
+  parent[key] = value;
+  return value;
+}
+
+function getOptionalObjectField(parent, key, label) {
+  if (!(key in parent) || parent[key] === undefined) {
+    return undefined;
+  }
+
+  const value = parent[key];
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    fail(label);
+  }
+
+  return value;
+}
+
+function writeJSONConfig(configPath, data) {
+  ensureParentDir(configPath);
+  writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function normalizeNewlines(text) {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function trimTrailingBlankLines(lines) {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === "") {
+    end -= 1;
+  }
+  return lines.slice(0, end);
+}
+
+function canonicalSectionBody(bodyLines) {
+  const lines = [...bodyLines];
+  while (lines.length > 0 && lines[0].trim() === "") {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
+function splitTomlSections(text) {
+  const normalized = normalizeNewlines(text);
+  if (normalized.length === 0) {
+    return { preambleLines: [], sections: [] };
+  }
+
+  const lines = normalized.split("\n");
+  const preambleLines = [];
+  const sections = [];
+  let currentHeader = null;
+  let currentBodyLines = [];
+
+  for (const line of lines) {
+    const headerMatch = line.match(/^\[([^\]]+)\]\s*$/);
+    if (headerMatch) {
+      if (currentHeader === null) {
+        preambleLines.push(...currentBodyLines);
+      } else {
+        sections.push({ header: currentHeader, bodyLines: currentBodyLines });
+      }
+      currentHeader = headerMatch[1];
+      currentBodyLines = [];
+      continue;
+    }
+    currentBodyLines.push(line);
+  }
+
+  if (currentHeader === null) {
+    preambleLines.push(...currentBodyLines);
+  } else {
+    sections.push({ header: currentHeader, bodyLines: currentBodyLines });
+  }
+
+  return { preambleLines, sections };
+}
+
+function renderTomlDocument(document) {
+  const chunks = [];
+  const preamble = trimTrailingBlankLines(document.preambleLines);
+  if (preamble.length > 0) {
+    chunks.push(preamble.join("\n"));
+  }
+
+  for (const section of document.sections) {
+    const bodyLines = trimTrailingBlankLines(section.bodyLines);
+    if (bodyLines.length > 0) {
+      chunks.push(`[${section.header}]\n${bodyLines.join("\n")}`);
+    } else {
+      chunks.push(`[${section.header}]`);
+    }
+  }
+
+  return chunks.length > 0 ? `${chunks.join("\n\n")}\n` : "";
+}
+
+function ensureUniqueManagedHeaders(document, headers, configPath) {
+  for (const header of headers) {
+    const count = document.sections.filter((section) => section.header === header).length;
+    if (count > 1) {
+      fail(`Existing Codex config has duplicate section [${header}] in ${configPath}; refusing to modify it.`);
+    }
+  }
+}
+
+function applyTomlSectionUpdates(text, updates, configPath) {
+  const document = splitTomlSections(text);
+  const managedHeaders = [
+    ...updates.removeHeaders,
+    ...updates.upserts.map((entry) => entry.header),
+  ];
+  ensureUniqueManagedHeaders(document, managedHeaders, configPath);
+
+  const upsertMap = new Map(
+    updates.upserts.map((entry) => [
+      entry.header,
+      {
+        header: entry.header,
+        bodyLines: normalizeNewlines(entry.body).split("\n"),
+      },
+    ]),
+  );
+  const removeSet = new Set(updates.removeHeaders);
+  const nextSections = [];
+  const insertedHeaders = new Set();
+
+  for (const section of document.sections) {
+    if (removeSet.has(section.header)) {
+      continue;
+    }
+    if (upsertMap.has(section.header)) {
+      nextSections.push(upsertMap.get(section.header));
+      insertedHeaders.add(section.header);
+      continue;
+    }
+    nextSections.push(section);
+  }
+
+  for (const entry of updates.upserts) {
+    if (!insertedHeaders.has(entry.header)) {
+      nextSections.push(upsertMap.get(entry.header));
+    }
+  }
+
+  return renderTomlDocument({
+    preambleLines: document.preambleLines,
+    sections: nextSections,
+  });
+}
+
+function installClaudeMcp(configPath, projectRoot, serverName, commandName) {
+  const desiredEntry = {
+    type: "stdio",
+    command: commandName,
+    args: ["mcp"],
+  };
+  const legacyServerName = "open-codex-computer-use";
+  const data = readJSONObjectConfig(configPath, `Claude config ${configPath}`);
+  const projects = ensureObjectField(data, "projects", 'Existing Claude config has non-object "projects"; refusing to modify it.');
+  const projectEntry = ensureObjectField(
+    projects,
+    projectRoot,
+    `Existing Claude project entry for ${projectRoot} is not an object; refusing to modify it.`,
+  );
+  const mcpServers = ensureObjectField(
+    projectEntry,
+    "mcpServers",
+    `Existing Claude project MCP config for ${projectRoot} is not an object; refusing to modify it.`,
+  );
+
+  const target = mcpServers[serverName];
+  const legacy = mcpServers[legacyServerName];
+  const targetMatches = JSON.stringify(target) === JSON.stringify(desiredEntry);
+  const legacyMatches = JSON.stringify(legacy) === JSON.stringify(desiredEntry);
+
+  if (targetMatches && !legacyMatches) {
+    process.stdout.write(`Claude MCP server "${serverName}" is already installed for ${projectRoot} in ${configPath}.\n`);
+    return;
+  }
+
+  mcpServers[serverName] = desiredEntry;
+  if (legacyMatches) {
+    delete mcpServers[legacyServerName];
+  }
+
+  writeJSONConfig(configPath, data);
+
+  if (targetMatches && legacyMatches) {
+    process.stdout.write(`Claude MCP server "${serverName}" was already installed for ${projectRoot}; removed legacy alias "${legacyServerName}" from ${configPath}.\n`);
+  } else {
+    process.stdout.write(`Installed Claude MCP server "${serverName}" for ${projectRoot} into ${configPath}.\n`);
+  }
+}
+
+function installGeminiMcp(configPath, serverName, commandName) {
+  const desiredEntry = {
+    command: commandName,
+    args: ["mcp"],
+  };
+  const legacyServerName = "open-codex-computer-use";
+  const data = readJSONObjectConfig(configPath, `Gemini config ${configPath}`);
+  const mcpServers = ensureObjectField(
+    data,
+    "mcpServers",
+    `Existing Gemini config has non-object "mcpServers"; refusing to modify it.`,
+  );
+
+  const target = mcpServers[serverName];
+  const legacy = mcpServers[legacyServerName];
+  const targetMatches = JSON.stringify(target) === JSON.stringify(desiredEntry);
+  const legacyMatches = JSON.stringify(legacy) === JSON.stringify(desiredEntry);
+
+  if (targetMatches && !legacyMatches) {
+    process.stdout.write(`Gemini MCP server "${serverName}" is already installed in ${configPath}.\n`);
+    return;
+  }
+
+  mcpServers[serverName] = desiredEntry;
+  if (legacyMatches) {
+    delete mcpServers[legacyServerName];
+  }
+
+  writeJSONConfig(configPath, data);
+
+  if (targetMatches && legacyMatches) {
+    process.stdout.write(`Gemini MCP server "${serverName}" was already installed; removed legacy alias "${legacyServerName}" from ${configPath}.\n`);
+  } else {
+    process.stdout.write(`Installed Gemini MCP server "${serverName}" into ${configPath}.\n`);
+  }
+}
+
+function installOpencodeMcp(primaryConfigPath, secondaryConfigPath, serverName, commandName) {
+  const desiredEntry = {
+    type: "local",
+    command: [commandName, "mcp"],
+  };
+  const legacyServerName = "open-codex-computer-use";
+  const configEntries = [{ path: primaryConfigPath, role: "primary" }];
+  if (secondaryConfigPath && secondaryConfigPath !== primaryConfigPath) {
+    configEntries.push({ path: secondaryConfigPath, role: "secondary" });
+  }
+
+  const records = configEntries.map((entry) => ({
+    ...entry,
+    data: readJSONObjectConfig(entry.path, `opencode config ${entry.path}`),
+    dirty: false,
+  }));
+
+  const targetMatches = [];
+  const extraAliases = [];
+  for (const record of records) {
+    const mcp = getOptionalObjectField(
+      record.data,
+      "mcp",
+      `Existing opencode config has non-object "mcp" in ${record.path}; refusing to modify it.`,
+    );
+    if (!mcp) {
+      continue;
+    }
+
+    if (JSON.stringify(mcp[serverName]) === JSON.stringify(desiredEntry)) {
+      targetMatches.push(record.path);
+    }
+    if (serverName in mcp || legacyServerName in mcp) {
+      extraAliases.push(record.path);
+    }
+  }
+
+  if (targetMatches.length === 1 && extraAliases.length === 1 && targetMatches[0] === extraAliases[0]) {
+    process.stdout.write(`opencode MCP server "${serverName}" is already installed in ${targetMatches[0]}.\n`);
+    return;
+  }
+
+  for (const record of records) {
+    const mcp = ensureObjectField(
+      record.data,
+      "mcp",
+      `Existing opencode config has non-object "mcp" in ${record.path}; refusing to modify it.`,
+    );
+
+    if (record.role === "primary") {
+      if (JSON.stringify(mcp[serverName]) !== JSON.stringify(desiredEntry)) {
+        mcp[serverName] = desiredEntry;
+        record.dirty = true;
+      }
+      if (legacyServerName in mcp) {
+        delete mcp[legacyServerName];
+        record.dirty = true;
+      }
+      continue;
+    }
+
+    if (serverName in mcp) {
+      delete mcp[serverName];
+      record.dirty = true;
+    }
+    if (legacyServerName in mcp) {
+      delete mcp[legacyServerName];
+      record.dirty = true;
+    }
+    if (Object.keys(mcp).length === 0) {
+      delete record.data.mcp;
+    }
+  }
+
+  for (const record of records) {
+    if (record.dirty) {
+      writeJSONConfig(record.path, record.data);
+    }
+  }
+
+  process.stdout.write(`Installed opencode MCP server "${serverName}" into ${primaryConfigPath}.\n`);
+}
+
+function installCodexMcp(configPath, serverName, commandName) {
+  const desiredBody = `command = ${JSON.stringify(commandName)}\nargs = ["mcp"]`;
+  const targetHeader = `mcp_servers."${serverName}"`;
+  const legacyServerName = "open-codex-computer-use";
+  const legacyHeader = `mcp_servers."${legacyServerName}"`;
+  const text = readTextIfExists(configPath);
+  const document = splitTomlSections(text);
+
+  ensureUniqueManagedHeaders(document, [targetHeader, legacyHeader], configPath);
+
+  const targetSection = document.sections.find((section) => section.header === targetHeader);
+  const legacySection = document.sections.find((section) => section.header === legacyHeader);
+  const desiredCanonical = canonicalSectionBody(desiredBody.split("\n"));
+  const targetMatches = targetSection ? canonicalSectionBody(targetSection.bodyLines) === desiredCanonical : false;
+  const legacyMatches = legacySection ? canonicalSectionBody(legacySection.bodyLines) === desiredCanonical : false;
+
+  if (targetMatches && !legacyMatches) {
+    process.stdout.write(`Codex MCP server "${serverName}" is already installed in ${configPath}.\n`);
+    return;
+  }
+
+  const nextText = applyTomlSectionUpdates(
+    text,
+    {
+      removeHeaders: [legacyHeader],
+      upserts: [{ header: targetHeader, body: desiredBody }],
+    },
+    configPath,
+  );
+
+  ensureParentDir(configPath);
+  writeFileSync(configPath, nextText, "utf8");
+
+  if (targetMatches && legacyMatches) {
+    process.stdout.write(`Codex MCP server "${serverName}" was already installed; removed legacy alias "${legacyServerName}" from ${configPath}.\n`);
+  } else {
+    process.stdout.write(`Installed Codex MCP server "${serverName}" into ${configPath}.\n`);
+  }
+}
+
+function printCodexPluginVersion(pluginManifestPath) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(pluginManifestPath, "utf8"));
+  } catch (error) {
+    fail(`Failed to read plugin manifest ${pluginManifestPath}: ${error.message}`);
+  }
+
+  if (!manifest || typeof manifest.version !== "string" || manifest.version.length === 0) {
+    fail(`Plugin manifest ${pluginManifestPath} does not contain a valid string "version".`);
+  }
+
+  process.stdout.write(`${manifest.version}\n`);
+}
+
+function installCodexPluginConfig(configPath, repoRoot, marketplaceName, pluginName) {
+  const text = readTextIfExists(configPath);
+  const repoRootPath = path.resolve(repoRoot);
+  const nextText = applyTomlSectionUpdates(
+    text,
+    {
+      removeHeaders: [
+        'mcp_servers."open-codex-computer-use"',
+        'mcp_servers."open-computer-use"',
+      ],
+      upserts: [
+        {
+          header: `marketplaces.${marketplaceName}`,
+          body: `source_type = "local"\nsource = ${JSON.stringify(repoRootPath)}`,
+        },
+        {
+          header: `plugins."${pluginName}@${marketplaceName}"`,
+          body: "enabled = true",
+        },
+      ],
+    },
+    configPath,
+  );
+
+  ensureParentDir(configPath);
+  writeFileSync(configPath, nextText, "utf8");
+}
+
+function copyIntoDir(targetDir, sourcePaths) {
+  if (sourcePaths.length === 0) {
+    fail("copy-into-dir requires at least one source path.");
+  }
+
+  mkdirSync(targetDir, { recursive: true });
+
+  for (const sourcePath of sourcePaths) {
+    if (!existsSync(sourcePath)) {
+      fail(`Source path does not exist: ${sourcePath}`);
+    }
+
+    const destinationPath = path.join(targetDir, path.basename(sourcePath));
+    rmSync(destinationPath, { recursive: true, force: true });
+    cpSync(sourcePath, destinationPath, { recursive: true });
+  }
+}
+
+/**
+ * Markers around the block this installer owns inside a DSH profile patch. The
+ * patch is a plain YAML array the user also edits by hand, so the block is
+ * delimited and replaced wholesale instead of being merged key by key.
+ */
+const DSH_PATCH_BEGIN_MARKER = "# >>> open-computer-use (managed by install-dsh-mcp.sh)";
+const DSH_PATCH_END_MARKER = "# <<< open-computer-use";
+
+/** Quote a value as a double-quoted YAML scalar (paths routinely contain spaces and parentheses). */
+function quoteYamlString(value) {
+  return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+/** Quote a value for the shell line a DSH hook runs. */
+function quoteShellWord(value) {
+  return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`")}"`;
+}
+
+/**
+ * Render the DSH hook config that clears the Open Computer Use software cursor.
+ * The cursor is only hidden at a turn boundary (the MCP `notifications/turn-ended`
+ * notification), which dsh-mcp-client never sends, so without this hook the cursor
+ * stays on screen after the first action of any session or subagent.
+ */
+function renderDshHookConfig(commandPath) {
+  return {
+    hooks: {
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: `${quoteShellWord(commandPath)} turn-ended`,
+              timeout: 5,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** Render the managed block appended to a DSH profile patch. */
+function renderDshPatchBlock(commandPath, hooksPath, withHook) {
+  const lines = [
+    DSH_PATCH_BEGIN_MARKER,
+    "# Replaced in place on every run; edits inside the block are overwritten.",
+    "# For the hook rationale see skills/open-computer-use/references/installation.md.",
+    "- insert:",
+    "    - id: mcp-open-computer-use",
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    "      config:",
+    "        serverName: ocu",
+    "        transport: stdio",
+    `        command: ${quoteYamlString(commandPath)}`,
+    "        args:",
+    "          - mcp",
+    "        toolCallTimeoutMs: 300000",
+    "        failOnStartupError: true",
+  ];
+
+  if (withHook) {
+    lines.push(
+      "    # OCU hides its software cursor only at a turn boundary, and dsh-mcp-client",
+      "    # never sends that notification; this row maps Stop onto the OCU CLI.",
+      "    - id: ocu-turn-ended-hook",
+      "      name: '@deepseek-ai/dsh-hooks-codex'",
+      "      config:",
+      `        configPath: ${quoteYamlString(hooksPath)}`,
+      "        defaultTimeoutMs: 5000",
+    );
+  }
+
+  lines.push(DSH_PATCH_END_MARKER);
+  return lines;
+}
+
+/** Replace the managed block in place, or append it when the patch has none yet. */
+function applyDshPatchBlock(existingText, blockLines, patchPath) {
+  const normalized = normalizeNewlines(existingText);
+  const lines = normalized.length > 0 ? normalized.split("\n") : [];
+  const beginIndex = lines.findIndex((line) => line.trim() === DSH_PATCH_BEGIN_MARKER);
+  const endIndex = lines.findIndex((line) => line.trim() === DSH_PATCH_END_MARKER);
+
+  if ((beginIndex === -1) !== (endIndex === -1) || (beginIndex !== -1 && endIndex < beginIndex)) {
+    fail(`Refusing to edit ${patchPath}: found only one of the two managed markers. Delete the stale marker line and re-run.`);
+  }
+
+  let nextLines;
+  if (beginIndex === -1) {
+    nextLines = trimTrailingBlankLines([...lines]);
+    if (nextLines.length > 0) {
+      nextLines.push("");
+    }
+    nextLines.push(...blockLines);
+  } else {
+    nextLines = [...lines.slice(0, beginIndex), ...blockLines, ...lines.slice(endIndex + 1)];
+  }
+
+  const text = trimTrailingBlankLines(nextLines).join("\n");
+  return text.length > 0 ? `${text}\n` : "";
+}
+
+/**
+ * Find rows this installer would own that already exist outside the managed
+ * block. They usually come from a hand-written registration; keeping both would
+ * register the MCP server twice, and dsh-mcp-client rejects a duplicate
+ * serverName.
+ */
+function findUnmanagedDshRows(existingText, ids) {
+  const lines = normalizeNewlines(existingText).split("\n");
+  const beginIndex = lines.findIndex((line) => line.trim() === DSH_PATCH_BEGIN_MARKER);
+  const endIndex = lines.findIndex((line) => line.trim() === DSH_PATCH_END_MARKER);
+  const outside = beginIndex !== -1 && endIndex > beginIndex
+    ? [...lines.slice(0, beginIndex), ...lines.slice(endIndex + 1)]
+    : lines;
+
+  const conflicts = [];
+  outside.forEach((line, index) => {
+    for (const id of ids) {
+      if (line.trim() === `- id: ${id}`) {
+        conflicts.push({ id, line: index + 1 });
+      }
+    }
+    if (/^serverName:\s*(?:ocu|"ocu"|'ocu')\s*(?:#.*)?$/.test(line.trim())) {
+      conflicts.push({ id: "serverName: ocu", line: index + 1 });
+    }
+  });
+  return conflicts;
+}
+
+/** Verify the selected executable is an Open Computer Use MCP server. */
+async function probeStdioMcp(commandPath, args) {
+  if (!path.isAbsolute(commandPath)) {
+    fail(`MCP command must be an absolute path: ${commandPath}`);
+  }
+  if (!existsSync(commandPath)) {
+    fail(`MCP command does not exist: ${commandPath}`);
+  }
+
+  const child = spawn(commandPath, args, { stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let settled = false;
+  let nextID = 1;
+  const pending = new Map();
+
+  const cleanup = () => {
+    if (!child.killed) child.kill("SIGTERM");
+  };
+  const rejectPending = (error) => {
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  };
+  child.stderr.on("data", (chunk) => {
+    if (stderr.length < 4096) stderr += chunk.toString();
+  });
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+    while (stdout.includes("\n")) {
+      const newline = stdout.indexOf("\n");
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line.length === 0) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        rejectPending(new Error(`MCP server wrote non-JSON stdout: ${line.slice(0, 200)}`));
+        continue;
+      }
+      const request = pending.get(message.id);
+      if (request) {
+        pending.delete(message.id);
+        request.resolve(message);
+      }
+    }
+  });
+
+  const exited = new Promise((_, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (!settled) {
+        reject(new Error(`MCP server exited before discovery (code=${code ?? "null"}, signal=${signal ?? "none"})${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+      }
+    });
+  });
+  const request = (method, params = {}) => {
+    const id = nextID++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`, (error) => {
+        if (!error) return;
+        pending.delete(id);
+        reject(error);
+      });
+    });
+  };
+  const timeout = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("MCP discovery timed out after 10 seconds")), 10_000).unref();
+  });
+
+  try {
+    const verify = async () => {
+      const initialized = await request("initialize", {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "open-computer-use-installer", version: "1" },
+      });
+      if (initialized.error) throw new Error(`MCP initialize failed: ${JSON.stringify(initialized.error)}`);
+      if (initialized.result?.serverInfo?.name !== "open-computer-use") {
+        throw new Error(`unexpected MCP server identity: ${JSON.stringify(initialized.result?.serverInfo?.name)}`);
+      }
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
+      const listed = await request("tools/list");
+      if (listed.error) throw new Error(`MCP tools/list failed: ${JSON.stringify(listed.error)}`);
+      const tools = listed.result?.tools;
+      if (!Array.isArray(tools)) throw new Error("MCP tools/list did not return a tools array");
+      if (tools.length === 0) throw new Error("MCP tools/list returned an empty tool catalog");
+      const names = tools.map((tool) => tool?.name);
+      if (names.some((name) => typeof name !== "string" || name.trim().length === 0)) {
+        throw new Error("MCP tools/list returned a tool without a valid name");
+      }
+      if (new Set(names).size !== names.length) {
+        throw new Error("MCP tools/list returned duplicate tool names");
+      }
+      return names;
+    };
+    const names = await Promise.race([verify(), timeout, exited]);
+    settled = true;
+    process.stdout.write(`Verified Open Computer Use MCP server (${names.length} tools): ${commandPath}\n`);
+  } catch (error) {
+    settled = true;
+    throw new Error(`Could not verify Open Computer Use MCP server at ${commandPath}: ${error.message}`);
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * Install the stdio MCP server into one DSH profile patch, and optionally the
+ * turn-boundary hook that keeps the software cursor from sticking on screen.
+ */
+function installDshMcp(patchPath, hooksPath, commandPath, withHookValue) {
+  const withHook = withHookValue !== "0" && withHookValue !== "false";
+
+  if (!existsSync(commandPath)) {
+    fail(`MCP command does not exist: ${commandPath}`);
+  }
+
+  const existing = readTextIfExists(patchPath);
+  const managedIds = withHook
+    ? ["mcp-open-computer-use", "ocu-turn-ended-hook"]
+    : ["mcp-open-computer-use"];
+  const conflicts = findUnmanagedDshRows(existing, managedIds);
+  if (conflicts.length > 0) {
+    const found = conflicts.map((entry) => `"${entry.id}" (line ${entry.line})`).join(", ");
+    fail(
+      `Refusing to edit ${patchPath}: it already declares ${found} outside the managed block.\n` +
+        "Remove the hand-written row(s) and re-run: two rows for the same id register the MCP " +
+        "server twice, and dsh-mcp-client rejects a duplicate serverName.",
+    );
+  }
+
+  if (withHook) {
+    writeJSONConfig(hooksPath, renderDshHookConfig(commandPath));
+  }
+
+  const nextText = applyDshPatchBlock(existing, renderDshPatchBlock(commandPath, hooksPath, withHook), patchPath);
+
+  if (nextText !== existing) {
+    ensureParentDir(patchPath);
+    writeFileSync(patchPath, nextText, "utf8");
+  }
+
+  process.stdout.write(`MCP server "ocu" -> ${commandPath}\n`);
+  process.stdout.write(`DSH profile patch: ${patchPath} (${existing === nextText ? "already current" : "updated"})\n`);
+  if (withHook) {
+    process.stdout.write(`Turn-boundary hook config: ${hooksPath}\n`);
+  }
+}
+
+async function main(argv) {
+  const [command, ...args] = argv;
+  switch (command) {
+    case "claude-mcp":
+      if (args.length !== 4) {
+        usage();
+        process.exit(1);
+      }
+      installClaudeMcp(...args);
+      return;
+    case "codex-mcp":
+      if (args.length !== 3) {
+        usage();
+        process.exit(1);
+      }
+      installCodexMcp(...args);
+      return;
+    case "gemini-mcp":
+      if (args.length !== 3) {
+        usage();
+        process.exit(1);
+      }
+      installGeminiMcp(...args);
+      return;
+    case "opencode-mcp":
+      if (args.length !== 4) {
+        usage();
+        process.exit(1);
+      }
+      installOpencodeMcp(...args);
+      return;
+    case "dsh-mcp":
+      if (args.length !== 4) {
+        usage();
+        process.exit(1);
+      }
+      installDshMcp(...args);
+      return;
+    case "probe-stdio-mcp":
+      if (args.length < 1) {
+        usage();
+        process.exit(1);
+      }
+      await probeStdioMcp(args[0], args.slice(1));
+      return;
+    case "codex-plugin-version":
+      if (args.length !== 1) {
+        usage();
+        process.exit(1);
+      }
+      printCodexPluginVersion(args[0]);
+      return;
+    case "codex-plugin-config":
+      if (args.length !== 4) {
+        usage();
+        process.exit(1);
+      }
+      installCodexPluginConfig(...args);
+      return;
+    case "copy-into-dir":
+      if (args.length < 2) {
+        usage();
+        process.exit(1);
+      }
+      copyIntoDir(args[0], args.slice(1));
+      return;
+    default:
+      usage();
+      process.exit(1);
+  }
+}
+
+try {
+  await main(process.argv.slice(2));
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}

@@ -10,6 +10,7 @@ import plistlib
 import shutil
 import struct
 import subprocess
+import importlib.util as _importlib_util
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,13 @@ VENDOR = ROOT / "third_party/open-computer-use"
 PIN = json.loads((VENDOR / "pin.json").read_text())
 OUTPUT = ROOT / "target/computer-use"
 SIGN_IDENTITY = "Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)"
+
+# Loaded by path because the file name contains dashes and is not importable.
+_vendor_spec = _importlib_util.spec_from_file_location(
+    "vendor_computer_use_source", Path(__file__).with_name("vendor-computer-use-source.py")
+)
+vendor_source = _importlib_util.module_from_spec(_vendor_spec)
+_vendor_spec.loader.exec_module(vendor_source)
 
 
 def run(args, **kwargs):
@@ -95,15 +103,55 @@ def verify(directory, target, signed=False):
 
 
 def source_checkout(source):
+    """Stage the upstream tree and apply the reviewed patches to it.
+
+    The default source is the tree VENDORED in this repository at
+    `third_party/open-computer-use/source/`, so a build needs no network and
+    cannot be changed by anything happening upstream. That is the point: an
+    upstream repository that is deleted, force-pushed or altered can no longer
+    affect a BioRouter build, and the bytes that go into a shipped helper are
+    reviewable in this repository's own history.
+
+    ⚠ The vendored tree is PRISTINE — the patches are not applied to it, they are
+    applied here, to a throwaway copy. Keeping the two apart is what makes an
+    upstream update tractable: the tree is replaced wholesale and the reviewed
+    patches are re-applied on top, so a conflict is a real conflict rather than a
+    merge of our own edits with themselves.
+
+    `--source <clone>` still takes an external checkout, which is how you build
+    against a candidate upstream before vendoring it. It is pinned exactly as
+    before; only the origin of the bytes differs.
+    """
     destination = OUTPUT / "source.noindex"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         shutil.rmtree(destination)
-    run(["git", "clone", "--no-checkout", source or PIN["repository"], destination])
-    run(["git", "checkout", "--detach", PIN["upstream_commit"]], cwd=destination)
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=destination).decode().strip()
-    if actual != PIN["upstream_commit"]:
-        raise ValueError("Upstream source pin mismatch")
+    if source:
+        run(["git", "clone", "--no-checkout", source, destination])
+        run(["git", "checkout", "--detach", PIN["upstream_commit"]], cwd=destination)
+        actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=destination).decode().strip()
+        if actual != PIN["upstream_commit"]:
+            raise ValueError("Upstream source pin mismatch")
+    else:
+        # Hash every vendored file against the manifest BEFORE it becomes build
+        # input. Without this the vendored tree is only files on disk, and an
+        # accidental edit — or a deliberate one — would be baked into a signed
+        # helper with nothing to notice.
+        vendor_source.verify()
+        shutil.copytree(vendor_source.SOURCE, destination)
+        # ⚠ Give the staged copy its own repository, and do not remove this as
+        # redundant. `git apply` resolves against the repository CONTAINING the
+        # working directory, and this directory sits inside BioRouter's own — so
+        # without an inner repo the patches are applied in BioRouter's context,
+        # where `target/` is ignored. Measured: the edits to tracked upstream
+        # files landed, every `new file mode` hunk was silently dropped, and the
+        # staged tree stayed at 406 files instead of 415. The build then
+        # succeeded and produced a helper 28,672 bytes smaller, built from
+        # effectively unpatched upstream, with nothing failing.
+        #
+        # The clone path never had this problem because a clone IS a repository.
+        # `git init` restores exactly those semantics.
+        run(["git", "init", "--quiet"], cwd=destination)
     for patch in sorted((VENDOR / "patches").glob("*.patch")):
         run(["git", "apply", "--check", patch], cwd=destination)
         run(["git", "apply", patch], cwd=destination)

@@ -1,8 +1,56 @@
 # BioRouter native Computer Use payload
 
-`pin.json` pins the MIT-licensed upstream commit. `patches/` is applied in lexical
-order to a fresh detached checkout; a dirty local source clone cannot affect a
-build. Every payload contains the upstream license, notice, source pin, patch
+`source/` is a COMPLETE copy of the MIT-licensed upstream project at the commit
+`pin.json` names, committed to this repository. A build reads it and needs no
+network, so an upstream repository that is deleted, force-pushed or altered
+cannot affect BioRouter, and the exact bytes that go into a shipped helper are
+reviewable in this repository's own history.
+
+`source/` is **pristine** — the patches are not applied to it. `patches/` is
+applied in lexical order to a throwaway copy at build time. Keeping the two apart
+is what makes an upstream update tractable: replace the tree wholesale, re-apply
+the reviewed patches on top, and a conflict is a real conflict rather than a
+merge of our own edits with themselves.
+
+`source-manifest.json` carries a SHA-256 of every vendored file plus one digest
+over the whole tree, and the build verifies it before the bytes become build
+input — in both directions, so an unrecorded file sitting in the tree is refused
+as loudly as a modified one. `scripts/check-vendored-computer-use.sh` runs that
+check in CI, and also asserts every manifest file is committable: repository-wide
+`.gitignore` rules (`*.png`, `.agents/`, `.mcp.json`) matched 15 of them when the
+tree was first vendored, and a tree that verifies locally while those files never
+reach a fresh clone is worse than one that fails outright.
+
+⚠ **Ten upstream files are deliberately NOT vendored**, listed under `excluded` in
+the manifest with the reason. They are assets upstream extracted from another
+vendor's shipped application for reverse-engineering notes. MIT covers upstream's
+own work; it cannot relicense somebody else's artwork. They are documentation
+references, not build inputs — nothing under `apps/` reads them — and a build is
+byte-identical with and without them (verified).
+
+### Checking for upstream changes
+
+```sh
+python3 scripts/check-computer-use-upstream.py          # summary
+python3 scripts/check-computer-use-upstream.py --json   # machine-readable
+```
+
+Read-only: it never edits the pin, the tree, or the patches. The number it exists
+to give you is not "N commits behind" but **which upstream files our patches also
+touch**, because those are what will conflict on re-vendoring. The update
+procedure is in that script's header.
+
+### Updating the vendored tree
+
+```sh
+git clone <repository> /tmp/ocu && git -C /tmp/ocu checkout <new commit>
+$EDITOR third_party/open-computer-use/pin.json          # commit + version
+python3 scripts/vendor-computer-use-source.py --from /tmp/ocu
+python3 scripts/computer-use-runtime.py build <target>  # patches re-apply here
+```
+
+A patch that no longer applies fails the build rather than being skipped. Bump
+`patch_revision` when you rework one, and rebuild every target. Every payload contains the upstream license, notice, source pin, patch
 hashes, target, launch arguments, and SHA-256 hashes of every shipped file.
 
 Build prerequisites are Python 3, git, Go 1.26.8 for Windows/Linux, and Swift 6.2+

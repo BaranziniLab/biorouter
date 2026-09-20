@@ -83,6 +83,13 @@ jobs:
       - name: Computer Use naming consistency
         run: ./scripts/check-computer-use-naming.sh
 
+      # The vendored upstream Computer Use source must match its manifest AND be
+      # fully committable. Repository-wide .gitignore rules matched 15 of its
+      # files when it was first vendored; a tree that verifies locally while
+      # those files never reach a fresh clone is worse than one that fails here.
+      - name: Vendored Computer Use source
+        run: ./scripts/check-vendored-computer-use.sh
+
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.

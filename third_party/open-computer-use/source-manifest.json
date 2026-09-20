@@ -1,0 +1,1600 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/iFurySt/open-codex-computer-use.git",
+  "upstream_commit": "547b4ffb8ed731a8f16486e6d8a3b215484267d3",
+  "upstream_version": "0.3.5",
+  "file_count": 396,
+  "tree_sha256": "cec233608c6e54d7faa9d58803f5c8a12c6d4d95c5142a57e460b967b01f4be1",
+  "excluded": [
+    {
+      "path_prefix": "docs/references/codex-computer-use-reverse-engineering/assets/extracted-",
+      "reason": "assets extracted from a third party's application; upstream's MIT licence does not extend to them, and they are documentation references rather than build inputs"
+    }
+  ],
+  "files": [
+    {
+      "path": ".agents/plugins/marketplace.json",
+      "sha256": "1d8e600c09f73e535229c6be1ddf7d137e33fcebab0223b1d72a6309b4a32562"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "df3531f1f3b5bb05470d0f4457d58b0fa1bd756943d5704d44d9e0e4b84a83f3"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "b2f31674ed0a3082afeeac623d16f948dc855053f873d65c089babe54e838e38"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "5ab276be5ea6102554e5f6de869dc750e428eff8aec7e0586a0329562bb5664b"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "ca92741378cb38f90330cb81ec323b2a9710d5d4e439129e88e7800ce84f124a"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "b0341d65f3edb11c65bf09aa93e10f60c450f0bd36db0c768b445b3f720ff9cc"
+    },
+    {
+      "path": "CODEOWNERS",
+      "sha256": "ab150460426b038a1994f75421dc95aefef3f159000c520af1b6c4b1856afc58"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "e18020a4aa3907be4ebc437adc93f175e0e47dcc92b88953c8affcb9869df9cd"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "0fdb775e00e6fdde23984b4f1184cd13c34135caac1e714ad489141c239704bc"
+    },
+    {
+      "path": "Makefile",
+      "sha256": "fbe5734454714faf6bb30d2dda3877c298249997902b5925d244ef71f76f1a98"
+    },
+    {
+      "path": "Package.swift",
+      "sha256": "c97dfa714a9d3790d4342fd09b3b82c96ed5794e0f3105f132d7915d50794676"
+    },
+    {
+      "path": "README.md",
+      "sha256": "64ee1d9b0c847a926a69966af49c1e1408ecdd5a30a62760f9cd066217462646"
+    },
+    {
+      "path": "README.zh-CN.md",
+      "sha256": "1403364ccb5ac957523a48959555fa8ce911c5c637475eb42b00db4c6a2035c0"
+    },
+    {
+      "path": "SECURITY.md",
+      "sha256": "2a68e9f6fcf1267e009f6743b59d0effc5182f0cf778a758a79a809b29d83f21"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift",
+      "sha256": "211a3da7b69de28d2362abc97c02f6aa9a61dbfb7699d4ffb53ded226cf190b7"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift",
+      "sha256": "b6673b97ff0141a955ae436299f644bede003a1d01f7b19563d24f681d905cad"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift",
+      "sha256": "8679537d5619b59090c8df41c2da23cd9c8172c8e75f3a9a78f98f74774d04ba"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift",
+      "sha256": "5b09bdbe752cd518b74139e2d91b78afc1d09f2b3ee054505cba117b391a9f6b"
+    },
+    {
+      "path": "apps/OpenComputerUseFixture/Sources/OpenComputerUseFixture/main.swift",
+      "sha256": "ee5887572dff8c8e4b3eb2aff67f814b138e2b1d36420e7534e4149ecc58e766"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/go.mod",
+      "sha256": "cd50a0702133136eb8b786e7e473fd454eecbbd344cd4c06ccaee6bf70569771"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/main.go",
+      "sha256": "ce87670e52ea11a9bb2274ff3e7e11d7108925ffdd7e6d6b213973218aab82eb"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/main_test.go",
+      "sha256": "8b6d5e50d3a5fb1cf8dadb6bb88192f26e52aecf3dca81e362e67e11fc7f3a52"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/runtime.py",
+      "sha256": "7d2ffb91986c9e7881a935b6bfaa23f3042642f8c133c930b76f66357d7e4178"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/runtime_test.py",
+      "sha256": "5911bbb706efa69114ee3f625325cfe677075d5798cc7d202cab04ef72fea9ce"
+    },
+    {
+      "path": "apps/OpenComputerUseSmokeSuite/Sources/OpenComputerUseSmokeSuite/main.swift",
+      "sha256": "103129083d06c177e0988cdaf898b320dedc0d6e8cd714d59b768236fb8904cd"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/go.mod",
+      "sha256": "f2cdb5d0212017b2c949ad03c7dfad217b5d4d5e9a95ffe16a745581b81ed038"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/main.go",
+      "sha256": "58061257f7a7f570f209ce8d7713aec9d77d538d289670cf57463c27e92ef67c"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/main_test.go",
+      "sha256": "8333087b29253a08a83bcf78ae784e2de8b37c7e721a84d6312c5bb38f864293"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/runtime.ps1",
+      "sha256": "af5b4dbeae10847f69a190562d4f40e3f11d78ac989f0c95260bd95f640e7ed8"
+    },
+    {
+      "path": "artifacts/tool-comparisons/20260417-focus-behavior/README.md",
+      "sha256": "46e3cbbe08716a1ed11ed0c94868561c5ed638f1863d99067944ee115576623f"
+    },
+    {
+      "path": "artifacts/tool-comparisons/20260417-focus-behavior/computer-use/get_app_state-activity-monitor.json",
+      "sha256": "1a2e4a857993591627d13609152afc4e7bba71e6e13e7d282858476ccde6c490"
+    },
+    {
+      "path": "artifacts/tool-comparisons/20260417-focus-behavior/open-codex-computer-use/click-activity-monitor-coordinate.json",
+      "sha256": "7221312951815fff59431fa75acb5cd5ff1c29d4231609d1ab4bf049e57e097b"
+    },
+    {
+      "path": "artifacts/tool-comparisons/20260417-focus-behavior/open-codex-computer-use/get_app_state-activity-monitor.json",
+      "sha256": "de93eb15981b31ea9ff54129440de45708b6c558a6defd3b4023a143fde856b2"
+    },
+    {
+      "path": "assets/app-icons/open-computer-use-1024.png",
+      "sha256": "cf367d379f1e6402a64951d0005ed209a7df0c2d6e2d8d6f0ca8d97ccefdea17"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "sha256": "906e500c35236842d7b4041ba64facf9cdba5fce62c8b97e43b109a4ff005b7f"
+    },
+    {
+      "path": "docs/CICD.md",
+      "sha256": "a5af661d68447752a5867aabfd2997ead85aaca4e66bf26d557b5298f77ba56a"
+    },
+    {
+      "path": "docs/DESIGN.md",
+      "sha256": "d26e436b51fb82101e40271963ef3de7a694f6064e9ba9b37d9aadb2f428719a"
+    },
+    {
+      "path": "docs/FRONTEND.md",
+      "sha256": "d9679af28b85a428fe99514a7a3d9f9738c8aff96bf63b4100385146cc8d256e"
+    },
+    {
+      "path": "docs/HISTORY_GUIDE.md",
+      "sha256": "7cdba80fccd9f5fde82f7d0cbb712e02503f6f16da573facdde4b90614052049"
+    },
+    {
+      "path": "docs/PLANS_GUIDE.md",
+      "sha256": "1b36984cff87fd511f3399f5adc68e4a72c0b76f1b94c9f56df82a53210ed9b8"
+    },
+    {
+      "path": "docs/PRODUCT_SENSE.md",
+      "sha256": "5d87fe9466a930a0fdccd0331f5912f17b37cfda468cbb5dd00254d4f5e0211b"
+    },
+    {
+      "path": "docs/QUALITY_SCORE.md",
+      "sha256": "374f3bbeb514e0edad367ecdb5bd6578d91be0f07ffdcc2cca49adfd8d8d6484"
+    },
+    {
+      "path": "docs/RELIABILITY.md",
+      "sha256": "cdd4249b1d8262df1848bdec072ad79fe50d980afa81f31800139860d29aa0e3"
+    },
+    {
+      "path": "docs/REPO_COLLAB_GUIDE.md",
+      "sha256": "1629dfed8f811277103175caca2e5e295075eb96d082228767e57a634178fc09"
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "sha256": "f3f886a741f8b92e41b54328e085bbc1efeca024d33f79b67f965ae81d7afdc4"
+    },
+    {
+      "path": "docs/SUPPLY_CHAIN_SECURITY.md",
+      "sha256": "e4904b6561886d093a7cb229251ad39d01e8fd1272fa49fec49b09178f1dc9be"
+    },
+    {
+      "path": "docs/design-docs/core-beliefs.md",
+      "sha256": "296c14d18d4ac97a57ebc5f66a36842e6e6842d02948b3833f2f96d134318aa3"
+    },
+    {
+      "path": "docs/design-docs/index.md",
+      "sha256": "38aab02f587ad8b3ee693748594ad5d4123c5aebb2a2a2248f8d57214b09c4cb"
+    },
+    {
+      "path": "docs/exec-plans/README.md",
+      "sha256": "ef450c46a22cca03120b2cbde76d2b1e1e6ab146414b1fa5e9cf20ab903ac178"
+    },
+    {
+      "path": "docs/exec-plans/active/.gitkeep",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "docs/exec-plans/active/20260417-official-tool-alignment.md",
+      "sha256": "f26e6affd46e89fed9f3a1a3dd2c73be3d51b61e674280d3b530c7b3f6ccdad5"
+    },
+    {
+      "path": "docs/exec-plans/active/20260417-permission-onboarding-app.md",
+      "sha256": "e7c1dbb09979ff56b25356a0212532e1096eed2b191be5d7fc5781a24834753f"
+    },
+    {
+      "path": "docs/exec-plans/active/20260418-standalone-cursor-lab.md",
+      "sha256": "d7f66b46093b6aa90c445d15afae0ef728663775c2fb555ca654c293bcead725"
+    },
+    {
+      "path": "docs/exec-plans/active/20260419-official-cursor-motion-reconstruction.md",
+      "sha256": "d59cef3b402861c876998f157dfc9ef1e590571458aed1a29a77f4cd182c8575"
+    },
+    {
+      "path": "docs/exec-plans/active/20260420-cursor-slider-binary-investigation.md",
+      "sha256": "516f8d45cdad50d2924a0ae38b4c9733e8c1732f2964e4a370787914df0084b4"
+    },
+    {
+      "path": "docs/exec-plans/active/20260422-linux-computer-use-runtime.md",
+      "sha256": "baad057bb628b16d528a5466b6e6d8c6d4f9f2f79abe5928e6479d15ae8e419b"
+    },
+    {
+      "path": "docs/exec-plans/active/20260422-remaining-tool-official-alignment.md",
+      "sha256": "8faa3590ba33b53efe3a9ae7c77bf5eb04dfd9017fdc2043390cc70b227e8a8e"
+    },
+    {
+      "path": "docs/exec-plans/active/20260422-windows-computer-use-runtime.md",
+      "sha256": "c6dac553577a9e0ccbdd78063d00385775c4246ca3bf5e8d83fb9dadfac00783"
+    },
+    {
+      "path": "docs/exec-plans/active/20260423-cross-platform-npm-distribution.md",
+      "sha256": "666c3edf20117e223d43b2e1adbd1dfc85cb327bd0df3b0302563b8c7e03c545"
+    },
+    {
+      "path": "docs/exec-plans/active/20260901-embedded-app-agent-socket-isolation.md",
+      "sha256": "a3c008ce03819861c6da9859edc0a2c190820df57b2079942ef68ecb7869877a"
+    },
+    {
+      "path": "docs/exec-plans/completed/.gitkeep",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260417-2115-npm-distribution.md",
+      "sha256": "2e39339b0beb0ab510198ba58f13723ae18cc74b2d4d19e89351373b5720302c"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260417-nonintrusive-computer-use.md",
+      "sha256": "ae2f1d7d545aa65a6214fafd74556effbdfef43a08ce2d3227735b40e09471ee"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260417-open-source-computer-use-reverse-engineering.md",
+      "sha256": "719002d49aee70f92182468366d2ef5fb2da26a197bc47cca1d21f3226fba57f"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260417-open-source-swift-computer-use.md",
+      "sha256": "558a0a0eeb0b722efda1d030f8b93ccd4ac6887e1fb6322dd7784d5dde6955fe"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260417-visual-cursor-overlay.md",
+      "sha256": "ad445e46f1f04cf830d46826af3f2093d6fc4c793ed7797ff2b128a7f233e207"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260419-overlay-official-cursor-motion-alignment.md",
+      "sha256": "11e2e09db8c7ecd2ece0d7b6706c51728aba0a215964097ebe5d69b1b6f2a7ec"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260419-standalone-cursor-from-python-reconstruction.md",
+      "sha256": "b02904c6713fe2ac179366d7fceb8cf76eba9667dcd926a8b4b08f385697b9d4"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260419-visual-cursor-pose-dynamics-refactor.md",
+      "sha256": "299ca542b6343954dae711e14b626c71eedbab1fa26edb68df3ac2f67a37e520"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260507-feishu-electron-snapshot-stability.md",
+      "sha256": "20e5580429ace053c5d100e488599ed99403017b04d8792e722a8eacf9bb28c7"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260722-add-sky-click.md",
+      "sha256": "7e07effa72ac41d7a87f81f06ab45e90bd8b1118cd7b0a43e831baeb7e70c2a6"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260722-configurable-click-method.md",
+      "sha256": "df3ba4cf2310969e2daba7ee93c466b5bd0a2858989bf16077f3ef5390413329"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260723-preserve-sky-click-focus.md",
+      "sha256": "97383146807e392fd081cb2ebfc8d91944647da5eae712d97818106a6a40ad85"
+    },
+    {
+      "path": "docs/exec-plans/tech-debt-tracker.md",
+      "sha256": "b546284851b640c4c5bdf6d15fb551572ad9fe8fea24343b9e8ab20d99bfac0c"
+    },
+    {
+      "path": "docs/exec-plans/templates/execution-plan.md",
+      "sha256": "e671460750abfc003ea1d5bba1535e9b2eb6d8c3f39f2fa869cea0f675879032"
+    },
+    {
+      "path": "docs/generated/README.md",
+      "sha256": "6b9b769202df390f3c7cd3d25c3bc65aa9fd4d8c98f75e6d53590228aad9afe9"
+    },
+    {
+      "path": "docs/generated/readme-assets/cursor-motion-demo-cover.png",
+      "sha256": "c211aa4f632be6c179a01864ada2e886ce741d3dda5d3838be54da802b3e6e77"
+    },
+    {
+      "path": "docs/generated/readme-assets/open-computer-use-demo-cover.png",
+      "sha256": "8857d83124dbdd8ca64eb7c394c92bfddc0761ce2c803973d2f8b86a7fc3dd0f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1156-open-source-computer-use-research-foundation.md",
+      "sha256": "01ad1eb39ff6f0723ecdfd8d56f82b721b7689c60a7443920e860a5de7ade3d3"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1258-prepare-initial-commit.md",
+      "sha256": "e2d7e5ac711de043ae1f333caa48e9b20c398d61638558087a4f3f6f2061beca"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1325-open-source-swift-computer-use.md",
+      "sha256": "9b5d54f9058bbd194c8cace73fd2aefa5b32b321e77aedca6444e2e76bf93ef9"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1504-hide-dock-icon-for-onboarding-app.md",
+      "sha256": "d9d0dd598b3319644e0b8cda049d648fdbe4cc935278c40100fa65b3e82b127e"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1510-nonintrusive-computer-use.md",
+      "sha256": "de6af4bd048a06c31fcb8388e88000fa051325dc4526ac3d2277b69c8b4bb5b2"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1532-install-open-computer-use-plugin.md",
+      "sha256": "4c22a6a47d91ab7881f249036e9d6408d02984e0e404c92fa3af41be2253dc68"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1544-logo-explorations.md",
+      "sha256": "b559c1fd9b446fbd4ece33b55fd5cc74ad9bb9941adcad84d7b264705a4560fa"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1554-rename-open-computer-use-identifiers.md",
+      "sha256": "41904c27b9b1302e05fcf5a261c6c434d9a9c8a00e18fdbbae626ea69de6a7b4"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1619-add-codex-mitm-dump-script.md",
+      "sha256": "39fe8a8b00f3145cb4c9849fe51b0f672adfc33410b70b5760f12e0fe15407a5"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1639-document-codex-local-runtime-logs.md",
+      "sha256": "18e8c599757ad41c6f06fa563ede2eb086c5a67f5c9194fdc2342d6687d3adcd"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1807-move-computer-use-cli-into-scripts.md",
+      "sha256": "33afb0b03bb67808dbd0135a72f6be5c8408fb0ff6bb2f2a760b175056ad1b59"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1812-normalize-repo-path-links.md",
+      "sha256": "5421ca966fe3c87c35199ecd03037bb1936eacc83261eb9fe7f8eb6e7f75c970"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1816-align-computer-use-tool-results.md",
+      "sha256": "9e7231961ce50ac1ee4aca34b384fe65c19496d2f66423fcc4f4022163870e4b"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1901-visual-cursor-overlay.md",
+      "sha256": "c4e85a7066cdd6a940827e0aee2cd432d81e527f7a8f9b24174337ca3da44754"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-1936-bump-open-computer-use-to-0.1.1.md",
+      "sha256": "7ec1a615d532063178cd8fc8da6cfbdd08f54eff7d01e2b47b2c18c7a03de3a1"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2043-bump-open-computer-use-to-0.1.2.md",
+      "sha256": "b9f953955f56529d437c41b2dec3acd7ca2cf6325b4888f28e72bf1e2cfe2efa"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2122-fix-permission-panel-tracking.md",
+      "sha256": "29943a4cd9a32089f7aea6073515e12fe4a34acadf4affbdec384d12aec29dc3"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2126-npm-distribution-and-publish.md",
+      "sha256": "b6a979a2c40ba8b59bdb620a166c08c4cdc1712792cbb21acd0ca763be39451a"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2130-window-aware-cursor-path-selection.md",
+      "sha256": "e97ac9817c4180c008e2dabd54ce83205ac3b46e9fb54b3e70a02287c8dee094"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2132-add-mcp-json-config-to-readme.md",
+      "sha256": "9ac9b8238ab61cd09aa41d0519e9519692d850027dabc361d1e2304d7319477e"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2138-bump-open-computer-use-to-0.1.3.md",
+      "sha256": "fc2215554443d0643591620e8708243e8be8f1128ebbd829cbf3b452a2c7294e"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2148-fix-npm-bin-symlink-launcher.md",
+      "sha256": "8fd3a517067313dbbe787689e2175c45709af7f0f11ed1fa50d74a83ab98b0da"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2154-bump-open-computer-use-to-0.1.4.md",
+      "sha256": "135dbd98f8640112635c53b3de2e7f98aadbb75afdba083801b5c26bfac4ec11"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2155-doctor-launches-permission-onboarding.md",
+      "sha256": "05221871fc41043fbd02357942262dfde2697167cf0d7449da62a346089bc422"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2206-enable-npm-trusted-publishing.md",
+      "sha256": "22d24a0187814dcba85bc4a63d2eb431321e57d3da3b2f47c875a8e35afb95b6"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2210-fix-npm-release-auth-and-readme-cleanup.md",
+      "sha256": "2ae056b63ddb9be3a2cce30189a7076acc043a4f4fd73de48a48877164d6ea82"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2214-enable-tag-release-and-bump-to-0.1.5.md",
+      "sha256": "8907de1649f8d30396ba756e81dcd20f2c75d3fa694e9216f2a0e804713290e9"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2215-fix-bundle-display-name-and-icon.md",
+      "sha256": "c6fb01b7d7d9cb1cfde794556ed52e84eda30bbf4d7d47c364bb5c95ce5d011b"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2218-fix-npm-auth-mode-selection.md",
+      "sha256": "3777fbabaa976167d7408102168c8f095bde097991ab930e60d95a5958340162"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2228-improve-npm-postinstall-next-steps.md",
+      "sha256": "ebc40caef93ba6adda9ec7f1549a93b2cec06c4d199549c3c85f165cf97630dc"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2235-fix-cli-help-and-version-flags.md",
+      "sha256": "27df301783e607d27124e71a0e7e8e700cf7780353afbd67be4a001c5eb1df85"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2246-bump-open-computer-use-to-0.1.6.md",
+      "sha256": "3a290886948b3dbde28fee63bb20cabb2315aa4eeb15850e41f1d18f1cb93724"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2255-add-codex-mcp-installer.md",
+      "sha256": "8ab8b330429c18de8a948cc4bf23ec8edcc95e3090f653e5f3498fa3aff5c501"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2310-add-claude-mcp-installer.md",
+      "sha256": "b94b80cc34a68ec75980c3104b4638f1fa844d49602fb20f780c112628c05b64"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2318-fix-release-build-on-xcode-26.md",
+      "sha256": "e5ac2192300ece6e2983a98f97c8edea6a06eeb61410968191f888eaaef5d460"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2326-bump-open-computer-use-to-0.1.9.md",
+      "sha256": "0a414577e7143cf8d199fc03972679a0edb3a6f55782b6cdac17a9ab5792dbd9"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2340-bump-open-computer-use-to-0.1.7.md",
+      "sha256": "d82f9ed3eb0a9029ce357cba98e52fc532de9fc2f1c9d02bd925c8b928f776c7"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2350-bump-open-computer-use-to-0.1.8.md",
+      "sha256": "4543594883cdac246843cb4ca7dbf6c8060056164c63ee17ba37cb1a5d2a8f5d"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2350-fix-permission-accessory-panel-ordering.md",
+      "sha256": "0b2f42f6923247eb333c9152e7a4049242108e126cfcf8d5a6e51c99685c2d08"
+    },
+    {
+      "path": "docs/histories/2026-04/20260417-2358-simplify-readme.md",
+      "sha256": "afe8e5911277777ca9b1843bd56d1c7f37271a65685cdbd70d737e4f6ebd95df"
+    },
+    {
+      "path": "docs/histories/2026-04/20260418-0014-translate-readme-to-english.md",
+      "sha256": "fea972bde849daa5a2fc5ac6b87c3ada128635acaa9a403c1fd49790fe2724d6"
+    },
+    {
+      "path": "docs/histories/2026-04/20260418-0015-stabilize-permission-bundle-identity-and-onboarding.md",
+      "sha256": "a62975da30bc36bb18762c822f015b9f4c0fd3649eb3aae2ec47bcfca147d8cf"
+    },
+    {
+      "path": "docs/histories/2026-04/20260418-0035-bump-open-computer-use-to-0.1.10.md",
+      "sha256": "481f4d3b8f3d8ba4fb88ca0ad6f8c0e91511aa0c4b958ec6ebd4659ab98be4d6"
+    },
+    {
+      "path": "docs/histories/2026-04/20260418-0100-bump-open-computer-use-to-0.1.11.md",
+      "sha256": "94ce4f44c03965e50579680341b4981b61a0f736c736eac4d5cbcc6252ea5463"
+    },
+    {
+      "path": "docs/histories/2026-04/20260418-1430-standalone-cursor-lab.md",
+      "sha256": "b8319f9bc10afb0ac2ea1ce969d34b0889da637e322d227007e3cb1f73b235af"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-1320-deepen-official-cursor-motion-analysis.md",
+      "sha256": "09e0b62f3af668e3eb9a0f702ace770d37b9c19688b9a5714d0a65cb46954713"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-1333-add-binary-guided-cursor-motion-re-demo.md",
+      "sha256": "9bcbc85ddfa6d25cf2cdb3f21ccca5b79f36ed56988cce1a039d2546ced26483"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2010-align-overlay-motion-with-official-model.md",
+      "sha256": "4370cb7defe044732308ddec82f1667e12fd8815fcf0553a7125dde0655ece07"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2135-refine-permission-panel-transition-and-back-button.md",
+      "sha256": "f6fc18c4a88bdc3609f4a4dfd4dfa5bd7be43e65d8f3c50a7747a975b55f07df"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2203-document-release-guide.md",
+      "sha256": "3e9abf33b960e3d0f2c7360300a3d6d4169aed773882dfbb29ef00751f3520eb"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2205-bump-open-computer-use-to-0.1.12.md",
+      "sha256": "2455eff9640fb3197b9b6f8ba7f80ad5068ee59616b513b1c6ba219b11becc89"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2219-refresh-official-overlay-arrow-findings.md",
+      "sha256": "c3328c18d4df12ba3142bff2b5f07376c12cb88c4ec5b847bc88bedf7bd73e6f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260419-2300-add-standalone-cursor-from-python-reconstruction.md",
+      "sha256": "7a10265f663384a1491fbd9d6f5bf82ba1a29a0a7a977020bd451be59fe4822c"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1151-investigate-cursor-slider-binary-mapping.md",
+      "sha256": "6737f29bdbf68551f19c78d6d2f59ab2d04f2088de87a94a6720e68e8dde5faf"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1238-confirm-official-overlay-trigger-matrix.md",
+      "sha256": "643e2faeb400c63c6a899996f8e8c578b53516f4534c0fc9b8584c5626504244"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1416-add-computer-use-cli-call-seq.md",
+      "sha256": "0453fb9fd381bfe10c7be68a756a2a446bd25ac8378fc847c38c3c0f1916a5af"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1558-fix-permission-relaunch-misdetection.md",
+      "sha256": "a8ae39884dbec85e40497c48f9caf1e9e2c1ff7d922aa2971a9ffade0ee77b78"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1608-unify-open-computer-use-app-identity.md",
+      "sha256": "7c047c6297deefeb39a9e4e449176210270c5e9d9d2dba89649aca06c19fc157"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1620-bump-open-computer-use-to-0.1.14.md",
+      "sha256": "ef158234703ffd99a6b5ffdecf653e529b2c32f7a6ddd8ed59d38a4a4fffd419"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1740-prepare-developer-id-signing-assets.md",
+      "sha256": "c4613902a6f19259a69acabad1f40abded3470db033ef51d0034324390b63132"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1745-bump-open-computer-use-to-0.1.13.md",
+      "sha256": "4c2bdc3e08fb116b3659f403bf00577be17f9e6698223be0af52b755480f4d70"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1758-enable-cursor-motion-notarization.md",
+      "sha256": "136e4b8b238924b9ed80ce6de93a070b8bc4c97b6fa2135b1dd113ae7859c0ed"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1806-remove-python-from-installers.md",
+      "sha256": "799add2486140f4613eda874953a604366ac521456146fb77adabbbf47ff62f7"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1808-bump-open-computer-use-to-0.1.17.md",
+      "sha256": "cf33c3d98c882b94105a90fb8442f799682ba38089f8da4595fe1ba3654535c1"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1810-bump-open-computer-use-to-0.1.19.md",
+      "sha256": "b4def2081f2872d20df24a1baa72a31223f2e2a0f0ee35ce2edefd945f2a8bb4"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1815-bump-open-computer-use-to-0.1.15.md",
+      "sha256": "d32b77005c366dedd43a5209ae234677d0797c6613eec72c682687bff12901ff"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1818-fix-ci-signing-identity-fallback.md",
+      "sha256": "d3d0da1df51259cc5b377f505362e82d4a8da95377c1f7e89ef92109cb26e68f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1825-clarify-youtube-demo-links-in-readme.md",
+      "sha256": "cec6d94423247ee680e05f595429cc953ff1fe2c0cd1065408338ba08172ba70"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1828-fix-hardened-runtime-for-notarization.md",
+      "sha256": "887648549cb4deaa83f270b3c533b8a010a1d6266340457af51cc0bb0de48bf8"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1828-fix-release-codesign-identity-resolution.md",
+      "sha256": "5acac49d05228af39844d159d77d21005c0aa60c898ef159c10690ffe34316f1"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1834-remove-rsync-from-plugin-installer.md",
+      "sha256": "7608f05450c015e4e1f192e3e47c8d6f632aaa6f8fd33746e4ddfa5e8a7ab6ac"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1836-bump-open-computer-use-to-0.1.18.md",
+      "sha256": "b72f6ea43a9bf52024a8e1106dc8f554d9616508252ae101b366dcfdff49f9f3"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1842-bump-open-computer-use-to-0.1.16.md",
+      "sha256": "02ad99f69efe29dd98357eca5ef8c63fc908b35ea33c50d19dedd9a32a2c09f5"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1845-bump-open-computer-use-to-0.1.20.md",
+      "sha256": "00bd8f28b24381fde953646052703c1c4e49183acbab0cfa78dc114a7c0701d8"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-1908-refresh-node24-compatible-actions.md",
+      "sha256": "75a2044dbacc15a4e1558ec82d97be1a50c302eaa524ad54f821a7c33dadf134"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-2028-shrink-app-icon-safe-area.md",
+      "sha256": "c64801af27483acef9cd0ff28f59ccb2aba71cfe6b09323a8bb729f8a0de37ad"
+    },
+    {
+      "path": "docs/histories/2026-04/20260420-2033-integrate-set-value-visual-cursor.md",
+      "sha256": "e8a61457e42bb6743402da7dc5501257215e964d298ea9dae638d5846527172f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1113-fix-initial-visual-cursor-approach.md",
+      "sha256": "ab2b46a913d8d24531dcacc58be7c3daa971f29c804f24ae6b90226baa957e55"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1210-bump-open-computer-use-to-0.1.21.md",
+      "sha256": "fff4228b7d4cd9d96e85d2ee9d9d02c45b93f2fc0bc39a1d720946581c2ee7fa"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1211-align-cursor-initial-origin.md",
+      "sha256": "d57b0b75d035222795ce292a99e2dbc7cbe82e29bc26b728a5d43a434f0b1551"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1611-bump-open-computer-use-to-0.1.22.md",
+      "sha256": "672ace58ca805d7f61f7c0837052ba47c7f3ad25bca9a009f8242983957f2ea3"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1624-document-official-computer-use-sender-auth.md",
+      "sha256": "9b2842fee0b31511dc407ea66a249407c584f08219c3b58d75fb84f74698da39"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-1659-archive-official-computer-use-bundles.md",
+      "sha256": "70a07ee9edf8a4f97fb37d03edc8a2a7c4f7cb144f0e4dd3ec04391a0a8e956f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-2058-add-native-call-command.md",
+      "sha256": "a855a141149f2b9a89ff9e677f508f0c5b3254644ffafb96f23581489701d11a"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-2103-bump-open-computer-use-to-0.1.23.md",
+      "sha256": "87b8af288055b23d90e775b7bc30940c5f2cc5e86b768e3ce85ae2eca7f1154a"
+    },
+    {
+      "path": "docs/histories/2026-04/20260421-2120-disable-click-global-pointer-default.md",
+      "sha256": "e5416333c818ff5c12613cb1dd51e9bf3666325728106c3068016a0fc05238bc"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1015-bump-open-computer-use-to-0.1.24.md",
+      "sha256": "8932f67ec2ac16a50fbe3e0e677fa12462cef627e014ee111100a40aec8b2964"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1050-align-set-value-settable-boundary.md",
+      "sha256": "4a0bb8b8e0e25f146bbb8b4c2d1a343a0157dcc2847d6631ad450df64c3f7db1"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1055-bump-open-computer-use-to-0.1.25.md",
+      "sha256": "02c953496f4f831620662056117c8f440e66be6704e2756b62389ca9c87b2830"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1057-preserve-visual-cursor-idle-state.md",
+      "sha256": "0a5ecb514387fcb4b44c8c3c10b3f0143451c0f43a39218830131a8e112a2276"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1113-align-remaining-tool-defaults.md",
+      "sha256": "174c5861d60fe699d10d5ff050c3f3193a6d6844239d02a81234cd01eee3b2c9"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1115-bump-open-computer-use-to-0.1.26.md",
+      "sha256": "e96a1cac534b5db5cf23123b33a050bc73379b799161c8c1bea6b0775528f6d0"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1124-add-textedit-overlay-sequence.md",
+      "sha256": "ece25e244de2878be38f68535e705a37dcec7e86388b476ccd966e02a791a422"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1150-bump-open-computer-use-to-0.1.27.md",
+      "sha256": "72ced42bdc176dfa7be32e1133875878dbd473097d326c468757533d6befde65"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1156-align-runtime-cursor-speed.md",
+      "sha256": "226b8c39ab9dfa19544eec9f543c066ce7d9a7e589c9b5bf355836aed4f2d058"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1205-harden-npm-release-retry.md",
+      "sha256": "cea09d3b40c9c6c10b2cfc2866cf1ec180b362fbdef2e19a6ba7742f237ad888"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1234-bump-open-computer-use-to-0.1.28.md",
+      "sha256": "353adebf667bc27a8c90b5cb2a3d68aea6962e609374ec7b434112d7252c1a53"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1246-add-windows-computer-use-runtime.md",
+      "sha256": "3cf34824bf488f0450939ec0c5f172cb75b368df51b519a47651912196918331"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1338-fix-visual-cursor-coordinate-space.md",
+      "sha256": "d43ae76141b05c0ac42a9f8239b81982934a553aab0bf5b3fb35ba8803e68dc7"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1403-sequence-call-inter-operation-sleep.md",
+      "sha256": "753c007a5ace02a76a64c3c2e8ed68d31438d6490afa0b236cf59f3ef11cbbc8"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1447-add-language-mirroring-rule-to-agents.md",
+      "sha256": "6f9a8032151e1620f04c326f39303d32c57d411096fdbc8d521b279e6bb716c4"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1452-sanitize-example-paths-and-sample-app-names.md",
+      "sha256": "47e18618de1a110afb123a6691c18bc757ae08d8382e7702412384e2604ef195"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1459-clarify-english-reply-rule.md",
+      "sha256": "2006354d89088b5be379cfbec0e8c83917390e32e0bb715b2f5658c97bb67e0f"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1507-add-targeted-click-fallback.md",
+      "sha256": "66f5a0a95710cf84767d173d5af74c020b14b1744c537eb5663227dd821a9bad"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1551-bump-open-computer-use-to-0.1.29.md",
+      "sha256": "e38b0eba44632ced67d5e19862fad95788b05b190d323884da6b7a9d2a4f29ca"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1601-require-pull-latest-before-push.md",
+      "sha256": "a9983e7774011b3da392e91330f7af8fbd91506e81372506724ad32caa5c98a9"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1638-shorten-visual-cursor-idle-timeout.md",
+      "sha256": "daa06937e9fe9fb9449156ccfe2f93c30eb043a166e9d14f57e8434a0c240e5b"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1649-fix-visual-cursor-target-z-order.md",
+      "sha256": "5eecc9ce8eca0e6cad55d2db3b9b4ec430b2a2719336148739fe6078cb69142b"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1658-bump-v0-1-30-and-release-notes-rule.md",
+      "sha256": "673e4574c29cc9ca5a985a8b74f4374bafeb4df85c587a12623c1d7a2ef2516e"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1705-build-warning-cleanup.md",
+      "sha256": "d218f476a4e58b45af72293f3af8a9bbd6cc10bd4fff9c2e9887c9eaf29b84b4"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1705-fix-targeted-mouse-coordinate-space.md",
+      "sha256": "6ed7b0cc7f38f4e7534fbc99b208138d2ab5f753ba45fc7ca1eb6031fa044d4c"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1720-switch-visual-cursor-idle-to-rotate-shake.md",
+      "sha256": "bff11b31d2e5fc2ff641bc223501862d2f2c277f56ee05b1cd72d6a19e714a26"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1737-add-bgclick-free-research.md",
+      "sha256": "c1bf69722c4b1fc6872fe35a7bac177f70dda95f74dd984eb6d0c03ba75c69ad"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1759-bump-open-computer-use-to-0.1.32.md",
+      "sha256": "c43983f3a28a469ff59a3e98237af89d4b5baa143a34ced10f5a225aadb33b9a"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1816-add-gemini-opencode-mcp-installers.md",
+      "sha256": "340fcf08f092c03e63104194272cfd1a9f26edc94298800965f5dac12604c9f0"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1828-bump-open-computer-use-to-0.1.33.md",
+      "sha256": "c2ee29312d2b22d0e4f5734d84a7dd882201bb5a6cdd211e321b476615862a60"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1830-add-star-history-readme-chart.md",
+      "sha256": "bc5f03457560ebd113c2ff14964347c875c64f74902d1e7a2292067d7c7e44b2"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-1952-add-gemini-cli-demo-video.md",
+      "sha256": "7b23a274b9711050f581ee011aa76783c3a3468318666e7839caa46c2e671783"
+    },
+    {
+      "path": "docs/histories/2026-04/20260422-2036-add-linux-computer-use-runtime.md",
+      "sha256": "e7d37c2c9b9ec99e006d4e7c0cf909341a128e215244d31b6b79e131fc3294df"
+    },
+    {
+      "path": "docs/histories/2026-04/20260423-1151-add-cross-platform-npm-packages.md",
+      "sha256": "5de7f1340cc72f909c5909d6430421fc3ba2521994ca174cd7efd9dd5b74765d"
+    },
+    {
+      "path": "docs/histories/2026-04/20260423-1236-auto-linux-codex-mcp-session-env.md",
+      "sha256": "359e7ba2a1fe80b6260d08b1e25274667cc3a5b5973ea5998555aa42f7657a0c"
+    },
+    {
+      "path": "docs/histories/2026-04/20260423-1417-organize-readme-demo-videos.md",
+      "sha256": "ed767c8c00239da948cc70b1765e3a8647908d2b6452fab4804cbbdb4fc83efe"
+    },
+    {
+      "path": "docs/histories/2026-05/20260503-1731-app-scoped-permission-agent.md",
+      "sha256": "9c105b33f6e9f23f69767260fbf3bde806ee981891b6d2c3c331bc70b088c8e1"
+    },
+    {
+      "path": "docs/histories/2026-05/20260506-1045-release-0.1.37.md",
+      "sha256": "23823425e5a2e22482b57e900cde2af61d85759cded8769566b92f87197cef5f"
+    },
+    {
+      "path": "docs/histories/2026-05/20260506-1058-release-0.1.38.md",
+      "sha256": "d4e45f565ea105ff86b87998a524ed6dfd4e6265bfd5426576dfcf2e1fca0c75"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1534-shrink-denylist-to-password-managers.md",
+      "sha256": "14df7f7a437f6caba119c76fae74e84abdda0ec3328c529d8de169e8db0ae4b3"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1553-bump-open-computer-use-to-0.1.39.md",
+      "sha256": "77efdd9adfc20742135ee23fa44477d156fa26eb01acef6d9935827184f00f48"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1638-feishu-electron-snapshot-stability.md",
+      "sha256": "86f23bdd1d668c2a09f04bd6e787c480dca1c48e1fcea9e5021b1751a2664ec2"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1646-release-0.1.40.md",
+      "sha256": "ffa914a5281f531c121fd0019f0ab7d8d6abd64d93b7e33d10be30034f4145fb"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1747-align-electron-snapshot-rendering.md",
+      "sha256": "58a6efc2feb1e3241682036e58d071a63c36f7bc565346cfc69f69b78d3895ef"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1825-polish-accessibility-formatting.md",
+      "sha256": "cda5156822b49509e3cd2d3130819b943f1449bd8a05815425dbe443697524ea"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1835-release-0.1.42.md",
+      "sha256": "0914660c7e3a978c32ce7e1efd0435d089e6b1ba2cd097096de736f9b362bcc6"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1846-webarea-container-rendering.md",
+      "sha256": "1963d86defd2473b1473ccdaa8f4ce7104fc3f589a3b25934c62ef98bd343824"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1849-release-0.1.43.md",
+      "sha256": "7b26cd5956fa021bd45ee65b98848dfe511c883c1af6ed695ee0f427c1d71ee9"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1905-require-ax-window-for-snapshot.md",
+      "sha256": "959102a9476f48c046a1c2a4b162943ad860593be58db34ae1554d663af6e0ba"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1910-release-0.1.44.md",
+      "sha256": "668d938523a136a6fecd9bde3401a77f5c0670aee27c4f5b72164f52911053dc"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1926-release-0.1.45.md",
+      "sha256": "63495c512dfd58cdb69a8b7723794b7f19444cd91a04e48d08452ef5de7c3296"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1935-release-0.1.46.md",
+      "sha256": "a56f387eced413d2d06c37f9fe266e626d9ff1896a327a5445703413eded1bf5"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1945-local-validation-before-release.md",
+      "sha256": "279e9519058cc5dfe369b93105c4df8686b404a130e3230d5edb357d5963521a"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-1958-recover-hidden-electron-window.md",
+      "sha256": "c05f67d9122114d897c6b5a2228ee001bdea853a11be7f9a32732dea7516b2ff"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2004-align-tree-root-indentation.md",
+      "sha256": "b6b60b3cb5c8393db48ddbc28bf647af22e12dc69474454a28d89af0b8a60a2e"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2010-render-ax-placeholder.md",
+      "sha256": "40797628eb596933a12d9dd4a95d257ab713fabb49b888f645010759ce23d216"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2015-document-official-state-rendering.md",
+      "sha256": "3d541fb42b50b62a7827925f0269af113a9f8cfceb1a83f574f7556d5a9db781"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2017-avoid-counter-text-merge.md",
+      "sha256": "045f7affb4d62497bab57601405f695faeae517ae4c82dd13d2dca200d9e515d"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2023-render-links-as-markdown.md",
+      "sha256": "89878e082ebe431120b45325f5616a16b3298c338865485ca3a15f6f8026f859"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2026-preserve-link-role-for-markdown.md",
+      "sha256": "afc9a151677cb5032688028249a5037202128ae9700df387b3930541ac1d9e52"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2040-refresh-permission-onboarding.md",
+      "sha256": "56ef6d236d7a95dffa1af4376801c2efe743008d7d2389ac7b91ffefc036826d"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2047-list-apps-frontmost.md",
+      "sha256": "09f93d33252454219f91d010cfd104d802b4e54de68b0e1a663d7efaddd9cab8"
+    },
+    {
+      "path": "docs/histories/2026-05/20260507-2115-restart-stale-app-agent.md",
+      "sha256": "c22023e0e73d1e162201bd8a415ef9ff0b20269be6fc06748a4deaea2e3067c5"
+    },
+    {
+      "path": "docs/histories/2026-05/20260508-1022-align-feishu-state-wrappers.md",
+      "sha256": "aaf033971ac2e96a765ed69a07f8d0393f1373ba680440c5a941bf40b75ba555"
+    },
+    {
+      "path": "docs/histories/2026-05/20260508-1045-headless-smoke-fixture.md",
+      "sha256": "029c1271dd6585b39c1581adc4169b0cebb615f667ac3c653c134b7f825bf5eb"
+    },
+    {
+      "path": "docs/histories/2026-05/20260508-1203-release-0.1.47.md",
+      "sha256": "0c4370c0691b893e5ec073e28c4e96fc18f4365a4b4838e7d0d106ee02aac0c5"
+    },
+    {
+      "path": "docs/histories/2026-05/20260508-1508-bound-screenshot-result-size.md",
+      "sha256": "002a3342cdbb451e7f8c5152906cbbe6ff8de270e28636b56312af33ea0b2d0a"
+    },
+    {
+      "path": "docs/histories/2026-05/20260508-1518-release-0.1.48.md",
+      "sha256": "3789354c5fd13474031d91df1d46a24228d84483fbe70a4d55ddd316a623e41e"
+    },
+    {
+      "path": "docs/histories/2026-05/20260510-1129-readme-browser-use-tip.md",
+      "sha256": "6269afe438348285e35b422719b94f99c6173ad4546734cd3630280acd77e483"
+    },
+    {
+      "path": "docs/histories/2026-05/20260511-1029-fix-open-panel-file-click.md",
+      "sha256": "205812e34df8dd1c748edc8d6ca4477ece290251959b2bcc00ecc2f072402098"
+    },
+    {
+      "path": "docs/histories/2026-05/20260511-1034-release-0.1.49.md",
+      "sha256": "d962d0db639a5a7e7c81f50708cad89361022b686f9a69e3dd2c6a442d32db03"
+    },
+    {
+      "path": "docs/histories/2026-05/20260512-1817-fix-macos-unicode-type-text.md",
+      "sha256": "0e4c930c597020247eec27dc1d8f64ac47eb737f61ce3f5a7242f15147d8d61a"
+    },
+    {
+      "path": "docs/histories/2026-05/20260512-1852-avoid-synthetic-row-side-action-clicks.md",
+      "sha256": "877f043187af758757d7cb00bf658c86b2c4653b1f0cdcbeef95f993e8248d70"
+    },
+    {
+      "path": "docs/histories/2026-05/20260513-1413-release-0.1.50.md",
+      "sha256": "f791dd51329bc1cda60ed5bd9d448d98a586093ca40617e33fa7229c87e6bf81"
+    },
+    {
+      "path": "docs/histories/2026-05/20260516-1117-open-computer-use-skill.md",
+      "sha256": "bf52bfcff5496d68a5b584a9226ac90278901de0a246d99292aea4862d57ec2d"
+    },
+    {
+      "path": "docs/histories/2026-05/20260520-1641-fix-permission-onboarding-stale-panel.md",
+      "sha256": "5c9b77539d109683baf7e64689f591eb74a88c86a9ed52a5aac9669d332af368"
+    },
+    {
+      "path": "docs/histories/2026-05/20260520-1720-release-0.1.51.md",
+      "sha256": "322b3761d83b5472aa7f367e3f2b46cd3df526fc10450c6e555df7601229753e"
+    },
+    {
+      "path": "docs/histories/2026-05/20260526-1126-fix-cli-element-index.md",
+      "sha256": "28b82295e03d9d3c27c544094b368faa35ccf932f5e9ceb202e94cdc8bb1889a"
+    },
+    {
+      "path": "docs/histories/2026-06/20260601-2002-agent-stress-validation.md",
+      "sha256": "dcc0cd4d9335be8fa9938ad91795a70ef6e9d975aab6e504790950b7ace192c1"
+    },
+    {
+      "path": "docs/histories/2026-06/20260603-2201-release-0.1.52.md",
+      "sha256": "3eddcebcb0c891359b76c7423bfaf38604d8701e98a287155d21d1a67ba9be2e"
+    },
+    {
+      "path": "docs/histories/2026-06/20260605-1640-unify-snapshot-text-limit.md",
+      "sha256": "40294d74a9b2d6665aafb8b18d2c5698697d3e23bf54bf3d4e39827fd22c9ae5"
+    },
+    {
+      "path": "docs/histories/2026-06/20260611-1608-release-0.1.53.md",
+      "sha256": "556b77759b85253e2927b4e59622177046d9937f3a0b89cd5878e97443e1f921"
+    },
+    {
+      "path": "docs/histories/2026-06/20260626-2206-add-ocu-cli-alias.md",
+      "sha256": "1a002f501ae99f538e77a54e5c646255b33b5505b4ef9da890bdaeb2749c416c"
+    },
+    {
+      "path": "docs/histories/2026-06/20260626-2216-release-0.1.54.md",
+      "sha256": "d9ae487f72749ea876b84ac6515e8ba2b8f73e701f046a4c5bd6049bdc419eb6"
+    },
+    {
+      "path": "docs/histories/2026-06/20260630-1635-unify-snapshot-tree-budget-defaults.md",
+      "sha256": "a0a55393c43d976dbcfbb9cdabfbc4e80394914605251bbc3317013885038a40"
+    },
+    {
+      "path": "docs/histories/2026-07/20260708-1044-bump-v0.2.0.md",
+      "sha256": "c624b1df889260514dc31e16b871c3e97bd3d745e9c31df90dcf6a743562391f"
+    },
+    {
+      "path": "docs/histories/2026-07/20260710-1659-document-macos-14-requirement.md",
+      "sha256": "5aa7fab4558d0fd73efe051ebc9396dafd1d1837d72875ced87687c037595e83"
+    },
+    {
+      "path": "docs/histories/2026-07/20260716-1548-preserve-anonymous-web-actions.md",
+      "sha256": "c328fb048dff346850ca80305c3a0080448c120efc2565f4177f385363c14fe8"
+    },
+    {
+      "path": "docs/histories/2026-07/20260720-1736-bump-v0.2.1.md",
+      "sha256": "48956385ace8519080ade050789495b45bc4c461a1b33bb01753450e8d905270"
+    },
+    {
+      "path": "docs/histories/2026-07/20260722-1718-add-configurable-click-method.md",
+      "sha256": "0b6ce78ced23b7ef8a78e32f22ac00dab620bca9e97e3c7d0b180d251a7cd2ee"
+    },
+    {
+      "path": "docs/histories/2026-07/20260723-1655-preserve-sky-click-focus.md",
+      "sha256": "cf5c70e41367fc1854727f5f2b9a7c54e1fdf9433826e27efae8887760b1a884"
+    },
+    {
+      "path": "docs/histories/2026-07/20260727-1425-bump-v0.3.0.md",
+      "sha256": "6fdd853865b51a35abd71bdda19d2eaab77260fa5ea28300f717d042a8b7359f"
+    },
+    {
+      "path": "docs/histories/2026-07/20260730-1431-preserve-generic-action-boundaries.md",
+      "sha256": "983092b7b2cc656c2ea48fac193e68eccd9d1a4070662775637a4a482c53a44f"
+    },
+    {
+      "path": "docs/histories/2026-07/20260730-1608-bump-v0.3.1.md",
+      "sha256": "5b6849e27ee02cd7e169add1740556b9cad1dd874c78394d7bd31c512a8bcd32"
+    },
+    {
+      "path": "docs/histories/2026-07/20260730-1637-enforce-english-github-release-notes.md",
+      "sha256": "454416a804805f1943498be6c142aceac66123e69a649d9cb34388ccd460a02d"
+    },
+    {
+      "path": "docs/histories/2026-08/20260808-0409-fix-linux-atspi-interface-detection.md",
+      "sha256": "432bcd81e84d47278202bd9d6a5ca6cc4ff0d3743d9d2e988ba87dc0f763e6df"
+    },
+    {
+      "path": "docs/histories/2026-08/20260828-1725-preserve-web-link-actions.md",
+      "sha256": "47e1b26d03c49c1af10113d77cc9fbaefb5348369a7bac6ca3fcf5b971a51c91"
+    },
+    {
+      "path": "docs/histories/2026-08/20260829-1745-bump-v0.3.2.md",
+      "sha256": "95033e7557fba145e2cc773563469c18efcf1c41cdeaafc499e746ca865bbbd0"
+    },
+    {
+      "path": "docs/histories/2026-09/20260901-1020-isolate-app-agent-socket.md",
+      "sha256": "fb792bff67d8079062650998d5ea1f484c3aa6806f8f3b181b75e5c0f2e52151"
+    },
+    {
+      "path": "docs/histories/2026-09/20260901-1424-bump-v0.3.3.md",
+      "sha256": "5905ac9de25b6edc702293005c5136de5965ea7be2e578fc5d920970e28feca8"
+    },
+    {
+      "path": "docs/histories/2026-09/20260906-1200-secondary-action-correctness.md",
+      "sha256": "69be0147ddb718bef436dd028252ec67c5f8733e9aeb2ac9db7da19e18a7aa32"
+    },
+    {
+      "path": "docs/histories/2026-09/20260906-1230-app-resolution-ranking.md",
+      "sha256": "571c7ce3feeb2c852363d0b4cbef90278bbcf1e9526a5fd723def63ca1e8e3e4"
+    },
+    {
+      "path": "docs/histories/2026-09/20260908-0934-drag-delivery-path-legibility.md",
+      "sha256": "d3578819b2b94cb0dc8dcbfa23c8d4050d0be6f34c8bef8cf7c6e62e91d13f21"
+    },
+    {
+      "path": "docs/histories/2026-09/20260908-2148-release-0-3-4.md",
+      "sha256": "82df698036bf9ac417fe326ac13c22305552ee01515baf2f2613204e4a9e0947"
+    },
+    {
+      "path": "docs/histories/2026-09/20260910-1226-release-0-3-5.md",
+      "sha256": "6e2951c4fb923e5d5e06b278eb42319c78890e1dd1a32145994edf9d16653ec0"
+    },
+    {
+      "path": "docs/histories/2026-09/20260914-1850-dsh-host-integration.md",
+      "sha256": "f4fa69b59d56a0091daca610a5f4660116597d5ca1b24581d1ba9c37d96004e6"
+    },
+    {
+      "path": "docs/histories/20260722-1905-add-sky-click.md",
+      "sha256": "a1092ae8412de41e039f90cc8d660e48c20b38250de301475b24016cb7e3cc5d"
+    },
+    {
+      "path": "docs/histories/template.md",
+      "sha256": "bebd9d451154d4f238673e9128f28df59b2b7d07505289ff31e3749c76295c47"
+    },
+    {
+      "path": "docs/product-specs/index.md",
+      "sha256": "fb9063400d32d9de59d4538410ec559ff9679c3996fdcf78ac74f5932fc977bc"
+    },
+    {
+      "path": "docs/references/README.md",
+      "sha256": "766733140a30f1ecf6e1badb387e1cdd5a78bb6f19941f474655213f0b8d9188"
+    },
+    {
+      "path": "docs/references/codex-computer-use-cli.md",
+      "sha256": "9eb1a92356c975162593c5ee1ef9fbfe56007a1fbf3caa93e2d8ea2c37013ef5"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/README.md",
+      "sha256": "dad03c1361924c05bd944defe7151991b39a5e1490f6fb5b2ca3aca5c23604c8"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/assets/README.md",
+      "sha256": "daa15411ebb48c5519a7172c17319297736160f1e4edfb05abc75ea4c37be8d2"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/1.0.750.zip",
+      "sha256": "bb0a8e0db982f9d37e48f30b51bb32814470a1bcd4e40695f3eb6065a092a2f3"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/1.0.755.zip",
+      "sha256": "b1eb458fee1e000c3d1f4c323a6a81fe54f39372537eaeb91b0d9b26e5679df8"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/README.md",
+      "sha256": "b6b56fa918cc6a03059f89bafb9aedc3de50ccf2ce213b069840e428bd89b390"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/SHA256SUMS",
+      "sha256": "8c8dfb8b653107cbe5e84d2c1e80f5e0b39f2f6f6d19a9ce7e06f0596fcf1b36"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/background-click-free-tooling.md",
+      "sha256": "07b6fb2d380bcecd128ae0357adedda95c14ae1230d42d11338d1734734c1c76"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/baseline-architecture.md",
+      "sha256": "0740fd8305c0cbd6eb5e01134b500ccd5e641a50fc6cc1ba1b84bd685977caca"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/internal-ipc-surface.md",
+      "sha256": "fbf27aa4074c34035a47fbc38254f41f7dc90efb0e65567c7c513d44c98d9962"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/packaging-and-lifecycle-integration.md",
+      "sha256": "a00c43b7c77027bcfd42b6c56fbc01c46812e96a93f51b712a90c72826c6788b"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/permission-onboarding.md",
+      "sha256": "06f868df941ab491231e8fb6f071b15ed7dac93426efc380540e3c12092ecc35"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/runtime-and-host-dependencies.md",
+      "sha256": "e44e9f8aab3d3cb9403373212b24c40daa3a2489ed9073f204ae2c9143df2cea"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/software-cursor-motion-model.md",
+      "sha256": "28bfd6c8f3c9c000ec43278d4a7d08d1cfca2609a7f16d49788aa81b70a0b3e1"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/software-cursor-motion-reconstruction.md",
+      "sha256": "b21ff88750e8efd2f0783b2176fdf1115a9e59053272f5baece93a0044a167f8"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/software-cursor-overlay.md",
+      "sha256": "de7a3e8c6837f19108dfc83c5ed3f8b558a06af381b1d6c5cb12005da902bad3"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/software-cursor-slider-parameter-investigation.md",
+      "sha256": "920c292c5e05df518b08ed9e3b7d6795cb603adf32be6776752d81e46174190e"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/state-rendering-1.0.770.md",
+      "sha256": "51fb9361b3ee3467889419cdf8cc5da88579a4efdf7feb6c6f9cc1f527b9760a"
+    },
+    {
+      "path": "docs/references/codex-computer-use-reverse-engineering/tool-call-samples-2026-04-17.md",
+      "sha256": "654680a010482ec57d250a2086de90202e5adc5b2c1eff14fb20d6f5595942bb"
+    },
+    {
+      "path": "docs/references/codex-local-runtime-logs.md",
+      "sha256": "22886b85e9130d767995105b97861cf002ac36b3c2235daf65f5e389ae038de3"
+    },
+    {
+      "path": "docs/references/codex-network-capture.md",
+      "sha256": "b929695579995be8cc26ad74ddf0828aac36fc077be9348cae627e944a1d82ca"
+    },
+    {
+      "path": "docs/releases/README.md",
+      "sha256": "7821464e03fa8d40f3f6df8f60d883fda6d53e362695ce557d2014d6498377de"
+    },
+    {
+      "path": "docs/releases/RELEASE_GUIDE.md",
+      "sha256": "5c9c88414ee74f478a7a64e2079c2834fa06f9c38018512da128f7f2a46d4607"
+    },
+    {
+      "path": "docs/releases/feature-release-notes.md",
+      "sha256": "5ace6b34f35748323f32f9a121830a77b5f74a252b63481e37c194b60e8764b1"
+    },
+    {
+      "path": "docs/releases/github/TEMPLATE.md",
+      "sha256": "9e49469ad1b2bfd367d66048ba95fd607b1ed9331f343cbaf3b6ea46b092405d"
+    },
+    {
+      "path": "docs/releases/github/v0.2.0.md",
+      "sha256": "f6f7811baace7af4bcb9997283bc13dc4d2993eeca5d397bfec4e3559a181343"
+    },
+    {
+      "path": "docs/releases/github/v0.2.1.md",
+      "sha256": "c3077d5d049a2ea0c334bc575c13ecda5f30b59263b5a7b2f3d0b9dc1b10d3d4"
+    },
+    {
+      "path": "docs/releases/github/v0.3.0.md",
+      "sha256": "5215ffbcb1ddd94b04d698a581f9f5559c84d252035d5d716205eb5b8579691a"
+    },
+    {
+      "path": "docs/releases/github/v0.3.1.md",
+      "sha256": "5d08ba7ebc9d399d023e5166f7e9dca17d56a40b6336382ae7c979eb72cf88c8"
+    },
+    {
+      "path": "docs/releases/github/v0.3.2.md",
+      "sha256": "c57ed669c8b9ecc432036bd2b0afa681e3295a7470bbacc0627e03db4fadfa16"
+    },
+    {
+      "path": "docs/releases/github/v0.3.3.md",
+      "sha256": "ab86122e1f988c269946ea6f609744e0f9ca5dd638bae4430a1bdb8d9c22e839"
+    },
+    {
+      "path": "docs/releases/github/v0.3.4.md",
+      "sha256": "1eb10b85fc402f1ece8a9baa3d012707fbf6bd924ed9936e15a5008e153b0bd1"
+    },
+    {
+      "path": "docs/releases/github/v0.3.5.md",
+      "sha256": "8906688686b4be61ff8530b01b9b3ccc9f2babda573198036e8c573219e701cb"
+    },
+    {
+      "path": "examples/textedit-overlay-seq.json",
+      "sha256": "537671bcfe928353f8f41650484cceae0a3f8a484155941a9c65443606f9ed08"
+    },
+    {
+      "path": "experiments/CursorMotion/README.md",
+      "sha256": "448be1ceb853ac9d6bd4417d06b23c9188c89a4afd433ac580482b588cef92ee"
+    },
+    {
+      "path": "experiments/CursorMotion/Sources/CursorMotion/CursorGlyphCalibration.swift",
+      "sha256": "aba088bcb6363e471ff949a93ed67ab688be8cd4bd92ff762375f691d0a0a78a"
+    },
+    {
+      "path": "experiments/CursorMotion/Sources/CursorMotion/CursorLabRootView.swift",
+      "sha256": "16b1472f81bce74b2ce8a6b146dcbd4cc99d1520196f3c019efcc88df25bbae6"
+    },
+    {
+      "path": "experiments/CursorMotion/Sources/CursorMotion/CursorMotionApp.swift",
+      "sha256": "0dbd86f3996dcda0c3597c2235a0b482545d8224ca1778a790d025a1c24ea8af"
+    },
+    {
+      "path": "experiments/CursorMotion/Sources/CursorMotion/CursorMotionModel.swift",
+      "sha256": "c96d4fbcbe9cce672597b450e1efee1a5759cfe4f774356695ab635577e9fca9"
+    },
+    {
+      "path": "experiments/CursorMotion/Sources/CursorMotion/SynthesizedCursorGlyphView.swift",
+      "sha256": "635d311b26f0ee5587e6e7dff77a9d6b608f5d5a11c32d2f92b11b746d75c909"
+    },
+    {
+      "path": "experiments/StandaloneCursor/README.md",
+      "sha256": "ceaf8259b08388975277c36a54ab7f4252c4372016add1309c87da7ed7c1894d"
+    },
+    {
+      "path": "experiments/StandaloneCursor/Sources/StandaloneCursor/StandaloneCursorApp.swift",
+      "sha256": "24cdbdf6d22c7ce87fcd6113ad4feb4d13adce905dc8768e899f6ca40a27fc00"
+    },
+    {
+      "path": "experiments/StandaloneCursor/Sources/StandaloneCursor/StandaloneCursorRootView.swift",
+      "sha256": "dd10d6678e57998585c1dfdf257e2e01c16ac7b4660e3b9f8860ff1c5ded3a6a"
+    },
+    {
+      "path": "experiments/StandaloneCursor/Sources/StandaloneCursorSupport/StandaloneCursorModel.swift",
+      "sha256": "cc4a25fbd1bc4d4caf66ea7e6d38be5bb747f6a2481eaf505ca8a705e1eee843"
+    },
+    {
+      "path": "experiments/StandaloneCursor/Tests/StandaloneCursorSupportTests/StandaloneCursorSupportTests.swift",
+      "sha256": "fb21eb8127cd77ff961489c32ad51323164ad24d068f98f72091a23a85cae35a"
+    },
+    {
+      "path": "package.json",
+      "sha256": "a704d4a1e75b5acd3b7314e45f1103bdc06a23e5bbc721e67b78fcb5694e3bf7"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift",
+      "sha256": "6a9e6dc298912a8ced8ecb497626bfe5e2c79ef213f449c0d35522e4a75c06aa"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AppAgentSocketNamespace.swift",
+      "sha256": "c18a8e9de3ec8ab8692bc0e9400d0aee4489f8507cd807906f05e56bf90a5fab"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AppDiscovery.swift",
+      "sha256": "3e83f8745dff44ba79bf063aaba734b7bf2388c3291a4e356330a1679799299f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift",
+      "sha256": "b6d754c81299b0692f2bc8ffeff99899474b9822a16715d0667437c95fdc83e2"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift",
+      "sha256": "45e9e21375d4bbb7c7f9d85cdc1d968328279f94a35a642d08d8410258ee2113"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/CursorMotionModel.swift",
+      "sha256": "dac9bb072f331f0e51f63846133d2dc3b0135f4fb56f001e58edd88b2bf58ad6"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Errors.swift",
+      "sha256": "1e3188f31ae9a9efd683b831fb2653ca58117649db7ff698658eb85738cf712c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/FixtureBridge.swift",
+      "sha256": "fb8e8dc32aeebc4b3a3f3c3a6f0b79d97d610dd630abc7bc78d996ca9f23fa01"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift",
+      "sha256": "5f588e9a12f5a431f5405cc18cb45c9051266f34b79ddd10fe7d14f2aee5c2bd"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/KeyMapping.swift",
+      "sha256": "e73e8680ceb066d67d8fed73ca7d0a7d2205941df7b24e8512ed150d3c666673"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift",
+      "sha256": "9b5fdfef1e3a1aeda73c619279dc7095fe11f09582d09373b9e82c82cb7d44ed"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift",
+      "sha256": "8fa54242cb25b6ec831bc7c0a3b0a20e4f707e6df6570c61f712af31a7abc73c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseVersion.swift",
+      "sha256": "61952c4514df036f1c46b82c314af5942b3e581ef57e24ace4fa14eb7e49b2f9"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift",
+      "sha256": "b068eee3a2f46cd89c4c9524ad1e422066021dfa92688e2ce0c6a8d68576c51a"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SkyClickSimulation.swift",
+      "sha256": "fcae810b7c136b960d09fee336d4d7c2a2697d4825e0f5699a14cb93d9539339"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SkyLightSPI.swift",
+      "sha256": "00585c598133dc32d288cde8b49ecdb17584f2b4d80c1563c2f29999c0402ea3"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift",
+      "sha256": "4718741802facf354e556c5bbe29c0f5d4b2f6040a8c2cda40890862d7ea5d86"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorOverlay.swift",
+      "sha256": "07b5f32b4d808f58eb6b149dce1daf587f059bc8bf592e44468321dc1076588a"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift",
+      "sha256": "f4c15a6425d633148614cce315727b328ab727abe29139e03f49332118e39d0c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolResult.swift",
+      "sha256": "cba476399f7f6516f30c507b99c258df10a01b16e342f941e42a967b5c43d5c6"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift",
+      "sha256": "79c6874dc16dedf1309b664cfb8cea0af8e89591ace27490d51e2f19094f4fa1"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/SkyClickLiveTests.swift",
+      "sha256": "19ff6d80e9c545d94d3614ed99802291b5684cb1069265fdc4012dd44bb7aab7"
+    },
+    {
+      "path": "plugins/open-computer-use/.codex-plugin/plugin.json",
+      "sha256": "ab6dcdb24ebce735422c653f6d3099f8cd20279ffde36087bee5f894dd7fac60"
+    },
+    {
+      "path": "plugins/open-computer-use/.mcp.json",
+      "sha256": "c0d635efb73095384a42fd2eb382350f1b1046bf493a37f5ab28999f2db37dfb"
+    },
+    {
+      "path": "plugins/open-computer-use/assets/open-computer-use-small.svg",
+      "sha256": "dd0192e154cf9fca4388507635f78898edb832468fefdba62aff7e39ce9d7736"
+    },
+    {
+      "path": "plugins/open-computer-use/assets/open-computer-use.svg",
+      "sha256": "21edc93c544bcac5c4133e39c64f46a998a02074b1dc2acefdea278a7f7dac83"
+    },
+    {
+      "path": "plugins/open-computer-use/scripts/launch-open-computer-use.sh",
+      "sha256": "8727828c018371a7d9c44450c784c54b2ef16db79c14ec5d7efffee100994cfb"
+    },
+    {
+      "path": "scripts/build-apple-iconset.sh",
+      "sha256": "6e0d41d1078429601d0a5ca9182508001c06f716c4c303305395bdbc8814542f"
+    },
+    {
+      "path": "scripts/build-cursor-motion-dmg.sh",
+      "sha256": "0ce2fb235a42c69efda492b35802326765aea8b21df8bc3c266418c1bb223785"
+    },
+    {
+      "path": "scripts/build-open-computer-use-app.sh",
+      "sha256": "f69093d7f0fbf7e4c5533a6f70ee5add307a5fbf4e922747d942f0a25893ef2f"
+    },
+    {
+      "path": "scripts/build-open-computer-use-linux.sh",
+      "sha256": "c7ec4e71fb6eb1454c934193e26015756947d71c74d80df4d8b2101e9103ab1a"
+    },
+    {
+      "path": "scripts/build-open-computer-use-windows.sh",
+      "sha256": "52f5a874738a9b20281294e4b1031ff9bea2db6b85dc232a99e2c1387d62f723"
+    },
+    {
+      "path": "scripts/check-action-pinning.sh",
+      "sha256": "bc02a31c79789a4e9cf6ee3674c629924770a158b8ab13ec33489eafcedbd23f"
+    },
+    {
+      "path": "scripts/check-docs.sh",
+      "sha256": "1bc62e9de7d67696c0c6a4e35219f520190f5224f3340fc0201ad8d6c22d9c45"
+    },
+    {
+      "path": "scripts/check-repo-hygiene.sh",
+      "sha256": "615abfb6e2efb1e25074550b81ee1d5a6db0e8f4fa2d1ec7cdb002aa024748fe"
+    },
+    {
+      "path": "scripts/ci.sh",
+      "sha256": "46726f61f9329f746e209d9a2a6e2aa59d86c984ea1d8afa63ef14ce81bf7fe5"
+    },
+    {
+      "path": "scripts/codex_dump.py",
+      "sha256": "291b37ca71896222a9b1cd980d0b80d891ee7f0a42d5b0246aa01ff1b8766645"
+    },
+    {
+      "path": "scripts/computer-use-cli/README.md",
+      "sha256": "29fb8ed1793550bc33652dea7ffbb1adc699a61882d4c9cd7e484a654d19ec9d"
+    },
+    {
+      "path": "scripts/computer-use-cli/app_server.go",
+      "sha256": "54040ff2305ead2b5138cb9ee7bf986a610e182a333c7b9bd8e3169602e01bee"
+    },
+    {
+      "path": "scripts/computer-use-cli/go.mod",
+      "sha256": "f0e1d24800a8dc8d267d252becc226351882996b51765aebd1bb9cd179e6edaf"
+    },
+    {
+      "path": "scripts/computer-use-cli/go.sum",
+      "sha256": "0a533b3993cec5c37a75d9862629450ee0dc5e8d5244b78442e6f3d83dd92e7a"
+    },
+    {
+      "path": "scripts/computer-use-cli/main.go",
+      "sha256": "b1f9cf9772f864ab9cfa7f07fa842541d0fe6ca4fd036f00fa1279e800681f57"
+    },
+    {
+      "path": "scripts/computer-use-cli/main_test.go",
+      "sha256": "3b415324b4ff2e9541dfa9cd6838cfd25d958bfa19be25d0af5758c6ea23467b"
+    },
+    {
+      "path": "scripts/cursor-motion-re/README.md",
+      "sha256": "b405443239fc80862996d47e2b9f04b69c5a1aeb9af0c64fa6ea3fb7179d7067"
+    },
+    {
+      "path": "scripts/cursor-motion-re/official_cursor_motion.py",
+      "sha256": "8dc386bc75d3e434ceddea556c56663db1801c1f32e32bece5204d78e6088551"
+    },
+    {
+      "path": "scripts/cursor-motion-re/reconstruct_cursor_motion.py",
+      "sha256": "b25aa02eecfd53acaa1e21eee1ad726d9544e82e83905b8dd220b40cc8e57871"
+    },
+    {
+      "path": "scripts/init-project.sh",
+      "sha256": "a441d485ca67444b595ed31cd771e0d843a09a6f4b6721388deff3b21eb6b9cd"
+    },
+    {
+      "path": "scripts/install-claude-mcp.sh",
+      "sha256": "a9eafb206480a6d7a5d97d34106d45d22e91a4d14fd251a0800adae08c57c6e9"
+    },
+    {
+      "path": "scripts/install-codex-mcp.sh",
+      "sha256": "b37cdef51e1c1a8a48ec24765d3a355a017d23e6beecf476461aba800dc0ce9e"
+    },
+    {
+      "path": "scripts/install-codex-plugin.sh",
+      "sha256": "375225eaf6dcd97062a61a30cf1c2b3f52cca63eee149fe744867169f56d2896"
+    },
+    {
+      "path": "scripts/install-config-helper.mjs",
+      "sha256": "eb48a6cad180edb3d23171a9b95c4931c2bd11bb66abf9510085fbc0dde44848"
+    },
+    {
+      "path": "scripts/install-dsh-mcp.sh",
+      "sha256": "0da04af51f1ec4a98fb0a7254d52b1ad7be6a6ccfc32f5d07dab133aa45d5cd0"
+    },
+    {
+      "path": "scripts/install-gemini-mcp.sh",
+      "sha256": "805b83a1a69d92ed44a634c77930abbb750c61ae925822d4b6a4e8fe26bc1c1e"
+    },
+    {
+      "path": "scripts/install-opencode-mcp.sh",
+      "sha256": "82f6effa2ff9748cadd03712f7848e8dcca2ee0e9330bbcaac39bba57fd819c7"
+    },
+    {
+      "path": "scripts/new-exec-plan.sh",
+      "sha256": "6f7c24ee7dce6ede6afde56056e3564acdced2a004a78e965e4738b811fd6ca0"
+    },
+    {
+      "path": "scripts/new-history.sh",
+      "sha256": "0bfa5803496427622323aa5d2ee2963763a48f10193b1d143d29000cd1af77e3"
+    },
+    {
+      "path": "scripts/npm/build-packages.mjs",
+      "sha256": "249875763ac0f5a9363ae4a11141c6789739817b2d8396d9eb936168e18ae896"
+    },
+    {
+      "path": "scripts/npm/publish-packages.mjs",
+      "sha256": "f52545cb5e08f197e5faab091d2009896de747394b21af6f981a858f55539530"
+    },
+    {
+      "path": "scripts/package-skill.sh",
+      "sha256": "d0c1db1749066797cd4bbb496c5d7594fc3cfc81af311bde7109ec94b060eb8b"
+    },
+    {
+      "path": "scripts/release-package.sh",
+      "sha256": "55e17afd11dd2977b148934fed202fc7b2fbffcd76cfb383ffdef6e63ff7b5da"
+    },
+    {
+      "path": "scripts/render-open-computer-use-icon.swift",
+      "sha256": "8d1dd8dc43577e0eabfe632f29a5d562734989de508e48aab7634e7a5292e307"
+    },
+    {
+      "path": "scripts/render-synthesized-software-cursor.swift",
+      "sha256": "d9e69939a1028b272c8194a20723da715a615131283d9ecb4aec99de8017677e"
+    },
+    {
+      "path": "scripts/run-agent-smoke-tests.mjs",
+      "sha256": "032a02e0b02603d19b194f9e678b8b6755a7b6e0bc156f81e23830ab6d492f34"
+    },
+    {
+      "path": "scripts/run-isolated-codex-exec.sh",
+      "sha256": "6a57aa2e86bbba8c1aff7986d0634e1ae34f34ce7522af99fbc9a3dca2068f38"
+    },
+    {
+      "path": "scripts/run-permission-onboarding-e2e.sh",
+      "sha256": "d621a7078688ab6af009142b6e00229c69678b6f2f24efe4d96a59bbf1a67340"
+    },
+    {
+      "path": "scripts/run-tool-smoke-tests.sh",
+      "sha256": "266bd291db0ec90bc16db5bfeb77a16dbdc6827c80e35beefabc587da3e0e6d2"
+    },
+    {
+      "path": "scripts/run-tool-stress-tests.sh",
+      "sha256": "cab9c2396273b904bf5cc5b587bae5406c61975336f170c743fd3dc9779a7639"
+    },
+    {
+      "path": "scripts/start-codex-mitm-dump.sh",
+      "sha256": "7a41d52e35970bdb541c4c47d362001492d0b8049f29a46a7c3676dc683eec2b"
+    },
+    {
+      "path": "scripts/tests/fixtures/open-computer-use-mcp.mjs",
+      "sha256": "7b4242a2b1f6b0b2a744e6af3adbd8111043ca6e7d104aeeed029bd2c7efe096"
+    },
+    {
+      "path": "scripts/tests/install-dsh-mcp.test.sh",
+      "sha256": "f9393dfcba0aa1ba77af4004ec10437c8b2c3bcb590fd1b567903811857d4c78"
+    },
+    {
+      "path": "scripts/validate-github-release-notes.mjs",
+      "sha256": "381dd092572a72a6158287062ab285995bb26c0793878c02800dba3a5774cf93"
+    },
+    {
+      "path": "skills/open-computer-use/SKILL.md",
+      "sha256": "4d5ac06972f8928d0df6b1f2c129ffc29ccd474437fb61a313e801bd4bf475c1"
+    },
+    {
+      "path": "skills/open-computer-use/agents/openai.yaml",
+      "sha256": "efebe3eea340f5f801d058bbb90afee7ac97bbe56d41557a83ec2b787c1c5996"
+    },
+    {
+      "path": "skills/open-computer-use/references/installation.md",
+      "sha256": "a8a5477aadf09eb486f6d41120afbd67ec348f0fe626e5bb8cde3b4086d1fc34"
+    },
+    {
+      "path": "skills/open-computer-use/references/troubleshooting.md",
+      "sha256": "ff9a4006f443ef9ab32689913d28bb2b0693a1f6187226becc837ea554921785"
+    },
+    {
+      "path": "skills/open-computer-use/references/usage.md",
+      "sha256": "49fb06d5dfc6d4581994ba0fdc83413d45622e118d93b4a7b7a148ea26508388"
+    }
+  ]
+}
