@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report what has changed upstream since the vendored Computer Use commit.
+"""Report what has changed upstream since the vendored Open Computer Use commit.
 
 Read-only. It never writes to the tree, never changes the pin, and never applies
 anything — deciding to take an upstream change is a review, not a command.

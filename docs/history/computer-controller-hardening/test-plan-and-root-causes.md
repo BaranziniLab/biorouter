@@ -1,6 +1,6 @@
 # Computer Controller — test plan and root causes
 
-> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 > **What this is.** The matrixed test plan for the Computer Controller extension: the five reported user problems with the root cause found for each, and roughly 60 numbered cases across screenshots, UI control, apps, settings, files, web, multi-app workflows, permissions, multi-monitor behaviour and cross-OS invariance.

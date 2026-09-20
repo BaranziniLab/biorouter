@@ -18,7 +18,7 @@ gate that enforces it.
 
 **They get every built-in capability, on the same terms as any other provider.**
 Developer (shell, text editor, analyze, image processor),
-Computer Use (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
+Biorouter Copilot (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
 To Do, Chat Recall, Agent Drafter and Auto Visualiser all reach the child over
 the bridge. What still does *not* is a **third-party** extension's tools, which
 remain admitted case by case rather than wholesale.

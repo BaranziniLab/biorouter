@@ -86,7 +86,7 @@
 //! work — writing scratch files, editing the workspace, deleting build output —
 //! keeps running with no prompt.
 //!
-//! Desktop observation and interaction use the separate host-owned Computer Use
+//! Desktop observation and interaction use the separate host-owned Biorouter Copilot
 //! task consent gate at dispatch, including nested code execution. They do not
 //! receive a second, per-action approval from this filesystem inspector.
 //!

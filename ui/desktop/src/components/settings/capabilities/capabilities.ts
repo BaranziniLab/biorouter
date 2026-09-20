@@ -27,7 +27,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
   },
   {
     key: 'computercontroller',
-    label: 'Computer Use',
+    label: 'Biorouter Copilot',
     description: 'View and control desktop apps for an approved task.',
     defaultEnabled: true,
   },

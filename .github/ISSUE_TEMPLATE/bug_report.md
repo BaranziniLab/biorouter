@@ -41,7 +41,7 @@ If applicable, add screenshots to help explain your problem.
 - **OS & Arch:** [e.g. Ubuntu 22.04 x86]
 - **Interface:** [UI / CLI]
 - **Version:** [e.g. v1.0.2]
-- **Extensions enabled:** [e.g. Computer Use, Figma]
+- **Extensions enabled:** [e.g. Biorouter Copilot, Figma]
 - **Provider & Model:** [e.g. Google – gemini-1.5-pro]
 
 ---

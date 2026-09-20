@@ -288,7 +288,7 @@ pub struct XlsxToolParams {
     pub value: Option<String>,
 }
 
-/// ComputerController MCP Server using official RMCP SDK
+/// Web & Documents MCP Server using official RMCP SDK
 #[derive(Clone)]
 pub struct WebDocumentsServer {
     tool_router: ToolRouter<Self>,

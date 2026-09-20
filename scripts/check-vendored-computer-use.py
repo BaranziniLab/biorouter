@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the vendored Computer Use tree can actually survive a fresh checkout.
+"""Assert the vendored Open Computer Use tree can survive a fresh checkout.
 
 `vendor-computer-use-source.py --verify` proves the tree on THIS disk matches its
 manifest. That is necessary and not sufficient: a tree can verify here and still
@@ -61,12 +61,12 @@ def main():
         )
 
     if problems:
-        print(f"{len(problems)} problem(s) with the vendored Computer Use tree:\n", file=sys.stderr)
+        print(f"{len(problems)} problem(s) with the vendored Open Computer Use tree:\n", file=sys.stderr)
         for problem in problems:
             print(f"- {len(wanted)} vendored files checked; some are {problem}\n", file=sys.stderr)
         raise SystemExit(1)
 
-    print(f"Vendored Computer Use source: {len(wanted)} files, committable and EOL-pinned")
+    print(f"Vendored Open Computer Use source: {len(wanted)} files, committable and EOL-pinned")
 
 
 if __name__ == "__main__":

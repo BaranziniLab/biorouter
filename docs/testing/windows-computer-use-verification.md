@@ -1,8 +1,8 @@
-> **What this is.** The procedure for verifying Computer Use on Windows on a real machine, and the record of why continuous integration cannot do it.
+> **What this is.** The procedure for verifying Biorouter Copilot on Windows on a real machine, and the record of why continuous integration cannot do it.
 > **Status:** Current — the verification is OUTSTANDING and blocks the 1.91.0 release.
 > **Audience:** Whoever runs the Windows verification, and anyone deciding whether a red Windows acceptance job is a defect or a missing capability.
 
-# Verifying Computer Use on Windows
+# Verifying Biorouter Copilot on Windows
 
 The `Install packages (win32-x64)` job in
 [`computer-use-package-acceptance.yml`](../../.github/workflows/computer-use-package-acceptance.yml)
@@ -42,7 +42,7 @@ after per-phase stderr breadcrumbs were added to `doctor`:
 Three conclusions, each of which retires an earlier guess:
 
 1. **Not a budget-summing problem any more.** `handle_doctor` used to run the dependency
-   check and the Computer Use probe in series, so their worst cases added. They are
+   check and the Biorouter Copilot probe in series, so their worst cases added. They are
    concurrent now and cold went from *exceeding* 40 s to completing in 34.91 s.
 2. **Not first-execution antivirus scanning.** Warm is not faster than cold. The ~46 s
    figure in earlier notes invited that hypothesis; the cold/warm pair refutes it.
@@ -131,6 +131,6 @@ never run; none of them crashed anything.
 
 ## Related documentation
 
-- [Computer Use implementation status](../design/computer-use-implementation-status.md) — the acceptance ledger and every gate's evidence
-- [Computer Use integration plan](../design/computer-use-integration-plan.md) — the design this verifies
+- [Biorouter Copilot implementation status](../design/computer-use-implementation-status.md) — the acceptance ledger and every gate's evidence
+- [Biorouter Copilot integration plan](../design/computer-use-integration-plan.md) — the design this verifies
 - [Testing](README.md) — what tests in this repository may safely touch

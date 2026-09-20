@@ -10,7 +10,7 @@ UI automation of Slack is inherently brittle: Slack exposes almost no AppleScrip
 
 Two existing facts shape every option below:
 
-- Developer's `shell` can call a user-authorized HTTP API. Web & Documents' `web_scrape` is GET-only. Native Computer Use is a separate application-control capability with its own task grant.
+- Developer's `shell` can call a user-authorized HTTP API. Web & Documents' `web_scrape` is GET-only. Native Biorouter Copilot is a separate application-control capability with its own task grant.
 - External MCP servers can be added via **Settings → Extensions → Add custom extension** (type: Standard IO or Streamable HTTP), with secrets stored in the OS Keychain (`env_keys`). The repo already anticipates a `slack-mcp` stdio extension keyed on `SLACK_TOKEN` — see `crates/biorouter-cli/src/workflows/secret_discovery.rs`.
 
 ---
@@ -87,4 +87,4 @@ To make Option A first-class instead of the agent shelling out `curl`, Biorouter
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — how to actually add the custom stdio extension Option B depends on
 - [Web & Documents](built-in/web-documents.md) — its GET-only URL tool cannot post messages
 - [Secret storage](../security/secret-storage.md) — how `env_keys` secrets such as `SLACK_TOKEN` reach the OS Keychain
-- [Computer Use multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around
+- [Computer Controller multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around

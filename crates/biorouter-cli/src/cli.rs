@@ -1406,10 +1406,10 @@ struct ServeOptions {
     )]
     web_dir: Option<std::path::PathBuf>,
 
-    /// Configure a separate approval key for computer-use tasks in the browser
+    /// Configure a separate approval key for Biorouter Copilot tasks in the browser
     #[arg(
         long,
-        help = "Interactively set a computer-use approval key; requires a terminal"
+        help = "Interactively set a Biorouter Copilot approval key; requires a terminal"
     )]
     computer_use_approval: bool,
 

@@ -13,7 +13,7 @@
   {
     "id": "computercontroller",
     "name": "computercontroller",
-    "display_name": "Computer Use",
+    "display_name": "Biorouter Copilot",
     "description": "View and control desktop apps for an approved task.",
     "enabled": true,
     "type": "builtin",

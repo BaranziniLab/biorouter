@@ -575,10 +575,10 @@ async fn drive_response(
                 if let Ok(status) = session.agent.extension_manager.computer_use_status(session.session_id()).await {
                     if super::computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
                         computer_use_challenge = Some(status.challenge_id.clone());
-                        let permission = run_permission_modal(app, tui, rx, Some(format!("Computer Use task approval\n{}", status.disclosure))).await?;
+                        let permission = run_permission_modal(app, tui, rx, Some(format!("Biorouter Copilot task approval\n{}", status.disclosure))).await?;
                         if permission == Permission::AllowOnce {
                             session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id).await?;
-                            app.push_note("Computer Use allowed for this task. Press Esc or Ctrl-C to stop.");
+                            app.push_note("Biorouter Copilot allowed for this task. Press Esc or Ctrl-C to stop.");
                         } else {
                             session.agent.extension_manager.computer_use.revoke();
                             if permission == Permission::Cancel { cancel.cancel(); }
@@ -731,7 +731,7 @@ async fn run_permission_modal(
 ) -> Result<Permission> {
     let options: Vec<(&'static str, &'static str)> = if prompt
         .as_deref()
-        .is_some_and(|text| text.starts_with("Computer Use task approval\n"))
+        .is_some_and(|text| text.starts_with("Biorouter Copilot task approval\n"))
     {
         vec![
             ("Allow task", "view and control desktop for this task"),
@@ -2059,14 +2059,14 @@ mod tests {
         app.modal = Some(PermissionModal {
             prompt: Some(format!(
                 "{}End of sensitive information disclosure",
-                "Computer Use on backend host\n".repeat(24)
+                "Biorouter Copilot on backend host\n".repeat(24)
             )),
             options: vec![("Allow task", "approve task"), ("Deny", "keep control off")],
             selected: 1,
             scroll: 0,
         });
         let first = buffer_text(&mut app, 80, 24);
-        assert!(first.contains("Computer Use on backend host"));
+        assert!(first.contains("Biorouter Copilot on backend host"));
         assert!(first.contains("Allow task"));
         app.modal.as_mut().unwrap().scroll = 24;
         let last = buffer_text(&mut app, 80, 24);

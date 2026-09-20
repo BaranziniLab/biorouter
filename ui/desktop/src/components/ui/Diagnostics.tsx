@@ -141,7 +141,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
       const extensions =
         info.enabled_extensions.length > 0
           ? info.enabled_extensions.join(', ')
-          : '[e.g. Computer Use, Figma]';
+          : '[e.g. Biorouter Copilot, Figma]';
 
       // ⚠ Both links used to be dead: repo-relative documentation paths pasted
       // after a `github.com/<org>/<repo>/` prefix, which resolves to nothing.

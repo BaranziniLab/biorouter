@@ -1,6 +1,6 @@
 # Privacy tiers
 
-> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
@@ -1488,7 +1488,7 @@ are readable by any tool that can run a command or open a path, and none of the 
 that path. `developer__shell` executes an arbitrary command (`rmcp_developer.rs:1307`) and is
 explicitly *not* jailed by the file tools' containment base (`:1950`); the OS sandbox that could
 confine it defaults to **off** (`shell_sandbox/mod.rs:244`). The former controller scripting
-path is removed; native Computer Use has a separate task grant. **Removing that old path does
+path is removed; native Biorouter Copilot has a separate task grant. **Removing that old path does
 not remove the need to guard arbitrary shell/file reads of private material.**
 
 Adding `**/sessions.db*` and the data directory to `DEFAULT_SECRET_PATTERNS` was this design's first
@@ -1784,7 +1784,7 @@ Windows has no unprivileged confinement — but that no longer means *"a public 
 files on those hosts"*, it means *"a public session cannot spawn a shell on those hosts"*. The
 fail-closed refusal narrows from **every file tool** to arbitrary-code child execution:
 `developer__shell` and its background jobs, and `compute_run`/`compute_python`. The old desktop
-scripting handlers are removed. The native Computer Use helper uses its own per-request consent,
+scripting handlers are removed. The native Biorouter Copilot helper uses its own per-request consent,
 observation isolation, and environment filtering; it is not an arbitrary-script fallback.
 `text_editor`, `analyze`, `image_processor`,
 `cache`, `xlsx_tool`, `pdf_tool`, `docx_tool` and every knowledge / memory / drafter tool keep

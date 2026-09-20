@@ -1,7 +1,7 @@
 # The CLI-only Linux packages (deb + rpm) — the headless half of BioRouter.
 #
 # Ships the interactive `biorouter` CLI, the `biorouterd` REST/WebSocket daemon,
-# the browser interface they serve, and the native Computer Use helper. No
+# the browser interface they serve, and the native Biorouter Copilot helper. No
 # Electron and no desktop GUI: this is the package for a server, a container, or
 # a workstation driven over `biorouter serve`.
 #
@@ -35,10 +35,10 @@ description: |
   `biorouterd` REST/WebSocket server daemon onto PATH, so `biorouter
   setup-path` is not needed. Also ships the browser interface, which
   `biorouter serve` hands to `biorouterd` so a headless host can be driven
-  from a browser, and the native Computer Use helper, which lets an approved
+  from a browser, and the native Biorouter Copilot helper, which lets an approved
   task observe and control the desktop of a machine that has one.
   Run `biorouter doctor` after install to check optional prerequisites and to
-  see whether Computer Use can reach a desktop session on this host.
+  see whether Biorouter Copilot can reach a desktop session on this host.
 
 # Ordered as the product is layered: the two binaries that ARE BioRouter, then
 # the two payloads they serve.
@@ -52,7 +52,7 @@ contents:
     file_info:
       mode: 0755
 
-  # The native Computer Use helper. `manifest::locate` finds it by walking out
+  # The native Biorouter Copilot helper. `manifest::locate` finds it by walking out
   # from the running executable, and /usr/libexec is where the FHS puts a
   # program run by another program rather than by a user — so this is the one
   # layout where the helper is NOT beside the binary that launches it.
@@ -86,7 +86,7 @@ contents:
 #
 # ⚠ Two groups, and the second is easy to mistake for a packaging error: a
 # HEADLESS package that depends on GTK3 and AT-SPI looks wrong until you know
-# the Computer Use helper drives a desktop THROUGH the accessibility bus. It is
+# the Biorouter Copilot helper drives a desktop THROUGH the accessibility bus. It is
 # not a GUI dependency — nothing here opens a window — it is the client side of
 # the same bus a screen reader uses. The names are pinned by
 # `vendor/computer-use/pin.json` and asserted against it by
@@ -98,7 +98,7 @@ overrides:
       # Core: libxcb is linked for clipboard/terminal support, zlib through libgit2.
       - libxcb1
       - zlib1g
-      # Computer Use: the helper's Python bridge and the accessibility stack.
+      # Biorouter Copilot: the helper's Python bridge and the accessibility stack.
       - python3
       - python3-gi
       - gir1.2-atspi-2.0
@@ -113,7 +113,7 @@ overrides:
       # Core.
       - libxcb
       - zlib
-      # Computer Use.
+      # Biorouter Copilot.
       - python3
       - python3-gobject
       - at-spi2-core

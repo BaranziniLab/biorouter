@@ -19,7 +19,7 @@ check-everything:
     ./scripts/check-version-consistency.sh
     @echo "  → Checking Biorouter name and logo consistency..."
     ./scripts/check-brand-consistency.sh
-    @echo "  → Checking the capability is called Computer Use everywhere a person reads it..."
+    @echo "  → Checking the capability is called Biorouter Copilot everywhere a person reads it..."
     ./scripts/check-computer-use-naming.sh
     ./scripts/check-vendored-computer-use.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."

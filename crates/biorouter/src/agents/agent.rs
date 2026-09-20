@@ -1100,7 +1100,8 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_active",
 ];
 
-// Native computer use and web/document utilities have independent capability grants.
+// Biorouter Copilot (native desktop control) and web/document utilities have
+// independent capability grants.
 const CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS: &[&str] = &[
     "computercontroller__list_apps",
     "computercontroller__get_app_state",
@@ -1179,7 +1180,7 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS,
     },
     CodingAgentBridgePolicy {
-        capability_name: "Computer Use",
+        capability_name: "Biorouter Copilot",
         target_name: "computercontroller",
         tools: CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS,
     },
@@ -16387,8 +16388,8 @@ mod tests {
 
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
     /// still what it measures — but the set of tools that counts as *arbitrary*
-    /// shrank. Every BUILT-IN capability is now bridged, Developer, Computer
-    /// Controller and Code Execution included, so what remains blocked is a
+    /// shrank. Every BUILT-IN capability is now bridged, Developer, Biorouter
+    /// Copilot and Code Execution included, so what remains blocked is a
     /// **third-party** extension's tools (`custom_local_mcp__*`), the workspace
     /// operations withheld for supervision-scope reasons, and names that are
     /// retired rather than withheld. Moving a built-in from the second list to

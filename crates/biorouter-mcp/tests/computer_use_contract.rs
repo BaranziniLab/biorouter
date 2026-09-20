@@ -261,7 +261,7 @@ async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
             })
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("Unknown Computer Use tool"));
+        assert!(error.to_string().contains("Unknown Biorouter Copilot tool"));
     }
     let missing = client
         .call_tool(CallToolRequestParams {
@@ -451,18 +451,27 @@ fn the_probe_bound_exceeds_every_helper_bound_it_supervises() {
 
     // The helper sources are fetched at build time, so read them only when a
     // checkout is present; the rule is still pinned wherever one is.
-    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/computer-use/source.noindex/apps");
+    let checkout =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/computer-use/source.noindex/apps");
     let mut checked = 0usize;
     for app in ["OpenComputerUseWindows", "OpenComputerUseLinux"] {
         let Ok(source) = std::fs::read_to_string(checkout.join(app).join("main.go")) else {
             continue;
         };
-        for (index, _) in source.match_indices("context.WithTimeout(context.Background(), ") {
-            let tail = &source[index..];
+        // `split` rather than `match_indices` + slicing: clippy::string_slice
+        // rejects indexing a `str`, because a byte index that is not a character
+        // boundary panics. The indices here happen to be safe (they come from
+        // `match_indices`), but the lint is denied workspace-wide and the split
+        // form needs no such reasoning to read.
+        for tail in source
+            .split("context.WithTimeout(context.Background(), ")
+            .skip(1)
+        {
+            // The split pattern already consumed up to `Background(), `, so the
+            // duration is at the head of `tail`. The old `match_indices` form
+            // kept the pattern and had to skip past it with `split_once("), ")`.
             let seconds: u64 = tail
-                .split_once("), ")
-                .and_then(|(_, rest)| rest.split_once("*time.Second"))
+                .split_once("*time.Second")
                 .and_then(|(value, _)| value.trim().parse().ok())
                 .expect("a helper bound this test can read");
             checked += 1;

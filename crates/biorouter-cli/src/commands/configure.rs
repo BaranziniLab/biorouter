@@ -998,7 +998,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         ),
         (
             "computercontroller",
-            "Computer Use",
+            "Biorouter Copilot",
             "View and control the backend desktop after you approve each task.",
         ),
         (

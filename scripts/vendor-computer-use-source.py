@@ -118,12 +118,12 @@ def verify():
     changed = sorted(p for p in set(recorded) & set(present) if recorded[p] != present[p])
     if missing or extra or changed:
         raise ValueError(
-            "vendored Computer Use source does not match its manifest — "
+            "vendored Open Computer Use source does not match its manifest — "
             f"missing={missing[:5]} unrecorded={extra[:5]} changed={changed[:5]}"
         )
     entries = [{"path": p, "sha256": present[p]} for p in sorted(present)]
     if tree_digest(entries) != manifest["tree_sha256"]:
-        raise ValueError("vendored Computer Use source tree digest mismatch")
+        raise ValueError("vendored Open Computer Use source tree digest mismatch")
     return manifest
 
 

@@ -21,7 +21,7 @@ async fn computer_use_diagnostics() -> serde_json::Value {
 ///
 /// ⚠ This exists because a `doctor` that exceeds its caller's budget is killed,
 /// and stdout is written only at the END — so a reader is handed an empty file
-/// and no way to tell a slow dependency probe from a slow Computer Use probe
+/// and no way to tell a slow dependency probe from a slow Biorouter Copilot probe
 /// from a wedged process. That is exactly the state the Windows package job was
 /// left in: "exceeded its 40s budget, stdout held no output", with nothing to
 /// say where the 40 seconds went.
@@ -42,7 +42,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     let mut mark = std::time::Instant::now();
     phase("start", &mut mark);
     // ⚠ Concurrent, not sequential. These two are independent — one probes the
-    // prerequisites, the other the bundled Computer Use helper — and each is
+    // prerequisites, the other the bundled Biorouter Copilot helper — and each is
     // already bounded on its own (12s per prerequisite; 30s for the readiness
     // probe plus its shutdown). Run in series their worst cases ADD, which is
     // how `doctor` came to exceed budgets its callers had sized for one of them:
@@ -62,7 +62,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     let deps = deps.map_err(|error| {
         anyhow::anyhow!("the dependency check panicked rather than reporting a result: {error}")
     })?;
-    phase("dependencies + computer use", &mut mark);
+    phase("dependencies + Biorouter Copilot", &mut mark);
     let cli_path = system::biorouter_on_path();
     // Snapshot the local-model sidecar. `status()` health-probes the configured
     // port, so this also detects a llama-server started by the desktop app or a
@@ -133,7 +133,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     print_sandbox_status();
 
     println!();
-    section("Computer Use");
+    section("Biorouter Copilot");
     println!(
         "    Backend desktop: {}",
         computer_use["host"].as_str().unwrap_or("this host")
@@ -154,7 +154,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     }
     println!("    Doctor checks readiness without capturing or controlling the desktop.");
     println!("    CLI: approve the task at the interactive terminal when requested. Non-interactive runs cannot grant approval.");
-    println!("    Browser: start with `biorouter serve --computer-use-approval`, then enter your key in the Computer Use approval field.");
+    println!("    Browser: start with `biorouter serve --computer-use-approval`, then enter your key in the Biorouter Copilot approval field.");
     println!("    A remote browser controls the backend host's desktop. A headless host has no desktop to control.");
 
     // Actionable next steps for anything missing. A probe that TIMED OUT did

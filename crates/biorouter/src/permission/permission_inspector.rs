@@ -374,7 +374,8 @@ impl PermissionInspector {
             }
             return Verdict::Decided(
                 InspectionAction::Allow,
-                "Computer Use requires its separate host-verified task consent at dispatch".into(),
+                "Biorouter Copilot requires its separate host-verified task consent at dispatch"
+                    .into(),
             );
         }
 

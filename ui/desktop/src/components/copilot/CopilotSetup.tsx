@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Check, ChevronDown, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { PermissionCheckButton } from './PermissionCheckButton';
-import { computerUseSetup, type ComputerUseRuntime } from './computerUseApi';
+import { copilotSetup, type CopilotRuntime } from './copilotApi';
 
 const RUNTIME_STATES: Record<string, string> = {
   ready: 'Runtime ready',
@@ -27,7 +27,7 @@ export type RuntimeVerdict = 'ready' | 'blocked' | 'unverified';
  * the remediation text below is what tells the user what to do about it, and
  * suppressing it there would leave a dead end.
  */
-export function runtimeVerdict(runtime: ComputerUseRuntime): RuntimeVerdict {
+export function runtimeVerdict(runtime: CopilotRuntime): RuntimeVerdict {
   const permissions = runtime.permissions;
   if (typeof permissions !== 'object' || permissions === null) return 'unverified';
   const granted = [permissions.accessibility, permissions.screen_recording];
@@ -36,7 +36,7 @@ export function runtimeVerdict(runtime: ComputerUseRuntime): RuntimeVerdict {
   return runtime.status === 'ready' ? 'ready' : 'blocked';
 }
 
-export function ComputerUseRuntimeDetails({ runtime }: { runtime: ComputerUseRuntime }) {
+export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) {
   const permissionSummary =
     typeof runtime.permissions === 'string'
       ? runtime.permissions === 'unknown'
@@ -110,8 +110,8 @@ export function ComputerUseRuntimeDetails({ runtime }: { runtime: ComputerUseRun
   );
 }
 
-export function ComputerUseSetup() {
-  const [runtime, setRuntime] = useState<ComputerUseRuntime>();
+export function CopilotSetup() {
+  const [runtime, setRuntime] = useState<CopilotRuntime>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -121,7 +121,7 @@ export function ComputerUseSetup() {
     setLoading(true);
     setError('');
     try {
-      const next = await computerUseSetup();
+      const next = await copilotSetup();
       setRuntime(next);
       setChecked(true);
       // Opened HERE, not in the click handler: a first press that FAILS must not
@@ -132,7 +132,7 @@ export function ComputerUseSetup() {
       setError(
         failure instanceof Error
           ? failure.message
-          : 'Could not read Computer Use setup. Check the backend connection and try again.'
+          : 'Could not read Biorouter Copilot setup. Check the backend connection and try again.'
       );
       setChecked(false);
     } finally {
@@ -164,17 +164,17 @@ export function ComputerUseSetup() {
         disabled={loading}
         aria-busy={loading}
         aria-expanded={expanded}
-        aria-controls="computer-use-setup-details"
+        aria-controls="copilot-setup-details"
         onClick={toggle}
       >
         {loading && <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />}
         {loading
           ? 'Checking…'
           : !runtime
-            ? 'Check Computer Use setup'
+            ? 'Check Biorouter Copilot setup'
             : open
-              ? 'Hide Computer Use setup'
-              : 'Show Computer Use setup'}
+              ? 'Hide Biorouter Copilot setup'
+              : 'Show Biorouter Copilot setup'}
         {runtime && !loading && (
           <ChevronDown
             className={`size-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : 'rotate-0'}`}
@@ -183,8 +183,8 @@ export function ComputerUseSetup() {
         )}
       </Button>
       {expanded && runtime && (
-        <div id="computer-use-setup-details" className="space-y-2">
-          <ComputerUseRuntimeDetails runtime={runtime} />
+        <div id="copilot-setup-details" className="space-y-2">
+          <CopilotRuntimeDetails runtime={runtime} />
           <PermissionCheckButton
             label="Check again"
             checking={loading}

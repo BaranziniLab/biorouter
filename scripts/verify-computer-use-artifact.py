@@ -53,7 +53,7 @@ def verify_artifact(artifact, target, require_signed=False):
                 raise ValueError(f"Unsupported release archive: {artifact}")
             manifests = [p for p in directory.rglob("manifest.json") if p.parent.name == "computer-use"]
             if len(manifests) != 1:
-                raise ValueError(f"Expected exactly one Computer Use payload, found {len(manifests)}")
+                raise ValueError(f"Expected exactly one Biorouter Copilot payload, found {len(manifests)}")
             runtime.verify(manifests[0].parent, target, require_signed)
             return {"artifact": artifact.name, "target": target, "manifest_sha256": runtime.digest(manifests[0]),
                     "upstream_commit": runtime.PIN["upstream_commit"], "patches": runtime.patches()}

@@ -57,7 +57,7 @@ Before submitting AI assisted code, confirm that:
 
 ```bash
 just check-everything               # fmt, clippy, UI lint, OpenAPI schema, version,
-                                    # brand, Computer Use naming, cross-compile drift,
+                                    # brand, Biorouter Copilot naming, cross-compile drift,
                                     # BAAM registry. Run before pushing; the checks that
                                     # actually block a merge are test (ubuntu/macos/
                                     # windows), Unit tests (vitest) and no-ai-coauthor.
@@ -127,7 +127,7 @@ biorouter
 
 **Using GitHub Copilot:**
 - Install the [GitHub Copilot extension](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) for VS Code
-- Enable Copilot for Rust files in your settings
+- Enable GitHub Copilot for Rust files in your settings
 - Recommended: Also install [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) for better code intelligence
 
 **Using Cursor:**

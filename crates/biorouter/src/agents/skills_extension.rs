@@ -6999,7 +6999,6 @@ mod installed_usability_tests {
     }
 }
 
-
 /// The built-in office contexts tell the model how to reach a Python runtime,
 /// and that advice has to hold on Windows too.
 #[cfg(test)]

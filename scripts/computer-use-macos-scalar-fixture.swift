@@ -1,4 +1,4 @@
-// Synthetic macOS scalar fixture for Computer Use `set_value` acceptance.
+// Synthetic macOS scalar fixture for Biorouter Copilot `set_value` acceptance.
 //
 // Three sliders, each a different contract:
 //   supported-scalar      an app-implemented settable scalar that APPLIES the value

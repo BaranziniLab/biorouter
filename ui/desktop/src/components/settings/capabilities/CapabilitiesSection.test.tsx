@@ -33,7 +33,9 @@ describe('CapabilitiesSection', () => {
     expect(screen.getAllByRole('switch')).toHaveLength(13);
     expect(screen.getByRole('switch', { name: 'Toggle Auto Visualiser capability' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Toggle Code Execution capability' })).toBeChecked();
-    expect(screen.getByRole('switch', { name: 'Toggle Computer Use capability' })).toBeChecked();
+    expect(
+      screen.getByRole('switch', { name: 'Toggle Biorouter Copilot capability' })
+    ).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Toggle Agent Drafter capability' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Toggle Chat Recall capability' })).not.toBeChecked();
   });

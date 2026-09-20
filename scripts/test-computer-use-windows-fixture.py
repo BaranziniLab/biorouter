@@ -68,7 +68,7 @@ foreach ($window in $windows) {
 
 
 
-FIXTURE_TITLE = "BioRouter Computer Use Fixture"
+FIXTURE_TITLE = "Biorouter Copilot Fixture"
 SENTINEL_TITLE = "BioRouter Unrelated Window Sentinel"
 
 
@@ -179,7 +179,7 @@ public class BioRouterFixtureForm : Form {
 '@
 $form = New-Object BioRouterFixtureForm
 $form.DiagnosticsDirectory = $env:BIOROUTER_FIXTURE_DIR
-$form.Text = 'BioRouter Computer Use Fixture'
+$form.Text = 'Biorouter Copilot Fixture'
 $form.Width = 480; $form.Height = 240
 $form.StartPosition = 'Manual'; $form.Location = New-Object System.Drawing.Point(140, 100)
 $form.AutoScroll = $true
@@ -274,7 +274,7 @@ $timer.Dispose()
                 return result
             request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "BioRouter-fixture", "version": "1"}})
             apps = call("list_apps", {})
-            if "BioRouter Computer Use Fixture" not in json.dumps(apps):
+            if "Biorouter Copilot Fixture" not in json.dumps(apps):
                 raise AssertionError("Fixture absent from native app discovery")
             app = str(fixture.pid)
             state = call("get_app_state", {"app": app})

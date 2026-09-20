@@ -12,8 +12,31 @@ pub const DEFAULT_EXTENSION_TIMEOUT: u64 = 300;
 pub const DEFAULT_EXTENSION_DESCRIPTION: &str = "";
 pub const DEFAULT_DISPLAY_NAME: &str = "Developer";
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
+/// ⚠ The VALUE is already written into every existing user's config.yaml.
+/// Rename the constant freely; renaming the string resets everyone to version 0
+/// and re-runs the capability split against a tree that has already been split.
 const COMPUTER_USE_MIGRATION_KEY: &str = "computer_use_capabilities_version";
-const COMPUTER_USE_MIGRATION_VERSION: u32 = 1;
+/// v1 split the legacy Computer Controller capability in two. v2 rewrites the
+/// stored display name to "Biorouter Copilot": `inject_builtin_extensions`
+/// inserts only when the key is ABSENT, so for an upgrading user the old label
+/// already sits in config.yaml and no default can reach it. The migration only
+/// ever assigns, so re-running it is safe.
+const COMPUTER_USE_MIGRATION_VERSION: u32 = 2;
+
+/// The capability's display name is written by the version-gated migration, so a
+/// rename that does not also move this version reaches fresh installs only: every
+/// existing user keeps the old label in their `config.yaml`, and
+/// `inject_builtin_extensions` will not overwrite it because the key is present.
+///
+/// ⚠ This sits at module scope ON PURPOSE. As a runtime `assert!` inside the test
+/// module it enforced nothing (the comparison folds at compile time, and clippy
+/// rejects it as a constant assertion), and even as a `const` block it would then
+/// compile only under `--tests`. Here it fails an ordinary build.
+const _: () = assert!(
+    COMPUTER_USE_MIGRATION_VERSION >= 2,
+    "the Biorouter Copilot label is written by the version-gated migration, so \
+     bumping the label without bumping the version reaches fresh installs only"
+);
 const WEB_DOCUMENT_TOOLS: &[&str] = &["web_scrape", "xlsx_tool", "docx_tool", "pdf_tool", "cache"];
 const RETIRED_BUILTIN_EXTENSIONS: &[&str] = &["tutorial"];
 
@@ -82,11 +105,11 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
                 if let Err(error) = Config::global()
                     .set_param(COMPUTER_USE_MIGRATION_KEY, COMPUTER_USE_MIGRATION_VERSION)
                 {
-                    warn!(%error, "Could not record Computer Use capability migration");
+                    warn!(%error, "Could not record Biorouter Copilot capability migration");
                 }
             }
             Err(error) => {
-                warn!(%error, "Could not persist Computer Use capability migration");
+                warn!(%error, "Could not persist Biorouter Copilot capability migration");
                 migrate_computer_use_capabilities(&mut extensions_map);
             }
         }
@@ -130,7 +153,7 @@ fn migrate_computer_use_capabilities(extensions: &mut IndexMap<String, Extension
     else {
         return;
     };
-    *display_name = Some("Computer Use".to_owned());
+    *display_name = Some("Biorouter Copilot".to_owned());
     if existing_web {
         return;
     }
@@ -157,7 +180,7 @@ fn migrate_computer_use_capabilities(extensions: &mut IndexMap<String, Extension
         {
             *available_tools = moved;
         }
-        // Keep the original Computer Use allowlist. Retired names match no native tool,
+        // Keep the original Biorouter Copilot allowlist. Retired names match no native tool,
         // so a legacy utility-only configuration cannot silently gain desktop control.
     }
     extensions.insert("webdocuments".to_owned(), web);
@@ -172,7 +195,7 @@ fn inject_builtin_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) 
         ),
         (
             "computercontroller",
-            "Computer Use",
+            "Biorouter Copilot",
             "View and control desktop apps for an approved task.",
         ),
         (
@@ -676,7 +699,7 @@ pub fn get_warnings() -> Vec<String> {
                             || matches!(bare, "automation_script" | "computer_control")
                     })
                 {
-                    warnings.push(format!("'{key}': legacy Computer Controller tool restrictions remain restricted. Web/document tools moved to Web & Documents; select the new native Computer Use tools explicitly to allow desktop control. Retired scripts are no longer callable."));
+                    warnings.push(format!("'{key}': legacy Computer Controller tool restrictions remain restricted. Web/document tools moved to Web & Documents; select the new native Biorouter Copilot tools explicitly to allow desktop control. Retired scripts are no longer callable."));
                 }
             }
             if matches!(entry.config, ExtensionConfig::Sse { .. }) {
@@ -1071,6 +1094,21 @@ mod computer_use_migration_tests {
         inject_builtin_extensions(&mut entries);
         assert!(entries["computercontroller"].enabled);
         assert!(entries["webdocuments"].enabled);
+    }
+
+    /// ⚠ The label is the whole reason `COMPUTER_USE_MIGRATION_VERSION` is 2.
+    /// `inject_builtin_extensions` inserts only when the key is absent, so an
+    /// upgrading user's stored legacy Computer Controller label is reachable only
+    /// here.
+    #[test]
+    fn the_migration_rewrites_a_stored_legacy_label() {
+        let mut entries = IndexMap::from([("computercontroller".to_owned(), legacy(true, &[]))]);
+        migrate_computer_use_capabilities(&mut entries);
+        let ExtensionConfig::Builtin { display_name, .. } = &entries["computercontroller"].config
+        else {
+            panic!()
+        };
+        assert_eq!(display_name.as_deref(), Some("Biorouter Copilot"));
     }
 
     #[test]

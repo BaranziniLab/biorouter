@@ -31,7 +31,8 @@ pub fn install_computer_use_action_digest(digest: Option<[u8; 32]>) {
     let _ = COMPUTER_USE_ACTION_DIGEST.set(digest);
 }
 
-/// Browser computer-use authority is deliberately separate from general user authority.
+/// Browser approval authority for Biorouter Copilot is deliberately separate from
+/// general user authority.
 /// The launcher passes only a digest on stdin; neither the browser cookie nor the
 /// daemon API secret can authorize desktop access.
 pub fn computer_use_action_proof(headers: &axum::http::HeaderMap) -> UserActionProof {

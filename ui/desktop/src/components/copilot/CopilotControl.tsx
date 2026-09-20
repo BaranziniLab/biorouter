@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor } from '../icons/app-icons';
-import { ComputerUseRuntimeDetails, runtimeVerdict } from './ComputerUseSetup';
+import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
 import { isBrowserSurface } from '../../utils/surface';
 import {
-  ComputerUseNotApplicable,
-  computerUseDecision,
-  computerUseSetup,
-  computerUseStatus,
-  type ComputerUseStatus,
-} from './computerUseApi';
+  CopilotNotApplicable,
+  copilotDecision,
+  copilotSetup,
+  copilotStatus,
+  type CopilotStatus,
+} from './copilotApi';
 
 /**
  * The panel's own surface. It sits on the composer bar's `--background-canvas`
@@ -32,15 +32,15 @@ function requestError(error: unknown): string {
     if ('message' in error && typeof error.message === 'string') return error.message;
     if ('error' in error && typeof error.error === 'string') return error.error;
   }
-  return 'Computer Use could not confirm this change. Try again.';
+  return 'Biorouter Copilot could not confirm this change. Try again.';
 }
 
-export function ComputerUseControl({ sessionId }: { sessionId: string }) {
-  return <SessionComputerUseControl key={sessionId} sessionId={sessionId} />;
+export function CopilotControl({ sessionId }: { sessionId: string }) {
+  return <SessionCopilotControl key={sessionId} sessionId={sessionId} />;
 }
 
-function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
-  const [status, setStatus] = useState<ComputerUseStatus>();
+function SessionCopilotControl({ sessionId }: { sessionId: string }) {
+  const [status, setStatus] = useState<CopilotStatus>();
   const [expanded, setExpanded] = useState(false);
   const [approvalKey, setApprovalKey] = useState('');
   const [error, setError] = useState('');
@@ -68,7 +68,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
     polling.current = true;
     const startedAt = generation.current;
     try {
-      const next = await computerUseStatus(sessionId);
+      const next = await copilotStatus(sessionId);
       if (
         mounted.current &&
         startedAt === generation.current &&
@@ -86,7 +86,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
       // left a dead alert above the composer AND kept the 2 s poll running,
       // which re-spawns the native helper's PowerShell/UIA bridge every 30 s
       // for a chat that can never use it.
-      if (failure instanceof ComputerUseNotApplicable) setNotApplicable(true);
+      if (failure instanceof CopilotNotApplicable) setNotApplicable(true);
       else setLoadError(requestError(failure));
     } finally {
       polling.current = false;
@@ -114,7 +114,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
     setSending(true);
     setError('');
     try {
-      const next = await computerUseDecision(status, action, approvalKey);
+      const next = await copilotDecision(status, action, approvalKey);
       if (mounted.current) {
         setStatus(next);
         setExpanded(false);
@@ -138,7 +138,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
     generation.current += 1;
     probing.current = true;
     try {
-      const runtime = await computerUseSetup();
+      const runtime = await copilotSetup();
       if (mounted.current) {
         setStatus((current) => current && { ...current, runtime });
         setChecked(true);
@@ -154,14 +154,14 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // A chat whose mode forbids Computer Use has no panel at all -- not an empty
+  // A chat whose mode forbids Biorouter Copilot has no panel at all -- not an empty
   // one, and certainly not an error one. This sits ABOVE the `!status` branch
   // because `status` stays undefined when the very first read is refused.
   if (notApplicable) return null;
   if (!status)
     return loadError ? (
-      <section aria-label="Computer Use" className={`${PANEL_SHELL} text-text-muted`}>
-        <p role="alert">Computer Use status unavailable: {loadError}</p>
+      <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-muted`}>
+        <p role="alert">Biorouter Copilot status unavailable: {loadError}</p>
         <Button size="sm" variant="ghost" onClick={() => void refresh()}>
           Retry
         </Button>
@@ -173,24 +173,24 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
   const requested = status.requested && !active;
   const detailsVisible = expanded || requested;
   const sharing = status.public_model !== false;
-  const detailsId = `computer-use-details-${sessionId}`;
+  const detailsId = `copilot-details-${sessionId}`;
   // A pending approval forces the panel open, because Allow and Cancel live
   // inside it. Offering a control that cannot close it would be a lie, so the
   // disclosure is withheld for exactly that state and returns once decided.
   const collapsible = !requested;
 
   return (
-    <section aria-label="Computer Use" className={`${PANEL_SHELL} text-text-default`}>
+    <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-default`}>
       <div className="flex min-w-0 items-center gap-2">
         <Monitor className="size-4 shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 break-words" role="status">
           {active
-            ? 'Computer use active'
+            ? 'Biorouter Copilot active'
             : busy
-              ? 'Computer use busy'
+              ? 'Biorouter Copilot busy'
               : status.state === 'stopped'
-                ? 'Computer use stopped'
-                : 'Computer Use'}
+                ? 'Biorouter Copilot stopped'
+                : 'Biorouter Copilot'}
           {active && <span className="text-text-muted"> · {status.target}</span>}
         </span>
         {collapsible && (
@@ -204,7 +204,9 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
             // The container below is always rendered and toggled with `hidden`,
             // so this IDREF always resolves. A control pointing at an element
             // that does not exist is what a collapsed-and-unmounted panel gives.
-            aria-label={detailsVisible ? 'Hide Computer Use details' : 'Show Computer Use details'}
+            aria-label={
+              detailsVisible ? 'Hide Biorouter Copilot details' : 'Show Biorouter Copilot details'
+            }
           >
             {detailsVisible ? (
               <ChevronDown
@@ -249,7 +251,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
             <p className="whitespace-pre-line">
               {status.disclosure ||
                 (sharing
-                  ? 'Allow computer use for this request? Screenshots, app text, and open-window information may be sent to the provider above, including sensitive information. Biorouter can type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it.'
+                  ? 'Allow Biorouter Copilot to view and control this computer for this request? Screenshots, app text, and open-window information may be sent to the provider above, including sensitive information. It can type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it.'
                   : 'Allow Biorouter to view and control this computer for this request? It can read app content, type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it. Private classification does not mean processing happens on this computer.')}
             </p>
             {status.handoff_required && !status.disclosure && (
@@ -271,7 +273,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
             that request.
           </p>
         ) : null}
-        {status.runtime && <ComputerUseRuntimeDetails runtime={status.runtime} />}
+        {status.runtime && <CopilotRuntimeDetails runtime={status.runtime} />}
         <PermissionCheckButton
           label="Check OS permissions"
           checking={checking}
@@ -283,7 +285,7 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
           <>
             {browser && (
               <label className="block">
-                Computer Use approval key
+                Biorouter Copilot approval key
                 <input
                   type="password"
                   autoComplete="off"

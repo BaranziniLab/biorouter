@@ -1,6 +1,6 @@
-# Computer Use capability
+# Biorouter Copilot capability
 
-Computer Use (`computercontroller`) observes and controls applications through BioRouter's bundled native helper. It is the only built-in desktop observation and control capability. Web fetching and document processing are provided separately by [Web & Documents](web-documents.md).
+Biorouter Copilot (`computercontroller`) observes and controls applications through BioRouter's bundled native helper. It is the only built-in desktop observation and control capability. Web fetching and document processing are provided separately by [Web & Documents](web-documents.md).
 
 ## Tools
 
@@ -25,7 +25,7 @@ Scrolling uses the target viewport where the platform exposes measurable geometr
 
 ## Approval and privacy
 
-Enable Computer Use in Settings → Chat → Capabilities or `biorouter configure`. Enabling it does not approve desktop access. Before the first observation or action, BioRouter requests approval for the task, model/provider, and target computer. The grant covers all tool turns within the current user request without a prompt for every click or capture. Completion or cancellation ends it; a new user request is a new task. Stop or revoke prevents further actions. OS accessibility and capture permissions are separate prerequisites.
+Enable Biorouter Copilot in Settings → Chat → Capabilities or `biorouter configure`. Enabling it does not approve desktop access. Before the first observation or action, BioRouter requests approval for the task, model/provider, and target computer. The grant covers all tool turns within the current user request without a prompt for every click or capture. Completion or cancellation ends it; a new user request is a new task. Stop or revoke prevents further actions. OS accessibility and capture permissions are separate prerequisites.
 
 Public-model approval discloses that screenshots and app text can be sent to the provider. Private-model approval names the actual provider/deployment; private does not always mean on-device. Each chat has separate results, snapshots, element references, and approval. Private and public chats never share stored observations or grants. They still operate the same physical desktop: material left visible can appear in a new capture. A private-to-public handoff therefore pauses for acknowledgement before capture.
 
@@ -52,7 +52,7 @@ records those validation gaps.
 
 ## Native runtime and replacement
 
-Computer Use works independently of Developer and Web & Documents. The native helper exposes all ten tool contracts without a runtime npm/install bootstrap; each operation still requires the platform prerequisites above. Platform support and GUI release evidence are tracked in the [implementation status](../../design/computer-use-implementation-status.md).
+Biorouter Copilot works independently of Developer and Web & Documents. The native helper exposes all ten tool contracts without a runtime npm/install bootstrap; each operation still requires the platform prerequisites above. Platform support and GUI release evidence are tracked in the [implementation status](../../design/computer-use-implementation-status.md).
 
 The previous script-driven controller and Developer capture tools have been removed. There are no compatibility aliases or script fallback routes. Update stored workflows to current native tools; an old tool approval does not grant the new capability.
 

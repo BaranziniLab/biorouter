@@ -14,7 +14,7 @@ workspace = true
 rmcp = { workspace = true, features = ["server", "client", "transport-io", "macros"] }
 biorouter-sandbox = { path = "../biorouter-sandbox" }
 # `std::fs::canonicalize` on Windows returns a VERBATIM path (`\\?\C:\…`). The
-# Computer Use payload paths are canonicalized and then reported by
+# Biorouter Copilot payload paths are canonicalized and then reported by
 # `biorouter doctor`, so without this they reach the installed-payload
 # acceptance check, the CLI's human output and the desktop Diagnostics view in
 # a spelling nothing else in the tree uses. `biorouter::system::real_path` has

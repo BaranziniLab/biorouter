@@ -11,7 +11,7 @@ We welcome pull requests for general contributions! If you have a larger new fea
 
 ## 🤖 Quick Responsible AI Tips
 
-If you use Biorouter, Copilot, Claude, or other AI tools to help with your PRs:
+If you use Biorouter, GitHub Copilot, Claude, or other AI tools to help with your PRs:
 
 **✅ Good Uses** 
 
@@ -157,7 +157,7 @@ develop on.
 `just check-everything` is the single precommit entry point. It chains
 `cargo fmt`, the clippy lint script, `npm run lint:check`, the OpenAPI schema
 check, the version, brand, and cross-compile-drift consistency checks, the
-Computer Use naming gate (which rejects the string "Computer Controller" anywhere
+Biorouter Copilot naming gate (which rejects the string "Computer Controller" anywhere
 a person reads it), and the two BAAM registry gates.
 
 ### Regenerating the OpenAPI schema

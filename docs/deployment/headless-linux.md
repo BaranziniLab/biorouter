@@ -54,11 +54,11 @@ biorouter doctor
 ```
 
 `doctor` reports optional prerequisites — `git`, `uv`, `node` — that some extensions need. The
-packages themselves depend on `libxcb` and `zlib` plus the Computer Use helper's runtime:
+packages themselves depend on `libxcb` and `zlib` plus the Biorouter Copilot helper's runtime:
 `python3`, the GObject and AT-SPI introspection bindings, and GTK 3. The full list is declared in
 [`packaging/cli/nfpm.yaml`](../../packaging/cli/nfpm.yaml). They install on a host with no
-display; Computer Use itself still reports `desktop_unavailable` there (see
-[below](#computer-use-requires-a-desktop-session)).
+display; Biorouter Copilot itself still reports `desktop_unavailable` there (see
+[below](#biorouter-copilot-requires-a-desktop-session)).
 
 > **Note.** The Linux binaries are built against a glibc 2.31 baseline, which covers Debian 11,
 > Ubuntu 22.04 and Rocky 9 and anything newer. Do not install the **desktop** `biorouter_*.deb` /
@@ -235,9 +235,9 @@ reaching the port as equivalent to a shell account.
 - **There are no user accounts.** Everyone who opens the address is the same user, with the same
   files and the same conversation history.
 
-## Computer Use requires a desktop session
+## Biorouter Copilot requires a desktop session
 
-Most of BioRouter needs no display. [Computer Use](../extensions/built-in/computer-controller.md)
+Most of BioRouter needs no display. [Biorouter Copilot](../extensions/built-in/computer-controller.md)
 uses its bundled native helper on the backend host. A headless service must report
 `desktop_unavailable` without breaking chat or Web & Documents. Opening the browser client does
 not expose the browser user's desktop.

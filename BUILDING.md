@@ -35,8 +35,8 @@ Before building, ensure the following are installed and configured:
 | **npm** | bundled with Node.js |
 | **Docker Desktop** | https://www.docker.com/products/docker-desktop (required for Linux build) |
 | **Xcode Command Line Tools** | `xcode-select --install` |
-| **Go 1.26.8** | https://go.dev/dl. Builds the Computer Use helper for the Windows and Linux targets; this is the version `.github/workflows/computer-use-native.yml` pins |
-| **Swift 6.2+ / Xcode** | Required for the two macOS Computer Use helper targets; `computer-use-runtime.py` refuses to build them anywhere but macOS |
+| **Go 1.26.8** | https://go.dev/dl. Builds the Biorouter Copilot helper for the Windows and Linux targets; this is the version `.github/workflows/computer-use-native.yml` pins |
+| **Swift 6.2+ / Xcode** | Required for the two macOS Biorouter Copilot helper targets; `computer-use-runtime.py` refuses to build them anywhere but macOS |
 | **Python 3** | Runs `scripts/computer-use-runtime.py`, the helper build driver |
 | **git** | The helper build stages the vendored source and applies its patches with `git apply` |
 
@@ -78,7 +78,12 @@ file ui/desktop/src/bin/biorouter
 
 > **Note:** Packaging requires **both** `biorouter` and `biorouterd` in `src/bin/` — `prepare-platform-binaries.js` aborts the build if either is missing (it also fetches the `llamacpp/llama-server` sidecar automatically). The ARM64 binaries are gitignored (they exceed GitHub's 100MB limit) and must be rebuilt on each machine.
 
-### Build the Computer Use helper for the target you are packaging
+### Build the Biorouter Copilot helper for the target you are packaging
+
+The helper's build paths, scripts and staged directories keep the `computer-use` spelling
+(`vendor/computer-use/`, `target/computer-use/`, `scripts/computer-use-runtime.py`,
+`stageComputerUse()`). Those are on-disk and provenance identifiers, not display names, so the
+rename to Biorouter Copilot left them alone deliberately.
 
 `stageComputerUse()` is the **first** statement of `prepare-platform-binaries.js`, so every packaging
 command below (Steps 2, 3, 4, 6 and 7, and any bare `npm run bundle:*`) dies before it copies a

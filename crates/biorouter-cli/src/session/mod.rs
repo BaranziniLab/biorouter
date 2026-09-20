@@ -1283,14 +1283,14 @@ impl CliSession {
                             computer_use_challenge = Some(status.challenge_id.clone());
                             if interactive && crate::commands::needs_terminal::prompt_can_run() {
                                 eprintln!("\n{}", status.disclosure);
-                                if cliclack::confirm("Allow Computer Use for this task?").initial_value(false).interact()? {
+                                if cliclack::confirm("Allow Biorouter Copilot for this task?").initial_value(false).interact()? {
                                     self.agent.extension_manager.approve_computer_use(&self.session_id, &status.challenge_id).await?;
-                                    eprintln!("Computer Use allowed for this task. Press Ctrl-C to stop desktop control.");
+                                    eprintln!("Biorouter Copilot allowed for this task. Press Ctrl-C to stop desktop control.");
                                 } else {
                                     self.agent.extension_manager.computer_use.revoke();
                                 }
                             } else {
-                                eprintln!("Computer Use requires interactive task approval; this non-interactive run cannot grant it.");
+                                eprintln!("Biorouter Copilot requires interactive task approval; this non-interactive run cannot grant it.");
                                 self.agent.extension_manager.computer_use.revoke();
                             }
                         }

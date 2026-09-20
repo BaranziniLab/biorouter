@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The vendored Computer Use source must match its manifest, and must survive a
-# checkout on any platform unchanged.
+# The vendored Open Computer Use source must match its manifest, and must survive
+# a checkout on any platform unchanged.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
