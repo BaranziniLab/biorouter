@@ -7,8 +7,12 @@ FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm AS computer-use-builder
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
+# ⚠ Both scripts. `computer-use-runtime.py` loads `vendor-computer-use-source.py`
+# by path to verify the vendored tree against its manifest before building, so
+# copying only the first leaves the build failing on a missing module.
 COPY scripts/computer-use-runtime.py scripts/computer-use-runtime.py
-COPY third_party/open-computer-use third_party/open-computer-use
+COPY scripts/vendor-computer-use-source.py scripts/vendor-computer-use-source.py
+COPY vendor/computer-use vendor/computer-use
 RUN case "$TARGETARCH" in amd64) HELPER_TARGET=linux-x64 ;; arm64) HELPER_TARGET=linux-arm64 ;; *) echo "Unsupported native helper architecture: $TARGETARCH" >&2; exit 1 ;; esac && \
     python3 scripts/computer-use-runtime.py build "$HELPER_TARGET" && \
     cp -a "target/computer-use/$HELPER_TARGET" /computer-use
