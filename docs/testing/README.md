@@ -11,6 +11,7 @@ subsystem it exercises, and the crate-level commands are in
 
 | Document | What it covers |
 |---|---|
+| [Verifying Computer Use on Windows](windows-computer-use-verification.md) | The procedure for the one check continuous integration structurally cannot run — Windows Computer Use needs a signed-in interactive desktop session, which a hosted runner has not got — plus the measurements already taken, so a reader does not re-derive them. |
 | [Process-global state in the Rust workspace](process-global-state.md) | The audit of every process-global value the crates read and write — environment variables, `Paths::*`, statics frozen at first read, mutable registries — plus the ledger of unlocked readers, the two non-interchangeable remedies, and the recipes to re-measure it all. |
 
 ## Related documentation
