@@ -11,7 +11,7 @@
 #     key, so renaming it would break existing configurations and command lines.
 #     It is already paired with the user-facing label "Computer Use"
 #     (ui/desktop/src/components/settings/capabilities/capabilities.ts).
-#   * upstream's own name. `third_party/open-computer-use/`, the vendored
+#   * upstream's own name. `vendor/computer-use/`, the vendored
 #     `OpenComputerUse*` sources and the NOTICE file that attributes them are the
 #     upstream project's identity, and the licence requires that attribution.
 #   * migration copy that names the OLD capability AS legacy, e.g. "This legacy

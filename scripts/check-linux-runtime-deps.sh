@@ -13,7 +13,7 @@
 # `--version`. There is no lazy path and no degraded mode to fall back to.
 #
 # That is fine, and invisible to users, precisely BECAUSE the packages declare
-# it — `packaging/cli/nfpm.yaml` names libxcb1 and zlib1g (deb) / libxcb and zlib
+# it — `packaging/biorouter-cli.yaml` names libxcb1 and zlib1g (deb) / libxcb and zlib
 # (rpm), so apt and dnf install them alongside the binaries. The failure this
 # script exists to catch is the day those two facts drift apart: someone adds a
 # crate that links another system library, the cross build links fine, and
@@ -101,7 +101,7 @@ if [ -n "$undeclared" ]; then
   echo "  exit 127 on a user's clean machine. Decide the distro package names, then:" >&2
   echo "    1. add a SONAME:deb:rpm row to PACKAGE_MAP in this script" >&2
   echo "    2. add the deb name to overrides.deb.depends and the rpm name to" >&2
-  echo "       overrides.rpm.depends in packaging/cli/nfpm.yaml" >&2
+  echo "       overrides.rpm.depends in packaging/biorouter-cli.yaml" >&2
   echo "    3. add both to the maker-deb depends / maker-rpm requires arrays in" >&2
   echo "       ui/desktop/forge.config.ts (the desktop packages bundle these same" >&2
   echo "       two binaries)" >&2
@@ -130,7 +130,7 @@ nfpm_depends() {
     in_ov && /^  [a-z]+:/    { sect = $1; sub(":", "", sect); key = ""; next }
     in_ov && /^    [a-z]+:/  { key  = $1; sub(":", "", key);  next }
     in_ov && /^      - / && sect == want && key == "depends" { print $2 }
-  ' packaging/cli/nfpm.yaml
+  ' packaging/biorouter-cli.yaml
 }
 
 fail=0
@@ -142,7 +142,7 @@ forge_config=$(tr '\n' ' ' < ui/desktop/forge.config.ts)
 
 for p in $deb_pkgs; do
   printf '%s\n' "$deb_declared" | grep -qx "$p" \
-    || err "packaging/cli/nfpm.yaml overrides.deb.depends is missing '$p' — the CLI .deb would install onto a clean Debian and then fail to start"
+    || err "packaging/biorouter-cli.yaml overrides.deb.depends is missing '$p' — the CLI .deb would install onto a clean Debian and then fail to start"
   # The desktop .deb bundles the same two binaries inside the Electron app. It
   # survives today only INCIDENTALLY: electron-installer-debian's own defaults
   # ask for libgtk-3-0, which drags libxcb1 in transitively. Declaring it makes
@@ -155,7 +155,7 @@ done
 
 for p in $rpm_pkgs; do
   printf '%s\n' "$rpm_declared" | grep -qx "$p" \
-    || err "packaging/cli/nfpm.yaml overrides.rpm.depends is missing '$p' — the CLI .rpm would install onto a clean Rocky/RHEL and then fail to start"
+    || err "packaging/biorouter-cli.yaml overrides.rpm.depends is missing '$p' — the CLI .rpm would install onto a clean Rocky/RHEL and then fail to start"
   printf '%s\n' "$forge_config" | grep -qE "requires: \[[^]]*'$p'" \
     || err "ui/desktop/forge.config.ts maker-rpm requires is missing '$p'"
 done

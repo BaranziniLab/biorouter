@@ -151,7 +151,7 @@ Earlier focused receipts above retain their original scope. Full local project g
 
 The native lane tested the `biorouter-1` patch against upstream OCU `0.3.5`, commit
 `547b4ffb8ed731a8f16486e6d8a3b215484267d3`. The repository records the source pin and
-prerequisites in `third_party/open-computer-use/pin.json`; the local test checkout was
+prerequisites in `vendor/computer-use/pin.json`; the local test checkout was
 `/tmp/ocu-biorouter-native-patch`. The final patch hash is
 `12214baff26bcc4a3eb4b085a08004f74ba16e8b6a2d010c633be682fb38ab67`.
 The local receipts below predate the final hosted run and are historical component

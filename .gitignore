@@ -101,3 +101,20 @@ ui/desktop/src/bin
 
 # Generated pinned native computer-use resources
 ui/desktop/src/computer-use/
+
+# ── Vendored Computer Use upstream ──────────────────────────────────────────
+# `vendor/computer-use/source/` is a COMPLETE copy of the upstream
+# project at the pinned commit, and the whole point of vendoring it is that a
+# build needs neither the network nor that repository continuing to exist. So it
+# has to be committed in full.
+#
+# ⚠ Repository-wide rules above would silently drop files out of it — `*.png`
+# took an app icon and two readme covers, `.agents/` took a plugin manifest, and
+# `.mcp.json` took another. Measured: 15 of 406 files, and `source-manifest.json`
+# would then fail to verify on a fresh clone with nothing explaining why.
+#
+# The directory line comes first on purpose: git cannot re-include a file whose
+# parent directory is excluded, so `.agents/` has to be re-admitted as a
+# directory before anything inside it can be.
+!vendor/computer-use/source/**/
+!vendor/computer-use/source/**

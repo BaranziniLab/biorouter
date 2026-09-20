@@ -1,0 +1,122 @@
+# The CLI-only Linux packages (deb + rpm) — the headless half of BioRouter.
+#
+# Ships the interactive `biorouter` CLI, the `biorouterd` REST/WebSocket daemon,
+# the browser interface they serve, and the native Computer Use helper. No
+# Electron and no desktop GUI: this is the package for a server, a container, or
+# a workstation driven over `biorouter serve`.
+#
+# Built by scripts/build-cli-linux-packages.sh from the prebuilt linux-gnu
+# binaries in target/x86_64-unknown-linux-gnu/release/. `${VERSION}` is injected
+# by that script; nothing here is edited per release.
+#
+# ⚠ Two guards PARSE this file with hand-rolled awk rather than a YAML library,
+# so its shape is load-bearing beyond being valid YAML:
+#   * scripts/check-linux-runtime-deps.sh reads `overrides.<fmt>.depends` by
+#     indentation — sections at two spaces, keys at four, items at six — and
+#     treats ANY column-0 line as the end of `overrides:`. So no comment in that
+#     block may start at column 0.
+#   * scripts/test-computer-use-packaging.py asserts each dependency appears
+#     literally as `- <name>` on its own line.
+# Comments and blank lines are fine; changing the indentation is not.
+name: "biorouter-cli"
+arch: "amd64"
+platform: "linux"
+version: "${VERSION}"
+release: "1"
+section: "science"
+priority: "optional"
+maintainer: "UCSF Baranzini Lab <baranzinilab@ucsf.edu>"
+vendor: "UCSF Baranzini Lab"
+homepage: "https://github.com/BaranziniLab/biorouter"
+license: "Apache-2.0"
+description: |
+  Biorouter CLI — AI-powered biomedical research environment (headless).
+  Installs the interactive `biorouter` command-line interface and the
+  `biorouterd` REST/WebSocket server daemon onto PATH, so `biorouter
+  setup-path` is not needed. Also ships the browser interface, which
+  `biorouter serve` hands to `biorouterd` so a headless host can be driven
+  from a browser, and the native Computer Use helper, which lets an approved
+  task observe and control the desktop of a machine that has one.
+  Run `biorouter doctor` after install to check optional prerequisites and to
+  see whether Computer Use can reach a desktop session on this host.
+
+# Ordered as the product is layered: the two binaries that ARE BioRouter, then
+# the two payloads they serve.
+contents:
+  - src: ./target/x86_64-unknown-linux-gnu/release/biorouter
+    dst: /usr/bin/biorouter
+    file_info:
+      mode: 0755
+  - src: ./target/x86_64-unknown-linux-gnu/release/biorouterd
+    dst: /usr/bin/biorouterd
+    file_info:
+      mode: 0755
+
+  # The native Computer Use helper. `manifest::locate` finds it by walking out
+  # from the running executable, and /usr/libexec is where the FHS puts a
+  # program run by another program rather than by a user — so this is the one
+  # layout where the helper is NOT beside the binary that launches it.
+  #
+  # `type: tree` copies the directory recursively; see the note on the web
+  # bundle below for what nfpm does without it.
+  - src: ./target/computer-use/linux-x64
+    dst: /usr/libexec/biorouter/computer-use
+    type: tree
+
+  # The browser interface bundle `biorouterd` serves (BIOROUTER_SERVE_UI), built
+  # by scripts/build-cli-linux-packages.sh via `npm run build:web`.
+  #
+  # Every other package places it beside the binaries so the daemon resolves it
+  # as `<exe dir>/../web`. That rule cannot work here: these binaries go on PATH
+  # at /usr/bin, and `<exe dir>/../web` would be /usr/web — not a location the
+  # FHS has any room for. /usr/share/<pkg>/ is where architecture-independent
+  # package data belongs, so the CLI packages are the one case that needs the
+  # path stated rather than derived.
+  #
+  # ⚠ `type: tree` is required. Without it nfpm reads `src` as a single file and
+  # the hashed assets/ underneath are silently dropped — the package builds,
+  # installs, and serves a blank page.
+  - src: ./ui/desktop/src/web
+    dst: /usr/share/biorouter/web
+    type: tree
+
+# A clean, headless machine has none of this. Declaring it is what makes
+# `apt install ./biorouter-cli.deb` produce a working install rather than one
+# that fails on first run.
+#
+# ⚠ Two groups, and the second is easy to mistake for a packaging error: a
+# HEADLESS package that depends on GTK3 and AT-SPI looks wrong until you know
+# the Computer Use helper drives a desktop THROUGH the accessibility bus. It is
+# not a GUI dependency — nothing here opens a window — it is the client side of
+# the same bus a screen reader uses. The names are pinned by
+# `vendor/computer-use/pin.json` and asserted against it by
+# scripts/test-computer-use-packaging.py, so they cannot drift from the runtime
+# that needs them.
+overrides:
+  deb:
+    depends:
+      # Core: libxcb is linked for clipboard/terminal support, zlib through libgit2.
+      - libxcb1
+      - zlib1g
+      # Computer Use: the helper's Python bridge and the accessibility stack.
+      - python3
+      - python3-gi
+      - gir1.2-atspi-2.0
+      - gir1.2-gtk-3.0
+      - at-spi2-core
+    recommends:
+      # Repository and knowledge-base features. `biorouter doctor` also checks
+      # uv and node, which are genuinely optional and not packaged.
+      - git
+  rpm:
+    depends:
+      # Core.
+      - libxcb
+      - zlib
+      # Computer Use.
+      - python3
+      - python3-gobject
+      - at-spi2-core
+      - gtk3
+    recommends:
+      - git

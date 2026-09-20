@@ -1606,6 +1606,26 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Computer Use
 
+**Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
+complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
+build reads it with **no network** — an upstream repository that disappears or changes
+cannot affect a BioRouter build. The tree is *pristine*; `patches/` is applied to a
+throwaway copy at build time, which is what keeps an upstream update tractable.
+`source-manifest.json` hashes every file and the build verifies it (both directions)
+before the bytes become build input. `scripts/check-vendored-computer-use.sh` is the CI
+guard and also asserts every vendored file is **committable** — repo-wide `.gitignore`
+rules matched 15 of them on the first attempt. Ten upstream files are deliberately
+excluded as third-party extracted artwork that MIT does not cover; they are docs, not
+build inputs, and the build is byte-identical without them.
+⚠ The staged copy gets its own `git init`, and that line is load-bearing: `git apply`
+resolves against the repository containing the working directory, and the staging
+directory lives inside BioRouter's, where `target/` is ignored. Without it the edits to
+tracked files landed while every `new file mode` hunk was silently dropped, and the build
+happily produced a helper 28,672 bytes smaller from effectively unpatched upstream.
+`scripts/check-computer-use-upstream.py` reports what changed upstream and, more usefully,
+which of those files our patches also touch.
+
+
 `computercontroller` — the extension key Computer Use kept for config
 compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
 `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,

@@ -65,9 +65,9 @@ log "building browser interface bundle ($WEB)"
 # ── 1. Build deb + rpm with nfpm (no root needed) ─────────────────────────────
 log "building deb + rpm with nfpm ($VERSION)"
 docker run --rm -e VERSION="$VERSION" -v "$ROOT":/work -w /work "$NFPM_IMAGE" \
-  package -f packaging/cli/nfpm.yaml -p deb -t "$DEB"
+  package -f packaging/biorouter-cli.yaml -p deb -t "$DEB"
 docker run --rm -e VERSION="$VERSION" -v "$ROOT":/work -w /work "$NFPM_IMAGE" \
-  package -f packaging/cli/nfpm.yaml -p rpm -t "$RPM"
+  package -f packaging/biorouter-cli.yaml -p rpm -t "$RPM"
 
 [ -f "$DEB" ] || die "deb was not produced"
 [ -f "$RPM" ] || die "rpm was not produced"
