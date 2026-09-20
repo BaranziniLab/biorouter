@@ -263,7 +263,7 @@ chmod 755 ~/.config
 
 **Log files:**
 
-Logs are stored in `~/.config/biorouter/logs/`. Review them for detailed error messages.
+Logs are stored in `~/.local/state/biorouter/logs/` on macOS and Linux. Run `biorouter info` for the logs directory on your own machine. Review them for detailed error messages.
 
 ## Related documentation
 

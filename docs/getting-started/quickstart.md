@@ -156,10 +156,10 @@ Type your questions, tasks, or instructions directly into the input field, and b
    biorouter session
    ```
 
-> **Tip.** CLI users can also start a session in [biorouter Web](../cli/command-reference.md#web), a web-based chat interface:
+> **Tip.** CLI users can also start a session in the browser with [`serve`](../cli/command-reference.md#serve), a web-based chat interface:
 >
 > ```sh
-> biorouter web --open
+> biorouter serve --open
 > ```
 
 ## Write your first prompt

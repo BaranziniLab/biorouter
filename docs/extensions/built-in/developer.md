@@ -1,7 +1,7 @@
 # Developer capability
 
-> **What this is.** Two things in one file: a walkthrough of the built-in Developer capability (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
-> **Status:** Current. The capability and its `shell` / `text_editor` / `analyze` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
+> **What this is.** Two things in one file: a walkthrough of the built-in Developer capability (enabling it, a worked project-setup example, its six tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
+> **Status:** Current. The capability and its `shell` / `shell_status` / `shell_kill` / `text_editor` / `analyze` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
 > **Audience:** end users, and anyone deciding how much autonomy to grant BioRouter.
 
 The Developer capability lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.
@@ -123,7 +123,7 @@ The `shell` tool runs a command one of two ways, and the difference matters more
 
 **Foreground** is the default: the command blocks the turn until it finishes, and its output comes back as the tool result. It carries a wall-clock budget, 240 seconds by default. When the budget expires BioRouter kills the command's **whole process group** — not just the shell it launched — and the call fails with an error that names the command, how long it ran, and what to do instead. Nothing is left running.
 
-**Background** is `background=true`. The call returns a `job_id` immediately and the job keeps running across tool calls, watched with `shell_wait`, peeked at with `shell_output`, and stopped with `shell_kill`. There is no budget. This is where a dev server, a build, a test suite or a long training run belongs.
+**Background** is `background=true`. The call returns a `job_id` immediately and the job keeps running across tool calls, watched or peeked at with `shell_status` (omit `job_id` to list every job; give `job_id` for one job's status and the output since the last look; add `timeout_secs` to block until it exits), and stopped with `shell_kill`. There is no budget. This is where a dev server, a build, a test suite or a long training run belongs.
 
 The budget exists because a foreground command that turns out to be far more expensive than it looked — a `find` over a whole home directory, a query with no index — blocks the turn for minutes with nothing to show for it. Two things make that visible while it happens:
 

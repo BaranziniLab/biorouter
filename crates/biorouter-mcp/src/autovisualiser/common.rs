@@ -163,13 +163,70 @@ const LEAFLET_CSS: &str = include_str!("templates/assets/leaflet.min.css");
 const MARKERCLUSTER_JS: &str = include_str!("templates/assets/leaflet.markercluster.min.js");
 const MERMAID_MIN: &str = include_str!("templates/assets/mermaid.min.js");
 
+/// Path (relative to the repository root) of the file holding the copyright
+/// lines and full licence texts for everything in `templates/assets/`.
+pub const LICENSES_PATH: &str =
+    "crates/biorouter-mcp/src/autovisualiser/templates/assets/LICENSES.md";
+
+/// Attribution notice injected into the `<head>` of every generated document.
+///
+/// The vendored libraries are inlined into each figure, so every figure is a
+/// redistribution of them, and MIT / BSD / ISC all require the notice to travel
+/// with the copy. Three of the seven files carry a banner of their own inside
+/// the minified source and four carry nothing at all, so the notice cannot rely
+/// on a comment surviving inside a blob.
+///
+/// It names the whole bundled set rather than only the libraries a particular
+/// figure loaded. That keeps it a single constant that cannot drift per figure,
+/// and naming a library the document does not embed costs a reader nothing,
+/// whereas omitting one that it does embed is the gap this closes. The full
+/// texts stay in [`LICENSES_PATH`] so a 3 MB Mermaid figure does not also carry
+/// six licences.
+///
+/// No `--` may appear inside the text: that sequence is illegal in an HTML
+/// comment. `attribution_comment_is_a_well_formed_html_comment` pins it.
+pub const ATTRIBUTION_COMMENT: &str = concat!(
+    "<!--\n",
+    "  Third-party libraries bundled in this figure, each under its own licence:\n",
+    "    Chart.js 4.5.0 (MIT), D3 7.9.0 (ISC), d3-sankey 0.12.3 (BSD-3-Clause),\n",
+    "    Leaflet 1.9.4 (BSD-2-Clause), Leaflet.markercluster 1.5.3 (MIT),\n",
+    "    Mermaid 11.17.2 (MIT).\n",
+    "  Copyright lines and the full licence texts ship with the BioRouter source at\n",
+    "  crates/biorouter-mcp/src/autovisualiser/templates/assets/LICENSES.md\n",
+    "-->\n"
+);
+
+// ---------------------------------------------------------------------------
 // Pinned CDN URLs (used only when BIOROUTER_AUTOVIS_CDN is enabled).
-const CDN_D3: &str = "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js";
-const CDN_D3_SANKEY: &str = "https://cdn.jsdelivr.net/npm/d3-sankey@0.12/dist/d3-sankey.min.js";
-const CDN_CHART: &str = "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js";
-const CDN_LEAFLET_JS: &str = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js";
-const CDN_LEAFLET_CSS: &str = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css";
-const CDN_MARKERCLUSTER_JS: &str =
+//
+// Every one of these pins an exact `major.minor.patch`, matching the vendored
+// file beside it byte for byte, and `vendored_and_cdn_pins_are_the_same_version`
+// in `tests.rs` fails on any pin that does not.
+//
+// A floating pin is not a convenience here, it is a second version of the
+// library with no commit behind it. The desktop sets `BIOROUTER_AUTOVIS_CDN=1`
+// by default, so a standalone figure loads these URLs while a dashboard always
+// inlines the vendored bytes: the same chart is then drawn by two different
+// releases inside one app, and `ATTRIBUTION_COMMENT` states a version the CDN
+// figure does not contain. That was measurable, not hypothetical, while
+// `chart.js@4` floated: it resolved to 4.5.1 against a vendored 4.5.0.
+//
+// ⚠ Bumping a pin does not break figures already stored in a session. The
+// desktop rewriter matches the jsdelivr package and path with the version
+// segment left free, so an old tag is recognised and gets today's bytes
+// (`ui/desktop/src/utils/artifactCdnAssets.ts`). Before that it matched the
+// whole URL as a string, and a bump blanked every figure in every history.
+// ---------------------------------------------------------------------------
+pub(crate) const CDN_D3: &str = "https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js";
+pub(crate) const CDN_D3_SANKEY: &str =
+    "https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js";
+pub(crate) const CDN_CHART: &str =
+    "https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js";
+pub(crate) const CDN_LEAFLET_JS: &str =
+    "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js";
+pub(crate) const CDN_LEAFLET_CSS: &str =
+    "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css";
+pub(crate) const CDN_MARKERCLUSTER_JS: &str =
     "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
 // Mermaid must be the *classic* (non-module) bundle, not jsdelivr's `/+esm`
 // transform. Every desktop artifact is displayed under a `default-src 'none'`
@@ -177,11 +234,83 @@ const CDN_MARKERCLUSTER_JS: &str =
 // process pre-fetches each URL below and splices the source into the document
 // as an inline `<script>` (`ui/desktop/src/utils/artifactCdnAssets.ts`). That
 // rewriter only recognises `<script src=…></script>`, and the tag it produces
-// is a classic script — so an ESM `import` would neither be rewritten nor run.
-// `dist/mermaid.min.js` is an esbuild IIFE that ends in
-// `globalThis["mermaid"] = …`, i.e. exactly the shape the vendored offline copy
-// has, which is what lets both modes reach the same runtime state.
-const CDN_MERMAID: &str = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+// is a classic script, so an ESM `import` would neither be rewritten nor run.
+// `dist/mermaid.min.js` is an esbuild IIFE ending in `globalThis["mermaid"] =
+// …`, which is the shape the vendored offline copy has, and that is what lets
+// both modes reach the same runtime state.
+//
+// The version is pinned exactly, for the reason given above the other pins.
+// Mermaid is where the cost was largest: a floating `@11` sat against a
+// vendored 10.9.0, so the same diagram really did render two ways.
+pub(crate) const CDN_MERMAID: &str =
+    "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js";
+
+/// A vendored library together with the CDN pin that stands in for it.
+///
+/// Test-only: it exists so the drift guard has one list to walk, and nothing in
+/// the rendering path reads it.
+#[cfg(test)]
+pub(crate) struct PinnedLibrary {
+    /// File name inside `templates/assets/`, which is also its `LICENSES.md` key.
+    pub file: &'static str,
+    /// The bytes inlined into a figure when CDN mode is off.
+    pub vendored: &'static str,
+    /// The URL referenced instead when CDN mode is on.
+    pub cdn_url: &'static str,
+    /// How [`ATTRIBUTION_COMMENT`] names the library.
+    pub notice_name: &'static str,
+}
+
+/// Every library BioRouter ships two ways, so every pair that can drift apart.
+///
+/// Adding a library to `Asset::sources` and `asset_html` without adding it here
+/// fails `every_shipped_library_has_a_pinned_cdn_row`, which walks the assets
+/// directory rather than this table.
+#[cfg(test)]
+pub(crate) const PINNED_LIBRARIES: &[PinnedLibrary] = &[
+    PinnedLibrary {
+        file: "chart.min.js",
+        vendored: CHART_MIN,
+        cdn_url: CDN_CHART,
+        notice_name: "Chart.js",
+    },
+    PinnedLibrary {
+        file: "d3.min.js",
+        vendored: D3_MIN,
+        cdn_url: CDN_D3,
+        notice_name: "D3",
+    },
+    PinnedLibrary {
+        file: "d3.sankey.min.js",
+        vendored: D3_SANKEY,
+        cdn_url: CDN_D3_SANKEY,
+        notice_name: "d3-sankey",
+    },
+    PinnedLibrary {
+        file: "leaflet.min.js",
+        vendored: LEAFLET_JS,
+        cdn_url: CDN_LEAFLET_JS,
+        notice_name: "Leaflet",
+    },
+    PinnedLibrary {
+        file: "leaflet.min.css",
+        vendored: LEAFLET_CSS,
+        cdn_url: CDN_LEAFLET_CSS,
+        notice_name: "Leaflet",
+    },
+    PinnedLibrary {
+        file: "leaflet.markercluster.min.js",
+        vendored: MARKERCLUSTER_JS,
+        cdn_url: CDN_MARKERCLUSTER_JS,
+        notice_name: "Leaflet.markercluster",
+    },
+    PinnedLibrary {
+        file: "mermaid.min.js",
+        vendored: MERMAID_MIN,
+        cdn_url: CDN_MERMAID,
+        notice_name: "Mermaid",
+    },
+];
 
 /// Whether to reference libraries from a pinned CDN instead of inlining them.
 ///
@@ -244,7 +373,7 @@ fn script_src(url: &str) -> String {
 //
 // A dashboard is a page of `<iframe srcdoc>` panels, one per figure. Naively it
 // would call each tool and embed the returned document, but each document
-// inlines its own copy of D3/Chart.js/Mermaid (Mermaid alone is 3.3 MB), so a
+// inlines its own copy of D3/Chart.js/Mermaid (Mermaid alone is 3.6 MB), so a
 // six-panel dashboard would weigh tens of megabytes.
 //
 // Instead the dashboard runs each tool inside `render_fragment`, which swaps
@@ -350,10 +479,46 @@ pub fn asset_html(assets: &[Asset]) -> String {
 /// Shared client runtime (theme, palette, auto-resize, error card) injected via `{{COMMON}}`.
 pub const COMMON_JS: &str = include_str!("templates/_common.js");
 
-/// Assemble a template: inject `{{ASSETS}}`, `{{COMMON}}`, then any extra `{{KEY}}`
-/// substitutions (which callers must have already escaped appropriately).
+/// Put [`ATTRIBUTION_COMMENT`] at the top of a template's `<head>`.
+///
+/// Every template opens its head with a literal `<head>`, so the notice lands
+/// before the library tags. A template without one still gets the notice, at the
+/// top of the document. Running twice is a no-op, so a document can never end up
+/// with two copies.
+///
+/// This runs on the template, before any substitution, and the notice carries no
+/// `{{KEY}}` of its own, so it cannot swallow or be rewritten by one.
+fn with_attribution(template: &str) -> String {
+    const HEAD: &str = "<head>";
+    debug_assert!(
+        ATTRIBUTION_COMMENT.contains(LICENSES_PATH),
+        "the notice must name the file holding the full licence texts"
+    );
+    if template.contains(ATTRIBUTION_COMMENT) {
+        return template.to_string();
+    }
+    let mut out = String::with_capacity(template.len() + ATTRIBUTION_COMMENT.len() + 1);
+    match template.split_once(HEAD) {
+        Some((before, after)) => {
+            out.push_str(before);
+            out.push_str(HEAD);
+            out.push('\n');
+            out.push_str(ATTRIBUTION_COMMENT);
+            out.push_str(after);
+        }
+        None => {
+            out.push_str(ATTRIBUTION_COMMENT);
+            out.push_str(template);
+        }
+    }
+    out
+}
+
+/// Assemble a template: inject the attribution notice and `{{ASSETS}}`,
+/// `{{COMMON}}`, then any extra `{{KEY}}` substitutions (which callers must have
+/// already escaped appropriately).
 pub fn assemble(template: &str, assets: &[Asset], subs: &[(&str, &str)]) -> String {
-    let mut html = template
+    let mut html = with_attribution(template)
         .replace("{{ASSETS}}", &asset_html(assets))
         .replace("{{COMMON}}", COMMON_JS);
     for (key, val) in subs {

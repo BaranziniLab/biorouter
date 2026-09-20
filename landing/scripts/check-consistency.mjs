@@ -17,6 +17,10 @@ const check = (condition, message) => {
 };
 const includes = (text, needle, message) => check(text.includes(needle), message || `missing ${needle}`);
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A display name is compared against HTML, where `Web & Documents` is written
+// `Web &amp; Documents`. Comparing the raw name never matched it, so the one
+// bundled extension with an ampersand always read as absent.
+const escapeHtml = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const capture = (text, re, label) => {
   const match = re.exec(text);
   if (!match) throw new Error(`Could not find ${label}`);
@@ -132,8 +136,8 @@ includes(docs, `biorouter v${landingVersion}`, 'docs provider defaults should ci
 includes(docs, `biorouter v${landingVersion}`, 'docs extension defaults should cite the latest published Biorouter version');
 includes(index, `v${landingVersion}`, 'index fallback release version should match the latest published version');
 includes(download, `v${landingVersion}`, 'download fallback badge should match the latest published version');
-includes(download, `BioRouter-${landingVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
-includes(download, `BioRouter-win32-x64-${landingVersion}.zip`, 'download Windows fallback should match release asset');
+includes(download, `Biorouter-${landingVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
+includes(download, `Biorouter-win32-x64-${landingVersion}.zip`, 'download Windows fallback should match release asset');
 includes(about, `releases/tag/v${landingVersion}`, 'about news should link to the latest published release');
 for (const page of [index, download, docs, about, content]) {
   check(!page.includes('1.88.2'), 'landing content should not advertise the retracted 1.88.2 release');
@@ -172,22 +176,52 @@ for (const recommended of ['Gemma 4 E4B', 'Gemma 4 12B']) {
   includes(mockups, recommended, `mockups should include memory-tiered Llama Server recommendation ${recommended}`);
 }
 
+// Derive the rail from the app rather than keeping a third copy of the list.
+// The hardcoded copy asserted 'Chat', 'History' and 'Apps', three rows the app
+// has never had under those names (they are 'New chat', reached from Recents,
+// and 'Built apps'), so it was checking the mockup against a list that matched
+// neither the app nor the site, and no edit to the site could turn it green.
 const appSidebar = source('ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx');
-for (const label of ['Home', 'Chat', 'History', 'Workflows', 'Scheduler', 'Extensions', 'Skills', 'Knowledge', 'Apps', 'Settings']) {
-  includes(appSidebar, `label: '${label}'`, `Biorouter sidebar source should include ${label}`);
+const sidebarLabels = [...appSidebar.matchAll(/label: '([^']+)'/g)].map((match) => match[1]);
+check(
+  sidebarLabels.length >= 8,
+  `expected the app sidebar to declare its rows as "label: '…'" (found ${sidebarLabels.length}); ` +
+    'if that shape changed, update this reader rather than reinstating a hand-written list'
+);
+for (const label of sidebarLabels) {
   includes(mockups, `label: '${label}'`, `mockup sidebar should include ${label}`);
 }
 
 const bundled = JSON.parse(source('ui/desktop/src/components/settings/extensions/bundled-extensions.json'));
+// docs.html holds several tables and two of them carry a `Knowledge` row, so
+// the default-state lookup is scoped to the built-in extensions table.
+const builtinTable = (() => {
+  const head = docs.indexOf('<th>Extension</th><th>Default</th>');
+  check(head !== -1, 'docs should carry a built-in extensions table with a Default column');
+  if (head === -1) return '';
+  const end = docs.indexOf('</table>', head);
+  return docs.slice(head, end === -1 ? undefined : end);
+})();
 for (const ext of bundled) {
-  includes(docs, ext.display_name, `docs should include bundled extension ${ext.display_name}`);
-  includes(mockups, ext.display_name, `mockup should include bundled extension ${ext.display_name}`);
-  const expected = ext.enabled ? '<strong>On</strong>' : 'Off';
+  const name = escapeHtml(ext.display_name);
+  includes(docs, name, `docs should include bundled extension ${ext.display_name}`);
+  includes(mockups, name, `mockup should include bundled extension ${ext.display_name}`);
+  const expected = ext.enabled ? 'On' : 'Off';
+  // Default is the SECOND cell of a four-column row (name, default,
+  // description, key tools). The regex used to end at `</td></tr>`, which made
+  // it capture the LAST cell instead, so every row failed on the key-tools text
+  // and real drift could not be seen inside the noise.
   const rowRe = new RegExp(
-    `<tr><td>(?:<strong>)?${escapeRegExp(ext.display_name)}(?:<\\/strong>)?<\\/td><td>[\\s\\S]*?<\\/td><td>(.*?)<\\/td><\\/tr>`
+    `<tr><td>(?:<strong>)?${escapeRegExp(name)}(?:<\\/strong>)?<\\/td><td>(.*?)<\\/td>`
   );
-  const docRow = rowRe.exec(docs);
-  check(docRow && docRow[1] === expected, `docs default state for ${ext.display_name} should be ${expected}`);
+  const docRow = rowRe.exec(builtinTable);
+  // A cell may qualify the state ("On; task approval required"), so the word
+  // that opens it is what is checked.
+  const state = docRow && docRow[1].replace(/<[^>]+>/g, '').trim();
+  check(
+    Boolean(state) && new RegExp(`^${expected}\\b`).test(state),
+    `docs default state for ${ext.display_name} should be ${expected}`
+  );
 }
 
 includes(docs, '--schedule-id review-weekly', 'scheduler docs should use named schedule ID argument');

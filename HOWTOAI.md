@@ -53,11 +53,14 @@ Before submitting AI assisted code, confirm that:
 - Docs are updated and accurate  
 - Code follows existing patterns  
 - The checks below pass locally (happy path + error cases)
+- No commit in your branch carries a `Co-Authored-By:` trailer naming an AI tool. The required `no-ai-coauthor` check rejects the branch until you rewrite the message, and several assistants add the trailer automatically
 
 ```bash
-just check-everything               # what CI gates on: fmt, clippy, UI lint,
-                                    # OpenAPI schema, version consistency,
-                                    # brand consistency, cross-compile drift
+just check-everything               # fmt, clippy, UI lint, OpenAPI schema, version,
+                                    # brand, Computer Use naming, cross-compile drift,
+                                    # BAAM registry. Run before pushing; the checks that
+                                    # actually block a merge are test (ubuntu/macos/
+                                    # windows), Unit tests (vitest) and no-ai-coauthor.
 cargo test -p <crate>               # the crates you touched
 cd ui/desktop && npm run test:run   # frontend; bare `npm test` is watch mode
                                     # and will never exit
@@ -100,7 +103,7 @@ just generate-openapi               # REQUIRED after any server-route change
 
 AI is a powerful assistant, not a replacement for your judgment. Use it to speed up development; while keeping your brain engaged, your standards high, and BioRouter secure.
 
-Questions? Join our [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions) to talk more about responsible AI development.  
+Questions? [Open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose) to talk more about responsible AI development. GitHub Discussions is not enabled on this repository.  
 
 ---
 

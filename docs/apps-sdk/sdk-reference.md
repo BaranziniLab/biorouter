@@ -23,7 +23,7 @@ The design describes nine pillars. Most of the surface below ships as documented
 
 | Area | Shipped state |
 |---|---|
-| Worker profiles (`br.agent`, `consult`) | **Partial — actively landing.** Cross-profile turns are serialized, not parallel; `consult` depth is 1; workers get no `ui_*` control unless the profile opts in. Treat the code in the `feat/apps-sdk-v2` branch as authoritative. |
+| Worker profiles (`br.agent`, `consult`) | **Partial — actively landing.** Cross-profile turns are serialized, not parallel; `consult` depth is 1; workers get no `ui_*` control unless the profile opts in. Treat the code in `crates/biorouter-mcp/src/agent_drafter/` and `crates/biorouter-server/src/routes/apps.rs` on `main` as authoritative. |
 | Per-app skill scoping | **Advisory only.** The named skills are surfaced to the agent, but BioRouter's skill enable/disable is global, so true per-app isolation is a follow-up. |
 | Export payload for external extensions | **Not staged.** External extensions are recorded as pinned registry references in `export.json`; installed-bundle (`.brxt`) staging is out of scope in this build. |
 | `bundle_daemon: "all"` (universal daemon) | **Out of scope.** Treated as `"current"` with a note. |
@@ -354,10 +354,10 @@ Each facade method stamps `agent: name` on its outgoing `prompt`/`call` frame; t
 > one worker (or the main agent) runs at a time on the app socket. Parallel turns
 > across profiles are a stretch goal, not in this build. `consult` depth is 1 (a
 > consulted profile cannot itself consult), and workers get no `ui_*` control
-> unless the profile opts in. This is an actively-landing feature in the
-> `feat/apps-sdk-v2` branch — treat the code (`validate_profiles` / `WorkerHandle`
-> in `apps.rs`, `consult` in `control.rs`, `AgentFacade` in `sdk.ts`) as
-> authoritative for its exact current shape.
+> unless the profile opts in. This is an actively-landing feature: treat the code
+> on `main` (`validate_profiles` / `WorkerHandle` in `apps.rs`, `consult` in
+> `control.rs`, `AgentFacade` in `sdk.ts`) as authoritative for its exact current
+> shape.
 
 ## Agent-driven UI tools
 

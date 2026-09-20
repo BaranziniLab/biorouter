@@ -22,12 +22,12 @@ this worktree; `file:line` references point at real current lines.
 
 | Severity | Meaning | Open |
 |---|---|---|
-| [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 8 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 15 |
+| [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 6 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 13 |
 | [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 7 |
 | [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 7 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
-| **Total** | | **45** |
+| **Total** | | **41** |
 
 ## Correctness risk
 
@@ -55,26 +55,6 @@ plaintext `~/.config/biorouter/secrets.yaml`.
 [Environment variables](../configuration/environment-variables.md) (line 176) states this
 correctly. **Decision needed:** reword secret-storage.md's table and dev-setup line to match,
 or change the code to honour the value.
-
-### The built-in extensions table marks four default-on extensions as "Disabled"
-
-[Extensions and skills guide](../extensions/extensions-and-skills-guide.md) lists Computer
-Controller (line 22), Memory (23), Auto Visualiser (25) and Code Execution (46) as
-`Disabled`. **Verified:** `ui/desktop/src/components/settings/capabilities/capabilities.ts`
-sets `defaultEnabled: true` for eleven capabilities and `false` only for chat recall.
-Four pages under `built-in/` also walk readers through "enabling" an extension
-that is already on. The cleanup added Note callouts rather than editing table rows.
-**Decision needed:** correct the four rows and drop the callouts.
-
-### `biorouter schedule delete` is not a real subcommand
-
-[Scheduled jobs](../workflows/scheduled-jobs.md) (line 89) tells readers to run
-`biorouter schedule delete <job-id>`. **Verified:** the subcommand is `Remove`
-(`crates/biorouter-cli/src/cli.rs:562-563`, handler `handle_schedule_remove` at
-`crates/biorouter-cli/src/commands/schedule.rs:171`), and
-[CLI command reference](../cli/command-reference.md) (line 462) documents
-`biorouter schedule remove --schedule-id …`. The command as printed fails.
-**Decision needed:** fix scheduled-jobs.md.
 
 ### The managed-policy guide understates a Windows trust gap the design doc calls load-bearing
 
@@ -163,22 +143,6 @@ The institutional-providers documents state deployment `gpt-5.2-2025-12-11` and 
 old values are arguably correct *there* — but the current values have no user-facing home.
 **Decision needed:** publish the live constants in a provider page (see the coverage gap
 above), then leave the history alone.
-
-### `CLAUDE.md` says v1.87.2; the repo is at v1.88.3
-
-**Verified:** `Cargo.toml` and `ui/desktop/package.json` both read `1.88.3`, and
-`docs/releases/notes/` runs through `v1.88.3.md`. `CLAUDE.md:7` says v1.87.2. Several rewritten
-docs declined to stamp a current version because of this.
-**Decision needed:** `scripts/release.sh bump` does not touch `CLAUDE.md`; either add it or
-stop citing a version there.
-
-### Provider section ordering: two history docs say Institutional first, the code says Local
-
-**Verified:** `ui/desktop/src/components/settings/providers/ProviderGrid.tsx` renders Local
-Models (line 208), then Institutional Models (218), then Commercial Models (227) — matching
-`CLAUDE.md`. Both institutional-providers documents specify Institutional → Local →
-Commercial. The cleanup added superseded notes. **Decision needed:** confirm the shipped order
-is intended and close out the design's requirement.
 
 ### The Knowledge plans put the module in the wrong crate, including in the architecture diagram
 
@@ -384,14 +348,14 @@ in-session interrupt / message queueing — which
 in-session content appears to have been lost in the migration rather than moved.
 **Decision needed:** write them, starting with `.biorouterignore`.
 
-### The Auto Visualiser page documents 8 of 34 tools
+### The Auto Visualiser page documents 8 of 32 figure kinds
 
 [Auto Visualiser](../extensions/built-in/auto-visualiser.md) covers eight chart families against
-34 registered tools. The most conspicuous omission is `render_dashboard`, the composite-report
-tool `CLAUDE.md` describes as the thing the model should reach for whenever an answer needs more
-than one figure. The cleanup named every missing tool in a Warning and pointed at the source
-rather than invent 26 parameter tables. **Decision needed:** this needs a content pass, not a
-formatting pass.
+the 32 kinds `render_figure` reaches. Its Status line and a Warning now name every missing kind
+and point at the source rather than invent 24 parameter tables, and `render_dashboard` (the
+composite-report tool) is named there, so the page no longer omits it. The catalogue itself is
+still eight of thirty-two. **Decision needed:** this needs a content pass, not a formatting
+pass.
 
 ### Four providers have modules but no entry in the provider guide
 

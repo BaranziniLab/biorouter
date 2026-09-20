@@ -83,9 +83,17 @@ fn desktop_asset_urls(module: &str) -> Vec<String> {
 /// Rebuild one of the rewriter's regexes from the desktop source, so a change to
 /// the tag shape it accepts is a change to what this test demands.
 ///
-/// The TS side is a template literal, `` new RegExp(`…${escapeRegExp(url)}…`, 'g') ``.
-/// Substituting the escaped URL and unescaping the literal's doubled backslashes
-/// yields the same pattern the renderer actually applies.
+/// The TS side is a template literal, `` new RegExp(`…${<url expression>}…`, 'g') ``.
+/// The interpolation is replaced with the URL, escaped, and the literal's
+/// doubled backslashes are unescaped.
+///
+/// ⚠ The renderer's own interpolation leaves the version segment of a jsdelivr
+/// URL free, so a figure stored under an older pin is still recognised. This
+/// substitutes the whole URL instead, which is deliberate: every document here
+/// was rendered moments ago with today's pin, so the exact URL is the one to
+/// demand, and it keeps the question this test asks about the *tag shape* the
+/// tools emit. Version tolerance is a property of the stored blob and is tested
+/// where it lives, in `artifactCdnAssets.test.ts`.
 fn rewriter_pattern(module: &str, function: &str, url: &str) -> Regex {
     let template = module
         .split_once(&format!("export const {function} = "))
@@ -97,8 +105,15 @@ fn rewriter_pattern(module: &str, function: &str, url: &str) -> Regex {
         .split_once('`')
         .expect("end of RegExp template")
         .0;
-    let source = template
-        .replace("${escapeRegExp(url)}", &regex::escape(url))
+    let interpolation = Regex::new(r"\$\{[^}]*\}").unwrap();
+    assert!(
+        interpolation.is_match(template),
+        "{function} no longer interpolates the URL into its pattern, so this \
+         test would be asserting against a fixed string: {template}"
+    );
+    // `$` is a capture reference in a replacement string, so double it.
+    let source = interpolation
+        .replace_all(template, regex::escape(url).replace('$', "$$"))
         .replace("\\\\", "\\");
     Regex::new(&source).unwrap_or_else(|e| panic!("{function} is not a valid pattern: {e}"))
 }

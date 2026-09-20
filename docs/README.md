@@ -59,7 +59,7 @@ Two kinds of document live here, and the difference matters more than any other 
 
 ## Historical records
 
-[`history/`](history/README.md) is the archive: 28 topic folders covering May–August 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
+[`history/`](history/README.md) is the archive: 30 topic folders covering May–August 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
 
 The largest campaigns in there:
 

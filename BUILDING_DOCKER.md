@@ -47,7 +47,7 @@ docker build -t biorouter:local .
 The build process:
 - Uses a multi-stage build to minimize final image size
 - Compiles with optimizations (LTO, stripping, size optimization)
-- Results in a `debian:bookworm-slim`-based image containing the `biorouter` CLI binary (the `biorouterd` daemon is not included)
+- Results in a `debian:bookworm-slim`-based image containing the `biorouter` CLI binary and the native Computer Use helper (the `biorouterd` daemon is not included)
 
 ### Build Options
 
@@ -204,10 +204,10 @@ analyze:
 
 ### Size and Optimization
 
-- **Multi-stage build**: the `rust:1.92-bookworm` builder stage is discarded; only the compiled binary is copied forward
-- **Base image**: `debian:bookworm-slim`, pinned by digest, plus six runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `curl`, `git`)
+- **Multi-stage build**: two builder stages are discarded (`golang:1.26.8-bookworm`, which builds the native Computer Use helper, and `rust:1.92-bookworm`, which builds the CLI); only the compiled artifacts are copied forward
+- **Base image**: `debian:bookworm-slim`, pinned by digest, plus eleven runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `python3`, `python3-gi`, `gir1.2-atspi-2.0`, `gir1.2-gtk-3.0`, `at-spi2-core`, `curl`, `git`). The five in the middle are the Computer Use helper's AT-SPI runtime
 - **Optimizations**: the `Dockerfile` overrides the release profile with LTO, one codegen unit, `opt-level=z`, and stripping
-- **Contents**: only the CLI (`/usr/local/bin/biorouter`) — it builds `--package biorouter-cli`, so the `biorouterd` daemon is **not** in the image
+- **Contents**: the CLI (`/usr/local/bin/biorouter`) and the Computer Use helper (`/usr/libexec/biorouter/computer-use`) — it builds `--package biorouter-cli`, so the `biorouterd` daemon is **not** in the image
 
 Image and binary sizes are not stated here on purpose: they move with the profile settings and the dependency tree, and a stale number is worse than none. Measure your own build with `docker images biorouter:local`.
 

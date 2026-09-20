@@ -28,7 +28,7 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_MODEL` | Default model to use | Model name (e.g. `"claude-4.5-sonnet"`, `"gpt-4"`) | None | Yes |
 | `BIOROUTER_TEMPERATURE` | Model response randomness | Float between 0.0 and 1.0 | Model-specific | No |
 | `BIOROUTER_MODE` | [Tool execution behaviour](../security/permission-modes.md) | `"auto"`, `"approve"`, `"chat"`, `"smart_approve"` | `"auto"` | No |
-| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | Integer (e.g. 10, 50, 100) | 1000 | No |
+| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | Integer (e.g. 10, 50, 100) | 100 | No |
 | `BIOROUTER_LEAD_PROVIDER` | Provider for the lead model in [lead/worker mode](environment-variables.md#leadworker-model-configuration) | Same as `BIOROUTER_PROVIDER` options | Falls back to `BIOROUTER_PROVIDER` | No |
 | `BIOROUTER_LEAD_MODEL` | Lead model for lead/worker mode | Model name | None | No |
 | `BIOROUTER_PLANNER_PROVIDER` | Provider for planning mode | Same as `BIOROUTER_PROVIDER` options | Falls back to `BIOROUTER_PROVIDER` | No |

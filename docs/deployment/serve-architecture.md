@@ -292,14 +292,6 @@ search found next, while the same path given as `--web-dir` was fatal. With neit
 resolver looks in a fixed order — locations relative to the executable, then a system-wide path
 for the Linux packages — and when it finds none, the error names every path it tried.
 
-## Related documentation
-
-- [Reaching a private chat from a script](programmatic-session-access.md) — what `X-Secret-Key` does *not* prove, and the capability header a private session additionally requires.
-- [Decisions behind `biorouter serve`](serve-decisions.md) — why each of the above was chosen.
-- [Browser access](browser-access.md) — using the command.
-- [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
-- [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SERVE_UI` and neighbours.
-
 ## Computer Use approval in a browser
 
 Start `biorouter serve --computer-use-approval` from an interactive terminal to set a
@@ -322,3 +314,11 @@ A server without an interactive desktop cannot provide Computer Use. Run
 `biorouter doctor --no-update` for runtime and host diagnostics without capturing or
 controlling the desktop. Unattended launches cannot configure the approval key through
 argv, environment variables, a file, or piped input.
+
+## Related documentation
+
+- [Reaching a private chat from a script](programmatic-session-access.md) — what `X-Secret-Key` does *not* prove, and the capability header a private session additionally requires.
+- [Decisions behind `biorouter serve`](serve-decisions.md) — why each of the above was chosen.
+- [Browser access](browser-access.md) — using the command.
+- [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
+- [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SERVE_UI` and neighbours.

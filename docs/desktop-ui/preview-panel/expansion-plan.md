@@ -4,8 +4,8 @@
 > Office documents, live websites, an annotation channel into the chat, and agent access to what
 > the panel is showing. Decision records, five workstreams, the security analysis, and how each
 > piece is tested.
-> **Status:** Proposed — awaiting approval. Nothing here has shipped. Branch
-> `design/preview-panel-expansion`, worktree `biorouter-preview-panel-wt`.
+> **Status:** Current. The plan was approved and all six phases are implemented and merged to
+> `main`. See the [implementation record](implementation-record.md) for what actually shipped.
 > **Audience:** the reviewer approving this, and whoever executes it afterwards.
 
 Read the [current-state survey](current-state.md) first, or at least §1 below. The panel is

@@ -813,6 +813,50 @@ cmd_publish() {
   require_fresh_windows_smoke "$v" "$LATEST_DRAFT_ASSET_UPDATED_AT"
   gh release edit "v$v" --draft=false
   log "published: $(gh release view "v$v" --json url --jq .url)"
+  log "next: scripts/release.sh landing $v   (the public site still cites the previous release)"
+}
+
+# ── landing site ──────────────────────────────────────────────────────────────
+# The public site cites the LATEST PUBLISHED version, not the tree's. Nothing in
+# this script used to touch `landing/` at all, which is why the site sat three
+# releases behind: its download links, install commands and version badges all
+# named v1.88.x while the tree was on 1.90.5. Its own guard
+# (`landing/scripts/check-consistency.mjs`) had been failing that whole time.
+#
+# ⚠ This runs AFTER publish, deliberately, and refuses to run before. The site's
+# hardcoded versions are FALLBACKS used when GitHub is unreachable, so pointing
+# them at an unpublished version would make every download link 404 in exactly
+# the case the fallback exists to cover.
+cmd_landing() {
+  local v="$1"
+  local is_draft
+  is_draft="$(gh release view "v$v" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+  case "$is_draft" in
+    false) ;;
+    true) die "v$v is still a draft. The landing site's versions are fallbacks for when GitHub is unreachable, so they must name a published release. Run: scripts/release.sh publish $v" ;;
+    *) die "v$v is not a published release; refusing to point the landing site at it" ;;
+  esac
+
+  log "pointing the landing site at the published v$v"
+  local prev
+  prev="$(perl -ne 'print $1 and exit if /\*\*Version:\*\* v([0-9]+\.[0-9]+\.[0-9]+)/' landing/assets/landing-site-content.md)"
+  [ -n "$prev" ] || die "could not read the current landing version from landing/assets/landing-site-content.md"
+  if [ "$prev" = "$v" ]; then
+    log "landing site already cites v$v"
+  else
+    log "landing site: v$prev → v$v"
+    local f
+    for f in landing/assets/landing-site-content.md landing/index.html landing/download.html landing/docs.html; do
+      [ -f "$f" ] || continue
+      perl -0pi -e "s/\Q$prev\E/$v/g" "$f"
+    done
+  fi
+
+  # The site's own guard is the check, not this function's diff.
+  ( cd landing && node scripts/check-consistency.mjs ) \
+    || die "landing consistency checks failed after the version update; fix the site before committing"
+  log "landing site updated and its consistency checks pass"
+  log "⚠ this leaves an uncommitted change; commit landing/ and push so the site deploys"
 }
 
 cmd_all() {
@@ -903,7 +947,7 @@ case "$CMD" in
       log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
     fi
     ;;
-  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish)
+  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|landing)
     need_version "$VER"
     # Keywords are deliberately REFUSED here. These phases run against a tree
     # that `bump` has already rewritten, so `minor` would resolve against the
@@ -914,5 +958,5 @@ case "$CMD" in
         die "'$VER' is only valid for 'bump' and 'all'. This phase needs the explicit version the tree is already at: $(current_version)" ;;
     esac
     "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|all} <version|major|minor|patch>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|landing|all} <version|major|minor|patch>" ;;
 esac

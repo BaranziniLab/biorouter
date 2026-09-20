@@ -22,8 +22,10 @@ Updating is not uniform across platforms, so an old install can stay old indefin
 
 **In scope:**
 
-- The loopback `biorouterd` HTTP and WebSocket API, and its `BIOROUTER_SERVER__SECRET_KEY` authentication.
+- The `biorouterd` HTTP and WebSocket API and its `BIOROUTER_SERVER__SECRET_KEY` authentication, whether bound to loopback (the default) or to a LAN-reachable address via `biorouter serve --host` / `biorouter web --host`, together with the browser token and its session cookie that gate the served interface.
 - Secret storage — including the plaintext `secrets.yaml` fallback, which is selected by `BIOROUTER_DISABLE_KEYRING=true` and automatically on headless Linux. See [secret storage](docs/security/secret-storage.md).
+- The secret guard, the always-on refusal that keeps credential files (`~/.aws/credentials`, SSH private keys, `secrets.yaml`, `.env`) out of tool arguments and tool output in every chat, mode and tier. See [secret guard](docs/security/secret-guard.md).
+- The Computer Use consent gate, the per-task approval that must be granted before any of the ten desktop observation and control tools (`list_apps`, `get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`, `screen_capture`) runs, and the native helper it drives.
 - MCP extension execution and the `.brxt` extension install path.
 - The `serve.mjs` server shipped with an exported Agent Drafter app.
 - The `biorouter://` URL scheme handler.
@@ -36,10 +38,11 @@ Updating is not uniform across platforms, so an old install can stay old indefin
 
 ## Known limits: safety, not a security boundary
 
-**Biorouter's in-app controls — permission modes, tool permissions, `.biorouterignore` — are safety measures against mistakes, not security boundaries against a determined or injected path.** They act inside Biorouter, above the operating system. A control failing to constrain the agent *as documented* is a vulnerability and is in scope above. The limits below are not defects; they are the shape of the product, and a deployment handling regulated data has to plan around them.
+**Biorouter's in-app controls — permission modes, tool permissions, `.biorouterignore` — are safety measures against mistakes, not security boundaries against a determined or injected path.** They act inside Biorouter, above the operating system. A control failing to constrain the agent *as documented* is a vulnerability and is in scope above. The secret guard and the Computer Use consent gate are a different matter: both are listed in scope, and a bypass of either is a reportable vulnerability. The limits below are not defects; they are the shape of the product, and a deployment handling regulated data has to plan around them.
 
 - **The agent runs with your privileges.** `shell` and `text_editor` can run any command and read or modify any file your user account can reach. `.biorouterignore` and permission modes filter what the agent is offered and when it must ask; they are not an OS sandbox, and an approved command is not confined by them. See [the Developer extension's access controls](docs/extensions/built-in/developer.md).
 - **Session history is not encrypted.** Conversations are kept in a local SQLite database at `~/.config/biorouter/sessions/sessions.db`. Whatever a session contained — including regulated data — stays readable on disk by anything running as your user account. See [managing sessions](docs/getting-started/managing-sessions.md).
+- **Computer Use sees and acts beyond Biorouter.** Once you grant a Computer Use task, `screen_capture` can read whatever is on the display, including windows belonging to other applications, and the input tools can act in them. The consent gate is per task and revocable with Stop; it is not a restriction on what the granted task can reach.
 
 These two limits are also what makes prompt injection consequential rather than merely annoying; read the autonomy caution below with them in mind. The practical consequence for patient data is that the boundary which matters is chosen **before** the session starts — the provider you pick and the machine you run on — not a setting applied afterwards.
 

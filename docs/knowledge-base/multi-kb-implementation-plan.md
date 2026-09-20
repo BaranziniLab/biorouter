@@ -26,7 +26,7 @@ Each decision is **resolved**. The rejected alternative is named so a future rea
 
 **Decision.** There is no separate "active set". The bases `kb_list_bases` returns for a session are the bases that session uses: `kb_search` with no `kb_id` already searches all of them and tags every hit with its `kb_id` (`crates/biorouter-mcp/src/knowledge/server.rs:291` `search_visible_bases`, called at `:620` and `:653`); the chat chip already multi-selects them (`ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, backed by `get_hidden_for_session_or_persisted`, `service.rs:1043`). Nothing about that changes. What changes is that we stop pretending a second, narrower "active" collection exists.
 
-**Rationale.** Cross-KB search is not missing — it shipped in `0f4a4987` ("Split knowledge focus from chat discovery"). The only genuinely singular thing is the focus pointer. Adding a third collection on top of two working ones would give every row in `KBSelectorPalette` three independent toggles (active / primary / hidden), which the survey flagged as the point where the feature becomes unusable, and would force a "narrowing vs widening" decision on KB-less `kb_search` that can only regress somebody.
+**Rationale.** Cross-KB search is not missing — it shipped in `0f4a4987` ("Split knowledge focus from chat discovery"). The only genuinely singular thing is the focus pointer. Adding a third collection on top of two working ones would give every row in `KBSelectorMenu` three independent toggles (active / primary / hidden), which the survey flagged as the point where the feature becomes unusable, and would force a "narrowing vs widening" decision on KB-less `kb_search` that can only regress somebody.
 
 **Alternative rejected.** Three axes — `visible ⊇ active ∋ primary`. Rejected for the three-toggle row, for the second empty-set/fallback semantic to keep in sync with the first, and because "active but not visible" and "visible but not active" have no meaning a user could state.
 
@@ -146,7 +146,7 @@ The body carries **three mutually exclusive** primary gestures, one per state of
 
 ### D12 — GUI: the palette row carries two states, never three
 
-**Decision.** `KBSelectorPalette`'s existing per-row switch becomes the **membership** switch ("in this chat"), which is what it already was under a different name. The row body click becomes **"make primary"** and no longer closes the palette; a `PRIMARY` badge replaces `Focused`. Making a base primary while its switch is off turns the switch on in the same request — one user gesture, one `POST`, and the server validates the *resulting* state. `KBSelectorTrigger` shows the primary's dot and name plus the set size. `KnowledgeContext` renames `activeKbId`/`activeKb`/`setActiveKbId` to `primaryKbId`/`primaryKb`/`setPrimaryKbId`, and **takes the primary from the server's response** rather than re-deriving the repair rule in TypeScript.
+**Decision.** `KBSelectorMenu`'s existing per-row switch becomes the **membership** switch ("in this chat"), which is what it already was under a different name. The row body click becomes **"make primary"** and no longer closes the palette; a `PRIMARY` badge replaces `Focused`. Making a base primary while its switch is off turns the switch on in the same request — one user gesture, one `POST`, and the server validates the *resulting* state. `KBSelectorTrigger` shows the primary's dot and name plus the set size. `KnowledgeContext` renames `activeKbId`/`activeKb`/`setActiveKbId` to `primaryKbId`/`primaryKb`/`setPrimaryKbId`, and **takes the primary from the server's response** rather than re-deriving the repair rule in TypeScript.
 
 The chat chip (`BottomMenuKnowledgeSelection.tsx`) is **untouched**: it already edits exactly the session set, with a searchable multi-toggle and a count. Its test is untouched too — none of the context fields it consumes are renamed.
 
@@ -189,7 +189,7 @@ The gesture carries **no optimistic pointer** and **omits `hidden_kbs`**. The da
 | Path | Responsibility |
 |---|---|
 | `ui/desktop/src/components/knowledge/KnowledgeContext.test.tsx` | First-ever Vitest coverage for the context: primary/hidden hydration from the server, the membership invariant on `setPrimaryKbId`, prune-don't-clear. |
-| `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.test.tsx` | Row has exactly two states; "make primary" does not close the palette and turns membership on. |
+| `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.test.tsx` | Row has exactly two states; "make primary" does not close the palette and turns membership on. |
 
 ### Modified
 
@@ -209,7 +209,7 @@ The gesture carries **no optimistic pointer** and **omits `hidden_kbs`**. The da
 | `crates/biorouter-cli/src/commands/knowledge.rs` | Membership validation on `--set`; primary marked in `list`; `resolve_kb` names the base it resolved to. |
 | `crates/biorouter-cli/src/session/output.rs` | Greeting row follows the rename. |
 | `ui/desktop/src/components/knowledge/KnowledgeContext.tsx` | `primaryKbId`/`primaryKb`/`setPrimaryKbId`; server response is the source of truth for the repaired primary. |
-| `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.tsx` | Membership switch + make-primary row body; `PRIMARY` badge; no auto-close. |
+| `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.tsx` | Membership switch + make-primary row body; `PRIMARY` badge; no auto-close. |
 | `ui/desktop/src/components/knowledge/KBSelector/KBSelectorTrigger.tsx` | Primary dot + name + set size. |
 | `ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx`, `graph/KnowledgeGraphPanel.tsx`, `changelog/ChangeLogDrawer.tsx`, `hooks/useKnowledgeBases.ts` | Consume `primaryKbId`. |
 | `ui/desktop/src/components/MentionPopover.tsx` | Reads `primary_kb`; labels membership vs primary. |
@@ -3346,19 +3346,19 @@ git commit -m "feat(knowledge-ui): hold a primary KB and adopt the daemon's memb
 ### Task 21: the palette row carries two states, and picking a primary does not close it
 
 **Files:**
-- Create: `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.test.tsx`
-- Modify: `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.tsx:37`, `:127`, `:132-133`, `:302-345`
+- Create: `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.test.tsx`
+- Modify: `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.tsx:37`, `:127`, `:132-133`, `:302-345`
 - Modify: `ui/desktop/src/components/knowledge/KBSelector/KBSelectorTrigger.tsx:14`, `:31`, `:34`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.test.tsx`:
+Create `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.test.tsx`:
 
 ```tsx
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { KBSelectorPalette } from './KBSelectorPalette';
+import { KBSelectorMenu } from './KBSelectorMenu';
 
 const mocks = vi.hoisted(() => ({
   setPrimaryKbId: vi.fn(),
@@ -3407,12 +3407,12 @@ afterAll(() => vi.unstubAllGlobals());
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('KBSelectorPalette', () => {
+describe('KBSelectorMenu', () => {
   // Two states per row, never three. Under the merged model membership and
   // the primary are the only two things a base can be, and the row body is
   // the "make primary" affordance.
   it('offers exactly one membership switch per row', () => {
-    render(<KBSelectorPalette onClose={mocks.onClose} />);
+    render(<KBSelectorMenu onClose={mocks.onClose} />);
     expect(screen.getByLabelText('Include Alpha in this chat')).toBeInTheDocument();
     expect(screen.getByLabelText('Include Beta in this chat')).toBeInTheDocument();
     expect(screen.getAllByRole('switch')).toHaveLength(2);
@@ -3421,14 +3421,14 @@ describe('KBSelectorPalette', () => {
   // Picking a primary used to close the palette, which made the selector feel
   // like a radio group over a single-active model. It is now a place you stay.
   it('makes a base primary without closing the palette', async () => {
-    render(<KBSelectorPalette onClose={mocks.onClose} />);
+    render(<KBSelectorMenu onClose={mocks.onClose} />);
     await userEvent.click(screen.getByText('Beta'));
     expect(mocks.setPrimaryKbId).toHaveBeenCalledWith('beta');
     expect(mocks.onClose).not.toHaveBeenCalled();
   });
 
   it('marks the primary', () => {
-    render(<KBSelectorPalette onClose={mocks.onClose} />);
+    render(<KBSelectorMenu onClose={mocks.onClose} />);
     expect(screen.getByText('Primary')).toBeInTheDocument();
   });
 });
@@ -3437,7 +3437,7 @@ describe('KBSelectorPalette', () => {
 - [ ] **Step 2: Run the test — see it fail**
 
 ```bash
-cd ui/desktop && npx vitest run src/components/knowledge/KBSelector/KBSelectorPalette.test.tsx
+cd ui/desktop && npx vitest run src/components/knowledge/KBSelector/KBSelectorMenu.test.tsx
 ```
 
 Expected:
@@ -3448,7 +3448,7 @@ TestingLibraryElementError: Unable to find a label with the text of: Include Alp
 
 - [ ] **Step 3: Implement**
 
-In `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.tsx`:
+In `ui/desktop/src/components/knowledge/KBSelector/KBSelectorMenu.tsx`:
 
 `:37` —
 

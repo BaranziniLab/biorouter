@@ -1,6 +1,6 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Copy is American English 2026-09-09 ([§3.10](#310--spelling))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Copy is American English 2026-09-09 ([§3.10](#310--spelling))** · **Doc revision:** 1.87.2 (the app version at sign-off, not the current one) · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile — now 36px content rows and 32px sidebar
@@ -43,8 +43,10 @@ Each element spec carries three labels:
 | Label | Meaning |
 |---|---|
 | **Canonical** | The target. Build to this. |
-| **Today** | What the code actually does right now, with `file:line` evidence. |
+| **Today** | What the code did when the passage was written, with `file:line` evidence. |
 | **Drift** | The gap. Every drift item has an ID (`DR-nn`) and lands in the [drift register](#part-7--drift-register). |
+
+> **Line numbers in this document are as-audited, not current.** `main.css` has grown past 5,300 lines and most of the `file:line` citations below now land on unrelated code. Grep for the token or selector name instead; a name survives the file growing, a line number does not. The same applies to `input.tsx`, `button.tsx`, `dialog.tsx` and `Select.tsx`.
 
 Where a genuine aesthetic trade-off exists, you'll see a **`Decision D-nn`** callout instead of a canonical value. Those are yours to settle.
 
@@ -431,9 +433,9 @@ generator asserts the navy half at 3:1 against the splash ground (Parchment dark
 
 ### 3.2 · Typography
 
-**Today:** `--font-sans: Arial, Helvetica, sans-serif` and `--font-mono: monospace` ([`main.css:56–57`](ui/desktop/src/styles/main.css#L56)). A comment reading `/* Cash Sans */` sits above the block and a second comment says `/* Arial is a system font — no @font-face needed */`. **No webfont is loaded anywhere.** The app renders in Arial, and code renders in whatever the OS calls `monospace` (Courier on many systems).
+**Today:** `--font-sans` aliases the `--font-body` role, an Arial-first native stack (`Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`), and `--font-mono` is `ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace`. **No webfont is loaded anywhere**; both stacks are the OS's own faces.
 
-Meanwhile the xterm terminal specifies `Menlo, Monaco, Consolas, "Liberation Mono", monospace` at `12.5px` ([`InAppTerminalDock.tsx:176`](ui/desktop/src/components/InAppTerminalDock.tsx#L176)) — so the terminal and the code blocks use **different monospace fonts at different sizes**. `DR-07`.
+`TERMINAL_FONT` in `InAppTerminalDock.tsx` is that mono stack byte-for-byte, at 13/20, with a comment requiring it to stay identical, because xterm measures glyph widths itself and cannot read `var(--font-mono)`. So a command pasted from a chat code block renders in exactly the same face as the terminal. `DR-07` described the mismatch these used to have and is **fixed**.
 
 Arial is a defensible choice for a tool that must render identically on a lab Windows box. It is also, bluntly, the reason the UI reads as slightly dated. See **[Decision D-06](#d-06--typeface)**.
 
@@ -478,9 +480,10 @@ Six steps. Nothing between them.
 | Page top padding | 48px (`pt-12`) |
 | Header bottom padding | 24px (`pb-6`) |
 | Header separator | 1px `--border-subtle` |
-| Max content measure | 1080px, centred |
+| Chat / prose measure | 760px flat (`--measure-chat`) |
+| Page measure | `clamp(1120px, 88%, 1720px)` (`--measure-page`) |
 | Row height | 36px content · 32px sidebar navigation/session ([D-12·C](#d-12--row-density)) |
-| Sidebar width | 240px expanded / 60px collapsed |
+| Sidebar width | 216–360px, 288px default (user-resizable; `components/ui/sidebarWidth.ts`) |
 
 **Today:** the documented flat header (`px-8 pt-12 pb-6 border-b`) is contradicted by `.biorouter-page-header`, which sets `border-bottom-color: transparent !important` and replaces the hairline with a gradient wash plus `box-shadow: var(--shadow-modal-chrome-bottom)` ([`main.css:519`](ui/desktop/src/styles/main.css#L519)). So the "flat header with a bottom border" is actually a shadowed, gradient header with no border. `DR-09`. See **[Decision D-05](#d-05--elevation-policy)**.
 
@@ -488,17 +491,21 @@ Six steps. Nothing between them.
 
 ### 3.4 · Radius
 
-**Today: seven distinct radii in TSX** — `rounded-md` (127×), `rounded-full` (90×), `rounded-lg` (85×), `rounded-xl` (54×), `rounded-2xl` (17×), `rounded-sm` (7×), `rounded-none` (6×) — plus raw `border-radius` values of 4/8/16px in `main.css`. There is no `--radius` token. `DR-10`.
+**Was, at audit: seven distinct radii in TSX** — `rounded-md` (127×), `rounded-full` (90×), `rounded-lg` (85×), `rounded-xl` (54×), `rounded-2xl` (17×), `rounded-sm` (7×), `rounded-none` (6×) — plus raw `border-radius` values of 4/8/16px in `main.css`, and no radius token at all. `DR-10` is **fixed**: a semantic ladder ships, named for the role a corner plays rather than a t-shirt size.
 
-**Canonical: four, plus `full`.**
+**Canonical: four roles, plus `full`.**
 
 | Token | Value | Applies to |
 |---|---|---|
-| `--radius-sm` | 4px | Chips, tags, inline code, checkbox |
-| `--radius-md` | 8px | Buttons, inputs, selects, list rows, menu items |
-| `--radius-lg` | 12px | Cards, panels, code blocks, tool-call cards |
-| `--radius-xl` | 16px | Modals, popovers, the composer |
+| `--radius-inner` | 4px | Inline code, chips, checkbox, swatches, nested inside a control |
+| `--radius-element` | 8px | Buttons, inputs, selects, tabs, list rows, menu items |
+| `--radius-container` | 12px | Cards, panels, dialogs, popovers, toasts, code blocks, the composer |
+| `--radius-surface` | 16px | RESERVED: the artifact / preview sheet only |
 | `--radius-full` | 9999px | Status dots, avatars, pills, toggle knobs |
+
+The nesting rule is normative: an element inside a container takes the next step **down**, and when a container's padding is `p`, its inner radius is `outer − p`.
+
+The old size names survive as deprecated aliases, and two of them do **not** resolve to what their name suggests: `--radius-sm` → `inner` (4px), `--radius-md` → `element` (8px), `--radius-lg` → `element` (**8px**, not 12px; it was already a silent alias of `md`), `--radius-xl` → `container` (**12px**, not 16px), `--radius-2xl` → `surface` (16px). Write the role name at new call sites.
 
 See **[Decision D-04](#d-04--radius-scale)** for the one genuinely contested value: list rows at 8px (current `.biorouter-list-row`) vs 12px (documented `rounded-xl`).
 
@@ -539,11 +546,13 @@ Dark-mode variants deepen opacity and swap the hairline ring to `rgba(255,255,25
 
 | Token | Value | Use |
 |---|---|---|
-| `--motion-fast` | 120ms | Hover, focus, colour transitions |
-| `--motion-base` | 180ms | Popover / dropdown / tooltip enter, tab switch |
-| `--motion-slow` | 260ms | Modal enter, route transition, drawer |
-| `--ease-out` | `cubic-bezier(.2,0,0,1)` | Everything entering |
-| `--ease-in` | `cubic-bezier(.4,0,1,1)` | Everything leaving (always faster: use `--motion-fast`) |
+| `--motion-fast` | 125ms (`--dur-fast`) | Hover, focus, colour transitions |
+| `--motion-base` | 175ms (`--dur-fast-max`) | Popover / dropdown / tooltip enter, tab switch |
+| `--motion-slow` | 300ms (`--dur-med`) | Modal enter, route transition, drawer |
+| `--ease-out` | `cubic-bezier(0.24, 1, 0.4, 1)` | Everything entering |
+| `--ease-in` | `cubic-bezier(.4,0,1,1)` | **Deprecated**: defined, never used; deleted in the sweep |
+
+The three `--motion-*` tokens are now aliases onto the `--dur-*` ladder, re-pointed rather than retuned, so existing call sites shifted by at most 5ms. The exception is `--motion-slow`, which was 260ms and is now the 300ms medium tier it was always describing. Write `--dur-*` at new call sites.
 
 No spring, no overshoot, no bounce. Exit is always shorter than enter.
 
@@ -570,9 +579,11 @@ No spring, no overshoot, no bounce. Exit is always shorter than enter.
 
 ### 3.8 · Focus
 
-This is the most serious defect in the current system.
+This was the most serious defect in the audited system. It is **fixed**: D-15 ships, and the shipped answer is stated first below.
 
-`--ring` is aliased to `--border-strong`, which is `neutral-100` `#f4f0e6` in light mode. `<Input>` focuses to `ring-2 ring-border-strong` ([`input.tsx:11`](ui/desktop/src/components/ui/input.tsx#L11)); `<Button>` focuses to `focus-visible:ring-ring/50 focus-visible:ring-[1px]` ([`button.tsx:7`](ui/desktop/src/components/ui/button.tsx#L7)); the dialog close button focuses to `focus:ring-ring focus:ring-2` ([`dialog.tsx:58`](ui/desktop/src/components/ui/dialog.tsx#L58)).
+**Today:** focus is D-15's surface shift. `main.css` owns it globally for every text field, and `input.tsx` says so in as many words ("D-15: focus is a surface shift, never a ring"); the `--background-focus` / `--border-focus` tokens are defined in all six family/mode scopes. `--ring` survives only for the `prefers-contrast: more` and `forced-colors` paths and is now `--color-neutral-600` (`#5c5a55`), which clears 3:1 against every ground.
+
+**Was, at audit:** `--ring` was aliased to `--border-strong` at `neutral-100`, `<Input>` focused to `ring-2 ring-border-strong`, `<Button>` to `focus-visible:ring-ring/50 focus-visible:ring-[1px]`, and the dialog close button to `focus:ring-ring focus:ring-2`.
 
 | Ground | Ring colour | Contrast | Required |
 |---|---|---|---|
@@ -580,9 +591,9 @@ This is the most serious defect in the current system.
 | `#faf8f3` canvas | `#f4f0e6` | **1.07:1** | 3.0:1 |
 | Dark `#0d0a06` | `#403928` | **1.72:1** | 3.0:1 |
 
-**The focus indicator is invisible in both themes.** The app is not keyboard-navigable in any practical sense. `DR-15`.
+**The focus indicator was invisible in both themes**, and the app was not keyboard-navigable in any practical sense. `DR-15` is fixed.
 
-Compounding it: **six different focus treatments** are in use across the codebase — `focus:outline` (44×), `focus:ring` (34×), `focus:border` (32×), `focus-visible:ring` (12×), `focus-visible:outline` (8×), `focus-visible:border` (1×). `DR-16`.
+Compounding it: **six different focus treatments** were in use across the codebase — `focus:outline` (44×), `focus:ring` (34×), `focus:border` (32×), `focus-visible:ring` (12×), `focus-visible:outline` (8×), `focus-visible:border` (1×). `DR-16` is fixed by the same decision.
 
 **Canonical — focus is a surface shift, never a ring.** *(D-15, superseding the original D-03 answer.)*
 
@@ -832,13 +843,13 @@ Icon-only buttons are square at the same heights, radius `--radius-md`.
 | Property | Value |
 |---|---|
 | Scrim | `rgba(32,25,15,.18)` light / `rgba(0,0,0,.48)` dark, `backdrop-filter: blur(8px)` |
-| Surface | `--background-default`, 1px `--border-subtle`, `--radius-xl` (16px), `--elev-modal` |
+| Surface | `--background-default`, 1px `--border-subtle`, `--radius-container` (12px), `--elev-modal` |
 | Width | `min(560px, 100vw − 32px)`; `lg` variant 720px |
 | Padding | 24px |
 | Header | Title 18/26 600, description 13/18 `--text-muted`, 8px gap |
 | Footer | Right-aligned, 8px gap, `secondary` then `primary`; stacks reversed on narrow |
 | Close | 32px ghost icon button, top-right, **16px inset** (`absolute right-4 top-4`), 16px icon centred |
-| Enter | 180ms `--ease-out`, `opacity 0→1`, `scale .96→1` |
+| Enter | `--motion-base` `--ease-out`, `opacity 0→1`, `scale .96→1` |
 | Exit | 120ms `--ease-in` |
 | Dismiss | Escape ✓, backdrop click ✓ (except when a form is dirty), focus trap ✓, focus restored on close |
 | Z | scrim `--z-overlay`, surface `--z-modal` |
@@ -882,7 +893,7 @@ padding on that side. (`react-toastify` needed `padding-inline-end: 38px` for ex
 
 | | Toast | Inline alert |
 |---|---|---|
-| Surface | `--background-default`, 1px `--border-subtle`, `--radius-lg`, `--elev-popover` | `--fill-{status}` at 8% over the page ground, 1px `--border-{status}` at 30% |
+| Surface | `--background-default`, 1px `--border-subtle`, `--radius-container` (12px), `--elev-popover` | `--fill-{status}` at 8% over the page ground, 1px `--border-{status}` at 30% |
 | Text | 13/18 | 13/18 `--text-{status}` |
 | Icon | 16px, `--text-{status}` | 16px, `--text-{status}`, top-aligned |
 | Accent | 3px left bar in `--text-{status}` | none |
@@ -912,7 +923,7 @@ Inline alerts are ad-hoc: `text-destructive bg-destructive/10 rounded-lg px-4 py
 
 | Property | Value |
 |---|---|
-| Surface | `--background-default`, 1px `--border-subtle`, `--radius-xl`, `--elev-popover` |
+| Surface | `--background-default`, 1px `--border-subtle`, `--radius-container` (12px), `--elev-popover` |
 | Padding | 4px |
 | Item | 32px tall, 8px×12px, `--radius-md`, 13/18 |
 | Item hover | `--background-medium` |
@@ -921,7 +932,7 @@ Inline alerts are ad-hoc: `text-destructive bg-destructive/10 rounded-lg px-4 py
 | Section label | 11px caps, `+0.08em`, `--text-muted`, 8px×12px |
 | Separator | 1px `--border-subtle`, 4px margin |
 | Offset | 6px from trigger |
-| Motion | 180ms `--ease-out`, `opacity` + `scale .96→1` from the trigger edge |
+| Motion | `--motion-base` `--ease-out`, `opacity` + `scale .96→1` from the trigger edge |
 | Z | `--z-dropdown` |
 
 **Today.** `.biorouter-popover-surface` gives border + shadow and is applied to both the Radix popover and the react-select menu — good. But the react-select menu is `rounded-xl` (12px) while its own control is `rounded-md` (6px), and the Radix dropdown items use a different height. `DR-28`
@@ -1055,7 +1066,7 @@ Flat. A hairline. No gradient, no shadow, no card wrapper. Primary action, if an
 
 ### 4.13 · Cards
 
-`--background-default`, 1px `--border-subtle`, `--radius-lg` (12px), 20px padding, **no shadow**. Hover (only if the card is a link): border → `--border-strong`. Metric tiles: 30px mono-light value over an 11px caps label in `--text-muted`.
+`--background-default`, 1px `--border-subtle`, `--radius-container` (12px), 20px padding, **no shadow**. Hover (only if the card is a link): border → `--border-strong`. Metric tiles: 30px mono-light value over an 11px caps label in `--text-muted`.
 
 Contextual summaries are not dashboard metric tiles. The chat-summary popover uses 12px sentence-case labels and 14px medium-weight values with tabular numerals, the standard compact controls, and no nested filled cards. Its To Do section is an ordered, connected step list with explicit statuses and a completion count; it is omitted when no checklist exists, including plan-only chats. Connections show checklist order, not inferred dependencies.
 
@@ -1661,34 +1672,45 @@ shared tab component it will use is already in place (D-23).
 > them, and their `file:line` evidence now points at unrelated code. A backlog
 > that cannot say "done" sends people chasing ghosts. **Every row must carry a
 > status; every status must be re-verified against the code, not against this
-> document.** Statuses below were re-verified on **2026-07-16**.
+> document.** Statuses below were re-verified on **2026-07-16**, and again on
+> **2026-09-19** for `DR-01`, `DR-03`, `DR-04`, `DR-06`, `DR-10`, `DR-15`,
+> `DR-16`, `DR-17`, `DR-19` and `DR-22`, all of which the Astryx work closed and
+> which are now marked fixed with current evidence. **The remaining `open` rows
+> carry their 2026-07-16 status and have not been re-checked since**, so several
+> of them are likely closed too; confirm a row against the tree before acting on
+> it.
+>
+> **A row's `file:line` evidence is as-audited, not current.** `main.css` has
+> grown past 5,300 lines and most of the line numbers in this document, in Part 7
+> and elsewhere, now point at unrelated code. Grep for the token or selector
+> name; a name survives the file growing, a line number does not.
 
 The original backlog, as audited:
 
 | ID | Sev | Status | What | Evidence |
 |---|---|---|---|---|
-| `DR-01` | High | open | Primary button fill is near-black, not the documented coral | `main.css:47`, `button.tsx:12` |
+| `DR-01` | High | ✅ fixed | Primary button fill is near-black, not the documented coral | `main.css:628` sets `--background-accent: var(--color-coral-600)`; §3.1 records D-01 shipped. |
 | `DR-02` | Med | open | `--color-block-teal` holds a coral (`#cf6d47`); `--color-block-orange` holds a deep coral | `main.css:20–21` |
-| `DR-03` | **High** | open | All four light-mode status text colours fail AA (1.85–3.65:1) | `main.css:88–91` |
-| `DR-04` | High | open | `--text-muted` on the sidebar is 4.01:1 — fails AA | `main.css:85`, `main.css:104` |
+| `DR-03` | **High** | ✅ fixed | All four light-mode status text colours fail AA (1.85–3.65:1) | `main.css:711` sets `--text-danger: var(--color-red-600)`, 6.54:1 on white, the canonical §3.1 value. |
+| `DR-04` | High | ✅ fixed | `--text-muted` on the sidebar is 4.01:1 — fails AA | `main.css:705` sets `--text-muted: #635c54`, min 5.56:1. |
 | `DR-05` | High | open | `--text-subtle` is 3.28:1 on white — fails AA everywhere in light mode | `main.css:86` |
-| `DR-06` | High | open | `--border-default`, `--border-input`, `--border-strong` are all `neutral-100` in light mode | `main.css:78–80` |
+| `DR-06` | High | ✅ fixed | `--border-default`, `--border-input`, `--border-strong` are all `neutral-100` in light mode | `main.css:689-692` holds three distinct values; the comment beside them records DR-06/DR-51. |
 | `DR-07` | Low | ✅ fixed | Terminal font (`Menlo` 12.5px) ≠ code-block font (`monospace`) | Both are `--font-mono` at 13/20 — `InAppTerminalDock.tsx:60` vs `codeTheme.ts:21`. |
 | `DR-08` | Low | open | `<Input>` is 16px below 930px, 14px above; `Select` is always 14px | `input.tsx:11` |
 | `DR-09` | Med | open | `.biorouter-page-header` nulls the documented hairline and adds a shadow | `main.css:519` |
-| `DR-10` | Med | open | Seven border radii in TSX; no `--radius` token exists | 280 usages |
+| `DR-10` | Med | ✅ fixed | Seven border radii in TSX; no `--radius` token exists | `main.css:37-49` defines the `--radius-inner/element/container/surface` ladder, with the old size names as aliases. |
 | `DR-11` | **High** | open | `--shadow-*: initial` makes `shadow-sm/md/lg/xl` dead — 22 usages render nothing | `main.css:15` (verified by compiling Tailwind) |
 | `DR-12` | Med | open | `inset 0 1px 0 rgba(255,255,255,.42)` glare line on dark panels | `main.css:494`, `529` |
 | `DR-13` | Low | open | Six transition durations; `prefers-reduced-motion` covers only 2 of 8 animations | 107 usages |
 | `DR-14` | **High** | open | `react-select` portals to `z-[9999]`, above the modal at `z-[1210]` | `Select.tsx:27`, `dialog.tsx:52` |
-| `DR-15` | **High** | open | Focus ring is 1.14:1 (light) / 1.72:1 (dark) — invisible | `main.css:95`, `input.tsx:11` |
-| `DR-16` | High | open | Six competing focus treatments across 131 usages | app-wide |
-| `DR-17` | Low | open | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | `package.json` |
+| `DR-15` | **High** | ✅ fixed | Focus ring is 1.14:1 (light) / 1.72:1 (dark) — invisible | `main.css:763` ships D-15's `--background-focus`; `input.tsx:25` says "D-15: focus is a surface shift, never a ring". |
+| `DR-16` | High | ✅ fixed | Six competing focus treatments across 131 usages | Closed by the same decision: one treatment, owned globally by `main.css`. |
+| `DR-17` | Low | ✅ fixed | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | Neither package is in `ui/desktop/package.json`. |
 | `DR-18` | Med | open | 96 inline `<svg>` literals in view components | app-wide |
-| `DR-19` | Med | open | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/Biorouter.tsx` |
+| `DR-19` | Med | ✅ fixed | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `grep -r '#EC5D2A\|#57B9AF' ui/desktop/src` returns 0. |
 | `DR-20` | Med | open | Button `outline` variant has no border; identical to `secondary` | `button.tsx:15–18` |
 | `DR-21` | Low | open | `shape="pill"` renders `rounded-md`; `shape="round"` also renders `rounded-md` | `button.tsx:28–31` |
-| `DR-22` | **High** | open | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `button.tsx:14`, 8 call sites |
+| `DR-22` | **High** | ✅ fixed | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `grep -r bg-destructive ui/desktop/src` returns 0. |
 | `DR-23` | Low | open | `![&_svg…]` uses Tailwind v3 important syntax under v4 | `button.tsx:23` |
 | `DR-24` | High | open | 103 raw `<button>` in 58 files bypass `<Button>` | app-wide |
 | `DR-25` | High | open | Diagnostics panel is white-on-cream in dark mode | `main.css:447–466` |

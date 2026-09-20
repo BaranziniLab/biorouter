@@ -37,10 +37,18 @@ sudo zypper install dpkg fakeroot rpm-build gcc gcc-c++ make pkg-config \
 - **Rust 1.92**: Install via [rustup](https://rustup.rs/) — the channel is pinned in `rust-toolchain.toml`, so rustup selects it automatically
 - **Node.js 24.x**: `ui/desktop/package.json` declares `engines: { "node": "^24.0.0" }`, and hermit pins 24.10.0. Newer majors break the Electron packaging step, so pin 24 rather than tracking latest (use [nvm](https://github.com/nvm-sh/nvm) for version management)
 - **npm**: Comes with Node.js
+- **Go 1.26.8**: Builds the native Computer Use helper (`.github/workflows/computer-use-native.yml` pins this version)
+- **Python 3**: Runs `scripts/computer-use-runtime.py`, the helper build driver
 
 ### Runtime requirements
 
-The bundled `llama-server` sidecar (the Llama Server local-models provider) needs OpenSSL 3 and OpenMP at runtime. The deb and rpm declare them (`libssl3` + `libgomp1`, `openssl-libs` + `libgomp`), which implies **Debian 12+ / Ubuntu 22.04+**. If you install from the zip or a flatpak, install those yourself — and on Debian 11 the app will run but local models will not.
+The packages the deb and rpm declare are the real runtime floor, and they are not all llama-server's:
+
+- `libxcb1` and `zlib1g` (`libxcb`, `zlib` on RPM) are linked by `biorouter`/`biorouterd` themselves. Without them the backend does not start at all.
+- `libssl3` and `libgomp1` (`openssl-libs`, `libgomp`) are the bundled `llama-server` sidecar's, so on a system missing them the app runs but local models do not.
+- `python3`, `python3-gi`, `gir1.2-atspi-2.0`, `gir1.2-gtk-3.0` and `at-spi2-core` (`python3`, `python3-gobject`, `at-spi2-core`, `gtk3` on RPM) are the Computer Use helper's AT-SPI runtime.
+
+Together they imply **Debian 12+ / Ubuntu 22.04+**. Installing from the zip or a flatpak means installing all of them yourself. `scripts/check-linux-runtime-deps.sh` asserts this list stays in step with what the binaries actually link; read it rather than this paragraph if the two disagree.
 
 ## Build Process
 
@@ -68,10 +76,17 @@ mkdir -p src/bin
 cp ../../target/release/biorouterd src/bin/
 cp ../../target/release/biorouter src/bin/
 
-# Fetch the pinned llama-server sidecar and verify all required binaries.
-# This downloads llamacpp/llama-server and fails fast if biorouter or
-# biorouterd is missing. Plain `npm run make` does NOT run this prep step
-# (so it ships without the local-models sidecar) — run it explicitly first.
+# Build the pinned Computer Use helper. This must come first: staging it is the
+# first thing prepare-platform-binaries.js does, and it aborts the whole build if
+# target/computer-use/linux-x64/manifest.json is absent. Nothing in the Justfile
+# produces it. Needs Go 1.26.8, Python 3 and git (the driver applies the patches
+# in vendor/computer-use/patches/ to a copy of the vendored source; no network).
+(cd ../.. && python3 scripts/computer-use-runtime.py build linux-x64)
+
+# Stage the Computer Use helper, fetch the pinned llama-server sidecar, build the
+# browser interface bundle, then verify all required binaries, failing fast if
+# biorouter or biorouterd is missing. Plain `npm run make` does NOT run this prep
+# step (so it ships without the local-models sidecar), so run it explicitly first.
 node scripts/prepare-platform-binaries.js
 ```
 

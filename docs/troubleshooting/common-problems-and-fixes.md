@@ -238,6 +238,16 @@ When the keyring is disabled, secrets are stored here:
 
 ## Extensions and package runners
 
+### Start with `biorouter doctor`
+
+Before working through the fixes below by hand, run:
+
+```bash
+biorouter doctor
+```
+
+It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain) and says whether `biorouter` is on your PATH, so it names the missing piece directly. To hand a failing prerequisite to Biorouter itself, run `biorouter doctor --fix <dependency>`, for example `biorouter doctor --fix uv`, or leave the name off to take the first missing required one.
+
 ### Hermit errors
 
 If you see an issue installing an extension in the app that says "hermit:fatal", you may need to reset your hermit cache. biorouter uses a copy of hermit to ensure npx and uvx are consistently available. If you have already used an older version of hermit, you may need to clean up the cache — on Mac this cache is at
@@ -421,9 +431,13 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 #### Data locations
 
-- **Logs and Config**: `~/.config/biorouter`
+- **Config**: `~/.config/biorouter`
+- **Data and sessions**: `~/.local/share/biorouter`
+- **Logs**: `~/.local/state/biorouter`
 - **Application Data**: `~/Library/Application Support/Biorouter`
 - **Secrets**: macOS Keychain (credential named "biorouter").
+
+`biorouter info` prints the first three for your own machine.
 
 #### Removal steps
 
@@ -436,6 +450,8 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
    ```bash
    rm -rf ~/.config/biorouter
+   rm -rf ~/.local/share/biorouter
+   rm -rf ~/.local/state/biorouter
    rm -rf ~/Library/Application\ Support/Biorouter
    ```
 
@@ -445,8 +461,8 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 #### Data locations
 
-- **Data/Sessions**: `~/.local/share/Biorouter/`
-- **Logs**: `~/.local/state/Biorouter/`
+- **Data/Sessions**: `~/.local/share/biorouter/`
+- **Logs**: `~/.local/state/biorouter/`
 - **Config**: `~/.config/biorouter/`
 - **Secrets**: System keyring (if available)
 
@@ -457,8 +473,8 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 - Remove data directories:
 
   ```bash
-  rm -rf ~/.local/share/Biorouter/
-  rm -rf ~/.local/state/Biorouter/
+  rm -rf ~/.local/share/biorouter/
+  rm -rf ~/.local/state/biorouter/
   rm -rf ~/.config/biorouter/
   ```
 

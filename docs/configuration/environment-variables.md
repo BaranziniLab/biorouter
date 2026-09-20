@@ -106,7 +106,7 @@ These variables control how biorouter manages conversation sessions and context.
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_CONTEXT_STRATEGY` | Controls how biorouter handles context-limit-exceeded situations | `"summarize"`, `"truncate"`, `"clear"`, `"prompt"` | `"prompt"` (interactive), `"summarize"` (headless) |
-| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | Integer (e.g. 10, 50, 100) | 1000 |
+| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | Integer (e.g. 10, 50, 100) | 100 |
 | `BIOROUTER_SUBAGENT_MAX_TURNS` | Sets the maximum turns allowed for a [subagent](../agent-loop/subagents.md) to complete before timeout | Integer (e.g. 25) | 25 |
 | `CONTEXT_FILE_NAMES` | Specifies custom filenames for hint/context files | JSON array of strings (e.g. `["CLAUDE.md", ".biorouterhints"]`) | `[".biorouterhints"]` |
 | `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"dark"` |
@@ -272,11 +272,10 @@ These variables are primarily used for developing, testing, and debugging biorou
 |----------|---------|---------|---------|
 | `BIOROUTER_PATH_ROOT` | Override the root directory for all biorouter data, config, and state files | Absolute path to a directory | Platform-specific defaults |
 
-Default locations:
+Default locations. There is no single root: config, data, and state resolve separately, and `biorouter info` prints the ones your machine is using.
 
-- macOS: `~/Library/Application Support/Block/biorouter/`
-- Linux: `~/.local/share/biorouter/`
-- Windows: `%APPDATA%\Block\biorouter\`
+- macOS and Linux: config `~/.config/biorouter`, data `~/.local/share/biorouter`, state `~/.local/state/biorouter`
+- Windows: `%APPDATA%\Block\biorouter\config` and `%APPDATA%\Block\biorouter\data` (there is no separate state directory; state falls back to data)
 
 When set, biorouter creates `config/`, `data/`, and `state/` subdirectories under the specified path. This is useful for isolating test environments, running multiple configurations, or CI/CD pipelines.
 

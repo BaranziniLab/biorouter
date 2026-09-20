@@ -2,9 +2,9 @@
 
 > **What this is.** The working documents for expanding BioRouter's artifact side panel from a
 > viewer of things the agent made into a working surface the user and the agent share.
-> **Status:** Current — the plan was approved and all six phases are implemented on
-> `design/preview-panel-expansion`.
-> **Audience:** contributors changing the panel, and anyone reviewing the plan before it runs.
+> **Status:** Current. The plan was approved and all six phases are implemented and merged to
+> `main`.
+> **Audience:** contributors changing the panel, and anyone reading the plan behind what shipped.
 
 The artifact side panel (`ui/desktop/src/components/artifacts/`) is the one place a generated
 figure, an app card, a written file or a directory is displayed. This folder holds the survey of

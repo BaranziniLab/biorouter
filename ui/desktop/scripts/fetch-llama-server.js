@@ -21,6 +21,12 @@ const { execFileSync } = require('child_process');
 
 const LLAMA_BUILD = 'b9611';
 const BASE_URL = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_BUILD}`;
+// llama.cpp is MIT, whose one obligation is that the copyright notice travels
+// with every distributed copy. The macOS and Linux archives carry a LICENSE
+// file; the Windows zip does not (verified against b9611: no licence-like entry
+// at all), so for Windows we fetch it from the repository at the pinned tag.
+// Without this the shipped Windows app redistributes llama.cpp with no notice.
+const LICENSE_URL = `https://raw.githubusercontent.com/ggml-org/llama.cpp/${LLAMA_BUILD}/LICENSE`;
 
 const destDir = path.join(__dirname, '..', 'src', 'bin', 'llamacpp');
 const markerFile = path.join(destDir, '.build');
@@ -128,6 +134,24 @@ function fetchLlamaServer(platform, arch) {
     const serverName = platform === 'win32' ? 'llama-server.exe' : 'llama-server';
     if (!fs.existsSync(path.join(destDir, serverName))) {
       throw new Error(`${serverName} not found in ${asset} — release layout changed?`);
+    }
+
+    // The licence must ship beside the binaries on every platform. This is
+    // checked rather than assumed because the gap it closes was invisible:
+    // Windows shipped without a notice for as long as the bundle existed, and
+    // nothing failed. If an upstream archive stops carrying LICENSE the same
+    // way, this fetches it rather than going quiet.
+    const licensePath = path.join(destDir, 'LICENSE');
+    if (!fs.existsSync(licensePath)) {
+      console.log(`${asset} carries no LICENSE; fetching it from ${LICENSE_URL}`);
+      download(LICENSE_URL, licensePath);
+      copied++;
+    }
+    if (!fs.existsSync(licensePath) || fs.statSync(licensePath).size === 0) {
+      throw new Error(
+        `llama.cpp LICENSE is missing from ${destDir}. It is MIT-licensed and the notice ` +
+          `must ship with the binaries; refusing to package without it.`
+      );
     }
 
     fs.writeFileSync(markerFile, marker);

@@ -41,6 +41,7 @@ The backend is a Rust workspace (`crates/`) organized into several crates:
 | `biorouter-mcp` | Built-in MCP servers |
 | `biorouter-sandbox` | Capability-scoped sandboxed execution for Biorouter agents (a leaf crate with no engine dependencies) |
 | `biorouter-acp` | Agent Communication Protocol support |
+| `biorouter-authprompt` | The macOS authentication prompt Biorouter's background service cannot raise itself (`biorouter-authprompt` binary) |
 | `biorouter-bench` | Benchmarking tools |
 | `biorouter-test` | Integration tests |
 

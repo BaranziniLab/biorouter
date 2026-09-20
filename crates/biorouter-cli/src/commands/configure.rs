@@ -1824,7 +1824,9 @@ fn configure_workflow_dialog() -> anyhow::Result<()> {
 pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
     let config = Config::global();
 
-    let current_max_turns: u32 = config.get_param("BIOROUTER_MAX_TURNS").unwrap_or(1000);
+    let current_max_turns: u32 = config
+        .get_param("BIOROUTER_MAX_TURNS")
+        .unwrap_or(biorouter::agents::DEFAULT_MAX_TURNS);
 
     let max_turns_input: String =
         cliclack::input("Set maximum number of agent turns without user input:")

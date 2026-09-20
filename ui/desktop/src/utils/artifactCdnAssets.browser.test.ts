@@ -22,7 +22,7 @@ import { injectArtifactBrowserCsp } from './artifactSecurity';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../../../..');
 
-const MERMAID_CDN_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+const MERMAID_CDN_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js';
 const VENDORED_MERMAID = resolve(
   repoRoot,
   'crates/biorouter-mcp/src/autovisualiser/templates/assets/mermaid.min.js'
@@ -189,8 +189,8 @@ describe('a CDN-mode Mermaid figure in a real browser', () => {
     // The shape this bug shipped in. Kept as a negative control so a harness
     // that silently stopped exercising the CSP would be noticed.
     const esmImport = readFileSync(CDN_FIXTURE, 'utf-8').replace(
-      /<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@11\/dist\/mermaid\.min\.js"[^>]*><\/script>/,
-      `<script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/+esm';window.mermaid=mermaid;</script>`
+      /<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@11\.17\.2\/dist\/mermaid\.min\.js"[^>]*><\/script>/,
+      `<script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.17.2/+esm';window.mermaid=mermaid;</script>`
     );
     expect(esmImport).toContain("+esm'");
 

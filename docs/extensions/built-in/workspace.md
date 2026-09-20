@@ -12,20 +12,20 @@ Workspace Control adds no network access of its own: every tool operates on sess
 
 ## Two tiers, and why they differ
 
-Workspace Control ships in **two sizes**, and most people only ever meet the small one.
+Workspace Control **ships on, with its whole surface**. It is a capability rather than an extension, so a fresh install already has every tool on this page, including `workspace_set_tools`, which re-tools and re-points *other* conversations. The smaller roster is not what you start with; it is what is left when you have switched Workspace Control **off** and the session may still delegate.
 
-| Tier | How you get it | What the agent can do |
+| Tier | When you get it | What the agent can do |
 |------|----------------|-----------------------|
-| **Delegation** (default) | Automatic. Any session that may delegate loads the capability with a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
-| **Full workspace control** | You enable the `workspace` capability explicitly. | Everything above plus `workspace_set_tools` (change another conversation's capabilities, extensions, skills, model, or knowledge bases), `workspace_open`, and the preview-panel pair. |
+| **Full workspace control** (default) | Automatic. The `workspace` capability is enabled out of the box and its tool list is not narrowed. | Everything in the row below, plus `workspace_set_tools` (change another conversation's capabilities, extensions, skills, model, or knowledge bases), `workspace_open`, and `workspace_read_panel` (with `capture: true` for a screenshot). |
+| **Delegation only** | You turned the `workspace` capability off, but the session may still delegate. BioRouter then loads a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
 
-The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the explicit opt-in can *re-tool* one or mint and move tabs. Three of the delegation tier's six tools stay child-scoped whatever the write rule says — `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move.
+The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the full surface can *re-tool* one or mint and move tabs. Three of the delegation tier's six tools stay child-scoped whatever the write rule says — `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move.
 
-Concretely, when delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter can inject the restricted six-tool Workspace roster as derived session state. Explicitly enabling Workspace unlocks the full roster, and that explicit choice is never downgraded to delegation-only mode.
+Concretely, when the capability is off and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter can inject the restricted six-tool Workspace roster as derived session state. An explicit Workspace entry is never downgraded to delegation-only mode.
 
-### Turning on the full surface
+### Turning it off, and back on
 
-In the desktop app, **Extensions** is its own destination in the left sidebar (not a Settings tab). Open it and turn on **Workspace Control**.
+In the desktop app, **Extensions** is its own destination in the left sidebar (not a Settings tab). Open it and switch **Workspace Control** off or on.
 
 From the CLI:
 
@@ -33,13 +33,13 @@ From the CLI:
 biorouter configure
 ```
 
-Choose `Toggle Extensions`, then enable `workspace`.
+Choose `Toggle Extensions`, then toggle `workspace`.
 
 > **Note.** Subagents never get Workspace Control themselves, in either tier — a child cannot spawn grandchildren, and cannot steer its own parent.
 
-## The eight tools
+## The nine tools
 
-Seven `workspace_*` tools plus `subagent`. You do not call these; you ask in plain language and BioRouter picks. The examples show the request and the call it turns into.
+Eight `workspace_*` tools plus `subagent`. You do not call these; you ask in plain language and BioRouter picks. The examples show the request and the call it turns into.
 
 ### `workspace_list`
 
@@ -98,6 +98,12 @@ Opens or focuses a conversation **you** own. Pass `session_id` to bring an exist
 `placement` is `tab` (default), `split` or `window`; `focus` defaults to **false**, so a new tab never steals the composer you are typing in.
 
 **It cannot delegate.** `new.kind: "sub_agent"` is refused, with a result pointing the agent at `subagent`. A conversation this tool creates is yours: it has no parent, so it is never nested under the agent in History and never appears in "Show subagent runs". That separation is structural rather than advisory ([#111](https://github.com/BaranziniLab/biorouter/issues/111)) — see the [session metadata contract](../../agent-loop/session-metadata-contract.md).
+
+### `workspace_read_panel`
+
+Reads what the preview panel is showing right now: the rendered document, figure, file or live web page. It returns the panel's **text** by default, which the agent can act on; `capture: true` returns a screenshot instead, for judging how something looks or for a panel that is an image with no readable text. `session_id` defaults to the calling conversation.
+
+> "What does the page in the panel actually say?" → `workspace_read_panel {}`
 
 ### `subagent`
 
@@ -178,12 +184,12 @@ Two capabilities deliberately have no CLI counterpart: spawning (it is a tool th
 
 Workspace Control operates the **live** workspace; [Chat Recall](chat-recall.md) searches **past** conversations by content. The agent's routing instructions send "what did we conclude about X last week?" to Chat Recall — so with Workspace Control on and Chat Recall off, it is being told to reach for a tool it does not have.
 
-That is why enabling Workspace Control in the desktop app raises a one-time, dismissible suggestion to turn Chat Recall on as well. It only ever suggests; it never enables anything for you, and it does not come back.
+That is why switching Workspace Control on in the desktop app, after having switched it off, raises a one-time, dismissible suggestion to turn Chat Recall on as well. It only ever suggests; it never enables anything for you, and it does not come back.
 
 ## Related documentation
 
 - [Workspace control](../../agent-loop/workspace-control.md) — the how-to companion to this page: arranging tabs, panes and windows, delegating, the caps you will meet, and the terminal path.
-- [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments, defaults and clamps, every refusal string, and the two places a tool reports success it did not earn.
+- [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md) — the developer-facing contract for these tools: exact arguments, defaults and clamps, every refusal string, and the two places a tool reports success it did not earn.
 - [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
 - [Chat Recall capability](chat-recall.md) — the complementary tool for searching past conversations by content.
 - [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.

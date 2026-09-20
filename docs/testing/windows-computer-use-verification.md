@@ -13,7 +13,7 @@ on a machine that can, and what a pass looks like.
 ## Why CI cannot do this
 
 The Windows runtime needs a signed-in interactive desktop session.
-[`third_party/open-computer-use/README.md`](../../third_party/open-computer-use/README.md)
+[`vendor/computer-use/README.md`](../../vendor/computer-use/README.md)
 states it outright — *"Windows requires the signed-in user's interactive session and Windows
 PowerShell with UI Automation support"* — and
 [`scripts/test-computer-use-windows-fixture.py`](../../scripts/test-computer-use-windows-fixture.py)
