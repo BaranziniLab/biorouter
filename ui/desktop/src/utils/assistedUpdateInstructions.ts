@@ -33,6 +33,21 @@ export function assistedUpdateKind(updatePath: string, platform: typeof process.
   return 'macos-app';
 }
 
+/**
+ * Whether this kind of update destroys a RUNNING install if the user starts it
+ * without quitting first.
+ *
+ * Squirrel's full install removes the existing app directory before checking
+ * whether anything holds a handle in it, so it deletes `Update.exe`, `packages\`
+ * and the root stub, then throws. Both shortcuts survive and point at a file
+ * that is gone. Re-running with the app closed repairs it, and no user data is
+ * at risk (settings and chats live outside the app folder), but the user's
+ * experience is "I ran the update and Biorouter will not start".
+ */
+export function updateRequiresQuitFirst(kind: AssistedUpdateKind): boolean {
+  return kind === 'windows-installer';
+}
+
 const PRESERVED = 'Your settings, chats and extensions live outside the app folder and are preserved.';
 
 /**
@@ -51,9 +66,13 @@ export function assistedUpdateInstructions(updatePath: string, platform: typeof 
       return [
         'The update has been downloaded as an installer.',
         '',
-        '1. Click "Open Folder" to reveal Biorouter Setup',
-        '2. Quit Biorouter (this app will close)',
-        '3. Run the installer, which upgrades your existing installation in place',
+        '1. Click "Open Folder & Quit" to reveal Biorouter Setup and close Biorouter',
+        '2. Run the installer once Biorouter has closed',
+        '',
+        'Biorouter must be closed before the installer runs. Squirrel deletes the existing '
+          + 'app directory before it checks whether anything is using it, so running the '
+          + 'installer over a running Biorouter leaves a half-removed install and shortcuts '
+          + 'that no longer work. Running it again with Biorouter closed repairs that.',
         '',
         PRESERVED,
       ].join('\n');
