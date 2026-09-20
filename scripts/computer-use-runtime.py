@@ -14,7 +14,7 @@ import importlib.util as _importlib_util
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "third_party/open-computer-use"
+VENDOR = ROOT / "vendor/computer-use"
 PIN = json.loads((VENDOR / "pin.json").read_text())
 OUTPUT = ROOT / "target/computer-use"
 SIGN_IDENTITY = "Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)"
@@ -106,7 +106,7 @@ def source_checkout(source):
     """Stage the upstream tree and apply the reviewed patches to it.
 
     The default source is the tree VENDORED in this repository at
-    `third_party/open-computer-use/source/`, so a build needs no network and
+    `vendor/computer-use/source/`, so a build needs no network and
     cannot be changed by anything happening upstream. That is the point: an
     upstream repository that is deleted, force-pushed or altered can no longer
     affect a BioRouter build, and the bytes that go into a shipped helper are

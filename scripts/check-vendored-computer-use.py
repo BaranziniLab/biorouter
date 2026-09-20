@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "third_party/open-computer-use/source-manifest.json"
-PREFIX = "third_party/open-computer-use/source"
+MANIFEST = ROOT / "vendor/computer-use/source-manifest.json"
+PREFIX = "vendor/computer-use/source"
 
 
 def paths():

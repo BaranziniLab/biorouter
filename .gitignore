@@ -103,7 +103,7 @@ ui/desktop/src/bin
 ui/desktop/src/computer-use/
 
 # ── Vendored Computer Use upstream ──────────────────────────────────────────
-# `third_party/open-computer-use/source/` is a COMPLETE copy of the upstream
+# `vendor/computer-use/source/` is a COMPLETE copy of the upstream
 # project at the pinned commit, and the whole point of vendoring it is that a
 # build needs neither the network nor that repository continuing to exist. So it
 # has to be committed in full.
@@ -116,5 +116,5 @@ ui/desktop/src/computer-use/
 # The directory line comes first on purpose: git cannot re-include a file whose
 # parent directory is excluded, so `.agents/` has to be re-admitted as a
 # directory before anything inside it can be.
-!third_party/open-computer-use/source/**/
-!third_party/open-computer-use/source/**
+!vendor/computer-use/source/**/
+!vendor/computer-use/source/**

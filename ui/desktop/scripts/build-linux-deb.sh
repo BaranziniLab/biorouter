@@ -68,7 +68,7 @@ npm ci --cache /root/.npm
 #
 # The deb and rpm install under /opt, so `<exe dir>/../web` resolves inside the
 # app tree exactly as it does on macOS and Windows. It is the CLI-only packages
-# (packaging/cli/nfpm.yaml, /usr/bin) that cannot use that rule and place the
+# (packaging/biorouter-cli.yaml, /usr/bin) that cannot use that rule and place the
 # bundle at /usr/share/biorouter/web instead.
 echo "Preparing Linux platform binaries (llama-server, web bundle, validation)..."
 ELECTRON_PLATFORM=linux ELECTRON_ARCH=x64 node scripts/prepare-platform-binaries.js

@@ -245,7 +245,7 @@ class PayloadTests(unittest.TestCase):
                 archive_module.verify_artifact(artifact, "linux-x64")
 
     def test_dependency_contract_in_both_package_formats(self):
-        cli = (runtime.ROOT / "packaging/cli/nfpm.yaml").read_text()
+        cli = (runtime.ROOT / "packaging/biorouter-cli.yaml").read_text()
         desktop = (runtime.ROOT / "ui/desktop/forge.config.ts").read_text()
         for packages in runtime.PIN["linux_dependencies"].values():
             for package in packages:

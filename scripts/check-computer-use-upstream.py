@@ -16,7 +16,7 @@ an upstream update, and this is what predicts it before anyone starts.
 Updating, once you have read this:
 
     1. git clone <repository> /tmp/ocu && git -C /tmp/ocu checkout <new commit>
-    2. edit third_party/open-computer-use/pin.json  (upstream_commit, upstream_version)
+    2. edit vendor/computer-use/pin.json  (upstream_commit, upstream_version)
     3. python3 scripts/vendor-computer-use-source.py --from /tmp/ocu
     4. python3 scripts/computer-use-runtime.py build <target>   # patches re-apply here
     5. resolve any patch that no longer applies, bump patch_revision in pin.json
@@ -31,7 +31,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "third_party/open-computer-use"
+VENDOR = ROOT / "vendor/computer-use"
 API = "https://api.github.com"
 
 

@@ -1606,7 +1606,7 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Computer Use
 
-**Upstream is VENDORED, not cloned.** `third_party/open-computer-use/source/` is a
+**Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
 complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
 build reads it with **no network** — an upstream repository that disappears or changes
 cannot affect a BioRouter build. The tree is *pristine*; `patches/` is applied to a

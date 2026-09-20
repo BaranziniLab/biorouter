@@ -3,7 +3,7 @@ name: Computer Use native payloads
 on:
   pull_request:
     paths:
-      - "third_party/open-computer-use/**"
+      - "vendor/computer-use/**"
       - "crates/biorouter-mcp/src/computer_use/**"
       - "crates/biorouter-mcp/src/computercontroller/**"
       - "Dockerfile"
@@ -11,7 +11,7 @@ on:
       - "ui/desktop/scripts/computer-use-resources.js"
       - "ui/desktop/scripts/prepare-platform-binaries.js"
       - "ui/desktop/forge.config.ts"
-      - "packaging/cli/nfpm.yaml"
+      - "packaging/biorouter-cli.yaml"
       - ".github/workflows/computer-use-native.yml"
   workflow_dispatch:
 

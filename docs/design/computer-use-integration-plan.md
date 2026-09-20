@@ -32,7 +32,7 @@ The target is all **future supported release artifacts**, including desktop, bun
 | `agents/code_execution_extension.rs` | Imports effective tools for programmatic execution. | Test direct and nested JavaScript calls, images, the same start-of-use grant, and cancellation. |
 | `security/sensitive_ops.rs` | Ambient screen/control approval recognizes `screen_capture`, `list_windows`, and `computer_control`; supports prefixed, bare, and nested calls. | Replace repeated ambient-tool escalation for this capability with a shared computer-use consent check. Direct and nested native calls consult the same grant. |
 | Capability UI and bundled JSON | Computer Controller is default-on; UI sync adds builtin entries. `ConfigContext.tsx` also contains prior default-enabling migrations. | Preserve explicit disablement and centralize new default/bootstrap behavior in Rust so CLI-only users get it too. |
-| `scripts/release.sh`, Forge, `packaging/cli/nfpm.yaml` | Four CPU/OS targets; desktop resources, updater ZIPs, and separate Linux CLI packages. | Add helper payloads to every path, with mandatory artifact checks. |
+| `scripts/release.sh`, Forge, `packaging/biorouter-cli.yaml` | Four CPU/OS targets; desktop resources, updater ZIPs, and separate Linux CLI packages. | Add helper payloads to every path, with mandatory artifact checks. |
 
 Two existing weaknesses influence the design: `computer_control_impl` bounds a `spawn_blocking` wait but does not itself terminate the underlying child on timeout; parts of the Linux legacy implementation can return empty success for unsupported commands. The new path must have bounded process lifetime and explicit unsupported/uncertain outcomes.
 
@@ -200,7 +200,7 @@ The release evidence should identify source commit, helper pin/patch revision, p
 - **Session/dispatch:** `crates/biorouter/src/agents/{extension.rs,extension_manager.rs,mcp_pool.rs,agent.rs,code_execution_extension.rs}`; lifecycle hooks and reviewed subagent/scheduled dispatch paths as identified during implementation.
 - **Policy:** a host-side `ComputerUseGrant` service; `crates/biorouter/src/security/sensitive_ops.rs` ambient-control handling; resolved native builtin identity; approval UI/events; private-environment stripping tests; bridge policy and data-isolation tests.
 - **Defaults/UX:** `crates/biorouter/src/config/extensions.rs`; CLI configure/doctor; `ui/desktop/src/components/ConfigContext.tsx`; capability metadata/section; bundled-extension metadata; authenticated server routes and generated clients.
-- **Packaging:** new pin/build/verification scripts; `ui/desktop/scripts/prepare-platform-binaries.js`; `ui/desktop/forge.config.ts`; `scripts/release.sh`; `scripts/build-cli-linux-packages.sh`; `packaging/cli/nfpm.yaml`; relevant Docker/install paths.
+- **Packaging:** new pin/build/verification scripts; `ui/desktop/scripts/prepare-platform-binaries.js`; `ui/desktop/forge.config.ts`; `scripts/release.sh`; `scripts/build-cli-linux-packages.sh`; `packaging/biorouter-cli.yaml`; relevant Docker/install paths.
 - **Acceptance:** `biorouter-self-test.yaml`; release artifact smoke scripts/workflow; platform GUI fixtures and installation/upgrade checks.
 
 ## Source references

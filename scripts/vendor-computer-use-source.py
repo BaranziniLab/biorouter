@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh `third_party/open-computer-use/source/` and its integrity manifest.
+"""Refresh `vendor/computer-use/source/` and its integrity manifest.
 
 The vendored tree is the PRISTINE upstream at `pin.json`'s commit — patches are
 NOT applied to it. Keeping the two separate is what makes an upstream update
@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VENDOR = ROOT / "third_party/open-computer-use"
+VENDOR = ROOT / "vendor/computer-use"
 SOURCE = VENDOR / "source"
 MANIFEST = VENDOR / "source-manifest.json"
 SCHEMA = 1

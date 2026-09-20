@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const root = path.resolve(__dirname, '../../..');
-const vendor = path.join(root, 'third_party/open-computer-use');
+const vendor = path.join(root, 'vendor/computer-use');
 const pin = JSON.parse(fs.readFileSync(path.join(vendor, 'pin.json'), 'utf8'));
 const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 

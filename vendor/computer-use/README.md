@@ -44,7 +44,7 @@ procedure is in that script's header.
 
 ```sh
 git clone <repository> /tmp/ocu && git -C /tmp/ocu checkout <new commit>
-$EDITOR third_party/open-computer-use/pin.json          # commit + version
+$EDITOR vendor/computer-use/pin.json          # commit + version
 python3 scripts/vendor-computer-use-source.py --from /tmp/ocu
 python3 scripts/computer-use-runtime.py build <target>  # patches re-apply here
 ```
