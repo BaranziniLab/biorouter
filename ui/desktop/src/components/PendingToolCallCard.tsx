@@ -1,3 +1,4 @@
+import './tool-call.css';
 import React from 'react';
 import { ToolIconWithStatus } from './ToolCallStatusIndicator';
 import { getToolCallIcon } from '../utils/toolIconMapping';
@@ -20,7 +21,7 @@ import type { PendingToolCallView } from '../hooks/chatStreamStore';
 export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = ({ pending }) => {
   const toolSummary = toolIdentifierToTitleCase(pending.name.split('__').pop() ?? pending.name);
   return (
-    <div className="mt-3" data-testid="pending-tool-call" data-tool-id={pending.id}>
+    <div className="br-tool-pending mt-3 text-text-muted" data-testid="pending-tool-call" data-tool-id={pending.id}>
       <div className="flex h-6 items-center">
         <span className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden font-sans text-sm leading-6">
           <ToolIconWithStatus
@@ -28,9 +29,8 @@ export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = (
             status="loading"
             className="mt-px"
           />
-          <span className="min-w-0 flex-1 truncate text-text-muted">
-            <span className="animate-pulse">Preparing</span>{' '}
-            <span className="text-text-default">{toolSummary}</span>
+          <span className="br-tool-running min-w-0 flex-1 truncate">
+            <span>Preparing</span> <span>{toolSummary}</span>
           </span>
         </span>
       </div>

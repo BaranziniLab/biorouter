@@ -12,34 +12,13 @@ export const ToolCallStatusIndicator: React.FC<ToolCallStatusIndicatorProps> = (
   status,
   className,
 }) => {
-  const getStatusStyles = () => {
-    switch (status) {
-      case 'success':
-        return 'bg-background-success';
-      case 'error':
-        return 'bg-background-danger';
-      case 'loading':
-        return 'bg-background-warning animate-pulse';
-      case 'pending':
-      default:
-        return 'bg-background-strong';
-    }
-  };
-
   return (
-    <div
-      className={cn(
-        'absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-background-default',
-        getStatusStyles(),
-        className
-      )}
-      aria-label={`Tool status: ${status}`}
-    />
+    <span role="img" className={cn('sr-only', className)} aria-label={`Tool status: ${status}`} />
   );
 };
 
 /**
- * Wrapper component that adds a status indicator to a tool icon
+ * Keeps status accessible while the visible tool icon stays undecorated.
  */
 interface ToolIconWithStatusProps {
   ToolIcon: React.ComponentType<{ className?: string }>;
@@ -53,9 +32,9 @@ export const ToolIconWithStatus: React.FC<ToolIconWithStatusProps> = ({
   className,
 }) => {
   return (
-    <div className={cn('relative inline-block', className)}>
+    <span className={cn('inline-flex shrink-0', className)}>
       <ToolIcon className="h-4 w-4 flex-shrink-0" />
       <ToolCallStatusIndicator status={status} />
-    </div>
+    </span>
   );
 };

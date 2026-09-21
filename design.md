@@ -1146,22 +1146,11 @@ Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on comp
 > turns a quiet conversation into a stack of boxes, and — because the app's focus treatment is now a
 > surface shift — a persistent 1px rectangle around a row is read by users as a *stuck focus ring*.
 
-**Collapsed.** No border. A 36px row, `--radius-md`, transparent fill, `hover:--background-muted`:
-a 16px status icon, the tool name in mono, a `--text-muted` summary, and the duration in `tabular-nums`.
+**Collapsed.** A transparent, borderless row with muted text and the tool icon alone, without colored status dots. Hover and keyboard focus bring the label to `--text-default` (dark ink in light mode, light ink in dark mode), without a background wash. Running text pulses gently; reduced motion disables the pulse.
 
-**Expanded.** The body appears beneath, separated by a `border-t` hairline. Arguments and results render
-as [code blocks](#51--code-blocks) on `--background-muted`. Still no surrounding outline.
+**Expanded.** One click reveals the inputs, generated code, and results together, separated by fine rules and short labels. Short content is fully visible. Long scripts, logs, and outputs show a few lines with an explicit Show more / Show less control. Arguments remain literal, selectable monospace text. No nested disclosure is required just to inspect an ordinary command and its output.
 
-**States.**
-
-| State | Icon | Colour | Surface |
-|---|---|---|---|
-| running | spinner | `--text-info` | — |
-| ok | check | `--text-success` | — |
-| error | triangle | `--text-danger` | `--background-danger` @ 5% wash |
-
-Failure is signalled by **colour** — the icon, the label, and a faint wash — never by an outline.
-This is the same rule as P3: colour is evidence.
+**Failure.** Keep the failure label and diagnostic message, with no red background. The words Ran, Working on, and Problem with communicate status without badge overlays; preserve any actionable permission or recovery control beneath the diagnostic.
 
 ---
 
@@ -1375,7 +1364,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 > |---|---|---|
 > | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* **Amended 2026-09-08: a `[role='tab']` trigger takes no fill** — it activates on focus, so the fill sat permanently on the active tab as a grey box; its underline firming (2px → 3px, label at `--text-default`) is its focus indicator instead. **Amended 2026-09-08 (fourth): a keyboard-scrollable region with no role (`.biorouter-focus-region`) takes a 1px inset `--border-accent` edge** — it was exempted from the fill *and* from the UA ring, leaving no indicator at all. |
 > | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
-> | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
+> | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = a clear notice, with no red wash. A persistent rectangle reads as a stuck focus ring. |
 > | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |
 >
 > The [drift register](#part-7--drift-register) is now the active backlog. The options below are retained as

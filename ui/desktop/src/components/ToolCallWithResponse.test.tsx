@@ -543,7 +543,6 @@ describe('summarizeToolCall', () => {
     expect(screen.queryByText('/Users/wgu/Desktop/biorouter/package.json')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/Reading package\.json/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
 
     expect(screen.getByText('command')).toBeInTheDocument();
     expect(screen.getByText('view')).toBeInTheDocument();
@@ -592,7 +591,6 @@ describe('summarizeToolCall', () => {
     expect(screen.queryByText('cmd')).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
 
     expect(screen.getByText('cmd')).toBeInTheDocument();
     expect(screen.getByText('npm run typecheck')).toBeInTheDocument();
@@ -722,7 +720,6 @@ describe('summarizeToolCall', () => {
     );
 
     fireEvent.click(screen.getByText(/Running make-report/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
 
     const dump = [...container.querySelectorAll('pre')].find((node) =>
       node.textContent?.includes('file:///tmp/report.csv')
@@ -890,7 +887,6 @@ describe('summarizeToolCall', () => {
     );
 
     fireEvent.click(screen.getByText(/Running build-site/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
     fireEvent.click(screen.getByRole('button', { name: 'dist/index.html' }));
 
     expect(onOpenArtifact).toHaveBeenCalledWith({
@@ -970,14 +966,12 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
-    fireEvent.click(screen.getByText('View executed calls (2)').closest('button') as HTMLElement);
 
     expect(screen.getByText('Reading manifest.json')).toBeInTheDocument();
     expect(screen.getByText('Running lss /tmp').parentElement?.textContent).toContain('· failed');
     expect(screen.queryByText(/\d+\. developer__/)).not.toBeInTheDocument();
 
     // Expanding the failing call reveals its exact args and its real error.
-    fireEvent.click(screen.getByText('Running lss /tmp').closest('button') as HTMLElement);
     expect(screen.getByText('lss /tmp')).toBeInTheDocument();
     expect(screen.getByText('Running lss /tmp failed')).toBeInTheDocument();
     expect(
@@ -1006,8 +1000,6 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
-    const codeToggle = screen.getByText('View generated code').closest('button') as HTMLElement;
-    fireEvent.click(codeToggle);
 
     // The highlighter splits the source into token spans, so assert on the
     // container text and on a token that survives tokenization intact.
@@ -1055,8 +1047,6 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
-    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText(/Running/).closest('button') as HTMLElement);
 
     // The literal markdown source is visible as text…
     expect(screen.getAllByText(new RegExp('\\[click me\\]\\(https://evil')).length).toBeGreaterThan(
@@ -1098,9 +1088,6 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
-    fireEvent.click(
-      screen.getByText('View recorded calls (1 of 4 executed)').closest('button') as HTMLElement
-    );
 
     expect(
       screen.getByText('3 executed calls were not recorded, so their details are unavailable.')
@@ -1135,9 +1122,6 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
-    );
-    fireEvent.click(
-      screen.getByText('View recorded calls (0 of 2 executed)').closest('button') as HTMLElement
     );
     expect(
       screen.getByText('2 executed calls were not recorded, so their details are unavailable.')
@@ -1287,9 +1271,6 @@ describe('ToolCallWithResponse nested todo metadata', () => {
       />
     );
     fireEvent.click(screen.getByText(new RegExp(planTitle)).closest('button') as HTMLElement);
-    fireEvent.click(
-      screen.getByText(`View executed calls (${calls.length})`).closest('button') as HTMLElement
-    );
     return rendered;
   };
 
@@ -1627,7 +1608,6 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
     );
 
     fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
 
     expect(screen.getByText('HRV rose by 12ms.')).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('untrusted="true"');
@@ -1724,7 +1704,6 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
     );
 
     fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
 
     expect(screen.getByText('plain output from an older session')).toBeInTheDocument();
   });
