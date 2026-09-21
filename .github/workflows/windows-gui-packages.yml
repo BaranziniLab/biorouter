@@ -1,0 +1,300 @@
+# Builds BOTH Windows release artifacts — the zip and the Squirrel installer —
+# from ONE packaging run, on a Windows runner, and uploads them.
+#
+# ⚠ Why both come from one job rather than two places. `forge.config.ts` lists
+# win32 under `maker-zip` AND declares `maker-squirrel`, so a single
+# `npm run make --platform=win32` packages once into `out/Biorouter-win32-x64/`
+# and then runs both makers against that same staged tree. The two artifacts
+# therefore contain the same `resources/bin/biorouter.exe` BY CONSTRUCTION.
+#
+# That is not a nicety. While 1.91.0 was being built, the zip was produced by the
+# Docker cross-build on a macOS host and the installer was produced natively on a
+# Windows box. Both were built from commit 5e668843 and both were "correct", yet
+# they measured 413,503,912 and 413,069,364 bytes. Rust builds embed paths and
+# are not reproducible by default, so source-identical does not imply
+# byte-identical, and one release would have shipped two Windows artifacts whose
+# backends disagreed with nothing recording that they did — the provenance
+# manifest hashes the archive, never the binaries inside it.
+#
+# ⚠ The backend is cross-compiled by `scripts/build-computer-use-package-cross.sh`,
+# not built on the Windows runner. Note what is and is not pinned: the RECIPE
+# is (the mingw winpthread link wrap and LZMA_API_STATIC from cross-env.sh),
+# and the compiler is (rust-toolchain.toml), but the base IMAGE is not —
+# `cross-env.sh:43` reads `WIN_RUST_IMG:=rust:latest`. Unlike Linux there is no
+# glibc floor riding on it, so this is a note rather than a defect; do not
+# describe it as a pinned image.
+# A native msvc build would produce a different toolchain's binaries than every
+# previous release shipped; the target stays `x86_64-pc-windows-gnu`. That script
+# also applies the mingw winpthread link wrap and LZMA_API_STATIC from
+# `scripts/cross-env.sh`, which a hand-rolled cargo invocation would miss.
+name: Windows GUI packages
+'on':
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  backend:
+    name: Windows backend (mingw cross recipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cross-cache/registry
+            .cross-cache/target/x86_64-pc-windows-gnu
+          key: cross-x86_64-pc-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
+          restore-keys: cross-x86_64-pc-windows-gnu-
+
+      # Also stages the mingw runtime DLLs beside the exes ($WIN_DLL_STAGE).
+      - name: Cross-build the Windows backend
+        run: bash scripts/build-computer-use-package-cross.sh x86_64-pc-windows-gnu
+
+      - name: Take ownership of the container-written cache
+        if: always()
+        run: if [ -d .cross-cache ]; then sudo chown -R "$(id -u):$(id -g)" .cross-cache; fi
+
+      - name: Record what was built
+        run: |
+          ls -l target/x86_64-pc-windows-gnu/release/*.exe target/x86_64-pc-windows-gnu/release/*.dll
+          sha256sum target/x86_64-pc-windows-gnu/release/biorouter.exe \
+                    target/x86_64-pc-windows-gnu/release/biorouterd.exe
+          echo "source commit: $(cat target/x86_64-pc-windows-gnu/release/package-source-commit.txt)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-backend-${{ inputs.version }}
+          path: |
+            target/x86_64-pc-windows-gnu/release/*.exe
+            target/x86_64-pc-windows-gnu/release/*.dll
+            target/x86_64-pc-windows-gnu/release/package-source-commit.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  packages:
+    name: Windows zip + Setup.exe
+    needs: backend
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-backend-${{ inputs.version }}
+          path: target/x86_64-pc-windows-gnu/release/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `inputs.version` is free text on a workflow_dispatch. Here the makers
+      # name their output from package.json rather than from the input, so a
+      # typo surfaces as a missing-file failure below — but only by accident of
+      # which name wins. Assert it directly rather than relying on that.
+      - name: Check the dispatch version against the tree
+        shell: bash
+        run: |
+          set -e
+          want='${{ inputs.version }}'
+          cargo="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          pkg="$(node -p "require('./ui/desktop/package.json').version")"
+          echo "dispatch=$want Cargo.toml=$cargo package.json=$pkg"
+          [ "$want" = "$cargo" ] && [ "$want" = "$pkg" ] || {
+            echo "::error::version $want does not match the tree ($cargo / $pkg)"; exit 1; }
+
+      - name: Build the Biorouter Copilot helper payload
+        run: python scripts/computer-use-runtime.py build win32-x64
+
+      # ⚠ `src/bin` is not tracked in git, so a fresh checkout has none.
+      # `prepare-platform-binaries.js` VALIDATES this directory and never copies
+      # from `target/`. Omitting this stage is how 1.91.0 produced an installer
+      # named 1.91.0 that carried a 1.90.5 backend: exit 0, every filename
+      # correct, and the provenance stamp matching HEAD throughout, because the
+      # stamp described `target/` while the packager read `src/bin`.
+      - name: Stage the Windows backend and its DLLs into src/bin
+        shell: bash
+        run: |
+          rm -rf ui/desktop/src/bin && mkdir -p ui/desktop/src/bin
+          cp -f target/x86_64-pc-windows-gnu/release/biorouterd.exe \
+                target/x86_64-pc-windows-gnu/release/biorouter.exe \
+                ui/desktop/src/bin/
+          cp -f target/x86_64-pc-windows-gnu/release/*.dll ui/desktop/src/bin/
+          ls -l ui/desktop/src/bin
+
+      # ⚠ USE THE CANONICAL SCRIPT. Do not open-code build-main + download-mingit
+      # + `npm run make`. `npm run make` is
+      # `check-package-prereqs.mjs && fix-node-pty-permissions.mjs && electron-forge make`,
+      # and NO forge hook calls `prepare-platform-binaries.js` — every `bundle:*`
+      # script in package.json invokes it explicitly for exactly that reason.
+      # Skipping it drops five things, and the two that are guards are inside the
+      # script being skipped, so the omission hides itself:
+      #   copyPlatformFiles()        src/platform/windows/bin -> src/bin:
+      #                              git, install-node.cmd, jbang.cmd, npx.cmd,
+      #                              uv.exe, uvx.exe
+      #   fetchLlamaServer()         the ONLY caller — the whole llamacpp sidecar
+      #   cleanBinDirectory()        strips other platforms' binaries
+      #   validateRequiredBinaries() guard
+      #   assertNoForeignBinaries()  guard
+      # A package built without it exits 0 with both artifacts present and
+      # correctly named. `verifyPackagedDependencies` in postPackage checks
+      # node-pty and symlink escapes only, so nothing else notices.
+      #
+      # `bundle:windows` (scripts/build-windows.js) runs build-main,
+      # download-mingit, prepare-platform-binaries and then ONE `make` with
+      # ELECTRON_PLATFORM/ELECTRON_ARCH set — which is also what makes the
+      # platform filtering select win32. It subsumes `build:web`, because
+      # prepare-platform-binaries builds the web bundle itself.
+      - name: Install desktop dependencies
+        working-directory: ui/desktop
+        run: npm ci
+
+      - name: Package once and run both makers
+        working-directory: ui/desktop
+        run: npm run bundle:windows
+
+      - name: Verify both artifacts and measure the shared backend
+        shell: bash
+        run: |
+          set -e
+          v='${{ inputs.version }}'
+          zip="ui/desktop/out/make/zip/win32/x64/Biorouter-win32-x64-${v}.zip"
+          exe="ui/desktop/out/make/squirrel.windows/x64/Biorouter-Setup-${v}.exe"
+          for f in "$zip" "$exe"; do
+            [ -f "$f" ] || { echo "::error::missing release artifact $f"; exit 1; }
+          done
+          staged="ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouter.exe"
+          [ -f "$staged" ] || { echo "::error::no staged backend at $staged"; exit 1; }
+
+          echo "release artifacts:"
+          sha256sum "$zip" "$exe"
+          ls -l "$zip" "$exe"
+
+          # ⚠ `[ -f ]` passes on a zero-byte or truncated file, and
+          # `if-no-files-found: error` only checks existence. Both artifacts are
+          # ~400 MB, so a floor well below that still catches a maker that wrote
+          # a stub.
+          for f in "$zip" "$exe"; do
+            bytes=$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")
+            [ "$bytes" -ge 100000000 ] || { echo "::error::$f is only $bytes bytes — expected a ~400 MB artifact"; exit 1; }
+          done
+
+          # Prove the version that is actually inside the package, not the one in
+          # the filename. This is the check whose absence shipped a 1.90.5
+          # backend in a 1.91.0 installer: exit 0, every filename correct, and
+          # the provenance stamp matching HEAD throughout.
+          #
+          # ⚠ It must COMPARE. Printing the version and reading it by eye is not
+          # a check — an automated run has no eye, so a mismatched backend would
+          # scroll past in green. `biorouterd --version` prints
+          # "biorouter-server <ver>".
+          got="$(./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe --version | tr -d '\r')"
+          echo "packaged backend reports: $got"
+          case "$got" in
+            *"$v") : ;;
+            *) echo "::error::packaged backend is '$got' but this release is $v"; exit 1 ;;
+          esac
+
+          # ⚠ A PRESENCE check, because this failure mode is an ABSENCE.
+          # A package missing the platform tooling and the llamacpp sidecar is
+          # byte-valid, correctly named and exits 0; only asking for the files
+          # by name sees it. These are what `prepare-platform-binaries.js`
+          # contributes: the bundled git the knowledge bases use, the uv/uvx
+          # Python tooling extensions install through, npx, jbang, and the whole
+          # Llama Server sidecar.
+          # ⚠ The three mingw DLLs are asserted NOWHERE else.
+          # `validateRequiredBinaries` (prepare-platform-binaries.js:212) requires
+          # only biorouterd.exe, biorouter.exe and llamacpp/llama-server.exe. A
+          # `-gnu` build will not start without libgcc_s_seh-1, libstdc++-6 and
+          # libwinpthread-1, and the failure is a Windows loader dialog naming a
+          # DLL — not something any test in this repository would catch.
+          # The staging step would fail first today (it runs under `shell: bash`,
+          # so an unexpanded `*.dll` glob makes `cp` fail under -e), but that
+          # catches the absence at STAGING. This catches it at PACKAGING, which
+          # is the half that survives a refactor of the staging step.
+          bin="ui/desktop/out/Biorouter-win32-x64/resources/bin"
+          missing=
+          for want in biorouter.exe biorouterd.exe git npx.cmd jbang.cmd install-node.cmd uv.exe uvx.exe llamacpp \
+                      libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            [ -e "$bin/$want" ] || missing="$missing $want"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the packaged resources/bin is missing:$missing"
+            echo "This is what skipping prepare-platform-binaries.js looks like."
+            ls -la "$bin"
+            exit 1
+          fi
+          echo "packaged resources/bin carries the platform tooling and the llamacpp sidecar"
+
+          # The two jobs check out the same ref of the same run, so this cannot
+          # currently disagree. Asserting it costs one line and turns an
+          # invariant into a check.
+          built_at="$(cat target/x86_64-pc-windows-gnu/release/package-source-commit.txt)"
+          [ "$built_at" = "${{ github.sha }}" ] || {
+            echo "::error::backend was built at $built_at but this job is ${{ github.sha }}"; exit 1; }
+          echo "backend source commit matches this run: $built_at"
+
+      # ⚠ What this proves and what it does NOT.
+      #
+      # Hashing the staged tree alone would prove nothing: it is the maker INPUT,
+      # so it is trivially equal to itself. Reading the backend back OUT of the
+      # finished zip proves the zip maker did not re-stage or rewrite it, which
+      # is the actual claim.
+      #
+      # It does NOT prove the same for the installer. `maker-squirrel` builds a
+      # nupkg from that tree by a separate code path, so its copy could in
+      # principle differ without this step noticing. Asserting that needs an
+      # install, which CI cannot cheaply do — so it is verified on real Windows
+      # hardware by reading the backend out of the INSTALLED app. Measured for
+      # 1.91.0, all three readings identical:
+      #   staged tree / zip member / installed from Setup.exe
+      #   7961B0220796FF2491E0A63E4F8EF083F53F6BD345DF04107415F02D64EC5EBA
+      # Do not delete this step believing the installed-app read covers it: that
+      # read happens after the release is built, and this one fails the build.
+      - name: Prove the zip carries the backend the makers were given
+        shell: bash
+        run: |
+          set -e
+          v='${{ inputs.version }}'
+          zip="ui/desktop/out/make/zip/win32/x64/Biorouter-win32-x64-${v}.zip"
+          staged="ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouter.exe"
+          python - "$zip" "$staged" <<'PY'
+          import hashlib, sys, zipfile
+          archive, staged = sys.argv[1], sys.argv[2]
+          want = hashlib.sha256(open(staged, 'rb').read()).hexdigest()
+          with zipfile.ZipFile(archive) as z:
+              names = [n for n in z.namelist() if n.replace('\\', '/').endswith('resources/bin/biorouter.exe')]
+              if len(names) != 1:
+                  print(f"::error::expected exactly one resources/bin/biorouter.exe in the zip, found {names}")
+                  sys.exit(1)
+              got = hashlib.sha256(z.read(names[0])).hexdigest()
+          print(f"staged tree : {want}")
+          print(f"zip member  : {got}  ({names[0]})")
+          if want != got:
+              print("::error::the zip's backend differs from the tree both makers were given")
+              sys.exit(1)
+          print("OK - the zip carries the staged backend byte for byte")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages-${{ inputs.version }}
+          path: |
+            ui/desktop/out/make/zip/win32/x64/*.zip
+            ui/desktop/out/make/squirrel.windows/x64/*.exe
+          if-no-files-found: error
+          retention-days: 7
