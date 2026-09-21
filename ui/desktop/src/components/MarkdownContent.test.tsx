@@ -1095,45 +1095,76 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
     });
   });
 
-  // These assert the class list rather than computed styles because jsdom does
-  // not run Tailwind, so no `prose-*` variant resolves to real CSS here. The
-  // rendered result was verified separately in a browser against the compiled
-  // stylesheet; these guard the contract that produces it.
-  describe('Prose treatment (design.md §3.2 / §4.17)', () => {
+  describe('Shared markdown treatment', () => {
     const proseContainer = () => document.querySelector('.prose');
 
-    it('steps h4 down from h3 instead of repeating it', async () => {
-      render(<MarkdownContent content={'### H3 Heading\n\n#### H4 Heading'} />);
-
-      await waitFor(() => {
-        expect(screen.getByRole('heading', { level: 3, name: 'H3 Heading' })).toBeInTheDocument();
-        expect(screen.getByRole('heading', { level: 4, name: 'H4 Heading' })).toBeInTheDocument();
-      });
-
-      const container = proseContainer();
-      // h4 previously had no rule at all and inherited h3's 14px/600.
-      expect(container).toHaveClass('prose-h3:text-[15px]');
-      expect(container).toHaveClass('prose-h4:text-[13px]');
-      // h4 is a muted label, not a heading.
-      expect(container).toHaveClass('prose-h4:text-text-muted');
-      expect(container).toHaveClass('prose-h4:tracking-[0.02em]');
-    });
-
-    it('pins an explicit leading on every heading level', () => {
-      render(<MarkdownContent content="# H1" />);
-
-      const container = proseContainer();
-      // text-lg/text-base/text-sm each ship their own line-height, which
-      // collided with the typography plugin's in a source-order-dependent way.
-      for (const leading of [
-        'prose-h1:leading-[26px]',
-        'prose-h2:leading-[24px]',
-        'prose-h3:leading-[22px]',
-        'prose-h4:leading-[18px]',
-      ]) {
-        expect(container).toHaveClass(leading);
+    it.each(['chat', 'document'] as const)(
+      'preserves heading hierarchy and nested lists in %s',
+      (variant) => {
+        render(
+          <MarkdownContent
+            variant={variant}
+            content={
+              '# Overview\n\n## Findings\n\n### Detail\n\n#### Notes\n\n- Parent\n  - Child 中文 α'
+            }
+          />
+        );
+        for (const [index, name] of ['Overview', 'Findings', 'Detail', 'Notes'].entries()) {
+          expect(screen.getByRole('heading', { level: index + 1, name })).toBeInTheDocument();
+        }
+        expect(screen.getByText('Child 中文 α').closest('ul')?.parentElement?.tagName).toBe('LI');
+        expect(proseContainer()).toHaveClass('biorouter-markdown');
       }
-    });
+    );
+
+    it.each(['chat', 'document'] as const)(
+      'makes tables keyboard accessible and preserves alignment and complete values in %s',
+      (variant) => {
+        render(
+          <MarkdownContent
+            variant={variant}
+            content={
+              '| Measure | Value | Status |\n| :--- | ---: | :---: |\n| α coefficient | 5.809e-04 | Ready |\n| Long_identifier_with_no_breaks | 1234567890.012345 | ✓ |'
+            }
+          />
+        );
+        const region = screen.getByRole('region', { name: 'Scrollable table' });
+        expect(region).toHaveAttribute('tabindex', '0');
+        expect(region.querySelector('table')).toBe(screen.getByRole('table'));
+        expect(screen.getByRole('cell', { name: '5.809e-04' })).toHaveStyle({ textAlign: 'right' });
+        expect(screen.getByRole('cell', { name: 'Ready' })).toHaveStyle({ textAlign: 'center' });
+        expect(screen.getByRole('cell', { name: '1234567890.012345' })).toBeInTheDocument();
+      }
+    );
+
+    it.each(['chat', 'document'] as const)(
+      'copies unlabeled fenced text and keeps it inert in %s',
+      async (variant) => {
+        const copy = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: { writeText: copy },
+        });
+        const onOpenArtifact = vi.fn();
+        const onRunInTerminal = vi.fn();
+        const { container } = render(
+          <MarkdownContent
+            variant={variant}
+            content={'```\n/tmp/results.csv\n  α = 0.0005809\n```\n\nInline `value` stays inline.'}
+            onOpenArtifact={onOpenArtifact}
+            onRunInTerminal={onRunInTerminal}
+          />
+        );
+        expect(container.querySelector('.biorouter-md-code-lang')).toHaveTextContent('text');
+        fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+        await waitFor(() => expect(copy).toHaveBeenCalledWith('/tmp/results.csv\n  α = 0.0005809'));
+        expect(screen.queryByRole('button', { name: 'Run' })).not.toBeInTheDocument();
+        expect(container.querySelector('.biorouter-md-code button[title*="Preview"]')).toBeNull();
+        expect(screen.getByText('value').tagName).toBe('CODE');
+        expect(onRunInTerminal).not.toHaveBeenCalled();
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+      }
+    );
 
     it('suppresses the curly quotes the typography plugin injects into blockquotes', async () => {
       render(<MarkdownContent content="> Confidence is an edge attribute." />);
@@ -1150,7 +1181,7 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       expect(container).toHaveClass('[&_blockquote_p:last-of-type]:after:content-none');
     });
 
-    it('renders tables as hairline rows, not a boxed grid with a filled header', async () => {
+    it('leaves table presentation to the shared stylesheet', async () => {
       const content = `| Compound | Edges |
 | --- | ---: |
 | Fingolimod | 318 |`;
@@ -1162,9 +1193,7 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       });
 
       const className = proseContainer()?.className ?? '';
-      // §4.17: no vertical rules, no header fill. The hairline-between-rows,
-      // caps header and row heights live in main.css (structural selectors a
-      // `prose-*` variant cannot express).
+      // The shared stylesheet owns the header band and horizontal separators.
       expect(className).not.toContain('prose-td:border');
       expect(className).not.toContain('prose-th:border');
       expect(className).not.toContain('prose-thead:bg-background-medium');
@@ -1504,6 +1533,23 @@ for the result.`;
       delete window.electron;
       resetFileLinkStatusForTests();
       vi.restoreAllMocks();
+    });
+
+    it('keeps unavailable header file links as plain text and preserves inline-code chips', async () => {
+      installCheckBridge(() => ({ exists: false, isDirectory: false }));
+      const { container } = render(
+        <MarkdownContent
+          content={'| /tmp/missing.csv | `/tmp/missing-code.csv` |\n| --- | --- |\n| one | two |'}
+          onOpenArtifact={vi.fn()}
+        />
+      );
+      await waitFor(() => expect(screen.getByText('/tmp/missing.csv').tagName).toBe('SPAN'));
+      const text = screen.getByText('/tmp/missing.csv');
+      expect(text.tagName).toBe('SPAN');
+      expect(text.closest('th')).not.toBeNull();
+      expect(text).not.toHaveClass('biorouter-inline-code');
+      expect(screen.getByText('/tmp/missing-code.csv')).toHaveClass('biorouter-inline-code');
+      expect(container.querySelector('thead button')).toBeNull();
     });
 
     it('keeps the accent link treatment for a file confirmed to exist', async () => {

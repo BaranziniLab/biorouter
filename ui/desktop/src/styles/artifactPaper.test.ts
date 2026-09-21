@@ -125,20 +125,19 @@ describe('artifact panel paper', () => {
     expect(css.trimEnd().slice(-400)).not.toContain('.br-paper');
   });
 
-  // Long lines and wide tables used to clip at the panel edge with no cue.
-  it('gives the code view, the table and document fences an overflow hint', () => {
-    for (const selector of [
-      ".br-paper-scroll[data-view='code'], .br-paper-table-scroll",
-      '.br-paper-prose .biorouter-md-code-body',
-    ]) {
-      const body = ruleBody(selector);
-      expect(body, selector).not.toBeNull();
-      // A cover attached to the content's end, over a shadow attached to the edge.
-      expect(body).toMatch(/no-repeat local,/);
-      expect(body).toMatch(
-        /var\(--paper-hint-ink\), transparent\) 100% 0 \/ 14px 100% no-repeat scroll/
-      );
-    }
+  it('gives the code view and table an overflow hint', () => {
+    const body = ruleBody(".br-paper-scroll[data-view='code'], .br-paper-table-scroll");
+    expect(body).toMatch(/no-repeat local,/);
+    expect(body).toMatch(
+      /var\(--paper-hint-ink\), transparent\) 100% 0 \/ 14px 100% no-repeat scroll/
+    );
+  });
+
+  it('keeps fenced code on the syntax palette ground with an overflow hint', () => {
+    const body = ruleBody('.biorouter-markdown .biorouter-md-code-body');
+    expect(body).toContain('var(--background-code)');
+    expect(body).toMatch(/no-repeat local,/);
+    expect(body).toMatch(/no-repeat scroll/);
   });
 
   // A narrow CSV used to stretch its columns across the whole column.
@@ -164,12 +163,19 @@ describe('artifact panel paper', () => {
     );
   });
 
-  // At most 48px from a fenced well to the next heading.
-  it('closes the gap after a fenced block before a heading', () => {
+  it('keeps the shared markdown table header readable at AA contrast', () => {
+    const header = ruleBody('.biorouter-markdown.prose thead th');
+    const band = ruleBody('.biorouter-markdown.prose thead');
+    const ink = /color: (#[0-9a-f]{6})/.exec(header ?? '')?.[1];
+    const ground = /background: (#[0-9a-f]{6})/.exec(band ?? '')?.[1];
+    expect(ink).toBeDefined();
+    expect(ground).toBeDefined();
+    expect(contrast(ink!, ground!)).toBeGreaterThanOrEqual(4.5);
     expect(
-      ruleBody('.br-paper-prose.prose pre:has(> .biorouter-md-code) + :where(h2, h3)')
-    ).toContain('margin-top: 1.5em;');
-    expect(ruleBody('.br-paper-prose .biorouter-md-code-head')).toContain('height: 26px;');
+      ruleBody(
+        '.biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code))'
+      )
+    ).toContain('color: inherit;');
   });
 });
 

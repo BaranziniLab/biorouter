@@ -441,6 +441,8 @@ Arial is a defensible choice for a tool that must render identically on a lab Wi
 
 #### Canonical type scale
 
+The values below are the Small baseline. Settings → App → Appearance offers Small (1×), Standard (the default, 1.07×), and Large (1.15×). Scale typography and absolute line heights together, including code and terminal text; keep layout dimensions and window zoom independent. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
+
 | Role | Size / line-height | Weight | Tracking |
 |---|---|---|---|
 | Page title | 24 / 30 | 600 | −0.01em |
@@ -1106,6 +1108,8 @@ It has **zero call sites.** Delete the file. `DR-35`
 
 Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 36px ([D-12·C](#d-12--row-density)), hairline between. Numeric columns right-aligned with `tabular-nums`. No zebra striping, no vertical rules. Sortable headers show a 12px chevron on hover and when active.
 
+**Markdown tables (chat and document previews).** Use a soft gray `#ecece9` header with bold dark `#292927` sentence-case labels (dark mode: `#353533` with `#eeeeeb` text), 13px base type, and 11px × 16px cell padding. Separate body rows with fine horizontal rules, emphasize the first column, and preserve authored numeric alignment. Wide tables scroll inside a keyboard-focusable region; never split a numeric value to squeeze it into a narrow pane. This markdown treatment supersedes the earlier D-21 no-header-fill rule for these surfaces.
+
 ---
 
 ### 4.18 · Chat messages
@@ -1127,6 +1131,10 @@ The chat surface is an instrument readout, not a messaging app.
 > The tint exists only so the eye can find the turn boundary when scrolling.
 
 Assistant prose is the page. Wrapping it in a bubble would halve the effective measure and add visual noise to the app's most-read surface. The user's turn is tinted only so the eye can find the boundary when scrolling.
+
+Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
+
+An empty chat's welcome sentence belongs to its tab. Select and animate it once, preserve it through tab switching, split/move/merge layouts and Settings visits, and start a fresh lifetime in a new tab or renderer. Keep the selected tab's complete frame and close control visible; use subtle neutral tab boundaries and mark the active tab with a bold label and thin bottom accent, without an accent border or surrounding shadow.
 
 Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on completion.
 
@@ -1206,7 +1214,7 @@ via `useResolvedTheme()` + `useThemeFamily()`. Code blocks paint on `--backgroun
 `prose-invert` complaint no longer applies: the prose tokens are remapped to the Parchment tokens outright
 (D-19). `DR-39` closed.
 
-**Canonical.** A code block is a `--radius-lg` panel, `--background-muted` fill, 1px `--border-subtle`, no shadow. A 32px header carries the language in 11px caps `--text-subtle` and a ghost copy button. Body: 13/20 mono, 12px padding, `overflow-x: auto`, `tab-size: 2`.
+**Canonical markdown blocks.** Use a 10px-radius panel with a 1px `--border-subtle` edge and no shadow. A header at least 36px tall carries the language in its authored case and the existing copy/run controls on `--background-muted`. The body uses `--background-code`, the shared mono theme, and 14px × 16px padding. Document code preserves lines and scrolls horizontally; chat code wraps long lines. Unlabelled fences use the same card with a `text` label and Copy control.
 
 The syntax palette is derived from the system, not imported:
 

@@ -13,6 +13,7 @@ import {
 import UpdateSection from './UpdateSection';
 import UsageSection from '../usage/UsageSection';
 import ResetPanel from './ResetPanel';
+import FontSizeSelector from './FontSizeSelector';
 
 import { COST_TRACKING_ENABLED, UPDATES_ENABLED } from '../../../updates';
 import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
@@ -258,6 +259,8 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           <ThemeSelector className="w-auto" horizontal />
         </div>
       </div>
+
+      <FontSizeSelector />
 
       {/* Usage — accumulated (billed) tokens + cost, month-to-date vs budget */}
       {COST_TRACKING_ENABLED && showPricing && <UsageSection key={usageVersion} />}

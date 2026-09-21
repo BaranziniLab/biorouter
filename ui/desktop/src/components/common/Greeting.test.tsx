@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Greeting } from './Greeting';
+import { Greeting, retainTabGreetings } from './Greeting';
 
 const animate = vi.fn();
 vi.mock('../../hooks/use-text-animator', () => ({
@@ -10,7 +10,10 @@ vi.mock('../../hooks/use-text-animator', () => ({
   },
 }));
 
-beforeEach(() => animate.mockClear());
+beforeEach(() => {
+  animate.mockClear();
+  retainTabGreetings([]);
+});
 
 describe('Greeting', () => {
   /**
@@ -51,14 +54,7 @@ describe('Greeting', () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 
-  /**
-   * ⚠ It unrolls on EVERY mount. `010bf68e` removed the animator outright and a
-   * later pass gated it to once per chat; both were wrong the same way. Home, a
-   * new window and a new chat are all arrivals, and an arrival is exactly when
-   * the unroll belongs. `prefers-reduced-motion` is the accessibility answer,
-   * and the animator already honours it.
-   */
-  it('animates on every mount, and can be switched off explicitly', () => {
+  it('animates separate arrivals without a tab identity, and supports disabling motion', () => {
     render(<Greeting />);
     expect(animate).toHaveBeenLastCalledWith(true);
 
@@ -75,5 +71,39 @@ describe('Greeting', () => {
     const first = container.textContent;
     rerender(<Greeting />);
     expect(container.textContent).toBe(first);
+  });
+});
+
+describe('tab greeting lifetime', () => {
+  it('keeps the sentence and skips animation when the same tab moves to another pane', () => {
+    const first = render(<Greeting tabId="tab-a" />);
+    const message = first.container.textContent;
+    expect(animate).toHaveBeenLastCalledWith(true);
+    first.unmount();
+    const moved = render(<Greeting tabId="tab-a" />);
+    expect(moved.container.textContent).toBe(message);
+    expect(animate).toHaveBeenLastCalledWith(false);
+  });
+  it('does not replay after visiting another tab or adding one', () => {
+    const view = render(<Greeting key="a" tabId="a" />);
+    const message = view.container.textContent;
+    view.rerender(<Greeting key="b" tabId="b" />);
+    expect(animate).toHaveBeenLastCalledWith(true);
+    retainTabGreetings(['a', 'b']);
+    view.rerender(<Greeting key="a" tabId="a" />);
+    expect(view.container.textContent).toBe(message);
+    expect(animate).toHaveBeenLastCalledWith(false);
+  });
+  it('releases closed tabs so a new lifetime gets a fresh greeting', () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const first = render(<Greeting tabId="tab-a" />);
+    const message = first.container.textContent;
+    first.unmount();
+    retainTabGreetings([]);
+    random.mockReturnValue(0.99);
+    const reopened = render(<Greeting tabId="tab-a" />);
+    expect(reopened.container.textContent).not.toBe(message);
+    expect(animate).toHaveBeenLastCalledWith(true);
+    random.mockRestore();
   });
 });

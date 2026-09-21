@@ -8,9 +8,11 @@ import {
   resetNewTerminalPaneRegistry,
 } from '../utils/terminalFocus';
 import { resetTerminalRunChannelForTests, runInTerminal } from '../utils/terminalRunChannel';
+import FontSizeSelector from './settings/app/FontSizeSelector';
 import { GENERATED_THEMES } from '../styles/themes.generated';
 
 interface FakeTerminal {
+  options: { fontSize: number };
   modes: { bracketedPasteMode: boolean };
   focus: ReturnType<typeof vi.fn>;
 }
@@ -57,7 +59,7 @@ vi.mock('@xterm/xterm', () => ({
     // deterministic.
     write = vi.fn((_data: string, callback?: () => void) => callback?.());
     writeln = vi.fn();
-    constructor() {
+    constructor(public options: { fontSize: number }) {
       xtermInstances.push(this as unknown as FakeTerminal);
     }
   },
@@ -101,6 +103,7 @@ function shellPrompt(sessionId: string, bracketed: boolean, paneIndex = 0) {
 const terminalDisposer = vi.fn();
 
 beforeEach(() => {
+  localStorage.clear();
   terminalDisposer.mockClear();
   resetCloseTerminalPaneRegistry();
   resetNewTerminalPaneRegistry();
@@ -147,6 +150,31 @@ beforeEach(() => {
 });
 
 describe('InAppTerminalDock', () => {
+  it('resizes terminal text without replacing the live shell or scrollback', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <FontSizeSelector />
+        <InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />
+      </>
+    );
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1));
+    const terminal = xtermInstances[0];
+    await waitFor(() => expect(terminal.focus).toHaveBeenCalledTimes(2));
+    terminal.focus.mockClear();
+    vi.mocked(window.electron.resizeTerminalSession).mockClear();
+    expect(terminal.options.fontSize).toBeCloseTo(13 * 1.07);
+    await user.click(screen.getByRole('radio', { name: 'Large' }));
+    await waitFor(() => expect(window.electron.resizeTerminalSession).toHaveBeenCalled());
+    expect(screen.getByRole('radio', { name: 'Large' })).toHaveFocus();
+    expect(terminal.focus).not.toHaveBeenCalled();
+    expect(terminal.options.fontSize).toBeCloseTo(13 * 1.15);
+    await user.click(screen.getByRole('radio', { name: 'Small' }));
+    expect(terminal.options.fontSize).toBe(13);
+    expect(xtermInstances).toEqual([terminal]);
+    expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);
+    expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
+  });
   it('opens with a visible active tab and lets users add another terminal tab', async () => {
     const user = userEvent.setup();
 

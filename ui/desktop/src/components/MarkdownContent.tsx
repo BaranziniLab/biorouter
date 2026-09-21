@@ -102,7 +102,7 @@ const CodeBlock = memo(function CodeBlock({
   language: string;
   /**
    * The header label: the fence id AS WRITTEN (`r` for ```{r setup}, `Python3`
-   * for ```Python3). Chat upper-cases it in CSS; a document shows it as is.
+   * for ```Python3). Both variants show it as authored.
    */
   label: string;
   /**
@@ -229,10 +229,10 @@ const CodeBlock = memo(function CodeBlock({
     //
     // The `biorouter-md-code*` names are hooks for surfaces that restyle the
     // block in authored CSS (the artifact panel's paper, main.css).
-    <div className="biorouter-md-code not-prose w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
+    <div className="biorouter-md-code not-prose w-full overflow-hidden bg-background-code">
       {/* Header bar */}
-      <div className="biorouter-md-code-head flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
-        <span className="biorouter-md-code-lang text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
+      <div className="biorouter-md-code-head flex items-center justify-between">
+        <span className="biorouter-md-code-lang text-[11px] font-medium text-text-muted select-none">
           {label || 'code'}
         </span>
         <div className="flex items-center gap-1">
@@ -283,7 +283,12 @@ const CodeBlock = memo(function CodeBlock({
         </div>
       </div>
       {/* Code body */}
-      <div className="biorouter-md-code-body w-full overflow-x-auto">
+      <div
+        className="biorouter-md-code-body w-full overflow-x-auto"
+        tabIndex={wrapLongLines ? undefined : 0}
+        role={wrapLongLines ? undefined : 'region'}
+        aria-label={wrapLongLines ? undefined : 'Scrollable code'}
+      >
         {memoizedSyntaxHighlighter}
       </div>
     </div>
@@ -534,6 +539,7 @@ function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: stri
 // nested inside the link's own button — invalid HTML that React warns about, and
 // two click targets for one link. Code under a link renders as plain inline code.
 const InsideLinkContext = createContext(false);
+const InsideCodeBlockContext = createContext(false);
 
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
@@ -564,14 +570,15 @@ const MarkdownCode = memo(
     const fenceMatch = /language-([\w.+-]+)/.exec(className || '');
     const text = String(children);
     const insideLink = useContext(InsideLinkContext);
+    const insideCodeBlock = useContext(InsideCodeBlockContext);
     const artifact =
       !match && !insideLink
         ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
         : null;
-    return !inline && match ? (
+    return !inline && (insideCodeBlock || match) ? (
       <CodeBlock
-        language={normalizeCodeLanguage(match[1])}
-        label={match[1]}
+        language={match ? normalizeCodeLanguage(match[1]) : 'text'}
+        label={match ? match[1] : 'text'}
         fenceLanguage={fenceMatch ? fenceMatch[1] : null}
         onRunInTerminal={onRunInTerminal}
         wrapLongLines={variant !== 'document'}
@@ -724,7 +731,7 @@ const MarkdownContent = memo(function MarkdownContent({
   return (
     <div
       data-variant={variant}
-      className={`w-full overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
+      className={`biorouter-markdown w-full min-w-0 overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
       prose-pre:[&:has(>code)]:p-3 prose-pre:[&>code]:p-0
       prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
@@ -736,17 +743,8 @@ const MarkdownContent = memo(function MarkdownContent({
       prose-a:decoration-text-accent/40 prose-a:underline-offset-2
       prose-table:table prose-table:w-full prose-table:text-[13px]
       prose-th:tabular-nums prose-td:tabular-nums
-      prose-blockquote:text-text-muted prose-blockquote:border-border-subtle prose-blockquote:not-italic
       [&_blockquote_p:first-of-type]:before:content-none
-      [&_blockquote_p:last-of-type]:after:content-none
-      prose-h1:text-[18px] prose-h1:leading-[26px] prose-h1:font-semibold prose-h1:tracking-[-0.005em] prose-h1:mb-3 prose-h1:mt-0 prose-h1:font-sans
-      prose-h2:text-[16px] prose-h2:leading-[24px] prose-h2:font-semibold prose-h2:mb-2 prose-h2:mt-4 prose-h2:font-sans
-      prose-h3:text-[15px] prose-h3:leading-[22px] prose-h3:font-semibold prose-h3:mb-2 prose-h3:mt-3 prose-h3:font-sans
-      prose-h4:text-[13px] prose-h4:leading-[18px] prose-h4:font-semibold prose-h4:tracking-[0.02em] prose-h4:text-text-muted prose-h4:mb-1 prose-h4:mt-3 prose-h4:font-sans
-      prose-p:mt-0 prose-p:mb-2 prose-p:font-sans
-      prose-ol:my-2 prose-ol:font-sans
-      prose-ul:mt-0 prose-ul:mb-3 prose-ul:font-sans
-      prose-li:m-0 prose-li:font-sans ${className}`}
+      [&_blockquote_p:last-of-type]:after:content-none ${className}`}
     >
       <ReactMarkdown
         urlTransform={artifactAwareUrlTransform}
@@ -838,6 +836,11 @@ const MarkdownContent = memo(function MarkdownContent({
               workingDir={workingDir}
             />
           ),
+          pre: ({ children }) => (
+            <InsideCodeBlockContext.Provider value={true}>
+              <div className="biorouter-md-pre">{children}</div>
+            </InsideCodeBlockContext.Provider>
+          ),
           code: ({ node: _node, ...props }) => (
             <MarkdownCode
               {...props}
@@ -861,18 +864,16 @@ const MarkdownContent = memo(function MarkdownContent({
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
             </li>
           ),
-          // A document's table scrolls inside its own frame when it is wider
-          // than the column (main.css, `.biorouter-md-table-scroll`), rather
-          // than being clipped by this root's `overflow-x-hidden`. Chat keeps
-          // the bare table.
-          table: ({ node: _node, ...props }) =>
-            variant === 'document' ? (
-              <div className="biorouter-md-table-scroll">
-                <table {...props} />
-              </div>
-            ) : (
+          table: ({ node: _node, ...props }) => (
+            <div
+              className="biorouter-md-table-scroll"
+              role="region"
+              aria-label="Scrollable table"
+              tabIndex={0}
+            >
               <table {...props} />
-            ),
+            </div>
+          ),
           td: ({ children, node: _node, ...props }) => (
             <td {...props}>
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}

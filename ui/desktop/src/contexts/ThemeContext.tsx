@@ -1,3 +1,4 @@
+import { useFontSize } from '../hooks/useFontSize';
 import { THEME_FAMILY_IDS } from '../styles/themes.generated';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
@@ -120,6 +121,7 @@ interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ children }: ThemeProviderProps) {
+  useFontSize();
   const [userThemePreference, setUserThemePreferenceState] =
     useState<ThemePreference>(loadThemePreference);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
