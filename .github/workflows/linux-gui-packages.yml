@@ -160,11 +160,18 @@ jobs:
             "$(node -e 'console.log(require(process.argv[1]).image)' "$PWD/ui/desktop/scripts/linux-native-baseline.json")" \
             bash /ws/ui/desktop/scripts/build-linux-deb.sh
 
-      # The container writes as root; later steps and the upload run as the
-      # runner user.
+      # ⚠ Chown the WHOLE checkout, not a list of directories. The container
+      # mounts `$PWD` at /ws and runs as root, so every path it touches becomes
+      # root-owned — and the set is larger than it looks. An earlier version
+      # enumerated out/, src/bin/ and node_modules/, and the run died three
+      # steps later on `ui/desktop/public/pdfjs`, which `build:web` recreates
+      # via rmSync inside that same container:
+      #     [biorouter-pdfjs-assets] EACCES, Permission denied: .../public/pdfjs
+      # Guessing the set is the bug; the mount root is the boundary, so cover
+      # that instead of predicting what the container will write.
       - name: Take ownership of the container-written tree
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" ui/desktop/out ui/desktop/src/bin ui/desktop/node_modules 2>/dev/null || true
+        run: sudo chown -R "$(id -u):$(id -g)" .
 
       # ⚠ Mirror `ensure_host_node_deps`, which `cmd_cli-linux` calls before this
       # script for a reason: `build-cli-linux-packages.sh` runs `npm run
@@ -189,6 +196,13 @@ jobs:
       # disturb node_modules, exactly as `cmd_cli-linux` notes.
       - name: Build the CLI-only deb and rpm
         run: bash scripts/build-cli-linux-packages.sh "${{ inputs.version }}"
+
+      # `build-cli-linux-packages.sh` runs its own containers with `-v "$ROOT":/work`
+      # as root, so dist/cli comes back root-owned exactly as the GUI build's
+      # output did. The upload step reads these files.
+      - name: Take ownership again after the CLI containers
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .
 
       # Assert what was produced rather than trusting an exit code. `cmd_linux`
       # carries the same assertion, and its comment records why: a bash function
