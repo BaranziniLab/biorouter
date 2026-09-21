@@ -534,6 +534,111 @@ cmd_cli-linux() {
   log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
 }
 
+# ── adopt artifacts built by CI ───────────────────────────────────────────────
+# Six of the eleven release assets are built by GitHub Actions rather than on
+# this host: the four Linux packages (`linux-gui-packages.yml`) and the two
+# Windows ones (`windows-gui-packages.yml`). Both moves were forced by a
+# measured defect, not by preference.
+#
+#   Linux  — Docker Desktop on macOS reports permissions from its
+#            `com.docker.grpcfuse.ownership` xattr rather than the inode, so
+#            every file the container wrote into `out/resources/computer-use/`
+#            came back `--w-------` and the packager could not read what it had
+#            just written. Three attempts, source verified clean each time; a
+#            named volume instead of the bind mount changed nothing.
+#   Windows — building the zip here and the installer on a Windows machine gave
+#            one release two Windows artifacts with DIFFERENT backends. Same
+#            commit, both correct, inner biorouter.exe 4d8ce07c… versus
+#            7961b022…, because Rust builds embed paths and are not reproducible
+#            by default. Nothing recorded it: the provenance manifest hashes
+#            each archive and never the binaries inside it.
+#
+# ⚠ THE WHOLE POINT OF THIS PHASE IS WHERE THE PROVENANCE COMES FROM.
+# `assert_release_source` checks HEAD and tree cleanliness. That says exactly
+# nothing about a file someone downloaded and dropped into `out/make` — the
+# same blind spot that let a 1.91.0 installer ship a 1.90.5 backend with the
+# stamp matching HEAD throughout, because the stamp described `target/` while
+# the packager read `src/bin`. A provenance check on the SOURCE of a copy says
+# nothing about a build that READ SOMEWHERE ELSE.
+#
+# So the run is SELECTED BY head sha rather than checked afterwards: only a
+# successful run of the named workflow whose `headSha` equals this release's
+# `source_sha` is eligible at all, and the chosen run id is written into the
+# manifest so the claim stays checkable after the fact. An eligible run that
+# does not exist is a hard failure, never a fallback to whatever is newest.
+RELEASE_CI_WORKFLOWS="linux-gui-packages.yml windows-gui-packages.yml"
+
+ci_run_for_release() { # <workflow file> <source sha> -> run id on stdout
+  local wf="$1" sha="$2" id
+  id="$(gh run list --workflow "$wf" --limit 50 \
+          --json databaseId,headSha,status,conclusion \
+          --jq "[.[] | select(.headSha == \"$sha\" and .status == \"completed\" and .conclusion == \"success\")] | first | .databaseId" \
+        2>/dev/null)"
+  [ -n "$id" ] && [ "$id" != "null" ] || return 1
+  printf '%s\n' "$id"
+}
+
+record_ci_run() { # <version> <workflow> <run id>
+  local v="$1" wf="$2" id="$3" manifest tmp
+  manifest="$(release_provenance_file "$v")"
+  tmp="$(mktemp "${manifest}.XXXXXX")"
+  awk -F '\t' -v wf="$wf" '!($1 == "ci_run" && $2 == wf)' "$manifest" >"$tmp"
+  printf 'ci_run\t%s\t%s\n' "$wf" "$id" >>"$tmp"
+  mv "$tmp" "$manifest"
+}
+
+cmd_adopt-ci() {
+  local v="$1"
+  assert_release_source "$v"
+  command -v gh >/dev/null 2>&1 || die "adopt-ci needs the gh CLI"
+  local manifest sha
+  manifest="$(release_provenance_file "$v")"
+  sha="$(release_provenance_value "$manifest" source_sha)"
+
+  # Resolve BOTH runs before downloading anything. Half-adopting a release is
+  # worse than not starting: `verify` would then report a specific missing file
+  # and read as a build problem rather than as a missing CI run.
+  local lin win
+  lin="$(ci_run_for_release linux-gui-packages.yml "$sha")" \
+    || die "no successful linux-gui-packages.yml run at $sha — dispatch it and wait:\n  gh workflow run linux-gui-packages.yml -f version=$v --ref main"
+  win="$(ci_run_for_release windows-gui-packages.yml "$sha")" \
+    || die "no successful windows-gui-packages.yml run at $sha — dispatch it and wait:\n  gh workflow run windows-gui-packages.yml -f version=$v --ref main"
+  log "adopting linux-gui-packages.yml run $lin and windows-gui-packages.yml run $win (both at $sha)"
+
+  local stage; stage="$(mktemp -d)"
+  trap 'rm -rf "$stage"' RETURN
+  gh run download "$lin" -n "linux-packages-$v" -D "$stage/linux" \
+    || die "could not download linux-packages-$v from run $lin"
+  gh run download "$win" -n "windows-packages-$v" -D "$stage/windows" \
+    || die "could not download windows-packages-$v from run $win"
+
+  # `gh run download` reproduces the paths the workflow uploaded, so find the
+  # files by name rather than assuming a layout that an upload-path edit would
+  # silently change.
+  adopt_one() { # <staged root> <basename> <destination dir> [runtime target]
+    local root="$1" name="$2" dest="$3" target="${4:-}" src
+    src="$(find "$root" -type f -name "$name" -print -quit)"
+    [ -n "$src" ] || die "run artifact did not contain $name"
+    mkdir -p "$dest"
+    cp -f "$src" "$dest/$name"
+    record_release_asset "$v" "$dest/$name" "$target"
+  }
+
+  adopt_one "$stage/linux" "biorouter_${v}_amd64.deb"        "$DESK/out/make/deb/x64" linux-x64
+  adopt_one "$stage/linux" "Biorouter-$v-1.x86_64.rpm"       "$DESK/out/make/rpm/x64" linux-x64
+  adopt_one "$stage/linux" "biorouter-cli_${v}_amd64.deb"    "$ROOT/dist/cli"         linux-x64
+  adopt_one "$stage/linux" "biorouter-cli-${v}-1.x86_64.rpm" "$ROOT/dist/cli"         linux-x64
+  adopt_one "$stage/windows" "Biorouter-win32-x64-$v.zip"    "$DESK/out/make/zip/win32/x64" win32-x64
+  # No runtime target: verify-computer-use-artifact.py reads .zip/.dmg/.deb/.rpm
+  # and dies on a PE. Covered indirectly by the attested win32 zip, which this
+  # workflow builds from the same staged tree in the same job.
+  adopt_one "$stage/windows" "Biorouter-Setup-$v.exe"        "$DESK/out/make/squirrel.windows/x64"
+
+  record_ci_run "$v" linux-gui-packages.yml "$lin"
+  record_ci_run "$v" windows-gui-packages.yml "$win"
+  log "adopted 6 CI-built assets; provenance records runs $lin and $win"
+}
+
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
@@ -947,7 +1052,7 @@ case "$CMD" in
       log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
     fi
     ;;
-  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|landing)
+  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing)
     need_version "$VER"
     # Keywords are deliberately REFUSED here. These phases run against a tree
     # that `bump` has already rewritten, so `minor` would resolve against the
@@ -958,5 +1063,5 @@ case "$CMD" in
         die "'$VER' is only valid for 'bump' and 'all'. This phase needs the explicit version the tree is already at: $(current_version)" ;;
     esac
     "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|landing|all} <version|major|minor|patch>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing|all} <version|major|minor|patch>" ;;
 esac
