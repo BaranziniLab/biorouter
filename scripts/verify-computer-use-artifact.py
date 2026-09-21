@@ -23,8 +23,16 @@ def verify_artifact(artifact, target, require_signed=False):
                 with zipfile.ZipFile(artifact) as archive:
                     # Extract only the helper tree, avoiding multi-GB app copies.
                     for member in archive.infolist():
-                        if "computer-use" in Path(member.filename).parts:
-                            if member.filename.startswith("/") or ".." in Path(member.filename).parts:
+                        # .NET Framework's ZipFile.CreateFromDirectory (cross-zip under powershell.exe,
+                        # so the Windows CI zip) writes '\' separators: 799 of the 1.91.0 zip's 818
+                        # entries. ZipInfo converts only os.sep, so on macOS each name stayed one literal
+                        # part and no payload was found. Normalize BEFORE the traversal guard, or a '..\'
+                        # name passes it. extract() then writes the normalized path; the local-header
+                        # check compares orig_filename, which this leaves untouched.
+                        member.filename = member.filename.replace("\\", "/")
+                        parts = Path(member.filename).parts
+                        if "computer-use" in parts:
+                            if member.filename.startswith("/") or ".." in parts:
                                 raise ValueError("Unsafe archive path")
                             extracted = Path(archive.extract(member, directory))
                             mode = member.external_attr >> 16
