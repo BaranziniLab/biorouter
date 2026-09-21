@@ -1,4 +1,4 @@
-# Builds the Linux GUI deb and rpm on a real Linux runner.
+# Builds the Linux GUI deb/rpm and the CLI-only deb/rpm on a real Linux runner.
 #
 # ⚠ Why this exists rather than the Docker cross-build in `scripts/release.sh`
 # `cmd_linux`. On a macOS release host, Docker Desktop stamps files with a
@@ -13,6 +13,18 @@
 # unreadable: `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
 # not work on Linux, with nothing in the test suite catching it. Building where
 # the packages are meant to run removes the whole class.
+#
+# ⚠ THE BACKEND IS NOT BUILT ON THE RUNNER. It is cross-compiled in the pinned
+# `rust:1.92-bullseye` image by `scripts/build-computer-use-package-cross.sh`,
+# which also runs `check-glibc-floor.sh` and `check-linux-runtime-deps.sh`.
+# The first version of this workflow ran a bare `cargo build --release` on
+# ubuntu-24.04 and would have shipped binaries linked against that runner's
+# glibc 2.39, which fail to start on Debian 12 / Ubuntu 22.04 / Rocky 9 — the
+# exact distros the 2.31 floor exists to protect. Nothing here would have caught
+# it: `check-glibc-floor.sh`'s own header says a `cargo check` cannot see this
+# because checks do not link, and the repo's container smoke tests all run on
+# newer glibc (bookworm 2.36, rocky9 2.34). Do not "simplify" this back to a
+# host cargo build.
 name: Linux GUI packages
 'on':
   workflow_dispatch:
@@ -24,15 +36,63 @@ name: Linux GUI packages
 permissions:
   contents: read
 jobs:
+  backend:
+    name: Linux backend (pinned glibc)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cross-cache/registry
+            .cross-cache/target/x86_64-unknown-linux-gnu
+          key: cross-x86_64-unknown-linux-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
+          restore-keys: cross-x86_64-unknown-linux-gnu-
+
+      # This is the ONLY supported way to produce shipped Linux binaries: it
+      # pins the bullseye image and then asserts the floor it just built against.
+      - name: Cross-build the backend and assert the glibc floor
+        run: bash scripts/build-computer-use-package-cross.sh x86_64-unknown-linux-gnu
+
+      - name: Take ownership of the container-written cache
+        if: always()
+        run: if [ -d .cross-cache ]; then sudo chown -R "$(id -u):$(id -g)" .cross-cache; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-backend-${{ inputs.version }}
+          path: target/x86_64-unknown-linux-gnu/release/
+          if-no-files-found: error
+          retention-days: 7
+
   packages:
-    name: Linux GUI deb + rpm
+    name: Linux deb + rpm (GUI and CLI-only)
+    needs: backend
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-backend-${{ inputs.version }}
+          path: target/x86_64-unknown-linux-gnu/release/
+
+      # Actions artifacts do not preserve the executable bit.
+      - name: Restore executable modes
+        run: chmod +x target/x86_64-unknown-linux-gnu/release/biorouter target/x86_64-unknown-linux-gnu/release/biorouterd
+
+      # Re-assert the floor on THIS job's copy. The check in `backend` proved the
+      # bytes it compiled; this proves the bytes that are about to be packaged,
+      # which is a different claim once an upload/download sits between them.
+      - name: Re-assert the glibc floor on the downloaded binaries
+        run: bash scripts/check-glibc-floor.sh
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.8'
@@ -40,24 +100,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
 
       # The deb/rpm makers need these; `build-linux-deb.sh` installs them itself
       # when it runs as root in a container, which it does not here.
       - name: Install package makers
         run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends fakeroot dpkg rpm
 
-      - name: Build the Linux backend
-        run: cargo build --release --bin biorouterd --bin biorouter --target x86_64-unknown-linux-gnu
-
       - name: Build the Biorouter Copilot helper payload
         run: python3 scripts/computer-use-runtime.py build linux-x64
 
-      # ⚠ `prepare-platform-binaries.js` reads `src/bin` and never copies from
-      # `target/`. Skipping this stage is how a build silently packages whatever
-      # `src/bin` happened to hold: on Windows it produced an installer named
-      # 1.91.0 containing a 1.90.5 backend, exit 0, correct filenames. The same
-      # staging lives in `release.sh` `cmd_windows`.
+      # ⚠ `prepare-platform-binaries.js` VALIDATES `src/bin` and never copies
+      # from `target/`. Skipping this stage is how a build silently packages
+      # whatever `src/bin` happened to hold: on Windows it produced an installer
+      # named 1.91.0 containing a 1.90.5 backend, exit 0, correct filenames. The
+      # same staging lives in `release.sh` `cmd_windows`.
       - name: Stage the Linux backend into src/bin
         run: |
           rm -rf ui/desktop/src/bin && mkdir -p ui/desktop/src/bin
@@ -79,12 +135,17 @@ jobs:
           npm run build:web
           node scripts/build-main.js
 
-      - name: Make the deb and rpm
+      - name: Make the GUI deb and rpm
         working-directory: ui/desktop
         env:
           ELECTRON_PLATFORM: linux
           ELECTRON_ARCH: x64
         run: npm run make -- --platform=linux --arch=x64
+
+      # The two CLI-only packages are release assets 7 and 8 and are built by
+      # their own script, exactly as the acceptance job does after its makers.
+      - name: Build the CLI-only deb and rpm
+        run: bash scripts/build-cli-linux-packages.sh "${{ inputs.version }}"
 
       # Assert what was produced rather than trusting the maker's exit code, the
       # same way `cmd_linux` does. A maker that runs and writes nothing is the
@@ -92,21 +153,27 @@ jobs:
       - name: Verify the artifacts exist and the helper is executable
         run: |
           set -e
-          deb="ui/desktop/out/make/deb/x64/biorouter_${{ inputs.version }}_amd64.deb"
-          rpm="ui/desktop/out/make/rpm/x64/Biorouter-${{ inputs.version }}-1.x86_64.rpm"
-          [ -f "$deb" ] || { echo "no deb at $deb"; exit 1; }
-          [ -f "$rpm" ] || { echo "no rpm at $rpm"; exit 1; }
+          v='${{ inputs.version }}'
+          deb="ui/desktop/out/make/deb/x64/biorouter_${v}_amd64.deb"
+          rpm="ui/desktop/out/make/rpm/x64/Biorouter-${v}-1.x86_64.rpm"
+          cli_deb="dist/cli/biorouter-cli_${v}_amd64.deb"
+          cli_rpm="dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+          for f in "$deb" "$rpm" "$cli_deb" "$cli_rpm"; do
+            [ -f "$f" ] || { echo "::error::missing release artifact $f"; exit 1; }
+            echo "$(du -h "$f" | cut -f1)  $f"
+          done
           ocu="ui/desktop/out/Biorouter-linux-x64/resources/computer-use/ocu"
-          [ -x "$ocu" ] || { echo "the Copilot helper is not executable: $(ls -l "$ocu")"; exit 1; }
-          echo "deb: $(du -h "$deb" | cut -f1)"
-          echo "rpm: $(du -h "$rpm" | cut -f1)"
+          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable: $(ls -l "$ocu")"; exit 1; }
           echo "ocu: $(ls -l "$ocu" | awk '{print $1}')"
+          sha256sum "$deb" "$rpm" "$cli_deb" "$cli_rpm"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-gui-packages-${{ inputs.version }}
+          name: linux-packages-${{ inputs.version }}
           path: |
             ui/desktop/out/make/deb/x64/*.deb
             ui/desktop/out/make/rpm/x64/*.rpm
+            dist/cli/*.deb
+            dist/cli/*.rpm
           if-no-files-found: error
           retention-days: 7
