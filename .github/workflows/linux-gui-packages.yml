@@ -147,11 +147,17 @@ jobs:
       # The script copies the Linux binaries into src/bin, sweeps foreign
       # executables recursively, runs prepare-platform-binaries, and then makes
       # the deb and rpm.
+      # ⚠ The baseline path must be ABSOLUTE. `require()` treats a bare relative
+      # path as a MODULE NAME, not a file, so `ui/desktop/scripts/...json` dies
+      # with "Cannot find module" and the unset image makes docker fail with
+      # "invalid reference format" (exit 125) — a message that names neither the
+      # file nor the reason. `release.sh:496` passes "$ROOT/..." for this exact
+      # reason; this step was copied from it with the prefix dropped.
       - name: Build the GUI deb and rpm with the canonical script
         run: |
           docker run --rm --platform linux/amd64 \
             -v "$PWD":/ws \
-            "$(node -e 'console.log(require(process.argv[1]).image)' ui/desktop/scripts/linux-native-baseline.json)" \
+            "$(node -e 'console.log(require(process.argv[1]).image)' "$PWD/ui/desktop/scripts/linux-native-baseline.json")" \
             bash /ws/ui/desktop/scripts/build-linux-deb.sh
 
       # The container writes as root; later steps and the upload run as the
@@ -159,6 +165,25 @@ jobs:
       - name: Take ownership of the container-written tree
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" ui/desktop/out ui/desktop/src/bin ui/desktop/node_modules 2>/dev/null || true
+
+      # ⚠ Mirror `ensure_host_node_deps`, which `cmd_cli-linux` calls before this
+      # script for a reason: `build-cli-linux-packages.sh` runs `npm run
+      # build:web` on the HOST, and the node_modules sitting here was installed
+      # by `npm ci` INSIDE the packaging container, as root, through a bind
+      # mount. CLAUDE.md records the failure that produces: `node_modules/.bin`
+      # ends up empty with the packages themselves present, and the build dies
+      # with `vite: command not found` — which reads as a missing tool rather
+      # than a broken install.
+      #
+      # `npm ci`, never `npm install`: install rewrites package-lock.json, and
+      # the next container build's `npm ci` then refuses the out-of-sync lock.
+      # The rollup probe is the assertion half — a green `npm ci` does not imply
+      # a usable tree, which is the whole point of checking.
+      - name: Reinstall host-native desktop dependencies
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          node -e "require('rollup')" || { echo "::error::host-native rollup is unavailable after npm ci"; exit 1; }
 
       # Release assets 7 and 8. Independent of the GUI packaging and it does not
       # disturb node_modules, exactly as `cmd_cli-linux` notes.
@@ -195,8 +220,21 @@ jobs:
           # question this step answers is what the package actually carries.
           rm -rf /tmp/pkgcheck && mkdir -p /tmp/pkgcheck
           dpkg-deb -x "$deb" /tmp/pkgcheck
-          res="$(find /tmp/pkgcheck -type d -name resources -path '*biorouter*' -print -quit)"
-          [ -n "$res" ] || { echo "::error::no resources directory inside the deb"; find /tmp/pkgcheck -maxdepth 4 -type d; exit 1; }
+
+          # ⚠ Anchor on CONTENT, not on layout. forge's deb/rpm makers ignore
+          # `prefix` entirely and install to usr/lib/<name>/resources, where the
+          # deb installer LOWERCASES the name and the rpm one PRESERVES its case
+          # — so no single literal path serves both. A prefix-based glob
+          # (`opt/*/resources`) already matched zero and failed the whole Linux
+          # install job of the package acceptance run, and the same wrong prefix
+          # was live in three places including shipped product code.
+          # The unique computer-use/manifest.json is the reliable anchor: find
+          # it, assert exactly one, and walk up.
+          mans="$(find /tmp/pkgcheck -type f -path '*/computer-use/manifest.json')"
+          n="$(printf '%s\n' "$mans" | grep -c . || true)"
+          [ "$n" = "1" ] || { echo "::error::expected exactly one computer-use/manifest.json in the deb, found $n"; printf '%s\n' "$mans"; exit 1; }
+          res="$(dirname "$(dirname "$mans")")"
+          [ "$(basename "$res")" = "resources" ] || { echo "::error::manifest's grandparent is $(basename "$res"), expected resources"; exit 1; }
           echo "inspecting $res"
 
           # A PRESENCE check, because this failure mode is an ABSENCE. A package
