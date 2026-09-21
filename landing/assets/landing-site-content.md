@@ -5,7 +5,7 @@ Landing site for UCSF Biorouter. Design: Material Design with OpenAI aesthetics 
 
 **Color palette:** UCSF teal (#18A3AC), UCSF navy (#052049), dark background (#0a0a0a)
 **Font:** Inter (body), JetBrains Mono (code)
-**Version:** v1.90.5 (September 2026)
+**Version:** v1.91.0 (September 2026)
 
 ---
 
@@ -34,7 +34,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
 
 ### Banner / Hero
 - Biorouter logo (icon.png) with glow animation
-- Version badge: "v1.90.5 Now Available"
+- Version badge: "v1.91.0 Now Available"
 - Headline: "UCSF Biorouter"
 - Subheading: AI-powered integrated research environment tagline
 - CTA buttons: Download, Documentation, GitHub
@@ -90,7 +90,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.90.5 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5)
+- v1.91.0 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -98,7 +98,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ## Tab 2 — Download (`download.html`)
 
 ### Hero
-- Version badge: "v1.90.5 · September 2026"
+- Version badge: "v1.91.0 · September 2026"
 - Title: "Download Biorouter"
 - Subtitle: "Native installers for every major platform. Open source and free."
 
@@ -112,22 +112,22 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 - Linux → amd64.deb (default for Linux)
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.90.5)
+### Download Links (v1.91.0)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | Biorouter-1.90.5-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/Biorouter-1.90.5-arm64.dmg |
-| macOS Intel | Biorouter-1.90.5-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/Biorouter-1.90.5-x64.dmg |
-| Windows x64 | Biorouter-win32-x64-1.90.5.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/Biorouter-win32-x64-1.90.5.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.90.5_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/biorouter_1.90.5_amd64.deb |
-| Linux Fedora/RHEL | Biorouter-1.90.5-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/Biorouter-1.90.5-1.x86_64.rpm |
-| Linux CLI Debian/Ubuntu | biorouter-cli_1.90.5_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/biorouter-cli_1.90.5_amd64.deb |
-| Linux CLI Fedora/RHEL | biorouter-cli-1.90.5-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.90.5/biorouter-cli-1.90.5-1.x86_64.rpm |
+| macOS Apple Silicon | Biorouter-1.91.0-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/Biorouter-1.91.0-arm64.dmg |
+| macOS Intel | Biorouter-1.91.0-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/Biorouter-1.91.0-x64.dmg |
+| Windows x64 | Biorouter-win32-x64-1.91.0.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/Biorouter-win32-x64-1.91.0.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.91.0_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/biorouter_1.91.0_amd64.deb |
+| Linux Fedora/RHEL | Biorouter-1.91.0-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/Biorouter-1.91.0-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.91.0_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/biorouter-cli_1.91.0_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.91.0-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.91.0/biorouter-cli-1.91.0-1.x86_64.rpm |
 
 ### Install Commands
 - macOS: Open DMG and drag Biorouter.app to /Applications
 - Windows: Unzip and run Biorouter.exe
-- Linux Debian: sudo apt install ./biorouter_1.90.5_amd64.deb
-- Linux RPM: sudo dnf install ./Biorouter-1.90.5-1.x86_64.rpm
+- Linux Debian: sudo apt install ./biorouter_1.91.0_amd64.deb
+- Linux RPM: sudo dnf install ./Biorouter-1.91.0-1.x86_64.rpm
 
 ### Setup Note / Info Box
 After installing, users should:
@@ -280,15 +280,19 @@ Each card contains:
 ## Tab 5 — About (`about.html`)
 
 ### News
-1. **Biorouter v1.90.5 Release** (September 2026)
+1. **Biorouter v1.91.0 Release** (September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0
+   - What's new: Biorouter Copilot observes and controls the desktop with an approval for every request, web and documents become their own capability, office contexts load only when needed, Windows gets its first installer and a long list of fixes, and third-party attribution is now correct
+
+2. **Biorouter v1.90.5 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5
    - What's new: chats keep their place when a tab closes mid-reply, streamed text keeps repeated tokens at chunk boundaries, mid-turn steering stays queued until the running turn consumes it, the artifact preview adapts between a side panel and a vertical layout, and scheduled work follows the caller's reach
 
-2. **Biorouter v1.90.0 Release** (September 2026)
+3. **Biorouter v1.90.0 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0
    - What's new: every tool driven across providers, and a review run before the drive
 
-3. **UCSF AI Research Day** (2026)
+4. **UCSF AI Research Day** (2026)
    - Link: https://ai.ucsf.edu/researchday
    - Biorouter to be featured
 
