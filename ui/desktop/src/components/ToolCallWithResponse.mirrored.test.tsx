@@ -112,12 +112,10 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
     // Arguments: collapsed at rest, reachable in two clicks like any other card.
     expect(screen.queryByText('command')).not.toBeInTheDocument();
     fireEvent.click(row.closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
     expect(screen.getByText('command')).toBeInTheDocument();
     expect(screen.getByText('npm run typecheck')).toBeInTheDocument();
 
     // Result: its own disclosure, holding the child's output.
-    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
     expect(screen.getByText('ok, 0 errors')).toBeInTheDocument();
   });
 
@@ -136,10 +134,10 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
 
     // A mirrored failure travels as a SUCCESSFUL transport carrying
     // `isError: true` — the spelling `getToolResultError` reads — so the card
-    // colours red while the failure text stays readable.
+    // preserves the failure text without a colored background.
     expect(screen.getByText(/Problem with/)).toBeInTheDocument();
     expect(screen.getByText(/Tool call failed/)).toBeInTheDocument();
-    expect(container.querySelector('.bg-background-danger\\/5')).not.toBeNull();
+    expect(container.querySelector('.bg-background-danger\\/5')).toBeNull();
 
     fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
     expect(screen.getByText('command not found: npm')).toBeInTheDocument();
@@ -179,7 +177,8 @@ describe('the child-executed affordance', () => {
       expect.stringContaining("ran inside the coding agent's own sandbox")
     );
     // Quiet: the row's own muted type, no badge, no status colour of its own.
-    expect(label.className).toContain('text-text-muted');
+    expect(label.closest('button')).toHaveClass('br-tool-disclosure');
+    expect(label.className).not.toContain('text-text-default');
     expect(label.className).not.toContain('bg-');
     // Everything else about the card is unchanged.
     expect(screen.getByText(/Running npm run typecheck/)).toBeInTheDocument();
@@ -241,7 +240,7 @@ describe('parity with an API-provider tool call', () => {
         toolResponse={mirroredResponse(executed, { isError })}
         onOpenArtifact={noopOpenArtifact}
       />
-    ).container.innerHTML;
+    ).container.innerHTML.replace(/aria-controls="[^"]+"/g, 'aria-controls="content"');
 
   it('renders a bridged pair identically to a pair with no metadata at all', () => {
     expect(renderPair('bridged')).toBe(renderPair(undefined));
