@@ -101,56 +101,55 @@ jobs:
         with:
           python-version: '3.12'
 
-      # The deb/rpm makers need these; `build-linux-deb.sh` installs them itself
-      # when it runs as root in a container, which it does not here.
-      - name: Install package makers
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends fakeroot dpkg rpm
-
       - name: Build the Biorouter Copilot helper payload
         run: python3 scripts/computer-use-runtime.py build linux-x64
 
-      # ⚠ `prepare-platform-binaries.js` VALIDATES `src/bin` and never copies
-      # from `target/`. Skipping this stage is how a build silently packages
-      # whatever `src/bin` happened to hold: on Windows it produced an installer
-      # named 1.91.0 containing a 1.90.5 backend, exit 0, correct filenames. The
-      # same staging lives in `release.sh` `cmd_windows`.
-      - name: Stage the Linux backend into src/bin
+      # `src/bin` is not tracked in git, and `build-linux-deb.sh` copies the
+      # Rust binaries into it rather than creating it.
+      - name: Create the staging directory
+        run: mkdir -p ui/desktop/src/bin
+
+      # ⚠ USE THE CANONICAL SCRIPT — this is `release.sh` `cmd_linux` verbatim,
+      # just running where Docker bind mounts are ordinary bind mounts.
+      #
+      # Do NOT open-code `npm run make --platform=linux` here. That command is
+      # `check-package-prereqs.mjs && fix-node-pty-permissions.mjs &&
+      # electron-forge make`, and no forge hook calls
+      # `prepare-platform-binaries.js`. This repository has already shipped that
+      # exact bug once: `build-linux-deb.sh`'s own comment records that it "used
+      # to call `npm run make` directly and skip it entirely, which is why the
+      # Linux packages were the only ones with no binary validation — and why
+      # they shipped a Windows llama-server". `fetchLlamaServer` is called from
+      # nowhere else, and the two binary guards live inside the script that
+      # would be skipped, so the omission conceals itself.
+      #
+      # The script copies the Linux binaries into src/bin, sweeps foreign
+      # executables recursively, runs prepare-platform-binaries, and then makes
+      # the deb and rpm.
+      - name: Build the GUI deb and rpm with the canonical script
         run: |
-          rm -rf ui/desktop/src/bin && mkdir -p ui/desktop/src/bin
-          cp -f target/x86_64-unknown-linux-gnu/release/biorouterd \
-                target/x86_64-unknown-linux-gnu/release/biorouter \
-                ui/desktop/src/bin/
-          chmod +x ui/desktop/src/bin/biorouterd ui/desktop/src/bin/biorouter
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD":/ws \
+            "$(node -e 'console.log(require(process.argv[1]).image)' ui/desktop/scripts/linux-native-baseline.json)" \
+            bash /ws/ui/desktop/scripts/build-linux-deb.sh
 
-      - name: Stage the Copilot helper
-        run: python3 scripts/computer-use-runtime.py stage linux-x64
+      # The container writes as root; later steps and the upload run as the
+      # runner user.
+      - name: Take ownership of the container-written tree
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" ui/desktop/out ui/desktop/src/bin ui/desktop/node_modules 2>/dev/null || true
 
-      - name: Install desktop dependencies
-        working-directory: ui/desktop
-        run: npm ci
-
-      - name: Build the web bundle and the Electron main process
-        working-directory: ui/desktop
-        run: |
-          npm run build:web
-          node scripts/build-main.js
-
-      - name: Make the GUI deb and rpm
-        working-directory: ui/desktop
-        env:
-          ELECTRON_PLATFORM: linux
-          ELECTRON_ARCH: x64
-        run: npm run make -- --platform=linux --arch=x64
-
-      # The two CLI-only packages are release assets 7 and 8 and are built by
-      # their own script, exactly as the acceptance job does after its makers.
+      # Release assets 7 and 8. Independent of the GUI packaging and it does not
+      # disturb node_modules, exactly as `cmd_cli-linux` notes.
       - name: Build the CLI-only deb and rpm
         run: bash scripts/build-cli-linux-packages.sh "${{ inputs.version }}"
 
-      # Assert what was produced rather than trusting the maker's exit code, the
-      # same way `cmd_linux` does. A maker that runs and writes nothing is the
-      # failure this catches.
-      - name: Verify the artifacts exist and the helper is executable
+      # Assert what was produced rather than trusting an exit code. `cmd_linux`
+      # carries the same assertion, and its comment records why: a bash function
+      # returns its LAST command's status, so three trailing `log` lines once
+      # masked a failing `docker run` entirely and the phase printed paths for
+      # files it had not produced.
+      - name: Verify the artifacts, the helper, and the packaged payload
         run: |
           set -e
           v='${{ inputs.version }}'
@@ -162,8 +161,25 @@ jobs:
             [ -f "$f" ] || { echo "::error::missing release artifact $f"; exit 1; }
             echo "$(du -h "$f" | cut -f1)  $f"
           done
-          ocu="ui/desktop/out/Biorouter-linux-x64/resources/computer-use/ocu"
-          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable: $(ls -l "$ocu")"; exit 1; }
+
+          # ⚠ A PRESENCE check, because this failure mode is an ABSENCE. A
+          # package with no llamacpp sidecar is byte-valid, correctly named and
+          # exits 0; only asking for the file by name sees it. `ocu` at mode
+          # 0200 ships non-executable and Biorouter Copilot does not work on
+          # Linux, with nothing in the test suite catching it.
+          pkg="ui/desktop/out/Biorouter-linux-x64/resources"
+          ocu="$pkg/computer-use/ocu"
+          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable: $(ls -l "$ocu" 2>&1)"; exit 1; }
+          [ -d "$pkg/bin/llamacpp" ] || { echo "::error::no llamacpp sidecar in the package — prepare-platform-binaries.js did not run"; ls -la "$pkg/bin"; exit 1; }
+          [ -d "$pkg/web" ] || { echo "::error::no browser interface bundle at $pkg/web"; exit 1; }
+
+          # No other platform's executables may ride along. The recursive sweep
+          # in build-linux-deb.sh exists because a top-level *.exe glob could not
+          # match src/bin/llamacpp/llama-server.exe, and 31 Windows files shipped
+          # inside a .deb as a result.
+          foreign="$(find "$pkg/bin" \( -name '*.exe' -o -name '*.dll' -o -name '*.cmd' \) -type f | head -20)"
+          [ -z "$foreign" ] || { echo "::error::Windows files in a Linux package:"; echo "$foreign"; exit 1; }
+
           echo "ocu: $(ls -l "$ocu" | awk '{print $1}')"
           sha256sum "$deb" "$rpm" "$cli_deb" "$cli_rpm"
 

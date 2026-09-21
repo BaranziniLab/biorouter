@@ -100,12 +100,12 @@ jobs:
       - name: Build the Biorouter Copilot helper payload
         run: python scripts/computer-use-runtime.py build win32-x64
 
-      # ⚠ `prepare-platform-binaries.js` VALIDATES `src/bin` and never copies
-      # from `target/`. Omitting this stage is exactly how 1.91.0 produced an
-      # installer named 1.91.0 that carried a 1.90.5 backend: exit 0, every
-      # filename correct, and the provenance stamp matching HEAD throughout,
-      # because the stamp describes `target/` while the packager reads `src/bin`.
-      # Only reading the version out of the INSTALLED app caught it.
+      # ⚠ `src/bin` is not tracked in git, so a fresh checkout has none.
+      # `prepare-platform-binaries.js` VALIDATES this directory and never copies
+      # from `target/`. Omitting this stage is how 1.91.0 produced an installer
+      # named 1.91.0 that carried a 1.90.5 backend: exit 0, every filename
+      # correct, and the provenance stamp matching HEAD throughout, because the
+      # stamp described `target/` while the packager read `src/bin`.
       - name: Stage the Windows backend and its DLLs into src/bin
         shell: bash
         run: |
@@ -116,28 +116,36 @@ jobs:
           cp -f target/x86_64-pc-windows-gnu/release/*.dll ui/desktop/src/bin/
           ls -l ui/desktop/src/bin
 
-      - name: Stage the Copilot helper
-        run: python scripts/computer-use-runtime.py stage win32-x64
-
+      # ⚠ USE THE CANONICAL SCRIPT. Do not open-code build-main + download-mingit
+      # + `npm run make`. `npm run make` is
+      # `check-package-prereqs.mjs && fix-node-pty-permissions.mjs && electron-forge make`,
+      # and NO forge hook calls `prepare-platform-binaries.js` — every `bundle:*`
+      # script in package.json invokes it explicitly for exactly that reason.
+      # Skipping it drops five things, and the two that are guards are inside the
+      # script being skipped, so the omission hides itself:
+      #   copyPlatformFiles()        src/platform/windows/bin -> src/bin:
+      #                              git, install-node.cmd, jbang.cmd, npx.cmd,
+      #                              uv.exe, uvx.exe
+      #   fetchLlamaServer()         the ONLY caller — the whole llamacpp sidecar
+      #   cleanBinDirectory()        strips other platforms' binaries
+      #   validateRequiredBinaries() guard
+      #   assertNoForeignBinaries()  guard
+      # A package built without it exits 0 with both artifacts present and
+      # correctly named. `verifyPackagedDependencies` in postPackage checks
+      # node-pty and symlink escapes only, so nothing else notices.
+      #
+      # `bundle:windows` (scripts/build-windows.js) runs build-main,
+      # download-mingit, prepare-platform-binaries and then ONE `make` with
+      # ELECTRON_PLATFORM/ELECTRON_ARCH set — which is also what makes the
+      # platform filtering select win32. It subsumes `build:web`, because
+      # prepare-platform-binaries builds the web bundle itself.
       - name: Install desktop dependencies
         working-directory: ui/desktop
         run: npm ci
 
-      # `prepare-platform-binaries.js` also validates that the browser interface
-      # bundle is present and non-empty, so build:web is a prerequisite of
-      # packaging rather than an optional extra.
-      - name: Build the web bundle, the Electron main process, and fetch MinGit
-        working-directory: ui/desktop
-        run: |
-          npm run build:web
-          node scripts/build-main.js
-          node scripts/download-mingit.js
-
-      # ONE make. Both makers run against one packaged tree — this is what makes
-      # the zip's and the installer's backends byte-identical.
       - name: Package once and run both makers
         working-directory: ui/desktop
-        run: npm run make -- --platform=win32 --arch=x64
+        run: npm run bundle:windows
 
       - name: Verify both artifacts and measure the shared backend
         shell: bash
@@ -162,6 +170,34 @@ jobs:
           # the provenance stamp matching HEAD throughout.
           echo "staged backend version:"
           ./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe --version
+
+          # ⚠ A PRESENCE check, because this failure mode is an ABSENCE.
+          # A package missing the platform tooling and the llamacpp sidecar is
+          # byte-valid, correctly named and exits 0; only asking for the files
+          # by name sees it. These are what `prepare-platform-binaries.js`
+          # contributes: the bundled git the knowledge bases use, the uv/uvx
+          # Python tooling extensions install through, npx, jbang, and the whole
+          # Llama Server sidecar.
+          bin="ui/desktop/out/Biorouter-win32-x64/resources/bin"
+          missing=
+          for want in biorouter.exe biorouterd.exe git npx.cmd jbang.cmd uv.exe uvx.exe llamacpp; do
+            [ -e "$bin/$want" ] || missing="$missing $want"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the packaged resources/bin is missing:$missing"
+            echo "This is what skipping prepare-platform-binaries.js looks like."
+            ls -la "$bin"
+            exit 1
+          fi
+          echo "packaged resources/bin carries the platform tooling and the llamacpp sidecar"
+
+          # The two jobs check out the same ref of the same run, so this cannot
+          # currently disagree. Asserting it costs one line and turns an
+          # invariant into a check.
+          built_at="$(cat target/x86_64-pc-windows-gnu/release/package-source-commit.txt)"
+          [ "$built_at" = "${{ github.sha }}" ] || {
+            echo "::error::backend was built at $built_at but this job is ${{ github.sha }}"; exit 1; }
+          echo "backend source commit matches this run: $built_at"
 
       # ⚠ What this proves and what it does NOT.
       #
