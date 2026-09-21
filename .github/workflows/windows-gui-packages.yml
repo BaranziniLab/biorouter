@@ -259,10 +259,20 @@ jobs:
       # nupkg from that tree by a separate code path, so its copy could in
       # principle differ without this step noticing. Asserting that needs an
       # install, which CI cannot cheaply do — so it is verified on real Windows
-      # hardware by reading the backend out of the INSTALLED app. Measured for
-      # 1.91.0, all three readings identical:
-      #   staged tree / zip member / installed from Setup.exe
-      #   7961B0220796FF2491E0A63E4F8EF083F53F6BD345DF04107415F02D64EC5EBA
+      # hardware by reading the backend out of the INSTALLED app. The invariant is
+      # that all three agree FOR ONE BUILD:
+      #   staged tree == zip member == installed from Setup.exe
+      # ⚠ No hash belongs here as "the" value. Rust builds are not reproducible, so
+      # every commit, and every run of this workflow, measures its own. This comment
+      # used to carry 7961B022… labelled "Measured for 1.91.0", but that value was
+      # measured on the 5e668843 build and the comment itself was added later, at
+      # 46a8bfe1 (#351); the 1.91.0 release, 847c73c0, measured e6d14e7d… for the
+      # same file. A reader who compared a build against the old number would have
+      # read a correct build as broken. Compare the three readings of the SAME
+      # build to each other, never to a number written down here.
+      # (scripts/release.sh also names 7961b022…, deliberately: it is the record of
+      # the incident where two artifacts from one commit carried different
+      # backends, and naming both hashes there is the evidence. Leave that one.)
       # Do not delete this step believing the installed-app read covers it: that
       # read happens after the release is built, and this one fails the build.
       - name: Prove the zip carries the backend the makers were given

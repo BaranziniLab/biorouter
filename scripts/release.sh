@@ -1019,6 +1019,22 @@ cmd_publish() {
   local is_draft
   is_draft="$(gh release view "v$v" --json isDraft --jq .isDraft 2>/dev/null || true)"
   [ "$is_draft" = true ] || die "v$v must exist as a draft release before publication"
+  # ⚠ CHECK the tag's target; do not derive it. publish creates the tag from the
+  # draft's recorded targetCommitish, not from today's main. cmd_draft pins that to
+  # RELEASE_SOURCE_SHA, and require_remote_main_exact (above) sets that variable
+  # from HEAD only after asserting HEAD == a freshly fetched origin/main, so for a
+  # draft THIS script made the chain holds by construction. But nothing ever read
+  # the target back, so a draft made any other way — a hand-run `gh release
+  # create`, or a release.sh from before the pin, when drafts took `--target main`
+  # — would publish a tag at a commit the artifacts were never built from, and
+  # every check here would pass. That is v1.89.8: tag and artifacts 8 commits
+  # apart. A guarantee derived from an invariant is not a guarantee checked.
+  local draft_target
+  draft_target="$(gh release view "v$v" --json targetCommitish --jq .targetCommitish)" \
+    || die "could not read v$v's draft target from GitHub; refusing to publish without it"
+  [ "$draft_target" = "$RELEASE_SOURCE_SHA" ] \
+    || die "v$v's draft targets $draft_target, but the artifacts were built at $RELEASE_SOURCE_SHA. Publishing would tag a commit the release was not built from. Delete the draft and re-run: scripts/release.sh draft $v"
+  log "draft target is the source commit ($draft_target)"
   verify_remote_release_assets "$v"
   require_fresh_windows_smoke "$v" "$LATEST_DRAFT_ASSET_UPDATED_AT"
   gh release edit "v$v" --draft=false
