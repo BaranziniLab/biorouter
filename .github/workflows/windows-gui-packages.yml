@@ -16,8 +16,13 @@
 # backends disagreed with nothing recording that they did — the provenance
 # manifest hashes the archive, never the binaries inside it.
 #
-# ⚠ The backend is cross-compiled in the pinned image by
-# `scripts/build-computer-use-package-cross.sh`, not built on the Windows runner.
+# ⚠ The backend is cross-compiled by `scripts/build-computer-use-package-cross.sh`,
+# not built on the Windows runner. Note what is and is not pinned: the RECIPE
+# is (the mingw winpthread link wrap and LZMA_API_STATIC from cross-env.sh),
+# and the compiler is (rust-toolchain.toml), but the base IMAGE is not —
+# `cross-env.sh:43` reads `WIN_RUST_IMG:=rust:latest`. Unlike Linux there is no
+# glibc floor riding on it, so this is a note rather than a defect; do not
+# describe it as a pinned image.
 # A native msvc build would produce a different toolchain's binaries than every
 # previous release shipped; the target stays `x86_64-pc-windows-gnu`. That script
 # also applies the mingw winpthread link wrap and LZMA_API_STATIC from
@@ -34,7 +39,7 @@ permissions:
   contents: read
 jobs:
   backend:
-    name: Windows backend (pinned mingw recipe)
+    name: Windows backend (mingw cross recipe)
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     steps:
@@ -96,6 +101,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # `inputs.version` is free text on a workflow_dispatch. Here the makers
+      # name their output from package.json rather than from the input, so a
+      # typo surfaces as a missing-file failure below — but only by accident of
+      # which name wins. Assert it directly rather than relying on that.
+      - name: Check the dispatch version against the tree
+        shell: bash
+        run: |
+          set -e
+          want='${{ inputs.version }}'
+          cargo="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          pkg="$(node -p "require('./ui/desktop/package.json').version")"
+          echo "dispatch=$want Cargo.toml=$cargo package.json=$pkg"
+          [ "$want" = "$cargo" ] && [ "$want" = "$pkg" ] || {
+            echo "::error::version $want does not match the tree ($cargo / $pkg)"; exit 1; }
 
       - name: Build the Biorouter Copilot helper payload
         run: python scripts/computer-use-runtime.py build win32-x64
@@ -168,8 +188,17 @@ jobs:
           # the filename. This is the check whose absence shipped a 1.90.5
           # backend in a 1.91.0 installer: exit 0, every filename correct, and
           # the provenance stamp matching HEAD throughout.
-          echo "staged backend version:"
-          ./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe --version
+          #
+          # ⚠ It must COMPARE. Printing the version and reading it by eye is not
+          # a check — an automated run has no eye, so a mismatched backend would
+          # scroll past in green. `biorouterd --version` prints
+          # "biorouter-server <ver>".
+          got="$(./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe --version | tr -d '\r')"
+          echo "packaged backend reports: $got"
+          case "$got" in
+            *"$v") : ;;
+            *) echo "::error::packaged backend is '$got' but this release is $v"; exit 1 ;;
+          esac
 
           # ⚠ A PRESENCE check, because this failure mode is an ABSENCE.
           # A package missing the platform tooling and the llamacpp sidecar is

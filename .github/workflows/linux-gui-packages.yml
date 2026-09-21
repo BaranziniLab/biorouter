@@ -42,6 +42,12 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
+      # ⚠ `release.sh` `run_cross_release` deliberately destroys its target
+      # volume before every release build, because cached objects keep stale
+      # glibc symbol versions. This job keeps a cache instead, and that is only
+      # safe because `check-glibc-floor.sh` runs afterwards on what was actually
+      # produced — and again in the packaging job on what is about to be
+      # packaged. Remove either assertion and this cache becomes the hole.
       - uses: actions/cache@v4
         with:
           path: |
@@ -100,6 +106,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # ⚠ `inputs.version` is free text on a workflow_dispatch, and
+      # `build-cli-linux-packages.sh` takes it as authoritative — it names the
+      # output files from it. A typo would therefore produce correctly-named
+      # packages for a version that does not exist, and every `[ -f ]` test
+      # below would pass, because those tests are built from the same typo.
+      - name: Check the dispatch version against the tree
+        run: |
+          set -e
+          want='${{ inputs.version }}'
+          cargo="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          pkg="$(node -p "require('./ui/desktop/package.json').version")"
+          echo "dispatch=$want Cargo.toml=$cargo package.json=$pkg"
+          [ "$want" = "$cargo" ] && [ "$want" = "$pkg" ] || {
+            echo "::error::version $want does not match the tree ($cargo / $pkg)"; exit 1; }
 
       - name: Build the Biorouter Copilot helper payload
         run: python3 scripts/computer-use-runtime.py build linux-x64
@@ -162,25 +183,50 @@ jobs:
             echo "$(du -h "$f" | cut -f1)  $f"
           done
 
-          # ⚠ A PRESENCE check, because this failure mode is an ABSENCE. A
-          # package with no llamacpp sidecar is byte-valid, correctly named and
-          # exits 0; only asking for the file by name sees it. `ocu` at mode
-          # 0200 ships non-executable and Biorouter Copilot does not work on
-          # Linux, with nothing in the test suite catching it.
-          pkg="ui/desktop/out/Biorouter-linux-x64/resources"
-          ocu="$pkg/computer-use/ocu"
-          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable: $(ls -l "$ocu" 2>&1)"; exit 1; }
-          [ -d "$pkg/bin/llamacpp" ] || { echo "::error::no llamacpp sidecar in the package — prepare-platform-binaries.js did not run"; ls -la "$pkg/bin"; exit 1; }
-          [ -d "$pkg/web" ] || { echo "::error::no browser interface bundle at $pkg/web"; exit 1; }
+          # ⚠ Inspect the SHIPPED .deb, not `out/Biorouter-linux-x64/`. Testing
+          # the staged tree would be a check that cannot fail: forge's
+          # postPackage hook already calls verifyComputerUse on that exact
+          # directory, so `make` would have died before reaching here. The
+          # question this step answers is what the package actually carries.
+          rm -rf /tmp/pkgcheck && mkdir -p /tmp/pkgcheck
+          dpkg-deb -x "$deb" /tmp/pkgcheck
+          res="$(find /tmp/pkgcheck -type d -name resources -path '*biorouter*' -print -quit)"
+          [ -n "$res" ] || { echo "::error::no resources directory inside the deb"; find /tmp/pkgcheck -maxdepth 4 -type d; exit 1; }
+          echo "inspecting $res"
+
+          # A PRESENCE check, because this failure mode is an ABSENCE. A package
+          # with no llamacpp sidecar is byte-valid, correctly named and exits 0;
+          # only asking for the file by name sees it.
+          [ -d "$res/bin/llamacpp" ] || { echo "::error::no llamacpp sidecar in the deb — prepare-platform-binaries.js did not run"; ls -la "$res/bin"; exit 1; }
+          [ -d "$res/web" ] || { echo "::error::no browser interface bundle in the deb"; exit 1; }
+
+          # `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
+          # not work on Linux, with nothing in the test suite catching it. That
+          # is the mode-mangling this whole workflow exists to avoid, so read it
+          # back off the packaged copy.
+          ocu="$res/computer-use/ocu"
+          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable in the deb: $(ls -l "$ocu" 2>&1)"; exit 1; }
+          echo "ocu in the deb: $(ls -l "$ocu" | awk '{print $1}')"
 
           # No other platform's executables may ride along. The recursive sweep
           # in build-linux-deb.sh exists because a top-level *.exe glob could not
           # match src/bin/llamacpp/llama-server.exe, and 31 Windows files shipped
           # inside a .deb as a result.
-          foreign="$(find "$pkg/bin" \( -name '*.exe' -o -name '*.dll' -o -name '*.cmd' \) -type f | head -20)"
+          foreign="$(find "$res/bin" \( -name '*.exe' -o -name '*.dll' -o -name '*.cmd' \) -type f | head -20)"
           [ -z "$foreign" ] || { echo "::error::Windows files in a Linux package:"; echo "$foreign"; exit 1; }
 
-          echo "ocu: $(ls -l "$ocu" | awk '{print $1}')"
+          # ⚠ RUN it and COMPARE. The runner is x86_64 Linux, so the packaged
+          # backend is natively executable here — there is no reason to ship a
+          # version nobody asked. Printing it would not be a check; an automated
+          # run has no eye to read it with. `biorouterd --version` prints
+          # "biorouter-server <ver>".
+          got="$("$res/bin/biorouterd" --version)"
+          echo "packaged backend reports: $got"
+          case "$got" in
+            *"$v") : ;;
+            *) echo "::error::packaged backend is '$got' but this release is $v"; exit 1 ;;
+          esac
+
           sha256sum "$deb" "$rpm" "$cli_deb" "$cli_rpm"
 
       - uses: actions/upload-artifact@v4
