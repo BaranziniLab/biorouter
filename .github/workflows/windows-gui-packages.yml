@@ -152,20 +152,58 @@ jobs:
           staged="ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouter.exe"
           [ -f "$staged" ] || { echo "::error::no staged backend at $staged"; exit 1; }
 
-          # The staged tree is the single input both makers consumed, so its hash
-          # is the shared-backend claim stated as a measurement rather than as an
-          # assumption about how forge works.
-          echo "shared staged backend:"
-          sha256sum "$staged"
           echo "release artifacts:"
           sha256sum "$zip" "$exe"
           ls -l "$zip" "$exe"
 
           # Prove the version that is actually inside the package, not the one in
           # the filename. This is the check whose absence shipped a 1.90.5
-          # backend in a 1.91.0 installer.
+          # backend in a 1.91.0 installer: exit 0, every filename correct, and
+          # the provenance stamp matching HEAD throughout.
           echo "staged backend version:"
           ./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe --version
+
+      # ⚠ What this proves and what it does NOT.
+      #
+      # Hashing the staged tree alone would prove nothing: it is the maker INPUT,
+      # so it is trivially equal to itself. Reading the backend back OUT of the
+      # finished zip proves the zip maker did not re-stage or rewrite it, which
+      # is the actual claim.
+      #
+      # It does NOT prove the same for the installer. `maker-squirrel` builds a
+      # nupkg from that tree by a separate code path, so its copy could in
+      # principle differ without this step noticing. Asserting that needs an
+      # install, which CI cannot cheaply do — so it is verified on real Windows
+      # hardware by reading the backend out of the INSTALLED app. Measured for
+      # 1.91.0, all three readings identical:
+      #   staged tree / zip member / installed from Setup.exe
+      #   7961B0220796FF2491E0A63E4F8EF083F53F6BD345DF04107415F02D64EC5EBA
+      # Do not delete this step believing the installed-app read covers it: that
+      # read happens after the release is built, and this one fails the build.
+      - name: Prove the zip carries the backend the makers were given
+        shell: bash
+        run: |
+          set -e
+          v='${{ inputs.version }}'
+          zip="ui/desktop/out/make/zip/win32/x64/Biorouter-win32-x64-${v}.zip"
+          staged="ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouter.exe"
+          python - "$zip" "$staged" <<'PY'
+          import hashlib, sys, zipfile
+          archive, staged = sys.argv[1], sys.argv[2]
+          want = hashlib.sha256(open(staged, 'rb').read()).hexdigest()
+          with zipfile.ZipFile(archive) as z:
+              names = [n for n in z.namelist() if n.replace('\\', '/').endswith('resources/bin/biorouter.exe')]
+              if len(names) != 1:
+                  print(f"::error::expected exactly one resources/bin/biorouter.exe in the zip, found {names}")
+                  sys.exit(1)
+              got = hashlib.sha256(z.read(names[0])).hexdigest()
+          print(f"staged tree : {want}")
+          print(f"zip member  : {got}  ({names[0]})")
+          if want != got:
+              print("::error::the zip's backend differs from the tree both makers were given")
+              sys.exit(1)
+          print("OK - the zip carries the staged backend byte for byte")
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
