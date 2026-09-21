@@ -17,9 +17,11 @@ on:
     branches: [main]
   schedule:
     - cron: "0 7 * * *"   # nightly: the expensive full cross-BUILD + glibc floor
-  # A schedule-only job is a job nobody can check. cross-build-nightly has run
-  # 36 times since 2026-07-15 — its entire existence — for 33 failures and 3
-  # cancellations and not one green. Part of why that stood for a month is that
+  # A schedule-only job is a job nobody can check. When this was written,
+  # cross-build-nightly had run 36 times since 2026-07-15 — its entire existence
+  # up to then — for 33 failures and 3 cancellations and not one green. (It has
+  # since been fixed and passes; that figure is the history behind this design,
+  # not the job's current state. Read its latest run rather than this line.) Part of why that stood for a month is that
   # there was no way to ASK it a question: you could read the log the morning
   # after, change something, and then wait a day to learn whether the change
   # helped. Manual dispatch turns a 24-hour edit loop into a 20-minute one. It

@@ -1029,6 +1029,11 @@ cmd_publish() {
   # — would publish a tag at a commit the artifacts were never built from, and
   # every check here would pass. That is v1.89.8: tag and artifacts 8 commits
   # apart. A guarantee derived from an invariant is not a guarantee checked.
+  # ⚠ `local` on its own line, deliberately. `local x="$(cmd)"` returns the exit
+  # status of `local` itself — effectively always 0 — so the `|| die` below would
+  # never fire and an unreadable target would continue as an empty string. A
+  # plain assignment carries the command substitution's own status. Do not fold
+  # these two lines back into one.
   local draft_target
   draft_target="$(gh release view "v$v" --json targetCommitish --jq .targetCommitish)" \
     || die "could not read v$v's draft target from GitHub; refusing to publish without it"
