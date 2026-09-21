@@ -178,8 +178,13 @@ jobs:
           rpm="ui/desktop/out/make/rpm/x64/Biorouter-${v}-1.x86_64.rpm"
           cli_deb="dist/cli/biorouter-cli_${v}_amd64.deb"
           cli_rpm="dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+          # ⚠ `[ -f ]` passes on a zero-byte or truncated file, and
+          # `if-no-files-found: error` only checks existence. These run 100 MB
+          # and up, so a modest floor still catches a maker that wrote a stub.
           for f in "$deb" "$rpm" "$cli_deb" "$cli_rpm"; do
             [ -f "$f" ] || { echo "::error::missing release artifact $f"; exit 1; }
+            bytes=$(stat -c %s "$f")
+            [ "$bytes" -ge 50000000 ] || { echo "::error::$f is only $bytes bytes — expected a package of 100 MB or more"; exit 1; }
             echo "$(du -h "$f" | cut -f1)  $f"
           done
 

@@ -184,6 +184,15 @@ jobs:
           sha256sum "$zip" "$exe"
           ls -l "$zip" "$exe"
 
+          # ⚠ `[ -f ]` passes on a zero-byte or truncated file, and
+          # `if-no-files-found: error` only checks existence. Both artifacts are
+          # ~400 MB, so a floor well below that still catches a maker that wrote
+          # a stub.
+          for f in "$zip" "$exe"; do
+            bytes=$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")
+            [ "$bytes" -ge 100000000 ] || { echo "::error::$f is only $bytes bytes — expected a ~400 MB artifact"; exit 1; }
+          done
+
           # Prove the version that is actually inside the package, not the one in
           # the filename. This is the check whose absence shipped a 1.90.5
           # backend in a 1.91.0 installer: exit 0, every filename correct, and
@@ -207,9 +216,20 @@ jobs:
           # contributes: the bundled git the knowledge bases use, the uv/uvx
           # Python tooling extensions install through, npx, jbang, and the whole
           # Llama Server sidecar.
+          # ⚠ The three mingw DLLs are asserted NOWHERE else.
+          # `validateRequiredBinaries` (prepare-platform-binaries.js:212) requires
+          # only biorouterd.exe, biorouter.exe and llamacpp/llama-server.exe. A
+          # `-gnu` build will not start without libgcc_s_seh-1, libstdc++-6 and
+          # libwinpthread-1, and the failure is a Windows loader dialog naming a
+          # DLL — not something any test in this repository would catch.
+          # The staging step would fail first today (it runs under `shell: bash`,
+          # so an unexpanded `*.dll` glob makes `cp` fail under -e), but that
+          # catches the absence at STAGING. This catches it at PACKAGING, which
+          # is the half that survives a refactor of the staging step.
           bin="ui/desktop/out/Biorouter-win32-x64/resources/bin"
           missing=
-          for want in biorouter.exe biorouterd.exe git npx.cmd jbang.cmd uv.exe uvx.exe llamacpp; do
+          for want in biorouter.exe biorouterd.exe git npx.cmd jbang.cmd install-node.cmd uv.exe uvx.exe llamacpp \
+                      libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
             [ -e "$bin/$want" ] || missing="$missing $want"
           done
           if [ -n "$missing" ]; then
