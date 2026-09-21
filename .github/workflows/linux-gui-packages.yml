@@ -166,6 +166,25 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" ui/desktop/out ui/desktop/src/bin ui/desktop/node_modules 2>/dev/null || true
 
+      # ⚠ Mirror `ensure_host_node_deps`, which `cmd_cli-linux` calls before this
+      # script for a reason: `build-cli-linux-packages.sh` runs `npm run
+      # build:web` on the HOST, and the node_modules sitting here was installed
+      # by `npm ci` INSIDE the packaging container, as root, through a bind
+      # mount. CLAUDE.md records the failure that produces: `node_modules/.bin`
+      # ends up empty with the packages themselves present, and the build dies
+      # with `vite: command not found` — which reads as a missing tool rather
+      # than a broken install.
+      #
+      # `npm ci`, never `npm install`: install rewrites package-lock.json, and
+      # the next container build's `npm ci` then refuses the out-of-sync lock.
+      # The rollup probe is the assertion half — a green `npm ci` does not imply
+      # a usable tree, which is the whole point of checking.
+      - name: Reinstall host-native desktop dependencies
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          node -e "require('rollup')" || { echo "::error::host-native rollup is unavailable after npm ci"; exit 1; }
+
       # Release assets 7 and 8. Independent of the GUI packaging and it does not
       # disturb node_modules, exactly as `cmd_cli-linux` notes.
       - name: Build the CLI-only deb and rpm
