@@ -15,7 +15,11 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { writeFileSync } from 'fs';
 import log from './logger';
-import { assistedUpdateInstructions } from './assistedUpdateInstructions';
+import {
+  assistedUpdateInstructions,
+  assistedUpdateKind,
+  updateRequiresQuitFirst,
+} from './assistedUpdateInstructions';
 import { githubUpdater } from './githubUpdater';
 import { loadRecentDirs } from './recentDirs';
 import { scheduleUpdateChecks, type AutomaticUpdateCheckReason } from './updateCheckSchedule';
@@ -240,14 +244,29 @@ export function registerUpdateIpcHandlers() {
         // updater prefers the installer. See assistedUpdateInstructions.ts.
         const detail = assistedUpdateInstructions(updatePath, process.platform);
 
+        // ⚠ "Open Folder Only" leaves Biorouter RUNNING, and for a Squirrel
+        // installer that is one double-click from a broken install: Squirrel
+        // removes the app directory before checking whether anything is using
+        // it, so it deletes Update.exe, packages\ and the root stub, then
+        // throws. Both shortcuts survive pointing at a file that is gone.
+        // Measured on Windows, 1.91.0. The instruction text says to quit, but an
+        // option that is reasonable to pick and cannot work should not be there.
+        const mustQuitFirst = updateRequiresQuitFirst(
+          assistedUpdateKind(updatePath, process.platform)
+        );
+        const buttons = mustQuitFirst
+          ? ['Open Folder & Quit', 'Cancel']
+          : ['Open Folder & Quit', 'Open Folder Only', 'Cancel'];
+        const cancelId = buttons.length - 1;
+
         const dialogResult = (await dialog.showMessageBox({
           type: 'info',
           title: 'Update ready to install',
           message: `Version ${githubUpdateInfo.latestVersion} is ready to install.`,
           detail,
-          buttons: ['Open Folder & Quit', 'Open Folder Only', 'Cancel'],
+          buttons,
           defaultId: 0,
-          cancelId: 2,
+          cancelId,
         })) as unknown as { response: number };
 
         if (dialogResult.response === 0) {
@@ -256,7 +275,7 @@ export function registerUpdateIpcHandlers() {
           setTimeout(() => {
             app.quit();
           }, 1500); // Give user time to see the folder open
-        } else if (dialogResult.response === 1) {
+        } else if (!mustQuitFirst && dialogResult.response === 1) {
           // Just open folder, don't quit
           shell.showItemInFolder(updatePath);
         }

@@ -1,0 +1,112 @@
+# Builds the Linux GUI deb and rpm on a real Linux runner.
+#
+# ⚠ Why this exists rather than the Docker cross-build in `scripts/release.sh`
+# `cmd_linux`. On a macOS release host, Docker Desktop stamps files with a
+# `com.docker.grpcfuse.ownership` xattr and its file-sharing layer reports
+# permissions from that xattr rather than the inode, so every file the container
+# wrote into `out/resources/computer-use/` landed as `--w-------` and the
+# packager could not read what it had just written. Measured on 1.91.0 across
+# three attempts with the source verified clean each time; a Docker volume
+# instead of the bind mount made no difference.
+#
+# Note what that would have done had the modes been merely wrong rather than
+# unreadable: `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
+# not work on Linux, with nothing in the test suite catching it. Building where
+# the packages are meant to run removes the whole class.
+name: Linux GUI packages
+'on':
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  packages:
+    name: Linux GUI deb + rpm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The deb/rpm makers need these; `build-linux-deb.sh` installs them itself
+      # when it runs as root in a container, which it does not here.
+      - name: Install package makers
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends fakeroot dpkg rpm
+
+      - name: Build the Linux backend
+        run: cargo build --release --bin biorouterd --bin biorouter --target x86_64-unknown-linux-gnu
+
+      - name: Build the Biorouter Copilot helper payload
+        run: python3 scripts/computer-use-runtime.py build linux-x64
+
+      # ⚠ `prepare-platform-binaries.js` reads `src/bin` and never copies from
+      # `target/`. Skipping this stage is how a build silently packages whatever
+      # `src/bin` happened to hold: on Windows it produced an installer named
+      # 1.91.0 containing a 1.90.5 backend, exit 0, correct filenames. The same
+      # staging lives in `release.sh` `cmd_windows`.
+      - name: Stage the Linux backend into src/bin
+        run: |
+          rm -rf ui/desktop/src/bin && mkdir -p ui/desktop/src/bin
+          cp -f target/x86_64-unknown-linux-gnu/release/biorouterd \
+                target/x86_64-unknown-linux-gnu/release/biorouter \
+                ui/desktop/src/bin/
+          chmod +x ui/desktop/src/bin/biorouterd ui/desktop/src/bin/biorouter
+
+      - name: Stage the Copilot helper
+        run: python3 scripts/computer-use-runtime.py stage linux-x64
+
+      - name: Install desktop dependencies
+        working-directory: ui/desktop
+        run: npm ci
+
+      - name: Build the web bundle and the Electron main process
+        working-directory: ui/desktop
+        run: |
+          npm run build:web
+          node scripts/build-main.js
+
+      - name: Make the deb and rpm
+        working-directory: ui/desktop
+        env:
+          ELECTRON_PLATFORM: linux
+          ELECTRON_ARCH: x64
+        run: npm run make -- --platform=linux --arch=x64
+
+      # Assert what was produced rather than trusting the maker's exit code, the
+      # same way `cmd_linux` does. A maker that runs and writes nothing is the
+      # failure this catches.
+      - name: Verify the artifacts exist and the helper is executable
+        run: |
+          set -e
+          deb="ui/desktop/out/make/deb/x64/biorouter_${{ inputs.version }}_amd64.deb"
+          rpm="ui/desktop/out/make/rpm/x64/Biorouter-${{ inputs.version }}-1.x86_64.rpm"
+          [ -f "$deb" ] || { echo "no deb at $deb"; exit 1; }
+          [ -f "$rpm" ] || { echo "no rpm at $rpm"; exit 1; }
+          ocu="ui/desktop/out/Biorouter-linux-x64/resources/computer-use/ocu"
+          [ -x "$ocu" ] || { echo "the Copilot helper is not executable: $(ls -l "$ocu")"; exit 1; }
+          echo "deb: $(du -h "$deb" | cut -f1)"
+          echo "rpm: $(du -h "$rpm" | cut -f1)"
+          echo "ocu: $(ls -l "$ocu" | awk '{print $1}')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-gui-packages-${{ inputs.version }}
+          path: |
+            ui/desktop/out/make/deb/x64/*.deb
+            ui/desktop/out/make/rpm/x64/*.rpm
+          if-no-files-found: error
+          retention-days: 7

@@ -96,6 +96,18 @@ let cfg = {
   // bundle with it.
   extraResource: ['src/bin', 'src/images', 'src/web', 'src/computer-use'],
   icon: 'src/images/icon',
+  // ⚠ Squirrel names the Start Menu FOLDER from the exe's version-resource
+  // CompanyName, not from the nupkg metadata. Left unset, electron-packager
+  // writes Electron's own default and every Windows user got Biorouter filed
+  // under "GitHub, Inc" in their Start Menu. Measured on the 1.91.0 installer,
+  // the first release to ship one. The nupkg was already correct
+  // (`<authors>Baranzini Lab, UCSF</authors>`), which is why this was invisible
+  // until a real installer existed. `forgeConfig.win32metadata.test.ts` pins it.
+  win32metadata: {
+    CompanyName: 'Baranzini Lab, UCSF',
+    FileDescription: 'Biorouter',
+    ProductName: 'Biorouter',
+  },
   // macOS code signing and notarization
   // Activate by setting APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.
   // Generate an app-specific password at https://appleid.apple.com/account/manage
