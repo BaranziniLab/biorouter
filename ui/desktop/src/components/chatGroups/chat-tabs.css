@@ -1,0 +1,34 @@
+/* Chat tabs fit even when a split pane is narrower than the usual tab floor. */
+.br-tabstrip--inline {
+  position: relative;
+}
+
+.br-tabstrip--inline > .br-tab {
+  min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 190px));
+  max-width: min(190px, var(--chat-tab-available-width, 190px));
+  border: 1px solid var(--border-subtle);
+  background-color: color-mix(in srgb, var(--background-default) 24%, transparent);
+}
+
+.br-tabstrip--inline > .br-tab:hover {
+  border-color: var(--border-strong);
+  background-color: color-mix(in srgb, var(--background-default) 72%, transparent);
+}
+
+.br-tabstrip--inline > .br-tab[data-active='true'] {
+  border-color: var(--border-subtle);
+  background-color: var(--background-default);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.br-tabstrip--inline[data-group-active='false'] > .br-tab[data-active='true'] {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--background-default) 55%, transparent);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.br-tabstrip--inline > .br-tab::before {
+  display: none;
+}

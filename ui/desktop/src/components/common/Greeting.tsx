@@ -1,33 +1,25 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useTextAnimator } from '../../hooks/use-text-animator';
 
 interface GreetingProps {
   className?: string;
-  /**
-   * Set false where the heading should appear immediately with no unroll.
-   * Defaults to animating, because every place this renders is an arrival:
-   * a new chat, a new window, or Home.
-   */
   animate?: boolean;
+  /** A tab survives chat remounts, session creation, and movement between panes. */
+  tabId?: string;
 }
 
-/**
- * The heading above the composer on an empty chat, and on Home.
- *
- * ⚠ **The rotation is deliberate product voice, not accidental filler.** These
- * are the stock sentences. I removed them once as marketing register and was
- * corrected: the variety is the point, and the operator wants a different line
- * on each arrival. Do not collapse this back to one fixed sentence.
- *
- * ⚠ **It unrolls on EVERY mount, on purpose.** `010bf68e` ("Keep chat greetings
- * still and immediate") removed the animator because `BaseChat` renders
- * `<Greeting key={sessionId}>` and every remount replayed it. A later attempt
- * gated it to once per chat. Both were wrong for the same reason: an arrival is
- * exactly when the unroll should play, and Home, a new window and a new chat
- * are all arrivals. The animator already honours `prefers-reduced-motion`,
- * which is the accessibility answer to "some people do not want motion" — a
- * blanket removal was not.
- */
+type GreetingLifetime = { message: string; shown: boolean };
+// Renderer-local: returning from Settings preserves tabs, while a new window
+// has its own registry. Closed tabs are released by ChatGroupsProvider.
+const tabGreetings = new Map<string, GreetingLifetime>();
+
+export function retainTabGreetings(tabIds: readonly string[]) {
+  const live = new Set(tabIds);
+  for (const tabId of tabGreetings.keys()) {
+    if (!live.has(tabId)) tabGreetings.delete(tabId);
+  }
+}
+
 const MESSAGES = [
   'What insights will your data reveal today?',
   'Which connections in the knowledge graph will lead to better care?',
@@ -49,13 +41,24 @@ const MESSAGES = [
 export function Greeting({
   className = 'mt-1 text-2xl font-semibold tracking-tight',
   animate = true,
+  tabId,
 }: GreetingProps) {
-  // Chosen once per instance, in a lazy initialiser, so a re-render does not
-  // swap the sentence out from under a running animation. A remount is a new
-  // arrival and gets a new line, which is the intent.
-  const [message] = useState(() => MESSAGES[Math.floor(Math.random() * MESSAGES.length)]);
-
-  const messageRef = useTextAnimator({ text: message, enabled: animate });
+  const [lifetime] = useState(() => {
+    const existing = tabId ? tabGreetings.get(tabId) : undefined;
+    if (existing) return existing;
+    const created = {
+      message: MESSAGES[Math.floor(Math.random() * MESSAGES.length)],
+      shown: false,
+    };
+    if (tabId) tabGreetings.set(tabId, created);
+    return created;
+  });
+  const [firstAppearance] = useState(() => !lifetime.shown);
+  const { message } = lifetime;
+  const messageRef = useTextAnimator({ text: message, enabled: animate && firstAppearance });
+  useLayoutEffect(() => {
+    lifetime.shown = true;
+  }, [lifetime]);
 
   // ⚠ The accessible name lives on the `h1`, and the split text is hidden from
   // assistive technology.

@@ -1465,6 +1465,7 @@
   }
 
   body {
+    font-size: calc(1rem * var(--app-font-scale, 1.07));
     @apply text-text-default;
     font-family: var(--font-sans);
   }
@@ -3984,85 +3985,226 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   --tw-prose-invert-td-borders: var(--border-subtle);
 }
 
-/* design.md §4.17 — markdown tables. Header row 32px, 11px caps in --text-muted
-   with a bottom hairline ONLY; body rows 40px with a hairline between; numeric
-   columns right-aligned + tabular-nums; NO zebra, NO vertical rules.
-
-   These live in CSS rather than in MarkdownContent.tsx's `prose-*` class list
-   because they are structural (`tbody tr:last-child`, `[align='right']`) and a
-   variant modifier cannot express them. The tsx drops `prose-td:border
-   prose-th:border prose-thead:bg-background-medium` — a filled header band plus
-   a full box grid around every cell — and this block is what replaces it. */
-.prose table {
-  border-collapse: collapse;
-  font-variant-numeric: normal;
+/* Shared markdown typography. Documents use a larger title, while the rhythm,
+   callouts, tables and code wells match their chat counterparts. */
+.biorouter-markdown.prose {
+  --md-code-pad: 14px 16px;
+  --md-title-size: calc(24px * var(--app-font-scale, 1.07));
+  font-size: 14px;
+  line-height: 1.7;
 }
 
-.prose thead {
-  background: transparent;
+.biorouter-markdown.prose[data-variant='document'] {
+  --md-title-size: calc(28px * var(--app-font-scale, 1.07));
+  font-size: 15px;
 }
 
-.prose thead th {
-  height: 32px;
-  padding: 0 12px 0 0;
-  border: 0;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-/* `middle`, matching the header. §4.17 fixes the row heights (32px header,
-   40px body), which only reads right if the text is centred in them — with
-   `top` a single-line cell hung at the top of its 40px box while the header
-   sat centred in its 32px one, so the two rows aligned on opposite edges. */
-.prose tbody td {
-  height: 40px;
-  padding: 8px 12px 8px 0;
-  border: 0;
-  border-bottom: 1px solid var(--border-subtle);
+.biorouter-markdown.prose :where(h1, h2, h3, h4, h5, h6) {
   color: var(--text-default);
-  vertical-align: middle;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
 }
 
-/* The last row's hairline would double up with the container/next block's own
-   edge — the rule is "a hairline BETWEEN rows", not around the table. */
-.prose tbody tr:last-child td {
-  border-bottom: 0;
+.biorouter-markdown.prose :where(h1, h2) {
+  position: relative;
+  padding-left: 0.7em;
 }
 
-.prose thead th:last-child,
-.prose tbody td:last-child {
-  padding-right: 0;
+.biorouter-markdown.prose :where(h1, h2)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.2em;
+  width: 3px;
+  height: 0.85em;
+  border-radius: 2px;
+  background: var(--accent-bar);
 }
 
-/* Numeric columns. GFM emits `align` on the cell, so honour it directly and pair
-   right-alignment with tabular figures so digits form a column. */
-.prose th[align='right'],
-.prose td[align='right'] {
-  text-align: right;
+.biorouter-markdown.prose h1 {
+  margin: 1.4em 0 0.7em;
+  font-size: var(--md-title-size);
+  line-height: 1.25;
+}
+
+.biorouter-markdown.prose h2 {
+  margin: 1.6em 0 0.65em;
+  font-size: 19px;
+}
+
+.biorouter-markdown.prose h3 {
+  margin: 1.4em 0 0.5em;
+  font-size: 16px;
+}
+
+.biorouter-markdown.prose :where(h4, h5, h6) {
+  margin: 1.3em 0 0.5em;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.biorouter-markdown.prose p {
+  margin: 0 0 0.85em;
+}
+
+.biorouter-markdown.prose :where(ul, ol) {
+  margin: 0 0 1em;
+  padding-left: 1.5em;
+}
+
+.biorouter-markdown.prose li {
+  margin: 0.3em 0;
+  padding-left: 0.2em;
+}
+
+.biorouter-markdown.prose li > :where(ul, ol) {
+  margin: 0.45em 0 0.65em;
+}
+
+.biorouter-markdown.prose li > p {
+  margin: 0.5em 0;
+}
+
+.biorouter-markdown.prose blockquote {
+  margin: 1.25em 0;
+  padding: 1em 1.2em;
+  border-left: 3px solid var(--accent-bar);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--accent-bar) 6%, var(--background-default));
+  color: var(--text-default);
+  font-style: normal;
+  font-weight: 400;
+}
+
+.biorouter-markdown.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.biorouter-markdown.prose hr {
+  margin: 2em 0;
+  border-color: var(--border-subtle);
+}
+
+.biorouter-markdown.prose > :first-child,
+.biorouter-markdown.prose > .biorouter-md-pre:first-child > .biorouter-md-code {
+  margin-top: 0;
+}
+
+.biorouter-markdown.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.biorouter-markdown .biorouter-inline-code {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.biorouter-markdown .biorouter-md-code {
+  margin: 1em 0 1.25em;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.biorouter-markdown .biorouter-md-code-head {
+  min-height: 36px;
+  gap: 12px;
+  padding: 4px 10px 4px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--background-muted);
+}
+
+.biorouter-markdown .biorouter-md-code-lang {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.biorouter-markdown .biorouter-md-code-body {
+  background:
+    linear-gradient(to left, var(--background-code) 45%, transparent) 100% 0 / 36px 100%
+      no-repeat local,
+    linear-gradient(to left, var(--border-subtle), transparent) 100% 0 / 14px 100% no-repeat
+      scroll;
+}
+
+.biorouter-markdown .biorouter-md-table-scroll {
+  max-width: 100%;
+  margin: 1.2em 0 1.5em;
+  overflow-x: auto;
+  border-radius: 8px 8px 0 0;
+}
+
+.biorouter-markdown .biorouter-md-table-scroll:focus-visible,
+.biorouter-markdown .biorouter-md-code-body:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.biorouter-markdown.prose table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
   font-variant-numeric: tabular-nums;
 }
 
-.prose th[align='center'],
-.prose td[align='center'] {
-  text-align: center;
+.biorouter-markdown.prose :where(th, td) {
+  padding: 11px 16px;
+  border: 0;
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: top;
 }
 
-/* `.bg-inline-code` retired. It had exactly two call sites, both in
-   MarkdownContent.tsx, and both now use the `prose-code:*` token utilities —
-   one recipe instead of a class competing with them, reconciled only by the
-   specificity ladder that used to live here (and which had to be extended by
-   hand for every new parent element; h4/h5/h6 and `ol > li` were already
-   missing). The load-bearing `pre:has(> code.bg-inline-code){padding:1em}`
-   rule — which padded language-less fenced blocks — moved into the component
-   as `prose-pre:[&:has(>code)]:p-3`, so retiring the class does not silently
-   unpad them. */
+.biorouter-markdown.prose thead {
+  background: #ecece9;
+}
+
+.biorouter-markdown.prose thead th {
+  color: #292927;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.dark .biorouter-markdown.prose thead {
+  background: #353533;
+}
+
+.dark .biorouter-markdown.prose thead th {
+  color: #eeeeeb;
+}
+
+.biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code)) {
+  color: inherit;
+}
+
+.biorouter-markdown.prose tbody td {
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-default);
+}
+
+.biorouter-markdown.prose tbody td:first-child {
+  font-weight: 600;
+}
+
+.biorouter-markdown.prose tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.biorouter-markdown.prose :where(th, td)[align='right'] {
+  text-align: right;
+}
+
+.biorouter-markdown.prose :where(th, td)[align='center'] {
+  text-align: center;
+}
 
 .user-message p {
   margin-bottom: 0 !important;
@@ -4608,206 +4750,7 @@ code [class~='token'] {
       scroll;
 }
 
-/* ── Prose ── */
-.br-paper-prose.prose {
-  font-size: 15px;
-  line-height: 1.7;
-  color: var(--text-default);
-}
-
-/* A fenced block reaches the page as `<pre>` wrapping the block, so a report
-   that OPENS with a code chunk (every R Markdown setup chunk) needs the reset
-   one level down too. */
-.br-paper-prose.prose > :first-child,
-.br-paper-prose.prose > pre:first-child > .biorouter-md-code {
-  margin-top: 0;
-}
-
-.br-paper-prose.prose :where(p) {
-  margin: 0 0 1em;
-}
-
-.br-paper-prose.prose :where(h1) {
-  margin: 0 0 0.75em;
-  font-size: 26px;
-  line-height: 1.25;
-  font-weight: 700;
-  letter-spacing: -0.012em;
-}
-
-.br-paper-prose.prose :where(h2) {
-  margin: 2em 0 0.6em;
-  font-size: 19px;
-  line-height: 1.35;
-  font-weight: 700;
-  letter-spacing: -0.006em;
-}
-
-.br-paper-prose.prose :where(h3) {
-  margin: 1.6em 0 0.5em;
-  font-size: 16px;
-  line-height: 1.45;
-  font-weight: 700;
-}
-
-.br-paper-prose.prose :where(h4) {
-  margin: 1.6em 0 0.4em;
-}
-
-.br-paper-prose.prose :where(ul, ol) {
-  margin: 0 0 1em;
-  padding-left: 1.35em;
-}
-
-.br-paper-prose.prose :where(li) {
-  margin: 0.3em 0;
-  padding-left: 0.25em;
-}
-
-.br-paper-prose.prose :where(li > p) {
-  margin: 0;
-}
-
-.br-paper-prose.prose :where(blockquote) {
-  margin: 1.6em 0;
-  padding: 0 0 0 1.1em;
-  border-left: 2px solid var(--border-strong);
-  color: var(--text-muted);
-  font-style: normal;
-}
-
-.br-paper-prose.prose :where(hr) {
-  margin: 2.5em 0;
-  border-color: var(--border-subtle);
-}
-
-.br-paper-prose.prose :where(img) {
-  border-radius: 6px;
-}
-
-/* Inline code, and the file-link chips that share its recipe. Chat's
-   `break-all` split a short identifier across lines mid-word (`tximpor|t`); on
-   paper a chip moves to the next line whole, and only a token longer than the
-   whole line (a long path) is broken. File links keep their coral link ink. */
-.br-paper-prose .biorouter-inline-code {
-  padding: 0.12em 0.38em;
-  border-radius: 5px;
-  background-color: var(--background-well);
-  font-size: 0.86em;
-  word-break: normal;
-  overflow-wrap: anywhere;
-}
-
-/* Fenced code: a faint well with a soft radius and no hairline — on paper the
-   tint alone is the edge. Its header stops being a bar: the language sits in
-   the well's corner in lower-case mono, the way it was written in the fence,
-   26px tall so the label sits close to the code it names. The inset is the
-   `--md-code-pad` the highlighter reads (MarkdownContent.tsx), not an
-   !important fight with its inline style. */
-.br-paper-prose .biorouter-md-code {
-  --md-code-pad: 0 16px 14px;
-  margin: 1em 0 1.25em;
-  border: 0;
-  border-radius: 10px;
-  background-color: var(--background-well);
-}
-
-.br-paper-prose .biorouter-md-code-head {
-  height: 26px;
-  padding: 0 6px 0 16px;
-  border: 0;
-  background: transparent;
-}
-
-.br-paper-prose .biorouter-md-code-lang {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-/* A document's fenced code keeps its lines (MarkdownContent `variant="document"`)
-   and scrolls inside the well, with the same overflow hint as the code view —
-   the cover is the WELL's ground here, not the page's. */
-.br-paper-prose .biorouter-md-code-body {
-  background:
-    linear-gradient(to left, var(--background-well) 45%, transparent) 100% 0 / 36px 100% no-repeat
-      local,
-    linear-gradient(to left, var(--paper-hint-ink), transparent) 100% 0 / 14px 100% no-repeat
-      scroll;
-}
-
-/* A block directly under its heading belongs to it: as close as a paragraph. */
-.br-paper-prose.prose :where(h1, h2, h3, h4) + pre > .biorouter-md-code {
-  margin-top: 0.6em;
-}
-
-/* …and the heading AFTER a block starts a new thought, but not a new page: at
-   most 48px from the well's bottom edge to the heading's top. The block's own
-   1.25em bottom margin sits inside `<pre>`, a scroll container, so it does NOT
-   collapse with the heading's margin — the two add (18.75px + 28.5px for an
-   h2), which is why this is 1.5em and not the 2em an h2 takes after prose. */
-.br-paper-prose.prose pre:has(> .biorouter-md-code) + :where(h2, h3) {
-  margin-top: 1.5em;
-}
-
-/* Tables inside a report: booktabs, not a grid. A firm rule under the header
-   and after the last row, hairlines between, figures in tabular digits. */
-.br-paper-prose.prose table {
-  margin: 1.6em 0 1.8em;
-  font-size: 13.5px;
-  line-height: 1.5;
-  font-variant-numeric: tabular-nums;
-}
-
-.br-paper-prose.prose thead th {
-  height: auto;
-  padding: 0 16px 8px 0;
-  border-bottom: 1px solid var(--border-strong);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-  vertical-align: bottom;
-}
-
-.br-paper-prose.prose tbody td {
-  height: auto;
-  padding: 8px 16px 8px 0;
-}
-
-.br-paper-prose.prose tbody tr:last-child td {
-  border-bottom: 1px solid var(--border-strong);
-}
-
-/* A report's table never breaks a value to fit: the renderer's root sets
-   `word-break: break-word`, which let the table shrink its columns below their
-   longest word, so an 8-column table in a 640px panel split `0.558` into `0.55`
-   / `8`. Cells wrap between words only — a figure has no break opportunity,
-   and neither has `5.809e-04`, since a hyphen before a digit is not one — and a
-   table that is then wider than the column scrolls inside its own frame
-   (MarkdownContent, `variant="document"`) with the panel's overflow hint,
-   instead of being clipped at the column edge with no way to reach the rest. */
-.br-paper-prose.prose :where(th, td) {
-  overflow-wrap: normal;
-  word-break: normal;
-}
-
-.br-paper-prose .biorouter-md-table-scroll {
-  margin: 1.6em 0 1.8em;
-  overflow-x: auto;
-  background:
-    linear-gradient(to left, var(--background-default) 45%, transparent) 100% 0 / 36px 100%
-      no-repeat local,
-    linear-gradient(to left, var(--paper-hint-ink), transparent) 100% 0 / 14px 100% no-repeat
-      scroll;
-}
-
-.br-paper-prose.prose .biorouter-md-table-scroll > table {
-  margin: 0;
-}
+/* MarkdownContent owns prose styling for both chat and document surfaces. */
 
 /* Front matter lifted into a title block (MarkdownDocument.tsx). */
 .br-paper-frontmatter {

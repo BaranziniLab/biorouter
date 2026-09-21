@@ -7,7 +7,7 @@ import {
   type NavigateFunction,
 } from 'react-router-dom';
 import type { ChatGroupsState } from '../components/chatGroups/chatGroupsTypes';
-import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
+import { ChatGroupsProvider, resetLiveChatTabsForTests, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import {
   beginComposerSend,
@@ -72,6 +72,7 @@ const deleteTempFile = vi.fn();
 
 beforeEach(() => {
   rendered = [];
+  resetLiveChatTabsForTests();
   localStorage.clear();
   sessionStorage.clear();
   resetNewTabRegistry();
@@ -138,14 +139,14 @@ describe('a new tab holding an unsent message', () => {
     mount();
 
     expect(tabIds()).toContain(unsent);
-    // A blank tab is still pruned, as it always was.
-    expect(tabIds()).not.toContain(blank);
+    // Settings preserves every live tab, including an empty one.
+    expect(tabIds()).toContain(blank);
     expect(screen.getByTestId('active')).toHaveTextContent(unsent);
     expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(true);
   });
 
   it('is focused, not joined by a blank tab, when Cmd+T brings the person back', async () => {
-    const { view, unsent } = await twoNewTabsFirstUnsent();
+    const { view, unsent, blank } = await twoNewTabsFirstUnsent();
     act(() => view.unmount());
 
     // Cmd+T with no provider mounted is remembered; the next provider cashes it.
@@ -153,7 +154,7 @@ describe('a new tab holding an unsent message', () => {
     mount();
 
     await waitFor(() => expect(screen.getByTestId('active')).toHaveTextContent(unsent));
-    expect(tabIds()).toEqual([unsent]);
+    expect(tabIds()).toEqual([unsent, blank]);
   });
 
   it('in a split, coming back focuses the draft on screen and no pane loses its chat', async () => {
@@ -219,6 +220,7 @@ describe('a new tab holding an unsent message', () => {
 
     // A reload is a new renderer: the drafts are memory, the layout is storage.
     resetComposerDraftsForTests();
+    resetLiveChatTabsForTests();
     mount();
 
     expect(tabIds()).not.toContain(unsent);
@@ -283,15 +285,18 @@ describe('a chat started elsewhere does not take a tab holding an unsent message
       })
     );
 
-  it('a message sent from Home opens its own tab beside the kept one', async () => {
-    const { view, unsent } = await twoNewTabsFirstUnsent();
+  it('a message sent from Home uses the empty tab beside the draft', async () => {
+    const { view, unsent, blank } = await twoNewTabsFirstUnsent();
     act(() => view.unmount());
     mount();
-    expect(tabIds()).toEqual([unsent]);
+    expect(tabIds()).toEqual([unsent, blank]);
 
     arriveWithStartedChat('s-home', {});
 
-    await waitFor(() => expect(tabIds()).toHaveLength(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).toContain(`${blank}=s-home`)
+    );
+    expect(tabIds()).toHaveLength(2);
     expect(screen.getByTestId('sessions').textContent).toContain(`${unsent}=`);
     expect(screen.getByTestId('sessions').textContent).not.toContain(`${unsent}=s-home`);
     expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(true);

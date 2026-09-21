@@ -1,3 +1,4 @@
+import { retainTabGreetings } from '../components/common/Greeting';
 import {
   createContext,
   useContext,
@@ -117,6 +118,13 @@ interface ChatGroupsContextValue {
   tabAnnotations: Record<string, TabAnnotation>;
 }
 
+// Route changes unmount this provider; only a new renderer ends these lifetimes.
+const liveTabsByWindow = new Map<string, Set<string>>();
+
+export function resetLiveChatTabsForTests() {
+  liveTabsByWindow.clear();
+}
+
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
 
 /** Returns null outside a provider (the ChatContext pattern) — never throws. */
@@ -131,12 +139,10 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // The navigation this provider mounts on. Read for its first state only.
   const mountLocation = useLocation();
   const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) => {
-    // A tab with no chat survives the re-read that coming back to /pair does
-    // only while it holds an unsent message — a draft, or a message whose start
-    // is still in flight — and that is renderer memory, so never across a
-    // reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
     const loaded = loadChatGroupsOrInitial(windowId, {
-      keepSessionlessTab: (tabId) => holdsUnsentMessage(composerDraftKeyForTab(tabId)),
+      keepSessionlessTab: (tabId) =>
+        liveTabsByWindow.get(windowId)?.has(tabId) === true ||
+        holdsUnsentMessage(composerDraftKeyForTab(tabId)),
     });
     // An ARRIVAL (sidebar New chat, or a Cmd+T remembered while another route
     // was showing) lands in the FIRST state, so every pane mounts already
@@ -176,6 +182,10 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // Persist. The transient route cargo is stripped inside saveChatGroups, not
   // here, so no caller can forget.
   useEffect(() => {
+    liveTabsByWindow.set(
+      windowIdRef.current,
+      new Set(Object.values(state.groups).flatMap((group) => group.tabs.map((tab) => tab.tabId)))
+    );
     saveChatGroups(state, windowIdRef.current);
   }, [state]);
 
@@ -563,6 +573,12 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     }),
     [state, activeSessionId, runningSessionIds, tabAnnotations]
   );
+
+  useEffect(() => {
+    retainTabGreetings(
+      Object.values(state.groups).flatMap((group) => group.tabs.map((tab) => tab.tabId))
+    );
+  }, [state.groups]);
 
   return <ChatGroupsContext.Provider value={value}>{children}</ChatGroupsContext.Provider>;
 }

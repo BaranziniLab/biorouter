@@ -365,11 +365,9 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             >
               <BioRouterWordmark
                 data-testid="sidebar-biorouter-mark"
-                // h-[22px] so the wordmark's cap height reads at the same size as
-                // the text-sm nav labels beside it — measured against "New chat"
-                // in the calibration harness. (The SVG box includes the underline,
-                // so the letters are smaller than the box; 17px looked undersized.)
-                className="h-[22px] w-auto shrink-0"
+                // Scale the SVG box with UI text; its measured viewBox keeps
+                // the lettering and underline in proportion.
+                className="h-[calc(24px*var(--app-font-scale,1.07))] w-auto shrink-0"
               />
               <EnvironmentBadge />
             </div>

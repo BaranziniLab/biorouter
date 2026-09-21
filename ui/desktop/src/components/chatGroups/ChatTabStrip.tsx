@@ -1,3 +1,5 @@
+import './chat-tabs.css';
+import { requestTabKeyboardFocus, consumeTabKeyboardFocus } from './chatTabKeyboardFocus';
 import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ChevronDown, X } from '../icons/app-icons';
 import { cn } from '../../utils';
@@ -209,7 +211,7 @@ export function ChatTabStrip({
   const sharedDrag = useChatTabDrag();
   const ownDrag = useTabDragReorder({ onReorder });
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
-  const activeTabRef = useRef<HTMLButtonElement | null>(null);
+  const activeTabRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
 
   // The empty part of the band is a titlebar: drag moves the window,
@@ -316,34 +318,41 @@ export function ChatTabStrip({
     // Keyed on the rendered order string — the DOM is the dependency here.
   }, [orderKey]);
 
-  // Feature-detected: scrollIntoView is absent in jsdom, and keeping the
-  // focused tab visible must never be able to take the strip down.
   const revealActiveTab = useCallback(() => {
-    activeTabRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    const strip = stripRef.current;
+    const tab = activeTabRef.current;
+    if (!strip || !tab || strip.clientWidth === 0) return;
+    const available = Math.max(0, strip.clientWidth - 8);
+    strip.style.setProperty('--chat-tab-available-width', `${available}px`);
+    // Measure the whole tab, including its close control, in scroll coordinates.
+    // offsetLeft is unaffected by the reorder/selection animation transforms.
+    const left = tab.offsetLeft;
+    const right = left + tab.offsetWidth;
+    if (left < strip.scrollLeft) strip.scrollLeft = left;
+    else if (right > strip.scrollLeft + available) strip.scrollLeft = right - available;
   }, []);
 
-  // Keep the focused tab in view as the strip scrolls past its shrink floor.
-  useEffect(() => {
+  // Also runs after the overflow button appears or a title changes its width.
+  useLayoutEffect(() => {
     revealActiveTab();
-  }, [activeTabId, tabs.length, revealActiveTab]);
+    if (activeTabId && consumeTabKeyboardFocus(activeTabId)) {
+      activeTabRef.current
+        ?.querySelector<HTMLButtonElement>('[role="tab"]')
+        ?.focus({ preventScroll: true });
+    }
+  });
 
-  // ⚠ **And again when the BOX changes, which the deps above cannot see.** The
-  // strip is a CSS scroll box whose `clientWidth` and left gutter both move on a
-  // window resize (the gutter flips when `AppLayout` auto-collapses the
-  // sidebar), and the browser preserves `scrollLeft` across that — so a resize
-  // scrolled the active tab out of sight and nothing put it back. This is the
-  // same division of labour `useTabStripOverflow` documents one file over: the
-  // observer catches the box changing, the effect above catches the content
-  // changing, and neither implies the other.
-  //
-  // No feedback loop to fear: `scrollIntoView` moves `scrollLeft`, which is not
-  // a size, so it cannot re-trigger the observer that called it.
   useEffect(() => {
     const el = stripRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(revealActiveTab);
-    observer.observe(el);
-    return () => observer.disconnect();
+    if (!el) return;
+    window.addEventListener('resize', revealActiveTab);
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(revealActiveTab);
+    observer?.observe(el);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', revealActiveTab);
+    };
   }, [revealActiveTab]);
 
   /**
@@ -359,16 +368,6 @@ export function ChatTabStrip({
    */
   const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length);
 
-  /**
-   * Selecting a tab must also SHOW it — the menu is a way to reach a
-   * scrolled-out tab, so landing on it without showing it is half an answer.
-   *
-   * ⚠ The effect above does that for a tab that was not already active, and
-   * ONLY for one: its deps are `activeTabId` and `tabs.length`, both unchanged
-   * when you pick the tab you are already on. That made the one documented way
-   * back a no-op for exactly the tab a resize had pushed off-screen. Revealing
-   * explicitly here closes it, for the ▾ menu and for a click on the tab itself.
-   */
   const handleSelect = useCallback(
     (tabId: ChatTabId) => {
       onSelect(tabId);
@@ -391,7 +390,10 @@ export function ChatTabStrip({
     event.preventDefault();
     const delta = event.key === 'ArrowRight' ? 1 : -1;
     const next = tabs[(index + delta + tabs.length) % tabs.length];
-    if (next) onSelect(next.tabId);
+    if (next) {
+      requestTabKeyboardFocus(next.tabId);
+      onSelect(next.tabId);
+    }
   };
 
   return (
@@ -538,6 +540,7 @@ export function ChatTabStrip({
           return (
             <div
               key={tab.tabId}
+              ref={isActive ? activeTabRef : undefined}
               data-tab-id={tab.tabId}
               data-active={isActive ? 'true' : undefined}
               data-dragging={draggedTabId === tab.tabId ? 'true' : undefined}
@@ -571,7 +574,6 @@ export function ChatTabStrip({
               <ContextMenu>
                 <ContextMenuTrigger asChild>
                   <button
-                    ref={isActive ? activeTabRef : undefined}
                     type="button"
                     role="tab"
                     aria-selected={isActive}
@@ -583,6 +585,7 @@ export function ChatTabStrip({
                     // word. `gap-2` is the token, not a magic number.
                     className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
                     onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
+                    onFocus={isActive ? revealActiveTab : undefined}
                     onKeyDown={(event) => handleKeyDown(event, index)}
                     onClick={() => {
                       // Swallow the synthetic click that ends a drag — otherwise

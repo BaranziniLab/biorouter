@@ -2611,7 +2611,11 @@ function BaseChatContent({
                         — the same three utilities every page title in the app was
                         writing by hand before there was a token for it. */}
                     {!suppressGreeting && (
-                      <Greeting key={sessionId} className={cn('text-center text-title')} />
+                      <Greeting
+                        key={terminalKey ?? sessionId}
+                        tabId={terminalKey}
+                        className={cn('text-center text-title')}
+                      />
                     )}
                     {renderChatInput()}
                   </div>
