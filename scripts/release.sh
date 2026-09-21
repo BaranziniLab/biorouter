@@ -16,15 +16,21 @@
 #                     Rebuild just the linux x86_64 backend from scratch.
 #   mac-arm64 <ver>   Package + sign + NOTARIZE the Apple Silicon .dmg.
 #   mac-intel <ver>   Package + sign + NOTARIZE the Intel .dmg.
-#   windows <ver>     Package the Windows .zip.
-#   linux <ver>       Package the GUI .deb + .rpm.
-#   cli-linux <ver>   Build the CLI-only .deb + .rpm (no GUI).
+#   adopt-ci <ver>    Take the 4 Linux + 2 Windows assets from the successful
+#                     linux-gui-packages.yml / windows-gui-packages.yml runs
+#                     at this release's source commit.
+#   windows <ver>     Package the Windows .zip + installer locally (retired
+#                     from the release path; adopt-ci replaces it).
+#   linux <ver>       Package the GUI .deb + .rpm locally (retired; adopt-ci).
+#   cli-linux <ver>   Build the CLI-only .deb + .rpm locally (retired; adopt-ci).
 #   mac-manifest <ver>
 #                     Generate latest-mac.yml for electron-updater.
 #   verify <ver>      Verify all release artifacts (arch, notarization, dmg format).
 #   draft <ver>       Create a draft GitHub release with assets + notes.
 #   publish <ver>     Publish a verified draft after native Windows smoke passes.
-#   all <ver>         Run every build/verify phase and create the draft release.
+#   landing <ver>     Point the landing site at a PUBLISHED release.
+#   all <ver>         Run every build/verify phase, adopt the CI packages, and
+#                     create the draft release.
 #
 # Hard-won invariants (see CLAUDE.md for the long version):
 #   * The macOS .dmg maker (macos-alias native module) only builds under
@@ -286,6 +292,7 @@ verify_release_provenance() {
   # the verifier to open a Squirrel exe (its embedded nupkg) would make this
   # direct and is worth doing separately.
   [ "$helper_count" -eq 9 ] || die "release provenance must attest the helper bytes in all 9 attestable install/update archives"
+  verify_release_ci_runs "$v"
   log "release provenance verified for 11 assets at $(release_provenance_value "$manifest" source_sha)"
 }
 
@@ -462,6 +469,7 @@ cmd_mac-intel() {
 }
 
 # ── windows packaging (host forge, Node 24) ───────────────────────────────────
+# Not on the release path: adopt-ci takes both Windows assets from one windows-gui-packages.yml run, because a zip from here and an installer from Windows carried different backends (see the adopt-ci block).
 cmd_windows() {
   local v="$1"; assert_release_source "$v"; activate_hermit; ensure_host_node_deps
   local WR="$ROOT/target/x86_64-pc-windows-gnu/release"
@@ -487,6 +495,7 @@ cmd_windows() {
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
+# Not on the release path: adopt-ci takes the GUI deb/rpm from linux-gui-packages.yml, because Docker Desktop on this host left the container's computer-use files unreadable (see the adopt-ci block).
 cmd_linux() {
   local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" ] || die "linux backend missing — run: scripts/release.sh backends $v"
@@ -517,6 +526,7 @@ cmd_linux() {
 # ── CLI-only Linux packages (deb + rpm; headless biorouter + biorouterd) ───────
 # Independent of the GUI packaging — does NOT corrupt node_modules. Builds and
 # smoke-tests both packages in clean containers.
+# Not on the release path: adopt-ci takes the CLI deb/rpm from the same linux-gui-packages.yml run as the GUI ones, so all four carry one backend build rather than this host's target/ beside CI's.
 cmd_cli-linux() {
   # ensure_host_node_deps because these packages now carry the browser interface
   # bundle, which is built on the HOST by `npm run build:web`. After a Linux or
@@ -568,14 +578,45 @@ cmd_cli-linux() {
 # does not exist is a hard failure, never a fallback to whatever is newest.
 RELEASE_CI_WORKFLOWS="linux-gui-packages.yml windows-gui-packages.yml"
 
+# Exit status: 0 with the run id on stdout; 1 when GitHub answered and no run
+# qualifies; 2 when GitHub could not be asked at all. The two failures need
+# opposite fixes (dispatch a run, versus repair gh), and this used to send gh's
+# stderr to /dev/null and return 1 for both, so an auth, network or rate-limit
+# failure was reported as "no successful run -- dispatch it and wait".
 ci_run_for_release() { # <workflow file> <source sha> -> run id on stdout
   local wf="$1" sha="$2" id
   id="$(gh run list --workflow "$wf" --limit 50 \
           --json databaseId,headSha,status,conclusion \
-          --jq "[.[] | select(.headSha == \"$sha\" and .status == \"completed\" and .conclusion == \"success\")] | first | .databaseId" \
-        2>/dev/null)"
+          --jq "[.[] | select(.headSha == \"$sha\" and .status == \"completed\" and .conclusion == \"success\")] | first | .databaseId")" \
+    || return 2
   [ -n "$id" ] && [ "$id" != "null" ] || return 1
   printf '%s\n' "$id"
+}
+
+# The refusal for each of ci_run_for_release's failures, naming the fix that
+# actually applies to it.
+ci_run_refusal() { # <workflow file> <source sha> <version> <status>
+  case "$4" in
+    0) ;;
+    1)
+      # ⚠ Status 1 means "no COMPLETED, SUCCESSFUL run at this sha", which is three
+      # different situations, and only one of them wants a dispatch. Telling
+      # someone to dispatch while a run is already queued or in progress creates a
+      # DUPLICATE run for the same commit, and a failed run needs its cause fixed
+      # first — re-dispatching an unchanged commit just fails again. So say which.
+      local latest st con rid
+      latest="$(gh run list --workflow "$1" --limit 50 --json databaseId,headSha,status,conclusion \
+                  --jq "[.[] | select(.headSha == \"$2\")] | first | \"\\(.databaseId) \\(.status) \\(.conclusion)\"" 2>/dev/null || true)"
+      read -r rid st con <<<"$latest"
+      if [ -z "$rid" ] || [ "$rid" = "null" ]; then
+        die "no $1 run at $2. Dispatch it and wait for it to succeed: gh workflow run $1 -f version=$3 --ref main (it builds main's head, so $2 must be origin/main when you dispatch)"
+      elif [ "$st" != "completed" ]; then
+        die "$1 run $rid at $2 is still $st. Wait for it — do NOT dispatch another, that would build the same commit twice: gh run watch $rid"
+      else
+        die "$1 run $rid at $2 completed with conclusion '$con', not success. Fix the cause before dispatching again; re-running an unchanged commit repeats the failure: gh run view $rid --log-failed"
+      fi ;;
+    *) die "could not query GitHub for $1 runs (gh's own error is above). That is not a missing run, so do not dispatch one; check 'gh auth status' and the network, then re-run" ;;
+  esac
 }
 
 record_ci_run() { # <version> <workflow> <run id>
@@ -587,7 +628,65 @@ record_ci_run() { # <version> <workflow> <run id>
   mv "$tmp" "$manifest"
 }
 
-cmd_adopt-ci() {
+# Reads the `ci_run` rows back. adopt-ci writes them, and until this check
+# nothing ever read them, so the one record of where six assets came from was
+# never compared with anything. A manifest with no such rows is a release
+# packaged entirely on this host, which is left to the checks above. Otherwise
+# every CI workflow must be named exactly once, and GitHub must still report
+# that run as a successful run OF THAT WORKFLOW at THIS release's source
+# commit. The REST run object rather than `gh run view`, because only it
+# carries the workflow file (`path`); without it a row naming the other
+# workflow's run passes whenever both built the same commit, which is exactly
+# the case adopt-ci selects for. Same repository resolution as
+# ci_run_for_release, so the id is read where it was chosen.
+verify_release_ci_runs() { # <version>
+  local v="$1" manifest source_sha bad wf count id fields head status conclusion path
+  manifest="$(release_provenance_file "$v")"
+  awk -F '\t' '$1 == "ci_run" { found = 1 } END { exit !found }' "$manifest" || return 0
+  source_sha="$(release_provenance_value "$manifest" source_sha)"
+  bad="$(awk -F '\t' -v wfs="$RELEASE_CI_WORKFLOWS" '
+    BEGIN { n = split(wfs, w, " "); for (i = 1; i <= n; i++) known[w[i]] = 1 }
+    $1 == "ci_run" && (NF != 3 || !($2 in known) || $3 !~ /^[0-9]+$/)
+  ' "$manifest")"
+  [ -z "$bad" ] || die "malformed ci_run row in release provenance: $bad"
+  for wf in $RELEASE_CI_WORKFLOWS; do
+    count="$(awk -F '\t' -v wf="$wf" '$1 == "ci_run" && $2 == wf { c++ } END { print c+0 }' "$manifest")"
+    [ "$count" -eq 1 ] \
+      || die "release provenance names $count $wf runs; adopt-ci records exactly one per workflow. Re-run: scripts/release.sh adopt-ci $v"
+    id="$(awk -F '\t' -v wf="$wf" '$1 == "ci_run" && $2 == wf { print $3 }' "$manifest")"
+    # `conclusion` is null until a run completes, and `read` collapses a run of
+    # tabs, so the one field that can be empty goes last.
+    fields="$(gh api "repos/{owner}/{repo}/actions/runs/$id" --jq '[.path, .head_sha, .status, .conclusion] | @tsv')" \
+      || die "could not read $wf run $id from GitHub (gh's own error is above), so the CI-built assets cannot be checked"
+    IFS=$'\t' read -r path head status conclusion <<<"$fields"
+    [ "$path" = ".github/workflows/$wf" ] \
+      || die "release provenance names run $id for $wf, but that run is of ${path:-an unknown workflow}. Re-run: scripts/release.sh adopt-ci $v"
+    [ "$head" = "$source_sha" ] \
+      || die "$wf run $id built $head, not this release's source $source_sha. Run the workflow at $source_sha, then: scripts/release.sh adopt-ci $v"
+    [ "$status" = completed ] && [ "$conclusion" = success ] \
+      || die "$wf run $id is $status/$conclusion, not completed/success. Re-run: scripts/release.sh adopt-ci $v"
+    log "$wf run $id: success at $source_sha"
+  done
+}
+
+# ⚠ A SUBSHELL body, `( ... )` rather than `{ ... }`, so the staging directory
+# is removed on every way out. It holds both downloaded artifacts, and the
+# Windows one alone is 809,507,441 bytes (windows-packages-1.91.0, run
+# 35554562885). The cleanup used to be `trap ... RETURN`, which never fires on
+# `die` or on an errexit, because both exit the shell rather than return, so
+# every failed adoption leaked it. A RETURN trap also stays set after the
+# function returns: called from another function, as cmd_all now does, it
+# fires again when that caller returns, dies on `stage: unbound variable`
+# under `set -u`, and turns a fully successful run into exit 1. An EXIT trap
+# set inside the subshell fires when the subshell ends, however it ends, and
+# neither the trap nor `adopt_one` reaches the caller. Measured under /bin/bash
+# 3.2.57 and bash 5.3.20, the old shape and this one side by side: the old
+# leaked the directory on `die` and exited 1 on a nested success; this one
+# removed it on success, die, errexit and a die inside a nested function, kept
+# exit status 1 on failure and 0 on success, and left the caller no EXIT trap
+# and no `adopt_one`. Nothing the caller reads is set here; the results are
+# the manifest rows and the copied files.
+cmd_adopt-ci() (
   local v="$1"
   assert_release_source "$v"
   command -v gh >/dev/null 2>&1 || die "adopt-ci needs the gh CLI"
@@ -598,15 +697,15 @@ cmd_adopt-ci() {
   # Resolve BOTH runs before downloading anything. Half-adopting a release is
   # worse than not starting: `verify` would then report a specific missing file
   # and read as a build problem rather than as a missing CI run.
-  local lin win
-  lin="$(ci_run_for_release linux-gui-packages.yml "$sha")" \
-    || die "no successful linux-gui-packages.yml run at $sha — dispatch it and wait:\n  gh workflow run linux-gui-packages.yml -f version=$v --ref main"
-  win="$(ci_run_for_release windows-gui-packages.yml "$sha")" \
-    || die "no successful windows-gui-packages.yml run at $sha — dispatch it and wait:\n  gh workflow run windows-gui-packages.yml -f version=$v --ref main"
+  local lin win rc
+  rc=0; lin="$(ci_run_for_release linux-gui-packages.yml "$sha")" || rc=$?
+  ci_run_refusal linux-gui-packages.yml "$sha" "$v" "$rc"
+  rc=0; win="$(ci_run_for_release windows-gui-packages.yml "$sha")" || rc=$?
+  ci_run_refusal windows-gui-packages.yml "$sha" "$v" "$rc"
   log "adopting linux-gui-packages.yml run $lin and windows-gui-packages.yml run $win (both at $sha)"
 
   local stage; stage="$(mktemp -d)"
-  trap 'rm -rf "$stage"' RETURN
+  trap 'rm -rf -- "$stage"' EXIT
   gh run download "$lin" -n "linux-packages-$v" -D "$stage/linux" \
     || die "could not download linux-packages-$v from run $lin"
   gh run download "$win" -n "windows-packages-$v" -D "$stage/windows" \
@@ -637,12 +736,18 @@ cmd_adopt-ci() {
   record_ci_run "$v" linux-gui-packages.yml "$lin"
   record_ci_run "$v" windows-gui-packages.yml "$win"
   log "adopted 6 CI-built assets; provenance records runs $lin and $win"
-}
+)
 
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
   assert_release_source "$v"
+  # Every non-mac smoke in smoke-test-release-artifacts.sh is a `docker run`.
+  # Verify used to rely on cmd_linux / cmd_cli-linux having started Docker just
+  # before it; neither runs on the release path now that adopt-ci replaced
+  # them, and publish re-runs this. Started here, a missing daemon fails in
+  # seconds instead of after the mac checks.
+  ensure_docker
   "$ROOT/scripts/check-brand-consistency.sh"
   local arm="$DESK/out/make/Biorouter-$v-arm64.dmg"
   local x64="$DESK/out/make/Biorouter-$v-x64.dmg"
@@ -830,11 +935,11 @@ with open(stamp_path, "w", encoding="utf-8") as handle:
 PY
   then
     rm -f "$releases_json" "$stamp_file"
-    die "GitHub draft assets do not exactly match the 10 local release files"
+    die "GitHub draft assets do not exactly match the 11 local release files"
   fi
   LATEST_DRAFT_ASSET_UPDATED_AT="$(<"$stamp_file")"
   rm -f "$releases_json" "$stamp_file"
-  log "all 10 uploaded asset digests match local files"
+  log "all 11 uploaded asset digests match local files"
 }
 
 require_fresh_windows_smoke() {
@@ -943,17 +1048,56 @@ cmd_landing() {
   esac
 
   log "pointing the landing site at the published v$v"
+  local content=landing/assets/landing-site-content.md about=landing/about.html
+
+  # ⚠ The News lists are HISTORY, and prose. about.html names a release nowhere
+  # but its `.news-list`, and the `### News` section is the one part of
+  # content.md that names past releases; every row in either is an older
+  # release's headline and summary.
+  # A mechanical rewrite cannot write the new row and would relabel the newest
+  # old one. Run on a copy of the 1.90.5 site, this phase's original loop (one
+  # global replace per file) turned content.md's "Biorouter v1.90.5 Release"
+  # entry into v1.91.0 while keeping 1.90.5's summary, and the about.html it
+  # never touched then failed check-consistency.mjs's "about news should link
+  # to the latest published release", so the first real run could not pass. So
+  # the new rows are a person's edit, and this checks for them BEFORE touching
+  # any file, so a refusal leaves the tree exactly as it was.
+  local about_tag news_tag missing=""
+  about_tag="$(perl -0ne 'my ($list) = /class="news-list">(.*)/s or exit; print $1 if $list =~ m{releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)}' "$about")"
+  news_tag="$(perl -0ne 'my ($news) = /^### News\n(.*?)(?=^#{1,3} |\z)/ms or exit; print $1 if $news =~ m{releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)}' "$content")"
+  [ "$about_tag" = "$v" ] \
+    || missing="$missing
+  - $about: its newest news row links v${about_tag:-<none found>}. Add a row above it in the .news-list, in that row's shape: href https://github.com/BaranziniLab/biorouter/releases/tag/v$v, the publish day and month, an <h3> headline and a <p> summary from docs/releases/notes/v$v.md."
+  [ "$news_tag" = "$v" ] \
+    || missing="$missing
+  - $content: its newest '### News' entry links v${news_tag:-<none found>}. Add '1. **Biorouter v$v Release**' with its Link and What's new above it, and renumber the entries below."
+  [ -z "$missing" ] || die "the landing News lists have no entry for v$v, and this phase does not write prose:$missing
+Then re-run: scripts/release.sh landing $v"
+
   local prev
-  prev="$(perl -ne 'print $1 and exit if /\*\*Version:\*\* v([0-9]+\.[0-9]+\.[0-9]+)/' landing/assets/landing-site-content.md)"
-  [ -n "$prev" ] || die "could not read the current landing version from landing/assets/landing-site-content.md"
+  prev="$(perl -ne 'print $1 and exit if /\*\*Version:\*\* v([0-9]+\.[0-9]+\.[0-9]+)/' "$content")"
+  [ -n "$prev" ] || die "could not read the current landing version from $content"
   if [ "$prev" = "$v" ]; then
     log "landing site already cites v$v"
   else
     log "landing site: v$prev → v$v"
     local f
-    for f in landing/assets/landing-site-content.md landing/index.html landing/download.html landing/docs.html; do
+    for f in "$content" landing/index.html landing/download.html landing/docs.html; do
       [ -f "$f" ] || continue
-      perl -0pi -e "s/\Q$prev\E/$v/g" "$f"
+      if [ "$f" = "$content" ]; then
+        # Every current-release slot EXCEPT the News section, which keeps the
+        # versions its rows were written about. The check above already
+        # required the section; the `die` is for a file that changed between.
+        PREV="$prev" NEW="$v" perl -0pi -e '
+          /^### News\n.*?(?=^#{1,3} |\z)/ms or die "no ### News section in $ARGV\n";
+          my ($s, $e) = ($-[0], $+[0]);
+          my ($head, $news, $tail) = (substr($_, 0, $s), substr($_, $s, $e - $s), substr($_, $e));
+          s/\Q$ENV{PREV}\E/$ENV{NEW}/g for $head, $tail;
+          $_ = $head . $news . $tail;
+        ' "$f"
+      else
+        perl -0pi -e "s/\Q$prev\E/$v/g" "$f"
+      fi
     done
   fi
 
@@ -964,12 +1108,35 @@ cmd_landing() {
   log "⚠ this leaves an uncommitted change; commit landing/ and push so the site deploys"
 }
 
+# Reports, without failing, whether the two CI packaging runs adopt-ci needs
+# already exist. They are the one step `all` cannot perform itself, and they
+# can build while the mac phases notarize, so the time to say so is before the
+# notarization rather than after it. adopt-ci makes the binding check.
+ci_packaging_hint() { # <version>
+  local v="$1" sha wf rc
+  sha="$(release_provenance_value "$(release_provenance_file "$v")" source_sha)"
+  for wf in $RELEASE_CI_WORKFLOWS; do
+    rc=0; ci_run_for_release "$wf" "$sha" >/dev/null || rc=$?
+    case "$rc" in
+      0) log "$wf already has a successful run at $sha" ;;
+      1) log "⚠ $wf has no successful run at $sha yet. Dispatch it now, so it builds during notarization: gh workflow run $wf -f version=$v --ref main (it builds main's head, so $sha must be origin/main when you dispatch)" ;;
+      *) log "⚠ could not ask GitHub about $wf runs (gh's own error is above); adopt-ci will ask again after the mac phases" ;;
+    esac
+  done
+}
+
 cmd_all() {
   local v="$1"
   cmd_bump "$v"; cmd_backends "$v"
-  cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
-  cmd_cli-linux "$v"                                                    # CLI-only deb/rpm (no GUI)
-  ( cd "$DESK" && npm ci >/dev/null 2>&1 )
+  ci_packaging_hint "$v"
+  cmd_mac-arm64 "$v"; cmd_mac-intel "$v"
+  # The four Linux and two Windows assets come from CI, not from the local
+  # windows / linux / cli-linux phases (see the adopt-ci block for the measured
+  # reasons). adopt-ci dies naming the exact dispatch command when a run is
+  # missing, and the phases after it resume one at a time. The `npm ci` that
+  # used to sit here repaired node_modules after the local Linux docker
+  # package, which no longer runs.
+  cmd_adopt-ci "$v"
   # Before verify, not after: verify inspects latest-mac.yml, so generating it
   # only inside cmd_draft left a full run checking a manifest from the PREVIOUS
   # release. cmd_mac-manifest is idempotent, so cmd_draft's own call can stay and
