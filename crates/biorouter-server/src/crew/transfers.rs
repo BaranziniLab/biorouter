@@ -443,10 +443,7 @@ impl TransferService {
         receipt.name = selection.name().into();
         receipt.size = selection.size().unwrap_or(0);
         state.receipts.insert(receipt.id.clone(), receipt.clone());
-        self.persist(&mut state)?;
-        drop(state);
-        self.launch(receipt.clone(), selection).await?;
-        Ok(receipt)
+        self.launch(&mut state, receipt, selection)
     }
     pub async fn resume(self: &Arc<Self>, id: &str, capability: &str) -> Result<Receipt> {
         let mut state = self.state.lock().await;
@@ -468,9 +465,7 @@ impl TransferService {
             true,
             FilePurpose::Transfer,
         )?;
-        drop(state);
-        self.launch(receipt.clone(), selection).await?;
-        Ok(receipt)
+        self.launch(&mut state, receipt, selection)
     }
     pub async fn pause(&self, id: &str) -> Result<Receipt> {
         let mut state = self.state.lock().await;
@@ -549,30 +544,40 @@ impl TransferService {
         state.receipts.insert(receipt.id.clone(), receipt.clone());
         self.persist(&mut state)
     }
-    async fn launch(self: &Arc<Self>, receipt: Receipt, selection: Selection) -> Result<()> {
+    fn launch(
+        self: &Arc<Self>,
+        state: &mut State,
+        mut receipt: Receipt,
+        selection: Selection,
+    ) -> Result<Receipt> {
+        ensure!(!state.poisoned, "Transfer store needs recovery");
+        ensure!(
+            !state.active.contains_key(&receipt.id),
+            "Transfer already active"
+        );
         let permit = match self.slots.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                let mut state = self.state.lock().await;
                 if let Some(saved) = state.receipts.get_mut(&receipt.id) {
                     saved.state = "needs_file_selection".into();
                     saved.error = Some(
                         "Two transfers are active; reselect and resume when one finishes".into(),
                     );
                 }
-                self.persist(&mut state)?;
+                self.persist(state)?;
                 anyhow::bail!("Two transfers are active; resume this receipt when one finishes");
             }
         };
         let cancel = CancellationToken::new();
-        {
-            let mut state = self.state.lock().await;
-            ensure!(
-                !state.active.contains_key(&receipt.id),
-                "Transfer already active"
-            );
-            state.active.insert(receipt.id.clone(), cancel.clone());
+        receipt.state = "starting".into();
+        receipt.error = None;
+        state.active.insert(receipt.id.clone(), cancel.clone());
+        state.receipts.insert(receipt.id.clone(), receipt.clone());
+        if let Err(error) = self.persist(state) {
+            state.active.remove(&receipt.id);
+            return Err(error);
         }
+        let accepted = receipt.clone();
         let service = self.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -597,11 +602,11 @@ impl TransferService {
                 let _ = service.persist(&mut state);
             }
         });
-        Ok(())
+        Ok(accepted)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "transfers_tests.rs"]
 mod transfers_tests;
 
