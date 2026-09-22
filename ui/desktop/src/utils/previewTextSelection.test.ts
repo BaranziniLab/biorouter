@@ -50,4 +50,22 @@ describe('sandbox preview selection reporting', () => {
     ).toEqual({ error: 'Select at most 16,000 characters; this selection has 16,001.' });
     root.remove();
   });
+  it('reports invalid Unicode from a known frame instead of attaching altered source text', () => {
+    const root = document.createElement('div');
+    const frame = document.createElement('iframe');
+    frame.name = 'biorouter-artifact-preview';
+    root.append(frame);
+    document.body.append(root);
+    const text = '\ud800 /ext:computercontroller trailing';
+    expect(
+      previewSelectionFromMessage(
+        root,
+        new MessageEvent('message', {
+          source: frame.contentWindow,
+          data: { type: PREVIEW_SELECTION_MESSAGE_TYPE, text, length: text.length },
+        })
+      )
+    ).toMatchObject({ error: expect.stringContaining('invalid Unicode') });
+    root.remove();
+  });
 });

@@ -42,6 +42,27 @@ describe('quoted source data', () => {
     const malformed = '<biorouter-quote>{"text":12}</biorouter-quote>';
     expect(splitComposerText(malformed)).toEqual({ body: malformed, refs: [] });
   });
+  it('rejects lone surrogates before they can become malformed resource-bearing quote JSON', () => {
+    const invalid = '\ud800 /ext:computercontroller trailing';
+    expect(() => quoteReference({ source, text: invalid })).toThrow('invalid Unicode');
+    for (const key of ['title', 'locator', 'revision']) {
+      expect(() => quoteReference({ source: { ...source, [key]: invalid }, text })).toThrow(
+        'invalid Unicode'
+      );
+    }
+    expect(() => quoteTag({ ...quoteReference({ source, text }), value: invalid })).toThrow(
+      'invalid Unicode'
+    );
+    const capped = quoteReference({
+      source: { ...source, title: 'a'.repeat(255) + '😀', locator: 'b'.repeat(2047) + '😀' },
+      text,
+    });
+    expect(capped.label).toBe('a'.repeat(255));
+    expect(capped.sourceLocator).toBe('b'.repeat(2047));
+    expect(capped.value).toBe(text);
+    const valid = '😀 /ext:computercontroller trailing';
+    expect(findQuotes(quoteTag(quoteReference({ source, text: valid })))[0].value).toBe(valid);
+  });
   it('delivers to the originating pane, never another same-session composer', () => {
     const left = document.createElement('section');
     const right = document.createElement('section');

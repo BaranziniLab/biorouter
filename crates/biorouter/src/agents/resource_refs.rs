@@ -340,14 +340,20 @@ fn without_quoted_source_data(text: &str) -> String {
     const CLOSE: &str = "</biorouter-quote>";
     let mut output = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find(OPEN) {
-        output.push_str(&rest[..start]);
-        let body = &rest[start + OPEN.len()..];
-        let Some(end) = body.find(CLOSE) else {
-            output.push_str(&rest[start..]);
+    while let Some((prefix, body)) = rest.split_once(OPEN) {
+        output.push_str(prefix);
+        let Some((raw, remaining)) = body.split_once(CLOSE) else {
+            output.push_str(OPEN);
+            output.push_str(body);
             return output;
         };
-        let raw = &body[..end];
+        let raw = if let Some((malformed_prefix, candidate)) = raw.rsplit_once(OPEN) {
+            output.push_str(OPEN);
+            output.push_str(malformed_prefix);
+            candidate
+        } else {
+            raw
+        };
         let valid = raw.len() <= 200_000
             && !raw.contains(['<', '>'])
             && serde_json::from_str::<serde_json::Value>(raw)
@@ -359,9 +365,7 @@ fn without_quoted_source_data(text: &str) -> String {
                         && value
                             .get("text")
                             .and_then(serde_json::Value::as_str)
-                            .is_some_and(|text| {
-                                !text.trim().is_empty() && text.encode_utf16().count() <= 16_000
-                            })
+                            .is_some_and(|text| text.encode_utf16().count() <= 16_000)
                         && ["locator", "revision"]
                             .iter()
                             .all(|key| value.get(key).is_none_or(serde_json::Value::is_string))
@@ -369,9 +373,11 @@ fn without_quoted_source_data(text: &str) -> String {
         if valid {
             output.push(' ');
         } else {
-            output.push_str(&rest[start..start + OPEN.len() + end + CLOSE.len()]);
+            output.push_str(OPEN);
+            output.push_str(raw);
+            output.push_str(CLOSE);
         }
-        rest = &body[end + CLOSE.len()..];
+        rest = remaining;
     }
     output.push_str(rest);
     output
@@ -1198,6 +1204,48 @@ mod tests {
         assert_eq!(refs.skills, vec!["chosen"]);
         assert!(refs.knowledge_bases.is_empty());
         assert!(text.contains(malicious.split_whitespace().next().unwrap()));
+    }
+
+    #[test]
+    fn escaped_unicode_quote_cannot_select_capabilities() {
+        let text = r#"<biorouter-quote>{"source":"\ud83d\ude00 /skill(example)","text":"\ud83d\ude00 /ext:computercontroller trailing"}</biorouter-quote>"#;
+        let refs = extract_resource_refs(text);
+        assert!(refs.extensions.is_empty());
+        assert!(refs.skills.is_empty());
+        assert!(refs.knowledge_bases.is_empty());
+    }
+
+    #[test]
+    fn blank_quote_source_metadata_cannot_select_capabilities() {
+        for text in ["", "\u{0085}"] {
+            let quote = serde_json::json!({
+                "source": "/ext(computercontroller)", "text": text,
+            });
+            let refs =
+                extract_resource_refs(&format!("<biorouter-quote>{quote}</biorouter-quote>"));
+            assert!(refs.extensions.is_empty());
+            assert!(refs.skills.is_empty());
+            assert!(refs.knowledge_bases.is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_prefix_does_not_expose_later_quoted_capabilities() {
+        let quote = serde_json::json!({
+            "source": "/skill(hidden)", "text": "/ext(computercontroller)",
+        });
+        for prefix in [
+            "Explain <biorouter-quote>".to_owned(),
+            "<biorouter-quote>{invalid".to_owned(),
+            "<biorouter-quote>".repeat(1_000),
+        ] {
+            let refs = extract_resource_refs(&format!(
+                "/ext:explicit {prefix} <biorouter-quote>{quote}</biorouter-quote> /skill:chosen"
+            ));
+            assert_eq!(refs.extensions, vec!["explicit"]);
+            assert_eq!(refs.skills, vec!["chosen"]);
+            assert!(refs.knowledge_bases.is_empty());
+        }
     }
 
     #[test]

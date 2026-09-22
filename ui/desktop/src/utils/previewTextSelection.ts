@@ -1,4 +1,4 @@
-import { MAX_QUOTE_CHARS } from './quotedText';
+import { hasInvalidQuoteUnicode, INVALID_QUOTE_UNICODE, MAX_QUOTE_CHARS } from './quotedText';
 
 export type SelectedText = string | { error: string };
 export const PREVIEW_SELECTION_MESSAGE_TYPE = 'biorouter-preview-text-selection';
@@ -34,6 +34,9 @@ export function previewSelectionFromMessage(
     return {
       error: `Select at most ${MAX_QUOTE_CHARS.toLocaleString()} characters; this selection has ${data.length.toLocaleString()}.`,
     };
+  if (typeof data.text === 'string' && hasInvalidQuoteUnicode(data.text)) {
+    return { error: INVALID_QUOTE_UNICODE };
+  }
   return typeof data.text === 'string' &&
     data.text.length === data.length &&
     data.length <= MAX_QUOTE_CHARS
