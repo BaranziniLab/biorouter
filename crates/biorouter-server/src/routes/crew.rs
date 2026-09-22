@@ -593,8 +593,11 @@ async fn launch_run(
     };
     record_starting_run(&ledger, &request_key, &view, &cancel).await?;
     if let Err(error) = configure_run_agent(&state, &agent, provider, &session_id).await {
-        let _ = crew.cancel_run(&session_id).await;
-        set_run_status(&ledger, &view.run_id, "failed", Some(error.to_string())).await;
+        let revoked = crew
+            .cancel_run_if_current(&session_id, &view.run_id)
+            .await
+            .is_ok();
+        finish_failed_run(&ledger, &view.run_id, error.to_string(), revoked).await;
         return Err(error.into());
     }
     if !set_run_status(&ledger, &view.run_id, "running", None).await {
@@ -760,7 +763,10 @@ async fn project_run_event(
                 .iter()
                 .any(|part| matches!(part, MessageContent::ActionRequired(_)))
             {
-                set_run_status(ledger, &view.run_id, "waiting_for_approval", None).await;
+                anyhow::ensure!(
+                    set_run_status(ledger, &view.run_id, "waiting_for_approval", None).await,
+                    "Task is no longer active or its status could not be saved."
+                );
                 crew.publish_run(
                     &view.session_id,
                     "Waiting for its owner's approval in the task conversation.",
@@ -770,7 +776,10 @@ async fn project_run_event(
             }
         }
         AgentEvent::ToolCallPending(call) => {
-            set_run_status(ledger, &view.run_id, "running", None).await;
+            anyhow::ensure!(
+                set_run_status(ledger, &view.run_id, "running", None).await,
+                "Task is no longer active or its status could not be saved."
+            );
             crew.publish_run(
                 &view.session_id,
                 &format!("Using {}", call.name),
@@ -857,12 +866,7 @@ async fn execute_run(
     publish_run_result(state, &crew, &view.session_id).await
 }
 
-async fn finish_run_outcome(
-    ledger: &RunLedger,
-    view: &RunView,
-    cancel: &CancellationToken,
-    error: Option<String>,
-) {
+async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<String>) {
     if let Some(error) = error {
         biorouter::session_events::publish(
             &view.session_id,
@@ -874,7 +878,7 @@ async fn finish_run_outcome(
                 provider_kind: None,
             },
         );
-        if let Ok(crew) = manager() {
+        let revoked = if let Ok(crew) = manager() {
             let _ = crew
                 .publish_run(
                     &view.session_id,
@@ -882,22 +886,40 @@ async fn finish_run_outcome(
                     "failed",
                 )
                 .await;
-            let _ = crew.cancel_run(&view.session_id).await;
-        }
-        set_run_status(
-            ledger,
-            &view.run_id,
-            if cancel.is_cancelled() {
-                "cancelled"
-            } else {
-                "failed"
-            },
-            Some(error),
-        )
-        .await;
+            crew.cancel_run_if_current(&view.session_id, &view.run_id)
+                .await
+                .is_ok()
+        } else {
+            false
+        };
+        finish_failed_run(ledger, &view.run_id, error, revoked).await;
     } else {
         set_run_status(ledger, &view.run_id, "completed", None).await;
     }
+}
+
+async fn finish_failed_run(ledger: &RunLedger, run_id: &str, error: String, revoked: bool) {
+    let mut stored = ledger.state.lock().await;
+    let Some(run) = stored.runs.get_mut(run_id) else {
+        return;
+    };
+    if automatic_terminal(&run.view.status) {
+        return;
+    }
+    run.view.status = if !revoked {
+        "cancellation_unconfirmed"
+    } else if run.cancel.is_cancelled() {
+        "cancelled"
+    } else {
+        "failed"
+    }
+    .into();
+    run.view.error = Some(if revoked {
+        error
+    } else {
+        format!("{error} Remote grant revocation is unconfirmed. Retry cancellation; remote jobs may continue until their enforced timeout.")
+    });
+    let _ = persist_run_status(ledger, &mut stored, run_id);
 }
 
 async fn drive_run(
@@ -922,27 +944,82 @@ async fn drive_run(
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error.to_string()),
         Err(_) => {
+            let _stored = ledger.state.lock().await;
             cancel.cancel();
             Some("Task reached its 15-minute execution limit.".into())
         }
     };
-    let finish_reason = if error.is_some() { "error" } else { "complete" };
-    finish_run_outcome(&ledger, &view, &cancel, error).await;
+    finish_run_outcome(&ledger, &view, error).await;
     if cancel.is_cancelled() {
         let _ = agent.record_turn_stopped(&view.session_id).await;
     }
     drop(turn_guard);
-    biorouter::session_events::publish(
-        &view.session_id,
-        biorouter::session_events::SessionBusEvent::TurnFinished {
-            reason: finish_reason.into(),
-            token_state: None,
-        },
-    );
+    publish_run_finished(&ledger, &view).await;
     state
         .agent_manager
         .deregister_agent_if_same(&view.session_id, &agent)
         .await;
+}
+
+enum RunStatusUpdate {
+    Applied(String),
+    AlreadyTerminal(String),
+    PersistFailed,
+}
+
+fn automatic_terminal(status: &str) -> bool {
+    matches!(
+        status,
+        "completed"
+            | "failed"
+            | "cancelled"
+            | "interrupted"
+            | "outcome_not_durable"
+            | "cancellation_pending"
+            | "cancellation_unconfirmed"
+    )
+}
+
+fn persist_run_status(
+    ledger: &RunLedger,
+    stored: &mut LedgerState,
+    run_id: &str,
+) -> anyhow::Result<()> {
+    if let Err(error) = ledger.persist(stored) {
+        if let Some(run) = stored.runs.get_mut(run_id) {
+            run.view.status = "outcome_not_durable".into();
+            run.view.error = Some("The latest task status could not be saved. Local cancellation, if requested, remains active; remote revocation may be unconfirmed. Inspect the conversation and remote outputs before retrying.".into());
+        }
+        tracing::error!("Crew run status could not be persisted: {error}");
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn transition_run_status(
+    ledger: &RunLedger,
+    run_id: &str,
+    status: &str,
+    error: Option<String>,
+) -> RunStatusUpdate {
+    let mut stored = ledger.state.lock().await;
+    let Some(run) = stored.runs.get_mut(run_id) else {
+        return RunStatusUpdate::PersistFailed;
+    };
+    if automatic_terminal(&run.view.status) {
+        return RunStatusUpdate::AlreadyTerminal(run.view.status.clone());
+    }
+    let status = if run.cancel.is_cancelled() {
+        "cancellation_unconfirmed"
+    } else {
+        status
+    };
+    run.view.status = status.into();
+    run.view.error = error;
+    if persist_run_status(ledger, &mut stored, run_id).is_err() {
+        return RunStatusUpdate::PersistFailed;
+    }
+    RunStatusUpdate::Applied(status.into())
 }
 
 async fn set_run_status(
@@ -951,20 +1028,32 @@ async fn set_run_status(
     status: &str,
     error: Option<String>,
 ) -> bool {
-    let mut stored = ledger.state.lock().await;
-    if let Some(run) = stored.runs.get_mut(run_id) {
-        run.view.status = status.into();
-        run.view.error = error;
+    match transition_run_status(ledger, run_id, status, error).await {
+        RunStatusUpdate::Applied(current) => current == status,
+        RunStatusUpdate::AlreadyTerminal(_current) => false,
+        RunStatusUpdate::PersistFailed => false,
     }
-    if let Err(error) = ledger.persist(&stored) {
-        if let Some(run) = stored.runs.get_mut(run_id) {
-            run.view.status = "outcome_not_durable".into();
-            run.view.error = Some("The latest task status could not be saved. Inspect its conversation and remote outputs before retrying; no work will be replayed automatically.".into());
-        }
-        tracing::error!("Crew run status could not be persisted: {error}");
-        return false;
-    }
-    true
+}
+
+async fn publish_run_finished(ledger: &RunLedger, view: &RunView) {
+    let stored = ledger.state.lock().await;
+    let status = stored
+        .runs
+        .get(&view.run_id)
+        .map(|run| run.view.status.as_str())
+        .unwrap_or("outcome_not_durable");
+    let reason = match status {
+        "completed" => "complete",
+        "failed" => "error",
+        other => other,
+    };
+    biorouter::session_events::publish(
+        &view.session_id,
+        biorouter::session_events::SessionBusEvent::TurnFinished {
+            reason: reason.into(),
+            token_state: None,
+        },
+    );
 }
 
 #[utoipa::path(get, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
@@ -990,23 +1079,115 @@ pub async fn cancel_run(
 ) -> CrewResult {
     require_person(&headers)?;
     let ledger = run_ledger().await?;
-    let (session_id, token) = {
-        let stored = ledger.state.lock().await;
-        let run = stored
-            .runs
-            .get(&run_id)
-            .filter(|run| run.view.connection_id == id)
-            .ok_or_else(|| {
-                anyhow::anyhow!("This task is not owned by this device and connection.")
-            })?;
-        (run.view.session_id.clone(), run.cancel.clone())
+    let reservation = reserve_cancellation(&ledger, &id, &run_id).await?;
+    let (session_id, reservation_error) = match reservation {
+        CancelReservation::AlreadyFinished(view) => {
+            return Ok(Json(
+                json!({"cancelled":view.status == "cancelled", "already_finished":true,"status":view.status}),
+            ));
+        }
+        CancelReservation::Pending {
+            session_id,
+            persistence_error,
+        } => (session_id, persistence_error),
     };
-    token.cancel();
-    manager()?
-        .cancel_run_if_current(&session_id, &run_id)
-        .await?;
-    set_run_status(&ledger, &run_id, "cancelled", None).await;
-    Ok(Json(json!({"cancelled": true})))
+    let revocation = match manager() {
+        Ok(crew) => crew.cancel_run_if_current(&session_id, &run_id).await,
+        Err(error) => Err(error),
+    };
+    let (status, persistence_error) =
+        finish_cancellation(&ledger, &run_id, revocation.is_ok()).await;
+    if reservation_error.is_some() || persistence_error.is_some() {
+        return Err(CrewRouteError(StatusCode::SERVICE_UNAVAILABLE, "crew_cancel_persistence_failed".into(),
+            format!("Local cancellation requested; current status: {status}. Remote revocation confirmed: {}. A ledger write failed; inspect the task before retrying. Remote process termination was not confirmed.", revocation.is_ok())));
+    }
+    if let (false, Err(error)) = (status == "cancelled", revocation) {
+        return Err(CrewRouteError(StatusCode::SERVICE_UNAVAILABLE, "crew_revocation_unconfirmed".into(),
+            format!("Local cancellation requested; current status: {status}. Remote grant revocation is unconfirmed: {error}. Retry cancellation to confirm revocation; remote jobs may continue until their enforced timeout.")));
+    }
+    Ok(Json(
+        json!({"cancelled":status == "cancelled","status":status,"remote_revocation_confirmed":true,
+        "message":"Local cancellation requested and remote grant revoked. Remote process termination was not confirmed."}),
+    ))
+}
+
+enum CancelReservation {
+    AlreadyFinished(RunView),
+    Pending {
+        session_id: String,
+        persistence_error: Option<String>,
+    },
+}
+
+async fn reserve_cancellation(
+    ledger: &RunLedger,
+    connection_id: &str,
+    run_id: &str,
+) -> anyhow::Result<CancelReservation> {
+    let mut stored = ledger.state.lock().await;
+    let run = stored
+        .runs
+        .get_mut(run_id)
+        .filter(|run| run.view.connection_id == connection_id)
+        .ok_or_else(|| anyhow::anyhow!("This task is not owned by this device and connection."))?;
+    if matches!(
+        run.view.status.as_str(),
+        "completed" | "failed" | "cancelled"
+    ) {
+        return Ok(CancelReservation::AlreadyFinished(run.view.clone()));
+    }
+    run.cancel.cancel();
+    let session_id = run.view.session_id.clone();
+    run.view.status = "cancellation_pending".into();
+    run.view.error = Some("Local cancellation requested; remote grant revocation is pending. Remote process termination is not confirmed.".into());
+    let persistence_error = persist_run_status(ledger, &mut stored, run_id)
+        .err()
+        .map(|error| error.to_string());
+    Ok(CancelReservation::Pending {
+        session_id,
+        persistence_error,
+    })
+}
+
+async fn finish_cancellation(
+    ledger: &RunLedger,
+    run_id: &str,
+    revoked: bool,
+) -> (String, Option<String>) {
+    let mut stored = ledger.state.lock().await;
+    let Some(run) = stored.runs.get_mut(run_id) else {
+        return (
+            "outcome_not_durable".into(),
+            Some("Task disappeared from ledger".into()),
+        );
+    };
+    if !matches!(
+        run.view.status.as_str(),
+        "completed" | "failed" | "cancelled"
+    ) {
+        run.view.status = if revoked {
+            "cancelled"
+        } else {
+            "cancellation_unconfirmed"
+        }
+        .into();
+        run.view.error = if revoked {
+            None
+        } else {
+            Some("Local cancellation remains requested; remote grant revocation remains unconfirmed. Retry cancellation; remote jobs may continue until their enforced timeout.".into())
+        };
+    }
+    let error = persist_run_status(ledger, &mut stored, run_id)
+        .err()
+        .map(|error| error.to_string());
+    let status = stored
+        .runs
+        .get(run_id)
+        .expect("checked run")
+        .view
+        .status
+        .clone();
+    (status, error)
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1126,10 +1307,96 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolActivity;
+    use super::{
+        finish_cancellation, finish_failed_run, finish_run_outcome, publish_run_finished,
+        reserve_cancellation, transition_run_status, CancelReservation, LedgerState, OwnedRun,
+        RunLedger, RunStatusUpdate, RunView, ToolActivity,
+    };
     use biorouter::conversation::message::Message;
+    use biorouter::session_events::SessionBusEvent;
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content, ErrorCode, ErrorData};
     use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::fs::OpenOptions;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(1);
+
+    async fn ledger_fixture(
+        status: &str,
+        broken_path: bool,
+    ) -> (tempfile::TempDir, Arc<RunLedger>, RunView) {
+        let temp = tempfile::tempdir().expect("temporary ledger directory");
+        let path = temp.path().join("runs.json");
+        if broken_path {
+            std::fs::create_dir(&path).expect("broken ledger path directory");
+        }
+        let writer_lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(temp.path().join("runs.lock"))
+            .expect("ledger writer lock");
+        let fixture_id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let view = RunView {
+            run_id: "run-1".into(),
+            connection_id: "connection-1".into(),
+            channel_id: "channel-1".into(),
+            session_id: format!("crew-cancel-test-{fixture_id}"),
+            status: status.into(),
+            error: None,
+        };
+        let mut runs = HashMap::new();
+        runs.insert(
+            view.run_id.clone(),
+            OwnedRun {
+                view: view.clone(),
+                cancel: CancellationToken::new(),
+            },
+        );
+        let ledger = Arc::new(RunLedger {
+            path,
+            state: Mutex::new(LedgerState {
+                runs,
+                requests: HashMap::new(),
+            }),
+            start: Mutex::new(()),
+            _writer_lock: writer_lock,
+        });
+        if !broken_path {
+            let state = ledger.state.lock().await;
+            ledger.persist(&state).expect("initial ledger persistence");
+        }
+        (temp, ledger, view)
+    }
+
+    fn persisted_status(path: &Path) -> String {
+        let file: Value = serde_json::from_slice(&std::fs::read(path).expect("saved ledger"))
+            .expect("ledger JSON");
+        file["runs"][0]["status"]
+            .as_str()
+            .expect("saved run status")
+            .into()
+    }
+
+    async fn final_reason(ledger: &RunLedger, view: &RunView) -> String {
+        let mut subscription = biorouter::session_events::subscribe(&view.session_id);
+        publish_run_finished(ledger, view).await;
+        match tokio::time::timeout(Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("final session event timeout")
+            .expect("final session event")
+        {
+            SessionBusEvent::TurnFinished { reason, .. } => reason,
+            event => panic!("expected TurnFinished, got {event:?}"),
+        }
+    }
 
     fn request(id: &str, name: &str, method: &str, params: Value) -> Message {
         Message::assistant().with_tool_request(
@@ -1303,5 +1570,193 @@ mod tests {
                 CallToolResult::success(vec![Content::text("private")]),
             ))
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_reservation_blocks_progress_and_success_races() {
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+
+        let reservation = reserve_cancellation(&ledger, "connection-1", "run-1")
+            .await
+            .expect("cancellation reservation");
+        assert!(matches!(
+            reservation,
+            CancelReservation::Pending {
+                persistence_error: None,
+                ..
+            }
+        ));
+        assert_eq!(persisted_status(&ledger.path), "cancellation_pending");
+
+        for next_status in ["running", "waiting_for_approval"] {
+            assert!(matches!(
+                transition_run_status(&ledger, "run-1", next_status, None).await,
+                RunStatusUpdate::AlreadyTerminal(ref status) if status == "cancellation_pending"
+            ));
+        }
+
+        // This is the automatic-success side of the race: a late model result
+        // must not turn a reserved cancellation into a completed task.
+        finish_run_outcome(&ledger, &view, None).await;
+        assert_eq!(
+            ledger
+                .state
+                .lock()
+                .await
+                .runs
+                .get("run-1")
+                .expect("run")
+                .view
+                .status,
+            "cancellation_pending"
+        );
+
+        let (status, error) = finish_cancellation(&ledger, "run-1", true).await;
+        assert_eq!(status, "cancelled");
+        assert!(error.is_none());
+        assert_eq!(persisted_status(&ledger.path), "cancelled");
+        assert_eq!(final_reason(&ledger, &view).await, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn completed_before_cancellation_is_reported_honestly() {
+        let (_temp, ledger, view) = ledger_fixture("completed", false).await;
+
+        let reservation = reserve_cancellation(&ledger, "connection-1", "run-1")
+            .await
+            .expect("cancellation reservation");
+        match reservation {
+            CancelReservation::AlreadyFinished(view) => {
+                assert_eq!(view.status, "completed");
+                assert!(!ledger
+                    .state
+                    .lock()
+                    .await
+                    .runs
+                    .get("run-1")
+                    .expect("run")
+                    .cancel
+                    .is_cancelled());
+            }
+            CancelReservation::Pending { .. } => panic!("completed run was cancellable"),
+        }
+        assert_eq!(persisted_status(&ledger.path), "completed");
+        assert_eq!(final_reason(&ledger, &view).await, "complete");
+    }
+
+    #[tokio::test]
+    async fn failed_revocation_is_durable_and_retry_can_confirm_cancellation() {
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        reserve_cancellation(&ledger, "connection-1", "run-1")
+            .await
+            .expect("initial cancellation reservation");
+
+        let (status, error) = finish_cancellation(&ledger, "run-1", false).await;
+        assert_eq!(status, "cancellation_unconfirmed");
+        assert!(error.is_none());
+        {
+            let state = ledger.state.lock().await;
+            let run = state.runs.get("run-1").expect("run");
+            assert_eq!(run.view.status, "cancellation_unconfirmed");
+            assert!(run
+                .view
+                .error
+                .as_deref()
+                .is_some_and(|error| { error.contains("Retry cancellation") }));
+        }
+        assert_eq!(persisted_status(&ledger.path), "cancellation_unconfirmed");
+
+        // The cancel endpoint is also the explicit retry: it reserves the
+        // still-active run again, then a confirmed revoke finishes it.
+        assert!(matches!(
+            reserve_cancellation(&ledger, "connection-1", "run-1")
+                .await
+                .expect("retry reservation"),
+            CancelReservation::Pending {
+                persistence_error: None,
+                ..
+            }
+        ));
+        let (status, error) = finish_cancellation(&ledger, "run-1", true).await;
+        assert_eq!(status, "cancelled");
+        assert!(error.is_none());
+        assert_eq!(persisted_status(&ledger.path), "cancelled");
+        assert_eq!(final_reason(&ledger, &view).await, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn retry_can_revoke_interrupted_and_undurable_runs() {
+        for initial_status in ["interrupted", "outcome_not_durable"] {
+            let (_temp, ledger, view) = ledger_fixture(initial_status, false).await;
+            assert!(matches!(
+                reserve_cancellation(&ledger, "connection-1", "run-1")
+                    .await
+                    .expect("retry reservation"),
+                CancelReservation::Pending {
+                    persistence_error: None,
+                    ..
+                }
+            ));
+            let (status, persistence_error) = finish_cancellation(&ledger, "run-1", true).await;
+            assert_eq!(status, "cancelled", "retrying {initial_status}");
+            assert!(persistence_error.is_none());
+            assert_eq!(persisted_status(&ledger.path), "cancelled");
+            assert_eq!(final_reason(&ledger, &view).await, "cancelled");
+        }
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_reports_undurable_cancellation_state() {
+        let (_temp, ledger, _view) = ledger_fixture("running", true).await;
+
+        let reservation = reserve_cancellation(&ledger, "connection-1", "run-1")
+            .await
+            .expect("reservation reports persistence failure");
+        match reservation {
+            CancelReservation::Pending {
+                persistence_error: Some(error),
+                ..
+            } => assert!(!error.is_empty()),
+            CancelReservation::Pending {
+                persistence_error: None,
+                ..
+            } => panic!("broken ledger path reported durable cancellation"),
+            CancelReservation::AlreadyFinished(_) => panic!("running task was already finished"),
+        }
+        {
+            let state = ledger.state.lock().await;
+            let run = state.runs.get("run-1").expect("run");
+            assert_eq!(run.view.status, "outcome_not_durable");
+            assert!(run
+                .view
+                .error
+                .as_deref()
+                .is_some_and(|error| { error.contains("latest task status could not be saved") }));
+        }
+
+        let (status, persistence_error) = finish_cancellation(&ledger, "run-1", true).await;
+        assert_eq!(status, "outcome_not_durable");
+        assert!(persistence_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_run_with_unconfirmed_revoke_surfaces_retryable_state() {
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        finish_failed_run(&ledger, "run-1", "synthetic runner failure".into(), false).await;
+
+        let state = ledger.state.lock().await;
+        let run = state.runs.get("run-1").expect("run");
+        assert_eq!(run.view.status, "cancellation_unconfirmed");
+        assert!(run.view.error.as_deref().is_some_and(|error| {
+            error.contains("synthetic runner failure")
+                && error.contains("Remote grant revocation is unconfirmed")
+                && error.contains("Retry cancellation")
+        }));
+        drop(state);
+        assert_eq!(persisted_status(&ledger.path), "cancellation_unconfirmed");
+        assert_eq!(
+            final_reason(&ledger, &view).await,
+            "cancellation_unconfirmed"
+        );
     }
 }

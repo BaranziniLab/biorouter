@@ -962,8 +962,9 @@ impl CrewManager {
     pub async fn agent_connections(&self, session: &str) -> Result<Value> {
         let s = self.scope(session).await?;
         let c = self.connection(&s.connection_id).await?;
+        self.validate_worker_scope(session, &s, &c).await?;
         Ok(
-            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
+            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
     pub async fn is_scoped(&self, session: &str) -> bool {
@@ -1117,7 +1118,7 @@ impl CrewManager {
                     connection_id: id.into(),
                     run_id: run_id.clone(),
                     channel_id: channel.into(),
-                    source_channels: sources,
+                    source_channels: sources.clone(),
                     epoch: c.policy_epoch,
                     provider_binding: provider_binding(provider),
                     public_provider: public,
@@ -1139,6 +1140,9 @@ impl CrewManager {
             context: serde_json::to_string(&json!({
                 "connection_id": id,
                 "destination_channel_id": channel,
+                "source_channel_ids": sources,
+                "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
+                "history_channel_id": channel,
                 "remote_files_enabled": !public && c.remote_root.is_some(),
                 "remote_path_base": "the granted SSH work directory; use relative paths such as crew-task.csv, never the local task working directory",
                 "history": context
@@ -1436,6 +1440,245 @@ mod tests {
             "ordinary MOIM lost local context: {moim}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_connections_exposes_only_live_authorized_context_channels() -> anyhow::Result<()>
+    {
+        let root = fixture_root("agent-connections-context-scope");
+        let connection = Connection {
+            id: "authorized-connection".into(),
+            node_id: None,
+            name: "authorized".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "workspace-authorized".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "cluster-authorized".into(),
+            mode: ClusterMode::Public,
+            policy_epoch: 7,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let mut other = connection.clone();
+        other.id = "other-connection".into();
+        other.name = "other".into();
+        let scope = Scope {
+            connection_id: connection.id.clone(),
+            run_id: "run-authorized".into(),
+            channel_id: "destination-channel".into(),
+            source_channels: vec![
+                "source-a".into(),
+                "source-b".into(),
+                "destination-channel".into(),
+            ],
+            epoch: connection.policy_epoch,
+            provider_binding: "public-test-provider".into(),
+            public_provider: true,
+            origin_restricted: false,
+            expired: false,
+        };
+        let manager = CrewManager::new(root.clone())?;
+        {
+            let mut registry = manager.registry.lock().await;
+            registry.connections = vec![connection.clone(), other];
+            registry.scopes.insert("live-session".into(), scope.clone());
+        }
+
+        let discovery = manager.agent_connections("live-session").await?;
+        let entry = &discovery["connections"][0];
+        assert_eq!(entry["id"], "authorized-connection");
+        assert_eq!(entry["destination_channel_id"], "destination-channel");
+        assert_eq!(
+            entry["source_channel_ids"],
+            json!(["source-a", "source-b", "destination-channel"])
+        );
+        assert!(entry["context_discovery"]
+            .as_str()
+            .is_some_and(|guidance| guidance.contains("messages.search")));
+        let serialized = serde_json::to_string(&discovery)?;
+        assert!(!serialized.contains("other-connection"));
+
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("live-session")
+            .unwrap()
+            .expired = true;
+        let expired = manager.agent_connections("live-session").await.unwrap_err();
+        assert!(expired
+            .to_string()
+            .contains("grant or connection policy changed"));
+
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("live-session")
+            .unwrap()
+            .expired = false;
+        manager.registry.lock().await.connections[0].policy_epoch += 1;
+        let changed = manager.agent_connections("live-session").await.unwrap_err();
+        assert!(changed
+            .to_string()
+            .contains("grant or connection policy changed"));
+
+        let missing = manager
+            .agent_connections("missing-session")
+            .await
+            .unwrap_err();
+        assert!(missing.to_string().contains("no human-approved Crew run"));
+
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admitted_context_keeps_history_on_destination_and_lists_selected_sources(
+    ) -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return Ok(());
+        }
+        let root = fixture_root("admission-context-discovery");
+        let profile_root = root.join("profile");
+        let fake_bin = root.join("bin");
+        fs::create_dir_all(&fake_bin)?;
+        let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let log = root.join("requests.log");
+        let ssh = format!(
+            r#"#!/bin/sh
+log='{}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  if printf '%s\n' "$line" | grep -q 'auth.challenge'; then
+    printf '{{"id":"%s","result":{{"workspace_id":"{workspace_id}","nonce":"nonce"}}}}\n' "$id"
+  elif printf '%s\n' "$line" | grep -q 'run.create'; then
+    printf '{{"id":"%s","result":{{"run":{{"id":"run-admitted"}},"credential":"run-credential"}}}}\n' "$id"
+  elif printf '%s\n' "$line" | grep -q 'messages.history'; then
+    printf '{{"id":"%s","result":{{"messages":[{{"channel_id":"destination-channel","id":"destination-message","text":"destination-only"}}]}}}}\n' "$id"
+  else
+    printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
+  fi
+done
+"#,
+            log.display()
+        );
+        let ssh_path = fake_bin.join("ssh");
+        fs::write(&ssh_path, ssh)?;
+        fs::set_permissions(&ssh_path, fs::Permissions::from_mode(0o700))?;
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", fake_bin.display());
+        let profile_string = profile_root.to_string_lossy().into_owned();
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile_string.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_string.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        );
+        let device_key = SigningKey::from_bytes(&[7; 32]);
+        let connection = Connection {
+            id: "admission-connection".into(),
+            node_id: None,
+            name: "admission fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace_id.into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "admission-cluster".into(),
+            mode: ClusterMode::Public,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: hex(&Sha256::digest(device_key.verifying_key().to_bytes())),
+            public_key: hex(&device_key.verifying_key().to_bytes()),
+        };
+        let manager = CrewManager::new(root.join("manager"))?;
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(connection.clone());
+        manager.write_credential(
+            &format!("device:{}", connection.id),
+            &hex(&device_key.to_bytes()),
+        )?;
+        let control = manager.control_path(&connection.id)?;
+        let transport = transport::Transport::connect(&connection, &control).await?;
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(connection.id.clone(), Arc::new(Mutex::new(transport)));
+
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )?;
+        let admission = manager
+            .begin_run(
+                "admission-session",
+                &connection.id,
+                "destination-channel",
+                vec!["source-a".into(), "source-b".into()],
+                &provider,
+            )
+            .await?;
+        let context: Value = serde_json::from_str(&admission.context)?;
+        assert_eq!(context["destination_channel_id"], "destination-channel");
+        assert_eq!(context["history_channel_id"], "destination-channel");
+        assert_eq!(
+            context["source_channel_ids"],
+            json!(["source-a", "source-b", "destination-channel"])
+        );
+        let history = context["history"]["messages"].as_array().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["channel_id"], "destination-channel");
+        assert_eq!(history[0]["text"], "destination-only");
+        let requests = fs::read_to_string(&log)?;
+        let history_request = requests
+            .lines()
+            .find(|line| line.contains("messages.history"))
+            .expect("admission should fetch destination history");
+        assert!(history_request.contains("destination-channel"));
+        assert!(!history_request.contains("source-a"));
+        assert!(!history_request.contains("source-b"));
+
+        let discovery = manager.agent_connections("admission-session").await?;
+        assert_eq!(
+            discovery["connections"][0]["source_channel_ids"],
+            json!(["source-a", "source-b", "destination-channel"])
+        );
+        assert!(discovery["connections"][0]["context_discovery"]
+            .as_str()
+            .unwrap()
+            .contains("messages.search"));
+
+        manager.disconnect(&connection.id).await?;
+        let _ = fs::remove_dir_all(root);
         Ok(())
     }
 

@@ -2275,6 +2275,25 @@ export default function ChatInput({
    */
   const noModelConfigured = hasNoModelConfigured(modelConfigStatus, currentProvider);
 
+  const hasCrewCommandExtras =
+    composerRefs.length > 0 || pastedImages.length > 0 || allDroppedFiles.length > 0;
+  const isCrewNavigationCommand = splitComposerText(displayValue).body.trim() === '/crew';
+  const openCrew = useCallback(() => {
+    if (hasCrewCommandExtras) {
+      toastWarning({
+        title: 'Draft kept',
+        msg: 'Remove the attached files, images, and reference chips before using /crew, or open Crew from the sidebar. Nothing was sent.',
+      });
+      return;
+    }
+    displayValueRef.current = '';
+    setView('crew', sessionId ? { resumeSessionId: sessionId } : undefined);
+    setDisplayValue('');
+    setValue('');
+    setHasUserTyped(false);
+    setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+  }, [hasCrewCommandExtras, sessionId, setView, setValue]);
+
   const canSubmit =
     !isLoading &&
     !noModelConfigured &&
@@ -2317,10 +2336,7 @@ export default function ChatInput({
       // user, correctly — the only thing in the box.
       const trimmedCandidate = splitComposerText(text ?? displayValue).body.trim();
       if (trimmedCandidate === '/crew') {
-        setView('crew', sessionId ? { resumeSessionId: sessionId } : undefined);
-        setDisplayValue('');
-        setValue('');
-        setHasUserTyped(false);
+        openCrew();
         return;
       }
       if (trimmedCandidate === DIVERGE_TRIGGER) {
@@ -2445,13 +2461,25 @@ export default function ChatInput({
       onFilesProcessed,
       pastedImages,
       sessionId,
-      setView,
+      openCrew,
       setLocalDroppedFiles,
       takeBack,
     ]
   );
 
   const handleKeyDown = (evt: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Navigation does not submit content, start a model, or grant access.
+    if (
+      evt.key === 'Enter' &&
+      !evt.shiftKey &&
+      !evt.altKey &&
+      !isComposing &&
+      isCrewNavigationCommand
+    ) {
+      evt.preventDefault();
+      openCrew();
+      return;
+    }
     // If mention popover is open, handle arrow keys and enter
     if (mentionPopover.isOpen && mentionPopoverRef.current) {
       if (evt.key === 'ArrowDown') {
@@ -2551,6 +2579,10 @@ export default function ChatInput({
 
   const onFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCrewNavigationCommand) {
+      openCrew();
+      return;
+    }
     if (isLoading && hasSubmittableContent) {
       handleInterruptionAndQueue();
       return;
@@ -2572,6 +2604,11 @@ export default function ChatInput({
     const afterMention = composerBody.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
     );
+
+    if (`${beforeMention}${itemText}${afterMention}`.trim() === '/crew') {
+      openCrew();
+      return;
+    }
 
     // A picked resource is a reference, not prose: it goes to the chip rail and
     // the `@query` it replaced just disappears. Detected by running the inserted
@@ -2615,13 +2652,14 @@ export default function ChatInput({
   const visionMismatch = !currentModelSupportsVision && hasPastedImageAttachments;
 
   const isSubmitButtonDisabled =
-    noModelConfigured ||
-    !hasSubmittableContent ||
-    isAnyImageLoading ||
-    isAnyDroppedFileLoading ||
-    chatState === ChatState.RestartingAgent ||
-    submissionBlocked ||
-    visionMismatch;
+    !isCrewNavigationCommand &&
+    (noModelConfigured ||
+      !hasSubmittableContent ||
+      isAnyImageLoading ||
+      isAnyDroppedFileLoading ||
+      chatState === ChatState.RestartingAgent ||
+      submissionBlocked ||
+      visionMismatch);
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {

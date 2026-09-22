@@ -795,6 +795,18 @@ export default function CrewView() {
                   </button>
                 </div>
               )}
+              {!grantSessionId && (
+                <div className="crew-invitation">
+                  <span>
+                    To give a personal conversation access to this channel, open it from Chat
+                    history and use /crew to review permissions. Start a new conversation with a
+                    non-sensitive first message before connecting it.
+                  </span>
+                  <button className="crew-button" onClick={() => navigate('/sessions')}>
+                    Open Chat history
+                  </button>
+                </div>
+              )}
               {grantSessionId && (
                 <div className="crew-invitation">
                   <span>Connect your current agent conversation to #{channel.name}.</span>
@@ -961,8 +973,11 @@ export default function CrewView() {
                         disabled={
                           busy ||
                           ![
+                            'starting',
                             'running',
                             'waiting_for_approval',
+                            'cancellation_pending',
+                            'cancellation_unconfirmed',
                             'interrupted',
                             'outcome_not_durable',
                           ].includes(run.status)
