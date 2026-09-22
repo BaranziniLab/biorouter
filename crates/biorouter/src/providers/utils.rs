@@ -619,8 +619,30 @@ impl RequestLog {
     where
         Payload: Serialize,
     {
-        let logs_dir = Paths::in_state_dir("logs");
+        Self::start_in(&Paths::in_state_dir("logs"), tier, model_config, payload)
+    }
 
+    /// [`start_with_tier`](Self::start_with_tier), writing under `logs_dir`.
+    ///
+    /// Every production log goes through `start_with_tier`, i.e. the state
+    /// dir as `Paths` says it is when the request starts. This seam exists for
+    /// the tests below that read a log back: they pass a directory of their
+    /// own instead of pointing `BIOROUTER_PATH_ROOT` at one, because the
+    /// provider tests in this binary open logs through `start` without the env
+    /// lock, and one that starts while such a test holds the variable writes
+    /// into that test's directory and rotates its `llm_request.0.jsonl` out
+    /// from under it. Forced (a probe opening one inside
+    /// `a_public_tier_log_still_writes_the_exchange`'s window), the old shape
+    /// failed 10 of 10 on `contents.contains("hello there")`.
+    fn start_in<Payload>(
+        logs_dir: &Path,
+        tier: ProviderTier,
+        model_config: &ModelConfig,
+        payload: &Payload,
+    ) -> Result<Self>
+    where
+        Payload: Serialize,
+    {
         let request_id = Uuid::new_v4();
         let temp_name = format!("llm_request.{request_id}.jsonl");
         let temp_path = logs_dir.join(PathBuf::from(temp_name));
@@ -1447,8 +1469,6 @@ mod tests {
     #[test]
     fn a_private_tier_log_writes_no_prompt_and_no_completion() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
 
         let model = ModelConfig::new("gpt-4o").unwrap();
         let prompt = json!({
@@ -1456,7 +1476,8 @@ mod tests {
             "messages": [{"role": "user", "content": "patient MRN 8675309 has glioblastoma"}],
         });
 
-        let mut log = RequestLog::start_with_tier(ProviderTier::Private, &model, &prompt).unwrap();
+        let mut log =
+            RequestLog::start_in(dir.path(), ProviderTier::Private, &model, &prompt).unwrap();
         assert_eq!(log.policy(), PayloadPolicy::MetadataOnly);
         log.write(&json!({"delta": "the biopsy shows"}), None)
             .unwrap();
@@ -1465,9 +1486,7 @@ mod tests {
         log.error("upstream 429").unwrap();
         log.finish().unwrap();
 
-        let contents =
-            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
-                .unwrap();
+        let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
 
         // Not one word of the exchange survived.
         assert!(!contents.contains("8675309"), "prompt leaked: {contents}");
@@ -1506,21 +1525,18 @@ mod tests {
     #[test]
     fn a_public_tier_log_still_writes_the_exchange() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
 
         let model = ModelConfig::new("gpt-4o").unwrap();
         let prompt = json!({"messages": [{"role": "user", "content": "hello there"}]});
 
-        let mut log = RequestLog::start_with_tier(ProviderTier::Public, &model, &prompt).unwrap();
+        let mut log =
+            RequestLog::start_in(dir.path(), ProviderTier::Public, &model, &prompt).unwrap();
         assert_eq!(log.policy(), PayloadPolicy::Full);
         log.write(&json!({"delta": "general kenobi"}), None)
             .unwrap();
         log.finish().unwrap();
 
-        let contents =
-            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
-                .unwrap();
+        let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
         assert!(contents.contains("hello there"));
         assert!(contents.contains("general kenobi"));
         assert!(contents.contains("\"provider_tier\":\"public\""));
@@ -1528,20 +1544,19 @@ mod tests {
 
     /// `start` is what all ~25 provider call sites reach, and none of them pass
     /// a tier. It must resolve to the safe end of the lattice.
+    ///
+    /// ⚠ The lines are TAKEN, not flushed: `start` resolves the ambient state
+    /// dir, which this test does not own, and every other test in the binary
+    /// can write to. They are the exact strings a flush writes (plus a
+    /// timing trailer), so asserting on them is asserting on the file's bytes
+    /// without reading a file anyone else can rotate.
     #[test]
     fn the_tierless_constructor_every_provider_uses_is_metadata_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
-
         let model = ModelConfig::new("gpt-4o").unwrap();
-        let log = RequestLog::start(&model, &json!({"secret": "do not ship me"})).unwrap();
+        let mut log = RequestLog::start(&model, &json!({"secret": "do not ship me"})).unwrap();
         assert_eq!(log.policy(), PayloadPolicy::MetadataOnly);
-        drop(log);
-
-        let contents =
-            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
-                .unwrap();
+        let contents = log.lines.take().expect("an open log").join("\n");
+        assert!(contents.contains("gpt-4o"), "not the header: {contents}");
         assert!(!contents.contains("do not ship me"), "leaked: {contents}");
     }
 
@@ -1550,14 +1565,12 @@ mod tests {
     /// them — a silent loss, so pin it here as well as at the reader.
     #[tokio::test]
     async fn every_log_header_records_the_session_it_belongs_to() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
         let model = ModelConfig::new("gpt-4o").unwrap();
 
+        // Taken, not flushed — see the tierless test above.
         let header = crate::session_context::with_session_id(Some("sess-42".into()), async {
-            let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
-            let log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
-            log.lines.as_ref().unwrap()[0].clone()
+            let mut log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
+            log.lines.take().unwrap()[0].clone()
         })
         .await;
 
@@ -1568,13 +1581,35 @@ mod tests {
     /// which the diagnostics filter reads as "cannot attribute, do not ship".
     #[test]
     fn a_log_opened_outside_a_session_records_a_null_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
-
         let model = ModelConfig::new("gpt-4o").unwrap();
-        let log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
-        assert!(log.lines.as_ref().unwrap()[0].contains("\"session_id\":null"));
+        // Taken, not flushed — see the tierless test above.
+        let mut log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
+        assert!(log.lines.take().unwrap()[0].contains("\"session_id\":null"));
+    }
+
+    /// `start` writes where the diagnostics bundle reads. The tests above pass
+    /// their own directory to `start_in`, so this is the one place that still
+    /// pins the production pairing — without it, either side could move and
+    /// every bundle would silently ship no request logs.
+    ///
+    /// Paths only, no file: the env lock is held at the sandbox root so both
+    /// resolutions see the same one, and the lines are taken so nothing is
+    /// flushed into a directory the whole binary shares.
+    #[test]
+    fn a_request_log_lands_where_the_diagnostics_bundle_reads() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let model = ModelConfig::new("gpt-4o").unwrap();
+        let mut log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
+        log.lines.take();
+        assert_eq!(
+            log.temp_path.parent(),
+            Some(crate::session::DiagnosticsSources::resolve().logs_dir()),
+            "RequestLog writes {} but the diagnostics bundle sweeps {}",
+            log.temp_path.display(),
+            crate::session::DiagnosticsSources::resolve()
+                .logs_dir()
+                .display()
+        );
     }
 
     #[test]

@@ -9,13 +9,40 @@ use anyhow::Result;
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{OnceCell, RwLock};
 use tracing::{debug, info};
 
 const DEFAULT_MAX_SESSION: usize = 100;
 
 static AGENT_MANAGER: OnceCell<Arc<AgentManager>> = OnceCell::const_new();
+
+/// The config root the process-global manager ([`AgentManager::instance`])
+/// seeds into: `Paths::config_dir()` — an environment read — taken the first
+/// time anything asks, and never again.
+///
+/// The config-side twin of `SessionManager`'s `SHARED_STORE_ROOT`. Caching the
+/// answer is not what protects a test binary; *when* the first ask happens is.
+/// Two test ctors make it happen before `main`, before any test can relocate
+/// `BIOROUTER_PATH_ROOT`: this crate's lib binary (`src/test_sandbox.rs`) and
+/// `biorouter-server`'s (its own `src/test_sandbox.rs`, which its integration
+/// binaries `#[path]`-include). Any other binary — `biorouter-cli`'s tests
+/// among them, whose ctor freezes the session store and `Config::global()` but
+/// not this — resolves it at whichever instant first calls `instance()`, and
+/// if a test is holding `BIOROUTER_PATH_ROOT` on a `TempDir` of its own then,
+/// the global manager seeds into that `TempDir` for the life of the process;
+/// see [`AgentManager::new`].
+///
+/// In the daemon nothing moves `BIOROUTER_PATH_ROOT`, so this is the answer
+/// `Paths::config_dir()` gives at `instance()`'s first call — the value `new`
+/// used to read for itself.
+///
+/// A `OnceLock` rather than a `LazyLock` only so that
+/// [`AgentManager::shared_config_root_if_resolved`] can look without resolving
+/// (see `SHARED_STORE_ROOT` for why a guard needs that); both resolve the
+/// same value at the same first call.
+static SHARED_CONFIG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// One pinned agent and how many concurrent runs are holding it.
 struct PinnedAgent {
@@ -41,29 +68,95 @@ pub struct AgentManager {
 }
 
 impl AgentManager {
+    /// Build a manager whose first-run seeding writes into `config_dir` — with
+    /// one known exception, the scheduler's copy of the Meditation workflow,
+    /// which follows the ambient data dir (last paragraph below).
+    ///
+    /// ⚠ **The config root is a PARAMETER, and no caller may leave it to the
+    /// environment.** Everything this constructor seeds — the Soul KB, the
+    /// built-in skills, the update-soul skill, the Meditation workflow — is
+    /// written under `config_dir`, and the seeding is *spawned* (BR-55), so it
+    /// lands at an arbitrary point after `new` returns. `BIOROUTER_PATH_ROOT`
+    /// is process-global and the lib test binary runs tests on parallel
+    /// threads, so any root resolved from it at an instant the caller does not
+    /// own belongs to whichever unrelated test holds `env_lock` then.
+    ///
+    /// That has now bitten twice, one layer apart:
+    ///
+    /// 1. The seeders resolved `Paths::config_dir()` themselves, inside the
+    ///    spawned task. `knowledge::conversation_ingest::tests::missing_or_\
+    ///    disabled_soul_skill_fails_before_raw_staging` — whose entire
+    ///    assertion is that no `update-soul` skill exists in the temp root it
+    ///    owns — was handed one by a manager it never built (CI
+    ///    `test (ubuntu-latest)`, PR #191 run 34304297956). The fix moved the
+    ///    read into this constructor and threaded it to the seeders.
+    /// 2. That left the read here, and here was still unowned for every caller
+    ///    that did not hold `env_lock` while constructing — the test module's
+    ///    own `create_test_manager` and a `subagent_handler` test.
+    ///    `first_run_seeding_lands_in_the_root_the_manager_was_built_with`
+    ///    failed with its own message, *"followed the ambient
+    ///    BIOROUTER_PATH_ROOT into /tmp/.tmpVnx6I7"* (CI `test (ubuntu-latest)`,
+    ///    rust.yml run 35480469489 attempt 1, job 105997233573, 2026-09-20,
+    ///    re-run green). Its own manager was innocent: while it held the
+    ///    environment on a root it had given nobody, a sibling test running on
+    ///    another thread (the log shows `deregistering_…`, `has_session_…`,
+    ///    `peek_agent_…` and `overlapping_…` finishing beside it, all built by
+    ///    `create_test_manager`) called `new`, read that root as "the root I
+    ///    was built with", and — correctly by its own contract — seeded an
+    ///    `update-soul` skill into it. Reproduced locally on the pre-fix tree
+    ///    (macOS, 16 cores): 1 of 256 runs of `execution::manager` under 8-way
+    ///    concurrent load, same message, same line; 0 of 60 without the load.
+    ///    That rarity is why a re-run went green, and why
+    ///    `create_test_manager_seeds_its_own_root_while_another_test_holds_\
+    ///    the_environment` now forces the interleaving instead of waiting for
+    ///    it.
+    ///
+    /// So `new` no longer reads the environment for its config root, and the
+    /// caller that owns the root passes it: a test passes a directory of its
+    /// own, and [`Self::instance`] passes [`Self::shared_config_root`]. That
+    /// closes the read for every manager built with an explicit root — every
+    /// `AgentManager::new` in this crate's tests. It does not make the global
+    /// manager environment-free:
+    ///
+    /// - `shared_config_root()` IS `Paths::config_dir()`, taken once at its
+    ///   first ask. Only a binary whose ctor asks before `main` (this crate's
+    ///   lib tests and `biorouter-server`'s; not `biorouter-cli`'s) is
+    ///   protected; elsewhere the first `instance()` still decides.
+    /// - `instance()` reads `Config::global()` for the session cap, and
+    ///   `get_or_create_agent` reads it for the mode and takes
+    ///   `PermissionManager::instance()` — two more one-shot cells resolved
+    ///   from `BIOROUTER_PATH_ROOT` at *their* first touch. The lib test ctor
+    ///   freezes `Config::global()` (so do the CLI's); nothing freezes
+    ///   `PERMISSION_MANAGER`, whose constructor reads and creates files.
+    /// - the spawned init's scheduler workflow copy, below.
+    ///
+    /// Neither occurrence was a production bug: outside tests a process builds
+    /// exactly one manager, through `instance()`, and nothing moves
+    /// `BIOROUTER_PATH_ROOT` while it runs, so the root read at construction
+    /// always was the root seeded. The second made a correct detector read as a flake, and a
+    /// detector that gets re-run green catches nothing.
+    ///
+    /// ⚠ Not the same as "the spawned init reads no environment". At least one
+    /// ambient read remains on it, and it is the scheduler's: `ensure_meditation_\
+    /// schedule` calls `add_scheduled_job(make_copy: true)`, which copies the
+    /// Meditation workflow into `get_default_scheduled_workflows_dir()` —
+    /// `Paths::data_dir()` at that instant. Measured 2026-09-21 with the
+    /// environment held on a root this manager was not given:
+    /// `data/scheduled_workflows/daily-meditation.yaml`, and the job's stored
+    /// `source`, both land in that root. In the daemon it is the same data dir
+    /// `schedule.json` lives in, so production is consistent; in a test binary
+    /// it is this family of unowned read, and
+    /// `first_run_seeding_lands_in_the_root_the_manager_was_built_with` does
+    /// not look at it. Closing it means giving the scheduler a store of its
+    /// own, which the owns-source containment check in `scheduler.rs` also
+    /// depends on.
     pub async fn new(
         session_manager: Arc<SessionManager>,
-        schedule_file_path: std::path::PathBuf,
+        schedule_file_path: PathBuf,
+        config_dir: PathBuf,
         max_sessions: Option<usize>,
     ) -> Result<Self> {
         let scheduler = Scheduler::new(schedule_file_path, session_manager.clone()).await?;
-
-        // ⚠ **Resolved ONCE, here, and threaded from here on.** Everything this
-        // constructor seeds — the Soul KB, the built-in skills, the update-soul
-        // skill, the Meditation workflow — used to call `Paths::config_dir()`
-        // for itself, at the moment it wrote. The seeding below is *spawned*
-        // (BR-55), so that moment is an arbitrary point after `new` has
-        // returned, and `BIOROUTER_PATH_ROOT` is process-global: in the lib test
-        // binary the root it read belonged to whichever unrelated test held
-        // `env_lock` by then. That is how
-        // `knowledge::conversation_ingest::tests::missing_or_disabled_soul_\
-        // skill_fails_before_raw_staging` — whose entire assertion is that no
-        // `update-soul` skill exists in the temp root it owns — was handed one
-        // by a manager it never built (CI `test (ubuntu-latest)`, PR #191 run
-        // 34304297956). A lock in the reader could not help; the writer never
-        // asked for one. A manager now writes only into the root it was
-        // constructed with.
-        let config_dir = Paths::config_dir();
 
         // Runs to completion before this constructor returns, so on the success
         // path no client ever observes a pre-OKF base or a store without its
@@ -158,13 +251,45 @@ impl AgentManager {
                 // and `sessions/sessions.db` are meant to be siblings, so taking
                 // the store's own answer is also the more honest statement.
                 let schedule_file_path = SessionManager::shared_store_root().join("schedule.json");
+                // The config root likewise comes from a once-resolved cell rather
+                // than a fresh `Paths::config_dir()`. The cell is itself that read,
+                // taken at its first ask, so it only protects a test binary whose
+                // ctor asks before `main` — see `SHARED_CONFIG_ROOT`.
+                let config_dir = Self::shared_config_root().to_path_buf();
                 let session_manager = Arc::new(SessionManager::instance());
-                let manager =
-                    Self::new(session_manager, schedule_file_path, Some(max_sessions)).await?;
+                let manager = Self::new(
+                    session_manager,
+                    schedule_file_path,
+                    config_dir,
+                    Some(max_sessions),
+                )
+                .await?;
                 Ok(Arc::new(manager))
             })
             .await
             .cloned()
+    }
+
+    /// The config root [`Self::instance`] seeds into ([`SHARED_CONFIG_ROOT`]).
+    ///
+    /// Reading it is what freezes it, which is why the `biorouter` lib and
+    /// `biorouter-server` test ctors call it before any test can relocate
+    /// `BIOROUTER_PATH_ROOT`. It is one environment read and a `PathBuf` — no
+    /// disk, no runtime — so it is safe before `main`. In production it is a
+    /// plain accessor.
+    pub fn shared_config_root() -> &'static Path {
+        SHARED_CONFIG_ROOT.get_or_init(Paths::config_dir)
+    }
+
+    /// [`Self::shared_config_root`] if something has already resolved it, and
+    /// `None` otherwise — **without** resolving it.
+    ///
+    /// For the test ctors' guards; production never calls it. A guard that
+    /// calls `shared_config_root()` to learn whether the ctor froze it resolves
+    /// it itself when the freeze is missing — while the ctor's sandbox is still
+    /// the ambient root — and passes. This read is how it tells the two apart.
+    pub fn shared_config_root_if_resolved() -> Option<&'static Path> {
+        SHARED_CONFIG_ROOT.get().map(PathBuf::as_path)
     }
 
     pub fn scheduler(&self) -> Arc<dyn SchedulerTrait> {
@@ -421,12 +546,36 @@ mod tests {
 
     use super::AgentManager;
 
+    /// A manager that seeds into `temp_dir` and nowhere else.
+    ///
+    /// ⚠ The config root is `temp_dir`'s own, never `Paths::config_dir()`. These
+    /// tests do not hold `env_lock`, so an ambient read here resolves to
+    /// whichever test is relocating `BIOROUTER_PATH_ROOT` at that instant — and
+    /// this manager's spawned first-run init then seeds an `update-soul` skill
+    /// into that test's root. That is exactly how
+    /// `first_run_seeding_lands_in_the_root_the_manager_was_built_with` failed
+    /// in CI run 35480469489 (see `AgentManager::new`).
     async fn create_test_manager(temp_dir: &TempDir) -> AgentManager {
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
         let schedule_path = temp_dir.path().join("schedule.json");
-        AgentManager::new(session_manager, schedule_path, Some(100))
-            .await
-            .unwrap()
+        AgentManager::new(
+            session_manager,
+            schedule_path,
+            temp_dir.path().join("config"),
+            Some(100),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Where a manager built on `root/config` puts the `update-soul` skill —
+    /// the file whose appearance in a root nobody gave out is the flake.
+    fn soul_skill(root: &std::path::Path) -> std::path::PathBuf {
+        root.join("config")
+            .join("skills")
+            .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
+            .join(crate::knowledge::soul::SOUL_SKILL_DIR)
+            .join("SKILL.md")
     }
 
     /// BR-55: `new` spawns `run_first_run_init` in the background, so a manager
@@ -1128,55 +1277,74 @@ mod tests {
     /// before_raw_staging` flake (CI `test (ubuntu-latest)`, PR #191 run
     /// 34304297956): `new` **spawns** `run_first_run_init`, which used to
     /// resolve `Paths::config_dir()` at seed time — inside a detached task,
-    /// long after `new` returned and after the constructing test had let go of
-    /// the environment. Whichever other test held `env_lock` at that moment
-    /// owned the directory the soul skill was written into, so a test whose
-    /// entire assertion is "no `update-soul` skill exists in MY root" was
+    /// long after `new` returned. Whichever other test held `env_lock` at that
+    /// moment owned the directory the soul skill was written into, so a test
+    /// whose entire assertion is "no `update-soul` skill exists in MY root" was
     /// handed one by a manager it never built. A lock in the reader cannot
     /// close that — the writer never asks for it (the family recorded in
     /// `model.rs`, "only serialises callers that *ask* for it").
     ///
+    /// ⚠ **This test is a detector for its OWN manager, and it runs in a
+    /// process of its own** (`test_sandbox::in_a_process_of_its_own`), so its
+    /// manager is the only one it can see. It holds the environment on
+    /// `ambient` — a root it hands to nobody — for its whole body, so if that
+    /// manager's `update-soul` seeding resolves its root from
+    /// `BIOROUTER_PATH_ROOT` instead of the root it was built with, the skill
+    /// lands in `ambient` and the first assertion fails. That skill is ALL it
+    /// looks at: the scheduler's workflow copy follows the ambient data dir into
+    /// `ambient/data/` unobserved (see [`AgentManager::new`]).
+    ///
+    /// It used to run in the shared test process, where it also caught any
+    /// SIBLING manager that seeded inside its window — by chance, which is how
+    /// it went red in CI run 35480469489 (2026-09-20) with its own manager
+    /// innocent: a sibling built by `create_test_manager` without the lock read
+    /// `ambient` as its construction root and seeded it. It moved out because
+    /// holding a foreign root for up to 30 s there handed that root to every
+    /// test that resolves `Paths` without the env lock, at least 466 of them.
+    /// The sibling case is now
+    /// `create_test_manager_seeds_its_own_root_while_another_test_holds_the_environment`'s,
+    /// forced every run instead of caught by chance.
+    ///
+    /// Holding `ambient` from BEFORE construction, rather than swapping to it
+    /// after `new` returns as this test first did, is strictly stronger now
+    /// that the root is a parameter: an ambient read in `new` itself (a caller
+    /// or a refactor that falls back to `Paths::config_dir()`) is caught as
+    /// surely as one in the spawned init. (While it still shared the process,
+    /// that also widened its window for a sibling constructing alongside it —
+    /// measured 2026-09-21 on macOS, with `create_test_manager` put back to an
+    /// ambient read: the old shape caught the sibling in 1 of 256 loaded runs
+    /// of this module, this one in 9 of 192.)
+    ///
     /// The runtime is deliberately `current_thread`: the spawned init can then
-    /// only run when this test yields, so the swap below is ordered rather than
-    /// raced, and the pre-fix tree fails this every time instead of sometimes.
+    /// only run when this test yields, so it provably runs inside the window
+    /// in which `ambient` is held, and a regression in THIS test's manager
+    /// fails every time rather than sometimes.
     #[tokio::test(flavor = "current_thread")]
     async fn first_run_seeding_lands_in_the_root_the_manager_was_built_with() {
-        fn soul_skill(root: &std::path::Path) -> std::path::PathBuf {
-            root.join("config")
-                .join("skills")
-                .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
-                .join(crate::knowledge::soul::SOUL_SKILL_DIR)
-                .join("SKILL.md")
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
         }
-
         let built_with = TempDir::new().unwrap();
-        let ambient_later = TempDir::new().unwrap();
+        let ambient = TempDir::new().unwrap();
         let sessions = TempDir::new().unwrap();
 
-        let manager = {
-            // The manager is constructed while THIS root is the ambient one …
-            let _env = env_lock::lock_env([(
-                "BIOROUTER_PATH_ROOT",
-                Some(built_with.path().to_str().unwrap()),
-            )]);
-            let session_manager = Arc::new(SessionManager::new(sessions.path().to_path_buf()));
-            AgentManager::new(
-                session_manager,
-                sessions.path().join("schedule.json"),
-                Some(4),
-            )
-            .await
-            .unwrap()
-            // … and `new` returns without ever yielding after the spawn, so on
-            // a current-thread runtime the init has provably not run yet.
-        };
+        // Some *other* root is the ambient one for the whole test. No manager's
+        // `update-soul` seeding may follow it there. (The scheduler's workflow
+        // copy still does, into `ambient/data/`; this test does not look.)
+        let _env = crate::test_sandbox::relocate_path_root(ambient.path().to_str().unwrap());
 
-        // … and some *other* test now owns the environment. Nothing this
-        // manager does may follow it there.
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(ambient_later.path().to_str().unwrap()),
-        )]);
+        let session_manager = Arc::new(SessionManager::new(sessions.path().to_path_buf()));
+        let manager = AgentManager::new(
+            session_manager,
+            sessions.path().join("schedule.json"),
+            built_with.path().join("config"),
+            Some(4),
+        )
+        .await
+        .unwrap();
+        // `new` returns without ever yielding after the spawn, so on a
+        // current-thread runtime the init has provably not run yet — it runs
+        // in the loop below, while `ambient` is still held.
 
         // The loop exits as soon as the seed lands in EITHER root — ~50 ms in
         // practice, in both the passing and the failing direction — so the
@@ -1184,20 +1352,21 @@ mod tests {
         // one. A fix for a flake must not itself be timing-sensitive on a
         // loaded runner: the first `ensure_soul_kb` initialises a git repo.
         for _ in 0..3_000 {
-            if soul_skill(built_with.path()).is_file() || soul_skill(ambient_later.path()).exists()
-            {
+            if soul_skill(built_with.path()).is_file() || soul_skill(ambient.path()).exists() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         assert!(
-            !soul_skill(ambient_later.path()).exists(),
-            "the first-run seeding followed the ambient BIOROUTER_PATH_ROOT into \
-             {} — a root this manager was never given. That is the flake: any \
-             test holding the environment when a background init fires is handed \
-             an `update-soul` skill it did not install.",
-            ambient_later.path().display()
+            !soul_skill(ambient.path()).exists(),
+            "a first-run seeding followed the ambient BIOROUTER_PATH_ROOT into \
+             {} — a root no manager was ever given. That is the flake: any test \
+             holding the environment when a background init fires is handed an \
+             `update-soul` skill it did not install. It need not be this test's \
+             manager — any `AgentManager::new` whose caller resolved its root \
+             from the environment while this test held it seeds here too.",
+            ambient.path().display()
         );
         assert!(
             soul_skill(built_with.path()).is_file(),
@@ -1206,5 +1375,71 @@ mod tests {
         );
 
         drop(manager);
+    }
+
+    /// The CI 35480469489 interleaving, forced rather than waited for: a
+    /// manager built by this module's own `create_test_manager` **while some
+    /// other test holds `BIOROUTER_PATH_ROOT`** must seed into its own temp
+    /// dir, and leave the holder's root untouched.
+    ///
+    /// `first_run_seeding_lands_in_the_root_the_manager_was_built_with` caught
+    /// this, but only when a sibling happened to construct inside its window
+    /// AND finish seeding before its own manager did — measured on this macOS
+    /// host at 1 run in 256 of `execution::manager` under 8-way concurrent
+    /// load, and 0 in 60 without load; CI hit it once in a full lib run on a
+    /// 4-vCPU runner. A regression caught that rarely reads as a flake and gets
+    /// re-run green, which is exactly what happened. Here the lock is simply
+    /// held across the helper's construction, so the helper's root is decided
+    /// while a foreign one is ambient every time — revert the helper to
+    /// `Paths::config_dir()` and this fails on every run.
+    ///
+    /// The wait is on a real signal: the Daily Meditation job is the LAST
+    /// thing `soul::install` registers, after the skill is written, so once the
+    /// scheduler lists it the seeding has finished wherever it was going to
+    /// land. A bounded poll rather than a sleep, so a loaded runner makes this
+    /// slower and never red.
+    #[tokio::test]
+    async fn create_test_manager_seeds_its_own_root_while_another_test_holds_the_environment() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let foreign = TempDir::new().unwrap();
+        let own = TempDir::new().unwrap();
+
+        // Stand-in for the detector above (or any relocating test): the
+        // environment names a root this manager is never given.
+        let _env = crate::test_sandbox::relocate_path_root(foreign.path().to_str().unwrap());
+
+        let manager = create_test_manager(&own).await;
+
+        let meditation = crate::knowledge::soul::MEDITATION_SCHEDULE_ID;
+        let mut registered = false;
+        for _ in 0..3_000 {
+            let jobs = manager.scheduler().list_scheduled_jobs().await;
+            if jobs.iter().any(|job| job.id == meditation) {
+                registered = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            registered,
+            "the first-run init never registered `{meditation}` within 30 s, so this \
+             test cannot say where the seeding went"
+        );
+
+        assert!(
+            !soul_skill(foreign.path()).exists(),
+            "a manager from `create_test_manager` seeded `update-soul` into {} — the \
+             root another test was holding, not the one it was handed. The helper \
+             resolved its config root from the environment; that is the CI \
+             35480469489 flake.",
+            foreign.path().display()
+        );
+        assert!(
+            soul_skill(own.path()).is_file(),
+            "the manager's own root {} never received its `update-soul` skill",
+            own.path().display()
+        );
     }
 }

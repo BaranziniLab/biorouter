@@ -25,6 +25,10 @@ pub mod workspace;
 /// tests never open the developer's real `sessions.db`.
 #[cfg(test)]
 mod test_sandbox;
+/// Registers inert tracing dispatchers before `main`, so a thread-local
+/// capture cannot miss its own events.
+#[cfg(test)]
+mod test_tracing;
 
 // Re-export commonly used items
 pub use openapi::*;

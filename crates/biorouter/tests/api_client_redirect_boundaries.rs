@@ -10,6 +10,29 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const SYNTHETIC_KEY: &str = "synthetic-redirect-test-key";
 
+/// The debug-log capture below installs a thread-local subscriber, and
+/// tracing caches each callsite's interest process-wide from whichever thread
+/// reaches it first. Every test here drives the same client, so without these
+/// dispatchers a sibling's request that is first to reach any event on that
+/// path, while the capture is the only subscriber registered, caches `never`
+/// for it — and a payload that event did carry would be dropped before the
+/// capture saw it: the "never logs the prompt" assertions would pass without
+/// looking. (Its positive control is a `debug!` only that test reaches, so it
+/// would not notice.) Mechanism and measurement: `biorouter_mcp::test_tracing`.
+#[ctor::ctor]
+fn register_inert_tracing_dispatchers_before_main() {
+    biorouter_mcp::test_tracing::register_inert_dispatchers();
+}
+
+#[test]
+fn the_inert_tracing_dispatchers_are_registered_before_main() {
+    assert!(
+        biorouter_mcp::test_tracing::inert_dispatchers_registered(),
+        "the ctor no longer registers the inert tracing dispatchers, so the debug-log \
+         captures in this binary can miss a transport event another test reached first"
+    );
+}
+
 fn isolated_environment(root: &Path) -> env_lock::EnvGuard<'static> {
     env_lock::lock_env([
         ("BIOROUTER_PATH_ROOT", Some(root.to_str().unwrap())),

@@ -2623,14 +2623,14 @@ mod privacy_disclosure_tests {
     #[tokio::test]
     #[serial]
     async fn the_acknowledgement_is_recorded_once_and_is_not_agent_writable() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         // Its own config root, or this test writes the acknowledgement into the
         // developer's real `~/.config/biorouter` and every later run of it
         // starts already-acknowledged.
         let dir = tempfile::TempDir::new().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(dir.path().to_str().expect("utf-8 temp path")),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(dir.path());
         install_test_user_action_key();
 
         // Once per install, not once per session: a dialog on every chat is
@@ -2656,14 +2656,14 @@ mod privacy_disclosure_tests {
     #[tokio::test]
     #[serial]
     async fn the_route_serves_the_one_copy_rather_than_a_second_one() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         // The renderer holds no English of its own; this is the wire it gets it
         // over. Compared against the constants themselves, so a second copy
         // written into this handler fails here rather than in a screenshot.
         let dir = tempfile::TempDir::new().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(dir.path().to_str().expect("utf-8 temp path")),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(dir.path());
         let served = get_privacy_disclosure().await.0;
         assert_eq!(served.long, biorouter::privacy::disclosure::COPY_LONG);
         assert_eq!(served.short, biorouter::privacy::disclosure::COPY_SHORT);

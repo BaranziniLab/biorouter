@@ -659,9 +659,11 @@ mod tests {
     /// out of the claim's own tree — proves the install dir was resolved.
     #[tokio::test]
     async fn configure_falls_back_to_a_parked_claim() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_str().unwrap().to_string();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root))]);
+        let _guard = crate::test_sandbox::relocate_path_root(tmp.path());
         // Prove the fixture is pointed at the temp tree before anything is
         // written or deleted: the real config root holds live extensions.
         for dir in [claim::claims_dir(), extensions_root()] {

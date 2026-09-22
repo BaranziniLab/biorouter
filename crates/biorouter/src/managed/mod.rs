@@ -46,7 +46,17 @@ impl ManagedPolicy {
     }
 
     fn load_inner() -> Self {
-        let Some(path) = crate::config::paths::Paths::managed_policy_path() else {
+        Self::load_from(crate::config::paths::Paths::managed_policy_path())
+    }
+
+    /// [`Self::load_inner`] for the file at `path` rather than at
+    /// `Paths::managed_policy_path()`. The tests below stage a policy in a
+    /// directory of their own and pass it here, instead of pointing
+    /// `BIOROUTER_PATH_ROOT` at it: every test in the binary that loads the
+    /// managed policy without the env lock would otherwise have read their
+    /// `deny: [developer__shell]` for as long as it was held.
+    fn load_from(path: Option<PathBuf>) -> Self {
+        let Some(path) = path else {
             return Self::empty();
         };
         if !path.exists() {
@@ -123,8 +133,14 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// Stage a managed file under a fresh `BIOROUTER_PATH_ROOT` and return the
-    /// temp dir (kept alive for the duration) plus a loaded policy.
+    /// Where `Paths::managed_policy_path()` puts the file under a root: the
+    /// shape `load_from` is handed below.
+    fn managed_file_under(root: &std::path::Path) -> PathBuf {
+        root.join("managed").join("managed-policy.yaml")
+    }
+
+    /// Stage a managed file in a fresh directory and return it (kept alive for
+    /// the duration) plus the policy loaded from it.
     fn load_with_managed_yaml(yaml: &str) -> (tempfile::TempDir, ManagedPolicy) {
         let dir = tempfile::tempdir().unwrap();
         let managed_dir = dir.path().join("managed");
@@ -134,18 +150,28 @@ mod tests {
         std::fs::write(&file, yaml).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let _guard =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(dir.path().to_str().unwrap()))]);
-        let policy = ManagedPolicy::load_inner();
+        let policy = ManagedPolicy::load_from(Some(managed_file_under(dir.path())));
         (dir, policy)
+    }
+
+    /// Production reads the file `Paths::managed_policy_path()` names, and
+    /// under the sandbox that is the path the tests above stage theirs at.
+    /// Paths only; nothing is written.
+    #[test]
+    fn the_staged_path_is_the_one_production_reads() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        assert_eq!(
+            crate::config::paths::Paths::managed_policy_path(),
+            Some(managed_file_under(std::path::Path::new(
+                crate::test_sandbox::sandbox_path_root()
+            )))
+        );
     }
 
     #[test]
     fn absent_file_is_inert() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(dir.path().to_str().unwrap()))]);
-        let policy = ManagedPolicy::load_inner();
+        let policy = ManagedPolicy::load_from(Some(managed_file_under(dir.path())));
         assert!(!policy.is_active());
         assert!(policy.permission_for("developer__shell").is_none());
         assert!(policy.project_hooks_override().is_none());
@@ -176,9 +202,7 @@ mod tests {
         // World-writable: an attacker could rewrite policy, so it must be ignored.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
 
-        let _guard =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(dir.path().to_str().unwrap()))]);
-        let policy = ManagedPolicy::load_inner();
+        let policy = ManagedPolicy::load_from(Some(managed_file_under(dir.path())));
         assert!(!policy.is_active(), "untrusted file must be inert");
         assert!(policy.permission_for("developer__shell").is_none());
     }

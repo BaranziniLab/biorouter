@@ -346,13 +346,13 @@ mod tests {
         use biorouter::catalog::{CatalogChangeReason, CatalogEntryChange, CatalogEvents};
         use std::io::Write;
 
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let sandbox = tempfile::tempdir().unwrap();
         // Pins the install root to this directory for the whole test: the
         // routes resolve it from `BIOROUTER_PATH_ROOT` on every call.
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(sandbox.path().to_string_lossy().into_owned()),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(sandbox.path());
 
         let name = "http-install-publish-probe";
         let archive = sandbox.path().join(format!("{name}.zip"));

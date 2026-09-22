@@ -190,7 +190,18 @@ fn job(id: &str, source: &Path, creator: Option<&str>) -> ScheduledJob {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_it() {
-    std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
+    // ⚠ This used to be `std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true")`,
+    // and that did nothing: `Config::global()` picks its secret store when it is
+    // built, and `test_sandbox`'s ctor builds it before `main`. The store is
+    // whatever the environment said then. So the guarantee is checked, not
+    // assumed, before `AppState::new()` or any provider below reads a secret: a
+    // run whose config would read the OS keychain stops here instead.
+    assert!(
+        test_sandbox::global_config_reads_secrets_from_a_file(),
+        "run this binary with BIOROUTER_DISABLE_KEYRING=true: its Config::global() was \
+         frozen before main with the OS keychain as its secret store, and the providers \
+         this test builds would read their secrets from it"
+    );
     // PHASE A is an install with no configured model at all, so a schedule that
     // names no chat runs public work.
     std::env::remove_var("BIOROUTER_PROVIDER");

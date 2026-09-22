@@ -9741,11 +9741,17 @@ mod tests {
         /// deterministic: without it the fallback would bind whatever the
         /// developer has configured, at an unknown tier, and silently decide the
         /// assertion.
+        ///
+        /// ⚠ It moves `BIOROUTER_PATH_ROOT`, so only a test running in a process
+        /// of its own may call it (`crate::test_sandbox::in_a_process_of_its_own`),
+        /// and it panics anywhere else: every `AppState::new()` in the shared
+        /// process resolves its knowledge root and skill catalog from that
+        /// variable without the env lock.
         pub(super) fn lock_env_for(
             root: &std::path::Path,
             host: &str,
         ) -> env_lock::EnvGuard<'static> {
-            env_lock::lock_env(base_env(root, host))
+            crate::test_sandbox::relocate_path_root_and(root, base_env(host))
         }
 
         /// `lock_env_for` plus a relocated home directory.
@@ -9770,24 +9776,18 @@ mod tests {
         /// Setting both on every platform is deliberate: the unused one is inert,
         /// and a per-platform `cfg` would leave the other path untested on the
         /// machine most people develop on.
+        ///
+        /// In a process of its own only, like [`lock_env_for`].
         pub(super) fn lock_env_for_home(
             root: &std::path::Path,
             home: &std::path::Path,
             host: &str,
         ) -> env_lock::EnvGuard<'static> {
-            let mut vars = base_env(root, host);
-            let home = home.to_string_lossy().into_owned();
-            vars.push(("HOME", Some(home.clone())));
-            vars.push(("USERPROFILE", Some(home)));
-            env_lock::lock_env(vars)
+            crate::test_sandbox::relocate_path_root_and_home(root, home, base_env(host))
         }
 
-        fn base_env(root: &std::path::Path, host: &str) -> Vec<(&'static str, Option<String>)> {
+        fn base_env(host: &str) -> Vec<(&'static str, Option<String>)> {
             vec![
-                (
-                    "BIOROUTER_PATH_ROOT",
-                    Some(root.to_string_lossy().into_owned()),
-                ),
                 ("OLLAMA_HOST", Some(host.to_string())),
                 ("OLLAMA_TIMEOUT", Some("1".to_string())),
                 ("BIOROUTER_LEAD_MODEL", None),
@@ -9921,6 +9921,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn the_app_capability_report_follows_the_manifests_provider_not_the_global_one() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // This test used to warm the process-global `SessionManager` here,
             // before the env lock relocates the path root, so that it could not
             // be the one that creates the session database inside a `TempDir`
@@ -10008,6 +10011,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_public_worker_profile_is_not_granted_a_private_base() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // `configure_worker_agent` grants `cfg.knowledge_base` with no report
             // between it and `configure_worker_provider`, and
             // `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))`
@@ -10399,6 +10405,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn an_apps_skill_grant_is_bounded_to_search_and_load() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // This test used to warm the process-global `SessionManager` here,
             // before the env lock relocates the path root, so that it could not
             // be the one that creates the session database inside a `TempDir`
@@ -10497,6 +10506,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_worker_profile_naming_uninstalled_skills_is_not_armed() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let _warm = crate::state::AppState::new().await.unwrap();
 
             let world = skill_world(&["app-skill"]);
@@ -10776,6 +10788,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_compute_block_with_the_default_sandbox_is_reported_not_swallowed() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let manifest = manifest(
                 "computedefault",
                 serde_json::json!({ "compute": { "timeout_s": 120 } }),
@@ -10811,6 +10826,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_data_block_resolving_no_sources_is_reported_not_swallowed() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let manifest = manifest(
                 "datanosources",
                 serde_json::json!({
@@ -10841,6 +10859,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn an_armable_compute_block_is_not_reported_as_withheld() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let manifest = manifest(
                 "computelocal",
                 serde_json::json!({ "compute": { "sandbox": "local", "timeout_s": 5 } }),
@@ -11526,6 +11547,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn configure_main_provider_cannot_raise_a_live_app_sessions_capability() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // This test used to warm the process-global `SessionManager` here,
             // before the env lock relocates the path root, so that it could not
             // be the one that creates the session database inside a `TempDir`
@@ -11586,6 +11610,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn configure_worker_provider_cannot_raise_a_live_worker_sessions_capability() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let _warm = crate::state::AppState::new().await.unwrap();
             let dir = tempfile::TempDir::new().unwrap();
             let _env = lock_env_for(dir.path(), PRIVATE_HOST);
@@ -11656,6 +11683,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_model_select_frame_cannot_raise_a_live_app_sessions_capability() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // (1) The needle is split so it does not appear contiguously in this
             // test's own text; otherwise deleting the real arm would leave
             // `split_once` matching here instead.
@@ -11739,6 +11769,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn an_app_session_created_on_a_private_model_really_gets_it() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let _warm = crate::state::AppState::new().await.unwrap();
             let dir = tempfile::TempDir::new().unwrap();
             let _env = lock_env_for(dir.path(), PRIVATE_HOST);
@@ -11803,6 +11836,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_restart_reads_the_rows_capability_off_the_instance_not_the_name() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (host, created_private) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
                 let _warm = crate::state::AppState::new().await.unwrap();
                 let dir = tempfile::TempDir::new().unwrap();
@@ -11887,6 +11923,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_session_row_that_cannot_be_read_at_all_refuses_the_raise() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             let _warm = crate::state::AppState::new().await.unwrap();
             let dir = tempfile::TempDir::new().unwrap();
             let _env = lock_env_for(dir.path(), PRIVATE_HOST);
@@ -12045,6 +12084,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_refused_main_bind_reaches_the_page_as_a_model_error_frame() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
                 let _warm = crate::state::AppState::new().await.unwrap();
                 let dir = tempfile::TempDir::new().unwrap();
@@ -12100,6 +12142,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_refused_worker_bind_reaches_the_page_stamped_with_the_profile() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
                 let _warm = crate::state::AppState::new().await.unwrap();
                 let dir = tempfile::TempDir::new().unwrap();
@@ -12166,6 +12211,9 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn a_manifest_route_pin_cannot_raise_a_live_app_session_and_says_so() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
                 let _warm = crate::state::AppState::new().await.unwrap();
                 let dir = tempfile::TempDir::new().unwrap();

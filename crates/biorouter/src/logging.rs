@@ -1,7 +1,7 @@
 use crate::config::paths::Paths;
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Returns the directory where log files should be stored for a specific component.
@@ -12,9 +12,18 @@ use std::time::{Duration, SystemTime};
 /// * `component` - The component name (e.g., "cli", "server", "debug", "llm")
 /// * `use_date_subdir` - Whether to create a date-based subdirectory
 pub fn prepare_log_directory(component: &str, use_date_subdir: bool) -> Result<PathBuf> {
-    let base_log_dir = Paths::in_state_dir("logs");
+    prepare_log_directory_in(&Paths::in_state_dir("logs"), component, use_date_subdir)
+}
 
-    if let Err(e) = cleanup_old_logs(component) {
+/// [`prepare_log_directory`] under `base_log_dir` instead of the state dir's
+/// `logs/`. Only the tests below call it: they pass a directory of their own
+/// rather than moving `BIOROUTER_PATH_ROOT` (see `test_sandbox::in_a_process_of_its_own`).
+fn prepare_log_directory_in(
+    base_log_dir: &Path,
+    component: &str,
+    use_date_subdir: bool,
+) -> Result<PathBuf> {
+    if let Err(e) = cleanup_old_logs_in(base_log_dir, component) {
         tracing::warn!("Log cleanup failed: {}", e);
     }
 
@@ -33,7 +42,10 @@ pub fn prepare_log_directory(component: &str, use_date_subdir: bool) -> Result<P
 }
 
 pub fn cleanup_old_logs(component: &str) -> Result<()> {
-    let base_log_dir = Paths::in_state_dir("logs");
+    cleanup_old_logs_in(&Paths::in_state_dir("logs"), component)
+}
+
+fn cleanup_old_logs_in(base_log_dir: &Path, component: &str) -> Result<()> {
     let component_dir = base_log_dir.join(component);
 
     if !component_dir.exists() {
@@ -66,33 +78,48 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Pin the state dir to a scratch root for the rest of the enclosing test.
+    /// A `logs/` directory of the test's own, handed to
+    /// `prepare_log_directory_in`.
     ///
-    /// `prepare_log_directory` resolves `BIOROUTER_PATH_ROOT` on every call, and
-    /// that variable is process-global. Other tests in this binary point it at a
-    /// `TempDir` of their own (`skills_extension`, `managed`, `diagnostics`), so
-    /// a logging test running concurrently used to resolve into *their* scratch
-    /// root and fail with `Failed for component: server` the moment that
-    /// `TempDir` was dropped out from under it. Taking the same lock those tests
-    /// take removes the race; pinning our own root also stops these tests
-    /// writing into the developer's real log directory.
-    ///
-    /// This is a macro rather than a function because `env_lock`'s guard borrows
-    /// the root path, so it cannot outlive a helper that owns the `TempDir`.
-    macro_rules! scoped_state_dir {
-        () => {
-            let temp = TempDir::new().unwrap();
-            let root = temp.path().to_string_lossy().into_owned();
-            let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
-        };
+    /// These tests used to point `BIOROUTER_PATH_ROOT` at a `TempDir` under the
+    /// env lock and call `prepare_log_directory`. The lock ordered them against
+    /// the other tests that took it and against nothing else, and the (at least)
+    /// 466 tests here that resolve `Paths` without it could take that `TempDir`
+    /// for their state, config and data dirs while it was held, and find it
+    /// deleted afterwards (see `test_sandbox::in_a_process_of_its_own`). A directory passed
+    /// in is never anyone's ambient root. The production resolution is pinned
+    /// once, by `component_logs_land_where_the_diagnostics_bundle_reads`.
+    fn scratch_logs() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let logs = temp.path().join("state").join("logs");
+        (temp, logs)
+    }
+
+    /// `prepare_log_directory` puts a component's logs where the diagnostics
+    /// bundle sweeps them (`logs/cli/`, `logs/server/`). Paths only, under the
+    /// sandbox pin; the directory it creates is inside the sandbox.
+    #[test]
+    fn component_logs_land_where_the_diagnostics_bundle_reads() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let log_dir = prepare_log_directory("cli", true).unwrap();
+        let swept = crate::session::DiagnosticsSources::resolve()
+            .logs_dir()
+            .join("cli");
+        assert_eq!(
+            log_dir.parent(),
+            Some(swept.as_path()),
+            "the CLI logs into {} but the diagnostics bundle sweeps {}",
+            log_dir.display(),
+            swept.display()
+        );
     }
 
     #[test]
     fn test_get_log_directory_basic_functionality() {
-        scoped_state_dir!();
+        let (_temp, logs) = scratch_logs();
 
         // Test basic directory creation without date subdirectory
-        let result = prepare_log_directory("cli", false);
+        let result = prepare_log_directory_in(&logs, "cli", false);
         assert!(result.is_ok());
 
         let log_dir = result.unwrap();
@@ -113,10 +140,10 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_with_date_subdir() {
-        scoped_state_dir!();
+        let (_temp, logs) = scratch_logs();
 
         // Test date-based subdirectory creation
-        let result = prepare_log_directory("server", true);
+        let result = prepare_log_directory_in(&logs, "server", true);
         assert!(result.is_ok());
 
         let log_dir = result.unwrap();
@@ -144,16 +171,16 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_idempotent() {
-        scoped_state_dir!();
+        let (_temp, logs) = scratch_logs();
 
         // Test that multiple calls return the same result and don't fail
         let component = "debug";
 
-        let result1 = prepare_log_directory(component, false);
+        let result1 = prepare_log_directory_in(&logs, component, false);
         assert!(result1.is_ok());
         let log_dir1 = result1.unwrap();
 
-        let result2 = prepare_log_directory(component, false);
+        let result2 = prepare_log_directory_in(&logs, component, false);
         assert!(result2.is_ok());
         let log_dir2 = result2.unwrap();
 
@@ -163,11 +190,11 @@ mod tests {
         assert!(log_dir2.exists());
 
         // Test same behavior with date subdirectories
-        let result3 = prepare_log_directory(component, true);
+        let result3 = prepare_log_directory_in(&logs, component, true);
         assert!(result3.is_ok());
         let log_dir3 = result3.unwrap();
 
-        let result4 = prepare_log_directory(component, true);
+        let result4 = prepare_log_directory_in(&logs, component, true);
         assert!(result4.is_ok());
         let log_dir4 = result4.unwrap();
 
@@ -177,14 +204,14 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_different_components() {
-        scoped_state_dir!();
+        let (_temp, logs) = scratch_logs();
 
         // Test that different components create different directories
         let components = ["cli", "server", "debug"];
         let mut created_dirs = Vec::new();
 
         for component in &components {
-            let result = prepare_log_directory(component, false);
+            let result = prepare_log_directory_in(&logs, component, false);
             assert!(result.is_ok(), "Failed for component: {}", component);
 
             let log_dir = result.unwrap();
