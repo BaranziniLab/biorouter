@@ -448,6 +448,13 @@ prompt: |
   2. Exercise contract, consent, non-pooling, ownership, cancellation and bridge/nested-call
      regression tests. Require removed tool names to fail rather than forward. A disabled
      capability or restricted roster must remain restricted after reload.
+     Verify ordinary replies never show a Copilot banner; only this conversation's actual
+     Copilot request may show one. Dismiss a completed banner, switch conversations and
+     return: it must stay dismissed until a new Copilot request. Dismissing an active banner
+     must retain Stop and must not revoke or grant control. OS checks must distinguish
+     denied permissions from a failed runtime probe. Settings actions target only the local
+     backend; remote sessions name the backend computer and require setup there. Opening
+     System Settings must never automatically grant an OS permission or task consent.
   3. Native GUI fixture: use only the exact disposable app/window {{ computer_use_fixture }}.
      If none is supplied, record GUI checks NOT OBSERVABLE and leave the acceptance gate open.
      Before any desktop observation, obtain the host's per-chat task grant for this model and

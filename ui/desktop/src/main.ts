@@ -72,6 +72,7 @@ import {
   type GhostSpec,
   type GhostWindowHandle,
 } from './dragGhostWindow';
+import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
 import { expandTilde, reinterpretTildeAsAbsolute } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import {
@@ -1266,6 +1267,7 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
+const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
 
@@ -1527,6 +1529,7 @@ const createChat = async (
         JSON.stringify({
           ...appConfig,
           BIOROUTER_API_HOST: baseUrl,
+          BIOROUTER_LOCAL_BACKEND: !settings.externalBiorouterd?.enabled,
           BIOROUTER_WORKING_DIR: workingDir,
           REQUEST_DIR: dir,
           BIOROUTER_BASE_URL_SHARE: baseUrlShare,
@@ -1540,6 +1543,8 @@ const createChat = async (
       partition: RENDERER_PARTITION,
     },
   });
+
+  copilotPermissionSettings.bindWindow(mainWindow, Boolean(settings.externalBiorouterd?.enabled));
 
   if (!app.isPackaged) {
     installExtension(REACT_DEVELOPER_TOOLS, {
@@ -2882,6 +2887,15 @@ ipcMain.handle('get-dock-icon-state', () => {
     console.error('Error getting dock icon state:', error);
     return true;
   }
+});
+
+ipcMain.handle('open-copilot-permission-settings', async (event, permission: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (!owner || owner.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error('Open permission settings from the Biorouter desktop window.');
+  }
+  const url = copilotPermissionSettings.urlForWindow(owner, process.platform, permission);
+  await shell.openExternal(url);
 });
 
 // Handle opening system notifications preferences

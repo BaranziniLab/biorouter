@@ -2548,6 +2548,7 @@ mod tests {
     #[test]
     fn computer_use_prompt_requires_host_request_and_new_challenge() {
         let mut status = biorouter::security::computer_use::ComputerUseStatus {
+            activity_id: None,
             runtime: serde_json::json!({}),
             enabled: true,
             session_id: "chat".into(),

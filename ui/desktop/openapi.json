@@ -7204,6 +7204,11 @@
           "requested"
         ],
         "properties": {
+          "activity_id": {
+            "type": "string",
+            "description": "The most recent actual Copilot request, independent of routine task cleanup.",
+            "nullable": true
+          },
           "challenge_id": {
             "type": "string"
           },

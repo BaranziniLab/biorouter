@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Monitor } from '../icons/app-icons';
+import { ChevronDown, ChevronUp, Monitor, X } from '../icons/app-icons';
 import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
@@ -25,6 +25,17 @@ import {
 const PANEL_SHELL =
   'mx-3 mb-2 rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-supporting';
 
+const dismissedActivities = new Map<string, string>();
+
+function rememberDismissal(sessionId: string, activity: string) {
+  dismissedActivities.delete(sessionId);
+  dismissedActivities.set(sessionId, activity);
+  if (dismissedActivities.size > 100) {
+    const oldest = dismissedActivities.keys().next().value;
+    if (oldest !== undefined) dismissedActivities.delete(oldest);
+  }
+}
+
 function requestError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -42,6 +53,10 @@ export function CopilotControl({ sessionId }: { sessionId: string }) {
 function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   const [status, setStatus] = useState<CopilotStatus>();
   const [expanded, setExpanded] = useState(false);
+  const [dismissedActivity, setDismissedActivity] = useState(() =>
+    dismissedActivities.get(sessionId)
+  );
+  const observedActivity = useRef(false);
   const [approvalKey, setApprovalKey] = useState('');
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -75,6 +90,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
         !mutation.current &&
         next.session_id === sessionId
       ) {
+        if (next.requested || next.state === 'active') observedActivity.current = true;
         setStatus(next);
         setLoadError('');
       }
@@ -158,15 +174,16 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   // one, and certainly not an error one. This sits ABOVE the `!status` branch
   // because `status` stays undefined when the very first read is refused.
   if (notApplicable) return null;
-  if (!status)
-    return loadError ? (
-      <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-muted`}>
-        <p role="alert">Biorouter Copilot status unavailable: {loadError}</p>
-        <Button size="sm" variant="ghost" onClick={() => void refresh()}>
-          Retry
-        </Button>
-      </section>
-    ) : null;
+  if (!status) return null;
+  // Older backends mark every completed reply stopped. Only an observed request
+  // or the new session-owned activity identifier proves this chat used Copilot.
+  if (
+    !status.activity_id &&
+    !status.requested &&
+    status.state !== 'active' &&
+    !observedActivity.current
+  )
+    return null;
   if (status.enabled === false && status.state !== 'active') return null;
   const active = status.state === 'active';
   const busy = status.state === 'busy';
@@ -178,6 +195,41 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   // inside it. Offering a control that cannot close it would be a lie, so the
   // disclosure is withheld for exactly that state and returns once decided.
   const collapsible = !requested;
+  const activityId = status.activity_id ?? (active || requested ? status.challenge_id : 'observed');
+  const activity = `${activityId}:${status.state}:${status.requested}`;
+  const dismissed = dismissedActivity === activity;
+  if (dismissed) {
+    if (!active && !requested) return null;
+    return (
+      <div className="mx-3 mb-2 flex flex-wrap items-center gap-2 text-supporting">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            dismissedActivities.delete(sessionId);
+            setDismissedActivity(undefined);
+          }}
+        >
+          {active ? 'Show active Biorouter Copilot' : 'Show Biorouter Copilot request'}
+        </Button>
+        {active && (
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={sending}
+            onClick={() => void decide('revoke')}
+          >
+            {sending ? 'Stopping…' : 'Stop'}
+          </Button>
+        )}
+        {error && (
+          <p role="alert" className="text-text-danger">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-default`}>
@@ -231,6 +283,23 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
             {sending ? 'Stopping…' : 'Stop'}
           </Button>
         )}
+        <Button
+          size="sm"
+          shape="round"
+          variant="ghost"
+          aria-label="Dismiss Biorouter Copilot banner"
+          title={
+            active
+              ? 'Hide details; control remains active and Stop stays available'
+              : 'Dismiss banner'
+          }
+          onClick={() => {
+            rememberDismissal(sessionId, activity);
+            setDismissedActivity(activity);
+          }}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </Button>
       </div>
       <div id={detailsId} hidden={!detailsVisible} className="mt-2 space-y-2">
         <p className="break-words">
