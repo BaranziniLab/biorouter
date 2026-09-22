@@ -1,3 +1,4 @@
+import { deleteConversation } from '../../utils/deleteConversation';
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
 import {
   MessageSquareText,
@@ -38,14 +39,7 @@ import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
-import {
-  deleteSession,
-  exportSession,
-  importSession,
-  Session,
-  ExtensionConfig,
-  ExtensionData,
-} from '../../api';
+import { exportSession, importSession, Session, ExtensionConfig, ExtensionData } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
@@ -982,24 +976,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     setSessionToDelete(null);
 
     try {
-      // With the user's proof: deleting a private chat is refused, exactly as
-      // reading it is, to a caller without it (issue #56, QA 2026-09-10 F0).
-      await deleteSession({
-        path: { session_id: sessionToDeleteId },
-        headers: await userActionHeaders(),
-        throwOnError: true,
-      });
+      await deleteConversation(sessionToDeleteId);
       const removeDeletedSession = (currentSessions: Session[]) =>
         currentSessions.filter((session) => session.id !== sessionToDeleteId);
-      updateCachedSessionList(removeDeletedSession);
       setSessions(removeDeletedSession);
-      // M11. The two lines above fix THIS view and the cache behind it; every
-      // other list surface learns of membership changes over the list channel,
-      // and delete was the one mutation that never announced itself there —
-      // which is why a deleted chat sat in the sidebar Recents until a renderer
-      // reload. The id is carried because Recents merges its re-reads and
-      // cannot discover a removal by refetching; see `SessionListChange`.
-      notifySessionListChanged({ removed: sessionToDeleteId });
       toastSuccess({
         title: 'Chat deleted',
         msg: `"${sessionName}" was removed from chat history.`,

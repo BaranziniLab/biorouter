@@ -1,3 +1,4 @@
+import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
 import type {
   MenuItemConstructorOptions,
   OpenDialogOptions,
@@ -8,6 +9,7 @@ import {
   app,
   App,
   BrowserWindow,
+  clipboard,
   dialog,
   globalShortcut,
   ipcMain,
@@ -2595,6 +2597,32 @@ ipcMain.on('react-ready', (event) => {
   }
 
   log.info('React ready - window is prepared for deep links');
+});
+
+ipcMain.handle('copy-conversation-id', (event, id: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  writeConversationId(
+    {
+      isAppWindow:
+        !!win && !win.isDestroyed() && windowMap.has(win.id) && win.webContents === event.sender,
+      isMainFrame: event.senderFrame === event.sender.mainFrame,
+    },
+    id,
+    (text) => clipboard.writeText(text)
+  );
+});
+
+ipcMain.handle('copy-selected-text', (event, id: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  writeSelectedText(
+    {
+      isAppWindow:
+        !!win && !win.isDestroyed() && windowMap.has(win.id) && win.webContents === event.sender,
+      isMainFrame: event.senderFrame === event.sender.mainFrame,
+    },
+    id,
+    (text) => clipboard.writeText(text)
+  );
 });
 
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {

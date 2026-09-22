@@ -155,6 +155,11 @@ instructions: |
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
   - Change an already-open report and app; verify same-tab updates and preserved user edits
   - Check absolute and later shorthand report links against the actual session directory
+  - In a disposable chat, select response text and choose Ask about it or Quote it; verify a removable source-labelled quotation appears without sending and preserves the draft and resource chips
+  - Repeat with Word, Markdown and text previews, and the quote button beside preview capture; preserve exact newlines and punctuation
+  - Verify quoted command-like source text (/ext:developer, /skill(example), kb_id:fixture) never activates resources
+  - In a disposable Recents row, verify Copy conversation ID against the exact fixture ID; cancel permanent deletion once, then confirm deletion and verify history and open tabs update
+  - Record native desktop evidence; do not mark unavailable GUI checks as passed
   {% if cleanup_after == "true" %}
   - Delete only the preview app created by this run during cleanup
   {% endif %}

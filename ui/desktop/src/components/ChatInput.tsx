@@ -1,3 +1,4 @@
+import { onQuotedText, quoteReference } from '../utils/quotedText';
 import React, { useRef, useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { annotationContextText, onArtifactAnnotation } from '../utils/annotationChannel';
 import { ArrowUp, ChevronsDownUp, Plus, X } from './icons/app-icons';
@@ -1680,6 +1681,22 @@ export default function ChatInput({
     [updateValue]
   );
 
+  useEffect(
+    () =>
+      onQuotedText(
+        sessionId,
+        (quote) => {
+          const current = splitComposerText(displayValueRef.current);
+          const next = joinComposerText(current.body, [...current.refs, quoteReference(quote)]);
+          displayValueRef.current = next;
+          setComposerText(next);
+          requestAnimationFrame(() => textAreaRef.current?.focus());
+        },
+        () => textAreaRef.current
+      ),
+    [sessionId, setComposerText]
+  );
+
   /** Replace the prose, keeping whatever references are attached. */
   const setComposerBody = useCallback(
     (body: string) => setComposerText(joinComposerText(body, composerRefs)),
@@ -3164,7 +3181,7 @@ export default function ChatInput({
           >
             {composerRefs.map((ref, index) => (
               <ResourceRefChip
-                key={`${ref.kind}:${ref.value}`}
+                key={`${index}:${ref.kind}:${ref.value}`}
                 refSpan={ref}
                 onRemove={() => handleRemoveReference(index)}
               />

@@ -1,3 +1,4 @@
+import { QuotedTextSelection, useTextSelection } from './QuotedTextSelection';
 import { useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { InlineImage } from './InlineImage';
@@ -166,6 +167,8 @@ export default function BioRouterMessage({
     return responseMap;
   }, [messages, messageIndex, toolRequests]);
 
+  const quotedSelection = useTextSelection(contentRef, `${sessionId}:${message.id}`);
+
   return (
     <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
@@ -202,18 +205,27 @@ export default function BioRouterMessage({
 
         {displayText && (
           <div className="flex flex-col group">
-            <div ref={contentRef} className="w-full">
-              <MarkdownContent
-                content={displayText}
-                onOpenArtifact={isStreaming ? undefined : onOpenArtifact}
-                workingDir={workingDir}
-                knownFilePaths={knownFilePaths}
-                // Withheld while the message is still streaming, exactly as
-                // onOpenArtifact is: a code fence that has not closed yet holds
-                // half a command, and half a command is a different command.
-                onRunInTerminal={isStreaming ? undefined : (onRunInTerminal ?? undefined)}
-              />
-            </div>
+            <QuotedTextSelection
+              source={{
+                sessionId,
+                title: 'Agent response',
+                locator: `conversation:${sessionId}/message:${message.id}`,
+              }}
+              selection={quotedSelection}
+            >
+              <div ref={contentRef} className="w-full">
+                <MarkdownContent
+                  content={displayText}
+                  onOpenArtifact={isStreaming ? undefined : onOpenArtifact}
+                  workingDir={workingDir}
+                  knownFilePaths={knownFilePaths}
+                  // Withheld while the message is still streaming, exactly as
+                  // onOpenArtifact is: a code fence that has not closed yet holds
+                  // half a command, and half a command is a different command.
+                  onRunInTerminal={isStreaming ? undefined : (onRunInTerminal ?? undefined)}
+                />
+              </div>
+            </QuotedTextSelection>
 
             {imagePaths.length > 0 && (
               <div className="mt-4">

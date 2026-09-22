@@ -1,3 +1,4 @@
+import { PREVIEW_SELECTION_INSTALL } from './previewTextSelection';
 /**
  * How tall a previewed HTML document WANTS to be, told to the panel that frames it.
  *
@@ -92,7 +93,7 @@ export const PREVIEW_SIZE_INSTALL = `(() => {
 
 /** Put the reporter at the top of the document, where `withPreviewActivityTracking` puts its own. */
 export function withPreviewSizeReporting(html: string): string {
-  const script = `<script>${PREVIEW_SIZE_INSTALL}</script>`;
+  const script = `<script>${PREVIEW_SIZE_INSTALL};${PREVIEW_SELECTION_INSTALL}</script>`;
   const head = /<head\b[^>]*>/i.exec(html);
   if (head) {
     const end = head.index + head[0].length;
