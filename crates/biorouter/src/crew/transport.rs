@@ -8,6 +8,39 @@ use tokio::{
 };
 
 pub const MAX_FRAME: usize = 1_048_576;
+struct WireFailure {
+    code: String,
+    description: &'static str,
+}
+impl WireFailure {
+    fn new(code: &str, description: &'static str) -> Self {
+        Self {
+            code: code.into(),
+            description,
+        }
+    }
+    fn io(stage: &'static str, error: std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        let kind = match error.kind() {
+            ErrorKind::BrokenPipe => "broken_pipe",
+            ErrorKind::ConnectionReset => "connection_reset",
+            ErrorKind::ConnectionAborted => "connection_aborted",
+            ErrorKind::NotConnected => "not_connected",
+            ErrorKind::UnexpectedEof => "unexpected_eof",
+            ErrorKind::TimedOut => "timed_out",
+            ErrorKind::WouldBlock => "would_block",
+            ErrorKind::Interrupted => "interrupted",
+            ErrorKind::PermissionDenied => "permission_denied",
+            ErrorKind::InvalidData => "invalid_data",
+            _ => "other",
+        };
+        Self {
+            code: format!("ssh_{stage}_io_{kind}"),
+            description: "SSH pipe I/O failed",
+        }
+    }
+}
+
 pub struct Transport {
     child: Child,
     stdin: ChildStdin,
@@ -121,45 +154,8 @@ impl Transport {
         // Cancellation after a write must never allow the next caller to consume
         // this request's late reply. Only a complete valid envelope rearms it.
         self.unusable = true;
-        let mut stage = "write";
-        let result = tokio::time::timeout(Duration::from_secs(45), async {
-            self.stdin.write_all(&bytes).await?;
-            self.stdin.flush().await?;
-            stage = "read";
-            let mut response = Vec::new();
-            let length = (&mut self.stdout)
-                .take((MAX_FRAME + 1) as u64)
-                .read_until(b'\n', &mut response)
-                .await?;
-            ensure!(
-                length > 0,
-                "SSH connection closed; authenticate or inspect host trust before reconnecting"
-            );
-            ensure!(
-                length <= MAX_FRAME && response.last() == Some(&b'\n'),
-                "Crew response exceeds frame limit or is incomplete"
-            );
-            stage = "frame validation";
-            let response: Value = serde_json::from_slice(&response)?;
-            ensure!(
-                response.get("id").and_then(Value::as_str) == Some(id.as_str()),
-                "Crew response ID mismatch"
-            );
-            if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
-                ensure!(
-                    error.get("code").is_some_and(Value::is_string)
-                        && error.get("message").is_some_and(Value::is_string),
-                    "Invalid broker error envelope"
-                );
-            } else {
-                ensure!(
-                    response.get("result").is_some(),
-                    "Crew response has no result"
-                );
-            }
-            Ok::<_, anyhow::Error>(response)
-        })
-        .await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(45), self.exchange(&bytes, &id)).await;
         match result {
             Ok(Ok(v)) => {
                 self.unusable = false;
@@ -170,15 +166,88 @@ impl Transport {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("Crew response has no result"))
             }
-            Ok(Err(e)) => {
-                let _ = self.child.kill().await;
-                Err(e.context(format!("Crew SSH {stage} failed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying")))
-            }
-            Err(_) => {
-                let _ = self.child.kill().await;
-                bail!("Crew request timed out; mutation outcome is unknown. Inspect history before retrying.")
-            }
+            Ok(Err(failure)) => Err(self.fatal_failure(failure).await),
+            Err(_) => Err(self
+                .fatal_failure(WireFailure::new("ssh_timeout", "Crew request timed out"))
+                .await),
         }
+    }
+    async fn exchange(
+        &mut self,
+        bytes: &[u8],
+        id: &str,
+    ) -> std::result::Result<Value, WireFailure> {
+        self.stdin
+            .write_all(bytes)
+            .await
+            .map_err(|error| WireFailure::io("write", error))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| WireFailure::io("write", error))?;
+        let mut bytes = Vec::new();
+        let length = (&mut self.stdout)
+            .take((MAX_FRAME + 1) as u64)
+            .read_until(b'\n', &mut bytes)
+            .await
+            .map_err(|error| WireFailure::io("read", error))?;
+        if length == 0 {
+            return Err(WireFailure::new("ssh_eof", "SSH connection closed"));
+        }
+        if length > MAX_FRAME {
+            return Err(WireFailure::new(
+                "ssh_frame_too_large",
+                "Crew response exceeds frame limit or is incomplete",
+            ));
+        }
+        if bytes.last() != Some(&b'\n') {
+            return Err(WireFailure::new(
+                "ssh_frame_incomplete",
+                "Crew response exceeds frame limit or is incomplete",
+            ));
+        }
+        let response: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            WireFailure::new(
+                "ssh_invalid_json",
+                "Crew SSH frame validation failed: invalid JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_str) != Some(id) {
+            return Err(WireFailure::new(
+                "ssh_response_id_mismatch",
+                "Crew SSH frame validation failed: response ID mismatch",
+            ));
+        }
+        if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
+            if !error.get("code").is_some_and(Value::is_string)
+                || !error.get("message").is_some_and(Value::is_string)
+            {
+                return Err(WireFailure::new(
+                    "ssh_invalid_envelope",
+                    "Crew SSH frame validation failed: invalid broker error envelope",
+                ));
+            }
+        } else if response.get("result").is_none() {
+            return Err(WireFailure::new(
+                "ssh_invalid_envelope",
+                "Crew SSH frame validation failed: response has no result",
+            ));
+        }
+        Ok(response)
+    }
+    async fn fatal_failure(&mut self, failure: WireFailure) -> anyhow::Error {
+        // Capture only exit status before our own cleanup, never SSH stderr or
+        // arguments. A cleanup signal must not be misreported as the cause.
+        let status = match self.child.try_wait() {
+            Ok(Some(status)) => status.code().map_or_else(
+                || "exited_without_code".into(),
+                |code| format!("exit_{code}"),
+            ),
+            Ok(None) => "running".into(),
+            Err(_) => "unknown".into(),
+        };
+        let _ = self.child.kill().await;
+        anyhow::anyhow!("Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying", failure.code, status, failure.description)
     }
     pub fn is_usable(&self) -> bool {
         !self.unusable

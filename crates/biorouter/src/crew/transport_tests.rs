@@ -41,6 +41,27 @@ fn request_params() -> serde_json::Value {
     json!({"workspace": "synthetic-crew-transport-test"})
 }
 
+fn assert_safe_failure(error: anyhow::Error, code: &str) -> String {
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!("Crew SSH failure [{code}; child_before_cleanup=")),
+        "unexpected transport failure: {message}"
+    );
+    for sentinel in [
+        "not-json",
+        "partial",
+        "wrong",
+        "sentinel-code",
+        "synthetic-crew-transport-test",
+    ] {
+        assert!(
+            !message.contains(sentinel),
+            "raw wire/request sentinel leaked into transport error: {message}"
+        );
+    }
+    message
+}
+
 #[tokio::test]
 async fn valid_response_rearms_transport_for_the_next_request() {
     let script = r#"
@@ -179,16 +200,21 @@ async fn response_id_mismatch_makes_transport_unusable_without_a_second_write() 
     "#;
     let mut transport = spawn_peer(script, Some(marker.path()));
 
-    assert!(transport
+    let error = transport
         .request(
             "synthetic.bad_id",
             request_params(),
             None,
             None,
-            Some("expected".into())
+            Some("expected".into()),
         )
         .await
-        .is_err());
+        .expect_err("mismatched response IDs must fail the exchange");
+    let message = assert_safe_failure(error, "ssh_response_id_mismatch");
+    assert!(
+        message.contains("child_before_cleanup=running"),
+        "{message}"
+    );
     assert!(!transport.is_usable());
     assert!(transport
         .request(
@@ -219,8 +245,7 @@ async fn eof_marks_transport_unusable_and_blocks_retry() {
         )
         .await
         .expect_err("peer EOF must fail the exchange");
-    let message = format!("{error:#}");
-    assert!(message.contains("SSH connection closed"), "{message}");
+    assert_safe_failure(error, "ssh_eof");
     assert!(!transport.is_usable());
     assert!(transport
         .request(
@@ -250,11 +275,7 @@ async fn incomplete_response_marks_transport_unusable() {
         )
         .await
         .expect_err("a response without a terminating newline must fail");
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("exceeds frame limit or is incomplete"),
-        "{message}"
-    );
+    assert_safe_failure(error, "ssh_frame_incomplete");
     assert!(!transport.is_usable());
     transport.close().await;
 }
@@ -315,12 +336,77 @@ async fn malformed_json_response_marks_transport_unusable() {
         )
         .await
         .expect_err("malformed JSON must fail frame validation");
+    let message = assert_safe_failure(error, "ssh_invalid_json");
+    assert!(message.contains("invalid JSON"), "{message}");
+    assert!(!transport.is_usable());
+    transport.close().await;
+}
+
+#[tokio::test]
+async fn malformed_error_envelope_has_safe_category_without_wire_details() {
+    let script = r#"IFS= read -r line; printf '%s\n' '{"version":1,"id":"envelope","error":{"code":"sentinel-code","message":123}}'"#;
+    let mut transport = spawn_peer(script, None);
+
+    let error = transport
+        .request(
+            "synthetic.error_envelope",
+            request_params(),
+            None,
+            None,
+            Some("envelope".into()),
+        )
+        .await
+        .expect_err("malformed broker error envelopes must fail validation");
+    let message = assert_safe_failure(error, "ssh_invalid_envelope");
     assert!(
-        error.to_string().contains("frame validation failed"),
-        "{error:#}"
+        message.contains("invalid broker error envelope"),
+        "{message}"
     );
     assert!(!transport.is_usable());
     transport.close().await;
+}
+
+#[tokio::test]
+async fn oversized_response_has_safe_category_without_wire_details() {
+    let script = r#"IFS= read -r line; head -c 1048577 /dev/zero"#;
+    let mut transport = spawn_peer(script, None);
+
+    let error = transport
+        .request(
+            "synthetic.oversized_response",
+            request_params(),
+            None,
+            None,
+            Some("oversized-response".into()),
+        )
+        .await
+        .expect_err("responses over MAX_FRAME must be rejected");
+    assert_safe_failure(error, "ssh_frame_too_large");
+    assert!(!transport.is_usable());
+    transport.close().await;
+}
+
+#[tokio::test]
+async fn naturally_exited_peer_reports_safe_exit_status_before_cleanup() {
+    let mut transport = spawn_peer("exit 23", None);
+    let status = transport.child.wait().await.unwrap();
+    assert_eq!(status.code(), Some(23));
+
+    let error = transport
+        .request(
+            "synthetic.natural_exit",
+            request_params(),
+            None,
+            None,
+            Some("natural-exit".into()),
+        )
+        .await
+        .expect_err("writing to a naturally exited peer must fail");
+    let message = assert_safe_failure(error, "ssh_write_io_broken_pipe");
+    assert!(
+        message.contains("child_before_cleanup=exit_23"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
