@@ -1465,7 +1465,7 @@
   }
 
   body {
-    font-size: calc(1rem * var(--app-font-scale, 1.07));
+    font-size: calc(1rem * var(--app-font-scale, 1));
     @apply text-text-default;
     font-family: var(--font-sans);
   }
@@ -3989,13 +3989,13 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
    callouts, tables and code wells match their chat counterparts. */
 .biorouter-markdown.prose {
   --md-code-pad: 14px 16px;
-  --md-title-size: calc(24px * var(--app-font-scale, 1.07));
+  --md-title-size: calc(24px * var(--app-font-scale, 1));
   font-size: 14px;
   line-height: 1.7;
 }
 
 .biorouter-markdown.prose[data-variant='document'] {
-  --md-title-size: calc(28px * var(--app-font-scale, 1.07));
+  --md-title-size: calc(28px * var(--app-font-scale, 1));
   font-size: 15px;
 }
 

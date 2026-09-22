@@ -1,6 +1,6 @@
 import { list } from 'postcss';
 
-const scaled = (value) => `calc(${value} * var(--app-font-scale, 1.07))`;
+const scaled = (value) => `calc(${value} * var(--app-font-scale, 1))`;
 const absoluteLength = /^\d*\.?\d+(px|rem)$/;
 const spacingCalculation = /^calc\(var\(--spacing\)\s*\*\s*[\d.]+\)$/;
 

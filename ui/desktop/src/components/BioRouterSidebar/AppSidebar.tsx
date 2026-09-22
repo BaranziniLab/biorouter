@@ -367,7 +367,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 data-testid="sidebar-biorouter-mark"
                 // Scale the SVG box with UI text; its measured viewBox keeps
                 // the lettering and underline in proportion.
-                className="h-[calc(24px*var(--app-font-scale,1.07))] w-auto shrink-0"
+                className="h-[calc(24px*var(--app-font-scale,1))] w-auto shrink-0"
               />
               <EnvironmentBadge />
             </div>

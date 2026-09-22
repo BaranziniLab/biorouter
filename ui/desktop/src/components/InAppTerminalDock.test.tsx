@@ -163,13 +163,13 @@ describe('InAppTerminalDock', () => {
     await waitFor(() => expect(terminal.focus).toHaveBeenCalledTimes(2));
     terminal.focus.mockClear();
     vi.mocked(window.electron.resizeTerminalSession).mockClear();
-    expect(terminal.options.fontSize).toBeCloseTo(13 * 1.07);
-    await user.click(screen.getByRole('radio', { name: 'Large' }));
+    expect(terminal.options.fontSize).toBe(13);
+    await user.click(screen.getByRole('radio', { name: 'Larger' }));
     await waitFor(() => expect(window.electron.resizeTerminalSession).toHaveBeenCalled());
-    expect(screen.getByRole('radio', { name: 'Large' })).toHaveFocus();
+    expect(screen.getByRole('radio', { name: 'Larger' })).toHaveFocus();
     expect(terminal.focus).not.toHaveBeenCalled();
     expect(terminal.options.fontSize).toBeCloseTo(13 * 1.15);
-    await user.click(screen.getByRole('radio', { name: 'Small' }));
+    await user.click(screen.getByRole('radio', { name: 'Standard' }));
     expect(terminal.options.fontSize).toBe(13);
     expect(xtermInstances).toEqual([terminal]);
     expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);

@@ -137,7 +137,7 @@ describe('AppSidebar chat navigation', () => {
     const brandMark = screen.getByTestId('sidebar-biorouter-mark');
     expect(brandMark.tagName.toLowerCase()).toBe('svg');
     expect(brandMark).toHaveAttribute('aria-label', 'BioRouter');
-    expect(brandMark).toHaveClass('h-[calc(24px*var(--app-font-scale,1.07))]', 'w-auto');
+    expect(brandMark).toHaveClass('h-[calc(24px*var(--app-font-scale,1))]', 'w-auto');
     expect(homeButton.closest('[data-sidebar="group"]')).toHaveClass('px-2');
     expect(homeButton).toHaveClass('gap-2', 'px-3');
     expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');

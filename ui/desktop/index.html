@@ -81,14 +81,14 @@
 
         // Apply the text preference before the first paint.
         try {
-          const sizes = { small: 1, standard: 1.07, large: 1.15 };
+          const sizes = { standard: 1, large: 1.07, larger: 1.15 };
           const stored = localStorage.getItem('app_font_size');
           const size = Object.prototype.hasOwnProperty.call(sizes, stored) ? stored : 'standard';
           document.documentElement.dataset.fontSize = size;
           document.documentElement.style.setProperty('--app-font-scale', String(sizes[size]));
         } catch (error) {
           document.documentElement.dataset.fontSize = 'standard';
-          document.documentElement.style.setProperty('--app-font-scale', '1.07');
+          document.documentElement.style.setProperty('--app-font-scale', '1');
         }
 
         // Run immediately
