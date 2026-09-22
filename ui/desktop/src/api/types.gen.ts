@@ -1532,6 +1532,8 @@ export type IngestConversationBody = {
     session_ids: Array<string>;
 };
 
+export type Initial = 'latest' | 'all';
+
 export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
@@ -2444,6 +2446,32 @@ export type ModelUsageRow = {
      * Number of billed turns attributed to this group.
      */
     turns: number;
+};
+
+export type ObserveEvent = {
+    runs: Array<unknown>;
+    snapshot: unknown;
+    type: 'state';
+} | {
+    channel_id: string;
+    cursor?: string | null;
+    messages: Array<unknown>;
+    reset: boolean;
+    type: 'messages';
+} | {
+    cursor?: string | null;
+    type: 'reconnect';
+} | {
+    clear: boolean;
+    code: string;
+    error: string;
+    type: 'error';
+};
+
+export type ObserveRequest = {
+    after?: string | null;
+    channel_id?: string | null;
+    initial?: Initial;
 };
 
 /**
@@ -6128,6 +6156,27 @@ export type CrewProfileGrantsData = {
 export type CrewProfileGrantsResponses = {
     200: unknown;
 };
+
+export type ObserveData = {
+    body: ObserveRequest;
+    path: {
+        /**
+         * Saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/observe';
+};
+
+export type ObserveResponses = {
+    /**
+     * Bounded NDJSON room events (one schema instance per line)
+     */
+    200: ObserveEvent;
+};
+
+export type ObserveResponse = ObserveResponses[keyof ObserveResponses];
 
 export type RequestData = {
     body: CrewRequest;

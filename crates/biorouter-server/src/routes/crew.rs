@@ -1059,8 +1059,12 @@ async fn publish_run_finished(ledger: &RunLedger, view: &RunView) {
 #[utoipa::path(get, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
 pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
     require_person(&headers)?;
+    Ok(Json(json!({"runs": owned_run_views(&id).await?})))
+}
+
+pub(super) async fn owned_run_views(id: &str) -> anyhow::Result<Vec<RunView>> {
     let ledger = run_ledger().await?;
-    let views: Vec<_> = ledger
+    let views = ledger
         .state
         .lock()
         .await
@@ -1069,7 +1073,7 @@ pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult
         .filter(|run| run.view.connection_id == id)
         .map(|run| run.view.clone())
         .collect();
-    Ok(Json(json!({"runs": views})))
+    Ok(views)
 }
 
 #[utoipa::path(post, path = "/crew/connections/{id}/runs/{run_id}/cancel", params(("id" = String, Path, description = "Crew id"), ("run_id" = String, Path, description = "Crew run_id")), responses((status = 200, body = Value)), tag = "Crew")]

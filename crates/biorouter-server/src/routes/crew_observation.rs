@@ -1,0 +1,521 @@
+//! Human room observation shared by native CLI and desktop clients.
+use anyhow::{ensure, Context, Result};
+use axum::{
+    body::Body,
+    extract::{DefaultBodyLimit, Path},
+    http::{HeaderMap, StatusCode},
+    response::Response,
+    routing::post,
+    Json, Router,
+};
+use biorouter::crew::manager;
+pub use biorouter::crew::observation::{Initial, ObserveEvent, ObserveRequest};
+use biorouter_server::auth::{user_action_proof, UserActionProof};
+use bytes::Bytes;
+use serde_json::{json, Value};
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
+
+const MAX_FRAME: usize = 1_048_576;
+static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
+
+fn person(headers: &HeaderMap) -> Result<()> {
+    ensure!(
+        matches!(user_action_proof(headers), UserActionProof::Proven),
+        "human_authority_required"
+    );
+    Ok(())
+}
+fn broker_code(error: &anyhow::Error) -> Option<String> {
+    let text = error.to_string();
+    let encoded = text.strip_prefix("Crew broker refused request: ")?;
+    serde_json::from_str::<Value>(encoded)
+        .ok()?
+        .get("code")?
+        .as_str()
+        .map(str::to_owned)
+}
+fn observation_error_code(error: &anyhow::Error) -> String {
+    if let Some(code) = broker_code(error) {
+        return code;
+    }
+    match error.to_string().as_str() {
+        "policy_changed" => "policy_changed",
+        "channel_access_changed" => "channel_access_changed",
+        "human_authority_required" => "human_authority_required",
+        _ => "observation_refused",
+    }
+    .into()
+}
+struct Observer {
+    headers: HeaderMap,
+    connection: String,
+    request: ObserveRequest,
+    cursor: Option<String>,
+    pending: VecDeque<Value>,
+    binding: Value,
+    epoch: Option<Value>,
+    first: bool,
+    state_due: bool,
+    sleep_due: bool,
+    last_state: Option<tokio::time::Instant>,
+    limit: usize,
+    deadline: tokio::time::Instant,
+    done: bool,
+    _permit: OwnedSemaphorePermit,
+}
+impl Observer {
+    async fn authorize(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        ensure!(!cancel.is_cancelled(), "observation_cancelled");
+        person(&self.headers)?;
+        let crew = manager()?;
+        ensure!(
+            connection_binding(&crew.connection(&self.connection).await?)? == self.binding,
+            "policy_changed"
+        );
+        let snapshot = crew
+            .human_request(&self.connection, "workspace.snapshot", json!({}), None)
+            .await?;
+        ensure!(!cancel.is_cancelled(), "observation_cancelled");
+        if let Some(channel) = &self.request.channel_id {
+            ensure!(
+                snapshot["channels"]
+                    .as_array()
+                    .is_some_and(|channels| channels
+                        .iter()
+                        .any(|entry| entry["id"].as_str() == Some(channel))),
+                "channel_access_changed"
+            );
+        }
+        let epoch = snapshot["workspace"]["policy_epoch"].clone();
+        ensure!(!epoch.is_null(), "Invalid workspace policy");
+        ensure!(
+            self.epoch
+                .as_ref()
+                .is_none_or(|previous| previous == &epoch),
+            "policy_changed"
+        );
+        self.epoch = Some(epoch);
+        ensure!(
+            connection_binding(&crew.connection(&self.connection).await?)? == self.binding,
+            "policy_changed"
+        );
+        person(&self.headers)?;
+        Ok(snapshot)
+    }
+    async fn history(&mut self, cancel: &CancellationToken) -> Result<VecDeque<Value>> {
+        let channel = self
+            .request
+            .channel_id
+            .as_ref()
+            .context("No channel selected")?;
+        loop {
+            ensure!(!cancel.is_cancelled(), "observation_cancelled");
+            let mut params = json!({"channel_id":channel,"limit":self.limit,
+                "latest":self.first && self.cursor.is_none() && matches!(self.request.initial, Initial::Latest)});
+            if let Some(cursor) = &self.cursor {
+                params["after"] = json!(cursor);
+            }
+            match manager()?
+                .human_request(&self.connection, "messages.history", params, None)
+                .await
+            {
+                Ok(page) => {
+                    let messages = page["messages"]
+                        .as_array()
+                        .context("Invalid history page")?;
+                    ensure!(messages.len() <= self.limit, "Invalid history page size");
+                    return Ok(messages.iter().cloned().collect());
+                }
+                Err(error)
+                    if self.limit > 1
+                        && broker_code(&error).as_deref() == Some("response_too_large") =>
+                {
+                    self.limit = (self.limit / 2).max(1)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    async fn next_frame(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        loop {
+            if tokio::time::Instant::now() >= self.deadline {
+                self.done = true;
+                return Ok(json!({"type":"reconnect","cursor":self.cursor}));
+            }
+            ensure!(!cancel.is_cancelled(), "observation_cancelled");
+            if self.state_due
+                || self
+                    .last_state
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
+            {
+                if self.state_due && self.sleep_due {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(2)) => (),
+                        () = cancel.cancelled() => anyhow::bail!("observation_cancelled"),
+                    }
+                }
+                self.authorize(cancel).await?;
+                let mut runs = super::crew::owned_run_views(&self.connection).await?;
+                let snapshot = self.authorize(cancel).await?;
+                runs.retain(|run| {
+                    snapshot["channels"].as_array().is_some_and(|channels| {
+                        channels
+                            .iter()
+                            .any(|channel| channel["id"] == run.channel_id)
+                    })
+                });
+                person(&self.headers)?;
+                self.last_state = Some(tokio::time::Instant::now());
+                self.state_due = false;
+                self.sleep_due = true;
+                return Ok(json!({"type":"state","snapshot":snapshot,"runs":runs}));
+            }
+            if !self.pending.is_empty() {
+                self.authorize(cancel).await?;
+                let message = self.pending.pop_front().unwrap();
+                let cursor = message["sequence"]
+                    .as_str()
+                    .context("Invalid message cursor")?
+                    .to_owned();
+                ensure!(
+                    self.cursor.as_ref() != Some(&cursor),
+                    "History cursor did not advance"
+                );
+                // Resolving the cursor rechecks every inherited source-channel ACL,
+                // including revocations that do not change the workspace epoch.
+                manager()?
+                    .human_request(
+                        &self.connection,
+                        "messages.history",
+                        json!({"channel_id":self.request.channel_id,"after":cursor,"limit":0}),
+                        None,
+                    )
+                    .await?;
+                self.authorize(cancel).await?;
+                self.cursor = Some(cursor);
+                let reset = self.first && self.request.after.is_none();
+                self.first = false;
+                return Ok(
+                    json!({"type":"messages","channel_id":self.request.channel_id,"messages":[message],"cursor":self.cursor,"reset":reset}),
+                );
+            }
+            if self.request.channel_id.is_none() {
+                self.state_due = true;
+                continue;
+            }
+            self.pending = self.history(cancel).await?;
+            if self.pending.is_empty() {
+                self.authorize(cancel).await?;
+                self.state_due = true;
+                if self.first {
+                    self.first = false;
+                    return Ok(
+                        json!({"type":"messages","channel_id":self.request.channel_id,"messages":[],"cursor":self.cursor,"reset":self.request.after.is_none()}),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[utoipa::path(post, path = "/crew/connections/{id}/observe", params(("id" = String, Path, description = "Saved Crew connection")), request_body = ObserveRequest, responses((status = 200, description = "Bounded NDJSON room events (one schema instance per line)", body = ObserveEvent, content_type = "application/x-ndjson")), tag = "Crew")]
+pub async fn observe(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<ObserveRequest>,
+) -> Result<Response, (StatusCode, Json<Value>)> {
+    person(&headers).map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"Verified human Crew authority is required"})),
+        )
+    })?;
+    if request
+        .channel_id
+        .as_ref()
+        .is_some_and(|v| v.is_empty() || v.len() > 128)
+        || request
+            .after
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 128)
+        || (request.after.is_some() && request.channel_id.is_none())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Invalid room observation selection"})),
+        ));
+    }
+    let permit = SLOTS.clone().try_acquire_owned().map_err(|_| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"Too many room observers"})),
+        )
+    })?;
+    let connection = manager()
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"Crew unavailable"})),
+            )
+        })?
+        .connection(&id)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"Crew connection unavailable"})),
+            )
+        })?;
+    let binding = connection_binding(&connection).unwrap();
+    let observer = Observer {
+        headers,
+        connection: id,
+        cursor: request.after.clone(),
+        request,
+        pending: VecDeque::new(),
+        binding,
+        epoch: None,
+        first: true,
+        state_due: true,
+        sleep_due: false,
+        last_state: None,
+        limit: 200,
+        deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+        done: false,
+        _permit: permit,
+    };
+    let stream = observation_stream(observer);
+    Ok(Response::builder()
+        .header("Content-Type", "application/x-ndjson")
+        .header("Cache-Control", "no-store")
+        .body(Body::from_stream(stream))
+        .unwrap())
+}
+
+fn connection_binding(connection: &biorouter::crew::Connection) -> Result<Value> {
+    let mut binding = serde_json::to_value(connection)?;
+    let fields = binding.as_object_mut().context("Invalid connection")?;
+    fields.remove("status");
+    fields.remove("last_error");
+    Ok(binding)
+}
+
+struct ObservationReceiver {
+    receiver: mpsc::Receiver<Bytes>,
+    cancel: CancellationToken,
+}
+impl Drop for ObservationReceiver {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+fn encode_frame(observer: &mut Observer, result: Result<Value>) -> Bytes {
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            observer.done = true;
+            let code = observation_error_code(&error);
+            json!({"type":"error","code":code,"error":"Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.","clear":true})
+        }
+    };
+    let mut encoded = serde_json::to_vec(&frame).unwrap();
+    if encoded.len() >= MAX_FRAME {
+        observer.done = true;
+        encoded = br#"{"type":"error","code":"response_too_large","error":"Room update exceeds the bounded frame limit","clear":true}"#.to_vec();
+    }
+    encoded.push(b'\n');
+    Bytes::from(encoded)
+}
+
+async fn produce(mut observer: Observer, sender: mpsc::Sender<Bytes>, cancel: CancellationToken) {
+    let lifetime_cancel = cancel.clone();
+    let deadline = observer.deadline;
+    let watchdog = tokio::spawn(async move {
+        tokio::select! {
+            () = tokio::time::sleep_until(deadline) => lifetime_cancel.cancel(),
+            () = lifetime_cancel.cancelled() => (),
+        }
+    });
+    loop {
+        // Never cancel a broker future mid-exchange: late JSONL replies must be
+        // drained before another caller uses this shared SSH transport. The
+        // observer permit stays owned until that bounded operation finishes.
+        let delivered_cursor = observer.cursor.clone();
+        let result = observer.next_frame(&cancel).await;
+        let expired = tokio::time::Instant::now() >= observer.deadline;
+        if cancel.is_cancelled() && !expired {
+            break;
+        }
+        let result = if expired {
+            observer.cursor = delivered_cursor;
+            observer.done = true;
+            Ok(json!({"type":"reconnect","cursor":observer.cursor}))
+        } else {
+            result
+        };
+        let frame = encode_frame(&mut observer, result);
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), sender.send(frame)).await,
+            Ok(Ok(()))
+        ) {
+            break;
+        }
+        if observer.done {
+            break;
+        }
+    }
+    cancel.cancel();
+    watchdog.abort();
+}
+
+fn observation_stream(
+    observer: Observer,
+) -> impl futures::Stream<Item = Result<Bytes, Infallible>> {
+    let (sender, receiver) = mpsc::channel(1);
+    let cancel = CancellationToken::new();
+    tokio::spawn(produce(observer, sender, cancel.clone()));
+    futures::stream::unfold(
+        ObservationReceiver { receiver, cancel },
+        |mut state| async move { state.receiver.recv().await.map(|frame| (Ok(frame), state)) },
+    )
+}
+
+pub fn routes() -> Router {
+    Router::new()
+        .route("/crew/connections/{id}/observe", post(observe))
+        .layer(DefaultBodyLimit::max(4096))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[test]
+    fn observation_error_codes_preserve_policy_and_broker_boundaries() {
+        assert_eq!(
+            observation_error_code(&anyhow::anyhow!("policy_changed")),
+            "policy_changed"
+        );
+        assert_eq!(
+            observation_error_code(&anyhow::anyhow!("channel_access_changed")),
+            "channel_access_changed"
+        );
+        assert_eq!(
+            observation_error_code(&anyhow::anyhow!("human_authority_required")),
+            "human_authority_required"
+        );
+        assert_eq!(
+            observation_error_code(&anyhow::anyhow!(
+                "Crew broker refused request: {{\"code\":\"stale_cursor\"}}"
+            )),
+            "stale_cursor"
+        );
+        assert_eq!(
+            observation_error_code(&anyhow::anyhow!("unexpected observer failure")),
+            "observation_refused"
+        );
+    }
+
+    #[test]
+    fn oversized_encoded_frame_is_replaced_by_bounded_error_frame() {
+        let permit = SLOTS.clone().try_acquire_owned().unwrap();
+        let mut observer = Observer {
+            headers: HeaderMap::new(),
+            connection: "connection".into(),
+            request: ObserveRequest {
+                channel_id: None,
+                after: None,
+                initial: Initial::Latest,
+            },
+            cursor: None,
+            pending: VecDeque::new(),
+            binding: json!({}),
+            epoch: None,
+            first: true,
+            state_due: false,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+            done: false,
+            _permit: permit,
+        };
+        let frame = encode_frame(&mut observer, Ok(json!({"payload": "x".repeat(MAX_FRAME)})));
+        let value: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["code"], "response_too_large");
+        assert!(value["clear"].as_bool().unwrap_or(false));
+        assert!(observer.done);
+    }
+
+    #[test]
+    fn broker_code_accepts_only_the_exact_refusal_envelope() {
+        let error =
+            anyhow::anyhow!("Crew broker refused request: {{\"code\":\"response_too_large\"}}");
+        assert_eq!(broker_code(&error).as_deref(), Some("response_too_large"));
+
+        let unrelated = anyhow::anyhow!("response_too_large");
+        assert!(broker_code(&unrelated).is_none());
+        let malformed =
+            anyhow::anyhow!("Crew broker refused request: {{\"message\":\"response_too_large\"}}");
+        assert!(broker_code(&malformed).is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_observer_emits_one_reconnect_frame_and_releases_the_stream() {
+        let permit = SLOTS.clone().try_acquire_owned().unwrap();
+        let observer = Observer {
+            headers: HeaderMap::new(),
+            connection: "connection".into(),
+            request: ObserveRequest {
+                channel_id: Some("channel".into()),
+                after: Some("cursor".into()),
+                initial: Initial::Latest,
+            },
+            cursor: Some("cursor".into()),
+            pending: VecDeque::new(),
+            binding: json!({}),
+            epoch: None,
+            first: true,
+            state_due: false,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() - Duration::from_secs(1),
+            done: false,
+            _permit: permit,
+        };
+        let mut stream = Box::pin(observation_stream(observer));
+        let frame = stream.next().await.unwrap().unwrap();
+        let frame: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(frame["type"], "reconnect");
+        assert_eq!(frame["cursor"], "cursor");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn observation_refuses_before_accessing_a_saved_connection_without_proof() {
+        let result = observe(
+            HeaderMap::new(),
+            Path("missing-connection".into()),
+            Json(ObserveRequest {
+                channel_id: Some("channel".into()),
+                after: None,
+                initial: Initial::Latest,
+            }),
+        )
+        .await;
+        let (status, Json(body)) = result.expect_err("missing proof must refuse");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body["error"].as_str().unwrap().contains("human"));
+    }
+}

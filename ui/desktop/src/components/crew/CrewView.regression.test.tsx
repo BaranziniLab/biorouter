@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import CrewView from './CrewView';
@@ -7,6 +7,7 @@ import { CrewHttpError } from './crewApi';
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
   crewRequest: vi.fn(),
+  observeCrew: vi.fn(),
   navigate: vi.fn(),
   getProviders: vi.fn(),
   read: vi.fn(),
@@ -15,7 +16,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./crewApi', async () => {
   const actual = await vi.importActual<typeof import('./crewApi')>('./crewApi');
-  return { ...actual, crewHttp: mocks.crewHttp, crewRequest: mocks.crewRequest };
+  return {
+    ...actual,
+    crewHttp: mocks.crewHttp,
+    crewRequest: mocks.crewRequest,
+    observeCrew: mocks.observeCrew,
+  };
 });
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({
@@ -99,6 +105,32 @@ function renderCrew() {
   );
 }
 
+function installObservation(
+  nextSnapshot = snapshot,
+  messages: Record<string, unknown>[] = []
+): void {
+  mocks.observeCrew.mockImplementation(
+    async (
+      _connectionId: string,
+      _channelId: string | undefined,
+      _after: string | null,
+      signal: AbortSignal,
+      receive: (frame: unknown) => void
+    ) => {
+      if (signal.aborted) return 'terminal';
+      receive({ type: 'state', snapshot: nextSnapshot, runs: [], cursor: null });
+      receive({
+        type: 'messages',
+        channel_id: channel.id,
+        messages,
+        cursor: messages.length ? (messages[messages.length - 1]?.sequence ?? null) : null,
+        reset: true,
+      });
+      return 'terminal';
+    }
+  );
+}
+
 function defaultHttp() {
   mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
     if (path === '/connections') return { connections: [connection] };
@@ -115,6 +147,7 @@ function defaultHttp() {
   mocks.getProviders.mockResolvedValue([{ name: 'fixture-provider', is_configured: true }]);
   mocks.getProviderModels.mockResolvedValue(['fixture-model']);
   mocks.read.mockResolvedValue('');
+  installObservation();
 }
 
 describe('CrewView action and uncertain-start regressions', () => {
@@ -145,14 +178,9 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
     expect(await screen.findAllByText('start failed')).not.toHaveLength(0);
     // A successful manual refresh must not erase the action error that still needs attention.
+    const beforeRefresh = mocks.observeCrew.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: 'Refresh channel' }));
-    await waitFor(() =>
-      expect(mocks.crewRequest).toHaveBeenCalledWith(
-        'conn-1',
-        'messages.history',
-        expect.anything()
-      )
-    );
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(beforeRefresh));
     expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
   });
 
@@ -167,9 +195,7 @@ describe('CrewView action and uncertain-start regressions', () => {
       await screen.findByRole('button', { name: 'Simulate authenticated completion' })
     );
 
-    await waitFor(() =>
-      expect(mocks.crewRequest).toHaveBeenCalledWith('conn-1', 'workspace.snapshot')
-    );
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(1));
     expect(
       mocks.crewHttp.mock.calls.some(
         ([path, method]) => path === '/connections/conn-1/connect' && method === 'POST'
@@ -192,7 +218,6 @@ describe('CrewView action and uncertain-start regressions', () => {
       attachments: [],
     }));
     mocks.crewRequest.mockImplementation(async (_id: string, method: string, params = {}) => {
-      if (method === 'workspace.snapshot') return snapshot;
       if (method === 'messages.history') {
         historyRequests.push(params);
         if ('before' in params) throw new Error('stale_cursor');
@@ -203,22 +228,35 @@ describe('CrewView action and uncertain-start regressions', () => {
       }
       return {};
     });
+    installObservation(snapshot, olderMessages);
     renderCrew();
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'keep this unsent draft' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Older messages' }));
     await waitFor(() => expect(historyRequests.some((params) => 'before' in params)).toBe(true));
     await waitFor(() => expect(screen.queryByText('Viewing earlier messages')).toBeNull());
-    expect(screen.getByLabelText('Message #general')).toHaveValue('keep this unsent draft');
+    expect(screen.getByText(/unsent draft is retained/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Message #general')).toHaveValue('keep this unsent draft')
+    );
   });
 
   it('clears the composer after the selected channel is revoked', async () => {
     let activeSnapshot = snapshot;
-    mocks.crewRequest.mockImplementation(async (_id: string, method: string) => {
-      if (method === 'workspace.snapshot') return activeSnapshot;
-      if (method === 'messages.history') return { messages: [], cursor: null };
-      return {};
-    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive({ type: 'state', snapshot: activeSnapshot, runs: [], cursor: null });
+        return 'terminal';
+      }
+    );
     renderCrew();
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'discard after revocation' } });
@@ -230,50 +268,47 @@ describe('CrewView action and uncertain-start regressions', () => {
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
 
-  it('retains the action error across failed, recovered, and successful background polls', async () => {
-    let pollMode: 'success' | 'failure' = 'success';
+  it('retains an unsent draft across a transient observer failure and manual recovery', async () => {
+    let observerMode: 'success' | 'failure' = 'success';
     renderCrew();
-    await screen.findByText('Welcome to #general');
-    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
-      if (path === '/connections/conn-1/runs' && method === 'POST') {
-        throw new Error('start failed');
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'retain while reconnecting' } });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        if (observerMode === 'failure') {
+          receive({
+            type: 'error',
+            clear: true,
+            code: 'temporary_observer_error',
+            error: 'observer temporarily unavailable',
+          });
+        } else {
+          receive({ type: 'state', snapshot, runs: [], cursor: null });
+        }
+        return 'terminal';
       }
-      if (path === '/connections/conn-1/runs' && method === 'GET') return { runs: [] };
-      if (path === '/connections') return { connections: [connection] };
-      return {};
-    });
-    mocks.crewRequest.mockImplementation(async (_id: string, method: string) => {
-      if (method === 'workspace.snapshot') {
-        if (pollMode === 'failure') throw new Error('poll failed');
-        return snapshot;
-      }
-      if (method === 'messages.history') return { messages: [], cursor: null };
-      return {};
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));
-    fireEvent.change(await screen.findByLabelText('Task'), { target: { value: 'run it' } });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fixture-model' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
-    expect(await screen.findAllByText('start failed')).not.toHaveLength(0);
+    );
+    observerMode = 'failure';
+    const beforeFailure = mocks.observeCrew.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() =>
+      expect(screen.getByText(/observer temporarily unavailable/)).toBeInTheDocument()
+    );
+    expect(mocks.observeCrew.mock.calls.length).toBe(beforeFailure + 1);
 
-    const beforeFailure = mocks.crewRequest.mock.calls.length;
-    pollMode = 'failure';
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 4200));
-    });
-    expect(mocks.crewRequest.mock.calls.length).toBeGreaterThan(beforeFailure);
-    expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
-
-    const beforeRecovery = mocks.crewRequest.mock.calls.length;
-    pollMode = 'success';
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 4200));
-    });
-    expect(mocks.crewRequest.mock.calls.length).toBeGreaterThan(beforeRecovery);
-    expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
+    observerMode = 'success';
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(2));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Message #general')).toHaveValue('retain while reconnecting')
+    );
   });
 
   it('keeps one request id across a retry with the same payload', async () => {

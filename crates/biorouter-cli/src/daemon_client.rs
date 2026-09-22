@@ -1,5 +1,6 @@
 //! Human-operated clients for the profile's shared daemon.
 use anyhow::{bail, ensure, Context, Result};
+use biorouter::crew::observation::{ObserveEvent, ObserveRequest};
 use biorouter::daemon_runtime::{self, Descriptor, Identity};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
@@ -56,6 +57,65 @@ impl CrewClient {
             body,
         )
         .await
+    }
+
+    pub async fn observe<F>(
+        &self,
+        path: &str,
+        body: &ObserveRequest,
+        on_frame: F,
+    ) -> Result<Option<String>>
+    where
+        F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+    {
+        #[cfg(not(unix))]
+        {
+            let _ = (path, body, on_frame);
+            bail!("Shared Crew daemon IPC is unavailable on this platform");
+        }
+        #[cfg(unix)]
+        {
+            use bytes::Bytes;
+            use http_body_util::Full;
+            use hyper::Request;
+            ensure!(
+                path.starts_with('/') && !path.starts_with("//") && !path.contains(['\r', '\n']),
+                "Invalid daemon observer path"
+            );
+            let (mut sender, _connection) = verified_observer_connection(&self.descriptor).await?;
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("Host", "localhost")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/x-ndjson")
+                .header("X-Secret-Key", &self.descriptor.api_secret)
+                .header("X-Daemon-Instance", &self.descriptor.instance_id)
+                .header("X-User-Action", self.proof.as_str())
+                .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
+            let response =
+                tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
+                    .await??;
+            ensure!(
+                response.status().is_success(),
+                "Crew observer refused ({}); check the connection, daemon and approval secret",
+                response.status()
+            );
+            ensure!(
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.split(';').next() == Some("application/x-ndjson")),
+                "Daemon returned an invalid observer content type"
+            );
+            tokio::time::timeout(
+                Duration::from_secs(610),
+                read_observer_frames(response.into_body(), on_frame),
+            )
+            .await
+            .context("Crew observation timed out without a reconnect frame; inspect connection status before watching again")?
+        }
     }
 
     pub async fn authenticate(&self, connection_id: &str) -> Result<Value> {
@@ -142,6 +202,97 @@ impl CrewClient {
             Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":true}))
         }
     }
+}
+
+#[cfg(unix)]
+struct ObserverConnection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
+
+#[cfg(unix)]
+impl Drop for ObserverConnection {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[cfg(unix)]
+async fn verified_observer_connection(
+    descriptor: &Descriptor,
+) -> Result<(
+    hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>>,
+    ObserverConnection,
+)> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full, Limited};
+    use hyper::{client::conn::http1, Request};
+    let stream = checked_socket(descriptor).await?;
+    let (mut sender, connection) = tokio::time::timeout(
+        Duration::from_secs(5),
+        http1::handshake(hyper_util::rt::TokioIo::new(stream)),
+    )
+    .await??;
+    let connection = ObserverConnection(tokio::spawn(connection));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/daemon/identity")
+        .header("Host", "localhost")
+        .header("X-Secret-Key", &descriptor.api_secret)
+        .body(Full::new(Bytes::new()))?;
+    let response =
+        tokio::time::timeout(Duration::from_secs(5), sender.send_request(request)).await??;
+    ensure!(
+        response.status().is_success(),
+        "Shared daemon identity was refused"
+    );
+    let bytes = tokio::time::timeout(
+        Duration::from_secs(5),
+        Limited::new(response.into_body(), 16 * 1024).collect(),
+    )
+    .await?
+    .map_err(|_| anyhow::anyhow!("Invalid shared daemon identity response"))?
+    .to_bytes();
+    let identity: Identity = serde_json::from_slice(&bytes)?;
+    ensure!(
+        identity == descriptor.identity(),
+        "Shared daemon identity changed; no approval credentials were sent"
+    );
+    Ok((sender, connection))
+}
+
+#[cfg(unix)]
+async fn read_observer_frames<F>(
+    mut body: hyper::body::Incoming,
+    mut on_frame: F,
+) -> Result<Option<String>>
+where
+    F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+{
+    use http_body_util::BodyExt;
+    const MAX_FRAME: usize = 1024 * 1024;
+    let mut pending = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.context(
+            "Crew observation interrupted; inspect connection status before watching again",
+        )?;
+        let Ok(bytes) = frame.into_data() else {
+            continue;
+        };
+        for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
+            ensure!(
+                pending.len() + segment.len() <= MAX_FRAME,
+                "Crew observer frame exceeds 1 MiB"
+            );
+            pending.extend_from_slice(segment);
+            if segment.last() == Some(&b'\n') {
+                let value =
+                    serde_json::from_slice(&pending).context("Invalid Crew observer frame")?;
+                pending.clear();
+                if let std::ops::ControlFlow::Break(cursor) = on_frame(value)? {
+                    return Ok(cursor);
+                }
+            }
+        }
+    }
+    bail!("Crew observation ended without a reconnect frame; inspect connection status before watching again")
 }
 
 #[cfg(unix)]
@@ -726,8 +877,14 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{open_daemon_owner_lock, wait_for_daemon_stop};
+    use super::{open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop};
+    use biorouter::crew::observation::ObserveEvent;
     use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
+    use bytes::Bytes;
+    use http_body_util::{Full, StreamBody};
+    use hyper::server::conn::http1 as server_http1;
+    use hyper::{body::Frame, client::conn::http1, service::service_fn, Request, Response};
+    use hyper_util::rt::TokioIo;
     use serial_test::serial;
     use std::fs::{self, File};
     use std::os::fd::AsRawFd;
@@ -827,5 +984,94 @@ mod tests {
         assert!(open_daemon_owner_lock().is_err());
         fs::remove_file(directory.join("owner.lock")).expect("hardlink removes");
         fs::remove_file(target).expect("target removes");
+    }
+
+    async fn observer_body(chunks: Vec<Vec<u8>>) -> hyper::body::Incoming {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("observer fixture listener");
+        let address = listener.local_addr().expect("observer fixture address");
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("observer fixture accept");
+            let service = service_fn(move |_request: Request<hyper::body::Incoming>| {
+                let chunks = chunks.clone();
+                async move {
+                    let frames = futures::stream::iter(chunks.into_iter().map(|chunk| {
+                        Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(chunk)))
+                    }));
+                    let body = StreamBody::new(frames);
+                    Ok::<_, std::convert::Infallible>(Response::new(body))
+                }
+            });
+            server_http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .expect("observer fixture response");
+        });
+        let stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("observer fixture connect");
+        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
+            .await
+            .expect("observer fixture handshake");
+        tokio::spawn(async move {
+            connection
+                .await
+                .expect("observer fixture client connection");
+        });
+        sender
+            .send_request(
+                Request::builder()
+                    .uri("/")
+                    .body(Full::new(Bytes::new()))
+                    .expect("observer fixture request"),
+            )
+            .await
+            .expect("observer fixture response headers")
+            .into_body()
+    }
+
+    #[tokio::test]
+    async fn observer_parser_handles_split_frames_and_stops_on_reconnect() {
+        let body = observer_body(vec![
+            br#"{"type":"state""#.to_vec(),
+            br#","snapshot":{},"runs":[]}
+{"type":"reconnect","cursor":"cursor-2"}
+"#
+            .to_vec(),
+        ])
+        .await;
+        let mut frames = Vec::new();
+        let cursor = read_observer_frames(body, |frame| {
+            let reconnect = matches!(&frame, ObserveEvent::Reconnect { .. });
+            frames.push(frame);
+            if reconnect {
+                Ok(std::ops::ControlFlow::Break(Some("cursor-2".into())))
+            } else {
+                Ok(std::ops::ControlFlow::Continue(()))
+            }
+        })
+        .await
+        .expect("split NDJSON frames parse");
+        assert_eq!(cursor.as_deref(), Some("cursor-2"));
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(frames[0], ObserveEvent::State { .. }));
+    }
+
+    #[tokio::test]
+    async fn observer_parser_rejects_malformed_and_oversized_framing() {
+        let malformed = observer_body(vec![b"{not-json}\n".to_vec()]).await;
+        let error = read_observer_frames(malformed, |_| Ok(std::ops::ControlFlow::Continue(())))
+            .await
+            .expect_err("malformed observer JSON must fail closed");
+        assert!(error.to_string().contains("Invalid Crew observer frame"));
+
+        let mut oversized = vec![b'x'; 1_048_577];
+        oversized.push(b'\n');
+        let oversized = observer_body(vec![oversized]).await;
+        let error = read_observer_frames(oversized, |_| Ok(std::ops::ControlFlow::Continue(())))
+            .await
+            .expect_err("oversized observer frame must fail closed");
+        assert!(error.to_string().contains("exceeds 1 MiB"));
     }
 }

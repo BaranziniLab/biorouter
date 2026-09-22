@@ -2291,6 +2291,47 @@
         }
       }
     },
+    "/crew/connections/{id}/observe": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "observe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObserveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded NDJSON room events (one schema instance per line)",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObserveEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/connections/{id}/request": {
       "post": {
         "tags": [
@@ -9943,6 +9984,13 @@
           }
         }
       },
+      "Initial": {
+        "type": "string",
+        "enum": [
+          "latest",
+          "all"
+        ]
+      },
       "InspectJobResponse": {
         "type": "object",
         "properties": {
@@ -11772,6 +11820,126 @@
             "description": "Number of billed turns attributed to this group."
           }
         }
+      },
+      "ObserveEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "snapshot",
+              "runs",
+              "type"
+            ],
+            "properties": {
+              "runs": {
+                "type": "array",
+                "items": {}
+              },
+              "snapshot": {},
+              "type": {
+                "type": "string",
+                "enum": [
+                  "state"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "channel_id",
+              "messages",
+              "reset",
+              "type"
+            ],
+            "properties": {
+              "channel_id": {
+                "type": "string"
+              },
+              "cursor": {
+                "type": "string",
+                "nullable": true
+              },
+              "messages": {
+                "type": "array",
+                "items": {}
+              },
+              "reset": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "messages"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "reconnect"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "error",
+              "clear",
+              "type"
+            ],
+            "properties": {
+              "clear": {
+                "type": "boolean"
+              },
+              "code": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "ObserveRequest": {
+        "type": "object",
+        "properties": {
+          "after": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "initial": {
+            "$ref": "#/components/schemas/Initial"
+          }
+        },
+        "additionalProperties": false
       },
       "PackageSummary": {
         "type": "object",

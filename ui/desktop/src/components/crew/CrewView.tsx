@@ -4,6 +4,8 @@ import {
   crewHttp,
   CrewHttpError,
   crewRequest,
+  observeCrew,
+  type ObservedRun,
   type CrewConnection,
   type Snapshot,
   type CrewMessage,
@@ -71,9 +73,7 @@ export default function CrewView() {
   const [invitePublicKey, setInvitePublicKey] = useState('');
   const [addExistingDevice, setAddExistingDevice] = useState(false);
   const [createdInvitation, setCreatedInvitation] = useState('');
-  const [runs, setRuns] = useState<
-    { run_id: string; channel_id: string; session_id: string; status: string; error?: string }[]
-  >([]);
+  const [runs, setRuns] = useState<ObservedRun[]>([]);
   const [connections, setConnections] = useState<CrewConnection[]>([]);
   const [connectionId, setConnectionId] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -103,6 +103,12 @@ export default function CrewView() {
   const [model, setModel] = useState('');
   const [authentication, setAuthentication] = useState(false);
   const generation = useRef(0);
+  const observer = useRef<AbortController | null>(null);
+  const [observationRevision, setObservationRevision] = useState(0);
+  const historyPage = useRef<string | null>(null);
+  useEffect(() => {
+    historyPage.current = historyBefore;
+  }, [historyBefore]);
   const dialogRef = useRef<HTMLElement>(null);
   const pendingMessage = useRef<{ fingerprint: string; key: string } | null>(null);
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
@@ -127,53 +133,60 @@ export default function CrewView() {
     [connectionId]
   );
 
-  const refresh = useCallback(async () => {
-    if (!connectionId) return;
-    const current = generation.current;
-    const next = await crewRequest<Snapshot>(connectionId, 'workspace.snapshot');
-    if (current !== generation.current) return;
-    setSnapshot(next);
-    const ownRuns = await crewHttp<{ runs: typeof runs }>(`/connections/${connectionId}/runs`);
-    if (current !== generation.current) return;
-    setRuns(ownRuns.runs);
-    setTeamId((old) =>
-      next.teams.some((item) => item.id === old) ? old : (next.teams[0]?.id ?? '')
-    );
-    if (channelId && !next.channels.some((item) => item.id === channelId)) {
-      setError(
-        'Access to the selected channel changed. Its messages and unsent composer content have been cleared; choose an authorized channel to continue.'
-      );
-      setChannelId('');
-      setMessages([]);
-    }
-    if (channelId && next.channels.some((item) => item.id === channelId)) {
-      try {
-        const history = await crewRequest<{ messages: CrewMessage[]; cursor: string | null }>(
-          connectionId,
-          'messages.history',
-          {
-            channel_id: channelId,
-            limit: 200,
-            latest: true,
-            ...(historyBefore === null ? {} : { before: historyBefore }),
-          }
+  const verifiedScope = useRef<{ connection: string; epoch: number; mode?: string } | null>(null);
+  const selectedSources = useRef(contextChannels);
+  useEffect(() => {
+    selectedSources.current = contextChannels;
+  }, [contextChannels]);
+  const clearDraft = useCallback(() => {
+    setBody('');
+    setAttachments([]);
+    setReferences([]);
+    setContextChannels([]);
+    pendingMessage.current = null;
+  }, []);
+  const clearProtectedState = useCallback(() => {
+    setSnapshot(null);
+    setRuns([]);
+    setMessages([]);
+    setHistoryBefore(null);
+    historyPage.current = null;
+    setPanel(null);
+  }, []);
+  const observationFailure = useCallback(
+    (message: string, code?: string) => {
+      clearProtectedState();
+      if (
+        code &&
+        [
+          'channel_access_changed',
+          'policy_changed',
+          'scope_changed',
+          'access_denied',
+          'principal_revoked',
+          'forbidden',
+          'privacy_denied',
+          'human_authority_required',
+        ].includes(code)
+      ) {
+        clearDraft();
+        setRefreshError(
+          `${message} Access or privacy changed, so the unsent draft and attachments were cleared. Retry to verify access.`
         );
-        if (current === generation.current) setMessages(history.messages);
-      } catch (failure) {
-        if (current !== generation.current) return;
-        if (
-          historyBefore !== null &&
-          failure instanceof Error &&
-          failure.message.includes('stale_cursor')
-        ) {
-          setMessages([]);
-          setHistoryBefore(null);
-          return;
-        }
-        throw failure;
+      } else {
+        setRefreshError(
+          `${message} Your unsent draft is retained for this channel. Retry to verify access before sending.`
+        );
       }
-    }
-  }, [connectionId, channelId, historyBefore]);
+    },
+    [clearProtectedState, clearDraft]
+  );
+  const refresh = useCallback(async () => {
+    observer.current?.abort();
+    generation.current += 1;
+    setRefreshError('');
+    setObservationRevision((revision) => revision + 1);
+  }, []);
 
   const act = async (operation: () => Promise<unknown>) => {
     setBusy(true);
@@ -212,6 +225,7 @@ export default function CrewView() {
     setRefreshError('');
   }, [connectionId]);
   useEffect(() => {
+    historyPage.current = null;
     setHistoryBefore(null);
     setBody('');
     setAttachments([]);
@@ -223,35 +237,151 @@ export default function CrewView() {
     if (panel === 'settings' && !owner) setPanel(null);
   }, [panel, owner]);
   useEffect(() => {
-    let active = true;
-    let refreshing = false;
-    const tick = () => {
-      if (refreshing) return Promise.resolve();
-      refreshing = true;
-      return refresh()
-        .then(() => {
-          if (active) setRefreshError('');
-        })
-        .catch((err: Error) => {
-          if (active) {
-            setRefreshError(err.message);
-            setSnapshot(null);
-            setMessages([]);
+    if (!connectionId) return;
+    const controller = new AbortController();
+    observer.current = controller;
+    const current = ++generation.current;
+    const active = () => !controller.signal.aborted && current === generation.current;
+    let cursor: string | null = null;
+    let immediateReconnects = 0;
+    void (async () => {
+      while (active()) {
+        const started = Date.now();
+        const outcome = await observeCrew(
+          connectionId,
+          channelId || undefined,
+          cursor,
+          controller.signal,
+          (frame) => {
+            if (!active()) return;
+            if (frame.type === 'state') {
+              const previousScope = verifiedScope.current;
+              if (
+                previousScope?.connection === connectionId &&
+                (previousScope.epoch !== frame.snapshot.workspace.policy_epoch ||
+                  previousScope.mode !== connection?.mode ||
+                  selectedSources.current.some(
+                    (id) => !frame.snapshot.channels.some((item) => item.id === id)
+                  ))
+              ) {
+                clearDraft();
+                setError(
+                  'Workspace privacy or selected channel access changed while reconnecting. The unsent draft and attachments were cleared; review the current policy before composing again.'
+                );
+              }
+              verifiedScope.current = {
+                connection: connectionId,
+                epoch: frame.snapshot.workspace.policy_epoch,
+                mode: connection?.mode,
+              };
+              setSnapshot(frame.snapshot);
+              setRuns(frame.runs);
+              setRefreshError('');
+              setTeamId((old) =>
+                frame.snapshot.teams.some((item) => item.id === old)
+                  ? old
+                  : (frame.snapshot.teams[0]?.id ?? '')
+              );
+              if (channelId && !frame.snapshot.channels.some((item) => item.id === channelId)) {
+                controller.abort();
+                generation.current += 1;
+                setMessages([]);
+                setBody('');
+                setAttachments([]);
+                setReferences([]);
+                setContextChannels([]);
+                setHistoryBefore(null);
+                historyPage.current = null;
+                pendingMessage.current = null;
+                setPanel(null);
+                setChannelId('');
+                setError(
+                  'Access to the selected channel changed. Its messages and unsent composer content have been cleared; choose an authorized channel to continue.'
+                );
+              }
+            } else if (frame.type === 'messages' && frame.channel_id === channelId) {
+              cursor = frame.cursor ?? null;
+              if (historyPage.current !== null) return;
+              setMessages((previous) => {
+                const next = frame.reset ? [] : [...previous];
+                for (const message of frame.messages) {
+                  const index = next.findIndex((old) => old.id === message.id);
+                  if (index < 0) next.push(message);
+                  else next[index] = message;
+                }
+                return next.slice(-200);
+              });
+            } else if (frame.type === 'reconnect') {
+              cursor = frame.cursor ?? null;
+            } else if (frame.type === 'error') {
+              observationFailure(frame.error, frame.code);
+              generation.current += 1;
+            }
           }
-        })
-        .finally(() => {
-          refreshing = false;
-        });
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 4000);
+        );
+        if (outcome !== 'reconnect' || !active()) return;
+        immediateReconnects = Date.now() - started < 1000 ? immediateReconnects + 1 : 0;
+        if (immediateReconnects >= 3)
+          throw new Error(
+            'The daemon repeatedly ended Crew observation. Retry after checking the daemon.'
+          );
+      }
+    })().catch((failure: unknown) => {
+      if (!active()) return;
+      observationFailure(
+        failure instanceof Error ? failure.message : 'Crew observation failed.',
+        failure instanceof CrewHttpError ? failure.code : undefined
+      );
+      generation.current += 1;
+    });
     return () => {
-      active = false;
-      window.clearInterval(timer);
+      controller.abort();
+      if (observer.current === controller) observer.current = null;
       generation.current += 1;
     };
-  }, [refresh]);
+  }, [
+    connectionId,
+    connection?.mode,
+    channelId,
+    observationRevision,
+    observationFailure,
+    clearDraft,
+  ]);
+
   useEffect(() => {
+    if (historyBefore === null || !connectionId || !channelId) return;
+    const controller = new AbortController();
+    const current = generation.current;
+    setMessages([]);
+    void crewRequest<{ messages: CrewMessage[]; cursor: string | null }>(
+      connectionId,
+      'messages.history',
+      {
+        channel_id: channelId,
+        limit: 200,
+        latest: true,
+        before: historyBefore,
+      },
+      false,
+      controller.signal
+    )
+      .then((page) => {
+        if (!controller.signal.aborted && current === generation.current)
+          setMessages(page.messages);
+      })
+      .catch((failure: unknown) => {
+        if (controller.signal.aborted || current !== generation.current) return;
+        observer.current?.abort();
+        generation.current += 1;
+        observationFailure(
+          failure instanceof Error ? failure.message : 'Earlier messages could not be loaded.',
+          failure instanceof CrewHttpError ? failure.code : undefined
+        );
+      });
+    return () => controller.abort();
+  }, [historyBefore, connectionId, channelId, observationRevision, observationFailure]);
+  useEffect(() => {
+    if (!snapshot) return;
     setChannelId((old) =>
       channels.some((item) => item.id === old)
         ? old
@@ -609,6 +739,7 @@ export default function CrewView() {
                     disabled={busy}
                     className={`crew-channel ${item.id === channelId ? 'selected' : ''}`}
                     onClick={() => {
+                      if (item.id === channelId) return;
                       generation.current += 1;
                       setReferences([]);
                       setMessages([]);
@@ -695,14 +826,10 @@ export default function CrewView() {
             <div className="crew-error" role="alert">
               <strong>Action needs attention</strong>
               <p>{visibleError}</p>
-              <button
-                onClick={() => {
-                  setError('');
-                  setRefreshError('');
-                }}
-              >
-                Dismiss
-              </button>
+              {refreshError && connectionId && (
+                <button onClick={() => void refresh()}>Retry Crew updates</button>
+              )}
+              {!refreshError && <button onClick={() => setError('')}>Dismiss</button>}
               {/host|SSH|key|authentication/i.test(visibleError) && <CrewHostTrust />}
             </div>
           )}
@@ -901,8 +1028,8 @@ export default function CrewView() {
                   className="crew-button"
                   disabled={busy || messages.length < 200}
                   onClick={() => {
-                    generation.current += 1;
-                    setHistoryBefore(messages[0]?.sequence ?? null);
+                    historyPage.current = messages[0]?.sequence ?? null;
+                    setHistoryBefore(historyPage.current);
                   }}
                 >
                   Older messages
@@ -914,8 +1041,9 @@ export default function CrewView() {
                       className="crew-button"
                       disabled={busy}
                       onClick={() => {
-                        generation.current += 1;
+                        historyPage.current = null;
                         setHistoryBefore(null);
+                        void refresh();
                       }}
                     >
                       Latest messages

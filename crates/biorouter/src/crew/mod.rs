@@ -1,6 +1,7 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
 mod credentials;
+pub mod observation;
 pub use credentials::CredentialStatus;
 mod ssh_policy;
 mod transport;

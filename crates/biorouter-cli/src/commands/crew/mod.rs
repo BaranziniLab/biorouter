@@ -6,6 +6,7 @@ use crate::daemon_client::CrewClient;
 use anyhow::{anyhow, ensure, Context, Result};
 pub use args::CrewOptions;
 use args::*;
+use biorouter::crew::observation::{Initial, ObserveEvent, ObserveRequest};
 use output::{component, emit, read_input};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
@@ -465,38 +466,41 @@ fn text_input(input: TextInput) -> Result<String> {
 }
 
 async fn watch(api: &Api, args: WatchArgs) -> Result<()> {
+    let path = api.path("/observe").await?;
     let mut cursor = args.after;
     loop {
-        let params = history_params(HistoryArgs {
-            channel: args.channel.clone(),
-            before: None,
+        let request = ObserveRequest {
+            channel_id: Some(args.channel.clone()),
             after: cursor.clone(),
-            limit: 200,
-            latest: false,
-        });
-        let page = tokio::select! {
-            result = api.broker("messages.history", params, false) => result?,
+            initial: Initial::All,
+        };
+        cursor = tokio::select! {
+            result = api.client.observe(&path, &request, |event| watch_event(api, event)) => result?,
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(()); }
         };
-        let messages = page["messages"]
-            .as_array()
-            .context("Daemon returned an invalid history page")?;
-        for message in messages {
-            emit(message, output::stream_format(api.format))?;
-        }
-        let next = page["cursor"].as_str().map(str::to_string);
-        ensure!(
-            messages.is_empty() || (next.is_some() && next != cursor),
-            "Daemon history cursor did not advance"
-        );
-        cursor = next.or(cursor);
-        if messages.len() < 200 {
-            tokio::select! {
-                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
-                signal = tokio::signal::ctrl_c() => { signal?; return Ok(()); }
+    }
+}
+
+fn watch_event(api: &Api, event: ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>> {
+    match event {
+        ObserveEvent::State { .. } => {}
+        ObserveEvent::Messages { messages, .. } => {
+            for message in messages {
+                emit(&message, output::stream_format(api.format))?;
             }
         }
+        ObserveEvent::Reconnect { cursor } => return Ok(std::ops::ControlFlow::Break(cursor)),
+        ObserveEvent::Error { code, error, clear } => {
+            if !matches!(api.format, OutputFormat::Text) {
+                emit(
+                    &json!({"type":"error","code":code,"error":error,"clear":clear}),
+                    output::stream_format(api.format),
+                )?;
+            }
+            return Err(anyhow!("Crew observation stopped [{}]: {}. Review the connection and cursor before watching again", output::safe_text(&code), output::safe_text(&error)));
+        }
     }
+    Ok(std::ops::ControlFlow::Continue(()))
 }
 
 async fn tasks(api: &Api, command: TaskCommand) -> Result<()> {
