@@ -12,6 +12,7 @@ pub struct Transport {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    unusable: bool,
 }
 
 pub fn ssh_args(c: &Connection, control: &Path) -> Vec<String> {
@@ -94,6 +95,7 @@ impl Transport {
             child,
             stdin,
             stdout,
+            unusable: false,
         })
     }
     pub async fn request(
@@ -104,6 +106,7 @@ impl Transport {
         credential: Option<&str>,
         id: Option<String>,
     ) -> Result<Value> {
+        ensure!(!self.unusable, "Crew SSH transport is unusable; reconnect before issuing another request. Inspect any previously submitted operation before retrying");
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut frame = json!({"version":1,"id":id,"method":method,"params":params});
         if let Some(auth) = auth {
@@ -115,9 +118,14 @@ impl Transport {
         let mut bytes = serde_json::to_vec(&frame)?;
         ensure!(bytes.len() < MAX_FRAME, "Crew request exceeds frame limit");
         bytes.push(b'\n');
+        // Cancellation after a write must never allow the next caller to consume
+        // this request's late reply. Only a complete valid envelope rearms it.
+        self.unusable = true;
+        let mut stage = "write";
         let result = tokio::time::timeout(Duration::from_secs(45), async {
             self.stdin.write_all(&bytes).await?;
             self.stdin.flush().await?;
+            stage = "read";
             let mut response = Vec::new();
             let length = (&mut self.stdout)
                 .take((MAX_FRAME + 1) as u64)
@@ -131,16 +139,30 @@ impl Transport {
                 length <= MAX_FRAME && response.last() == Some(&b'\n'),
                 "Crew response exceeds frame limit or is incomplete"
             );
+            stage = "frame validation";
             let response: Value = serde_json::from_slice(&response)?;
             ensure!(
                 response.get("id").and_then(Value::as_str) == Some(id.as_str()),
                 "Crew response ID mismatch"
             );
+            if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
+                ensure!(
+                    error.get("code").is_some_and(Value::is_string)
+                        && error.get("message").is_some_and(Value::is_string),
+                    "Invalid broker error envelope"
+                );
+            } else {
+                ensure!(
+                    response.get("result").is_some(),
+                    "Crew response has no result"
+                );
+            }
             Ok::<_, anyhow::Error>(response)
         })
         .await;
         match result {
             Ok(Ok(v)) => {
+                self.unusable = false;
                 if let Some(error) = v.get("error").filter(|v| !v.is_null()) {
                     bail!("Crew broker refused request: {}", error);
                 }
@@ -150,7 +172,7 @@ impl Transport {
             }
             Ok(Err(e)) => {
                 let _ = self.child.kill().await;
-                Err(e)
+                Err(e.context(format!("Crew SSH {stage} failed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying")))
             }
             Err(_) => {
                 let _ = self.child.kill().await;
@@ -158,8 +180,16 @@ impl Transport {
             }
         }
     }
+    pub fn is_usable(&self) -> bool {
+        !self.unusable
+    }
     pub async fn close(&mut self) {
+        self.unusable = true;
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "transport_tests.rs"]
+mod tests;

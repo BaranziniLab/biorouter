@@ -918,6 +918,36 @@ impl CrewManager {
         }
         Ok(())
     }
+    async fn retire_failed_transport(
+        &self,
+        id: &str,
+        failed: &Arc<Mutex<transport::Transport>>,
+    ) -> Result<()> {
+        // Callers release the transport mutex before taking lifecycle ownership.
+        // Connect/update/remove hold this same guard while replacing publication.
+        let _lifecycle = self.connection_guard(id).await?;
+        let removed = {
+            let mut transports = self.transports.lock().await;
+            if transports
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(current, failed))
+            {
+                transports.remove(id)
+            } else {
+                None
+            }
+        };
+        if let Some(removed) = removed {
+            let mut registry = self.registry.lock().await;
+            if let Some(connection) = registry.connections.iter_mut().find(|c| c.id == id) {
+                connection.status = "disconnected".into();
+                connection.last_error = Some("SSH bridge failed. Reconnect; inspect any submitted operation before retrying because its outcome may be unknown.".into());
+            }
+            drop(registry);
+            removed.lock().await.close().await;
+        }
+        Ok(())
+    }
     async fn transport(&self, id: &str) -> Result<Arc<Mutex<transport::Transport>>> {
         self.transports
             .lock()
@@ -987,8 +1017,28 @@ impl CrewManager {
                 "Enrollment identity changed; refresh the saved connection before joining"
             );
         }
-        let t = self.transport(id).await?;
-        let mut t = t.lock().await;
+        let transport = self.transport(id).await?;
+        let mut locked = transport.lock().await;
+        let result = self
+            .signed_exchange(&mut locked, &c, method, params, request_id, &signer)
+            .await;
+        let usable = locked.is_usable();
+        drop(locked);
+        if !usable {
+            self.retire_failed_transport(id, &transport).await?;
+        }
+        result
+    }
+    async fn signed_exchange(
+        &self,
+        t: &mut transport::Transport,
+        c: &Connection,
+        method: &str,
+        params: Value,
+        request_id: Option<String>,
+        signer: &SigningKey,
+    ) -> Result<Value> {
+        let id = &c.id;
         let fresh = self.connection(id).await?;
         ensure!(
             fresh.policy_epoch == c.policy_epoch
@@ -1035,6 +1085,7 @@ impl CrewManager {
         )
         .await
     }
+
     pub async fn run_metadata(&self, session: &str) -> Option<RunMetadata> {
         self.registry
             .lock()
@@ -1336,12 +1387,19 @@ impl CrewManager {
             }
         }
         let transport = self.transport(&s.connection_id).await?;
-        let mut transport = transport.lock().await;
+        let mut locked = transport.lock().await;
         self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;
-        let result = transport
+        let result = locked
             .request(method, params, None, Some(&credential), None)
-            .await?;
+            .await;
+        let usable = locked.is_usable();
+        drop(locked);
+        if !usable {
+            self.retire_failed_transport(&s.connection_id, &transport)
+                .await?;
+        }
+        let result = result?;
         self.validate_worker_scope(session, &s, &c).await?;
         Ok(result)
     }
