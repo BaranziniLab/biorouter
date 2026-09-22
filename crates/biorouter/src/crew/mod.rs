@@ -1304,6 +1304,8 @@ mod tests {
         session::SessionManager,
     };
     use rmcp::model::CallToolResult;
+    #[cfg(unix)]
+    use std::time::Duration;
     use std::{
         fs,
         sync::Arc,
@@ -1321,6 +1323,277 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    fn worker_race_connection(
+        connection_id: &str,
+        mode: ClusterMode,
+        policy_epoch: u64,
+        public_provider: bool,
+    ) -> (Connection, Scope) {
+        let connection = Connection {
+            id: connection_id.into(),
+            node_id: None,
+            name: "worker-race".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            mode,
+            policy_epoch,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let scope = Scope {
+            connection_id: connection_id.into(),
+            run_id: "worker-race-run".into(),
+            channel_id: "worker-race-channel".into(),
+            source_channels: vec!["worker-race-channel".into()],
+            epoch: policy_epoch,
+            provider_binding: "worker-race-provider".into(),
+            public_provider,
+            origin_restricted: false,
+            expired: false,
+        };
+        (connection, scope)
+    }
+
+    #[cfg(unix)]
+    fn write_worker_race_ssh(root: &Path, wait_for_release: bool) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fake_bin = root.join("bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        let log = root.join("requests.log");
+        let gate = root.join("response-held");
+        let release = root.join("release-response");
+        if wait_for_release {
+            fs::write(&gate, b"hold").unwrap();
+        }
+        let ssh = format!(
+            r#"#!/bin/sh
+log='{}'
+gate='{}'
+release='{}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  while [ -f "$gate" ] && [ ! -f "$release" ]; do sleep 0.01; done
+  printf '{{"id":"%s","result":{{"accepted_method":"messages.history"}}}}\n' "$id"
+done
+"#,
+            log.display(),
+            gate.display(),
+            release.display(),
+        );
+        let ssh_path = fake_bin.join("ssh");
+        fs::write(&ssh_path, ssh).unwrap();
+        fs::set_permissions(&ssh_path, fs::Permissions::from_mode(0o700)).unwrap();
+        (log, release)
+    }
+
+    #[cfg(unix)]
+    async fn worker_race_manager(
+        root: &Path,
+        connection: &Connection,
+        scope: &Scope,
+    ) -> Arc<CrewManager> {
+        let registry = Registry {
+            connections: vec![connection.clone()],
+            scopes: HashMap::from([("worker-race-session".into(), scope.clone())]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = Arc::new(CrewManager::new(root.to_owned()).unwrap());
+        manager
+            .write_credential("run:worker-race-session", "run-credential")
+            .unwrap();
+        let control = manager.control_path(&connection.id).unwrap();
+        let transport = transport::Transport::connect(connection, &control)
+            .await
+            .unwrap();
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(connection.id.clone(), Arc::new(Mutex::new(transport)));
+        manager
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_request_rechecks_policy_before_writing_transport() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("worker-race-before-write");
+        let fake_bin = root.join("bin");
+        let (log, _) = write_worker_race_ssh(&root, false);
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", fake_bin.display());
+        let profile_string = profile_root.to_string_lossy().into_owned();
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile_string.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_string.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        );
+        let connection_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let (connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        let manager = worker_race_manager(&root, &connection, &scope).await;
+        let transport = manager
+            .transports
+            .lock()
+            .await
+            .get(connection_id)
+            .cloned()
+            .unwrap();
+        let control = manager
+            .worker_request(
+                "worker-race-session",
+                "messages.history",
+                json!({
+                    "channel_id": "worker-race-channel",
+                    "limit": 1,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(control["accepted_method"], "messages.history");
+        let baseline_requests = fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(baseline_requests.lines().count(), 1);
+        let held = transport.lock().await;
+        let manager_for_worker = manager.clone();
+        let worker = tokio::spawn(async move {
+            manager_for_worker
+                .worker_request(
+                    "worker-race-session",
+                    "messages.history",
+                    json!({
+                        "channel_id": "worker-race-channel",
+                        "limit": 1,
+                    }),
+                )
+                .await
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline && Arc::strong_count(&transport) < 3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(Arc::strong_count(&transport) >= 3);
+        assert_eq!(
+            fs::read_to_string(&log).unwrap_or_default(),
+            baseline_requests
+        );
+        {
+            let mut registry = manager.registry.lock().await;
+            let current = registry
+                .connections
+                .iter_mut()
+                .find(|candidate| candidate.id == connection_id)
+                .unwrap();
+            current.mode = ClusterMode::Private;
+            current.policy_epoch = 2;
+        }
+        drop(held);
+        let error = worker.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("policy changed"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap_or_default(),
+            baseline_requests
+        );
+        let _ = manager.transports.lock().await.remove(connection_id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_request_reports_possible_effects_after_inflight_policy_change() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("worker-race-inflight-response");
+        let fake_bin = root.join("bin");
+        let (log, release) = write_worker_race_ssh(&root, true);
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", fake_bin.display());
+        let profile_string = profile_root.to_string_lossy().into_owned();
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile_string.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_string.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        );
+        let connection_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let (connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Private, 1, false);
+        let manager = worker_race_manager(&root, &connection, &scope).await;
+        let manager_for_worker = manager.clone();
+        let worker = tokio::spawn(async move {
+            manager_for_worker
+                .worker_request(
+                    "worker-race-session",
+                    "messages.history",
+                    json!({
+                        "channel_id": "worker-race-channel",
+                        "limit": 1,
+                    }),
+                )
+                .await
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline
+            && fs::read_to_string(&log).unwrap_or_default().is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!fs::read_to_string(&log).unwrap_or_default().is_empty());
+        {
+            let mut registry = manager.registry.lock().await;
+            let current = registry
+                .connections
+                .iter_mut()
+                .find(|candidate| candidate.id == connection_id)
+                .unwrap();
+            current.policy_epoch = 2;
+        }
+        fs::write(&release, b"release").unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("inspect any submitted effects before obtaining a fresh grant"),
+            "{error}"
+        );
+        let _ = manager.transports.lock().await.remove(connection_id);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
