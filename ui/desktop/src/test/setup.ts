@@ -3,6 +3,7 @@ import { vi, afterEach, afterAll, expect } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
 import { ASYNC_UTIL_TIMEOUT_MS, TEST_TIMEOUT_MS, MIN_TIMEOUT_HEADROOM } from './timeouts';
 import { assertNoUnexpectedNetworkAttempts, installOfflineFetch } from './networkGuard';
+import { waitForQueuedZeroDelayTimers } from './queuedTimers';
 import { client } from '../api/client.gen';
 import { resetComposerQueuesForTests } from '../utils/composerQueues';
 
@@ -32,7 +33,36 @@ afterEach(() => {
 // A request whose promise settles after the last test's `afterEach` — the late
 // resolution that started this — is recorded with nothing left to report it.
 // This is where it surfaces.
-afterAll(() => {
+//
+// The wait comes FIRST, before that check, and is load-bearing: it lets the
+// zero-delay timers the file's last unmounts queued run while jsdom is still
+// installed. Radix FocusScope (every Dialog, Sheet, Popover, Select and
+// DropdownMenu) restores focus from a real `setTimeout(…, 0)` queued when it
+// unmounts, and on CI (run 35464728334, job 105954881938) one queued by the last
+// test's `cleanup()` ran after vitest's jsdom teardown had put Node's
+// `CustomEvent` back, so jsdom's `dispatchEvent` threw — `534 passed`, `Errors 1
+// error`, exit 1, from BottomMenuExtensionSelection.privacy.test.tsx. 60 of the
+// 527 jsdom spec files end in that state (measured 2026-09-21), and 16 of those
+// 60 call `cleanup()` from their own `afterEach` (which runs before this
+// file's), so it is fixed here, once, and not per spec. It resolves from a timer
+// queued behind those in Node's FIFO timer list, so it is ordered after them
+// rather than timed. Swapping it for `setImmediate` or a microtask reopens the
+// race: both can run before a 1 ms timer that is already queued.
+//
+// This is the file's last HOOK — vitest runs after-hooks in reverse
+// registration order and this file registers before the spec is imported — but
+// not its last code: a function RETURNED from a root-level `beforeAll`, a
+// file-scoped `test.extend` fixture's teardown and, once the file has finished,
+// a worker-scoped fixture's teardown all run after it, and a timer they queue is
+// not covered (no spec does any of the three today). Nor is a timer longer than
+// 1 ms. Because every file runs in a child process of its own, such a timer can
+// fire only within that child's lifetime — which ends when the pool, once the
+// child has answered "stopped", sends it SIGTERM (SIGKILL 500 ms later if it
+// survives) — and never in a later file. That holds only while vitest keeps one
+// worker per file, which ./vitestIsolation.test.ts pins. ./queuedTimers.ts has
+// the measurements, the mechanism and both gaps.
+afterAll(async () => {
+  await waitForQueuedZeroDelayTimers();
   assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
 });
 
