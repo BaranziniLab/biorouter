@@ -333,8 +333,8 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
       // `shape="round"` at the default rung — the one row-action size. The
       // delete button used to be `size="sm"` with no shape, so it alone was a
       // 28px pill in a line of 32px squares.
-      expect(action).toHaveClass('w-8');
-      expect(action).toHaveClass('h-8');
+      expect(action).toHaveClass('w-control-md');
+      expect(action).toHaveClass('h-control-md');
     }
   });
 

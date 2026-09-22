@@ -44,6 +44,6 @@ describe('the shared Select', () => {
 
   /** The rung itself still lives on the class, as the one source of truth. */
   it('keeps the 32px rung on the control class', () => {
-    expect(SELECT).toMatch(/'flex h-8 w-full items-center/);
+    expect(SELECT).toMatch(/'flex h-control-md w-full items-center/);
   });
 });

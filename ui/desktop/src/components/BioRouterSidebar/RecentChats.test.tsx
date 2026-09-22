@@ -140,7 +140,8 @@ describe('RecentChats', () => {
     const currentChat = screen.getByTestId('recent-chat-session-0');
     const ongoingChat = screen.getByTestId('recent-chat-session-1');
     expect(ongoingChat).toHaveAccessibleName('Open ongoing chat: Chat 1');
-    expect(ongoingChat).toHaveClass('w-full', 'h-8', 'px-3', 'text-sm');
+    expect(ongoingChat).toHaveClass('w-full', 'h-control-md', 'px-3', 'text-sm');
+    expect(ongoingChat.parentElement).toHaveClass('flex', 'flex-col', 'gap-0.5');
     expect(ongoingChat).not.toHaveClass('font-medium');
     expect(currentChat).toHaveClass('font-medium');
     expect(currentChat).toHaveAttribute('aria-current', 'page');
@@ -305,7 +306,7 @@ describe('RecentChats', () => {
       '1.5'
     );
     // Rows stay 32px — the glyph must not change sidebar density (D-12).
-    expect(screen.getByTestId('recent-chat-session-0')).toHaveClass('h-8');
+    expect(screen.getByTestId('recent-chat-session-0')).toHaveClass('h-control-md');
   });
 
   it('requests another page when the user scrolls near the end of the loaded chats', () => {

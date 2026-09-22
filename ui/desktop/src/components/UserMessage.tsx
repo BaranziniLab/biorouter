@@ -263,7 +263,7 @@ export default function UserMessage({
   }, [editContent, isEditing]);
 
   return (
-    <div className="w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
+    <div className="br-message-meta-scope w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
       <div className="flex flex-col group">
         {/* BR-71 §5: a message injected from another session is labeled in the
             transcript for as long as it exists — including while it is being

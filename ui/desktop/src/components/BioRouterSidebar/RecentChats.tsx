@@ -219,7 +219,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           up carrying the tooltip's hover/focus listeners and the menu's
           `contextmenu` listener at once — which is what keeps the row one
           element. Wrapping the button in a div for the second trigger would put
-          a box inside the 2px row rhythm and break `space-y-0.5`. */}
+          a box inside the 2px row rhythm and break the shared row gap. */}
         <TooltipTrigger asChild>
           <ContextMenuTrigger asChild>
             <button
@@ -236,7 +236,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
               }
               aria-label={accessibleLabel}
               aria-current={isActive ? 'page' : undefined}
-              className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
+              className={`relative flex h-control-md w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
                 isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
               }`}
             >
@@ -412,7 +412,7 @@ export default function RecentChats({
                   rhythm or it has none: with the destinations separated and the
                   history flush, the two halves of the same column read as two
                   different lists. */}
-              <div className="min-w-0 space-y-0.5">
+              <div className="flex min-w-0 flex-col gap-0.5">
                 {group.sessions.map((session) => (
                   <RecentChatRow
                     key={session.id}

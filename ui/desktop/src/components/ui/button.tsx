@@ -59,10 +59,10 @@ const buttonVariants = cva(
       // retires the old 24/32/36/40 ladder and, with it, the off-scale 28px that
       // row actions were hand-rolling because no rung offered it.
       size: {
-        xs: 'h-6 gap-1 [&_svg:not([class*=size-])]:size-3',
-        default: 'h-8',
-        sm: 'h-7 gap-1.5',
-        lg: 'h-9',
+        xs: 'h-control-compact gap-1 [&_svg:not([class*=size-])]:size-3',
+        default: 'h-control-md',
+        sm: 'h-control-sm gap-1.5',
+        lg: 'h-control-lg',
       },
       // 'pill' is a misnomer — it maps to rounded-element (8px), not a full pill.
       // 'round' is a square icon button (w==h via compound variants), also rounded-element.
@@ -103,22 +103,22 @@ const buttonVariants = cva(
       {
         shape: 'round',
         size: 'xs',
-        className: 'w-6 h-6 p-0 rounded-element',
+        className: 'w-control-compact h-control-compact p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'default',
-        className: 'w-8 h-8 p-0 rounded-element',
+        className: 'w-control-md h-control-md p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'sm',
-        className: 'w-7 h-7 p-0 rounded-element',
+        className: 'w-control-sm h-control-sm p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'lg',
-        className: 'w-9 h-9 p-0 rounded-element',
+        className: 'w-control-lg h-control-lg p-0 rounded-element',
       },
     ],
     defaultVariants: {

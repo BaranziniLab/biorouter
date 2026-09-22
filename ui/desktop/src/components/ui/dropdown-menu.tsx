@@ -60,9 +60,9 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
  * design.md §4.5 — THE menu row: 32px tall, 12px horizontal padding, `--radius-element`,
  * `text-secondary` (13/18), highlight fill `--overlay-hover`.
  *
- * `min-h-8` is what actually lands the 32px spec: 13/18 text inside 6px of vertical
+ * `min-h-control-md` is what actually lands the 32px spec: 13/18 text inside 6px of vertical
  * padding measures 30px, and `items-center` then optically centres the label in the
- * extra 2px. Expressing height as a minimum (rather than a fixed `h-8`) lets a row
+ * extra 2px. Expressing height as a minimum (rather than a fixed `h-control-md`) lets a row
  * that wraps — a long extension name, a two-line label — grow instead of clipping.
  *
  * Every row-shaped member of this menu — item, checkbox, radio, sub-trigger — composes
@@ -71,7 +71,7 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
  * call site that re-states padding or type size is reintroducing the drift.
  */
 export const DROPDOWN_ROW_CLASS_NAME =
-  "relative flex min-h-8 cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+  "relative flex min-h-control-md cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
 function DropdownMenuItem({
   className,

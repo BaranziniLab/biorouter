@@ -182,7 +182,7 @@ const CodeBlock = memo(function CodeBlock({
           // Overridable, so a surface that restyles the block (the artifact
           // panel's paper) can set its own inset without an !important fight
           // with an inline style. Chat never sets it and keeps 12px.
-          padding: 'var(--md-code-pad, 12px)',
+          padding: 'var(--md-code-pad, calc(12px * var(--app-font-scale, 1.07)))',
           background: 'transparent',
           // A kept line needs the block to be as wide as its longest line, so
           // the body (`overflow-x: auto`) scrolls it; a wrapped one fits.
