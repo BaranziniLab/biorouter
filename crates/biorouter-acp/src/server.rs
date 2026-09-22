@@ -1277,7 +1277,7 @@ pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
 
     let expected_token = Arc::new(resolve_ws_token());
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = biorouter::net::bind_non_inheritable(&addr).await?;
     let local = listener.local_addr()?;
     info!(address = %local, "ACP WebSocket server listening (authenticated)");
 

@@ -1,0 +1,81 @@
+# The clippy configuration of ONE gate: no production code may open a socket that
+# a Windows child process inherits. Read by `scripts/check-non-inheritable-sockets.sh`
+# through CLIPPY_CONF_DIR, and by nothing else.
+#
+# Why this is its own directory, not a `clippy.toml` at the repo root:
+# `scripts/clippy-lint.sh` runs `cargo clippy --all-targets -- -D warnings`, and
+# every test that binds a throwaway `tokio::net::TcpListener` (legitimate: a test
+# process spawns no long-lived children) would fail it. The gate script lints
+# only `--lib --bins` in the release profile, which leaves out `#[cfg(test)]`
+# code and `tests/`, so test binds stay legal with no attribute anywhere. (And no
+# attribute helps anywhere else: the gate force-warns the lint, which no
+# `#[allow]` or `#[expect]` can lower, and fails on every site it reports.)
+#
+# Why a compiler lint and not a text scan: the listener census this replaced
+# read paths as text, and a reviewer walked four spellings past it (a same-name
+# alias pair, `Self::bind`, a glob or `super::` import beside an unrelated std
+# import, a gated match arm swallowing the next one). `disallowed_methods`
+# matches the resolved `DefId`, so every spelling that reaches the function is
+# the same call to it.
+#
+# ⚠ How clippy 1.92 treats an entry it cannot resolve, measured:
+#   * the crate is not in the linted crate's dependency graph at all (say
+#     `tokio_tungstenite` from `biorouter-sandbox`): SILENTLY ignored. Harmless
+#     there, since that crate cannot call it either.
+#   * the crate is in the graph but the item is not (a typo, or an upstream
+#     rename): a plain warning, "`…` does not refer to a reachable function",
+#     which does NOT fail a clippy run.
+#   * the path names something that is not a function (a struct such as
+#     `tokio::net::TcpSocket`, a module): a plain warning again, "expected a
+#     function, found a struct".
+# So an entry could rot into guarding nothing with every run green. The gate
+# (scripts/clippy-non-inheritable/gate.py) fails on both warnings, which makes
+# clippy, not the case of a name, the judge of what is a function (Windows FFI
+# such as `WSASocketW` is one; a module is as snake_case as a function); reads
+# this file with a TOML parser (so an entry in any form, a bare string or a
+# table with its keys in any order, is checked); refuses `allow-invalid` and
+# any key or top-level table it does not know; and checks that every crate
+# named below is reachable from a workspace member over normal dependency edges
+# in `cargo metadata`, so a rotten entry fails the gate instead.
+#
+# Outbound connections are gated too. `tokio::net::TcpStream::connect` is
+# inheritable on Windows for the same reason (mio's plain `socket()`): a child
+# spawned while the connection is open holds it open after BioRouter drops it,
+# so no FIN reaches the peer. This list used to leave it out, on the argument
+# that its only production callers were short-lived CLI connections on paths
+# that spawn no child. That was a claim about where today's call sites happen
+# to sit, not a rule a new call site would be held to (one of them, the
+# readiness probe in `biorouter serve`, already lives in a function that owns
+# the daemon it spawned), and it let a one-token edit of the tunnel's connect
+# back to tokio's pass the gate. Every production connect now goes through
+# `biorouter::net::connect_non_inheritable`, which takes the same arguments and
+# returns the same type, so nothing is left to exempt.
+#
+# Out of reach of any lint in this workspace: a dependency that binds a tokio
+# listener INSIDE its own code (hyper 0.14's `Server::bind`, warp's `run`,
+# rmcp's SSE server). None is called from production code today; the reason
+# text below is what a reviewer should apply to a new one.
+
+disallowed-methods = [
+  # Listeners. mio 1.1.1 creates every Windows socket with a plain `socket()`
+  # call, which Windows makes inheritable, and std's `Command` spawns with
+  # `bInheritHandles = TRUE`: a child keeps the port bound after BioRouter
+  # closes it. The full reasoning is on `biorouter::net::bind_non_inheritable`.
+  { path = "tokio::net::TcpListener::bind", reason = "on Windows every child process inherits this listening socket and keeps its port bound after the listener is dropped; bind with `biorouter::net::bind_non_inheritable` (same arguments, same return type)" },
+  { path = "mio::net::TcpListener::bind", reason = "mio creates an inheritable socket on Windows, so a child keeps the port bound; bind with `biorouter::net::bind_non_inheritable`" },
+  { path = "tokio::net::UdpSocket::bind", reason = "inheritable on Windows for the same reason as tokio's TcpListener::bind (see `biorouter::net::bind_non_inheritable`); bind a `std::net::UdpSocket`, which is not, and convert it with `tokio::net::UdpSocket::from_std`" },
+  { path = "mio::net::UdpSocket::bind", reason = "inheritable on Windows for the same reason as tokio's TcpListener::bind (see `biorouter::net::bind_non_inheritable`); bind a `std::net::UdpSocket` and convert it with `tokio::net::UdpSocket::from_std`" },
+
+  # Outbound TCP. The same mio socket, seen from the connecting end.
+  { path = "tokio::net::TcpStream::connect", reason = "on Windows every child process inherits this socket and holds the connection open after the stream is dropped, so no FIN reaches the peer; connect with `biorouter::net::connect_non_inheritable` (same arguments, same return type)" },
+  { path = "mio::net::TcpStream::connect", reason = "mio creates an inheritable socket on Windows, so a child holds the connection open; connect with `biorouter::net::connect_non_inheritable`" },
+
+  # The websocket connect family: each dials with `tokio::net::TcpStream::connect`
+  # (tokio-tungstenite 0.28 `src/connect.rs`), an inheritable socket on Windows.
+  # In `biorouterd`, which spawns MCP servers, shells and agents all day, a child
+  # would hold the tunnel's connection open after the daemon drops it, so no FIN
+  # reaches the relay until that child exits.
+  { path = "tokio_tungstenite::connect_async", reason = "dials an inheritable socket on Windows, which every child process then holds open; connect with `tunnel::ws_connect::connect_async_non_inheritable` (biorouter-server), or build the socket with `biorouter::net::connect_non_inheritable` and hand it to `tokio_tungstenite::client_async_tls_with_config`" },
+  { path = "tokio_tungstenite::connect_async_with_config", reason = "dials an inheritable socket on Windows, which every child process then holds open; connect with `biorouter::net::connect_non_inheritable` and hand the stream to `tokio_tungstenite::client_async_tls_with_config`" },
+  { path = "tokio_tungstenite::connect_async_tls_with_config", reason = "dials an inheritable socket on Windows, which every child process then holds open; connect with `biorouter::net::connect_non_inheritable` and hand the stream to `tokio_tungstenite::client_async_tls_with_config`" },
+]

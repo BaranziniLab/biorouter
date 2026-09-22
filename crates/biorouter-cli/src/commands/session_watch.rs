@@ -828,7 +828,7 @@ async fn connect_to_daemon_at(port: u16) -> Result<tokio::net::TcpStream> {
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!("{}", no_daemon_at(port)));
     }
-    Ok(tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?)
+    Ok(biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?)
 }
 
 async fn stream_request_bytes(
@@ -1013,7 +1013,8 @@ pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> 
     // `biorouter session list` forever. Timing out yields `Err`, which the
     // caller renders as `state unknown` — the honest answer.
     let raw = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
         stream
             .write_all(build_get_request("/sessions/running", DAEMON_HOST, &auth).as_bytes())
             .await?;
@@ -1107,7 +1108,8 @@ async fn post_json_to(
     }
     let request = build_protected_post_request(path, DAEMON_HOST, auth, body);
     let raw = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
         stream.write_all(request.as_bytes()).await?;
         let mut raw = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -1191,7 +1193,8 @@ pub(crate) async fn daemon_json_request(
         body.len()
     );
     let exchange = async {
-        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
         stream.write_all(request.as_bytes()).await?;
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await?;
