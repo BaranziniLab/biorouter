@@ -14,6 +14,30 @@
  * `crates/biorouter-mcp/tests/no_console_window_census.rs`. This is the same
  * tripwire for the half of the app that census cannot see.
  *
+ * # The two rules, and why the second one is the load-bearing one
+ *
+ * **Rule 2 first, because it is the one that actually governs.** Electron sets
+ * `EnvironmentFlags::kHideConsoleWindows` on every Node environment it creates
+ * (shell/common/node_bindings.cc, unconditionally, since Electron 16), so
+ * libuv enters its console-hiding branch for every spawn in the main process
+ * whether or not the caller passed `windowsHide`. What then decides whether
+ * `CREATE_NO_WINDOW` is really applied is the STDIO SHAPE: libuv ORs the flag
+ * in only if no stdio entry is an inherited fd (src/win/process.c ~1034-1042,
+ * deliberate since 2017 — inheriting a console and then severing it made child
+ * output disappear). So one `stdio: 'inherit'`, one raw fd, or a `fork()`
+ * without `silent: true` is a visible black box, and `windowsHide: true` next
+ * to it is a silent no-op that makes the diff look correct. That is the defect
+ * shape this file exists to catch, and it is invisible to a code review that is
+ * looking for a missing option.
+ *
+ * **Rule 1** is still worth having and is not the fix: every site states
+ * `windowsHide` explicitly. It costs a line, it hides a GUI-subsystem child's
+ * window (a different window from #368's), and it means the app does not
+ * depend silently on an embedder detail that Electron could drop. What it does
+ * NOT do is move the console-window behaviour on today's Electron —
+ * `scripts/windows-console.test.mjs` measures that on Windows and pins it, so
+ * the day it changes is a red build rather than a bug report.
+ *
  * # What it asserts
  *
  * Every call to a `child_process` spawning function, in every production file
@@ -49,8 +73,9 @@
  *     (`const f = spawn; f(...)`);
  *   * process creation that is not `child_process` at all. `node-pty` is the one
  *     such API in the tree and has its own assertion below;
- *   * whether the flag WORKS. That is a question only Windows can answer, and
- *     `src/utils/windowsConsoleWindow.test.ts` asks it there, with a control.
+ *   * whether any of it WORKS. That is a question only Windows can answer, and
+ *     `scripts/windows-console.test.mjs` asks it there — of plain Node AND of
+ *     the real Electron — with a control on every claim.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -86,7 +111,7 @@ export const VISIBLE_BY_DESIGN = [
     file: 'src/main.ts',
     match: "spawn('cmd.exe', startArgs",
     reason:
-      'cli:launch on Windows — the user clicked "open the CLI in a terminal", so the console window is the feature being delivered, not a side effect.',
+      'cli:launch on Windows — the user clicked "open the CLI in a terminal", so a window is wanted. It is delivered by `start`, not by this option; the option records the intent. Do not read this row as "windowsHide: false makes a window appear" — inside Electron it cannot.',
   },
   {
     file: 'src/main.ts',
@@ -193,6 +218,50 @@ export function spawnerNames(sourceFile) {
   return { direct, namespaces };
 }
 
+/**
+ * Does this options object inherit a standard handle?
+ *
+ * `'inherit'` in either spelling, and any raw fd number, reach libuv as
+ * UV_INHERIT_FD — which is the one thing that stops `CREATE_NO_WINDOW` being
+ * applied. `'pipe'`, `'overlapped'`, `'ignore'` and a passed stream do not.
+ */
+function stdioOf(objectLiteral) {
+  for (const property of objectLiteral.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const key = ts.isIdentifier(property.name)
+      ? property.name.text
+      : ts.isStringLiteral(property.name)
+        ? property.name.text
+        : null;
+    if (key !== 'stdio') continue;
+    const value = property.initializer;
+    if (ts.isStringLiteral(value)) {
+      return value.text === 'inherit' ? 'inherit' : 'safe';
+    }
+    if (ts.isArrayLiteralExpression(value)) {
+      for (const element of value.elements) {
+        if (ts.isStringLiteral(element) && element.text === 'inherit') return 'inherit';
+        if (ts.isNumericLiteral(element)) return 'inherit';
+      }
+      return 'safe';
+    }
+    // `stdio: [...] as ['pipe','pipe','pipe']` — read through the assertion.
+    const unwrapped = ts.isAsExpression(value) ? value.expression : value;
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      for (const element of unwrapped.elements) {
+        if (ts.isStringLiteral(element) && element.text === 'inherit') return 'inherit';
+        if (ts.isNumericLiteral(element)) return 'inherit';
+      }
+      return 'safe';
+    }
+    if (ts.isStringLiteral(unwrapped)) return unwrapped.text === 'inherit' ? 'inherit' : 'safe';
+    return 'unknown';
+  }
+  // Absent. `spawn`/`exec*` default to pipes, which is safe; `fork` defaults to
+  // 'inherit' unless `silent: true`, which is not, so it is answered separately.
+  return 'default';
+}
+
 /** `const NAME = { ... }` object literals, so an options identifier can be resolved. */
 function objectLiteralConsts(sourceFile) {
   const found = new Map();
@@ -266,15 +335,31 @@ export function collectSpawnSites(sourceText, fileName = 'file.ts') {
           (a) => !ts.isArrowFunction(a) && !ts.isFunctionExpression(a)
         );
         let state = 'no-options';
+        // `spawn`/`exec*` default to pipes; `fork` defaults to 'inherit' unless
+        // `silent: true`, so an options-less fork is already the hazard.
+        let stdio = callee.endsWith('fork') ? 'fork-default' : 'default';
         const last = args[args.length - 1];
+        const readOptions = (objectLiteral) => {
+          const value = windowsHideOf(objectLiteral);
+          state = value === true ? 'hidden' : value === false ? 'visible' : (value ?? 'missing');
+          if (value === 'unknown') state = 'unknown';
+          const shape = stdioOf(objectLiteral);
+          if (shape !== 'default') stdio = shape;
+          else if (callee.endsWith('fork')) {
+            const silent = objectLiteral.properties.some(
+              (property) =>
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name) &&
+                property.name.text === 'silent' &&
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword
+            );
+            stdio = silent ? 'safe' : 'fork-default';
+          }
+        };
         if (last && ts.isObjectLiteralExpression(last)) {
-          const value = windowsHideOf(last);
-          state = value === true ? 'hidden' : value === false ? 'visible' : (value ?? 'missing');
-          if (value === 'unknown') state = 'unknown';
+          readOptions(last);
         } else if (last && ts.isIdentifier(last) && consts.has(last.text)) {
-          const value = windowsHideOf(consts.get(last.text));
-          state = value === true ? 'hidden' : value === false ? 'visible' : (value ?? 'missing');
-          if (value === 'unknown') state = 'unknown';
+          readOptions(consts.get(last.text));
         } else if (last && couldBeOptions(last)) {
           // Something is being passed that this census cannot read. Reported as
           // its own state rather than waved through: "I could not tell" and "it
@@ -283,7 +368,7 @@ export function collectSpawnSites(sourceText, fileName = 'file.ts') {
         }
 
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-        sites.push({ callee, line: line + 1, state, text: node.getText(sourceFile) });
+        sites.push({ callee, line: line + 1, state, stdio, text: node.getText(sourceFile) });
       }
     }
     ts.forEachChild(node, visit);
@@ -358,6 +443,24 @@ export function auditTree(root = SRC_ROOT) {
 
     for (const site of collectSpawnSites(text, repoRelative)) {
       sites.push({ ...site, file: repoRelative });
+
+      // Rule 2, checked first because it is the one that decides what the user
+      // sees. An inherited fd stops libuv applying CREATE_NO_WINDOW, so this
+      // site shows a console window no matter what `windowsHide` says.
+      if (site.stdio === 'inherit' || site.stdio === 'fork-default' || site.stdio === 'unknown') {
+        violations.push({
+          ...site,
+          file: repoRelative,
+          why:
+            site.stdio === 'unknown'
+              ? 'stdio is not a literal this census can read, so whether it inherits an fd is unknown'
+              : site.stdio === 'fork-default'
+                ? "fork() without `silent: true` defaults to stdio 'inherit', which shows a console window"
+                : 'stdio inherits a standard handle, so CREATE_NO_WINDOW is never applied and this shows a console window whatever windowsHide says',
+        });
+        continue;
+      }
+
       if (site.state === 'hidden') continue;
       if (site.state === 'visible') {
         if (isAllowedVisible(repoRelative, site.text)) continue;
