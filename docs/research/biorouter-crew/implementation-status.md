@@ -6,20 +6,24 @@ Each row must have an evidence path before it can be marked `pass`.
 
 Legend: `not-run` = no execution yet; `blocked` = an external prerequisite is
 missing; `fail` = an observed defect; `pass` = the required behavior was
-observed on the same revision. The current baseline is `35dc2c7d5`; the Crew
-implementation is partially landed; focused broker tests, the bounded
-core/server check, daemon build, OpenAPI generation, and UI lint/typecheck
-have passed. Alice, Bob, and Carol each visibly reached Crew from isolated
-profiles; the cohesive three-user broker workflow has not started.
+observed on the same revision. The implementation checkpoint is `e9a09c6c`
+plus subsequent product hardening and Luna regressions in this worktree.
+Focused broker (22 cases), managed-policy, MCP and CrewManager tests have
+passed. The complete required check sequence and fresh application binaries
+remain under validation. Alice's initial host setup and message have app and
+journal observations. The previous Bob enrollment fixture was manually
+altered outside the normal save flow and is not nominal product evidence;
+Carol's completed UI enrollment was not established. A clean three-profile
+run is required. See [fixture integrity correction](qa-fixture-integrity.md).
 
 ## Release gates
 
 | ID | Gate and acceptance invariant | Type/evidence required | Status | Owner / next action |
 |---|---|---|---|---|
-| G01 | Actual BioRouter Electron development app is built from this worktree and three independent app clients drive the visible Crew UI. | Build command, revision, sanitized screenshots/video, action timeline | pass | Alice, Bob, and Carol each launched from isolated profile roots and visibly reached `/crew`; profile labels, empty state, workspace selector, and setup validation were observed. Bob's fresh daemon (`target/debug/biorouterd`, SHA-256 `c3c649205bd36050420e38ab2cc455cff596f25b8997e15a31beab75f9249c70`) completed first-host preparation and recovered the same public bootstrap key after an exact app restart. |
+| G01 | Actual BioRouter Electron development app is built from this worktree and three independent app clients drive the visible Crew UI. | Build command, revision, sanitized screenshots/video, action timeline | not-run | Alice initial setup/post and Bob visible onboarding were observed, but the previous three-client claim lacked complete Carol evidence and Bob's enrollment fixture was manually altered. Revalidate three independent, simultaneous clients with fresh profile/binary provenance; see `qa-fixture-integrity.md`. |
 | G02 | Three real Unix accounts use distinct UIDs, home directories, SSH identities and profiles; no shared key or copied provider credential. | Disposable AWS fixture report with account/key/UID mapping | blocked | AWS fixture ready; source transfer approval pending |
-| G03 | Alice hosts the broker from a user-writable home; product install/start/restart/recovery is rootless and creates no system account/group/service/global SSH change. | Privilege trace, filesystem manifest, process UID, install/recovery transcript | not-run | Broker + QA |
-| G04 | Alice, Bob and Carol complete connect/enroll/general/analysis/files/owned-agent/context/revocation/recovery workflow with human chat before model selection. | Three-app evidence bundle and event IDs | not-run | Requires G01–G03 and broker reachability |
+| G03 | Alice hosts the broker from a user-writable home; product install/start/restart/recovery is rootless and creates no system account/group/service/global SSH change. | Privilege trace, filesystem manifest, process UID, install/recovery transcript | not-run | Alice's Linux fixture install/start passed as UID 1101 with state under `/home/alice/.local/share/biorouter-crew/lab`; restart/recovery and no-global-change audit remain. |
+| G04 | Alice, Bob and Carol complete connect/enroll/general/analysis/files/owned-agent/context/revocation/recovery workflow with human chat before model selection. | Three-app evidence bundle and event IDs | not-run | Alice alone connected to the local broker, initialized the workspace, created `Synthetic Lab/#general`, and posted a human message visible as Restricted. Broker journal sequences 4 (auth.bootstrap), 5 (team.create), and 6 (message.post) confirm the effects. Bob/Carol enrollment and the multi-user workflow remain pending. |
 | G05 | Real provider positive pass uses the actual BioRouter provider path and a public-safe fixture; negative pass uses a designated synthetic public sink and observes zero forbidden canary bytes. | Provider identity, sink digest/bytes, dispatch/tool/context traces | not-run | Parent/provider + QA |
 | G06 | 10, 30 and 50 independently authenticated Unix participants exercise bounded load; the 50-user target is a 30-minute soak with three graphical clients retained. | Workload seed, p50/p95/p99, CPU/RSS/open files, journal/replay, UI responsiveness | not-run | QA; run only after G04 |
 | G07 | macOS, Windows and Linux client compatibility is measured separately for OpenSSH/MFA/process lifecycle. | Per-OS run records; no macOS substitution for other OSes | not-run | QA/platform |
@@ -99,7 +103,13 @@ server-side denial and absence-of-effect assertion.
 - AWS has a verified three-account fixture prepared by the AWS lane, but the
   source transfer approval needed to move the current broker into that fixture
   is pending. No source credentials or private keys were copied here.
-- Focused broker tests: 20 passed (`crates/biorouter-crew/tests/broker_contract.rs`); focused hook-policy tests: 35 passed (`crates/biorouter/src/hooks/mod.rs`). Core/server/Crew check: passed. `biorouterd`
+- A separate local-only Docker Linux fixture is reachable at
+  `127.0.0.1:56928` with pinned host keys and distinct synthetic users
+  `alice=1101`, `bob=1102`, and `carol=1103`; see
+  `local-linux-ssh-fixture-report.md`. Alice's fresh UI preparation produced a
+  public bootstrap key, but the rootless broker has not yet been started in
+  that fixture.
+- Post-merge focused broker tests: 20 passed (`crates/biorouter-crew/tests/broker_contract.rs`); hook-policy tests: 35 passed (`crates/biorouter/src/hooks/mod.rs`); managed-admission tests: 10 passed (`crates/biorouter/src/managed/mod.rs`); MCP sampling/routing tests: 4 passed (`crates/biorouter/src/agents/mcp_client.rs`). Core/server/Crew check, fresh `biorouterd` build, OpenAPI schema, UI lint/typecheck/theme/contrast/token, version, and cross-drift checks passed. Clippy currently fails on two product string-slice lints in `crates/biorouter/src/crew/mod.rs:160,272`.
   build: passed. OpenAPI and frontend API generation: passed. UI lint,
   typecheck, theme, contrast and token checks: passed. Visible three-profile
   three-user broker workflow, real provider positive/negative sink checks, and 50-user soak

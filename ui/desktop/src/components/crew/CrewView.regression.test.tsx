@@ -115,7 +115,9 @@ describe('CrewView action and uncertain-start regressions', () => {
     vi.clearAllMocks();
     defaultHttp();
     let next = 1;
-    vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(() => `request-${next++}`);
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(
+      () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`,
+    );
   });
 
   it('retains a start action error after a successful manual refresh', async () => {

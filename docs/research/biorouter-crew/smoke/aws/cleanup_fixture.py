@@ -13,8 +13,23 @@ def aws(region: str, *args: str, check: bool = True) -> dict:
     if check and result.returncode:
         raise RuntimeError(result.stderr.decode(errors="replace"))
     if not check:
-        return {"returncode": result.returncode, "stderr": result.stderr.decode()}
+        payload = {"returncode": result.returncode, "stderr": result.stderr.decode()}
+        if result.returncode == 0 and result.stdout.strip():
+            decoded = json.loads(result.stdout)
+            if isinstance(decoded, dict):
+                payload.update(decoded)
+        return payload
     return json.loads(result.stdout) if result.stdout.strip() else {}
+
+
+def wait_not_found(region: str, args: tuple[str, ...], marker: str, label: str) -> None:
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        result = aws(region, *args, check=False)
+        if result.get("returncode") and marker in result.get("stderr", ""):
+            return
+        time.sleep(5)
+    raise RuntimeError(f"{label} deletion was not confirmed")
 
 
 def main() -> int:
@@ -39,7 +54,7 @@ def main() -> int:
                     cleanup["instance"] = "terminated"
                     break
                 time.sleep(5)
-            if cleanup.get("instance") != "terminated":
+            if cleanup.get("instance") not in {"terminated", "deleted"}:
                 raise RuntimeError("instance termination was not confirmed")
             for volume in resources.get("volumes", []):
                 deadline = time.monotonic() + 180
@@ -52,10 +67,24 @@ def main() -> int:
                 if cleanup.get(volume) != "deleted":
                     raise RuntimeError(f"volume cleanup was not confirmed: {volume}")
         if resources.get("security_group"):
-            aws(region, "ec2", "delete-security-group", "--group-id", resources["security_group"])
+            group = resources["security_group"]
+            aws(region, "ec2", "delete-security-group", "--group-id", group)
+            wait_not_found(
+                region,
+                ("ec2", "describe-security-groups", "--group-ids", group),
+                "InvalidGroup.NotFound",
+                f"security group {group}",
+            )
             cleanup["security_group"] = "deleted"
         if resources.get("bootstrap_key_pair"):
-            aws(region, "ec2", "delete-key-pair", "--key-name", resources["bootstrap_key_pair"])
+            key_name = resources["bootstrap_key_pair"]
+            aws(region, "ec2", "delete-key-pair", "--key-name", key_name)
+            wait_not_found(
+                region,
+                ("ec2", "describe-key-pairs", "--key-names", key_name),
+                "InvalidKeyPair.NotFound",
+                f"key pair {key_name}",
+            )
             cleanup["bootstrap_key_pair"] = "deleted"
         cleanup["status"] = "verified"
         for key in [state.get("bootstrap_key_path"), state.get("host_key", {}).get("known_hosts_path"), state.get("connection_config")]:
