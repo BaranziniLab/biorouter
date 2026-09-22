@@ -62,7 +62,7 @@ describe('SessionInsights', () => {
     expect(screen.getByText('Loading usage')).toBeInTheDocument();
   });
 
-  it('renders persisted activity immediately while refreshing', () => {
+  it('renders persisted activity immediately while refreshing', async () => {
     cacheHomeActivity(activity);
 
     render(
@@ -73,7 +73,7 @@ describe('SessionInsights', () => {
 
     expect(screen.getByText('Usage heatmap 7')).toBeInTheDocument();
     expect(screen.queryByText('Loading usage')).not.toBeInTheDocument();
-    expect(mocks.getSessionActivity).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.getSessionActivity).toHaveBeenCalledTimes(1));
   });
 
   it('renders refreshed activity once the request resolves', async () => {

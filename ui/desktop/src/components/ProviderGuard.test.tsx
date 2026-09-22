@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
   getProviders: vi.fn(),
   navigate: vi.fn(),
+  location: { pathname: '/' },
 }));
 
 vi.mock('./ConfigContext', () => ({
@@ -20,6 +21,7 @@ vi.mock('./ConfigContext', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
+  useLocation: () => mocks.location,
 }));
 
 /**
@@ -75,6 +77,7 @@ function configReads({ provider = '', skipped = false }: { provider?: string; sk
 describe('ProviderGuard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.location.pathname = '/';
     configReads({});
     mocks.upsert.mockResolvedValue(undefined);
     mocks.getProviders.mockResolvedValue([]);
@@ -115,6 +118,7 @@ describe('ProviderGuard', () => {
 describe('ProviderGuard — entering without a provider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.location.pathname = '/';
     configReads({});
     mocks.upsert.mockResolvedValue(undefined);
     mocks.getProviders.mockResolvedValue([]);
@@ -169,6 +173,24 @@ describe('ProviderGuard — entering without a provider', () => {
     await waitFor(() => expect(mocks.upsert).toHaveBeenCalled());
     expect(screen.getByText('CATALOG')).toBeInTheDocument();
     expect(screen.queryByText('Application')).toBeNull();
+  });
+
+  it('lets Crew open without persisting a global onboarding skip', async () => {
+    mocks.location.pathname = '/crew';
+    const view = renderGuard();
+
+    expect(await screen.findByText('Application')).toBeInTheDocument();
+    expect(mocks.upsert).not.toHaveBeenCalledWith(ONBOARDING_SKIPPED_KEY, true, false);
+
+    mocks.location.pathname = '/';
+    view.rerender(
+      <ProviderGuard didSelectProvider={false}>
+        <div>Application</div>
+      </ProviderGuard>
+    );
+
+    expect(await screen.findByText('CATALOG')).toBeInTheDocument();
+    expect(mocks.upsert).not.toHaveBeenCalledWith(ONBOARDING_SKIPPED_KEY, true, false);
   });
 });
 
