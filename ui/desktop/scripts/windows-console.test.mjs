@@ -86,20 +86,47 @@ const MINUTE = 60_000;
 
 const PWSH = 'powershell.exe';
 
-test(
-  'CONTROL: a plain Node spawn with no windowsHide shows a console window',
-  onWindows,
-  async () => {
-    const verdict = await askFromHere(PWSH, probeArgs, { stdio: 'pipe' }, 'node control');
-    assert.equal(
-      verdict,
-      'visible',
-      'the control did not show a window, so this machine cannot demonstrate the bug and every other assertion here proves nothing'
+/**
+ * What this harness can measure, asked once.
+ *
+ * A console-subsystem parent that owns NO console does not hand its children a
+ * fresh one — they get none. Measured twice, independently: a peer's agent shell
+ * returned `none` for all six cases of an earlier version of this file, and
+ * GitHub's windows-latest runner does the same, because the runner agent is a
+ * service and `node` under it has no console. Both readings look exactly like
+ * "Node hides console windows by default", and both are the harness, not Node.
+ *
+ * So the Node-level cases below are only meaningful from a console-BEARING
+ * parent, and they say so rather than asserting into the void. What keeps the
+ * file from passing vacuously in that case is the Electron block: Electron is a
+ * GUI-subsystem parent, which DOES give a console child a new console, so its
+ * controls draw a real window on the very runner where these cannot. At least
+ * one control here produces `visible` in every environment, and that is the
+ * property that makes the rest of the file mean anything.
+ */
+let harnessVerdict = null;
+async function harnessConsole() {
+  if (harnessVerdict === null) {
+    harnessVerdict = await askFromHere(PWSH, probeArgs, { stdio: 'pipe' }, 'harness control');
+  }
+  return harnessVerdict;
+}
+
+test('CONTROL: does this harness own a console to hand down?', onWindows, async () => {
+  const verdict = await harnessConsole();
+  assert.ok(
+    verdict === 'visible' || verdict === 'none',
+    `a spawn with no windowsHide reported ${JSON.stringify(verdict)}. It should be 'visible' from a console-bearing parent, or 'none' from a console-less one; 'hidden' would mean something is applying SW_HIDE that nobody asked for.`
+  );
+  if (verdict === 'none') {
+    console.log(
+      '# this harness owns no console, so the Node-level cases cannot measure anything here; the Electron block carries the proof'
     );
   }
-);
+});
 
 test('windowsHide: true hides it under plain Node', onWindows, async () => {
+  if ((await harnessConsole()) !== 'visible') return;
   const verdict = await askFromHere(
     PWSH,
     probeArgs,
@@ -110,6 +137,7 @@ test('windowsHide: true hides it under plain Node', onWindows, async () => {
 });
 
 test('a grandchild behind a hidden cmd.exe stays hidden', onWindows, async () => {
+  if ((await harnessConsole()) !== 'visible') return;
   const verdict = await askFromHere(
     'cmd.exe',
     (out) => ['/d', '/s', '/c', PWSH, ...probeArgs(out)],
@@ -126,6 +154,7 @@ test(
   'CONTROL: the same grandchild behind an unhidden cmd.exe shows a window',
   onWindows,
   async () => {
+    if ((await harnessConsole()) !== 'visible') return;
     const verdict = await askFromHere(
       'cmd.exe',
       (out) => ['/d', '/s', '/c', PWSH, ...probeArgs(out)],

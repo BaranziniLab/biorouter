@@ -304,10 +304,10 @@ test('the Windows behavioural test still exists, and still has its controls', ()
     join(SRC_ROOT, '..', 'scripts', 'windows-console.test.mjs'),
     'utf8'
   );
-  assert.match(
-    behavioural,
-    /CONTROL: a plain Node spawn with no windowsHide shows a console window/
-  );
+  // Every control the file carries, by name. A control that is renamed away or
+  // quietly deleted is how a behavioural test becomes decoration, and this is
+  // the one place that failure is visible on every platform.
+  assert.match(behavioural, /CONTROL: does this harness own a console to hand down\?/);
   assert.match(
     behavioural,
     /CONTROL: the same grandchild behind an unhidden cmd\.exe shows a window/
