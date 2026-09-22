@@ -1,0 +1,82 @@
+{
+  "probe_scope": "temporary synthetic fixtures; no deployment or PHI",
+  "results": [
+    {
+      "elapsed_seconds": 0.988,
+      "primitives": {
+        "checks": {
+          "binary_blob_1mib_atomic_publish_hash": true,
+          "claimed_name_differs_from_kernel_identity": true,
+          "fixture_files_mode_0600": true,
+          "jsonl_fsync_reopen_exact": true,
+          "private_fixture_mode_0700": true,
+          "resume_after_sequence_two": true,
+          "temporary_fixture_removed": true,
+          "torn_tail_detected_without_losing_complete_records": true,
+          "torn_tail_recovery_reopens": true,
+          "uds_kernel_uid_matches_ssh_account": true,
+          "uds_thread_completed": true
+        },
+        "fixture_filesystem": "xfs",
+        "home_filesystem": "nfs",
+        "passed": true,
+        "platform": "Linux",
+        "python": "3.9.16",
+        "scope": "synthetic primitives only, one authenticated Unix account",
+        "uid": 1135,
+        "user": "wagu"
+      },
+      "returncode": 0,
+      "sftp_subsystem": {
+        "pwd_command_completed": true,
+        "returncode": 0
+      },
+      "ssh_stdio_binary_roundtrip": {
+        "bytes_received": 1048576,
+        "bytes_sent": 1048576,
+        "returncode": 0,
+        "sha256_match": true
+      },
+      "target": "wagu@narrows-login.sdsc.edu"
+    },
+    {
+      "elapsed_seconds": 1.068,
+      "primitives": {
+        "checks": {
+          "binary_blob_1mib_atomic_publish_hash": true,
+          "claimed_name_differs_from_kernel_identity": true,
+          "fixture_files_mode_0600": true,
+          "jsonl_fsync_reopen_exact": true,
+          "private_fixture_mode_0700": true,
+          "resume_after_sequence_two": true,
+          "temporary_fixture_removed": true,
+          "torn_tail_detected_without_losing_complete_records": true,
+          "torn_tail_recovery_reopens": true,
+          "uds_kernel_uid_matches_ssh_account": true,
+          "uds_thread_completed": true
+        },
+        "fixture_filesystem": "ext2/ext3",
+        "home_filesystem": "zfs",
+        "passed": true,
+        "platform": "Linux",
+        "python": "3.12.7",
+        "scope": "synthetic primitives only, one authenticated Unix account",
+        "uid": 1020,
+        "user": "wanjun"
+      },
+      "returncode": 0,
+      "sftp_subsystem": {
+        "pwd_command_completed": true,
+        "returncode": 0
+      },
+      "ssh_stdio_binary_roundtrip": {
+        "bytes_received": 1048576,
+        "bytes_sent": 1048576,
+        "returncode": 0,
+        "sha256_match": true
+      },
+      "target": "wanjun@leo.ucsf.edu"
+    }
+  ],
+  "tested_at_utc": "2026-09-22T03:19:51.081257+00:00"
+}
