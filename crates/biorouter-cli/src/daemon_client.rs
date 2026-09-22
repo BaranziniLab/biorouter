@@ -788,10 +788,8 @@ async fn wait_for_daemon_stop(expected: &Descriptor) -> Result<Value> {
                 error.kind() == std::io::ErrorKind::WouldBlock,
                 "Stop accepted, but daemon owner lock could not be checked: {error}"
             );
-            match std::fs::symlink_metadata(daemon_runtime::descriptor_path()) {
-                Ok(_) => {
-                    let current = daemon_runtime::read_descriptor()
-                        .context("Stop accepted, but current daemon discovery is invalid")?;
+            match daemon_runtime::read_descriptor() {
+                Ok(current) => {
                     if current.identity() != expected.identity() {
                         tokio::time::timeout_at(deadline, verify_identity(&current))
                             .await
@@ -803,9 +801,13 @@ async fn wait_for_daemon_stop(expected: &Descriptor) -> Result<Value> {
                             "replacement_instance_id":current.instance_id}));
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
                 Err(error) => {
-                    return Err(error).context("Stop accepted, but discovery is inaccessible");
+                    return Err(error)
+                        .context("Stop accepted, but current daemon discovery is invalid");
                 }
             }
             ensure!(
@@ -952,6 +954,74 @@ mod tests {
             result["instance_id"],
             "22222222-2222-4222-8222-222222222222"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stop_does_not_confirm_when_descriptor_disappears_before_lock_release() {
+        let directory = runtime_dir();
+        create_owner_lock(&directory);
+        let owner = open_daemon_owner_lock().expect("owner lock opens");
+        hold_lock(&owner);
+        let expected = expected_descriptor(&directory);
+        let mut waiter = Box::pin(wait_for_daemon_stop(&expected));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut waiter)
+                .await
+                .is_err(),
+            "a missing descriptor cannot prove shutdown while the owner lock is held"
+        );
+
+        drop(owner);
+        let result = waiter
+            .await
+            .expect("releasing the owner lock confirms stop");
+        assert!(result["stopped"].as_bool().unwrap_or(false));
+        assert_eq!(
+            result["instance_id"],
+            "22222222-2222-4222-8222-222222222222"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stop_refuses_malformed_and_insecure_existing_descriptors() {
+        let directory = runtime_dir();
+        create_owner_lock(&directory);
+        let owner = open_daemon_owner_lock().expect("owner lock opens");
+        hold_lock(&owner);
+        let descriptor_path = daemon_runtime::descriptor_path();
+
+        fs::write(&descriptor_path, b"{not-json}").expect("malformed descriptor writes");
+        fs::set_permissions(&descriptor_path, fs::Permissions::from_mode(0o600))
+            .expect("malformed descriptor mode sets");
+        let expected = expected_descriptor(&directory);
+        let error = wait_for_daemon_stop(&expected)
+            .await
+            .expect_err("malformed descriptor must refuse shutdown confirmation");
+        assert!(
+            format!("{error:#}").contains("current daemon discovery is invalid"),
+            "unexpected malformed descriptor refusal: {error:#}"
+        );
+
+        fs::write(
+            &descriptor_path,
+            serde_json::to_vec(&expected).expect("descriptor serializes"),
+        )
+        .expect("insecure descriptor writes");
+        fs::set_permissions(&descriptor_path, fs::Permissions::from_mode(0o644))
+            .expect("insecure descriptor mode sets");
+        let error = wait_for_daemon_stop(&expected)
+            .await
+            .expect_err("insecure descriptor must refuse shutdown confirmation");
+        assert!(
+            format!("{error:#}").contains("current daemon discovery is invalid"),
+            "unexpected insecure descriptor refusal: {error:#}"
+        );
+
+        drop(owner);
+        fs::remove_file(descriptor_path).expect("descriptor removes");
     }
 
     #[test]
