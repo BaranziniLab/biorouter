@@ -33,11 +33,16 @@
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
 
+#[path = "support/reserved_port.rs"]
+mod reserved_port;
+
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use reserved_port::ReservedPort;
 
 /// How long `serve` may take to stop. Its grace for the daemon is ten seconds;
 /// this leaves room for a loaded machine beyond that, so a pass means "the
@@ -81,16 +86,6 @@ fn require_a_daemon_from_this_tree() {
          `cargo build -p biorouter-server --bin biorouterd`.",
         daemon.display()
     );
-}
-
-/// A port nothing is listening on. Released before `serve` binds it, which
-/// leaves a window another process could take it in; `serve` then refuses to
-/// start and the readiness wait reports that, rather than a wrong result.
-fn free_port() -> u16 {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .expect("find a free port")
 }
 
 fn port_is_open(port: u16) -> bool {
@@ -173,6 +168,9 @@ struct Served {
     /// from a later process that happens to reuse its pid.
     daemon_identity: String,
     port: u16,
+    /// Keeps [`Self::port`] from being chosen by another test until the
+    /// daemon on it has been stopped. Dropped after [`Drop::drop`] runs.
+    _reserved: ReservedPort,
     root: tempfile::TempDir,
 }
 
@@ -200,7 +198,8 @@ impl Served {
         std::fs::create_dir_all(&home).unwrap();
         let log = std::fs::File::create(root.path().join("serve.log")).unwrap();
 
-        let port = free_port();
+        let reserved = reserved_port::reserve();
+        let port = reserved.port;
         let mut command = Command::new(biorouter());
         command
             .args(["serve", "--port", &port.to_string()])
@@ -229,6 +228,7 @@ impl Served {
             daemon: 0,
             daemon_identity: String::new(),
             port,
+            _reserved: reserved,
             root,
         };
         let ready = wait_for(READY_BUDGET, || {
@@ -238,6 +238,22 @@ impl Served {
         assert!(
             ready.is_some() && matches!(served.serve.try_wait(), Ok(None)),
             "serve did not come up on port {port}:\n{}",
+            served.log()
+        );
+        // The daemon answering is not `serve` knowing it is. `serve` prints its
+        // URL only once its own readiness probe (`wait_until_ready`) connects,
+        // and a probe that never connects leaves everything checked above true:
+        // the daemon answers and `serve` keeps waiting, then gives up after its
+        // own 60 s without having printed an address. A mutant probe that
+        // always failed passed every test here until this wait was added.
+        let url = format!("http://127.0.0.1:{port}/");
+        let announced = wait_for(READY_BUDGET, || {
+            served.log().contains(&url) || matches!(served.serve.try_wait(), Ok(Some(_)))
+        });
+        assert!(
+            announced.is_some() && served.log().contains("Biorouter is serving at"),
+            "the daemon answers on port {port}, but serve never announced {url}: its \
+             readiness probe did not succeed:\n{}",
             served.log()
         );
         served.daemon = served.only_child();

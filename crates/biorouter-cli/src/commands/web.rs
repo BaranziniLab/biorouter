@@ -357,7 +357,7 @@ pub async fn handle_web(
         }
     }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = biorouter::net::bind_non_inheritable(addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())

@@ -33,11 +33,16 @@
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
 
+#[path = "support/reserved_port.rs"]
+mod reserved_port;
+
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use reserved_port::ReservedPort;
 
 /// How long the command may take to stop. Its grace for the daemon is ten
 /// seconds; this leaves room for a loaded machine beyond that, so a pass means
@@ -81,16 +86,6 @@ fn require_a_daemon_from_this_tree() {
          `cargo build -p biorouter-server --bin biorouterd`.",
         daemon.display()
     );
-}
-
-/// A port nothing is listening on. Released before the daemon binds it, which
-/// leaves a window another process could take it in; the readiness wait then
-/// reports that rather than a wrong result.
-fn free_port() -> u16 {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .expect("find a free port")
 }
 
 fn port_is_open(port: u16) -> bool {
@@ -173,6 +168,9 @@ struct Served {
     /// a later process that happens to reuse its pid.
     daemon_identity: String,
     port: u16,
+    /// Keeps [`Self::port`] from being chosen by another test until the
+    /// daemon on it has been stopped. Dropped after [`Drop::drop`] runs.
+    _reserved: ReservedPort,
     root: tempfile::TempDir,
 }
 
@@ -195,7 +193,8 @@ impl Served {
         .unwrap();
         let log = std::fs::File::create(root.path().join("serve.log")).unwrap();
 
-        let port = free_port();
+        let reserved = reserved_port::reserve();
+        let port = reserved.port;
         let serve = Command::new(biorouter())
             .args(["apps", "serve", APP_ID])
             // Nothing here may touch the developer's own configuration,
@@ -215,6 +214,7 @@ impl Served {
             daemon: 0,
             daemon_identity: String::new(),
             port,
+            _reserved: reserved,
             root,
         };
         let ready = wait_for(READY_BUDGET, || {

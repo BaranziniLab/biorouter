@@ -11,6 +11,8 @@ check-everything:
     cargo fmt --all
     @echo "  → Running clippy linting..."
     ./scripts/clippy-lint.sh
+    @echo "  → Checking no production socket is one a Windows child process inherits..."
+    ./scripts/check-non-inheritable-sockets.sh
     @echo "  → Checking UI code formatting..."
     cd ui/desktop && npm run lint:check
     @echo "  → Validating OpenAPI schema..."

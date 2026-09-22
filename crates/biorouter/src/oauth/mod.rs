@@ -67,7 +67,7 @@ pub async fn oauth_flow(
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::net::bind_non_inheritable(addr).await?;
     let used_addr = listener.local_addr()?;
     tokio::spawn(async move {
         let result = axum::serve(listener, app).await;

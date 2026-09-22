@@ -224,11 +224,17 @@ impl LoopbackBridge {
         // its own handle to the listening socket, and a socket stays open until
         // its last handle closes: the port can go on accepting after Biorouter
         // closes it, for as long as that child lives. (Read from the mio and std
-        // sources and Microsoft's `WSASocketW` docs; not reproduced on Windows.)
+        // sources and Microsoft's `WSASocketW` docs, then measured on
+        // windows-latest by `crate::net`'s inheritance tests.)
         // On Unix the two paths produce the same socket (close-on-exec,
-        // `SO_REUSEADDR`, `SO_NOSIGPIPE` on Apple, non-blocking); the only
-        // difference is a listen backlog of 128 instead of 1024, which is ample
-        // for one child's tool calls.
+        // `SO_REUSEADDR`, `SO_NOSIGPIPE` on Apple, non-blocking). The one
+        // difference is the listen backlog: std asks for 128, and mio asks for
+        // -1, which the kernel reads as its own maximum. On Linux that is
+        // `net.core.somaxconn` (4096, measured in Docker), so the queue is 128
+        // where tokio's would be 4096. On macOS the maximum is
+        // `kern.ipc.somaxconn`, 128 by default, and on Windows mio asks for 128
+        // too, so on both the two are the same. 128 pending connections is
+        // ample for one child's tool calls.
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;

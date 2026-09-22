@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 use url::Url;
 
@@ -488,9 +488,12 @@ async fn run_single_connection(
 
     info!("Connecting to {}...", url);
 
+    // Not `tokio_tungstenite::connect_async`, whose socket every child the
+    // daemon spawns while the tunnel is up would inherit on Windows, and hold
+    // open after this connection is dropped (see `ws_connect`).
     let ws_stream = match tokio::time::timeout(
         Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-        connect_async(url.clone()),
+        super::ws_connect::connect_async_non_inheritable(url.clone()),
     )
     .await
     {

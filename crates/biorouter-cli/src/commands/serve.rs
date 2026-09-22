@@ -559,7 +559,7 @@ async fn wait_until_ready(host: &str, port: u16, child: &mut Child) -> Result<()
             for addr in addrs {
                 let attempt = tokio::time::timeout(
                     Duration::from_millis(250),
-                    tokio::net::TcpStream::connect(addr),
+                    biorouter::net::connect_non_inheritable(addr),
                 );
                 if matches!(attempt.await, Ok(Ok(_))) {
                     return Ok(());

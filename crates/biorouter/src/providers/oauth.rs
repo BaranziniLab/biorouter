@@ -334,7 +334,7 @@ impl OAuthFlow {
         // Otherwise, use the requested port
         let bind_port = requested_port.unwrap_or(0);
         let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
-        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let listener = crate::net::bind_non_inheritable(addr).await?;
 
         let actual_port = listener.local_addr()?.port();
 
