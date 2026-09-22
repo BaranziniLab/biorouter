@@ -25,7 +25,15 @@ async function main() {
     { name: 'pipe-without-windowsHide', stdio: 'pipe' },
     { name: 'pipe-with-windowsHide', stdio: 'pipe', windowsHide: true },
     { name: 'ignore-without-windowsHide', stdio: 'ignore' },
+    // The inherit PAIR, not just one arm. libuv sets STARTF_USESHOWWINDOW
+    // unconditionally (process.c, nine lines above the CREATE_NO_WINDOW block),
+    // so `windowsHide: true` also asks for SW_HIDE — and Microsoft says
+    // STARTUPINFO "affects the console window if a new console is created for
+    // the process". Whether SW_HIDE rescues an inherit-stdio spawn is therefore
+    // an open question that only these two cases together can answer: one arm
+    // alone cannot tell "inherit is safe" from "this machine never draws".
     { name: 'inherit-with-windowsHide', stdio: 'inherit', windowsHide: true },
+    { name: 'inherit-without-windowsHide', stdio: 'inherit' },
   ];
 
   const results = {};
