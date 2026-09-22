@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-crew"
-version = "1.91.0"
+version = "1.91.1"
 dependencies = [
  "anyhow",
  "ed25519-dalek",

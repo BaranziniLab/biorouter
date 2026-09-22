@@ -1160,6 +1160,105 @@ mod tests {
         );
     }
 
+    fn scoped_registry_fixture(root: &std::path::Path, session: &str) {
+        let crew = root.join("config/crew");
+        std::fs::create_dir_all(&crew).unwrap();
+        std::fs::write(
+            crew.join("connections.json"),
+            serde_json::json!({
+                "connections": [],
+                "scopes": {
+                    session: {
+                        "connection_id": "fixture-connection",
+                        "run_id": "fixture-run",
+                        "channel_id": "fixture-channel",
+                        "source_channels": ["fixture-channel"],
+                        "epoch": 0,
+                        "provider_binding": "fixture-provider",
+                        "public_provider": false,
+                        "origin_restricted": false,
+                        "expired": false
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shared_provider_sampling_rejects_idle_crew_scope() {
+        let root = tempfile::tempdir().unwrap();
+        scoped_registry_fixture(root.path(), "crew-session");
+        let previous = std::env::var_os("BIOROUTER_PATH_ROOT");
+        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        let provider = empty_provider();
+        bind_sampling_session(&provider, "crew-session").unwrap();
+        let error = crew_sampling_allowed(&provider)
+            .await
+            .expect_err("auxiliary sampling must refuse a Crew-scoped provider");
+        assert!(error.to_string().contains("Crew-scoped sessions"));
+        match previous {
+            Some(value) => std::env::set_var("BIOROUTER_PATH_ROOT", value),
+            None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn unscoped_sampling_remains_allowed_and_dropped_provider_binding_does_not_transfer() {
+        let root = tempfile::tempdir().unwrap();
+        scoped_registry_fixture(root.path(), "crew-session");
+        let previous = std::env::var_os("BIOROUTER_PATH_ROOT");
+        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        let old_provider = empty_provider();
+        bind_sampling_session(&old_provider, "crew-session").unwrap();
+        drop(old_provider);
+
+        let fresh_provider = empty_provider();
+        bind_sampling_session(&fresh_provider, "ordinary-session").unwrap();
+        crew_sampling_allowed(&fresh_provider)
+            .await
+            .expect("an ordinary unscoped session remains allowed");
+        match previous {
+            Some(value) => std::env::set_var("BIOROUTER_PATH_ROOT", value),
+            None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
+        }
+    }
+
+    /// Session metadata supplied by an MCP server is not an authority for
+    /// auxiliary routing. A forged Crew-looking value must not authorize a
+    /// delivery to another session.
+    #[tokio::test]
+    async fn shared_client_does_not_trust_forged_server_session_metadata() {
+        let routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
+        let (tx_a, mut rx_a) = mpsc::channel(4);
+        routes.lock().await.insert("tok-A".to_string(), tx_a);
+        let client = BioRouterClient::with_routing(
+            Arc::new(Mutex::new(Vec::new())),
+            routes,
+            true,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+            empty_provider(),
+        );
+
+        let mut notification = progress_notif("forged-server-token");
+        if let ServerNotification::ProgressNotification(progress) = &mut notification {
+            let mut meta = Meta::new();
+            meta.0.insert(
+                "biorouter-session-id".into(),
+                Value::String("crew-scoped-session".into()),
+            );
+            progress.extensions.insert(meta);
+        }
+        client.deliver(None, notification).await;
+        assert!(
+            rx_a.try_recv().is_err(),
+            "server-supplied session metadata must not authorize shared-client delivery"
+        );
+    }
+
     /// An unpooled client keeps the legacy broadcast behavior: an untokened
     /// notification reaches every subscriber.
     #[tokio::test]

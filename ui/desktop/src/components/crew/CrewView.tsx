@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Users, Plus, Send, RefreshCw } from '../icons/app-icons';
 import {
   crewHttp,
+  CrewHttpError,
   crewRequest,
   type CrewConnection,
   type Snapshot,
@@ -44,6 +45,14 @@ const emptyConnection = {
   mode: 'private' as 'private' | 'public',
 };
 
+interface PendingRunAttempt {
+  fingerprint: string;
+  key: string;
+  unknownDestination?: string;
+}
+// Inspection can navigate to another route; retain the uncertain attempt in memory, never on disk.
+let unfinishedRunAttempt: PendingRunAttempt | null = null;
+
 export default function CrewView() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -73,6 +82,8 @@ export default function CrewView() {
   const [historyBefore, setHistoryBefore] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [error, setError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
+  const visibleError = error || refreshError;
   const [busy, setBusy] = useState(false);
   const [body, setBody] = useState('');
   const [name, setName] = useState('');
@@ -81,7 +92,11 @@ export default function CrewView() {
   const [classification, setClassification] = useState('restricted');
   const [connectionForm, setConnectionForm] = useState(emptyConnection);
   const [editingConnection, setEditingConnection] = useState('');
-  const [preparedDevice, setPreparedDevice] = useState<{ preparation_id: string; public_key: string; device_id: string } | null>(null);
+  const [preparedDevice, setPreparedDevice] = useState<{
+    preparation_id: string;
+    public_key: string;
+    device_id: string;
+  } | null>(null);
   const [contextChannels, setContextChannels] = useState<string[]>([]);
   const [provider, setProvider] = useState('');
   const [model, setModel] = useState('');
@@ -89,7 +104,11 @@ export default function CrewView() {
   const generation = useRef(0);
   const dialogRef = useRef<HTMLElement>(null);
   const pendingMessage = useRef<{ fingerprint: string; key: string } | null>(null);
-  const pendingRun = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
+  const [unknownRunDestination, setUnknownRunDestination] = useState(
+    unfinishedRunAttempt?.unknownDestination ?? ''
+  );
+  const [inspectedPriorRun, setInspectedPriorRun] = useState(false);
   const connection = connections.find((item) => item.id === connectionId);
   const channel = snapshot?.channels.find((item) => item.id === channelId);
   const team = snapshot?.teams.find((item) => item.id === teamId);
@@ -130,7 +149,12 @@ export default function CrewView() {
       const history = await crewRequest<{ messages: CrewMessage[]; cursor: number }>(
         connectionId,
         'messages.history',
-        { channel_id: channelId, limit: 200, latest: true, ...(historyBefore === null ? {} : { before: historyBefore }) }
+        {
+          channel_id: channelId,
+          limit: 200,
+          latest: true,
+          ...(historyBefore === null ? {} : { before: historyBefore }),
+        }
       );
       if (current === generation.current) setMessages(history.messages);
     }
@@ -169,6 +193,8 @@ export default function CrewView() {
     setRuns([]);
     setContextChannels([]);
     setAuthentication(false);
+    setError('');
+    setRefreshError('');
   }, [connectionId]);
   useEffect(() => {
     setHistoryBefore(null);
@@ -188,9 +214,12 @@ export default function CrewView() {
       if (refreshing) return Promise.resolve();
       refreshing = true;
       return refresh()
+        .then(() => {
+          if (active) setRefreshError('');
+        })
         .catch((err: Error) => {
           if (active) {
-            setError(err.message);
+            setRefreshError(err.message);
             setSnapshot(null);
             setMessages([]);
           }
@@ -280,6 +309,70 @@ export default function CrewView() {
       await loadConnections();
       await refresh();
     });
+  const submitOwnedRun = async (deliberateRestart = false) => {
+    if (pendingRun.current?.unknownDestination && !deliberateRestart) {
+      throw new Error(
+        'Inspect the previous task conversations and remote effects, then acknowledge the inspection before starting another task.'
+      );
+    }
+    if (deliberateRestart && (!pendingRun.current?.unknownDestination || !inspectedPriorRun)) {
+      throw new Error('Confirm that you inspected the previous task before starting a new one.');
+    }
+    const payload = {
+      channel_id: channelId,
+      prompt: body,
+      provider,
+      model,
+      context_channels: [channelId, ...contextChannels],
+      posting_grant: true,
+    };
+    const fingerprint = JSON.stringify({ connectionId, ...payload });
+    if (deliberateRestart || pendingRun.current?.fingerprint !== fingerprint) {
+      pendingRun.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    unfinishedRunAttempt = pendingRun.current;
+    if (deliberateRestart) {
+      setUnknownRunDestination('');
+      setInspectedPriorRun(false);
+    }
+    try {
+      await crewHttp(`/connections/${connectionId}/runs`, 'POST', {
+        ...payload,
+        request_id: pendingRun.current.key,
+      });
+    } catch (failure) {
+      if (failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown') {
+        const destination = `${connection?.name ?? connectionId} / ${team?.name ?? teamId} / #${channel?.name ?? channelId}`;
+        pendingRun.current.unknownDestination = destination;
+        unfinishedRunAttempt = pendingRun.current;
+        setUnknownRunDestination(destination);
+        setInspectedPriorRun(false);
+      }
+      throw failure;
+    }
+    pendingRun.current = null;
+    unfinishedRunAttempt = null;
+    setUnknownRunDestination('');
+    setInspectedPriorRun(false);
+    setPanel(null);
+    setBody('');
+    await refresh();
+  };
+
+  const refreshChannel = async () => {
+    setBusy(true);
+    try {
+      await refresh();
+      setRefreshError('');
+    } catch (failure) {
+      setRefreshError(failure instanceof Error ? failure.message : String(failure));
+      setSnapshot(null);
+      setMessages([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const send = () =>
     act(async () => {
       const payload = {
@@ -423,23 +516,35 @@ export default function CrewView() {
                 </select>
               </label>
               {snapshot && snapshot.actor.uid === snapshot.workspace.host_uid && (
-                <label className="crew-label">Shared workspace policy
-                  <select aria-label="Shared workspace policy" value={snapshot.workspace.mode} disabled={busy}
-                    onChange={(event) => void act(async () => {
-                      await request('policy.set', { mode: event.target.value }, true);
-                      await refresh();
-                    })}>
+                <label className="crew-label">
+                  Shared workspace policy
+                  <select
+                    aria-label="Shared workspace policy"
+                    value={snapshot.workspace.mode}
+                    disabled={busy}
+                    onChange={(event) =>
+                      void act(async () => {
+                        await request('policy.set', { mode: event.target.value }, true);
+                        await refresh();
+                      })
+                    }
+                  >
                     <option value="private">Private for everyone</option>
                     <option value="public">Allow Public preferences and public-safe work</option>
                   </select>
-                  <span className="crew-small">Only the workspace host changes this baseline. Existing content keeps its restrictions; active agents need fresh grants after a change.</span>
+                  <span className="crew-small">
+                    Only the workspace host changes this baseline. Existing content keeps its
+                    restrictions; active agents need fresh grants after a change.
+                  </span>
                 </label>
               )}
               <p>
                 Effective:{' '}
                 {connection.mode === 'private' || snapshot?.workspace.mode === 'private'
                   ? 'private'
-                  : snapshot ? 'public' : 'unknown until the workspace policy is verified'}
+                  : snapshot
+                    ? 'public'
+                    : 'unknown until the workspace policy is verified'}
                 . Existing content keeps its restrictions.
               </p>
             </div>
@@ -525,18 +630,19 @@ export default function CrewView() {
                         {person.id === snapshot.actor.id ? ' · you' : ''}
                       </small>
                     </span>
-                    {snapshot.actor.uid === snapshot.workspace.host_uid && person.id !== snapshot.actor.id && (
-                      <button
-                        className="crew-button"
-                        aria-label={`Remove ${person.username} from workspace`}
-                        onClick={() => {
-                          openPanel('offboard');
-                          setPersonId(person.id);
-                        }}
-                      >
-                        Remove access
-                      </button>
-                    )}
+                    {snapshot.actor.uid === snapshot.workspace.host_uid &&
+                      person.id !== snapshot.actor.id && (
+                        <button
+                          className="crew-button"
+                          aria-label={`Remove ${person.username} from workspace`}
+                          onClick={() => {
+                            openPanel('offboard');
+                            setPersonId(person.id);
+                          }}
+                        >
+                          Remove access
+                        </button>
+                      )}
                   </div>
                 ))}
               </div>
@@ -569,12 +675,19 @@ export default function CrewView() {
           )}
         </aside>
         <main className="crew-main">
-          {error && (
+          {visibleError && (
             <div className="crew-error" role="alert">
               <strong>Action needs attention</strong>
-              <p>{error}</p>
-              <button onClick={() => setError('')}>Dismiss</button>
-              {/host|SSH|key|authentication/i.test(error) && <CrewHostTrust />}
+              <p>{visibleError}</p>
+              <button
+                onClick={() => {
+                  setError('');
+                  setRefreshError('');
+                }}
+              >
+                Dismiss
+              </button>
+              {/host|SSH|key|authentication/i.test(visibleError) && <CrewHostTrust />}
             </div>
           )}
           {authentication && connection && (
@@ -725,7 +838,7 @@ export default function CrewView() {
                   <button
                     aria-label="Refresh channel"
                     disabled={busy}
-                    onClick={() => void act(refresh)}
+                    onClick={() => void refreshChannel()}
                   >
                     <RefreshCw size={16} />
                   </button>
@@ -748,17 +861,31 @@ export default function CrewView() {
                 </div>
               </header>
               <div className="crew-inline" aria-label="Message history navigation">
-                <button className="crew-button" disabled={busy || messages.length < 200}
-                  onClick={() => { generation.current += 1; setHistoryBefore(messages[0]?.sequence ?? null); }}>
+                <button
+                  className="crew-button"
+                  disabled={busy || messages.length < 200}
+                  onClick={() => {
+                    generation.current += 1;
+                    setHistoryBefore(messages[0]?.sequence ?? null);
+                  }}
+                >
                   Older messages
                 </button>
-                {historyBefore !== null && <>
-                  <span className="crew-small">Viewing earlier messages</span>
-                  <button className="crew-button" disabled={busy}
-                    onClick={() => { generation.current += 1; setHistoryBefore(null); }}>
-                    Latest messages
-                  </button>
-                </>}
+                {historyBefore !== null && (
+                  <>
+                    <span className="crew-small">Viewing earlier messages</span>
+                    <button
+                      className="crew-button"
+                      disabled={busy}
+                      onClick={() => {
+                        generation.current += 1;
+                        setHistoryBefore(null);
+                      }}
+                    >
+                      Latest messages
+                    </button>
+                  </>
+                )}
               </div>
               <div
                 className="crew-timeline"
@@ -778,8 +905,12 @@ export default function CrewView() {
                   <article key={message.id} className="crew-message">
                     <div className="crew-avatar">
                       {snapshot.principals.find((p) => p.id === message.actor_id)?.avatar ||
-                        (snapshot.principals.find((p) => p.id === message.actor_id)?.nickname || '?')
-                          .slice(0, 2).toUpperCase()}
+                        (
+                          snapshot.principals.find((p) => p.id === message.actor_id)?.nickname ||
+                          '?'
+                        )
+                          .slice(0, 2)
+                          .toUpperCase()}
                     </div>
                     <div>
                       <div className="crew-message-meta">
@@ -827,7 +958,15 @@ export default function CrewView() {
                       </button>
                       <button
                         className="crew-button"
-                        disabled={busy || !['running', 'waiting_for_approval', 'interrupted', 'outcome_not_durable'].includes(run.status)}
+                        disabled={
+                          busy ||
+                          ![
+                            'running',
+                            'waiting_for_approval',
+                            'interrupted',
+                            'outcome_not_durable',
+                          ].includes(run.status)
+                        }
                         onClick={() =>
                           void act(async () => {
                             await crewHttp(
@@ -1020,7 +1159,9 @@ export default function CrewView() {
                       editingConnection ? 'PATCH' : 'POST',
                       {
                         ...connectionForm,
-                        preparation_id: !editingConnection ? preparedDevice?.preparation_id : undefined,
+                        preparation_id: !editingConnection
+                          ? preparedDevice?.preparation_id
+                          : undefined,
                         cluster_connection_id: editingConnection
                           ? connection?.cluster_connection_id
                           : undefined,
@@ -1040,28 +1181,61 @@ export default function CrewView() {
                   Use the workspace invitation’s verified endpoint and your own SSH account. SSH
                   configuration and jump hosts are supported.
                 </p>
-                {!editingConnection && <details className="crew-trust">
-                  <summary>Hosting a new workspace?</summary>
-                  <p>Prepare this device first, then initialize the broker using your own ordinary SSH account. Keep the private key on this computer.</p>
-                  <button type="button" className="crew-button" disabled={busy}
-                    onClick={() => void act(async () => {
-                      const prepared = await crewHttp<{ preparation_id: string; public_key: string; device_id: string }>('/devices/prepare', 'POST', {});
-                      setPreparedDevice(prepared);
-                    })}>
-                    {preparedDevice ? 'Recover prepared device key' : 'Prepare my hosting identity'}
-                  </button>
-                  {preparedDevice && <>
-                    <label className="crew-label">Public bootstrap key
-                      <input readOnly value={preparedDevice.public_key} onFocus={(event) => event.currentTarget.select()} />
-                    </label>
-                    <p>Install the reviewed Linux broker at <code>~/.local/bin/biorouter-crew</code>, then run these commands in your SSH terminal:</p>
-                    <pre className="crew-setup-command">{`mkdir -p "$HOME/.local/share/biorouter-crew/workspace"
+                {!editingConnection && (
+                  <details className="crew-trust">
+                    <summary>Hosting a new workspace?</summary>
+                    <p>
+                      Prepare this device first, then initialize the broker using your own ordinary
+                      SSH account. Keep the private key on this computer.
+                    </p>
+                    <button
+                      type="button"
+                      className="crew-button"
+                      disabled={busy}
+                      onClick={() =>
+                        void act(async () => {
+                          const prepared = await crewHttp<{
+                            preparation_id: string;
+                            public_key: string;
+                            device_id: string;
+                          }>('/devices/prepare', 'POST', {});
+                          setPreparedDevice(prepared);
+                        })
+                      }
+                    >
+                      {preparedDevice
+                        ? 'Recover prepared device key'
+                        : 'Prepare my hosting identity'}
+                    </button>
+                    {preparedDevice && (
+                      <>
+                        <label className="crew-label">
+                          Public bootstrap key
+                          <input
+                            readOnly
+                            value={preparedDevice.public_key}
+                            onFocus={(event) => event.currentTarget.select()}
+                          />
+                        </label>
+                        <p>
+                          Install the reviewed Linux broker at{' '}
+                          <code>~/.local/bin/biorouter-crew</code>, then run these commands in your
+                          SSH terminal:
+                        </p>
+                        <pre className="crew-setup-command">{`mkdir -p "$HOME/.local/share/biorouter-crew/workspace"
 chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
 ~/.local/bin/biorouter-crew start --state-dir "$HOME/.local/share/biorouter-crew/workspace" --bootstrap-key ${preparedDevice.public_key}
 ~/.local/bin/biorouter-crew status --state-dir "$HOME/.local/share/biorouter-crew/workspace"`}</pre>
-                    <p>Copy the socket, workspace ID, owner UID and workspace public key from the status output into this form. After saving, connect and select Initialize as workspace host. Preparing again after an app restart recovers the same unused identity.</p>
-                  </>}
-                </details>}
+                        <p>
+                          Copy the socket, workspace ID, owner UID and workspace public key from the
+                          status output into this form. After saving, connect and select Initialize
+                          as workspace host. Preparing again after an app restart recovers the same
+                          unused identity.
+                        </p>
+                      </>
+                    )}
+                  </details>
+                )}
                 {(
                   [
                     'name',
@@ -1197,8 +1371,11 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                       const result = await request<{ invitation: string }>(
                         'enrollment.invite',
                         {
-                          uid: Number(inviteUid), public_key: invitePublicKey,
-                          existing_principal_id: addExistingDevice ? existingEnrollee?.id : undefined,
+                          uid: Number(inviteUid),
+                          public_key: invitePublicKey,
+                          existing_principal_id: addExistingDevice
+                            ? existingEnrollee?.id
+                            : undefined,
                         },
                         true
                       );
@@ -1206,7 +1383,9 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                     }
                     if (panel === 'offboard') {
                       if (!offboardPerson || name !== offboardPerson.username) {
-                        throw new Error('Enter the exact account username to remove workspace access.');
+                        throw new Error(
+                          'Enter the exact account username to remove workspace access.'
+                        );
                       }
                       await mutate('enrollment.revoke', { principal_id: personId });
                     }
@@ -1229,22 +1408,7 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                       );
                       navigate(`/pair?resumeSessionId=${encodeURIComponent(grantSessionId)}`);
                     }
-                    if (panel === 'agent') {
-                      const payload = {
-                        channel_id: channelId, prompt: body, provider, model,
-                        context_channels: [channelId, ...contextChannels], posting_grant: true,
-                      };
-                      const fingerprint = JSON.stringify({ connectionId, ...payload });
-                      if (pendingRun.current?.fingerprint !== fingerprint)
-                        pendingRun.current = { fingerprint, key: crypto.randomUUID() };
-                      await crewHttp(`/connections/${connectionId}/runs`, 'POST', {
-                        ...payload, request_id: pendingRun.current.key,
-                      });
-                      pendingRun.current = null;
-                      setPanel(null);
-                      setBody('');
-                      await refresh();
-                    }
+                    if (panel === 'agent') await submitOwnedRun();
                   });
                 }}
               >
@@ -1292,7 +1456,11 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                         min="1"
                         required
                         value={inviteUid}
-                        onChange={(e) => { setInviteUid(e.target.value); setAddExistingDevice(false); setCreatedInvitation(''); }}
+                        onChange={(e) => {
+                          setInviteUid(e.target.value);
+                          setAddExistingDevice(false);
+                          setCreatedInvitation('');
+                        }}
                       />
                     </label>
                     <label className="crew-label">
@@ -1312,9 +1480,10 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                           checked={addExistingDevice}
                           onChange={(event) => setAddExistingDevice(event.target.checked)}
                         />
-                        Add another device for @{existingEnrollee.username} (UID {existingEnrollee.uid}),
-                        keeping this person’s current memberships. If this Unix account has been
-                        reassigned, remove the old person’s workspace access before enrolling.
+                        Add another device for @{existingEnrollee.username} (UID{' '}
+                        {existingEnrollee.uid}), keeping this person’s current memberships. If this
+                        Unix account has been reassigned, remove the old person’s workspace access
+                        before enrolling.
                       </label>
                     )}
                     {createdInvitation && (
@@ -1329,12 +1498,16 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                   <>
                     <p>
                       Remove @{offboardPerson.username} from this workspace and revoke all their
-                      devices and active grants. Their messages remain in channel history.
-                      A later enrollment creates a new identity without these memberships.
+                      devices and active grants. Their messages remain in channel history. A later
+                      enrollment creates a new identity without these memberships.
                     </p>
                     <label className="crew-label">
                       Type {offboardPerson.username} to confirm
-                      <input required value={name} onChange={(event) => setName(event.target.value)} />
+                      <input
+                        required
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                      />
                     </label>
                   </>
                 )}
@@ -1439,6 +1612,62 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                       ))}
                   </>
                 )}
+                {panel === 'agent' && unknownRunDestination && (
+                  <section className="crew-error" aria-label="Previous task outcome unknown">
+                    <strong>Inspect the previous task before starting again</strong>
+                    <p>
+                      The earlier request to {unknownRunDestination} was admitted, but its final
+                      setup outcome is unknown. No new task will start automatically.
+                    </p>
+                    <p>
+                      Inspect Crew run cards, the relevant task conversations in Chat history, and
+                      any remote outputs or jobs. Repeating the task could duplicate earlier
+                      effects.
+                    </p>
+                    <button
+                      type="button"
+                      className="crew-button"
+                      disabled={busy}
+                      onClick={() => {
+                        setPanel(null);
+                        setInspectedPriorRun(false);
+                      }}
+                    >
+                      Inspect Crew run cards
+                    </button>
+                    <button
+                      type="button"
+                      className="crew-button"
+                      disabled={busy}
+                      onClick={() => {
+                        setInspectedPriorRun(false);
+                        navigate('/sessions');
+                      }}
+                    >
+                      Open Chat history
+                    </button>
+                    <label className="crew-check">
+                      <input
+                        type="checkbox"
+                        checked={inspectedPriorRun}
+                        onChange={(event) => setInspectedPriorRun(event.target.checked)}
+                      />
+                      I inspected the previous task and remote effects, and want to start a new
+                      task.
+                    </label>
+                    <button
+                      type="button"
+                      className="crew-button"
+                      disabled={busy || !inspectedPriorRun}
+                      onClick={(event) => {
+                        if (event.currentTarget.form?.reportValidity())
+                          void act(() => submitOwnedRun(true));
+                      }}
+                    >
+                      Start a new task
+                    </button>
+                  </section>
+                )}
                 {(panel === 'agent' || panel === 'grant') && (
                   <>
                     <p>
@@ -1533,18 +1762,25 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                     </p>
                   </>
                 )}
-                <button className="crew-button primary" disabled={busy || (panel === 'offboard' && (!offboardPerson || name !== offboardPerson.username))}>
+                <button
+                  className="crew-button primary"
+                  disabled={
+                    busy ||
+                    (panel === 'agent' && Boolean(unknownRunDestination)) ||
+                    (panel === 'offboard' && (!offboardPerson || name !== offboardPerson.username))
+                  }
+                >
                   {panel === 'offboard'
                     ? 'Remove workspace access'
                     : panel === 'grant'
-                    ? 'Allow this conversation to read and post here'
-                    : panel === 'agent'
-                      ? 'Start my agent and allow posting here'
-                      : panel === 'settings'
-                        ? 'Request ownership transfer'
-                        : panel === 'invite'
-                          ? 'Send invitation'
-                          : 'Save'}
+                      ? 'Allow this conversation to read and post here'
+                      : panel === 'agent'
+                        ? 'Start my agent and allow posting here'
+                        : panel === 'settings'
+                          ? 'Request ownership transfer'
+                          : panel === 'invite'
+                            ? 'Send invitation'
+                            : 'Save'}
                 </button>
               </form>
             )}

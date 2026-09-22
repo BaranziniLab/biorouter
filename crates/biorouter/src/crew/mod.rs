@@ -78,7 +78,7 @@ pub struct AuthenticationPlan {
     pub connection_id: String,
     pub authentication_id: String,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 struct Scope {
     connection_id: String,
     run_id: String,
@@ -91,7 +91,7 @@ struct Scope {
     origin_restricted: bool,
     expired: bool,
 }
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct Registry {
     connections: Vec<Connection>,
     scopes: HashMap<String, Scope>,
@@ -155,9 +155,10 @@ fn unhex(value: &str) -> Result<Vec<u8>> {
         value.len().is_multiple_of(2) && value.bytes().all(|b| b.is_ascii_hexdigit()),
         "Invalid encoded key"
     );
-    (0..value.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&value[i..i + 2], 16).map_err(Into::into))
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
         .collect()
 }
 fn provider_binding(provider: &dyn Provider) -> String {
@@ -247,6 +248,18 @@ impl CrewManager {
         })
     }
     fn persist(&self, registry: &Registry) -> Result<()> {
+        #[cfg(unix)]
+        let directories_to_sync = {
+            let mut directories = vec![self.root.clone()];
+            let mut directory = self.root.as_path();
+            while !directory.exists() {
+                directory = directory
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("Crew registry parent unavailable"))?;
+                directories.push(directory.to_path_buf());
+            }
+            directories
+        };
         std::fs::create_dir_all(&self.root)?;
         ensure!(
             !std::fs::symlink_metadata(&self.root)?
@@ -264,12 +277,16 @@ impl CrewManager {
         file.write_all(&serde_json::to_vec(registry)?)?;
         file.as_file().sync_all()?;
         file.persist(self.root.join("connections.json"))?;
+        #[cfg(unix)]
+        for directory in directories_to_sync {
+            std::fs::File::open(directory)?.sync_all()?;
+        }
         Ok(())
     }
     fn control_path(&self, id: &str) -> Result<PathBuf> {
         let root = std::env::temp_dir().join(format!(
             "brcrew-{}",
-            &hex(&Sha256::digest(self.root.to_string_lossy().as_bytes()))[..12]
+            hex(&Sha256::digest(self.root.to_string_lossy().as_bytes())[..6])
         ));
         std::fs::create_dir_all(&root)?;
         ensure!(
@@ -329,7 +346,7 @@ impl CrewManager {
         self.disconnect(id).await?;
         self.save_inner(Some(id), input).await
     }
-    async fn save_inner(&self, id: Option<&str>, input: SaveConnection) -> Result<Connection> {
+    fn validate_connection(input: &SaveConnection) -> Result<()> {
         ensure!(
             safe_atom(&input.ssh_target),
             "SSH target must be a host alias or user@host"
@@ -356,7 +373,127 @@ impl CrewManager {
                 "Identity file must be an absolute path"
             );
         }
-        let mut r = self.registry.lock().await;
+        Ok(())
+    }
+    fn connection_device(
+        &self,
+        connection_id: &str,
+        old: Option<&Connection>,
+        prepared: Option<&PreparedDevice>,
+    ) -> Result<(String, String)> {
+        Ok(if let Some(c) = old {
+            (c.device_id.clone(), c.public_key.clone())
+        } else if let Some(prepared) = prepared {
+            let secret: [u8; 32] =
+                unhex(&self.read_credential(&format!("device:{connection_id}"))?)?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("Prepared device key is invalid"))?;
+            ensure!(
+                hex(&SigningKey::from_bytes(&secret).verifying_key().to_bytes())
+                    == prepared.public_key,
+                "Prepared public key does not match profile credential"
+            );
+            (prepared.device_id.clone(), prepared.public_key.clone())
+        } else {
+            let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+            let public = key.verifying_key().to_bytes();
+            let device = hex(&Sha256::digest(public));
+            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))?;
+            (device, hex(&public))
+        })
+    }
+    fn build_connection(
+        &self,
+        r: &mut Registry,
+        id: Option<&str>,
+        input: SaveConnection,
+        prepared: Option<&PreparedDevice>,
+    ) -> Result<Connection> {
+        let old = if let Some(id) = id {
+            Some(
+                r.connections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Unknown Crew connection"))?,
+            )
+        } else {
+            None
+        };
+        let connection_id = old
+            .as_ref()
+            .map(|c| c.id.clone())
+            .or_else(|| {
+                prepared
+                    .as_ref()
+                    .map(|prepared| prepared.preparation_id.clone())
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let (device_id, public_key) =
+            self.connection_device(&connection_id, old.as_ref(), prepared)?;
+        // Workspace aliases share the most restrictive existing cluster identity automatically.
+        let canonical = r
+            .connections
+            .iter()
+            .find(|c| c.workspace_id == input.workspace_id || c.ssh_target == input.ssh_target)
+            .map(|c| c.cluster_connection_id.clone());
+        let cluster = canonical
+            .or_else(|| old.as_ref().map(|c| c.cluster_connection_id.clone()))
+            .or(input.cluster_connection_id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        uuid::Uuid::parse_str(&cluster)?;
+        let epoch = r
+            .connections
+            .iter()
+            .filter(|c| c.cluster_connection_id == cluster)
+            .map(|c| c.policy_epoch)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mode = if r.connections.iter().any(|c| {
+            c.cluster_connection_id == cluster
+                && Some(c.id.as_str()) != id
+                && c.mode == ClusterMode::Private
+        }) {
+            ClusterMode::Private
+        } else {
+            input.mode
+        };
+        for c in r
+            .connections
+            .iter_mut()
+            .filter(|c| c.cluster_connection_id == cluster)
+        {
+            c.mode = mode;
+            c.policy_epoch = epoch;
+        }
+        Ok(Connection {
+            id: connection_id,
+            node_id: old.as_ref().and_then(|c| c.node_id.clone()),
+            name: input.name,
+            ssh_target: input.ssh_target,
+            port: input.port,
+            identity_file: input.identity_file,
+            proxy_jump: input.proxy_jump,
+            socket_path: input.socket_path,
+            owner_uid: input.owner_uid,
+            workspace_id: input.workspace_id,
+            workspace_public_key: input.workspace_public_key,
+            remote_root: input.remote_root,
+            remote_execution: input.remote_execution,
+            cluster_connection_id: cluster,
+            mode,
+            policy_epoch: epoch,
+            status: "disconnected".into(),
+            last_error: None,
+            device_id,
+            public_key,
+        })
+    }
+    async fn save_inner(&self, id: Option<&str>, input: SaveConnection) -> Result<Connection> {
+        Self::validate_connection(&input)?;
+        let mut registry = self.registry.lock().await;
+        let mut r = registry.clone();
         let preparation_hash = hex(&Sha256::digest(serde_json::to_vec(&input)?));
         let prepared = if let Some(preparation_id) = &input.preparation_id {
             ensure!(
@@ -394,104 +531,7 @@ impl CrewManager {
         } else {
             None
         };
-        let old = if let Some(id) = id {
-            Some(
-                r.connections
-                    .iter()
-                    .find(|c| c.id == id)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Unknown Crew connection"))?,
-            )
-        } else {
-            None
-        };
-        let connection_id = old
-            .as_ref()
-            .map(|c| c.id.clone())
-            .or_else(|| {
-                prepared
-                    .as_ref()
-                    .map(|prepared| prepared.preparation_id.clone())
-            })
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let (device_id, public_key) = if let Some(c) = &old {
-            (c.device_id.clone(), c.public_key.clone())
-        } else if let Some(prepared) = &prepared {
-            let secret: [u8; 32] =
-                unhex(&self.read_credential(&format!("device:{connection_id}"))?)?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("Prepared device key is invalid"))?;
-            ensure!(
-                hex(&SigningKey::from_bytes(&secret).verifying_key().to_bytes())
-                    == prepared.public_key,
-                "Prepared public key does not match profile credential"
-            );
-            (prepared.device_id.clone(), prepared.public_key.clone())
-        } else {
-            let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-            let public = key.verifying_key().to_bytes();
-            let device = hex(&Sha256::digest(public));
-            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))?;
-            (device, hex(&public))
-        };
-        // Workspace aliases share the most restrictive existing cluster identity automatically.
-        let canonical = r
-            .connections
-            .iter()
-            .find(|c| c.workspace_id == input.workspace_id || c.ssh_target == input.ssh_target)
-            .map(|c| c.cluster_connection_id.clone());
-        let cluster = canonical
-            .or_else(|| old.as_ref().map(|c| c.cluster_connection_id.clone()))
-            .or(input.cluster_connection_id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        uuid::Uuid::parse_str(&cluster)?;
-        let epoch = r
-            .connections
-            .iter()
-            .filter(|c| c.cluster_connection_id == cluster)
-            .map(|c| c.policy_epoch)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let mode = if r.connections.iter().any(|c| {
-            c.cluster_connection_id == cluster
-                && Some(c.id.as_str()) != id
-                && c.mode == ClusterMode::Private
-        }) {
-            ClusterMode::Private
-        } else {
-            input.mode
-        };
-        for c in r
-            .connections
-            .iter_mut()
-            .filter(|c| c.cluster_connection_id == cluster)
-        {
-            c.mode = mode;
-            c.policy_epoch = epoch;
-        }
-        let c = Connection {
-            id: connection_id,
-            node_id: old.as_ref().and_then(|c| c.node_id.clone()),
-            name: input.name,
-            ssh_target: input.ssh_target,
-            port: input.port,
-            identity_file: input.identity_file,
-            proxy_jump: input.proxy_jump,
-            socket_path: input.socket_path,
-            owner_uid: input.owner_uid,
-            workspace_id: input.workspace_id,
-            workspace_public_key: input.workspace_public_key,
-            remote_root: input.remote_root,
-            remote_execution: input.remote_execution,
-            cluster_connection_id: cluster,
-            mode,
-            policy_epoch: epoch,
-            status: "disconnected".into(),
-            last_error: None,
-            device_id,
-            public_key,
-        };
+        let c = self.build_connection(&mut r, id, input, prepared.as_ref())?;
         r.connections.retain(|old| old.id != c.id);
         r.connections.push(c.clone());
         if let Some(prepared) = prepared {
@@ -500,6 +540,7 @@ impl CrewManager {
             r.pending_device = None;
         }
         self.persist(&r)?;
+        *registry = r;
         Ok(c)
     }
     pub async fn remove(&self, id: &str) -> Result<()> {
@@ -528,19 +569,11 @@ impl CrewManager {
             authentication_id: uuid::Uuid::new_v4().to_string(),
         })
     }
-    pub async fn connect(&self, id: &str) -> Result<Connection> {
-        let c = self.connection(id).await?;
-        let mut transport = transport::Transport::connect(&c, &self.control_path(id)?).await?;
-        let challenge_nonce = uuid::Uuid::new_v4().to_string();
-        let hello = transport
-            .request(
-                "hello",
-                json!({"challenge_nonce":challenge_nonce}),
-                None,
-                None,
-                None,
-            )
-            .await?;
+    fn verify_workspace_identity(
+        c: &Connection,
+        hello: &Value,
+        challenge_nonce: &str,
+    ) -> Result<String> {
         ensure!(
             hello["workspace_id"].as_str() == Some(&c.workspace_id),
             "Workspace identity mismatch"
@@ -551,7 +584,7 @@ impl CrewManager {
         );
         ensure!(hello["workspace_public_key"].as_str()==Some(c.workspace_public_key.as_str()), "Workspace public key changed or is missing; verify the workspace descriptor before reconnecting");
         ensure!(
-            hello["challenge_nonce"].as_str() == Some(challenge_nonce.as_str()),
+            hello["challenge_nonce"].as_str() == Some(challenge_nonce),
             "Workspace identity challenge mismatch"
         );
         let public_key: [u8; 32] = unhex(&c.workspace_public_key)?
@@ -580,6 +613,22 @@ impl CrewManager {
             node_id
         ]))?;
         VerifyingKey::from_bytes(&public_key)?.verify(&signed, &signature)?;
+        Ok(node_id.to_string())
+    }
+    pub async fn connect(&self, id: &str) -> Result<Connection> {
+        let c = self.connection(id).await?;
+        let mut transport = transport::Transport::connect(&c, &self.control_path(id)?).await?;
+        let challenge_nonce = uuid::Uuid::new_v4().to_string();
+        let hello = transport
+            .request(
+                "hello",
+                json!({"challenge_nonce":challenge_nonce}),
+                None,
+                None,
+                None,
+            )
+            .await?;
+        let node_id = Self::verify_workspace_identity(&c, &hello, &challenge_nonce)?;
         let mut registry = self.registry.lock().await;
         let current = registry
             .connections
@@ -595,14 +644,14 @@ impl CrewManager {
         );
         if let Some(previous) = &current.node_id {
             ensure!(
-                previous == node_id,
+                previous == &node_id,
                 "Verified SSH node identity changed; create a newly verified connection"
             );
         }
         let mut groups: std::collections::BTreeSet<String> = registry
             .connections
             .iter()
-            .filter(|entry| entry.node_id.as_deref() == Some(node_id))
+            .filter(|entry| entry.node_id.as_deref() == Some(node_id.as_str()))
             .map(|entry| entry.cluster_connection_id.clone())
             .collect();
         groups.insert(c.cluster_connection_id.clone());
@@ -614,7 +663,7 @@ impl CrewManager {
         } else {
             ClusterMode::Public
         };
-        let changed = groups.len() > 1 || c.node_id.as_deref() != Some(node_id);
+        let changed = groups.len() > 1 || c.node_id.as_deref() != Some(node_id.as_str());
         let epoch = registry
             .connections
             .iter()
@@ -632,7 +681,7 @@ impl CrewManager {
             entry.mode = mode;
             entry.policy_epoch = epoch;
             if entry.id == id {
-                entry.node_id = Some(node_id.into());
+                entry.node_id = Some(node_id.clone());
                 entry.status = "connected".into();
                 entry.last_error = None;
             }
@@ -717,6 +766,21 @@ impl CrewManager {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
         }
+        let key: [u8; 32] = unhex(&self.read_credential(&format!("device:{id}"))?)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
+        let signer = SigningKey::from_bytes(&key);
+        let public = signer.verifying_key().to_bytes();
+        ensure!(
+            hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
+            "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
+        );
+        if matches!(method, "auth.bootstrap" | "auth.enroll") {
+            ensure!(
+                params["public_key"].as_str() == Some(c.public_key.as_str()),
+                "Enrollment identity changed; refresh the saved connection before joining"
+            );
+        }
         let t = self.transport(id).await?;
         let mut t = t.lock().await;
         let fresh = self.connection(id).await?;
@@ -748,10 +812,6 @@ impl CrewManager {
             fresh.policy_epoch == c.policy_epoch && fresh.mode == c.mode,
             "Crew connection policy changed during authentication; review and retry"
         );
-        let key = unhex(&self.read_credential(&format!("device:{id}"))?)?;
-        let key: [u8; 32] = key
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
         let bytes = serde_json::to_vec(&json!([
             c.workspace_id,
             challenge["uid"],
@@ -759,7 +819,7 @@ impl CrewManager {
             method,
             canonical(&params)
         ]))?;
-        let signature = hex(&SigningKey::from_bytes(&key).sign(&bytes).to_bytes());
+        let signature = hex(&signer.sign(&bytes).to_bytes());
         t.request(
             method,
             params,
@@ -1038,13 +1098,45 @@ impl CrewManager {
                 params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
             }
         }
+        let transport = self.transport(&s.connection_id).await?;
+        let mut transport = transport.lock().await;
+        self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;
-        self.transport(&s.connection_id)
-            .await?
-            .lock()
-            .await
+        let result = transport
             .request(method, params, None, Some(&credential), None)
-            .await
+            .await?;
+        self.validate_worker_scope(session, &s, &c).await?;
+        Ok(result)
+    }
+    async fn validate_worker_scope(
+        &self,
+        session: &str,
+        expected_scope: &Scope,
+        expected_connection: &Connection,
+    ) -> Result<()> {
+        let registry = self.registry.lock().await;
+        let scope = registry
+            .scopes
+            .get(session)
+            .ok_or_else(|| anyhow::anyhow!("Crew run is unavailable"))?;
+        let connection = registry
+            .connections
+            .iter()
+            .find(|connection| connection.id == scope.connection_id)
+            .ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
+        ensure!(
+            scope == expected_scope
+                && !scope.expired
+                && scope.epoch == connection.policy_epoch
+                && connection.policy_epoch == expected_connection.policy_epoch
+                && connection.mode == expected_connection.mode
+                && connection.workspace_id == expected_connection.workspace_id
+                && connection.workspace_public_key == expected_connection.workspace_public_key
+                && (!scope.public_provider
+                    || (connection.mode == ClusterMode::Public && !scope.origin_restricted)),
+            "Crew grant or connection policy changed while this operation was pending; inspect any submitted effects before obtaining a fresh grant"
+        );
+        Ok(())
     }
     pub async fn publish_run(&self, session: &str, body: &str, status: &str) -> Result<Value> {
         self.worker_request(session, "run.project", json!({"body":body,"status":status}))
@@ -1144,5 +1236,209 @@ impl CrewManager {
             return self.attach_remote(session, params).await;
         }
         self.worker_request(session, method, params).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "biorouter-crew-manager-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn failed_policy_save_preserves_connection_and_scope_authority() {
+        let root = fixture_root("failed-policy-save");
+        let connection_id = "11111111-1111-4111-8111-111111111111".to_owned();
+        let cluster_id = "22222222-2222-4222-8222-222222222222".to_owned();
+        let workspace_id = "33333333-3333-4333-8333-333333333333".to_owned();
+        let connection = Connection {
+            id: connection_id.clone(),
+            node_id: None,
+            name: "fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace_id.clone(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: cluster_id.clone(),
+            mode: ClusterMode::Private,
+            policy_epoch: 7,
+            status: "disconnected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let scope = Scope {
+            connection_id: connection_id.clone(),
+            run_id: "run-1".into(),
+            channel_id: "channel-1".into(),
+            source_channels: vec!["channel-1".into()],
+            epoch: 7,
+            provider_binding: "private".into(),
+            public_provider: false,
+            origin_restricted: false,
+            expired: false,
+        };
+        let registry = Registry {
+            connections: vec![connection],
+            scopes: HashMap::from([("session-1".into(), scope.clone())]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+        fs::remove_file(root.join("connections.json")).unwrap();
+        fs::create_dir(root.join("connections.json")).unwrap();
+
+        let input = SaveConnection {
+            preparation_id: None,
+            name: "fixture-public-alias".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id,
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: Some(cluster_id),
+            mode: ClusterMode::Public,
+        };
+        assert!(manager
+            .save_inner(Some(&connection_id), input)
+            .await
+            .is_err());
+        let live = manager.connection(&connection_id).await.unwrap();
+        assert_eq!(live.mode, ClusterMode::Private);
+        assert_eq!(live.policy_epoch, 7);
+        let live_scope = manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get("session-1")
+            .cloned()
+            .unwrap();
+        assert!(live_scope == scope);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn worker_scope_validation_rejects_alias_epoch_and_expiry_then_accepts_regrant() {
+        let root = fixture_root("worker-scope-validation");
+        let connection_id = "44444444-4444-4444-8444-444444444444".to_owned();
+        let workspace_id = "55555555-5555-4555-8555-555555555555".to_owned();
+        let connection = Connection {
+            id: connection_id.clone(),
+            node_id: None,
+            name: "fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id,
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "66666666-6666-4666-8666-666666666666".into(),
+            mode: ClusterMode::Public,
+            policy_epoch: 4,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "55".repeat(32),
+            public_key: "66".repeat(32),
+        };
+        let scope = Scope {
+            connection_id: connection_id.clone(),
+            run_id: "run-public".into(),
+            channel_id: "channel-public".into(),
+            source_channels: vec!["channel-public".into()],
+            epoch: 4,
+            provider_binding: "public".into(),
+            public_provider: true,
+            origin_restricted: false,
+            expired: false,
+        };
+        let registry = Registry {
+            connections: vec![connection.clone()],
+            scopes: HashMap::from([("session-public".into(), scope.clone())]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+        assert!(manager
+            .validate_worker_scope("session-public", &scope, &connection)
+            .await
+            .is_ok());
+
+        let mut wrong_epoch = scope.clone();
+        wrong_epoch.epoch = 3;
+        assert!(manager
+            .validate_worker_scope("session-public", &wrong_epoch, &connection)
+            .await
+            .is_err());
+        let mut expired = scope.clone();
+        expired.expired = true;
+        assert!(manager
+            .validate_worker_scope("session-public", &expired, &connection)
+            .await
+            .is_err());
+
+        let mut aliased = connection.clone();
+        aliased.mode = ClusterMode::Private;
+        aliased.policy_epoch = 5;
+        manager.registry.lock().await.connections[0] = aliased.clone();
+        assert!(manager
+            .validate_worker_scope("session-public", &scope, &connection)
+            .await
+            .is_err());
+
+        let mut regranted = scope;
+        regranted.run_id = "run-private-regrant".into();
+        regranted.epoch = 5;
+        regranted.public_provider = false;
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .insert("session-public".into(), regranted.clone());
+        assert!(manager
+            .validate_worker_scope("session-public", &regranted, &aliased)
+            .await
+            .is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -13,6 +13,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+fn projection_status(p: &Value) -> Result<Option<String>> {
+    let status = p.get("status").and_then(Value::as_str).map(str::to_owned);
+    if let Some(status) = &status {
+        ensure!(
+            matches!(
+                status.as_str(),
+                "progress" | "completed" | "failed" | "cancelled"
+            ),
+            "invalid_params: run status"
+        );
+    }
+    Ok(status)
+}
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -327,6 +340,193 @@ struct Actor {
     id: String,
     run: Option<Run>,
 }
+enum Admission {
+    Actor(Box<Actor>),
+    Replay(Value),
+}
+struct JournalReplay {
+    state_value: Value,
+    checksum: String,
+    sequence: u64,
+    committed: usize,
+    torn_tail: Option<Vec<u8>>,
+}
+fn replay_record(
+    line: &[u8],
+    state_value: &mut Value,
+    checksum: &mut String,
+    sequence: &mut u64,
+) -> Result<()> {
+    let envelope: Value =
+        serde_json::from_slice(line).context("journal_corrupt: complete record is invalid")?;
+    match envelope.get("version").and_then(Value::as_u64) {
+        Some(1) => {
+            let record: Record =
+                serde_json::from_slice(line).context("journal_corrupt: legacy record invalid")?;
+            ensure!(
+                record.sequence == *sequence + 1 && record.previous == *checksum,
+                "journal_corrupt: sequence/hash chain invalid"
+            );
+            let text = std::str::from_utf8(line)?.trim_end();
+            let start = text
+                .find(",\"state\":")
+                .ok_or_else(|| anyhow!("journal_corrupt: legacy state missing"))?
+                + 9;
+            let mut payload = serde_json::to_vec(&(
+                &record.version,
+                &record.sequence,
+                &record.previous,
+                &record.actor,
+                &record.operation,
+                &record.timestamp,
+            ))?;
+            payload.pop();
+            payload.push(b',');
+            payload.extend_from_slice(&text.as_bytes()[start..text.len() - 1]);
+            payload.push(b']');
+            let actual = digest(&payload);
+            ensure!(
+                actual == record.checksum,
+                "journal_corrupt: checksum mismatch"
+            );
+            *checksum = actual;
+            *sequence = record.sequence;
+            *state_value = envelope
+                .get("state")
+                .cloned()
+                .ok_or_else(|| anyhow!("journal_corrupt: state missing"))?;
+        }
+        Some(2) => {
+            let record: DeltaRecord =
+                serde_json::from_slice(line).context("journal_corrupt: delta record invalid")?;
+            ensure!(
+                record.sequence == *sequence + 1 && record.previous == *checksum,
+                "journal_corrupt: sequence/hash chain invalid"
+            );
+            let actual = digest(&serde_json::to_vec(&(
+                &record.version,
+                &record.sequence,
+                &record.previous,
+                &record.actor,
+                &record.operation,
+                &record.timestamp,
+                &record.patches,
+            ))?);
+            ensure!(
+                actual == record.checksum,
+                "journal_corrupt: checksum mismatch"
+            );
+            for patch in record.patches {
+                apply_patch(state_value, patch)?;
+            }
+            *checksum = actual;
+            *sequence = record.sequence;
+        }
+        _ => bail!("journal_corrupt: unsupported journal version"),
+    }
+    Ok(())
+}
+fn replay_journal(journal: &File) -> Result<JournalReplay> {
+    let mut replay = BufReader::new(journal.try_clone()?);
+    let mut torn_tail = None;
+    let mut state_value = Value::Null;
+    let mut checksum = String::new();
+    let mut sequence = 0;
+    let mut committed = 0;
+    loop {
+        let mut line = Vec::new();
+        let count = std::io::Read::by_ref(&mut replay)
+            .take(16 * 1024 * 1024 + 1)
+            .read_until(b'\n', &mut line)?;
+        if count == 0 {
+            break;
+        }
+        ensure!(
+            count <= 16 * 1024 * 1024,
+            "journal_corrupt: record exceeds 16 MiB replay bound"
+        );
+        if !line.ends_with(b"\n") {
+            torn_tail = Some(line);
+            break;
+        }
+        replay_record(&line, &mut state_value, &mut checksum, &mut sequence)?;
+        ensure!(
+            state_value.get("sequence").and_then(Value::as_u64) == Some(sequence),
+            "journal_corrupt: state sequence mismatch"
+        );
+        if let Some(object) = state_value.as_object_mut() {
+            object.entry("references").or_insert_with(|| json!({}));
+            object.entry("read_positions").or_insert_with(|| json!({}));
+        }
+        committed += line.len();
+    }
+    Ok(JournalReplay {
+        state_value,
+        checksum,
+        sequence,
+        committed,
+        torn_tail,
+    })
+}
+fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Result<State> {
+    let recovered = if sequence > 0 {
+        Some(
+            serde_json::from_value::<State>(state_value)
+                .context("journal_corrupt: invalid recovered state")?,
+        )
+    } else {
+        None
+    };
+    let state = match recovered {
+        Some(s) => {
+            ensure!(
+                s.workspace.host_uid == unsafe { libc::geteuid() },
+                "host_identity_changed"
+            );
+            #[cfg(target_os = "linux")]
+            if let Some(expected) = &s.writer_node_id {
+                ensure!(
+                    expected == &node_identity()?,
+                    "node_identity_changed: workspace belongs to another writer node; automatic failover is disabled"
+                );
+            }
+            s
+        }
+        None => {
+            let key: [u8; 32] = hex::decode(bootstrap_key)?
+                .try_into()
+                .map_err(|_| anyhow!("bootstrap_key must be a 32-byte Ed25519 public key"))?;
+            VerifyingKey::from_bytes(&key)?;
+            State {
+                workspace: Workspace {
+                    id: id(),
+                    host_uid: unsafe { libc::geteuid() },
+                    mode: Mode::Private,
+                    policy_epoch: 1,
+                },
+                bootstrap_key: bootstrap_key.into(),
+                workspace_signing_key: digest(token().as_bytes()),
+                writer_node_id: None,
+                runtime_basename: None,
+                principals: BTreeMap::new(),
+                devices: BTreeMap::new(),
+                enrollments: BTreeMap::new(),
+                teams: BTreeMap::new(),
+                channels: BTreeMap::new(),
+                invitations: BTreeMap::new(),
+                messages: vec![],
+                runs: BTreeMap::new(),
+                grants: BTreeMap::new(),
+                blobs: BTreeMap::new(),
+                references: BTreeMap::new(),
+                dedupe: BTreeMap::new(),
+                sequence: 0,
+                read_positions: BTreeMap::new(),
+            }
+        }
+    };
+    Ok(state)
+}
 impl Broker {
     pub fn open(root: &Path, bootstrap_key: &str) -> Result<Self> {
         private_dir(root)?;
@@ -361,161 +561,14 @@ impl Broker {
             journal.metadata()?.len() <= 1024 * 1024 * 1024,
             "quota_exceeded: journal exceeds supported replay size of 1 GiB"
         );
-        let mut replay = BufReader::new(journal.try_clone()?);
-        let mut torn_tail = None;
-        let mut state_value = Value::Null;
-        let mut checksum = String::new();
-        let mut sequence = 0;
-        let mut committed = 0;
-        loop {
-            let mut line = Vec::new();
-            let count = std::io::Read::by_ref(&mut replay)
-                .take(16 * 1024 * 1024 + 1)
-                .read_until(b'\n', &mut line)?;
-            if count == 0 {
-                break;
-            }
-            ensure!(
-                count <= 16 * 1024 * 1024,
-                "journal_corrupt: record exceeds 16 MiB replay bound"
-            );
-            if !line.ends_with(b"\n") {
-                torn_tail = Some(line);
-                break;
-            }
-            let envelope: Value = serde_json::from_slice(&line)
-                .context("journal_corrupt: complete record is invalid")?;
-            match envelope.get("version").and_then(Value::as_u64) {
-                Some(1) => {
-                    let record: Record = serde_json::from_slice(&line)
-                        .context("journal_corrupt: legacy record invalid")?;
-                    ensure!(
-                        record.sequence == sequence + 1 && record.previous == checksum,
-                        "journal_corrupt: sequence/hash chain invalid"
-                    );
-                    let text = std::str::from_utf8(&line)?.trim_end();
-                    let start = text
-                        .find(",\"state\":")
-                        .ok_or_else(|| anyhow!("journal_corrupt: legacy state missing"))?
-                        + 9;
-                    let mut payload = serde_json::to_vec(&(
-                        &record.version,
-                        &record.sequence,
-                        &record.previous,
-                        &record.actor,
-                        &record.operation,
-                        &record.timestamp,
-                    ))?;
-                    payload.pop();
-                    payload.push(b',');
-                    payload.extend_from_slice(&text.as_bytes()[start..text.len() - 1]);
-                    payload.push(b']');
-                    let actual = digest(&payload);
-                    ensure!(
-                        actual == record.checksum,
-                        "journal_corrupt: checksum mismatch"
-                    );
-                    checksum = actual;
-                    sequence = record.sequence;
-                    state_value = envelope
-                        .get("state")
-                        .cloned()
-                        .ok_or_else(|| anyhow!("journal_corrupt: state missing"))?;
-                }
-                Some(2) => {
-                    let record: DeltaRecord = serde_json::from_slice(&line)
-                        .context("journal_corrupt: delta record invalid")?;
-                    ensure!(
-                        record.sequence == sequence + 1 && record.previous == checksum,
-                        "journal_corrupt: sequence/hash chain invalid"
-                    );
-                    let actual = digest(&serde_json::to_vec(&(
-                        &record.version,
-                        &record.sequence,
-                        &record.previous,
-                        &record.actor,
-                        &record.operation,
-                        &record.timestamp,
-                        &record.patches,
-                    ))?);
-                    ensure!(
-                        actual == record.checksum,
-                        "journal_corrupt: checksum mismatch"
-                    );
-                    for patch in record.patches {
-                        apply_patch(&mut state_value, patch)?;
-                    }
-                    checksum = actual;
-                    sequence = record.sequence;
-                }
-                _ => bail!("journal_corrupt: unsupported journal version"),
-            }
-            ensure!(
-                state_value.get("sequence").and_then(Value::as_u64) == Some(sequence),
-                "journal_corrupt: state sequence mismatch"
-            );
-            if let Some(object) = state_value.as_object_mut() {
-                object.entry("references").or_insert_with(|| json!({}));
-                object.entry("read_positions").or_insert_with(|| json!({}));
-            }
-            committed += line.len();
-        }
-        let recovered = if sequence > 0 {
-            Some(
-                serde_json::from_value::<State>(state_value)
-                    .context("journal_corrupt: invalid recovered state")?,
-            )
-        } else {
-            None
-        };
-        let state = match recovered {
-            Some(s) => {
-                ensure!(
-                    s.workspace.host_uid == unsafe { libc::geteuid() },
-                    "host_identity_changed"
-                );
-                #[cfg(target_os = "linux")]
-                if let Some(expected) = &s.writer_node_id {
-                    ensure!(
-                        expected == &node_identity()?,
-                        "node_identity_changed: workspace belongs to another writer node; automatic failover is disabled"
-                    );
-                }
-                s
-            }
-            None => {
-                let key: [u8; 32] = hex::decode(bootstrap_key)?
-                    .try_into()
-                    .map_err(|_| anyhow!("bootstrap_key must be a 32-byte Ed25519 public key"))?;
-                VerifyingKey::from_bytes(&key)?;
-                State {
-                    workspace: Workspace {
-                        id: id(),
-                        host_uid: unsafe { libc::geteuid() },
-                        mode: Mode::Private,
-                        policy_epoch: 1,
-                    },
-                    bootstrap_key: bootstrap_key.into(),
-                    workspace_signing_key: digest(token().as_bytes()),
-                    writer_node_id: None,
-                    runtime_basename: None,
-                    principals: BTreeMap::new(),
-                    devices: BTreeMap::new(),
-                    enrollments: BTreeMap::new(),
-                    teams: BTreeMap::new(),
-                    channels: BTreeMap::new(),
-                    invitations: BTreeMap::new(),
-                    messages: vec![],
-                    runs: BTreeMap::new(),
-                    grants: BTreeMap::new(),
-                    blobs: BTreeMap::new(),
-                    references: BTreeMap::new(),
-                    dedupe: BTreeMap::new(),
-                    sequence: 0,
-                    read_positions: BTreeMap::new(),
-                }
-            }
-        };
+        let JournalReplay {
+            state_value,
+            checksum,
+            sequence,
+            committed,
+            torn_tail,
+        } = replay_journal(&journal)?;
+        let state = recovered_state(state_value, sequence, bootstrap_key)?;
         if let Some(torn_bytes) = torn_tail {
             let tail = root.join(format!("torn-tail-{}", id()));
             let mut file = private_file(&tail, false)?;
@@ -622,59 +675,34 @@ impl Broker {
             "invalid_request: version/id"
         );
         if req.method == "hello" {
-            let secret: [u8; 32] = hex::decode(&self.state.workspace_signing_key)?
-                .try_into()
-                .map_err(|_| anyhow!("storage_corrupt: workspace identity"))?;
-            let key = SigningKey::from_bytes(&secret);
-            let public_key = hex::encode(key.verifying_key().to_bytes());
-            let nonce = req
-                .params
-                .get("challenge_nonce")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            ensure!(
-                nonce.len() <= 128,
-                "invalid_params: challenge nonce too long"
-            );
-            let node_id = node_identity()?;
-            ensure!(
-                self.state
-                    .writer_node_id
-                    .as_ref()
-                    .is_none_or(|expected| expected == &node_id),
-                "node_identity_changed: workspace belongs to another writer node"
-            );
-            let payload = serde_json::to_vec(&json!([
-                self.state.workspace.id,
-                self.state.workspace.host_uid,
-                nonce,
-                public_key,
-                node_id
-            ]))?;
-            let signature = hex::encode(key.sign(&payload).to_bytes());
-            return Ok(
-                json!({"protocol":1,"workspace_id":self.state.workspace.id,"host_uid":self.state.workspace.host_uid,"mode":self.state.workspace.mode,"policy_epoch":self.state.workspace.policy_epoch,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"capabilities":["human_chat","signed_devices","resumable_blobs","scoped_runs"],"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
-            );
+            return self.hello(req);
         }
         if req.method == "auth.challenge" {
-            let device = text(&req.params, "device_id")?;
-            ensure!(device.len() == 64, "invalid_params: device fingerprint");
-            conn.challenges.retain(|_, (_, expiry)| *expiry >= now());
-            ensure!(
-                conn.challenges.len() < 16,
-                "rate_limited: too many live challenges"
-            );
-            let nonce = token();
-            let expiry = now() + 60;
-            conn.challenges
-                .insert(nonce.clone(), (device.into(), expiry));
-            return Ok(
-                json!({"nonce":nonce,"workspace_id":self.state.workspace.id,"uid":uid,"expires_at":expiry}),
-            );
+            return self.challenge(uid, conn, req);
         }
         if req.method == "auth.bootstrap" || req.method == "auth.enroll" {
             return self.enroll(uid, conn, req);
         }
+        let actor = match self.authenticate(uid, conn, req)? {
+            Admission::Actor(actor) => *actor,
+            Admission::Replay(result) => return Ok(result),
+        };
+        if matches!(
+            req.method.as_str(),
+            "workspace.snapshot"
+                | "messages.history"
+                | "messages.search"
+                | "context.manifest"
+                | "run.remote_scope"
+                | "blob.read"
+                | "blob.status"
+                | "reference.get"
+        ) {
+            return self.read(&actor, req);
+        }
+        self.apply_mutation(&actor, req)
+    }
+    fn authenticate(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Admission> {
         let actor = if let Some(credential) = &req.credential {
             ensure!(req.auth.is_none(), "invalid_request: mixed authentication");
             let run_id = self
@@ -688,32 +716,8 @@ impl Broker {
                 .get(run_id)
                 .ok_or_else(|| anyhow!("unauthorized: invalid grant"))?
                 .clone();
-            if run.revoked && req.method == "run.project" {
-                if let Some(key) = req.params.get("idempotency_key").and_then(Value::as_str) {
-                    let scope_key = format!("{}:{}:{key}", run.owner_id, run.id);
-                    if let Some(cached) = self.state.dedupe.get(&scope_key) {
-                        let mut live = run.clone();
-                        live.revoked = false;
-                        self.validate_run(&live, uid)?;
-                        let fingerprint = digest(&serde_json::to_vec(&json!([
-                            req.method,
-                            canonical(&req.params)
-                        ]))?);
-                        ensure!(
-                            fingerprint == cached.digest,
-                            "conflict: idempotency key reused with different request"
-                        );
-                        ensure!(
-                            cached
-                                .result
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .is_some_and(|s| matches!(s, "completed" | "failed" | "cancelled")),
-                            "grant_expired: run revoked"
-                        );
-                        return Ok(cached.result.clone());
-                    }
-                }
+            if let Some(result) = self.terminal_replay(&run, uid, req)? {
+                return Ok(Admission::Replay(result));
             }
             self.validate_run(&run, uid)?;
             ensure!(
@@ -764,19 +768,39 @@ impl Broker {
                 run: None,
             }
         };
-        if matches!(
-            req.method.as_str(),
-            "workspace.snapshot"
-                | "messages.history"
-                | "messages.search"
-                | "context.manifest"
-                | "run.remote_scope"
-                | "blob.read"
-                | "blob.status"
-                | "reference.get"
-        ) {
-            return self.read(&actor, req);
+        Ok(Admission::Actor(Box::new(actor)))
+    }
+    fn terminal_replay(&self, run: &Run, uid: u32, req: &Request) -> Result<Option<Value>> {
+        if run.revoked && req.method == "run.project" {
+            if let Some(key) = req.params.get("idempotency_key").and_then(Value::as_str) {
+                let scope_key = format!("{}:{}:{key}", run.owner_id, run.id);
+                if let Some(cached) = self.state.dedupe.get(&scope_key) {
+                    let mut live = run.clone();
+                    live.revoked = false;
+                    self.validate_run(&live, uid)?;
+                    let fingerprint = digest(&serde_json::to_vec(&json!([
+                        req.method,
+                        canonical(&req.params)
+                    ]))?);
+                    ensure!(
+                        fingerprint == cached.digest,
+                        "conflict: idempotency key reused with different request"
+                    );
+                    ensure!(
+                        cached
+                            .result
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| matches!(s, "completed" | "failed" | "cancelled")),
+                        "grant_expired: run revoked"
+                    );
+                    return Ok(Some(cached.result.clone()));
+                }
+            }
         }
+        Ok(None)
+    }
+    fn apply_mutation(&mut self, actor: &Actor, req: &Request) -> Result<Value> {
         let key = text(&req.params, "idempotency_key")?;
         ensure!(key.len() <= 128, "invalid_params: idempotency key too long");
         let scope = actor.run.as_ref().map(|r| r.id.as_str()).unwrap_or("human");
@@ -795,7 +819,7 @@ impl Broker {
                     .blobs
                     .get(blob_id)
                     .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(&self.state, &actor, blob)?;
+                self.blob_authorized(&self.state, actor, blob)?;
             }
             ensure!(
                 saved.digest == fingerprint,
@@ -808,7 +832,7 @@ impl Broker {
             "quota_exceeded: workspace operation quota requires maintenance"
         );
         let mut state = self.state.clone();
-        let result = self.mutate(&mut state, &actor, req)?;
+        let result = self.mutate(&mut state, actor, req)?;
         state.dedupe.insert(
             key,
             Cached {
@@ -825,6 +849,57 @@ impl Broker {
             return Err(error);
         }
         Ok(result)
+    }
+    fn hello(&self, req: &Request) -> Result<Value> {
+        let secret: [u8; 32] = hex::decode(&self.state.workspace_signing_key)?
+            .try_into()
+            .map_err(|_| anyhow!("storage_corrupt: workspace identity"))?;
+        let key = SigningKey::from_bytes(&secret);
+        let public_key = hex::encode(key.verifying_key().to_bytes());
+        let nonce = req
+            .params
+            .get("challenge_nonce")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        ensure!(
+            nonce.len() <= 128,
+            "invalid_params: challenge nonce too long"
+        );
+        let node_id = node_identity()?;
+        ensure!(
+            self.state
+                .writer_node_id
+                .as_ref()
+                .is_none_or(|expected| expected == &node_id),
+            "node_identity_changed: workspace belongs to another writer node"
+        );
+        let payload = serde_json::to_vec(&json!([
+            self.state.workspace.id,
+            self.state.workspace.host_uid,
+            nonce,
+            public_key,
+            node_id
+        ]))?;
+        let signature = hex::encode(key.sign(&payload).to_bytes());
+        Ok(
+            json!({"protocol":1,"workspace_id":self.state.workspace.id,"host_uid":self.state.workspace.host_uid,"mode":self.state.workspace.mode,"policy_epoch":self.state.workspace.policy_epoch,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"capabilities":["human_chat","signed_devices","resumable_blobs","scoped_runs"],"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
+        )
+    }
+    fn challenge(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
+        let device = text(&req.params, "device_id")?;
+        ensure!(device.len() == 64, "invalid_params: device fingerprint");
+        conn.challenges.retain(|_, (_, expiry)| *expiry >= now());
+        ensure!(
+            conn.challenges.len() < 16,
+            "rate_limited: too many live challenges"
+        );
+        let nonce = token();
+        let expiry = now() + 60;
+        conn.challenges
+            .insert(nonce.clone(), (device.into(), expiry));
+        Ok(
+            json!({"nonce":nonce,"workspace_id":self.state.workspace.id,"uid":uid,"expires_at":expiry}),
+        )
     }
     fn verify(
         &self,
@@ -843,8 +918,16 @@ impl Broker {
             .ok_or_else(|| anyhow!("unauthorized: challenge missing or consumed"))?;
         let bytes = hex::decode(public_key)?;
         ensure!(
-            device == auth.device_id && auth.device_id == digest(&bytes) && expiry >= now(),
-            "unauthorized: challenge binding expired or mismatched"
+            device == auth.device_id,
+            "unauthorized: challenge belongs to another device"
+        );
+        ensure!(
+            auth.device_id == digest(&bytes),
+            "unauthorized: enrollment public key does not match the signing device"
+        );
+        ensure!(
+            expiry >= now(),
+            "unauthorized: authentication challenge expired; retry the action"
         );
         let key: [u8; 32] = bytes
             .try_into()
@@ -994,153 +1077,166 @@ impl Broker {
             })
     }
     fn read(&self, actor: &Actor, req: &Request) -> Result<Value> {
-        let s = &self.state;
-        let p = &req.params;
         match req.method.as_str() {
-            "workspace.snapshot" => {
-                let mut positions = BTreeMap::new();
-                let mut unread = BTreeMap::new();
-                for channel in s
-                    .channels
-                    .values()
-                    .filter(|c| c.members.contains(&actor.id))
-                {
-                    let sequence = *s
-                        .read_positions
-                        .get(&format!("{}:{}", actor.id, channel.id))
-                        .unwrap_or(&0);
-                    positions.insert(channel.id.clone(), sequence);
-                    let count = s
-                        .messages
-                        .iter()
-                        .filter(|m| {
-                            m.channel_id == channel.id
-                                && m.sequence > sequence
-                                && m.actor_id != actor.id
-                                && self.visible(s, actor, m)
-                        })
-                        .count();
-                    unread.insert(channel.id.clone(), count);
-                }
-                Ok(
-                    json!({"workspace":s.workspace,"actor":s.principals.get(&actor.id),"principals":s.principals.values().filter(|p|p.active).collect::<Vec<_>>(),"teams":s.teams.values().filter(|t|t.members.contains(&actor.id)).collect::<Vec<_>>(),"channels":s.channels.values().filter(|c|c.members.contains(&actor.id)).collect::<Vec<_>>(),"invitations":s.invitations.values().filter(|i|i.principal_id==actor.id || i.inviter_id==actor.id).collect::<Vec<_>>(),"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()}),
-                )
-            }
-            "messages.history" | "messages.search" => {
-                let channel = text(p, "channel_id")?;
-                self.channel(s, &actor.id, channel, false)?;
-                if let Some(r) = &actor.run {
-                    ensure!(
-                        r.source_channels.contains(channel),
-                        "forbidden: channel outside run grant"
-                    );
-                }
-                let after = p.get("after").and_then(Value::as_u64).unwrap_or(0);
-                let before = p.get("before").and_then(Value::as_u64).unwrap_or(u64::MAX);
-                let limit = p
-                    .get("limit")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(100)
-                    .min(200) as usize;
-                let query = if req.method == "messages.search" {
-                    text(p, "query")?.to_lowercase()
-                } else {
-                    String::new()
-                };
-                let matching = s.messages.iter().filter(|m| {
-                    m.channel_id == channel
-                        && m.sequence > after
-                        && m.sequence < before
-                        && self.visible(s, actor, m)
-                        && m.body.to_lowercase().contains(&query)
-                });
-                let messages: Vec<_> = if p.get("latest").and_then(Value::as_bool) == Some(true) {
-                    let mut latest: Vec<_> = matching.rev().take(limit).collect();
-                    latest.reverse();
-                    latest
-                } else {
-                    matching.take(limit).collect()
-                };
-                let cursor = messages.last().map(|m| m.sequence).unwrap_or(after);
-                Ok(json!({"messages":messages,"cursor":cursor}))
-            }
-            "run.remote_scope" => {
-                let run = actor
-                    .run
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("forbidden: worker grant required"))?;
-                ensure!(
-                    !run.public_provider,
-                    "privacy_denied: remote filesystem is unavailable to public providers"
-                );
-                let root = run
-                    .remote_root
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
-                Ok(
-                    json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at}),
-                )
-            }
-            "context.manifest" => {
-                let run = actor
-                    .run
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("forbidden: worker grant required"))?;
-                let messages: Vec<_> = s
-                    .messages
-                    .iter()
-                    .filter(|m| {
-                        run.source_channels.contains(&m.channel_id) && self.visible(s, actor, m)
-                    })
-                    .rev()
-                    .take(200)
-                    .collect();
-                Ok(
-                    json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":messages.iter().any(|m|m.restricted)}),
-                )
-            }
-            "reference.get" => {
-                let reference = s
-                    .references
-                    .get(text(p, "reference_id")?)
-                    .ok_or_else(|| anyhow!("forbidden: reference unavailable"))?;
-                self.reference_authorized(s, actor, reference)?;
-                Ok(json!(reference))
-            }
-            "blob.status" => {
-                let blob = s
-                    .blobs
-                    .get(text(p, "blob_id")?)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(s, actor, blob)?;
-                ensure!(
-                    blob.complete || blob.owner_id == actor.id,
-                    "forbidden: incomplete attachment unavailable"
-                );
-                Ok(json!(blob))
-            }
-            "blob.read" => {
-                let blob = s
-                    .blobs
-                    .get(text(p, "blob_id")?)
-                    .filter(|b| b.complete)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(s, actor, blob)?;
-                let offset = number(p, "offset")?;
-                ensure!(
-                    offset <= blob.size,
-                    "invalid_params: offset beyond attachment"
-                );
-                let mut file = private_file(&self.root.join("blobs").join(&blob.id), false)?;
-                file.seek(SeekFrom::Start(offset))?;
-                let mut bytes = vec![0; MAX_CHUNK.min((blob.size - offset) as usize)];
-                file.read_exact(&mut bytes)?;
-                Ok(
-                    json!({"blob":blob,"offset":offset,"data_hex":hex::encode(&bytes),"next_offset":offset+bytes.len() as u64,"complete":offset+bytes.len() as u64==blob.size}),
-                )
-            }
+            "workspace.snapshot" => self.read_workspace_snapshot(actor, req),
+            "messages.history" | "messages.search" => self.read_messages_history(actor, req),
+            "run.remote_scope" => self.read_run_remote_scope(actor, req),
+            "context.manifest" => self.read_context_manifest(actor, req),
+            "reference.get" => self.read_reference_get(actor, req),
+            "blob.status" => self.read_blob_status(actor, req),
+            "blob.read" => self.read_blob_read(actor, req),
             _ => bail!("unsupported: method unavailable"),
         }
+    }
+    fn read_workspace_snapshot(&self, actor: &Actor, _req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let mut positions = BTreeMap::new();
+        let mut unread = BTreeMap::new();
+        for channel in s
+            .channels
+            .values()
+            .filter(|c| c.members.contains(&actor.id))
+        {
+            let sequence = *s
+                .read_positions
+                .get(&format!("{}:{}", actor.id, channel.id))
+                .unwrap_or(&0);
+            positions.insert(channel.id.clone(), sequence);
+            let count = s
+                .messages
+                .iter()
+                .filter(|m| {
+                    m.channel_id == channel.id
+                        && m.sequence > sequence
+                        && m.actor_id != actor.id
+                        && self.visible(s, actor, m)
+                })
+                .count();
+            unread.insert(channel.id.clone(), count);
+        }
+        Ok(
+            json!({"workspace":s.workspace,"actor":s.principals.get(&actor.id),"principals":s.principals.values().filter(|p|p.active).collect::<Vec<_>>(),"teams":s.teams.values().filter(|t|t.members.contains(&actor.id)).collect::<Vec<_>>(),"channels":s.channels.values().filter(|c|c.members.contains(&actor.id)).collect::<Vec<_>>(),"invitations":s.invitations.values().filter(|i|i.principal_id==actor.id || i.inviter_id==actor.id).collect::<Vec<_>>(),"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()}),
+        )
+    }
+    fn read_messages_history(&self, actor: &Actor, req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let p = &req.params;
+        let channel = text(p, "channel_id")?;
+        self.channel(s, &actor.id, channel, false)?;
+        if let Some(r) = &actor.run {
+            ensure!(
+                r.source_channels.contains(channel),
+                "forbidden: channel outside run grant"
+            );
+        }
+        let after = p.get("after").and_then(Value::as_u64).unwrap_or(0);
+        let before = p.get("before").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        let limit = p
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(100)
+            .min(200) as usize;
+        let query = if req.method == "messages.search" {
+            text(p, "query")?.to_lowercase()
+        } else {
+            String::new()
+        };
+        let matching = s.messages.iter().filter(|m| {
+            m.channel_id == channel
+                && m.sequence > after
+                && m.sequence < before
+                && self.visible(s, actor, m)
+                && m.body.to_lowercase().contains(&query)
+        });
+        let messages: Vec<_> = if p.get("latest").and_then(Value::as_bool) == Some(true) {
+            let mut latest: Vec<_> = matching.rev().take(limit).collect();
+            latest.reverse();
+            latest
+        } else {
+            matching.take(limit).collect()
+        };
+        let cursor = messages.last().map(|m| m.sequence).unwrap_or(after);
+        Ok(json!({"messages":messages,"cursor":cursor}))
+    }
+    fn read_run_remote_scope(&self, actor: &Actor, _req: &Request) -> Result<Value> {
+        let run = actor
+            .run
+            .as_ref()
+            .ok_or_else(|| anyhow!("forbidden: worker grant required"))?;
+        ensure!(
+            !run.public_provider,
+            "privacy_denied: remote filesystem is unavailable to public providers"
+        );
+        let root = run
+            .remote_root
+            .as_ref()
+            .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
+        Ok(
+            json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at}),
+        )
+    }
+    fn read_context_manifest(&self, actor: &Actor, _req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let run = actor
+            .run
+            .as_ref()
+            .ok_or_else(|| anyhow!("forbidden: worker grant required"))?;
+        let messages: Vec<_> = s
+            .messages
+            .iter()
+            .filter(|m| run.source_channels.contains(&m.channel_id) && self.visible(s, actor, m))
+            .rev()
+            .take(200)
+            .collect();
+        Ok(
+            json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":messages.iter().any(|m|m.restricted)}),
+        )
+    }
+    fn read_reference_get(&self, actor: &Actor, req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let p = &req.params;
+        let reference = s
+            .references
+            .get(text(p, "reference_id")?)
+            .ok_or_else(|| anyhow!("forbidden: reference unavailable"))?;
+        self.reference_authorized(s, actor, reference)?;
+        Ok(json!(reference))
+    }
+    fn read_blob_status(&self, actor: &Actor, req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let p = &req.params;
+        let blob = s
+            .blobs
+            .get(text(p, "blob_id")?)
+            .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+        self.blob_authorized(s, actor, blob)?;
+        ensure!(
+            blob.complete || blob.owner_id == actor.id,
+            "forbidden: incomplete attachment unavailable"
+        );
+        Ok(json!(blob))
+    }
+    fn read_blob_read(&self, actor: &Actor, req: &Request) -> Result<Value> {
+        let s = &self.state;
+        let p = &req.params;
+        let blob = s
+            .blobs
+            .get(text(p, "blob_id")?)
+            .filter(|b| b.complete)
+            .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+        self.blob_authorized(s, actor, blob)?;
+        let offset = number(p, "offset")?;
+        ensure!(
+            offset <= blob.size,
+            "invalid_params: offset beyond attachment"
+        );
+        let mut file = private_file(&self.root.join("blobs").join(&blob.id), false)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; MAX_CHUNK.min((blob.size - offset) as usize)];
+        file.read_exact(&mut bytes)?;
+        Ok(
+            json!({"blob":blob,"offset":offset,"data_hex":hex::encode(&bytes),"next_offset":offset+bytes.len() as u64,"complete":offset+bytes.len() as u64==blob.size}),
+        )
     }
     fn reference_authorized(
         &self,
@@ -1178,681 +1274,764 @@ impl Broker {
         Ok(())
     }
     fn mutate(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
-        let p = &req.params;
-        let who = &actor.id;
         match req.method.as_str() {
-            "channel.read" => {
-                let channel = text(p, "channel_id")?;
-                self.channel(s, who, channel, false)?;
-                let sequence = number(p, "sequence")?;
-                ensure!(
-                    sequence <= s.sequence,
-                    "invalid_params: read sequence beyond journal"
-                );
-                let entry = s
-                    .read_positions
-                    .entry(format!("{who}:{channel}"))
-                    .or_default();
-                *entry = (*entry).max(sequence);
-                Ok(json!({"channel_id":channel,"sequence":*entry}))
-            }
-            "profile.update" => {
-                let nickname = text(p, "nickname")?;
-                ensure!(nickname.len() <= 120, "invalid_params: nickname too long");
-                let avatar = p.get("avatar").and_then(Value::as_str);
-                ensure!(avatar.is_none_or(|a|a.chars().count()<=12&&!a.chars().any(char::is_control)),"invalid_params: avatar must be up to 12 printable characters");
-                let profile = s
-                    .principals
-                    .get_mut(who)
-                    .ok_or_else(|| anyhow!("unauthorized"))?;
-                profile.nickname = nickname.into();
-                profile.avatar = avatar.map(str::to_owned);
-                Ok(json!(profile))
-            }
-            "enrollment.invite" => {
-                self.manager(s, who)?;
-                let uid: u32 = number(p, "uid")?.try_into()?;
-                let current_username = username(uid)?;
-                let existing_principal_id = match p.get("existing_principal_id") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::String(value)) => Some(value.clone()),
-                    _ => bail!("invalid_params: existing_principal_id must be a string"),
-                };
-                match s
-                    .principals
-                    .values()
-                    .find(|principal| principal.uid == uid && principal.active)
-                {
-                    Some(principal) => {
-                        ensure!(principal.username == current_username, "identity_mismatch: UID account name changed; offboard the old principal before enrollment");
-                        ensure!(existing_principal_id.as_deref() == Some(principal.id.as_str()), "invalid_params: adding a device requires the active existing_principal_id; offboard first if this is a replacement account");
-                    }
-                    None => ensure!(
-                        existing_principal_id.is_none(),
-                        "invalid_params: no active principal exists for this UID"
-                    ),
-                }
-                let key = text(p, "public_key")?;
-                let bytes: [u8; 32] = hex::decode(key)?
-                    .try_into()
-                    .map_err(|_| anyhow!("invalid_params: Ed25519 key"))?;
-                VerifyingKey::from_bytes(&bytes)?;
-                let invitation = token();
-                s.enrollments.insert(
-                    digest(invitation.as_bytes()),
-                    Enrollment {
-                        existing_principal_id,
-                        uid,
-                        public_key: key.into(),
-                        expires_at: now() + 3600,
-                    },
-                );
-                Ok(
-                    json!({"invitation":invitation,"expires_at":now()+3600,"uid":uid,"device_id":digest(&bytes)}),
-                )
-            }
-            "enrollment.revoke" => {
-                self.manager(s, who)?;
-                let target = text(p, "principal_id")?;
-                ensure!(target != who, "forbidden: cannot revoke workspace host");
-                s.principals
-                    .get_mut(target)
-                    .ok_or_else(|| anyhow!("forbidden: principal unavailable"))?
-                    .active = false;
-                s.devices.retain(|_, d| d.principal_id != target);
-                s.enrollments.retain(|_, e| {
-                    s.principals
-                        .values()
-                        .all(|p| p.id != target || p.uid != e.uid)
-                });
-                s.workspace.policy_epoch += 1;
-                Ok(json!({"revoked":true}))
-            }
-            "policy.set" => {
-                self.manager(s, who)?;
-                s.workspace.mode = mode(p, "mode")?;
-                s.workspace.policy_epoch += 1;
-                Ok(json!(s.workspace))
-            }
-            "team.create" => {
-                ensure!(s.teams.len() < 100, "quota_exceeded: maximum teams");
-                let name = text(p, "name")?;
-                ensure!(name.len() <= 120, "invalid_params: name too long");
-                let team_id = id();
-                let channel_id = id();
-                let members = BTreeSet::from([who.clone()]);
-                let team = Team {
-                    id: team_id.clone(),
-                    name: name.into(),
-                    created_by: who.clone(),
-                    members: members.clone(),
-                    general_channel_id: channel_id.clone(),
-                };
-                let channel = Channel {
-                    id: channel_id.clone(),
-                    team_id: team_id.clone(),
-                    name: "general".into(),
-                    created_by: who.clone(),
-                    owner_id: who.clone(),
-                    members,
-                    archived: false,
-                    classification: if s.workspace.mode == Mode::Private {
-                        Classification::Restricted
-                    } else {
-                        Classification::PublicSafe
-                    },
-                    pending_owner: None,
-                };
-                s.teams.insert(team_id, team.clone());
-                s.channels.insert(channel_id, channel.clone());
-                Ok(json!({"team":team,"channel":channel}))
-            }
-            "channel.create" => {
-                let team_id = text(p, "team_id")?;
-                ensure!(
-                    s.teams
-                        .get(team_id)
-                        .is_some_and(|t| t.members.contains(who)),
-                    "forbidden: team unavailable"
-                );
-                ensure!(s.channels.len() < 1000, "quota_exceeded: maximum channels");
-                let name = text(p, "name")?;
-                ensure!(name.len() <= 120, "invalid_params: name too long");
-                let classification = match p.get("classification") {
-                    Some(v) => serde_json::from_value(v.clone())?,
-                    None => Classification::Restricted,
-                };
-                let c = Channel {
-                    id: id(),
-                    team_id: team_id.into(),
-                    name: name.into(),
-                    created_by: who.clone(),
-                    owner_id: who.clone(),
-                    members: BTreeSet::from([who.clone()]),
-                    archived: false,
-                    classification,
-                    pending_owner: None,
-                };
-                s.channels.insert(c.id.clone(), c.clone());
-                Ok(json!(c))
-            }
-            "invitation.create" => {
-                let kind = text(p, "kind")?;
-                let target = text(p, "target_id")?;
-                let principal = text(p, "principal_id")?;
-                ensure!(
-                    s.principals.get(principal).is_some_and(|p| p.active),
-                    "forbidden: principal unavailable"
-                );
-                match kind {
-                    "team" => ensure!(
-                        s.teams.get(target).is_some_and(|t| t.created_by == *who),
-                        "forbidden: team owner required"
-                    ),
-                    "channel" => {
-                        let c = self.channel(s, who, target, true)?;
-                        ensure!(c.owner_id == *who, "forbidden: current owner required");
-                        ensure!(
-                            s.teams
-                                .get(&c.team_id)
-                                .is_some_and(|t| t.members.contains(principal)),
-                            "forbidden: target must first join team"
-                        );
-                    }
-                    _ => bail!("invalid_params: invitation kind"),
-                }
-                let invitation = Invitation {
-                    id: id(),
-                    kind: kind.into(),
-                    target_id: target.into(),
-                    principal_id: principal.into(),
-                    inviter_id: who.clone(),
-                    expires_at: now() + 86400,
-                };
-                s.invitations
-                    .insert(invitation.id.clone(), invitation.clone());
-                Ok(json!(invitation))
-            }
-            "invitation.accept" => {
-                let invitation = s
-                    .invitations
-                    .get(text(p, "invitation_id")?)
-                    .filter(|i| i.principal_id == *who && i.expires_at >= now())
-                    .ok_or_else(|| anyhow!("forbidden: invitation unavailable"))?
-                    .clone();
-                if invitation.kind == "team" {
-                    let team = s
-                        .teams
-                        .get_mut(&invitation.target_id)
-                        .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
-                    ensure!(
-                        team.created_by == invitation.inviter_id,
-                        "forbidden: invitation authority changed"
-                    );
-                    team.members.insert(who.clone());
-                    s.channels
-                        .get_mut(&team.general_channel_id)
-                        .ok_or_else(|| anyhow!("storage_corrupt"))?
-                        .members
-                        .insert(who.clone());
-                } else {
-                    let c = s
-                        .channels
-                        .get_mut(&invitation.target_id)
-                        .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?;
-                    ensure!(
-                        c.owner_id == invitation.inviter_id && !c.archived,
-                        "forbidden: invitation authority changed"
-                    );
-                    c.members.insert(who.clone());
-                }
-                s.invitations.remove(&invitation.id);
-                s.workspace.policy_epoch += 1;
-                Ok(json!({"accepted":true}))
-            }
+            "channel.read" => self.mutate_channel_read(s, actor, req),
+            "profile.update" => self.mutate_profile_update(s, actor, req),
+            "enrollment.invite" => self.mutate_enrollment_invite(s, actor, req),
+            "enrollment.revoke" => self.mutate_enrollment_revoke(s, actor, req),
+            "policy.set" => self.mutate_policy_set(s, actor, req),
+            "team.create" => self.mutate_team_create(s, actor, req),
+            "channel.create" => self.mutate_channel_create(s, actor, req),
+            "invitation.create" => self.mutate_invitation_create(s, actor, req),
+            "invitation.accept" => self.mutate_invitation_accept(s, actor, req),
             "channel.archive" | "channel.transfer" | "membership.revoke" => {
-                let channel = text(p, "channel_id")?;
-                let c = self.channel(s, who, channel, true)?;
-                ensure!(c.owner_id == *who, "forbidden: current owner required");
-                let c = s.channels.get_mut(channel).expect("authorized channel");
-                match req.method.as_str() {
-                    "channel.archive" => c.archived = true,
-                    "channel.transfer" => {
-                        let successor = text(p, "successor_id")?;
-                        ensure!(
-                            successor != who && c.members.contains(successor),
-                            "forbidden: eligible successor required"
-                        );
-                        c.pending_owner = Some(successor.into());
-                    }
-                    _ => {
-                        let target = text(p, "principal_id")?;
-                        ensure!(target != who, "forbidden: transfer before owner removal");
-                        c.members.remove(target);
-                        if c.pending_owner.as_deref() == Some(target) {
-                            c.pending_owner = None;
-                        }
-                    }
-                }
-                s.invitations.retain(|_, i| i.target_id != channel);
-                s.workspace.policy_epoch += 1;
-                Ok(json!(c))
+                self.mutate_channel_archive(s, actor, req)
             }
-            "transfer.accept" => {
-                let channel = text(p, "channel_id")?;
-                self.channel(s, who, channel, true)?;
-                let c = s.channels.get_mut(channel).expect("authorized channel");
-                ensure!(
-                    c.pending_owner.as_deref() == Some(who),
-                    "forbidden: no transfer offered to this principal"
-                );
-                let previous_owner = c.owner_id.clone();
-                c.members.remove(&previous_owner);
-                c.owner_id = who.clone();
-                c.pending_owner = None;
-                s.invitations.retain(|_, i| i.target_id != channel);
-                s.workspace.policy_epoch += 1;
-                Ok(json!(c))
-            }
-            "message.post" | "run.project" => {
-                ensure!(
-                    req.method != "run.project" || actor.run.is_some(),
-                    "forbidden: run projection requires an admitted worker grant"
-                );
-                ensure!(s.messages.len() < 100_000, "quota_exceeded: message limit");
-                let body = p
-                    .get("body")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("invalid_params: body must be a string"))?;
-                ensure!(body.len() <= 65536, "invalid_params: message too long");
-                let channel = if let Some(run) = &actor.run {
-                    run.channel_id.as_str()
-                } else {
-                    text(p, "channel_id")?
-                };
-                let c = self.channel(s, who, channel, true)?;
-                let sources = actor
-                    .run
-                    .as_ref()
-                    .map(|r| r.source_channels.clone())
-                    .unwrap_or_else(|| BTreeSet::from([channel.into()]));
-                let mut restricted = actor
-                    .run
-                    .as_ref()
-                    .map(|r| r.personal_mode == Mode::Private)
-                    .unwrap_or_else(|| {
-                        p.get("personal_mode").and_then(Value::as_str) != Some("public")
-                    })
-                    || s.workspace.mode == Mode::Private
-                    || c.classification == Classification::Restricted;
-                restricted |= s
-                    .messages
-                    .iter()
-                    .any(|m| sources.contains(&m.channel_id) && m.restricted);
-                if let Some(run) = &actor.run {
-                    restricted |= run.personal_mode == Mode::Private || run.remote_root.is_some();
-                }
-                let attachments: Vec<String> = strings(p, "attachments")?.into_iter().collect();
-                for blob_id in &attachments {
-                    let b = s
-                        .blobs
-                        .get(blob_id)
-                        .filter(|b| b.complete)
-                        .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                    self.blob_authorized(s, actor, b)?;
-                    ensure!(
-                        b.channel_id == channel && b.source_channels.is_subset(&sources),
-                        "forbidden: attachment provenance cannot be dropped"
-                    );
-                    restricted |= b.restricted;
-                }
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        !run.public_provider || !restricted,
-                        "privacy_denied: source policy changed"
-                    );
-                }
-                let status = p.get("status").and_then(Value::as_str).map(str::to_owned);
-                if let Some(status) = &status {
-                    ensure!(
-                        matches!(
-                            status.as_str(),
-                            "progress" | "completed" | "failed" | "cancelled"
-                        ),
-                        "invalid_params: run status"
-                    );
-                }
-                let references: Vec<String> = strings(p, "references")?.into_iter().collect();
-                for reference_id in &references {
-                    let reference = s
-                        .references
-                        .get(reference_id)
-                        .ok_or_else(|| anyhow!("forbidden: reference unavailable"))?;
-                    self.reference_authorized(s, actor, reference)?;
-                    ensure!(
-                        reference.channel_id == channel
-                            && reference.source_channels.is_subset(&sources),
-                        "forbidden: reference provenance cannot be dropped"
-                    );
-                    restricted = true;
-                }
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        !run.public_provider || !restricted,
-                        "privacy_denied: reference is restricted"
-                    );
-                }
-                ensure!(
-                    !body.is_empty() || (actor.run.is_none() && (!attachments.is_empty() || !references.is_empty())),
-                    "invalid_params: body must be nonempty unless a human message includes attachments or references"
-                );
-                let message = Message {
-                    references,
-
-                    id: id(),
-                    sequence: s.sequence + 1,
-                    channel_id: channel.into(),
-                    actor_id: who.clone(),
-                    run_id: actor.run.as_ref().map(|r| r.id.clone()),
-                    body: body.into(),
-                    created_at: now(),
-                    restricted,
-                    source_channels: sources,
-                    attachments,
-                    status: status.clone(),
-                };
-                s.messages.push(message.clone());
-                if status.as_deref().is_some_and(|v| v != "progress") {
-                    if let Some(run) = &actor.run {
-                        s.runs.get_mut(&run.id).expect("admitted run").revoked = true;
-                    }
-                }
-                Ok(json!(message))
-            }
-            "run.create" => {
-                let channel = text(p, "channel_id")?;
-                self.channel(s, who, channel, true)?;
-                let mut sources = strings(p, "source_channels")?;
-                sources.insert(channel.into());
-                ensure!(
-                    sources.len() <= 20,
-                    "quota_exceeded: too many context channels"
-                );
-                let public = p
-                    .get("public_provider")
-                    .and_then(Value::as_bool)
-                    .ok_or_else(|| anyhow!("invalid_params: public_provider required"))?;
-                let personal = mode(p, "personal_mode")?;
-                if public {
-                    ensure!(
-                        personal == Mode::Public && s.workspace.mode == Mode::Public,
-                        "privacy_denied: Private workspace or connection"
-                    );
-                }
-                for source in &sources {
-                    let c = self.channel(s, who, source, false)?;
-                    if public {
-                        ensure!(
-                            c.classification == Classification::PublicSafe
-                                && !s
-                                    .messages
-                                    .iter()
-                                    .any(|m| m.channel_id == *source && m.restricted),
-                            "privacy_denied: retained context is restricted"
-                        );
-                    }
-                }
-                let expires = number(p, "expires_in")?;
-                ensure!(
-                    (1..=3600).contains(&expires),
-                    "invalid_params: expiry must be 1..3600 seconds"
-                );
-                let remote_root = p
-                    .get("remote_root")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let remote_execution = p
-                    .get("remote_execution")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if let Some(root) = &remote_root {
-                    ensure!(!public&&Path::new(root).is_absolute()&&root!="/","privacy_denied: remote root must be explicitly scoped and private-provider only");
-                    self.protect_authority_root(
-                        root,
-                        s.principals
-                            .get(who)
-                            .ok_or_else(|| anyhow!("unauthorized"))?
-                            .uid,
-                    )?;
-                }
-                ensure!(
-                    !remote_execution || remote_root.is_some(),
-                    "invalid_params: execution requires remote root"
-                );
-                let run = Run {
-                    remote_root,
-                    remote_execution,
-                    id: id(),
-                    owner_id: who.clone(),
-                    channel_id: channel.into(),
-                    source_channels: sources,
-                    provider_policy_id: text(p, "provider_policy_id")?.into(),
-                    public_provider: public,
-                    personal_mode: personal,
-                    policy_epoch: s.workspace.policy_epoch,
-                    expires_at: now() + expires,
-                    revoked: false,
-                };
-                let credential = token();
-                s.grants
-                    .insert(digest(credential.as_bytes()), run.id.clone());
-                s.runs.insert(run.id.clone(), run.clone());
-                Ok(json!({"run":run,"credential":credential}))
-            }
-            "run.revoke" => {
-                let run = s
-                    .runs
-                    .get_mut(text(p, "run_id")?)
-                    .filter(|r| r.owner_id == *who)
-                    .ok_or_else(|| anyhow!("forbidden: owned run unavailable"))?;
-                run.revoked = true;
-                Ok(json!(run))
-            }
-            "reference.create" => {
-                let channel = text(p, "channel_id")?;
-                self.channel(s, who, channel, true)?;
-                let path = text(p, "path")?;
-                ensure!(
-                    path.len() <= 4096
-                        && Path::new(path).is_absolute()
-                        && !Path::new(path)
-                            .components()
-                            .any(|c| matches!(c, std::path::Component::ParentDir)),
-                    "invalid_params: absolute remote path without parent traversal required"
-                );
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        run.channel_id == channel && !run.public_provider,
-                        "forbidden: reference outside run destination"
-                    );
-                    let root = run
-                        .remote_root
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
-                    ensure!(
-                        Path::new(path).starts_with(root),
-                        "forbidden: reference outside approved remote root"
-                    );
-                }
-                ensure!(
-                    s.references.len() < 10000,
-                    "quota_exceeded: remote reference limit"
-                );
-                let label = text(p, "label")?;
-                ensure!(
-                    label.len() <= 255 && !label.chars().any(char::is_control),
-                    "invalid_params: reference label"
-                );
-                let reference = RemoteReference {
-                    id: id(),
-                    channel_id: channel.into(),
-                    owner_id: who.clone(),
-                    path: path.into(),
-                    label: label.into(),
-                    restricted: true,
-                    source_channels: actor
-                        .run
-                        .as_ref()
-                        .map(|r| r.source_channels.clone())
-                        .unwrap_or_else(|| BTreeSet::from([channel.into()])),
-                    verified: false,
-                };
-                s.references.insert(reference.id.clone(), reference.clone());
-                Ok(json!(reference))
-            }
-            "blob.begin" => {
-                let channel = text(p, "channel_id")?;
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        run.channel_id == channel,
-                        "forbidden: attachment destination outside run grant"
-                    );
-                }
-                let c = self.channel(s, who, channel, true)?;
-                let size = number(p, "size")?;
-                ensure!(
-                    size <= 1024 * 1024 * 1024,
-                    "quota_exceeded: maximum attachment is 1 GiB"
-                );
-                ensure!(
-                    s.blobs.len() < 10000
-                        && s.blobs.values().map(|b| b.size).sum::<u64>() + size
-                            <= 10 * 1024 * 1024 * 1024,
-                    "quota_exceeded: workspace attachment quota"
-                );
-                let sha = text(p, "sha256")?;
-                ensure!(
-                    sha.len() == 64 && hex::decode(sha)?.len() == 32,
-                    "invalid_params: sha256"
-                );
-                let name = text(p, "name")?;
-                ensure!(
-                    name.len() <= 255 && !name.chars().any(char::is_control),
-                    "invalid_params: attachment display name"
-                );
-                let blob = Blob {
-                    run_id: actor.run.as_ref().map(|r| r.id.clone()),
-                    id: id(),
-                    owner_id: who.clone(),
-                    channel_id: channel.into(),
-                    name: name.into(),
-                    media_type: text(p, "media_type")?.into(),
-                    size,
-                    sha256: sha.to_lowercase(),
-                    offset: 0,
-                    complete: false,
-                    restricted: actor.run.as_ref().is_some_and(|r| {
-                        r.remote_root.is_some()
-                            || r.personal_mode == Mode::Private
-                            || s.messages
-                                .iter()
-                                .any(|m| r.source_channels.contains(&m.channel_id) && m.restricted)
-                    }) || actor
-                        .run
-                        .as_ref()
-                        .map(|r| r.personal_mode == Mode::Private)
-                        .unwrap_or_else(|| {
-                            p.get("personal_mode").and_then(Value::as_str) != Some("public")
-                        })
-                        || s.workspace.mode == Mode::Private
-                        || c.classification == Classification::Restricted,
-                    source_channels: actor
-                        .run
-                        .as_ref()
-                        .map(|r| r.source_channels.clone())
-                        .unwrap_or_else(|| BTreeSet::from([channel.into()])),
-                };
-                let file = private_file(&self.root.join("blobs").join(&blob.id), false)?;
-                file.sync_all()?;
-                sync_dir(&self.root.join("blobs"))?;
-                s.blobs.insert(blob.id.clone(), blob.clone());
-                Ok(json!(blob))
-            }
-            "blob.chunk" => {
-                let blob_id = text(p, "blob_id")?;
-                let b = s
-                    .blobs
-                    .get(blob_id)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(s, actor, b)?;
-                self.channel(s, who, &b.channel_id, true)?;
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        b.run_id.as_deref() == Some(run.id.as_str()),
-                        "forbidden: upload belongs to another authority scope"
-                    );
-                }
-                ensure!(
-                    b.owner_id == *who && !b.complete,
-                    "forbidden: upload unavailable"
-                );
-                let offset = number(p, "offset")?;
-                let bytes = hex::decode(text(p, "data_hex")?)?;
-                ensure!(
-                    !bytes.is_empty()
-                        && bytes.len() <= MAX_CHUNK
-                        && offset == b.offset
-                        && offset + bytes.len() as u64 <= b.size,
-                    "conflict: chunk size/offset invalid"
-                );
-                let mut file = private_file(&self.root.join("blobs").join(blob_id), false)?;
-                file.seek(SeekFrom::Start(offset))?;
-                file.write_all(&bytes)?;
-                file.sync_all()?;
-                let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
-                blob.offset += bytes.len() as u64;
-                Ok(json!(blob))
-            }
-            "blob.finish" => {
-                let blob_id = text(p, "blob_id")?;
-                let b = s
-                    .blobs
-                    .get(blob_id)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(s, actor, b)?;
-                self.channel(s, who, &b.channel_id, true)?;
-                if let Some(run) = &actor.run {
-                    ensure!(
-                        b.run_id.as_deref() == Some(run.id.as_str()),
-                        "forbidden: upload belongs to another authority scope"
-                    );
-                }
-                ensure!(
-                    b.owner_id == *who && !b.complete && b.offset == b.size,
-                    "conflict: attachment incomplete"
-                );
-                let mut file = private_file(&self.root.join("blobs").join(blob_id), false)?;
-                file.set_len(b.size)?;
-                let mut hash = Sha256::new();
-                let mut buffer = vec![0; 65536];
-                loop {
-                    let n = file.read(&mut buffer)?;
-                    if n == 0 {
-                        break;
-                    }
-                    hash.update(&buffer[..n]);
-                }
-                ensure!(
-                    hex::encode(hash.finalize()) == b.sha256,
-                    "digest_mismatch: attachment content differs from declaration"
-                );
-                file.sync_all()?;
-                let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
-                blob.complete = true;
-                Ok(json!(blob))
-            }
+            "transfer.accept" => self.mutate_transfer_accept(s, actor, req),
+            "message.post" | "run.project" => self.mutate_message_post(s, actor, req),
+            "run.create" => self.mutate_run_create(s, actor, req),
+            "run.revoke" => self.mutate_run_revoke(s, actor, req),
+            "reference.create" => self.mutate_reference_create(s, actor, req),
+            "blob.begin" => self.mutate_blob_begin(s, actor, req),
+            "blob.chunk" => self.mutate_blob_chunk(s, actor, req),
+            "blob.finish" => self.mutate_blob_finish(s, actor, req),
             _ => bail!("unsupported: operation is not supported by this broker"),
         }
+    }
+    fn mutate_channel_read(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        self.channel(s, who, channel, false)?;
+        let sequence = number(p, "sequence")?;
+        ensure!(
+            sequence <= s.sequence,
+            "invalid_params: read sequence beyond journal"
+        );
+        let entry = s
+            .read_positions
+            .entry(format!("{who}:{channel}"))
+            .or_default();
+        *entry = (*entry).max(sequence);
+        Ok(json!({"channel_id":channel,"sequence":*entry}))
+    }
+    fn mutate_profile_update(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let nickname = text(p, "nickname")?;
+        ensure!(nickname.len() <= 120, "invalid_params: nickname too long");
+        let avatar = p.get("avatar").and_then(Value::as_str);
+        ensure!(
+            avatar.is_none_or(|a| a.chars().count() <= 12 && !a.chars().any(char::is_control)),
+            "invalid_params: avatar must be up to 12 printable characters"
+        );
+        let profile = s
+            .principals
+            .get_mut(who)
+            .ok_or_else(|| anyhow!("unauthorized"))?;
+        profile.nickname = nickname.into();
+        profile.avatar = avatar.map(str::to_owned);
+        Ok(json!(profile))
+    }
+    fn mutate_enrollment_invite(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        self.manager(s, who)?;
+        let uid: u32 = number(p, "uid")?.try_into()?;
+        let current_username = username(uid)?;
+        let existing_principal_id = match p.get("existing_principal_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.clone()),
+            _ => bail!("invalid_params: existing_principal_id must be a string"),
+        };
+        match s
+            .principals
+            .values()
+            .find(|principal| principal.uid == uid && principal.active)
+        {
+            Some(principal) => {
+                ensure!(principal.username == current_username, "identity_mismatch: UID account name changed; offboard the old principal before enrollment");
+                ensure!(existing_principal_id.as_deref() == Some(principal.id.as_str()), "invalid_params: adding a device requires the active existing_principal_id; offboard first if this is a replacement account");
+            }
+            None => ensure!(
+                existing_principal_id.is_none(),
+                "invalid_params: no active principal exists for this UID"
+            ),
+        }
+        let key = text(p, "public_key")?;
+        let bytes: [u8; 32] = hex::decode(key)?
+            .try_into()
+            .map_err(|_| anyhow!("invalid_params: Ed25519 key"))?;
+        VerifyingKey::from_bytes(&bytes)?;
+        let invitation = token();
+        s.enrollments.insert(
+            digest(invitation.as_bytes()),
+            Enrollment {
+                existing_principal_id,
+                uid,
+                public_key: key.into(),
+                expires_at: now() + 3600,
+            },
+        );
+        Ok(
+            json!({"invitation":invitation,"expires_at":now()+3600,"uid":uid,"device_id":digest(&bytes)}),
+        )
+    }
+    fn mutate_enrollment_revoke(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        self.manager(s, who)?;
+        let target = text(p, "principal_id")?;
+        ensure!(target != who, "forbidden: cannot revoke workspace host");
+        s.principals
+            .get_mut(target)
+            .ok_or_else(|| anyhow!("forbidden: principal unavailable"))?
+            .active = false;
+        s.devices.retain(|_, d| d.principal_id != target);
+        s.enrollments.retain(|_, e| {
+            s.principals
+                .values()
+                .all(|p| p.id != target || p.uid != e.uid)
+        });
+        s.workspace.policy_epoch += 1;
+        Ok(json!({"revoked":true}))
+    }
+    fn mutate_policy_set(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        self.manager(s, who)?;
+        s.workspace.mode = mode(p, "mode")?;
+        s.workspace.policy_epoch += 1;
+        Ok(json!(s.workspace))
+    }
+    fn mutate_team_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(s.teams.len() < 100, "quota_exceeded: maximum teams");
+        let name = text(p, "name")?;
+        ensure!(name.len() <= 120, "invalid_params: name too long");
+        let team_id = id();
+        let channel_id = id();
+        let members = BTreeSet::from([who.clone()]);
+        let team = Team {
+            id: team_id.clone(),
+            name: name.into(),
+            created_by: who.clone(),
+            members: members.clone(),
+            general_channel_id: channel_id.clone(),
+        };
+        let channel = Channel {
+            id: channel_id.clone(),
+            team_id: team_id.clone(),
+            name: "general".into(),
+            created_by: who.clone(),
+            owner_id: who.clone(),
+            members,
+            archived: false,
+            classification: if s.workspace.mode == Mode::Private {
+                Classification::Restricted
+            } else {
+                Classification::PublicSafe
+            },
+            pending_owner: None,
+        };
+        s.teams.insert(team_id, team.clone());
+        s.channels.insert(channel_id, channel.clone());
+        Ok(json!({"team":team,"channel":channel}))
+    }
+    fn mutate_channel_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let team_id = text(p, "team_id")?;
+        ensure!(
+            s.teams
+                .get(team_id)
+                .is_some_and(|t| t.members.contains(who)),
+            "forbidden: team unavailable"
+        );
+        ensure!(s.channels.len() < 1000, "quota_exceeded: maximum channels");
+        let name = text(p, "name")?;
+        ensure!(name.len() <= 120, "invalid_params: name too long");
+        let classification = match p.get("classification") {
+            Some(v) => serde_json::from_value(v.clone())?,
+            None => Classification::Restricted,
+        };
+        let c = Channel {
+            id: id(),
+            team_id: team_id.into(),
+            name: name.into(),
+            created_by: who.clone(),
+            owner_id: who.clone(),
+            members: BTreeSet::from([who.clone()]),
+            archived: false,
+            classification,
+            pending_owner: None,
+        };
+        s.channels.insert(c.id.clone(), c.clone());
+        Ok(json!(c))
+    }
+    fn mutate_invitation_create(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let kind = text(p, "kind")?;
+        let target = text(p, "target_id")?;
+        let principal = text(p, "principal_id")?;
+        ensure!(
+            s.principals.get(principal).is_some_and(|p| p.active),
+            "forbidden: principal unavailable"
+        );
+        match kind {
+            "team" => ensure!(
+                s.teams.get(target).is_some_and(|t| t.created_by == *who),
+                "forbidden: team owner required"
+            ),
+            "channel" => {
+                let c = self.channel(s, who, target, true)?;
+                ensure!(c.owner_id == *who, "forbidden: current owner required");
+                ensure!(
+                    s.teams
+                        .get(&c.team_id)
+                        .is_some_and(|t| t.members.contains(principal)),
+                    "forbidden: target must first join team"
+                );
+            }
+            _ => bail!("invalid_params: invitation kind"),
+        }
+        let invitation = Invitation {
+            id: id(),
+            kind: kind.into(),
+            target_id: target.into(),
+            principal_id: principal.into(),
+            inviter_id: who.clone(),
+            expires_at: now() + 86400,
+        };
+        s.invitations
+            .insert(invitation.id.clone(), invitation.clone());
+        Ok(json!(invitation))
+    }
+    fn mutate_invitation_accept(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let invitation = s
+            .invitations
+            .get(text(p, "invitation_id")?)
+            .filter(|i| i.principal_id == *who && i.expires_at >= now())
+            .ok_or_else(|| anyhow!("forbidden: invitation unavailable"))?
+            .clone();
+        if invitation.kind == "team" {
+            let team = s
+                .teams
+                .get_mut(&invitation.target_id)
+                .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
+            ensure!(
+                team.created_by == invitation.inviter_id,
+                "forbidden: invitation authority changed"
+            );
+            team.members.insert(who.clone());
+            s.channels
+                .get_mut(&team.general_channel_id)
+                .ok_or_else(|| anyhow!("storage_corrupt"))?
+                .members
+                .insert(who.clone());
+        } else {
+            let c = s
+                .channels
+                .get_mut(&invitation.target_id)
+                .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?;
+            ensure!(
+                c.owner_id == invitation.inviter_id && !c.archived,
+                "forbidden: invitation authority changed"
+            );
+            c.members.insert(who.clone());
+        }
+        s.invitations.remove(&invitation.id);
+        s.workspace.policy_epoch += 1;
+        Ok(json!({"accepted":true}))
+    }
+    fn mutate_channel_archive(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        let c = self.channel(s, who, channel, true)?;
+        ensure!(c.owner_id == *who, "forbidden: current owner required");
+        let c = s.channels.get_mut(channel).expect("authorized channel");
+        match req.method.as_str() {
+            "channel.archive" => c.archived = true,
+            "channel.transfer" => {
+                let successor = text(p, "successor_id")?;
+                ensure!(
+                    successor != who && c.members.contains(successor),
+                    "forbidden: eligible successor required"
+                );
+                c.pending_owner = Some(successor.into());
+            }
+            _ => {
+                let target = text(p, "principal_id")?;
+                ensure!(target != who, "forbidden: transfer before owner removal");
+                c.members.remove(target);
+                if c.pending_owner.as_deref() == Some(target) {
+                    c.pending_owner = None;
+                }
+            }
+        }
+        s.invitations.retain(|_, i| i.target_id != channel);
+        s.workspace.policy_epoch += 1;
+        Ok(json!(c))
+    }
+    fn mutate_transfer_accept(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        self.channel(s, who, channel, true)?;
+        let c = s.channels.get_mut(channel).expect("authorized channel");
+        ensure!(
+            c.pending_owner.as_deref() == Some(who),
+            "forbidden: no transfer offered to this principal"
+        );
+        let previous_owner = c.owner_id.clone();
+        c.members.remove(&previous_owner);
+        c.owner_id = who.clone();
+        c.pending_owner = None;
+        s.invitations.retain(|_, i| i.target_id != channel);
+        s.workspace.policy_epoch += 1;
+        Ok(json!(c))
+    }
+    fn message_restricted(
+        &self,
+        s: &State,
+        actor: &Actor,
+        p: &Value,
+        c: &Channel,
+        sources: &BTreeSet<String>,
+    ) -> bool {
+        let mut restricted = actor
+            .run
+            .as_ref()
+            .map(|r| r.personal_mode == Mode::Private)
+            .unwrap_or_else(|| p.get("personal_mode").and_then(Value::as_str) != Some("public"))
+            || s.workspace.mode == Mode::Private
+            || c.classification == Classification::Restricted;
+        restricted |= s
+            .messages
+            .iter()
+            .any(|m| sources.contains(&m.channel_id) && m.restricted);
+        if let Some(run) = &actor.run {
+            restricted |= run.personal_mode == Mode::Private || run.remote_root.is_some();
+        }
+        restricted
+    }
+    fn mutate_message_post(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(
+            req.method != "run.project" || actor.run.is_some(),
+            "forbidden: run projection requires an admitted worker grant"
+        );
+        ensure!(s.messages.len() < 100_000, "quota_exceeded: message limit");
+        let body = p
+            .get("body")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("invalid_params: body must be a string"))?;
+        ensure!(body.len() <= 65536, "invalid_params: message too long");
+        let channel = if let Some(run) = &actor.run {
+            run.channel_id.as_str()
+        } else {
+            text(p, "channel_id")?
+        };
+        let c = self.channel(s, who, channel, true)?;
+        let sources = actor
+            .run
+            .as_ref()
+            .map(|r| r.source_channels.clone())
+            .unwrap_or_else(|| BTreeSet::from([channel.into()]));
+        let mut restricted = self.message_restricted(s, actor, p, c, &sources);
+        let attachments: Vec<String> = strings(p, "attachments")?.into_iter().collect();
+        for blob_id in &attachments {
+            let b = s
+                .blobs
+                .get(blob_id)
+                .filter(|b| b.complete)
+                .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+            self.blob_authorized(s, actor, b)?;
+            ensure!(
+                b.channel_id == channel && b.source_channels.is_subset(&sources),
+                "forbidden: attachment provenance cannot be dropped"
+            );
+            restricted |= b.restricted;
+        }
+        if let Some(run) = &actor.run {
+            ensure!(
+                !run.public_provider || !restricted,
+                "privacy_denied: source policy changed"
+            );
+        }
+        let status = projection_status(p)?;
+        let references: Vec<String> = strings(p, "references")?.into_iter().collect();
+        for reference_id in &references {
+            let reference = s
+                .references
+                .get(reference_id)
+                .ok_or_else(|| anyhow!("forbidden: reference unavailable"))?;
+            self.reference_authorized(s, actor, reference)?;
+            ensure!(
+                reference.channel_id == channel && reference.source_channels.is_subset(&sources),
+                "forbidden: reference provenance cannot be dropped"
+            );
+            restricted = true;
+        }
+        if let Some(run) = &actor.run {
+            ensure!(
+                !run.public_provider || !restricted,
+                "privacy_denied: reference is restricted"
+            );
+        }
+        ensure!(
+            !body.is_empty() || (actor.run.is_none() && (!attachments.is_empty() || !references.is_empty())),
+            "invalid_params: body must be nonempty unless a human message includes attachments or references"
+        );
+        let message = Message {
+            references,
+
+            id: id(),
+            sequence: s.sequence + 1,
+            channel_id: channel.into(),
+            actor_id: who.clone(),
+            run_id: actor.run.as_ref().map(|r| r.id.clone()),
+            body: body.into(),
+            created_at: now(),
+            restricted,
+            source_channels: sources,
+            attachments,
+            status: status.clone(),
+        };
+        s.messages.push(message.clone());
+        if status.as_deref().is_some_and(|v| v != "progress") {
+            if let Some(run) = &actor.run {
+                s.runs.get_mut(&run.id).expect("admitted run").revoked = true;
+            }
+        }
+        Ok(json!(message))
+    }
+    fn mutate_run_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        self.channel(s, who, channel, true)?;
+        let mut sources = strings(p, "source_channels")?;
+        sources.insert(channel.into());
+        ensure!(
+            sources.len() <= 20,
+            "quota_exceeded: too many context channels"
+        );
+        let public = p
+            .get("public_provider")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| anyhow!("invalid_params: public_provider required"))?;
+        let personal = mode(p, "personal_mode")?;
+        if public {
+            ensure!(
+                personal == Mode::Public && s.workspace.mode == Mode::Public,
+                "privacy_denied: Private workspace or connection"
+            );
+        }
+        for source in &sources {
+            let c = self.channel(s, who, source, false)?;
+            if public {
+                ensure!(
+                    c.classification == Classification::PublicSafe
+                        && !s
+                            .messages
+                            .iter()
+                            .any(|m| m.channel_id == *source && m.restricted),
+                    "privacy_denied: retained context is restricted"
+                );
+            }
+        }
+        let expires = number(p, "expires_in")?;
+        ensure!(
+            (1..=3600).contains(&expires),
+            "invalid_params: expiry must be 1..3600 seconds"
+        );
+        let remote_root = p
+            .get("remote_root")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let remote_execution = p
+            .get("remote_execution")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(root) = &remote_root {
+            ensure!(
+                !public && Path::new(root).is_absolute() && root != "/",
+                "privacy_denied: remote root must be explicitly scoped and private-provider only"
+            );
+            self.protect_authority_root(
+                root,
+                s.principals
+                    .get(who)
+                    .ok_or_else(|| anyhow!("unauthorized"))?
+                    .uid,
+            )?;
+        }
+        ensure!(
+            !remote_execution || remote_root.is_some(),
+            "invalid_params: execution requires remote root"
+        );
+        let run = Run {
+            remote_root,
+            remote_execution,
+            id: id(),
+            owner_id: who.clone(),
+            channel_id: channel.into(),
+            source_channels: sources,
+            provider_policy_id: text(p, "provider_policy_id")?.into(),
+            public_provider: public,
+            personal_mode: personal,
+            policy_epoch: s.workspace.policy_epoch,
+            expires_at: now() + expires,
+            revoked: false,
+        };
+        let credential = token();
+        s.grants
+            .insert(digest(credential.as_bytes()), run.id.clone());
+        s.runs.insert(run.id.clone(), run.clone());
+        Ok(json!({"run":run,"credential":credential}))
+    }
+    fn mutate_run_revoke(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let run = s
+            .runs
+            .get_mut(text(p, "run_id")?)
+            .filter(|r| r.owner_id == *who)
+            .ok_or_else(|| anyhow!("forbidden: owned run unavailable"))?;
+        run.revoked = true;
+        Ok(json!(run))
+    }
+    fn mutate_reference_create(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        self.channel(s, who, channel, true)?;
+        let path = text(p, "path")?;
+        ensure!(
+            path.len() <= 4096
+                && Path::new(path).is_absolute()
+                && !Path::new(path)
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "invalid_params: absolute remote path without parent traversal required"
+        );
+        if let Some(run) = &actor.run {
+            ensure!(
+                run.channel_id == channel && !run.public_provider,
+                "forbidden: reference outside run destination"
+            );
+            let root = run
+                .remote_root
+                .as_ref()
+                .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
+            ensure!(
+                Path::new(path).starts_with(root),
+                "forbidden: reference outside approved remote root"
+            );
+        }
+        ensure!(
+            s.references.len() < 10000,
+            "quota_exceeded: remote reference limit"
+        );
+        let label = text(p, "label")?;
+        ensure!(
+            label.len() <= 255 && !label.chars().any(char::is_control),
+            "invalid_params: reference label"
+        );
+        let reference = RemoteReference {
+            id: id(),
+            channel_id: channel.into(),
+            owner_id: who.clone(),
+            path: path.into(),
+            label: label.into(),
+            restricted: true,
+            source_channels: actor
+                .run
+                .as_ref()
+                .map(|r| r.source_channels.clone())
+                .unwrap_or_else(|| BTreeSet::from([channel.into()])),
+            verified: false,
+        };
+        s.references.insert(reference.id.clone(), reference.clone());
+        Ok(json!(reference))
+    }
+    fn mutate_blob_begin(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel = text(p, "channel_id")?;
+        if let Some(run) = &actor.run {
+            ensure!(
+                run.channel_id == channel,
+                "forbidden: attachment destination outside run grant"
+            );
+        }
+        let c = self.channel(s, who, channel, true)?;
+        let size = number(p, "size")?;
+        ensure!(
+            size <= 1024 * 1024 * 1024,
+            "quota_exceeded: maximum attachment is 1 GiB"
+        );
+        ensure!(
+            s.blobs.len() < 10000
+                && s.blobs.values().map(|b| b.size).sum::<u64>() + size <= 10 * 1024 * 1024 * 1024,
+            "quota_exceeded: workspace attachment quota"
+        );
+        let sha = text(p, "sha256")?;
+        ensure!(
+            sha.len() == 64 && hex::decode(sha)?.len() == 32,
+            "invalid_params: sha256"
+        );
+        let name = text(p, "name")?;
+        ensure!(
+            name.len() <= 255 && !name.chars().any(char::is_control),
+            "invalid_params: attachment display name"
+        );
+        let blob = Blob {
+            run_id: actor.run.as_ref().map(|r| r.id.clone()),
+            id: id(),
+            owner_id: who.clone(),
+            channel_id: channel.into(),
+            name: name.into(),
+            media_type: text(p, "media_type")?.into(),
+            size,
+            sha256: sha.to_lowercase(),
+            offset: 0,
+            complete: false,
+            restricted: actor.run.as_ref().is_some_and(|r| {
+                r.remote_root.is_some()
+                    || r.personal_mode == Mode::Private
+                    || s.messages
+                        .iter()
+                        .any(|m| r.source_channels.contains(&m.channel_id) && m.restricted)
+            }) || actor
+                .run
+                .as_ref()
+                .map(|r| r.personal_mode == Mode::Private)
+                .unwrap_or_else(|| {
+                    p.get("personal_mode").and_then(Value::as_str) != Some("public")
+                })
+                || s.workspace.mode == Mode::Private
+                || c.classification == Classification::Restricted,
+            source_channels: actor
+                .run
+                .as_ref()
+                .map(|r| r.source_channels.clone())
+                .unwrap_or_else(|| BTreeSet::from([channel.into()])),
+        };
+        let file = private_file(&self.root.join("blobs").join(&blob.id), false)?;
+        file.sync_all()?;
+        sync_dir(&self.root.join("blobs"))?;
+        s.blobs.insert(blob.id.clone(), blob.clone());
+        Ok(json!(blob))
+    }
+    fn mutate_blob_chunk(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let blob_id = text(p, "blob_id")?;
+        let b = s
+            .blobs
+            .get(blob_id)
+            .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+        self.blob_authorized(s, actor, b)?;
+        self.channel(s, who, &b.channel_id, true)?;
+        if let Some(run) = &actor.run {
+            ensure!(
+                b.run_id.as_deref() == Some(run.id.as_str()),
+                "forbidden: upload belongs to another authority scope"
+            );
+        }
+        ensure!(
+            b.owner_id == *who && !b.complete,
+            "forbidden: upload unavailable"
+        );
+        let offset = number(p, "offset")?;
+        let bytes = hex::decode(text(p, "data_hex")?)?;
+        ensure!(
+            !bytes.is_empty()
+                && bytes.len() <= MAX_CHUNK
+                && offset == b.offset
+                && offset + bytes.len() as u64 <= b.size,
+            "conflict: chunk size/offset invalid"
+        );
+        let mut file = private_file(&self.root.join("blobs").join(blob_id), false)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
+        blob.offset += bytes.len() as u64;
+        Ok(json!(blob))
+    }
+    fn mutate_blob_finish(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let blob_id = text(p, "blob_id")?;
+        let b = s
+            .blobs
+            .get(blob_id)
+            .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+        self.blob_authorized(s, actor, b)?;
+        self.channel(s, who, &b.channel_id, true)?;
+        if let Some(run) = &actor.run {
+            ensure!(
+                b.run_id.as_deref() == Some(run.id.as_str()),
+                "forbidden: upload belongs to another authority scope"
+            );
+        }
+        ensure!(
+            b.owner_id == *who && !b.complete && b.offset == b.size,
+            "conflict: attachment incomplete"
+        );
+        let mut file = private_file(&self.root.join("blobs").join(blob_id), false)?;
+        file.set_len(b.size)?;
+        let mut hash = Sha256::new();
+        let mut buffer = vec![0; 65536];
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buffer[..n]);
+        }
+        ensure!(
+            hex::encode(hash.finalize()) == b.sha256,
+            "digest_mismatch: attachment content differs from declaration"
+        );
+        file.sync_all()?;
+        let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
+        blob.complete = true;
+        Ok(json!(blob))
     }
     fn manager(&self, s: &State, actor: &str) -> Result<()> {
         ensure!(
@@ -1926,7 +2105,7 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
     );
     Ok(())
 }
-fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
+fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
     let uid = broker.state.workspace.host_uid;
     let descriptor_path = broker.root.join("runtime.json");
     let recorded = match OpenOptions::new()
@@ -1975,6 +2154,11 @@ fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("unsafe_runtime: cannot read runtime descriptor"),
     };
+    Ok(recorded)
+}
+fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
+    let uid = broker.state.workspace.host_uid;
+    let recorded = recorded_runtime(broker, node_id)?;
     let basename = match (&broker.state.runtime_basename, recorded) {
         (Some(expected), Some(recorded)) => {
             ensure!(
@@ -2003,6 +2187,9 @@ fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
         state.runtime_basename = Some(basename.clone());
         broker.commit(state, "system", "workspace.bind_runtime")?;
     }
+    reclaim_runtime_socket(uid, &basename)
+}
+fn reclaim_runtime_socket(uid: u32, basename: &str) -> Result<PathBuf> {
     let directory = PathBuf::from("/tmp").join(basename);
     match fs::symlink_metadata(&directory) {
         Ok(metadata) => ensure!(
@@ -2072,6 +2259,22 @@ fn write_runtime(root: &Path, info: &Value) -> Result<()> {
     fs::rename(path, root.join("runtime.json"))?;
     sync_dir(root)
 }
+struct ConnectionPermit {
+    counts: Arc<Mutex<BTreeMap<u32, usize>>>,
+    uid: u32,
+}
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = self.counts.lock() {
+            if let Some(count) = counts.get_mut(&self.uid) {
+                *count -= 1;
+                if *count == 0 {
+                    counts.remove(&self.uid);
+                }
+            }
+        }
+    }
+}
 pub fn serve(root: &Path, bootstrap_key: &str) -> Result<()> {
     ensure!(
         cfg!(target_os = "linux"),
@@ -2100,24 +2303,33 @@ pub fn serve(root: &Path, bootstrap_key: &str) -> Result<()> {
     write_runtime(root, &info)?;
     println!("{}", info);
     let shared = Arc::new(Mutex::new(broker));
-    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let active = Arc::new(Mutex::new(BTreeMap::<u32, usize>::new()));
     for stream in listener.incoming() {
         let stream = stream?;
-        if active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 64 {
-            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            continue;
-        }
+        let uid = peer_uid(&stream)?;
+        let permit = {
+            let mut counts = active
+                .lock()
+                .map_err(|_| anyhow!("connection limits unavailable"))?;
+            if counts.values().sum::<usize>() >= 256 || counts.get(&uid).copied().unwrap_or(0) >= 8
+            {
+                continue;
+            }
+            *counts.entry(uid).or_default() += 1;
+            ConnectionPermit {
+                counts: Arc::clone(&active),
+                uid,
+            }
+        };
         let shared = Arc::clone(&shared);
-        let active = Arc::clone(&active);
         std::thread::spawn(move || {
-            let _ = serve_client(stream, shared);
-            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let _permit = permit;
+            let _ = serve_client(stream, uid, shared);
         });
     }
     Ok(())
 }
-fn serve_client(mut stream: UnixStream, broker: Arc<Mutex<Broker>>) -> Result<()> {
-    let uid = peer_uid(&stream)?;
+fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);

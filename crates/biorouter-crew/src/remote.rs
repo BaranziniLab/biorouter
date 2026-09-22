@@ -169,111 +169,117 @@ pub fn handle(method: &str, params: &Value, scope: &Value) -> Result<Value> {
     let root = root(scope)?;
     let path = relative(params)?;
     match method {
-        "remote.list" => {
-            let directory = open_scoped(&root, &path, false)?;
-            ensure!(directory.metadata()?.is_dir(), "not a directory");
-            use std::os::fd::AsRawFd;
-            let entries = std::fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
-            let mut result = Vec::new();
-            for entry in entries.take(501) {
-                ensure!(
-                    result.len() < 500,
-                    "directory contains more than 500 entries; select a narrower directory"
-                );
-                let entry = entry?;
-                let kind = entry.file_type()?;
-                result.push(json!({"name":entry.file_name().to_string_lossy(),"directory":kind.is_dir(),"symlink":kind.is_symlink()}));
-            }
-            Ok(json!({"path":path,"entries":result}))
-        }
-        "remote.read" | "remote.hash" => {
-            let mut file = open_scoped(&root, &path, false)?;
-            ensure!(file.metadata()?.is_file(), "not a regular file");
-            ensure!(
-                file.metadata()?.len() <= MAX_FILE as u64,
-                "file exceeds bounded read limit (256 KiB)"
-            );
-            let mut bytes = Vec::new();
-            (&mut file)
-                .take(MAX_FILE as u64 + 1)
-                .read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= MAX_FILE, "file exceeds limit");
-            let hash = hex::encode(Sha256::digest(&bytes));
-            if method == "remote.hash" {
-                Ok(json!({"sha256":hash,"size":bytes.len()}))
-            } else {
-                Ok(
-                    json!({"path":path,"data_hex":hex::encode(&bytes),"text_utf8":std::str::from_utf8(&bytes).ok().filter(|_|bytes.len()<=65536),"sha256":hash,"size":bytes.len()}),
-                )
-            }
-        }
-        "remote.write" => {
-            ensure!(
-                params.get("text").is_some() != params.get("data_hex").is_some(),
-                "provide exactly one of text or data_hex"
-            );
-            let bytes = if let Some(text) = params.get("text").and_then(Value::as_str) {
-                text.as_bytes().to_vec()
-            } else {
-                hex::decode(text(params, "data_hex")?)?
-            };
-            ensure!(bytes.len() <= MAX_FILE, "write exceeds 256 KiB limit");
-            let mut file = open_scoped(&root, &path, true)?;
-            ensure!(file.metadata()?.is_file(), "not a regular file");
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            Ok(json!({"path":path,"size":bytes.len(),"sha256":hex::encode(Sha256::digest(bytes))}))
-        }
+        "remote.list" => list_files(&root, &path),
+        "remote.read" | "remote.hash" => read_file(&root, &path, method),
+        "remote.write" => write_file(&root, &path, params),
         "remote.execute" => start_job(&root, params, scope),
-        "remote.job_status" | "remote.cancel" => {
-            let id = text(params, "job_id")?;
-            let jobs = JOBS.lock().map_err(|_| anyhow!("job state unavailable"))?;
-            let Some(job) = jobs.get(id).cloned() else {
-                ensure!(
-                    id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "invalid job ID"
-                );
-                drop(jobs);
-                let state = PathBuf::from(
-                    std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unavailable"))?,
-                )
-                .join(".local/state/biorouter-crew/remote-jobs")
-                .join(id);
-                use std::os::unix::fs::OpenOptionsExt;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(state)?;
-                let mut data = Vec::new();
-                file.take(1_048_577).read_to_end(&mut data)?;
-                ensure!(data.len() <= 1_048_576, "invalid job record");
-                let mut record: Value = serde_json::from_slice(&data)?;
-                ensure!(
-                    record["run_id"].as_str() == Some(text(scope, "run_id")?),
-                    "forbidden: job belongs to another run"
-                );
-                if matches!(record["status"].as_str(), Some("starting" | "running")) {
-                    record["status"] = json!("unknown_after_disconnect");
-                    record["message"] = json!(
-                        "Inspect output files before retrying; no process is adopted by PID."
-                    );
-                }
-                return Ok(record);
-            };
-            drop(jobs);
-            let mut job = job.lock().map_err(|_| anyhow!("job state unavailable"))?;
-            ensure!(
-                job.run_id == text(scope, "run_id")?,
-                "forbidden: job belongs to another run"
-            );
-            if method == "remote.cancel" {
-                stop_job(&mut job, "cancelled");
-            }
-            snapshot(id, &job)
-        }
+        "remote.job_status" | "remote.cancel" => job_status(method, params, scope),
         _ => bail!("unsupported: remote operation unavailable"),
     }
 }
+fn list_files(root: &Path, path: &Path) -> Result<Value> {
+    let directory = open_scoped(root, path, false)?;
+    ensure!(directory.metadata()?.is_dir(), "not a directory");
+    use std::os::fd::AsRawFd;
+    let entries = std::fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
+    let mut result = Vec::new();
+    for entry in entries.take(501) {
+        ensure!(
+            result.len() < 500,
+            "directory contains more than 500 entries; select a narrower directory"
+        );
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        result.push(json!({"name":entry.file_name().to_string_lossy(),"directory":kind.is_dir(),"symlink":kind.is_symlink()}));
+    }
+    Ok(json!({"path":path,"entries":result}))
+}
+
+fn read_file(root: &Path, path: &Path, method: &str) -> Result<Value> {
+    let mut file = open_scoped(root, path, false)?;
+    ensure!(file.metadata()?.is_file(), "not a regular file");
+    ensure!(
+        file.metadata()?.len() <= MAX_FILE as u64,
+        "file exceeds bounded read limit (256 KiB)"
+    );
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_FILE as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= MAX_FILE, "file exceeds limit");
+    let hash = hex::encode(Sha256::digest(&bytes));
+    if method == "remote.hash" {
+        Ok(json!({"sha256":hash,"size":bytes.len()}))
+    } else {
+        Ok(
+            json!({"path":path,"data_hex":hex::encode(&bytes),"text_utf8":std::str::from_utf8(&bytes).ok().filter(|_|bytes.len()<=65536),"sha256":hash,"size":bytes.len()}),
+        )
+    }
+}
+
+fn write_file(root: &Path, path: &Path, params: &Value) -> Result<Value> {
+    ensure!(
+        params.get("text").is_some() != params.get("data_hex").is_some(),
+        "provide exactly one of text or data_hex"
+    );
+    let bytes = if let Some(text) = params.get("text").and_then(Value::as_str) {
+        text.as_bytes().to_vec()
+    } else {
+        hex::decode(text(params, "data_hex")?)?
+    };
+    ensure!(bytes.len() <= MAX_FILE, "write exceeds 256 KiB limit");
+    let mut file = open_scoped(root, path, true)?;
+    ensure!(file.metadata()?.is_file(), "not a regular file");
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(json!({"path":path,"size":bytes.len(),"sha256":hex::encode(Sha256::digest(bytes))}))
+}
+
+fn job_status(method: &str, params: &Value, scope: &Value) -> Result<Value> {
+    let id = text(params, "job_id")?;
+    let jobs = JOBS.lock().map_err(|_| anyhow!("job state unavailable"))?;
+    let Some(job) = jobs.get(id).cloned() else {
+        ensure!(
+            id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "invalid job ID"
+        );
+        drop(jobs);
+        let state =
+            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unavailable"))?)
+                .join(".local/state/biorouter-crew/remote-jobs")
+                .join(id);
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(state)?;
+        let mut data = Vec::new();
+        file.take(1_048_577).read_to_end(&mut data)?;
+        ensure!(data.len() <= 1_048_576, "invalid job record");
+        let mut record: Value = serde_json::from_slice(&data)?;
+        ensure!(
+            record["run_id"].as_str() == Some(text(scope, "run_id")?),
+            "forbidden: job belongs to another run"
+        );
+        if matches!(record["status"].as_str(), Some("starting" | "running")) {
+            record["status"] = json!("unknown_after_disconnect");
+            record["message"] =
+                json!("Inspect output files before retrying; no process is adopted by PID.");
+        }
+        return Ok(record);
+    };
+    drop(jobs);
+    let mut job = job.lock().map_err(|_| anyhow!("job state unavailable"))?;
+    ensure!(
+        job.run_id == text(scope, "run_id")?,
+        "forbidden: job belongs to another run"
+    );
+    if method == "remote.cancel" {
+        stop_job(&mut job, "cancelled");
+    }
+    snapshot(id, &job)
+}
+
 fn snapshot(id: &str, job: &Job) -> Result<Value> {
     Ok(
         json!({"job_id":id,"status":job.status,"exit_code":job.exit_code,"stdout":String::from_utf8_lossy(&job.stdout.lock().map_err(|_|anyhow!("output unavailable"))?),"stderr":String::from_utf8_lossy(&job.stderr.lock().map_err(|_|anyhow!("output unavailable"))?)}),
@@ -371,6 +377,117 @@ fn validate_work_tree(root: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn reserve_job_record(root: &Path, id: &str, digest: &str, run: &str) -> Result<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unavailable"))?);
+    let state = home.join(".local/state/biorouter-crew/remote-jobs");
+    ensure!(
+        !state.starts_with(root),
+        "invalid_scope: work root contains Crew authority state"
+    );
+    std::fs::create_dir_all(&state)?;
+    ensure!(
+        !std::fs::symlink_metadata(&state)?.file_type().is_symlink(),
+        "remote job state must not be a symlink"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))?;
+    let record = state.join(id);
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut marker = std::fs::OpenOptions::new()
+        .mode(0o600)
+        .create_new(true)
+        .write(true)
+        .open(&record)
+        .map_err(|e| {
+            anyhow!("execution outcome may already exist; inspect before retrying: {e}")
+        })?;
+    marker.write_all(
+        json!({"status":"starting","digest":digest,"run_id":run})
+            .to_string()
+            .as_bytes(),
+    )?;
+    marker.sync_all()?;
+    // Persist the invocation name and newly created state hierarchy before execution.
+    for directory in state.ancestors() {
+        File::open(directory)?.sync_all()?;
+        if directory == home {
+            break;
+        }
+    }
+    Ok(record)
+}
+fn spawn_job_child(root: &Path, argv: &[String], expiry: u64, deadline: Instant) -> Result<Child> {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("__crew-exec")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root)
+        .env("TMPDIR", root)
+        .env("LANG", "C.UTF-8")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OMP_NUM_THREADS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(root);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    ensure!(
+        Instant::now() < deadline,
+        "remote execution grant expired during admission"
+    );
+    let mut child = command.spawn()?;
+    let input =
+        json!({"root":root,"argv":argv,"parent_pid":std::process::id(),"expires_at":expiry});
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("child input missing"))?
+        .write_all(serde_json::to_string(&input)?.as_bytes())?;
+    Ok(child)
+}
+fn monitor_job(job: Arc<Mutex<Job>>, deadline: Instant) {
+    let monitor = job.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let Ok(mut job) = monitor.lock() else { break };
+        let Some(child) = job.child.as_mut() else {
+            break;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                job.exit_code = status.code();
+                job.status = if status.success() {
+                    "completed"
+                } else {
+                    "failed"
+                }
+                .into();
+                job.child = None;
+                persist_job(&mut job);
+                break;
+            }
+            Err(_) => {
+                stop_job(&mut job, "failed");
+                break;
+            }
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            stop_job(&mut job, "timed_out");
+            break;
+        }
+    });
+}
+
 fn start_job(root: &Path, params: &Value, scope: &Value) -> Result<Value> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -420,69 +537,8 @@ fn start_job(root: &Path, params: &Value, scope: &Value) -> Result<Value> {
             < 4,
         "remote job concurrency limit reached"
     );
-    let state = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unavailable"))?)
-        .join(".local/state/biorouter-crew/remote-jobs");
-    ensure!(
-        !state.starts_with(root),
-        "invalid_scope: work root contains Crew authority state"
-    );
-    std::fs::create_dir_all(&state)?;
-    ensure!(
-        !std::fs::symlink_metadata(&state)?.file_type().is_symlink(),
-        "remote job state must not be a symlink"
-    );
-    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
-    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))?;
-    let record = state.join(&id);
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut marker = std::fs::OpenOptions::new()
-        .mode(0o600)
-        .create_new(true)
-        .write(true)
-        .open(&record)
-        .map_err(|e| {
-            anyhow!("execution outcome may already exist; inspect before retrying: {e}")
-        })?;
-    marker.write_all(
-        json!({"status":"starting","digest":digest,"run_id":run})
-            .to_string()
-            .as_bytes(),
-    )?;
-    marker.sync_all()?;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("__crew-exec")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", root)
-        .env("TMPDIR", root)
-        .env("LANG", "C.UTF-8")
-        .env("OPENBLAS_NUM_THREADS", "1")
-        .env("OMP_NUM_THREADS", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .current_dir(root);
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    ensure!(
-        Instant::now() < deadline,
-        "remote execution grant expired during admission"
-    );
-    let mut child = command.spawn()?;
-    let input =
-        json!({"root":root,"argv":argv,"parent_pid":std::process::id(),"expires_at":expiry});
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("child input missing"))?
-        .write_all(serde_json::to_string(&input)?.as_bytes())?;
+    let record = reserve_job_record(root, &id, &digest, run)?;
+    let mut child = spawn_job_child(root, &argv, expiry, deadline)?;
     let stdout = Arc::new(Mutex::new(Vec::new()));
     let stderr = Arc::new(Mutex::new(Vec::new()));
     let out_reader = pump(
@@ -512,37 +568,7 @@ fn start_job(root: &Path, params: &Value, scope: &Value) -> Result<Value> {
     }));
     jobs.insert(id.clone(), job.clone());
     drop(jobs);
-    let monitor = job.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(50));
-        let Ok(mut job) = monitor.lock() else { break };
-        let Some(child) = job.child.as_mut() else {
-            break;
-        };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                job.exit_code = status.code();
-                job.status = if status.success() {
-                    "completed"
-                } else {
-                    "failed"
-                }
-                .into();
-                job.child = None;
-                persist_job(&mut job);
-                break;
-            }
-            Err(_) => {
-                stop_job(&mut job, "failed");
-                break;
-            }
-            _ => {}
-        }
-        if Instant::now() >= deadline {
-            stop_job(&mut job, "timed_out");
-            break;
-        }
-    });
+    monitor_job(job.clone(), deadline);
     let locked = job.lock().map_err(|_| anyhow!("job state unavailable"))?;
     let result = snapshot(&id, &locked)?;
     Ok(result)

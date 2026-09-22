@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use biorouter_crew::{signing_payload, Broker, Connection, DeviceAuth, Request};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -6,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -86,7 +88,7 @@ fn signed_as(
     });
     broker.handle(caller_uid, connection, req)
 }
-fn bootstrap(root: &PathBuf) -> (Broker, Connection, SigningKey) {
+fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
     let mut broker = Broker::open(root, &public).unwrap();
@@ -360,7 +362,7 @@ fn attachment_begin_uses_attachment_handler() {
 fn revoked_worker_credential_cannot_read_context() {
     let root = temp_root("revoke-worker");
     let remote_root = temp_root("revoke-worker-remote");
-    let result = with_cleanup(&root, || {
+    with_cleanup(&root, || {
         let (mut broker, mut connection, key) = bootstrap(&root);
         let team = signed(
             &mut broker,
@@ -411,7 +413,6 @@ fn revoked_worker_credential_cannot_read_context() {
         );
     });
     let _ = fs::remove_dir_all(&remote_root);
-    result
 }
 
 #[test]
@@ -1174,6 +1175,193 @@ fn restricted_message_invalidates_existing_public_run() {
             json!({"channel_id":channel,"source_channels":[channel],"provider_policy_id":"public","personal_mode":"public","public_provider":true,"expires_in":60,"idempotency_key":"fresh-public-run"}),
         );
         assert_eq!(fresh.error.unwrap().code, "privacy_denied");
+    });
+}
+
+#[test]
+fn delayed_public_worker_response_rechecks_newly_restricted_channel() {
+    let root = temp_root("public-delayed-response");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        assert!(signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "policy",
+            "policy.set",
+            json!({"mode":"public","idempotency_key":"policy"}),
+        )
+        .error
+        .is_none());
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"delayed-public","idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap().to_owned();
+        let run = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "run",
+            "run.create",
+            json!({"channel_id":channel,"source_channels":[channel],"provider_policy_id":"public","personal_mode":"public","public_provider":true,"expires_in":60,"idempotency_key":"run"}),
+        )
+        .result
+        .unwrap();
+        let credential = run["credential"].as_str().unwrap().to_owned();
+        let progress = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "progress".into(),
+                method: "run.project".into(),
+                params: json!({"body":"safe progress","status":"progress","idempotency_key":"progress"}),
+                auth: None,
+                credential: Some(credential.clone()),
+            },
+        );
+        assert!(
+            progress.error.is_none(),
+            "initial progress failed: {:?}",
+            progress.error
+        );
+
+        // This is the policy transition a queued public response must not cross.
+        let restricted = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "restricted",
+            "message.post",
+            json!({"channel_id":channel,"body":"private human update","personal_mode":"private","idempotency_key":"restricted"}),
+        );
+        assert!(
+            restricted.error.is_none(),
+            "restricted post failed: {:?}",
+            restricted.error
+        );
+        let delayed = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "delayed".into(),
+                method: "run.project".into(),
+                params: json!({"body":"late public response","status":"completed","idempotency_key":"delayed"}),
+                auth: None,
+                credential: Some(credential),
+            },
+        );
+        assert_eq!(delayed.error.unwrap().code, "privacy_denied");
+    });
+}
+
+#[test]
+fn worker_grant_epoch_change_requires_regrant_before_projection() {
+    let root = temp_root("worker-regrant");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"regrant","idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap().to_owned();
+        let first = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "first-run",
+            "run.create",
+            json!({"channel_id":channel,"source_channels":[channel],"provider_policy_id":"private","personal_mode":"private","public_provider":false,"expires_in":60,"idempotency_key":"first-run"}),
+        )
+        .result
+        .unwrap();
+        let stale_credential = first["credential"].as_str().unwrap().to_owned();
+        let before = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "before".into(),
+                method: "context.manifest".into(),
+                params: json!({}),
+                auth: None,
+                credential: Some(stale_credential.clone()),
+            },
+        );
+        assert!(
+            before.error.is_none(),
+            "fresh grant rejected: {:?}",
+            before.error
+        );
+        let policy = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "policy",
+            "policy.set",
+            json!({"mode":"public","idempotency_key":"policy"}),
+        );
+        assert!(
+            policy.error.is_none(),
+            "policy change failed: {:?}",
+            policy.error
+        );
+        let stale = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "stale".into(),
+                method: "run.project".into(),
+                params: json!({"body":"stale projection","status":"progress","idempotency_key":"stale"}),
+                auth: None,
+                credential: Some(stale_credential),
+            },
+        );
+        assert_eq!(stale.error.unwrap().code, "grant_expired");
+
+        let fresh = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "fresh-run",
+            "run.create",
+            json!({"channel_id":channel,"source_channels":[channel],"provider_policy_id":"private","personal_mode":"private","public_provider":false,"expires_in":60,"idempotency_key":"fresh-run"}),
+        )
+        .result
+        .unwrap();
+        let fresh_credential = fresh["credential"].as_str().unwrap().to_owned();
+        let accepted = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "accepted".into(),
+                method: "run.project".into(),
+                params: json!({"body":"fresh projection","status":"progress","idempotency_key":"accepted"}),
+                auth: None,
+                credential: Some(fresh_credential),
+            },
+        );
+        assert!(
+            accepted.error.is_none(),
+            "regrant was rejected: {:?}",
+            accepted.error
+        );
     });
 }
 

@@ -87,6 +87,17 @@ export interface CrewMessage {
   references?: string[];
 }
 
+export class CrewHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string
+  ) {
+    super(message);
+    this.name = 'CrewHttpError';
+  }
+}
+
 export async function crewHttp<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const config = client.getConfig();
   const headers = new Headers(config.headers as HeadersInit);
@@ -101,7 +112,12 @@ export async function crewHttp<T>(path: string, method = 'GET', body?: unknown):
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const result = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(result?.error || `Crew request failed (${response.status})`);
+  if (!response.ok)
+    throw new CrewHttpError(
+      typeof result?.error === 'string' ? result.error : `Crew request failed (${response.status})`,
+      response.status,
+      typeof result?.code === 'string' ? result.code : undefined
+    );
   return result as T;
 }
 

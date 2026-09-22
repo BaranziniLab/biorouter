@@ -196,6 +196,42 @@ mod tests {
     }
 
     #[test]
+    fn empty_policy_allows_ordinary_unscoped_admission() {
+        ManagedPolicy::empty()
+            .ensure_crew_compatible()
+            .expect("an absent managed policy must not block ordinary Crew admission");
+    }
+
+    #[test]
+    fn required_managed_hooks_refuse_crew_admission() {
+        let (_dir, policy) = load_with_managed_yaml(
+            "hooks:\n  PreToolUse:\n    - hooks: [{ type: command, command: 'echo managed' }]\n",
+        );
+        let error = policy
+            .ensure_crew_compatible()
+            .expect_err("required managed hooks must refuse Crew admission");
+        assert!(error.to_string().contains("required managed hooks"));
+    }
+
+    #[test]
+    fn forced_project_hooks_refuse_crew_admission() {
+        let file: ManagedPolicyFile = serde_yaml::from_str("allow_project_hooks: true\n").unwrap();
+        let error = ManagedPolicy::from_file(file)
+            .ensure_crew_compatible()
+            .expect_err("forced project hooks must refuse Crew admission");
+        assert!(error.to_string().contains("required managed hooks"));
+    }
+
+    #[test]
+    fn managed_policy_load_failure_refuses_crew_admission() {
+        let (_dir, policy) = load_with_managed_yaml("permissions: [not-a-map]\n");
+        let error = policy
+            .ensure_crew_compatible()
+            .expect_err("a managed load failure must fail closed for Crew");
+        assert!(error.to_string().contains("could not be loaded"));
+    }
+
+    #[test]
     fn trusted_file_loads_and_applies() {
         let (_dir, policy) = load_with_managed_yaml(
             "permissions:\n  deny: [\"developer__shell\"]\nallow_project_hooks: false\n",

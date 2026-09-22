@@ -4275,6 +4275,76 @@ impl Drop for EagerCompactionGuard {
     }
 }
 
+async fn run_background_compaction(
+    provider: Arc<dyn Provider>,
+    session_manager: Arc<SessionManager>,
+    hooks_manager: Arc<crate::hooks::HooksManager>,
+    session_config: SessionConfig,
+    working_dir: std::path::PathBuf,
+    threshold: f64,
+) {
+    let session_id = session_config.id.clone();
+    let crew_admission = match crate::crew::manager() {
+        Ok(crew) => {
+            if crew.is_scoped_session(&session_id).await {
+                if let Err(error) = hooks_manager.ensure_crew_compatible() {
+                    tracing::warn!("Crew background compaction refused: {error}");
+                    return;
+                }
+            }
+            crew.check_provider_dispatch(&session_id, provider.as_ref())
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = crew_admission {
+        tracing::warn!("Crew background compaction refused: {error}");
+        return;
+    }
+    // Fire PreCompact only when compaction actually proceeds (the routine
+    // calls this back after its threshold check passes) — never on a turn
+    // that ended under budget.
+    let precompact_hooks = Arc::clone(&hooks_manager);
+    let precompact_id = session_id.clone();
+    let precompact_dir = working_dir.clone();
+    let on_before_compact = move || {
+        fire_compaction_hook_on(
+            &precompact_hooks,
+            crate::hooks::HookEvent::PreCompact,
+            &precompact_id,
+            &precompact_dir,
+            "auto",
+            Some("eager"),
+        );
+    };
+
+    match crate::context_mgmt::run_eager_compaction(
+        provider,
+        session_manager,
+        session_config,
+        threshold,
+        on_before_compact,
+    )
+    .await
+    {
+        Ok(crate::context_mgmt::EagerCompactionOutcome::Swapped) => {
+            info!("BR-12: eager compaction swapped in for session {session_id}");
+            fire_compaction_hook_on(
+                &hooks_manager,
+                crate::hooks::HookEvent::PostCompact,
+                &session_id,
+                &working_dir,
+                "auto",
+                Some("eager"),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!("BR-12: eager compaction failed for session {session_id}: {e}");
+        }
+    }
+}
+
 /// Fire a Pre/PostCompact hook without an `Agent` receiver. Split out of
 /// [`Agent::fire_compaction_hook`] so the BR-12 background eager-compaction task
 /// (which holds only a cloned `Arc<HooksManager>`, not `&self`) can fire the
@@ -7172,65 +7242,15 @@ impl Agent {
                 in_flight,
             };
 
-            let crew_admission = match crate::crew::manager() {
-                Ok(crew) => {
-                    if crew.is_scoped_session(&session_id).await {
-                        if let Err(error) = hooks_manager.ensure_crew_compatible() {
-                            tracing::warn!("Crew background compaction refused: {error}");
-                            return;
-                        }
-                    }
-                    crew.check_provider_dispatch(&session_id, provider.as_ref())
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = crew_admission {
-                tracing::warn!("Crew background compaction refused: {error}");
-                return;
-            }
-            // Fire PreCompact only when compaction actually proceeds (the routine
-            // calls this back after its threshold check passes) — never on a turn
-            // that ended under budget.
-            let precompact_hooks = Arc::clone(&hooks_manager);
-            let precompact_id = session_id.clone();
-            let precompact_dir = working_dir.clone();
-            let on_before_compact = move || {
-                fire_compaction_hook_on(
-                    &precompact_hooks,
-                    crate::hooks::HookEvent::PreCompact,
-                    &precompact_id,
-                    &precompact_dir,
-                    "auto",
-                    Some("eager"),
-                );
-            };
-
-            match crate::context_mgmt::run_eager_compaction(
+            run_background_compaction(
                 provider,
                 session_manager,
+                hooks_manager,
                 session_config,
+                working_dir,
                 threshold,
-                on_before_compact,
             )
-            .await
-            {
-                Ok(crate::context_mgmt::EagerCompactionOutcome::Swapped) => {
-                    info!("BR-12: eager compaction swapped in for session {session_id}");
-                    fire_compaction_hook_on(
-                        &hooks_manager,
-                        crate::hooks::HookEvent::PostCompact,
-                        &session_id,
-                        &working_dir,
-                        "auto",
-                        Some("eager"),
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("BR-12: eager compaction failed for session {session_id}: {e}");
-                }
-            }
+            .await;
         });
     }
 
