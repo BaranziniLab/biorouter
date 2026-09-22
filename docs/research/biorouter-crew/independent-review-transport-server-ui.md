@@ -113,3 +113,19 @@ The transport Astra lane independently reviewed the root lane's eager compaction
 ## Uncertain task starts and refresh feedback
 
 The UI preserves a task request ID through an uncertain network retry. A typed `crew_start_outcome_unknown` now retains that attempt across route navigation, blocks an ordinary resubmit, and requires an explicit human inspection acknowledgment before creating a new attempt. Root Astra reviewed the source change separately from its UI author. Background and manual refresh use their own error state, so polling cannot erase an action refusal. Luna's component regressions use different generated IDs to distinguish retry from deliberate restart, real interval polling through failure/recovery, and an unmount/remount check. All four cases passed; they do not substitute for actual remote side-effect or app workflow evidence.
+
+
+## Bounded follow-up review against 5fbd74f7
+
+The independent Astra architecture/privacy lane reviewed the subsequent product delta on September 22, 2026 without editing code or running tests. No actionable new finding was reported in this bounded review.
+
+- The broker rejects a new mutation while poisoned before invoking filesystem-changing handlers; an already committed, authorized idempotent response remains replayable. An initially uncertain blob commit retains its file because a complete journal record may survive failed synchronization. Unreachable-file sweeping remains unimplemented.
+- Unix OpenSSH control paths use a private, no-follow, UID-validated directory and owned-socket validation. The fixed short path leaves room for OpenSSH's temporary suffix independently of long isolated profile paths.
+- An omitted tool connection ID is derived only from the existing session grant. Explicit IDs still pass ownership, scope, epoch and privacy validation; admission metadata does not grant additional authority.
+- The authentication component buffers only bounded early events for the subsequently returned session, ignores cancelled callbacks and disposes a late-created session after explicit close. Route navigation intentionally retains the owned master.
+
+This is source review of that delta, not a repeated full-PR audit or runtime/cross-platform acceptance. Luna's focused regressions and refreshed app runs are recorded separately.
+
+## Windows SSH subprocess integration
+
+Root Astra independently reviewed the transport Astra follow-up prompted by the Linux source census. Both the bridge connection and owned control-master exit now construct a named Tokio command and call the existing `prepare_agent_child_command` immediately before spawning. That helper applies Windows console suppression and removes daemon-private credentials. The existing SSH arguments, explicit isolated-profile configuration, piped/null streams, kill-on-drop and bounded wait remain unchanged; no environment assignment follows the scrub. Unix broker/helper spawn sites remain platform-gated. This is source review; the census tests and refreshed runtime acceptance are recorded by Luna separately.

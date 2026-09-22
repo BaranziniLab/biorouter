@@ -752,13 +752,15 @@ impl CrewManager {
             if control.exists() {
                 let mut args = transport::ssh_args(&connection, &control);
                 args.extend(["-O".into(), "exit".into(), connection.ssh_target]);
-                let mut child = tokio::process::Command::new("ssh")
+                let mut command = tokio::process::Command::new("ssh");
+                command
                     .args(args)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .spawn()?;
+                    .kill_on_drop(true);
+                crate::subprocess::prepare_agent_child_command(&mut command);
+                let mut child = command.spawn()?;
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
             }
         }

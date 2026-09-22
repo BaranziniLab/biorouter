@@ -140,6 +140,36 @@ impl OllamaProvider {
     }
 }
 
+fn require_ollama_answer(mut stream: MessageStream) -> MessageStream {
+    use futures::StreamExt;
+    Box::pin(async_stream::try_stream! {
+        let mut answered = false;
+        let mut finish_reason = None;
+        while let Some(item) = stream.next().await {
+            let item = item?;
+            if let Some(message) = &item.0 {
+                answered |= message.is_tool_call()
+                    || message.content.iter().filter_map(|content| content.as_text())
+                        .any(|text| !text.trim().is_empty());
+            }
+            if let Some(reason) = item.1.as_ref().and_then(|usage| usage.finish_reason.as_ref()) {
+                finish_reason = Some(reason.clone());
+            }
+            yield item;
+        }
+        if !answered {
+            let detail = if finish_reason.as_deref() == Some("length") {
+                "The response reached its token limit before producing an answer. Review the model's output budget or choose another model."
+            } else {
+                "The model may have returned reasoning only. Retry or choose another model; no answer or tool result was produced."
+            };
+            Err(ProviderError::RequestFailed(format!(
+                "Ollama completed without answer text or tool calls. {detail}"
+            )))?;
+        }
+    })
+}
+
 struct NoAuth;
 
 #[async_trait]
@@ -318,7 +348,7 @@ impl Provider for OllamaProvider {
             .inspect_err(|e| {
                 let _ = log.error(e);
             })?;
-        stream_openai_compat(response, log)
+        Ok(require_ollama_answer(stream_openai_compat(response, log)?))
     }
 
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
@@ -394,5 +424,159 @@ impl OllamaProvider {
             .join(" ");
 
         filtered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::declarative_providers::ProviderEngine;
+    use crate::conversation::message::Message;
+    use crate::providers::base::ProviderStreamItem;
+    use futures::TryStreamExt;
+    use serde_json::Value;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn config(base_url: &str) -> DeclarativeProviderConfig {
+        DeclarativeProviderConfig {
+            name: "ollama-test".to_string(),
+            engine: ProviderEngine::Ollama,
+            display_name: "Ollama test server".to_string(),
+            description: None,
+            api_key_env: "NOT_USED".to_string(),
+            base_url: base_url.to_string(),
+            models: vec![],
+            headers: None,
+            timeout_seconds: Some(5),
+            supports_streaming: Some(true),
+        }
+    }
+
+    async fn provider_for(body: &str) -> (MockServer, OllamaProvider) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::from_custom_config(
+            ModelConfig::new_or_fail("qwen3"),
+            config(&server.uri()),
+        )
+        .expect("test Ollama provider should construct");
+        (server, provider)
+    }
+
+    async fn assert_stream_request(server: &MockServer) {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock should return received requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/v1/chat/completions");
+        let payload: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(payload["stream"], true);
+    }
+
+    async fn collect_stream(
+        provider: &OllamaProvider,
+    ) -> Result<Vec<ProviderStreamItem>, ProviderError> {
+        provider
+            .stream(
+                "system",
+                &[Message::user().with_text("test the mocked stream")],
+                &[],
+            )
+            .await?
+            .try_collect()
+            .await
+    }
+
+    #[tokio::test]
+    async fn reasoning_only_stream_is_an_explicit_provider_error() {
+        let body = concat!(
+            "data: {\"id\":\"reasoning-only\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"thinking only\",\"content\":null},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"reasoning-only\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":null},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (server, provider) = provider_for(body).await;
+
+        let error = collect_stream(&provider)
+            .await
+            .expect_err("reasoning without an answer must fail the provider stream");
+        assert!(matches!(error, ProviderError::RequestFailed(_)));
+        let detail = error.to_string();
+        assert!(detail.contains("completed without answer text or tool calls"));
+        assert!(detail.contains("reasoning only"));
+        assert_stream_request(&server).await;
+    }
+
+    #[tokio::test]
+    async fn empty_stream_is_an_explicit_provider_error() {
+        let (server, provider) = provider_for("data: [DONE]\n\n").await;
+
+        let error = collect_stream(&provider)
+            .await
+            .expect_err("an empty provider stream must not be reported as success");
+        assert!(matches!(error, ProviderError::RequestFailed(_)));
+        assert!(error
+            .to_string()
+            .contains("completed without answer text or tool calls"));
+        assert_stream_request(&server).await;
+    }
+
+    #[tokio::test]
+    async fn normal_text_stream_remains_successful() {
+        let body = concat!(
+            "data: {\"id\":\"text\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ready\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"text\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (server, provider) = provider_for(body).await;
+
+        let items = collect_stream(&provider)
+            .await
+            .expect("text response should remain successful");
+        let text = items
+            .iter()
+            .filter_map(|(message, _, _)| message.as_ref())
+            .map(Message::as_concat_text)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(text, ["ready"]);
+        assert_stream_request(&server).await;
+    }
+
+    #[tokio::test]
+    async fn completed_tool_call_stream_remains_successful() {
+        let body = concat!(
+            "data: {\"id\":\"tool\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"tool\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"tool\",\"model\":\"qwen3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (server, provider) = provider_for(body).await;
+
+        let items = collect_stream(&provider)
+            .await
+            .expect("completed tool call should remain successful");
+        let tool_request = items
+            .iter()
+            .filter_map(|(message, _, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .find_map(|content| content.as_tool_request())
+            .expect("stream should emit the completed tool request");
+        assert_eq!(tool_request.id, "call_1");
+        let call = tool_request
+            .tool_call
+            .as_ref()
+            .expect("tool call should be valid");
+        assert_eq!(call.name, "shell");
+        assert_eq!(call.arguments.as_ref().unwrap()["command"], "pwd");
+        assert_stream_request(&server).await;
     }
 }

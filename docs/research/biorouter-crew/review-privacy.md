@@ -57,3 +57,9 @@ A bounded source review of the new Linux broker packaging integration found two 
 The explicit Bash broker-only recipe in `linux-portability.md` uses the centralized pinned cross-build function and documents its output path. Linux build selection, backend artifact staging, nfpm destination/mode, and the documented ordinary-user remote installation path remain consistent. The GUI intentionally invokes the remote broker rather than bundling a local Linux broker.
 
 Both reported findings are closed at source review. This follow-up did not run builds, scripts, tests, package installations, or remote commands; it does not establish that the new CI/package assertions have passed or that operational broker behavior works on every supported host.
+
+## Ollama empty-stream follow-up — September 22, 2026
+
+Independent bounded source review found no actionable issue in the new `require_ollama_answer` wrapper in `crates/biorouter/src/providers/ollama.rs`. It forwards each decoded message/usage/pending item unchanged and propagates upstream errors through `item?`. Only a clean end of stream without non-whitespace `MessageContent::Text` or a `ToolRequest` adds the new `ProviderError::RequestFailed`; usage, pending-tool notifications and reasoning content do not satisfy that predicate. `MessageContent::as_text` and `Message::is_tool_call` were inspected to verify those variant boundaries. The wrapper does not reinterpret reasoning as an answer.
+
+The integration is confined to Ollama's streaming method; the common decoder, nonstreaming completion and other providers remain unchanged. This review does not establish live-model success or regression-test results, and it does not turn earlier empty or failed Crew model attempts into successful workflows. No builds or tests were run by this reviewer.
