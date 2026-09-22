@@ -790,6 +790,17 @@ fn confine(root: &Path) -> Result<()> {
     })
     .collect::<std::result::Result<Vec<_>, _>>()?;
     filter.insert(libc::SYS_fcntl, fcntl_rules);
+    // CPython's script fopen sets close-on-exec with FIOCLEX and treats EPERM as fatal.
+    let close_on_exec = seccompiler::SeccompCondition::new(
+        1,
+        seccompiler::SeccompCmpArgLen::Dword,
+        seccompiler::SeccompCmpOp::Eq,
+        libc::FIOCLEX as u64,
+    )?;
+    filter.insert(
+        libc::SYS_ioctl,
+        vec![seccompiler::SeccompRule::new(vec![close_on_exec])?],
+    );
     let filter = SeccompFilter::new(
         filter,
         SeccompAction::Errno(libc::EPERM as u32),
