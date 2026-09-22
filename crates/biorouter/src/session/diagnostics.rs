@@ -576,12 +576,11 @@ fn log_summary(sweep: &RequestLogSweep, component_logs: usize) -> String {
 fn push_scheduled_workflows(
     zip: &mut ZipOut<'_>,
     options: FileOptions,
-    data_dir: &std::path::Path,
+    scheduled_workflows_dir: &std::path::Path,
     notes: &mut Vec<String>,
 ) -> anyhow::Result<()> {
-    let scheduled_workflows_dir = data_dir.join("scheduled_workflows");
     if scheduled_workflows_dir.exists() && scheduled_workflows_dir.is_dir() {
-        match fs::read_dir(&scheduled_workflows_dir) {
+        match fs::read_dir(scheduled_workflows_dir) {
             Ok(entries) => {
                 for entry in entries.filter_map(|entry| entry.ok()) {
                     let path = entry.path();
@@ -613,14 +612,71 @@ fn push_scheduled_workflows(
     Ok(())
 }
 
+/// Where a bundle's files are read from: the request/component logs, the
+/// config file and the data dir (`schedule.json`, `scheduled_workflows/`).
+///
+/// [`generate_diagnostics`] resolves them from [`Paths`] once, first, exactly as
+/// it always did. The tests hand in directories of their own instead — see
+/// `sources_in` in the tests below for why that is the whole of their
+/// isolation.
+pub(crate) struct DiagnosticsSources {
+    logs_dir: std::path::PathBuf,
+    config_path: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+}
+
+impl DiagnosticsSources {
+    /// The directories a bundle reads on this machine, as `Paths` says now.
+    pub(crate) fn resolve() -> Self {
+        Self {
+            logs_dir: Paths::in_state_dir("logs"),
+            config_path: Paths::config_dir().join("config.yaml"),
+            data_dir: Paths::data_dir(),
+        }
+    }
+
+    /// Where the request-log sweep looks — the directory `RequestLog` writes.
+    #[cfg(test)]
+    pub(crate) fn logs_dir(&self) -> &std::path::Path {
+        &self.logs_dir
+    }
+
+    /// The config file the bundle redacts and ships — the one
+    /// `Config::global()` writes.
+    #[cfg(test)]
+    pub(crate) fn config_path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+
+    /// The `schedule.json` the bundle ships — the one the scheduler writes.
+    pub(crate) fn schedule_json(&self) -> std::path::PathBuf {
+        self.data_dir.join("schedule.json")
+    }
+
+    /// The directory whose files the bundle ships as `scheduled_workflows/` —
+    /// the one the scheduler copies each job's workflow into.
+    pub(crate) fn scheduled_workflows_dir(&self) -> std::path::PathBuf {
+        self.data_dir.join("scheduled_workflows")
+    }
+}
+
 pub async fn generate_diagnostics(
     session_manager: &SessionManager,
     session_id: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let logs_dir = Paths::in_state_dir("logs");
-    let config_dir = Paths::config_dir();
-    let config_path = config_dir.join("config.yaml");
-    let data_dir = Paths::data_dir();
+    generate_diagnostics_from(session_manager, session_id, &DiagnosticsSources::resolve()).await
+}
+
+async fn generate_diagnostics_from(
+    session_manager: &SessionManager,
+    session_id: &str,
+    sources: &DiagnosticsSources,
+) -> anyhow::Result<Vec<u8>> {
+    let DiagnosticsSources {
+        logs_dir,
+        config_path,
+        data_dir: _,
+    } = sources;
 
     let system_info = SystemInfo::collect();
 
@@ -651,8 +707,8 @@ pub async fn generate_diagnostics(
         let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        let sweep = push_session_logs(&mut zip, options, &logs_dir, session_id, &mut notes)?;
-        let component_logs = push_component_logs(&mut zip, options, &logs_dir, &mut notes)?;
+        let sweep = push_session_logs(&mut zip, options, logs_dir, session_id, &mut notes)?;
+        let component_logs = push_component_logs(&mut zip, options, logs_dir, &mut notes)?;
 
         // ⚠ Written ALWAYS, and that is the fix. The log sweep used to report
         // nothing at all: `collection-notes.txt` appears only when a file could
@@ -684,7 +740,7 @@ pub async fn generate_diagnostics(
         }
 
         if config_path.exists() {
-            match fs::read(&config_path) {
+            match fs::read(config_path) {
                 Ok(raw) => {
                     zip.start_file("config.yaml", options)?;
                     zip.write_all(redact_config_yaml(&String::from_utf8_lossy(&raw)).as_bytes())?;
@@ -706,7 +762,7 @@ pub async fn generate_diagnostics(
             zip.write_all(usage.to_text().as_bytes())?;
         }
 
-        let schedule_json = data_dir.join("schedule.json");
+        let schedule_json = sources.schedule_json();
         if schedule_json.exists() {
             match fs::read(&schedule_json) {
                 Ok(bytes) => {
@@ -720,7 +776,12 @@ pub async fn generate_diagnostics(
             }
         }
 
-        push_scheduled_workflows(&mut zip, options, &data_dir, &mut notes)?;
+        push_scheduled_workflows(
+            &mut zip,
+            options,
+            &sources.scheduled_workflows_dir(),
+            &mut notes,
+        )?;
 
         // Last, so it can report on everything above it. Absent when nothing
         // went wrong, so its presence is itself the signal.
@@ -748,11 +809,96 @@ mod tests {
     use crate::session::session_manager::{SessionType, UsageLedgerEntry};
     use tempfile::TempDir;
 
+    /// A bundle's sources inside `temp`, handed to the collector directly.
+    ///
+    /// ⚠ **No test here may set `BIOROUTER_PATH_ROOT`, and this helper is why
+    /// none needs to.** They all used to point it at their `TempDir` under the
+    /// env lock and let `generate_diagnostics` resolve `Paths`. The lock orders
+    /// the tests that TAKE it; it does nothing about the ones that only read
+    /// the variable, and `RequestLog::start` is one: it resolves
+    /// `Paths::in_state_dir("logs")` the instant a request starts, and the
+    /// provider tests — `providers::versa_azure::routing_tests`,
+    /// `bedrock_namespace_tests`, `bedrock`, `knowledge_source_tool`, 70
+    /// requests in one whole-lib run (census, 2026-09-21) — open one per
+    /// request without the lock. One that starts while a test here holds the
+    /// variable writes into that test's logs dir, and its flush renames
+    /// `llm_request.{i}` → `{i+1}` under the test's own fixtures. Forced on
+    /// the previous shape (a probe opening a `RequestLog` while
+    /// `the_bundle_ships_only_the_named_session_s_llm_logs` held its root),
+    /// that test failed 10 of 10 with `left: ["logs/llm_request.1.jsonl"]`;
+    /// with this helper, 0 of 10. Unforced, whole-lib runs on this branch
+    /// failed it as `left: []` and as `left: [".0", ".1"]` (a review counted
+    /// 2 of 31). A test whose directory is never the ambient root cannot be
+    /// handed anyone's write, whatever the scheduling — which is the property,
+    /// rather than a lock that could only ever cover the writers that ask.
+    ///
+    /// `the_diagnostics_sources_are_never_relocated_through_the_environment`
+    /// below holds that line.
+    fn sources_in(temp: &TempDir) -> DiagnosticsSources {
+        DiagnosticsSources {
+            logs_dir: temp.path().join("state").join("logs"),
+            config_path: temp.path().join("config").join("config.yaml"),
+            data_dir: temp.path().join("data"),
+        }
+    }
+
+    /// Nothing in this module relocates the process's path root, or reads a
+    /// bundle's sources from it. See [`sources_in`] for the measured reason; a
+    /// test that goes back to relocating it is exposed to every unlocked
+    /// `RequestLog` in the binary again, and fails only when one lands inside
+    /// its window.
+    ///
+    /// The last two needles are the other half. `generate_diagnostics` and
+    /// `DiagnosticsSources::resolve` take the sources from `Paths` — in this
+    /// binary, the sandbox that every test shares — so a test calling either
+    /// bundles whatever logs, `config.yaml` and `schedule.json` its siblings
+    /// have written there, and any assertion on the bundle's contents depends
+    /// on which of them ran first. The production pairing they stand for is
+    /// pinned where each writer lives, under the sandbox pin, instead:
+    /// `providers::utils`' `a_request_log_lands_where_the_diagnostics_bundle_reads`,
+    /// `config::base`'s `the_config_file_is_the_one_the_diagnostics_bundle_reads`
+    /// and `scheduler`'s `the_schedule_lands_where_the_diagnostics_bundle_reads`.
+    ///
+    /// Over source text because the failure it prevents has no runtime signal
+    /// until the race is lost. The needles are assembled so this test's own
+    /// text is not a match.
+    #[test]
+    fn the_diagnostics_sources_are_never_relocated_through_the_environment() {
+        let source = include_str!("diagnostics.rs");
+        let (_, tests) = source
+            .split_once(concat!("#[cfg(test)]\n", "mod tests {"))
+            .expect("this file has a tests module");
+        let needles = [
+            concat!("lock_", "env("),
+            concat!("pin_sandbox_", "path_root("),
+            concat!("set_", "var("),
+            concat!("generate_", "diagnostics("),
+            concat!("DiagnosticsSources::", "resolve("),
+        ];
+        let offenders: Vec<&str> = tests
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a diagnostics test moves the process-global path root again, or reads a \
+             bundle's sources from it:\n  {}\n\
+             Unlocked writers follow that variable — every provider test's \
+             RequestLog does — so a test holding it on its own TempDir receives \
+             their files and their rotation of llm_request.N, and a test that reads \
+             through it (generate_diagnostics, DiagnosticsSources::resolve) bundles \
+             whatever its siblings wrote into the shared sandbox. Pass the \
+             directories with `sources_in(&temp)` to `generate_diagnostics_from` \
+             instead.",
+            offenders.join("\n  ")
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn diagnostics_bundle_succeeds_before_any_logs_exist() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
         let session = sm
             .create_session(
@@ -763,7 +909,9 @@ mod tests {
             .await
             .unwrap();
 
-        let bundle = generate_diagnostics(&sm, &session.id).await.unwrap();
+        let bundle = generate_diagnostics_from(&sm, &session.id, &sources)
+            .await
+            .unwrap();
         let mut archive = zip::ZipArchive::new(Cursor::new(bundle)).unwrap();
 
         assert!(archive.by_name("session.json").is_ok());
@@ -791,11 +939,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn an_unreadable_source_costs_that_source_and_not_the_whole_bundle() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
 
-        let bundle = generate_diagnostics(&sm, "no-such-session-20260820")
+        let bundle = generate_diagnostics_from(&sm, "no-such-session-20260820", &sources)
             .await
             .expect("an unreadable transcript must not lose the bundle");
 
@@ -832,8 +979,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_clean_collection_ships_no_notes_file() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
         let session = sm
             .create_session(
@@ -844,7 +990,11 @@ mod tests {
             .await
             .unwrap();
 
-        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
         let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
         assert!(names.contains(&"session.json"), "{names:?}");
         assert!(
@@ -874,8 +1024,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_bundle_ships_only_the_named_session_s_llm_logs() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
         let session = sm
             .create_session(
@@ -886,7 +1035,7 @@ mod tests {
             .await
             .unwrap();
 
-        let logs_dir = Paths::in_state_dir("logs");
+        let logs_dir = sources.logs_dir.clone();
         fs::create_dir_all(&logs_dir).unwrap();
 
         // Three logs on this machine: one from the session being reported, one
@@ -910,7 +1059,11 @@ mod tests {
         )
         .unwrap();
 
-        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
 
         let log_names: Vec<&str> = entries
             .iter()
@@ -938,15 +1091,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_bundled_config_has_its_credentials_redacted() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
         let session = sm
             .create_session(temp.path().to_path_buf(), "diag".into(), SessionType::User)
             .await
             .unwrap();
 
-        let config_dir = Paths::config_dir();
+        let config_dir = sources.config_path.parent().unwrap().to_path_buf();
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(
             config_dir.join("config.yaml"),
@@ -961,7 +1113,11 @@ mod tests {
         )
         .unwrap();
 
-        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
         let (_, config) = entries
             .iter()
             .find(|(name, _)| name == "config.yaml")
@@ -1074,8 +1230,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn every_bundle_carries_a_log_summary() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sources = sources_in(&temp);
         let sm = SessionManager::new(temp.path().join("sessions"));
         let session = sm
             .create_session(
@@ -1086,7 +1241,11 @@ mod tests {
             .await
             .unwrap();
 
-        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
         let summary = entries
             .iter()
             .find(|(name, _)| name == "logs-summary.txt")
@@ -1102,11 +1261,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_daemon_s_own_warnings_reach_the_bundle() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().to_string_lossy().into_owned();
-        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
-        let day = Paths::in_state_dir("logs")
-            .join("server")
-            .join("2026-09-05");
+        let sources = sources_in(&temp);
+        let day = sources.logs_dir.clone().join("server").join("2026-09-05");
         fs::create_dir_all(&day).unwrap();
         fs::write(
             day.join("20260905_103453-biorouterd.log"),
@@ -1125,7 +1281,11 @@ mod tests {
             .await
             .unwrap();
 
-        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
         let (name, bytes) = entries
             .iter()
             .find(|(name, _)| name.starts_with("logs/server/"))

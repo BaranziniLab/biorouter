@@ -57,6 +57,10 @@ pub mod system;
 /// developer's real `~/.config/biorouter`.
 #[cfg(test)]
 mod test_sandbox;
+/// Test-binary-only: register inert tracing dispatchers before any test runs,
+/// so a thread-local capture cannot miss its own events.
+#[cfg(test)]
+mod test_tracing;
 pub mod token_counter;
 pub mod tool_inspection;
 pub mod tool_monitor;

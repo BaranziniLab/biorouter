@@ -120,6 +120,8 @@ colored = "2"
 serial_test = { workspace = true }
 wiremock = { workspace = true }
 env-lock = { workspace = true }
+# `test_tracing`'s before-main registration in this crate's own test binary.
+ctor = "0.2"
 
 [features]
 utoipa = ["dep:utoipa"]

@@ -1504,10 +1504,11 @@ mod tests {
         /// instead of the developer's own.
         ///
         /// ⚠ The caller owns the `TempDir` and must keep it BOUND — a dropped
-        /// one deletes the tree before the call runs. It also passes
-        /// `BIOROUTER_PATH_ROOT` to `lock_env` itself, so that every variable
-        /// this module touches is set under the workspace lock and none behind
-        /// its back.
+        /// one deletes the tree before the call runs. It also relocates
+        /// `BIOROUTER_PATH_ROOT` itself, through
+        /// `crate::test_sandbox::relocate_path_root_and` in a process of its own,
+        /// so that every variable this module touches is set under the
+        /// workspace lock and none behind its back.
         fn cli_knowledge_root_with_base(tmp: &tempfile::TempDir, id: &str) -> std::path::PathBuf {
             let root = tmp.path().join("config").join("knowledge");
             std::fs::create_dir_all(&root).unwrap();
@@ -1520,6 +1521,9 @@ mod tests {
         #[serial]
         async fn the_cli_ingest_handler_ratchets_from_the_instance_and_the_name_is_the_same_in_both_legs(
         ) {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             // Round 3 §7: a handler can call `paired`, ignore its tier, and derive
             // the capability from the requested provider name — every structural
             // count in Step 5 still passes. Only a handler-level behavioural row
@@ -1529,12 +1533,7 @@ mod tests {
                 ("http://ollama.invalid:11434", false),
             ] {
                 let tmp = tempfile::TempDir::new().unwrap();
-                let mut env = base_env(host);
-                env.push((
-                    "BIOROUTER_PATH_ROOT",
-                    Some(tmp.path().to_string_lossy().into_owned()),
-                ));
-                let _env = lock_env(env);
+                let _env = crate::test_sandbox::relocate_path_root_and(tmp.path(), base_env(host));
                 let root = cli_knowledge_root_with_base(&tmp, "k");
 
                 // The sub-agent WILL fail — nothing answers on either host — and
@@ -1575,6 +1574,9 @@ mod tests {
         #[tokio::test]
         #[serial]
         async fn errors_fail_the_lint_command_and_a_clean_base_still_passes() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (page, expect_ok) in [
                 // Conformant: OKF §4.1's one always-required key is present.
                 ("---\ntype: Note\nidentifier: A\n---\n\nbody\n", true),
@@ -1583,12 +1585,10 @@ mod tests {
                 ("---\nidentifier: A\n---\n\nbody\n", false),
             ] {
                 let tmp = tempfile::TempDir::new().unwrap();
-                let mut env = base_env("http://127.0.0.1:1");
-                env.push((
-                    "BIOROUTER_PATH_ROOT",
-                    Some(tmp.path().to_string_lossy().into_owned()),
-                ));
-                let _env = lock_env(env);
+                let _env = crate::test_sandbox::relocate_path_root_and(
+                    tmp.path(),
+                    base_env("http://127.0.0.1:1"),
+                );
                 let root = cli_knowledge_root_with_base(&tmp, "k");
                 biorouter::knowledge::store::write_page(
                     &root.join("k"),
@@ -1632,17 +1632,15 @@ mod tests {
         #[tokio::test]
         #[serial]
         async fn the_cli_read_only_lint_admits_a_private_model_and_still_refuses_a_public_one() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
             for (host, expect_ok) in [
                 ("http://127.0.0.1:1", true),
                 ("http://ollama.invalid:11434", false),
             ] {
                 let tmp = tempfile::TempDir::new().unwrap();
-                let mut env = base_env(host);
-                env.push((
-                    "BIOROUTER_PATH_ROOT",
-                    Some(tmp.path().to_string_lossy().into_owned()),
-                ));
-                let _env = lock_env(env);
+                let _env = crate::test_sandbox::relocate_path_root_and(tmp.path(), base_env(host));
                 let root = cli_knowledge_root_with_base(&tmp, "k");
                 biorouter::knowledge::tier::raise_unlocked(&root, "k", true).unwrap();
 

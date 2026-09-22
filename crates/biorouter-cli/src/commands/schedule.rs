@@ -1289,11 +1289,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_schedule_added_with_no_daemon_says_exactly_when_it_will_run() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(root.path().to_string_lossy().into_owned()),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(root.path());
         let data_dir = root.path().join("data");
         let workflow = root.path().join("probe.yaml");
         std::fs::write(
@@ -1436,11 +1436,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_schedule_added_with_nobody_to_ask_is_refused_and_writes_nothing() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(root.path().to_string_lossy().into_owned()),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(root.path());
         let data_dir = root.path().join("data");
         let workflow = root.path().join("probe.yaml");
         std::fs::write(
@@ -1483,11 +1483,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn the_refusal_is_the_needs_a_terminal_one_so_main_exits_2() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(root.path().to_string_lossy().into_owned()),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(root.path());
         let workflow = root.path().join("probe.yaml");
         std::fs::write(
             &workflow,
@@ -1520,11 +1520,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn removing_and_running_a_schedule_need_a_person_too() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(root.path().to_string_lossy().into_owned()),
-        )]);
+        let _env = crate::test_sandbox::relocate_path_root(root.path());
         let data_dir = root.path().join("data");
         let port = unused_port().await;
 

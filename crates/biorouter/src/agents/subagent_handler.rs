@@ -1985,6 +1985,11 @@ mod tests {
                 crate::execution::manager::AgentManager::new(
                     sm.clone(),
                     temp.path().join("schedule.json"),
+                    // This test's own root, never the ambient one: it holds no
+                    // `env_lock`, so `Paths::config_dir()` here would seed into
+                    // whichever test is relocating `BIOROUTER_PATH_ROOT` right
+                    // now (see `AgentManager::new`).
+                    temp.path().join("config"),
                     Some(4),
                 )
                 .await

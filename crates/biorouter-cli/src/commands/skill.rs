@@ -1503,11 +1503,11 @@ mod tests {
     /// the developer's real skills directory or race a test that moved it.
     #[test]
     fn a_shipped_name_is_never_answered_with_force_advice() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
-        let _guard = env_lock::lock_env([(
-            "BIOROUTER_PATH_ROOT",
-            Some(tmp.path().to_str().unwrap().to_string()),
-        )]);
+        let _guard = crate::test_sandbox::relocate_path_root(tmp.path());
         let root = skills_root();
         assert!(
             root.starts_with(tmp.path()),

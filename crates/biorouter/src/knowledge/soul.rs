@@ -1049,10 +1049,11 @@ mod tests {
     /// restores the bug in full, with every test still green, because the
     /// damage lands in a *different* test's temp directory.
     ///
-    /// The rule is not "don't call `Paths`" in general — `AgentManager::new`,
+    /// The rule is not "don't call `Paths`" in general — `AgentManager::
+    /// shared_config_root` (one `Paths::config_dir()`, taken at its first ask),
     /// the CLI and the reset route all call it, and must. It is that a writer
-    /// which runs **detached from the call that scheduled it** takes its root as
-    /// an argument, so it can only ever write where its owner said.
+    /// which runs **detached from the call that scheduled it** takes its root
+    /// as an argument, so it can only ever write where its owner said.
     ///
     /// Asserted over source text because there is no runtime signal: a seeder
     /// that reads the environment is indistinguishable from one that does not
