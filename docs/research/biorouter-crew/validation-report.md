@@ -1433,3 +1433,119 @@ tests total). Vitest duration was **161.42s** and `/usr/bin/time -p` reported
 `/private/tmp/crew-ui-vitest-final-906.log`. This run includes the Crew
 observer recovery and upload/picker privacy regressions; expected existing
 test warnings and skipped Playwright checks were non-failing.
+
+## G13 filesystem authority regressions (2026-09-22)
+
+Added the Unix-only integration target
+`crates/biorouter-server/tests/crew_transfer_authority.rs`. Its temporary
+roots use `/private/tmp` on macOS, where the production no-follow directory
+walk intentionally rejects the `/var` symlink chain, and the platform default
+temporary root elsewhere; no live profile or credential state is used.
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-server --test crew_transfer_authority -- --nocapture
+```
+
+Result: **4 passed, 0 failed**. Strict clippy also passed:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo clippy -p biorouter-server --test crew_transfer_authority -- -D warnings
+```
+
+The proven G13 subset is bounded to: source selection remaining anchored to
+the originally opened inode after path replacement; publication remaining on
+the originally selected directory after directory inode replacement; raced
+target creation refusing implicit overwrite while preserving the existing
+sentinel and owned partial; symlink substitution refusal; and explicit
+hardlink replacement preserving the unrelated hardlink sentinel and removing
+only the owned partial after successful publication. This does not claim
+whole-transfer daemon, Windows, or GUI coverage.
+
+### G13 focused follow-up after target-approval handoff
+
+The prior 4-test count above is superseded by the current bounded run. The
+Unix authority integration target now reports **6 passed, 0 failed, 0
+ignored** with the same bounded command. The expanded cases cover absent to
+created targets, approved existing-target replacement, and a held original
+partial file whose named path is replaced before final publication.
+
+The focused private transfer module reports **11 passed, 0 failed, 734
+filtered out**:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-server --lib crew::transfers::transfers_tests -- --nocapture
+```
+
+This includes start and resume pending-capability gates, expiry without TTL
+renewal, discard quota/receipt preservation, publication recovery, malformed
+receipt rejection, and the completed-replay helper preserving published bytes
+while restoring the original selection approval. The replay case is a
+registration/bind helper regression; it is not a manager-backed end-to-end
+start claim.
+
+The route proof-gating module reports **3 passed, 0 failed, 742 filtered out**
+for confirm/discard requests without human proof, including API-key-only
+requests. The existing filesystem target reports **9 passed, 0 failed, 0
+ignored** after its temporary-root helper was made portable through the
+canonical system temporary directory.
+
+The strict server gate passed after removing three redundant test-only borrows:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo clippy -p biorouter-server --lib --tests -- -D warnings
+```
+
+`just generate-openapi` then completed successfully and regenerated both
+`ui/desktop/openapi.json` and the frontend API bindings. Rustfmt checks for the
+four touched test modules and `git diff --check` both passed. These tests do
+not claim a manager-backed live `TransferService::confirm` run with a changed
+target; that remains an explicit integration gap. They also do not claim
+Windows or GUI parity.
+
+## Crew transport sticky-failure tests (2026-09-22)
+
+The focused Unix-local transport suite ran against the shared bounded target;
+all peers were synthetic `/bin/sh` processes with temporary marker files, so
+the run used no real SSH, credentials, profiles, or network endpoints:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib crew::transport::tests -- --nocapture
+```
+
+Result: **9 passed, 0 failed, 0 ignored, 4,218 filtered out** in **0.26s**.
+The cases cover valid-response rearming, structured denial recovery, local
+oversize rejection before poisoning, mismatched-ID no-retry/no-second-write,
+EOF, incomplete and malformed frames, cancellation after write, and paired
+stale/current `Arc` retirement behavior. The matching retirement assertion
+also checks disconnected status, sanitized recovery guidance, unchanged
+connection mode, and exact peer-child exit.
+
+Strict Clippy passed with:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo clippy -p biorouter --lib --tests -- -D warnings
+```
+
+`cargo fmt --all -- --check` and `git diff --check` passed. The source inputs
+for this validation were commit `67a32a075100af8f348e4c86b208b21848d21450`
+with transport handoff hash
+`058e966781cc6675fe341a0dba974f2707df5f5ce7a5d1aa6d5255020dd2db02` and test
+hash `109a359b545e912dcd1b2af239c175019a3c006130d12ba91e219f54302c5e31`.
