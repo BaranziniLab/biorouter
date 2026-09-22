@@ -23,6 +23,8 @@ import {
 } from './console-window-census.mjs';
 
 const statesOf = (source) => collectSpawnSites(source).map((s) => `${s.callee}:${s.state}`);
+const shapesOf = (source) => collectSpawnSites(source).map((s) => s.stdio);
+const IMPORT = "import { spawn, fork } from 'node:child_process';\n";
 
 // ── The instrument, proven able to fail ──────────────────────────────────────
 
@@ -147,6 +149,71 @@ test('a spawn imported from somewhere else is not a spawn site', () => {
   assert.deepEqual(statesOf(`import { spawn } from './myPool';\nspawn('worker');\n`), []);
 });
 
+// ── The stdio rule: the one that decides what the user actually sees ─────────
+
+test("stdio: 'inherit' is caught even when windowsHide: true is right there", () => {
+  // The hazard in its purest form: the diff looks correct, and libuv never
+  // applies CREATE_NO_WINDOW because one fd is inherited.
+  assert.deepEqual(
+    shapesOf(`${IMPORT}spawn('git', [], { stdio: 'inherit', windowsHide: true });\n`),
+    ['inherit']
+  );
+});
+
+test("an 'inherit' anywhere in the stdio array is caught", () => {
+  assert.deepEqual(
+    shapesOf(
+      `${IMPORT}spawn('git', [], { stdio: ['ignore', 'inherit', 'pipe'], windowsHide: true });\n`
+    ),
+    ['inherit']
+  );
+});
+
+test('a raw fd in the stdio array is caught, because it reaches libuv as UV_INHERIT_FD', () => {
+  assert.deepEqual(shapesOf(`${IMPORT}spawn('git', [], { stdio: [0, 1, 2] });\n`), ['inherit']);
+});
+
+test("'pipe' and 'ignore' are safe shapes", () => {
+  assert.deepEqual(shapesOf(`${IMPORT}spawn('a', [], { stdio: 'pipe' });\n`), ['safe']);
+  assert.deepEqual(shapesOf(`${IMPORT}spawn('a', [], { stdio: 'ignore' });\n`), ['safe']);
+  assert.deepEqual(
+    shapesOf(`${IMPORT}spawn('a', [], { stdio: ['ignore', 'pipe', 'ignore'] });\n`),
+    ['safe']
+  );
+});
+
+test('a const-asserted stdio tuple is read through the assertion', () => {
+  // biorouterd.ts writes exactly this shape; a census that could not see
+  // through `as` would report the daemon spawn as unreadable.
+  assert.deepEqual(
+    shapesOf(
+      `${IMPORT}spawn('d', [], { stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'] });\n`
+    ),
+    ['safe']
+  );
+});
+
+test('a non-literal stdio is reported as unknown rather than assumed safe', () => {
+  assert.deepEqual(shapesOf(`${IMPORT}const s = 'pipe';\nspawn('a', [], { stdio: s });\n`), [
+    'unknown',
+  ]);
+});
+
+test('fork() without silent: true is the hazard wearing no stdio key at all', () => {
+  // fork's default stdio is 'inherit'. A reviewer scanning for a missing
+  // `windowsHide` sees nothing wrong with `fork(mod, args, { windowsHide: true })`.
+  assert.deepEqual(shapesOf(`${IMPORT}fork('m.js', [], { windowsHide: true });\n`), [
+    'fork-default',
+  ]);
+  assert.deepEqual(shapesOf(`${IMPORT}fork('m.js', []);\n`), ['fork-default']);
+});
+
+test('fork() with silent: true pipes its stdio and is safe', () => {
+  assert.deepEqual(shapesOf(`${IMPORT}fork('m.js', [], { silent: true, windowsHide: true });\n`), [
+    'safe',
+  ]);
+});
+
 // ── The real tree ────────────────────────────────────────────────────────────
 
 const AUDIT = auditTree();
@@ -162,6 +229,18 @@ test('every production spawn site states windowsHide', () => {
       )}\n\nOn Windows the Electron main process owns no console, so a console-subsystem` +
       ' child spawned without windowsHide gets a NEW, VISIBLE one. Add `windowsHide: true`, or' +
       ' `windowsHide: false` plus a row in VISIBLE_BY_DESIGN saying why a window is wanted.'
+  );
+});
+
+test('no production spawn site inherits a standard handle', () => {
+  // Its own test with its own message, because it fails for a different reason
+  // than a missing option and has a different fix: the site must stop
+  // inheriting, not gain a flag.
+  const inheriting = AUDIT.sites.filter((s) => s.stdio === 'inherit' || s.stdio === 'fork-default');
+  assert.deepEqual(
+    inheriting.map((s) => `${s.file}:${s.line}`),
+    [],
+    'an inherited fd stops libuv applying CREATE_NO_WINDOW, so these spawn a VISIBLE console on Windows whatever windowsHide says. Use pipes or ignore.'
   );
 });
 
@@ -216,12 +295,28 @@ test('node-pty is spawned from exactly one place, and it is the terminal', () =>
   assert.equal(AUDIT.ptySites[0].file, 'src/main.ts');
 });
 
-test('the Windows behavioural test still exists and still has its control', () => {
-  // This census only proves the option is WRITTEN. The proof that it WORKS runs
-  // on Windows, and is worthless without its control — so the control is pinned
-  // from here, where it is checked on every platform.
-  const behavioural = readFileSync(join(SRC_ROOT, 'utils', 'windowsConsoleWindow.test.ts'), 'utf8');
-  assert.match(behavioural, /CONTROL: spawning without windowsHide shows a console window/);
-  assert.match(behavioural, /resolves\.toBe\('visible'\)/);
-  assert.match(behavioural, /runProbe/);
+test('the Windows behavioural test still exists, and still has its controls', () => {
+  // This census reads source. Whether any of it WORKS is measured on Windows by
+  // the file below, and that file is worthless without its controls — so they
+  // are pinned from here, where they run on every platform and every pull
+  // request rather than only on the Windows runner.
+  const behavioural = readFileSync(
+    join(SRC_ROOT, '..', 'scripts', 'windows-console.test.mjs'),
+    'utf8'
+  );
+  assert.match(
+    behavioural,
+    /CONTROL: a plain Node spawn with no windowsHide shows a console window/
+  );
+  assert.match(
+    behavioural,
+    /CONTROL: the same grandchild behind an unhidden cmd\.exe shows a window/
+  );
+  assert.match(
+    behavioural,
+    /THE HAZARD: inherited stdio shows a window even with windowsHide: true/
+  );
+  // The embedder pin. Deleted, the app goes back to depending silently on
+  // Electron's kHideConsoleWindows with nothing watching it.
+  assert.match(behavioural, /kHideConsoleWindows/);
 });

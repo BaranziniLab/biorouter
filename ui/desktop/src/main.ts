@@ -4899,10 +4899,18 @@ function registerCliInstallHandlers() {
           env: SPAWN_ENV,
           detached: true,
           stdio: 'ignore',
-          // DELIBERATELY VISIBLE. The user clicked "open the CLI in a terminal";
-          // the console window IS the feature. Stated rather than left to the
-          // default so the console-window census can tell this apart from a
-          // site that simply forgot (#368).
+          // A VISIBLE WINDOW IS WANTED HERE — the user clicked "open the CLI in
+          // a terminal" — but this option is NOT what delivers it, and writing
+          // it as though it were is how the feature gets broken later. The
+          // window comes from `start`, which Microsoft documents as starting "a
+          // separate Command Prompt window to run a specified program"; `/b` is
+          // its opt-out. Inside Electron `windowsHide: false` cannot summon a
+          // console at all, because Electron sets kHideConsoleWindows on every
+          // Node environment it makes and libuv then takes the hiding branch
+          // whatever the caller passed. So this records intent for the
+          // console-window census, and nothing else. If anyone "simplifies"
+          // this to spawn `cmd /k biorouter` directly, the terminal silently
+          // stops appearing (#368).
           windowsHide: false,
         });
         child.unref();
@@ -4926,8 +4934,11 @@ function registerCliInstallHandlers() {
             env: SPAWN_ENV,
             detached: true,
             stdio: 'ignore',
-            // DELIBERATELY VISIBLE, same as the Windows branch above: this is
-            // the user's terminal emulator, opened because they asked for it.
+            // A visible window is wanted, same as the Windows branch above:
+            // this is the user's own terminal emulator, opened because they
+            // asked for it. `windowsHide` has no meaning on Linux; it is
+            // written so this site reads the same as its Windows twin and so
+            // the census sees a decision rather than an omission.
             windowsHide: false,
             ...(cwd ? { cwd } : {}),
           });
