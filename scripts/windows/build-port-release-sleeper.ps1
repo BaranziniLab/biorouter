@@ -4,11 +4,20 @@
 # dropped Add-Type's -OutputAssembly / -OutputType.
 [CmdletBinding()]
 param(
-    [string]$Source = (Join-Path $PSScriptRoot 'port-release-sleeper.cs'),
+    [string]$Source,
     [Parameter(Mandatory = $true)][string]$Output
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ⚠ Resolved HERE, not as a param default: under `powershell.exe -File`,
+# $PSScriptRoot is empty while the param block is evaluated, and Join-Path then
+# dies on an empty path (measured on windows-latest, 2026-09-22).
+if ([string]::IsNullOrWhiteSpace($Source)) {
+    $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $Source = Join-Path $here 'port-release-sleeper.cs'
+}
+if (-not (Test-Path -LiteralPath $Source)) { throw "no sidecar source at $Source" }
 Add-Type -TypeDefinition (Get-Content -LiteralPath $Source -Raw) -OutputAssembly $Output -OutputType ConsoleApplication
 if (-not (Test-Path -LiteralPath $Output)) { throw "Add-Type produced no executable at $Output" }
 Write-Output "built stand-in sidecar: $Output"
