@@ -16,27 +16,48 @@ const RUNTIME_STATES: Record<string, string> = {
   probe_failed: 'Could not check the native runtime',
 };
 
-export type RuntimeVerdict = 'ready' | 'blocked' | 'unverified';
+export type RuntimeVerdict = 'ready' | 'blocked' | 'unverified' | 'unavailable';
 
-/**
- * Whether this runtime needs anything from the user. Pure, so the branch is
- * testable without mounting.
- *
- * `ready` demands BOTH permissions explicitly true AND a ready status, so a
- * `desktop_unavailable` runtime with every permission granted is still blocked:
- * the remediation text below is what tells the user what to do about it, and
- * suppressing it there would leave a dead end.
- */
+// A failed runtime probe is not evidence that an OS permission was denied.
 export function runtimeVerdict(runtime: CopilotRuntime): RuntimeVerdict {
+  if (
+    [
+      'missing_runtime',
+      'incompatible_runtime',
+      'probe_failed',
+      'desktop_unavailable',
+      'unsupported_environment',
+      'missing_dependency',
+    ].includes(runtime.status)
+  )
+    return 'unavailable';
   const permissions = runtime.permissions;
   if (typeof permissions !== 'object' || permissions === null) return 'unverified';
   const granted = [permissions.accessibility, permissions.screen_recording];
   if (granted.some((value) => value === false)) return 'blocked';
   if (granted.some((value) => value !== true)) return 'unverified';
-  return runtime.status === 'ready' ? 'ready' : 'blocked';
+  return runtime.status === 'ready' ? 'ready' : 'unverified';
 }
 
 export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) {
+  const [settingsError, setSettingsError] = useState('');
+  const localMac =
+    window.electron?.platform === 'darwin' &&
+    window.electron?.getConfig?.().BIOROUTER_LOCAL_BACKEND === true &&
+    /darwin/.test(runtime.target ?? '') &&
+    Boolean(window.electron?.openCopilotPermissionSettings);
+  const openSettings = async (permission: 'accessibility' | 'screen_recording') => {
+    setSettingsError('');
+    try {
+      await window.electron.openCopilotPermissionSettings(permission);
+    } catch (error) {
+      setSettingsError(
+        error instanceof Error
+          ? error.message
+          : 'Could not open System Settings. Open Privacy & Security manually.'
+      );
+    }
+  };
   const permissionSummary =
     typeof runtime.permissions === 'string'
       ? runtime.permissions === 'unknown'
@@ -72,6 +93,13 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
       {runtime.status === 'desktop_unavailable' && (
         <p>Run Biorouter in a signed-in desktop session on the backend computer.</p>
       )}
+      {runtime.status === 'probe_failed' && (
+        <p>
+          The permission check failed; this does not mean access was denied. Restart Biorouter on
+          the backend computer and check again. If it still fails, repair the matching Biorouter
+          package.
+        </p>
+      )}
       {/* The remediation below used to render unconditionally, on `target` alone.
           That is why a fully granted machine was told to "Review Accessibility
           and Screen Recording ..." directly under "Native desktop access is
@@ -84,7 +112,9 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
             to set up.
           </span>
         </p>
-      ) : /darwin/.test(target) ? (
+      ) : ['missing_runtime', 'incompatible_runtime', 'probe_failed'].includes(
+          runtime.status
+        ) ? null : /darwin/.test(target) ? (
         <p>
           Review Accessibility and Screen Recording in System Settings → Privacy &amp; Security on
           the backend computer, then check again.
@@ -105,6 +135,43 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
           again.
         </p>
       )}
+      {verdict !== 'ready' &&
+        (verdict !== 'unavailable' || runtime.status === 'probe_failed') &&
+        /darwin/.test(target) && (
+          <div className="space-y-2">
+            <p>
+              {runtime.message?.includes('System Settings')
+                ? 'Use the app names in the permission details above.'
+                : 'For the bundled app, enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter.'}{' '}
+              If macOS asks you to quit and reopen it, do so, then use Check again. Checking
+              permissions does not grant them.
+            </p>
+            {localMac ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void openSettings('accessibility')}
+                >
+                  Open Accessibility settings
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void openSettings('screen_recording')}
+                >
+                  Open Screen Recording settings
+                </Button>
+              </div>
+            ) : (
+              <p>
+                Make these changes on the backend computer. If it is remote, changing permissions on
+                this device will not change the backend's access.
+              </p>
+            )}
+            {settingsError && <p role="alert">{settingsError}</p>}
+          </div>
+        )}
       {runtime.development_override && <p>Using an explicitly configured development runtime.</p>}
     </div>
   );

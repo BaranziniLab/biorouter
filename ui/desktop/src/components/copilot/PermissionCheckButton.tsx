@@ -9,6 +9,7 @@ import type { RuntimeVerdict } from './CopilotSetup';
 const RESULT: Record<RuntimeVerdict, string> = {
   ready: 'All OS permissions are allowed.',
   blocked: 'A required OS permission is missing — see the detail above.',
+  unavailable: 'The native runtime is unavailable — see the repair steps above.',
   unverified: 'The backend could not confirm OS permissions — see the detail above.',
 };
 
