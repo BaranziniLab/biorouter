@@ -3696,6 +3696,22 @@ impl ExtensionManager {
     ) -> Option<String> {
         // Use minute-level granularity to prevent conversation changes every second
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
+        let crew = match crate::crew::manager() {
+            Ok(crew) => crew,
+            Err(error) => {
+                tracing::warn!(
+                    "Context withheld because Crew scope could not be verified: {error}"
+                );
+                return None;
+            }
+        };
+        if crew.is_scoped_session(session_id).await {
+            // A newly granted ordinary chat can retain local platform clients.
+            // None of their workspace context is part of its remote grant.
+            return Some(format!(
+                "{MOIM_OPEN_TAG}\nIt is currently {timestamp}\nCrew scope: remote file paths are relative to the approved SSH work directory. The local task directory is not a remote file location. Omit connection_id in crew__request to use this conversation's granted connection. Use crew__connections for current scope metadata; channel IDs are not connection IDs.\n{MOIM_CLOSE_TAG}"
+            ));
+        }
         let mut content = format!(
             "{MOIM_OPEN_TAG}\nIt is currently {}\nWorking directory: {}\n",
             timestamp,

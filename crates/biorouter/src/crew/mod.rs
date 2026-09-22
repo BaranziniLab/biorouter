@@ -135,6 +135,64 @@ pub fn manager() -> Result<Arc<CrewManager>> {
     managers.insert(path, manager.clone());
     Ok(manager)
 }
+
+#[cfg(test)]
+pub(crate) async fn install_test_scope(
+    session_id: &str,
+    provider: Option<&dyn Provider>,
+) -> Arc<CrewManager> {
+    let manager = manager().expect("the test Crew manager should initialize");
+    let connection_id = format!("context-fixture-connection-{session_id}");
+    let mut registry = manager.registry.lock().await;
+    registry.connections.push(Connection {
+        id: connection_id.clone(),
+        node_id: None,
+        name: "context fixture".into(),
+        ssh_target: "fixture@example.test".into(),
+        port: Some(22),
+        identity_file: None,
+        proxy_jump: None,
+        socket_path: "/tmp/context-fixture.sock".into(),
+        owner_uid: 10001,
+        workspace_id: format!("workspace-{session_id}"),
+        workspace_public_key: "11".repeat(32),
+        remote_root: None,
+        remote_execution: false,
+        cluster_connection_id: format!("cluster-{session_id}"),
+        mode: ClusterMode::Public,
+        policy_epoch: 1,
+        status: "connected".into(),
+        last_error: None,
+        device_id: "22".repeat(32),
+        public_key: "33".repeat(32),
+    });
+    registry.scopes.insert(
+        session_id.into(),
+        Scope {
+            connection_id,
+            run_id: format!("run-{session_id}"),
+            channel_id: format!("channel-{session_id}"),
+            source_channels: vec![],
+            epoch: 1,
+            provider_binding: provider.map_or_else(|| "test-context".into(), provider_binding),
+            public_provider: true,
+            origin_restricted: false,
+            expired: false,
+        },
+    );
+    drop(registry);
+    manager
+}
+
+#[cfg(test)]
+pub(crate) async fn remove_test_scope(manager: &CrewManager, session_id: &str) {
+    let mut registry = manager.registry.lock().await;
+    registry.scopes.remove(session_id);
+    registry
+        .connections
+        .retain(|connection| connection.id != format!("context-fixture-connection-{session_id}"));
+}
+
 fn canonical(value: &Value) -> Value {
     match value {
         Value::Object(map) => serde_json::to_value(
@@ -1301,6 +1359,7 @@ mod tests {
             crew_extension::CrewClient,
             extension::PlatformExtensionContext,
             mcp_client::{McpClientTrait, McpMeta},
+            ExtensionManager,
         },
         privacy::{CallCapability, ProviderTier},
         session::SessionManager,
@@ -1325,6 +1384,59 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[tokio::test]
+    async fn authoritative_crew_context_omits_local_moim_context() -> anyhow::Result<()> {
+        let working_dir = tempfile::tempdir()?;
+        let canary = format!("crew-local-context-canary-{}", uuid::Uuid::new_v4());
+        fs::write(working_dir.path().join("AGENTS.md"), &canary)?;
+        let canary_file = format!("{canary}.txt");
+        fs::write(working_dir.path().join(&canary_file), b"local-only")?;
+        let path_text = working_dir.path().display().to_string();
+        let session_id = format!("crew-context-{canary}");
+        let manager = crate::crew::install_test_scope(&session_id, None).await;
+
+        let extension_manager = ExtensionManager::new_without_provider(working_dir.path().into());
+        let moim = extension_manager
+            .collect_moim(&session_id, working_dir.path(), None)
+            .await
+            .expect("Crew scope should still provide its remote guidance");
+        assert!(moim.contains("Crew scope: remote file paths"), "{moim}");
+        assert!(
+            !moim.contains(&path_text),
+            "Crew MOIM leaked local path: {moim}"
+        );
+        assert!(
+            !moim.contains(&canary),
+            "Crew MOIM leaked local workspace context: {moim}"
+        );
+
+        crate::crew::remove_test_scope(&manager, &session_id).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ordinary_context_retains_local_moim_and_prompt_context() -> anyhow::Result<()> {
+        let working_dir = tempfile::tempdir()?;
+        let canary = format!("ordinary-local-context-canary-{}", uuid::Uuid::new_v4());
+        fs::write(working_dir.path().join("AGENTS.md"), &canary)?;
+        let canary_file = format!("{canary}.txt");
+        fs::write(working_dir.path().join(&canary_file), b"local-only")?;
+        let path_text = working_dir.path().display().to_string();
+        let session_id = format!("ordinary-context-{canary}");
+
+        let extension_manager = ExtensionManager::new_without_provider(working_dir.path().into());
+        let moim = extension_manager
+            .collect_moim(&session_id, working_dir.path(), None)
+            .await
+            .expect("ordinary sessions should receive local context");
+        assert!(
+            moim.contains(&path_text) && moim.contains(&canary_file),
+            "ordinary MOIM lost local context: {moim}"
+        );
+
+        Ok(())
     }
 
     #[cfg(unix)]

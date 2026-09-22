@@ -662,53 +662,83 @@ fn remote_operation_detail(method: &str, params: &Value) -> String {
     }
 }
 
-async fn publish_requested_tools(
-    crew: &biorouter::crew::CrewManager,
-    session_id: &str,
-    message: &Message,
-    shown_tools: &mut std::collections::HashSet<String>,
-) -> anyhow::Result<()> {
-    for part in &message.content {
-        let MessageContent::ToolRequest(request) = part else {
-            continue;
-        };
-        if !shown_tools.insert(request.id.clone()) {
-            continue;
+#[derive(Default)]
+struct ToolActivity {
+    requested: HashMap<String, String>,
+    responded: std::collections::HashSet<String>,
+}
+
+impl ToolActivity {
+    fn messages(&mut self, message: &Message) -> Vec<String> {
+        let mut activity = Vec::new();
+        for part in &message.content {
+            if let MessageContent::ToolRequest(request) = part {
+                let Ok(call) = &request.tool_call else {
+                    continue;
+                };
+                if call.name.as_ref() != "crew__request" {
+                    continue;
+                }
+                let Some(arguments) = &call.arguments else {
+                    continue;
+                };
+                let Some(method) = arguments.get("method").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !matches!(
+                    method,
+                    "remote.execute"
+                        | "remote.read"
+                        | "remote.write"
+                        | "remote.list"
+                        | "remote.hash"
+                        | "remote.attach"
+                        | "remote.cancel"
+                        | "remote.job_status"
+                        | "messages.history"
+                        | "messages.search"
+                        | "context.manifest"
+                        | "blob.read"
+                        | "run.project"
+                ) || self.requested.contains_key(&request.id)
+                {
+                    continue;
+                }
+                self.requested.insert(request.id.clone(), method.into());
+                if method.starts_with("remote.") {
+                    let params = arguments.get("params").unwrap_or(&Value::Null);
+                    let detail = remote_operation_detail(method, params);
+                    activity.push(format!("Requested {method}: {detail}"));
+                }
+            }
         }
-        let Ok(call) = &request.tool_call else {
-            continue;
-        };
-        if call.name.as_ref() != "crew__request" {
-            continue;
+        for part in &message.content {
+            let MessageContent::ToolResponse(response) = part else {
+                continue;
+            };
+            let Some(method) = self.requested.get(&response.id) else {
+                continue;
+            };
+            if !self.responded.insert(response.id.clone()) {
+                continue;
+            }
+            let succeeded = response
+                .tool_result
+                .as_ref()
+                .is_ok_and(|result| result.is_error != Some(true));
+            // Results can contain private files or diagnostics outside the intended
+            // room summary. Publish only the typed outcome, never the raw payload.
+            activity.push(if !succeeded {
+                format!("Tool failed: {method}. Inspect the task conversation for details.")
+            } else if method == "remote.execute" {
+                "remote.execute returned a job receipt. Check remote.job_status for its outcome."
+                    .into()
+            } else {
+                format!("Tool response received: {method}.")
+            });
         }
-        let Some(arguments) = &call.arguments else {
-            continue;
-        };
-        let method = arguments
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("Crew operation");
-        let params = arguments.get("params").unwrap_or(&Value::Null);
-        let detail = remote_operation_detail(method, params);
-        if matches!(
-            method,
-            "remote.execute"
-                | "remote.read"
-                | "remote.write"
-                | "remote.list"
-                | "remote.hash"
-                | "remote.attach"
-                | "remote.cancel"
-        ) {
-            crew.publish_run(
-                session_id,
-                &format!("Requested {method}: {detail}"),
-                "progress",
-            )
-            .await?;
-        }
+        activity
     }
-    Ok(())
 }
 
 async fn project_run_event(
@@ -716,12 +746,15 @@ async fn project_run_event(
     ledger: &RunLedger,
     view: &RunView,
     event: AgentEvent,
-    shown_tools: &mut std::collections::HashSet<String>,
+    tool_activity: &mut ToolActivity,
 ) -> anyhow::Result<()> {
     match event {
         AgentEvent::TurnAborted { message, .. } => anyhow::bail!("{message}"),
         AgentEvent::Message(message) => {
-            publish_requested_tools(crew, &view.session_id, &message, shown_tools).await?;
+            for activity in tool_activity.messages(&message) {
+                crew.publish_run(&view.session_id, &activity, "progress")
+                    .await?;
+            }
             if message
                 .content
                 .iter()
@@ -806,7 +839,7 @@ async fn execute_run(
             Some(cancel.clone()),
         )
         .await?;
-    let mut shown_tools = std::collections::HashSet::new();
+    let mut tool_activity = ToolActivity::default();
     while let Some(event) = stream.next().await {
         if cancel.is_cancelled() {
             anyhow::bail!("Task cancelled by its owner.");
@@ -816,7 +849,7 @@ async fn execute_run(
             &view.session_id,
             biorouter::session_events::SessionBusEvent::Agent(event.clone()),
         );
-        project_run_event(&crew, ledger, view, event, &mut shown_tools).await?;
+        project_run_event(&crew, ledger, view, event, &mut tool_activity).await?;
     }
     if cancel.is_cancelled() {
         anyhow::bail!("Task cancelled by its owner.");
@@ -1089,4 +1122,186 @@ pub fn routes(state: Arc<AppState>) -> Router {
         )
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolActivity;
+    use biorouter::conversation::message::Message;
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Content, ErrorCode, ErrorData};
+    use serde_json::{json, Value};
+
+    fn request(id: &str, name: &str, method: &str, params: Value) -> Message {
+        Message::assistant().with_tool_request(
+            id,
+            Ok(CallToolRequestParams {
+                task: None,
+                name: name.to_owned().into(),
+                arguments: Some(
+                    json!({"method": method, "params": params})
+                        .as_object()
+                        .expect("tool arguments are an object")
+                        .clone(),
+                ),
+                meta: None,
+            }),
+        )
+    }
+
+    fn response(id: &str, result: CallToolResult) -> Message {
+        Message::user().with_tool_response(id, Ok(result))
+    }
+
+    fn error_response(id: &str, message: &str) -> Message {
+        Message::user().with_tool_response(
+            id,
+            Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                message.to_owned(),
+                None,
+            )),
+        )
+    }
+
+    #[test]
+    fn matching_request_and_response_publish_typed_activity() {
+        let mut activity = ToolActivity::default();
+        let request = request(
+            "call-1",
+            "crew__request",
+            "remote.execute",
+            json!({"argv": ["python", "-c", "print(1)"]}),
+        );
+
+        assert_eq!(
+            activity.messages(&request),
+            vec!["Requested remote.execute: python (2 arguments; task-scoped execution)"]
+        );
+        assert_eq!(
+            activity.messages(&response(
+                "call-1",
+                CallToolResult::success(vec![Content::text("private response")]),
+            )),
+            vec!["remote.execute returned a job receipt. Check remote.job_status for its outcome."]
+        );
+    }
+
+    #[test]
+    fn errors_publish_failure_while_success_publishes_receipt() {
+        let mut activity = ToolActivity::default();
+        assert_eq!(
+            activity.messages(&request(
+                "read-1",
+                "crew__request",
+                "remote.read",
+                json!({"path": "notes.txt"}),
+            )),
+            vec!["Requested remote.read: notes.txt"]
+        );
+        let failed = activity.messages(&error_response("read-1", "PRIVATE_ERROR_DETAIL"));
+        assert_eq!(
+            failed,
+            vec!["Tool failed: remote.read. Inspect the task conversation for details."]
+        );
+        assert!(!failed.join(" ").contains("PRIVATE_ERROR_DETAIL"));
+
+        assert_eq!(
+            activity.messages(&request(
+                "status-1",
+                "crew__request",
+                "remote.job_status",
+                json!({"job_id": "job-1"}),
+            )),
+            vec!["Requested remote.job_status: "]
+        );
+        assert_eq!(
+            activity.messages(&response(
+                "status-1",
+                CallToolResult::success(vec![Content::text("status payload")]),
+            )),
+            vec!["Tool response received: remote.job_status."]
+        );
+    }
+
+    #[test]
+    fn duplicate_and_unmatched_responses_are_ignored() {
+        let mut activity = ToolActivity::default();
+        let success = CallToolResult::success(vec![Content::text("receipt")]);
+
+        assert!(activity
+            .messages(&response("unmatched", success.clone()))
+            .is_empty());
+        assert!(activity
+            .messages(&request(
+                "call-2",
+                "crew__request",
+                "messages.history",
+                json!({"channel_id": "general"}),
+            ))
+            .is_empty());
+        assert_eq!(
+            activity.messages(&response("call-2", success.clone())),
+            vec!["Tool response received: messages.history."]
+        );
+        assert!(activity
+            .messages(&request(
+                "call-2",
+                "crew__request",
+                "messages.history",
+                json!({"channel_id": "general"}),
+            ))
+            .is_empty());
+        assert!(activity.messages(&response("call-2", success)).is_empty());
+    }
+
+    #[test]
+    fn private_tool_payload_never_enters_crew_activity() {
+        let mut activity = ToolActivity::default();
+        let private_payload = "PRIVATE_SYNTHETIC_PAYLOAD_7b2f";
+
+        activity.messages(&request(
+            "read-2",
+            "crew__request",
+            "remote.read",
+            json!({"path": "/private/diagnostics.json"}),
+        ));
+        let published = activity.messages(&response(
+            "read-2",
+            CallToolResult::success(vec![Content::text(private_payload)]),
+        ));
+        assert_eq!(published, vec!["Tool response received: remote.read."]);
+        assert!(!published.join(" ").contains(private_payload));
+    }
+
+    #[test]
+    fn unknown_and_non_crew_requests_are_ignored() {
+        let mut activity = ToolActivity::default();
+        let non_crew = request(
+            "shell-1",
+            "developer__shell",
+            "remote.read",
+            json!({"path": "private.txt"}),
+        );
+        let unknown = request(
+            "unknown-1",
+            "crew__request",
+            "private.internal_method",
+            json!({"payload": "private"}),
+        );
+
+        assert!(activity.messages(&non_crew).is_empty());
+        assert!(activity.messages(&unknown).is_empty());
+        assert!(activity
+            .messages(&response(
+                "shell-1",
+                CallToolResult::success(vec![Content::text("private")]),
+            ))
+            .is_empty());
+        assert!(activity
+            .messages(&response(
+                "unknown-1",
+                CallToolResult::success(vec![Content::text("private")]),
+            ))
+            .is_empty());
+    }
 }
