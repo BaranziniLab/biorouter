@@ -1,0 +1,25 @@
+[package]
+name = "biorouter-crew"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ed25519-dalek = "2.2.0"
+hex = "0.4.3"
+libc = "=0.2.186"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10.9"
+uuid = { version = "=1.19.0", features = ["v4", "serde"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"

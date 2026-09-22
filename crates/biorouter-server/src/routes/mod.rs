@@ -740,6 +740,7 @@ pub mod audio;
 pub mod catalog;
 pub mod coding_agents;
 pub mod config_management;
+pub mod crew;
 pub mod errors;
 pub mod knowledge;
 pub mod llamacpp;
@@ -789,6 +790,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(coding_agents::routes(state.clone()))
+        .merge(crew::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // The interface's own endpoints -- the filesystem browser, settings,

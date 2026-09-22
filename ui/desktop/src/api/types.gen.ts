@@ -769,6 +769,12 @@ export type CredibilityResponse = {
 
 export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
 
+export type CrewRequest = {
+    method: string;
+    params?: unknown;
+    request_id?: string | null;
+};
+
 /**
  * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
  * flow.
@@ -1223,6 +1229,11 @@ export type FrontendToolRequest = {
 export type GetToolsQuery = {
     extension_name?: string | null;
     session_id: string;
+};
+
+export type GrantSessionRequest = {
+    channel_id: string;
+    context_channels?: Array<string>;
 };
 
 export type Graph = {
@@ -3119,6 +3130,15 @@ export type RunNowResponse = {
     session_id: string;
 };
 
+export type RunView = {
+    channel_id: string;
+    connection_id: string;
+    error?: string | null;
+    run_id: string;
+    session_id: string;
+    status: string;
+};
+
 /**
  * BR-71: the sessions holding a turn right now.
  */
@@ -3834,6 +3854,16 @@ export type StartAgentRequest = {
     workflow_deeplink?: string | null;
     workflow_id?: string | null;
     working_dir: string;
+};
+
+export type StartRunRequest = {
+    channel_id: string;
+    context_channels?: Array<string>;
+    model: string;
+    posting_grant?: boolean;
+    prompt: string;
+    provider: string;
+    request_id?: string | null;
 };
 
 /**
@@ -5925,6 +5955,207 @@ export type ValidateConfigResponses = {
 };
 
 export type ValidateConfigResponse = ValidateConfigResponses[keyof ValidateConfigResponses];
+
+export type ListConnectionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/connections';
+};
+
+export type ListConnectionsResponses = {
+    200: unknown;
+};
+
+export type SaveConnectionData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/connections';
+};
+
+export type SaveConnectionResponses = {
+    200: unknown;
+};
+
+export type RemoveConnectionData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}';
+};
+
+export type RemoveConnectionResponses = {
+    200: unknown;
+};
+
+export type UpdateConnectionData = {
+    body: unknown;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}';
+};
+
+export type UpdateConnectionResponses = {
+    200: unknown;
+};
+
+export type AuthenticationPlanData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/auth-plan';
+};
+
+export type AuthenticationPlanResponses = {
+    200: unknown;
+};
+
+export type ConnectData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/connect';
+};
+
+export type ConnectResponses = {
+    200: unknown;
+};
+
+export type DisconnectData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/disconnect';
+};
+
+export type DisconnectResponses = {
+    200: unknown;
+};
+
+export type RequestData = {
+    body: CrewRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/request';
+};
+
+export type RequestResponses = {
+    200: unknown;
+};
+
+export type ListRunsData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs';
+};
+
+export type ListRunsResponses = {
+    200: unknown;
+};
+
+export type StartRunData = {
+    body: StartRunRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs';
+};
+
+export type StartRunResponses = {
+    200: unknown;
+};
+
+export type CancelRunData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+        /**
+         * Crew run_id
+         */
+        run_id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs/{run_id}/cancel';
+};
+
+export type CancelRunResponses = {
+    200: unknown;
+};
+
+export type GrantSessionData = {
+    body: GrantSessionRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+        /**
+         * Crew session_id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session_id}/grant';
+};
+
+export type GrantSessionResponses = {
+    200: unknown;
+};
+
+export type PrepareDeviceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/devices/prepare';
+};
+
+export type PrepareDeviceResponses = {
+    200: unknown;
+};
 
 export type DiagnosticsData = {
     body?: never;
@@ -8598,6 +8829,10 @@ export type GetUsageReportErrors = {
      */
     401: unknown;
     /**
+     * Human user-action proof required for aggregate billing data
+     */
+    403: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -8624,6 +8859,10 @@ export type GetUsageSummaryErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Human user-action proof required for aggregate billing data
+     */
+    403: unknown;
     /**
      * Internal server error
      */

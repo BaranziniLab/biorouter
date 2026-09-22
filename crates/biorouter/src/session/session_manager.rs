@@ -2210,6 +2210,26 @@ impl SessionManager {
         include_empty: bool,
         public_only: bool,
     ) -> Result<Vec<SidebarRow>> {
+        self.list_session_summaries_page_excluding(
+            limit,
+            after,
+            include_subagents,
+            include_empty,
+            public_only,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn list_session_summaries_page_excluding(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SidebarRow>> {
         self.storage
             .list_session_summaries_page(
                 limit,
@@ -2217,6 +2237,7 @@ impl SessionManager {
                 include_subagents,
                 include_empty,
                 public_only,
+                excluded_ids,
             )
             .await
     }
@@ -2298,13 +2319,25 @@ impl SessionManager {
         self.storage.count_all_sessions().await
     }
 
+    pub async fn get_insights_excluding(&self, excluded_ids: &[String]) -> Result<SessionInsights> {
+        self.storage.get_insights(excluded_ids).await
+    }
+
+    pub async fn get_activity_excluding(
+        &self,
+        days: i64,
+        excluded_ids: &[String],
+    ) -> Result<ActivityWindow> {
+        self.storage.get_activity(days, excluded_ids).await
+    }
+
     pub async fn get_insights(&self) -> Result<SessionInsights> {
-        self.storage.get_insights().await
+        self.storage.get_insights(&[]).await
     }
 
     /// Per-day usage for the Home heatmap, over the last `days` calendar days.
     pub async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
-        self.storage.get_activity(days).await
+        self.storage.get_activity(days, &[]).await
     }
 
     /// Append one turn's usage to the per-turn token ledger.
@@ -2372,6 +2405,8 @@ impl SessionManager {
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(id).await,
+            "Crew context cannot be exported without its channel permissions. Share an authorized message or attachment from Crew instead.");
         self.storage.export_session(id).await
     }
 
@@ -2676,6 +2711,9 @@ impl SessionManager {
     }
 
     pub async fn copy_session(&self, session_id: &str, new_name: String) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage.copy_session(self, session_id, new_name).await
     }
 
@@ -2687,6 +2725,9 @@ impl SessionManager {
         session_id: &str,
         timestamp: i64,
     ) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage
             .diverge_session_for_edit(self, session_id, timestamp)
             .await
@@ -2736,6 +2777,9 @@ impl SessionManager {
         anchor_ms: Option<i64>,
         anchor_uid: Option<String>,
     ) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage
             .diverge_session(self, session_id, custom_name, anchor_ms, anchor_uid)
             .await
@@ -7274,6 +7318,7 @@ impl SessionStorage {
         include_subagents: bool,
         include_empty: bool,
         public_only: bool,
+        excluded_ids: &[String],
     ) -> Result<Vec<SidebarRow>> {
         let type_filter = if include_subagents {
             "('user', 'scheduled', 'sub_agent')"
@@ -7316,6 +7361,7 @@ impl SessionStorage {
             {join}
             WHERE s.session_type IN {type_filter}
             {tier_filter}
+            AND s.id NOT IN (SELECT value FROM json_each(?))
             {keyset}
             GROUP BY s.id
             ORDER BY s.updated_at DESC, s.id ASC
@@ -7323,7 +7369,8 @@ impl SessionStorage {
             "#
         );
 
-        let mut q = sqlx::query_as::<_, SidebarRow>(&query);
+        let mut q =
+            sqlx::query_as::<_, SidebarRow>(&query).bind(serde_json::to_string(excluded_ids)?);
         if let Some(cursor) = after {
             q = q
                 .bind(cursor.updated_at.clone())
@@ -7552,7 +7599,7 @@ impl SessionStorage {
         Ok(count as u64)
     }
 
-    async fn get_insights(&self) -> Result<SessionInsights> {
+    async fn get_insights(&self, excluded_ids: &[String]) -> Result<SessionInsights> {
         let pool = self.pool().await?;
 
         // Sessions: totals plus 7d/30d windows.
@@ -7569,8 +7616,10 @@ impl SessionStorage {
               COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS sessions_30d
             FROM sessions
             WHERE session_type IN ('user', 'scheduled')
+              AND id NOT IN (SELECT value FROM json_each(?))
             "#,
         )
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_one(pool)
         .await?;
 
@@ -7613,8 +7662,10 @@ impl SessionStorage {
             FROM token_events te
             JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?))
             "#,
         )
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_one(pool)
         .await?;
 
@@ -7899,7 +7950,7 @@ impl SessionStorage {
         })
     }
 
-    async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
+    async fn get_activity(&self, days: i64, excluded_ids: &[String]) -> Result<ActivityWindow> {
         let pool = self.pool().await?;
         let days = days.clamp(1, 371);
         // SQLite's `-N days` modifier takes a literal, so build it once.
@@ -7912,11 +7963,13 @@ impl SessionStorage {
             SELECT date(created_at, 'localtime') AS day, COUNT(*) AS n
             FROM sessions
             WHERE session_type IN ('user', 'scheduled')
+              AND id NOT IN (SELECT value FROM json_each(?2))
               AND created_at >= datetime('now', ?1)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 
@@ -7933,11 +7986,13 @@ impl SessionStorage {
             FROM token_events te
             JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?2))
               AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 
@@ -7949,11 +8004,13 @@ impl SessionStorage {
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
             WHERE s.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?2))
               AND m.created_timestamp >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 

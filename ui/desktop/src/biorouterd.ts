@@ -316,7 +316,10 @@ export const startBiorouterd = async (
 ): Promise<BiorouterdResult> => {
   const { app, serverSecret, userActionKey, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
-  const homeDir = os.homedir();
+  const profileRoot = !app.isPackaged ? process.env.BIOROUTER_DEV_PROFILE_ROOT : undefined;
+  const homeDir = profileRoot ? path.join(profileRoot, 'home') : os.homedir();
+  if (profileRoot && (externalBiorouterd?.enabled || process.env.BIOROUTER_EXTERNAL_BACKEND))
+    throw new Error('Isolated development profiles cannot reuse an external backend.');
   const dir = path.resolve(path.normalize(inputDir));
 
   if (externalBiorouterd?.enabled && externalBiorouterd.url) {
@@ -386,8 +389,42 @@ export const startBiorouterd = async (
   } as BiorouterProcessEnv;
 
   const processEnv: BiorouterProcessEnv = {
-    ...process.env,
+    ...(profileRoot
+      ? Object.fromEntries(
+          Object.entries(process.env).filter(([key]) =>
+            [
+              'PATH',
+              'LANG',
+              'LC_ALL',
+              'TERM',
+              'SHELL',
+              'SystemRoot',
+              'WINDIR',
+              'ComSpec',
+              'PATHEXT',
+              'BIOROUTER_PATH_ROOT',
+              'BIOROUTER_DEV_PROFILE_ROOT',
+              'BIOROUTER_DEV_PROFILE_NAME',
+            ].includes(key)
+          )
+        )
+      : process.env),
     ...additionalEnv,
+    ...(profileRoot
+      ? {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          APPDATA: path.join(profileRoot, 'appdata'),
+          LOCALAPPDATA: path.join(profileRoot, 'localappdata'),
+          TMPDIR: path.join(profileRoot, 'temp'),
+          TMP: path.join(profileRoot, 'temp'),
+          TEMP: path.join(profileRoot, 'temp'),
+          XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+          XDG_DATA_HOME: path.join(homeDir, '.local/share'),
+          XDG_STATE_HOME: path.join(homeDir, '.local/state'),
+          BIOROUTER_DISABLE_KEYRING: 'true',
+        }
+      : {}),
   } as BiorouterProcessEnv;
 
   if (isWindows && !resolvedBiorouterdPath.toLowerCase().endsWith('.exe')) {

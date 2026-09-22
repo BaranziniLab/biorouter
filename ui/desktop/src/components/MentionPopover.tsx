@@ -46,6 +46,10 @@ const CLIENT_INSERT_COMMANDS: Record<
     description: 'Use the Knowledge capability',
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
+  crew: {
+    description: 'Open Crew workspaces, channels, files, and your agents. Press Enter',
+    insert: '/crew',
+  },
   diverge: {
     description: 'Branch this chat into a new one with full history. Press Enter',
     insert: '/diverge',

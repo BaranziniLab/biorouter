@@ -22,6 +22,9 @@ activities:
   - Test error boundaries and security controls
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
+  - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
+  - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
+  - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
   - Measure performance and resource usage
   - Generate comprehensive test report
 
@@ -161,6 +164,13 @@ instructions: |
   Validate the ten-tool native roster, per-request approval, private/public isolation and
   sequential control against the explicitly supplied disposable app/window fixture. A missing
   fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
+
+  For a Crew-enabled fixture, additionally:
+  - Confirm the empty `/crew` view identifies the isolated profile and does not imply authentication success when no workspace exists
+  - Exercise the workspace form's required connection, invitation, and pinned-key validation using synthetic values only
+  - Verify first-host preparation is explicit, host-key trust is visible, and no private key or provider credential is entered into the fixture
+  - Repeat a start request with the same synthetic request id and verify the UI preserves one durable receipt; a changed payload must be rejected
+  - Verify human-only Crew session/history access remains available before provider selection, while a normal-chat tool request outside the scoped allowlist is refused
 
   {% endif %}
 

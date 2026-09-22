@@ -6,7 +6,7 @@ import { useComposerToolbarCollapsed } from './bottom_menu/useComposerToolbarCol
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
-import type { View } from '../utils/navigationUtils';
+import type { View, ViewOptions } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
@@ -393,7 +393,7 @@ interface ChatInputProps {
   reasoningDraftKey?: string;
   droppedFiles?: DroppedFile[];
   onFilesProcessed?: () => void;
-  setView: (view: View) => void;
+  setView: (view: View, options?: ViewOptions) => void;
   totalTokens?: number;
   accumulatedInputTokens?: number;
   accumulatedOutputTokens?: number;
@@ -2316,6 +2316,13 @@ export default function ChatInput({
       // would let an attached chip silently defeat a command that is — to the
       // user, correctly — the only thing in the box.
       const trimmedCandidate = splitComposerText(text ?? displayValue).body.trim();
+      if (trimmedCandidate === '/crew') {
+        setView('crew', sessionId ? { resumeSessionId: sessionId } : undefined);
+        setDisplayValue('');
+        setValue('');
+        setHasUserTyped(false);
+        return;
+      }
       if (trimmedCandidate === DIVERGE_TRIGGER) {
         if (sessionId) {
           void diverge(sessionId);
@@ -2438,6 +2445,7 @@ export default function ChatInput({
       onFilesProcessed,
       pastedImages,
       sessionId,
+      setView,
       setLocalDroppedFiles,
       takeBack,
     ]

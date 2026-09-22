@@ -3240,8 +3240,22 @@ fn call_tool_boundary_refusal(
 )]
 async fn call_tool(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<CallToolRequest>,
 ) -> Result<Json<CallToolResponse>, StatusCode> {
+    let crew = biorouter::crew::manager().map_err(|_| StatusCode::FORBIDDEN)?;
+    if crew.is_scoped_session(&payload.session_id).await {
+        crate::routes::session_reach::session_reach(
+            state.session_manager(),
+            &payload.session_id,
+            &headers,
+        )
+        .await
+        .map_err(|refusal| refusal.status)?;
+        crew.authorize_session_tool(&payload.session_id, &payload.name)
+            .await
+            .map_err(|_| StatusCode::FORBIDDEN)?;
+    }
     let arguments = match payload.arguments {
         Value::Object(map) => Some(map),
         _ => None,

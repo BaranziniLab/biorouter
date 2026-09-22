@@ -503,6 +503,7 @@ type ElectronAPI = {
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
+  createCrewAuthentication?: (connectionId: string) => Promise<TerminalCreateResult>;
   createTerminalSession: (options?: {
     workingDir?: string;
     cols?: number;
@@ -823,6 +824,8 @@ const electronAPI: ElectronAPI = {
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
+  createCrewAuthentication: (connectionId: string) =>
+    ipcRenderer.invoke('crew:authenticate', connectionId),
   createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('terminal:create', options),
   writeTerminalSession: (sessionId: string, data: string) =>

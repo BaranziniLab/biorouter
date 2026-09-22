@@ -313,6 +313,13 @@ impl ChatRecallClient {
             .map(|s| s.to_string());
 
         if let Some(sid) = target_session_id {
+            let crew = crate::crew::manager()
+                .map_err(|_| crate::privacy::refusal::workspace_out_of_reach())?;
+            if crew.is_scoped_session(&sid).await {
+                return Ok(vec![Content::text(
+                    crate::privacy::refusal::chatrecall_load_refusal(),
+                )]);
+            }
             // LOAD MODE: Get session summary (first and last few messages)
             match self.context.session_manager.get_session(&sid, true).await {
                 Ok(loaded_session) => {

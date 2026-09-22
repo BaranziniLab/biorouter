@@ -1,3 +1,4 @@
+import './developmentProfile';
 import type {
   MenuItemConstructorOptions,
   OpenDialogOptions,
@@ -764,7 +765,9 @@ if (process.env.ENABLE_PLAYWRIGHT) {
 // Windows/Linux resolve the handler by executable path rather than bundle id,
 // and Electron's documented dev form (execPath + the app entry point) launches
 // the real app, so registering there is both safe and useful.
-if (process.platform === 'darwin') {
+if (process.env.BIOROUTER_DEV_PROFILE_ROOT) {
+  // An isolated development profile must not claim the installed app's URL scheme.
+} else if (process.platform === 'darwin') {
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient('biorouter');
   } else {
@@ -789,7 +792,7 @@ const WINDOW_OWNING_DEEPLINK_HOSTS = ['bot', 'workflow', 'diverge'];
 // Apply single instance lock on Windows and Linux where it's needed for deep links
 // macOS uses the 'open-url' event instead
 let gotTheLock = true;
-if (process.platform !== 'darwin') {
+if (process.platform !== 'darwin' || process.env.BIOROUTER_DEV_PROFILE_ROOT) {
   gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
@@ -1261,6 +1264,8 @@ let appConfig = {
   BIOROUTER_PREDEFINED_MODELS: predefinedModels,
   BIOROUTER_API_HOST: 'http://127.0.0.1',
   BIOROUTER_WORKING_DIR: '',
+  BIOROUTER_DEV_PROFILE_NAME: process.env.BIOROUTER_DEV_PROFILE_NAME || '',
+  BIOROUTER_DEV_PROFILE_ROOT: process.env.BIOROUTER_DEV_PROFILE_ROOT || '',
   // If BIOROUTER_ALLOWLIST_WARNING env var is not set, defaults to false (strict blocking mode)
   BIOROUTER_ALLOWLIST_WARNING: process.env.BIOROUTER_ALLOWLIST_WARNING === 'true',
 };
@@ -1364,7 +1369,7 @@ const createChat = async (
   // below), which is unchanged. Set BIOROUTER_SHARED_DAEMON=0 to revert to the
   // previous per-window daemon.
   const useSharedDaemon = isSharedDaemonEnabled();
-  const windowWorkingDir = path.resolve(path.normalize(dir || os.homedir()));
+  const windowWorkingDir = path.resolve(path.normalize(dir || app.getPath('home')));
 
   // The daemon's WebSocket gates admit a page only from the daemon's own
   // origin and, beside it, the one renderer its launcher declares (QA-D F7;
@@ -1390,7 +1395,7 @@ const createChat = async (
         app,
         serverSecret,
         userActionKey,
-        dir: os.homedir(),
+        dir: app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
       })
@@ -1398,7 +1403,7 @@ const createChat = async (
         app,
         serverSecret,
         userActionKey,
-        dir: dir || os.homedir(),
+        dir: dir || app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
       });
@@ -4447,6 +4452,7 @@ const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
   log.warn('[terminal] failed to dispose session:', error)
 );
 let nodePtyModule: NodePtyModule | null | undefined;
+const crewAuthenticationSessions = new Map<string, { sessionId: string; plan: string }>();
 
 /**
  * Free every shell a renderer owns once its document goes away.
@@ -4663,6 +4669,143 @@ function registerCliInstallHandlers() {
       // `which` found a name but it won't run — a broken/dangling install.
       brokenOnPath: pathLocation !== null && pathVersion === null,
     };
+  });
+
+  ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
+    if (typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId)) {
+      return { success: false, error: 'Invalid Crew connection ID.' };
+    }
+    const owner = event.sender;
+    const ownerWindow = BrowserWindow.fromWebContents(owner);
+    const daemon = ownerWindow && biorouterdClients.get(ownerWindow.id);
+    const baseUrl = daemon?.getConfig().baseUrl;
+    if (!baseUrl) return { success: false, error: 'The local daemon is not available.' };
+    try {
+      const settings = loadSettings();
+      const response = await fetch(
+        `${baseUrl}/crew/connections/${encodeURIComponent(connectionId)}/auth-plan`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Secret-Key': getServerSecret(settings),
+            'X-User-Action': getUserActionKey(settings),
+          },
+          body: '{}',
+          signal: AbortSignal.timeout(15000),
+        }
+      );
+      const plan = await response.json();
+      if (!response.ok) throw new Error(plan.error || 'Could not prepare SSH authentication.');
+      if (
+        plan.program !== 'ssh' ||
+        plan.connection_id !== connectionId ||
+        !Array.isArray(plan.args) ||
+        plan.args.length > 64 ||
+        !plan.args.every(
+          (arg: unknown) => typeof arg === 'string' && arg.length < 4096 && !arg.includes('\0')
+        ) ||
+        !plan.args.includes('StrictHostKeyChecking=yes') ||
+        !plan.args.includes('-N')
+      ) {
+        throw new Error('The daemon returned an invalid SSH authentication plan.');
+      }
+      const authOwnerKey = `${owner.id}:${connectionId}`;
+      const planIdentity = JSON.stringify(plan.args);
+      const existingAuth = crewAuthenticationSessions.get(authOwnerKey);
+      if (existingAuth && terminalSessions.getOwned(existingAuth.sessionId, owner.id)) {
+        if (existingAuth.plan === planIdentity)
+          return {
+            success: true,
+            sessionId: existingAuth.sessionId,
+            backend: 'pty',
+            cwd: app.getPath('home'),
+          };
+        disposeTerminalSession(existingAuth.sessionId);
+      }
+      const pty = await loadNodePty();
+      if (!pty) throw new Error('Native SSH authentication requires the desktop terminal runtime.');
+      const concurrentAuth = crewAuthenticationSessions.get(authOwnerKey);
+      if (concurrentAuth && terminalSessions.getOwned(concurrentAuth.sessionId, owner.id)) {
+        if (concurrentAuth.plan === planIdentity)
+          return {
+            success: true,
+            sessionId: concurrentAuth.sessionId,
+            backend: 'pty',
+            cwd: app.getPath('home'),
+          };
+        disposeTerminalSession(concurrentAuth.sessionId);
+      }
+      if (owner.isDestroyed()) throw new Error('The authentication window closed.');
+      if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner()) {
+        throw new Error('Close an existing terminal before opening SSH authentication.');
+      }
+      registerTerminalOwnerTeardown(owner);
+      const sessionId = crypto.randomUUID();
+      const terminal = pty.spawn('ssh', plan.args, {
+        name: 'xterm-256color',
+        cols: 80,
+        rows: 12,
+        cwd: app.getPath('home'),
+        env: process.env.BIOROUTER_DEV_PROFILE_ROOT
+          ? ({
+              ...Object.fromEntries(
+                Object.entries(process.env).filter(
+                  ([key, value]) =>
+                    value !== undefined &&
+                    [
+                      'PATH',
+                      'LANG',
+                      'LC_ALL',
+                      'TERM',
+                      'SystemRoot',
+                      'WINDIR',
+                      'ComSpec',
+                      'PATHEXT',
+                    ].includes(key)
+                )
+              ),
+              HOME: app.getPath('home'),
+              USERPROFILE: app.getPath('home'),
+              TMPDIR: app.getPath('temp'),
+              TMP: app.getPath('temp'),
+              TEMP: app.getPath('temp'),
+            } as Record<string, string>)
+          : (process.env as Record<string, string>),
+      });
+      const handleDestroyed = () => disposeTerminalSession(sessionId);
+      owner.once('destroyed', handleDestroyed);
+      terminalSessions.add(sessionId, {
+        ownerId: owner.id,
+        backend: 'pty',
+        cwd: app.getPath('home'),
+        write: (data) => terminal.write(data),
+        resize: (cols, rows) => terminal.resize(cols, rows),
+        dispose: () => {
+          if (crewAuthenticationSessions.get(authOwnerKey)?.sessionId === sessionId)
+            crewAuthenticationSessions.delete(authOwnerKey);
+          terminal.kill();
+        },
+        removeOwnerDestroyedListener: () => owner.removeListener('destroyed', handleDestroyed),
+      });
+      crewAuthenticationSessions.set(authOwnerKey, { sessionId, plan: planIdentity });
+      terminal.onData((data) => {
+        if (!owner.isDestroyed()) owner.send('terminal:data', { sessionId, data });
+      });
+      terminal.onExit(({ exitCode, signal }) => {
+        if (crewAuthenticationSessions.get(authOwnerKey)?.sessionId === sessionId)
+          crewAuthenticationSessions.delete(authOwnerKey);
+        const registered = terminalSessions.forget(sessionId);
+        registered?.removeOwnerDestroyedListener();
+        if (!owner.isDestroyed()) owner.send('terminal:exit', { sessionId, exitCode, signal });
+      });
+      return { success: true, sessionId, backend: 'pty', cwd: app.getPath('home') };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'SSH authentication failed.',
+      };
+    }
   });
 
   ipcMain.handle('terminal:create', async (event, options?: TerminalCreateOptions) => {

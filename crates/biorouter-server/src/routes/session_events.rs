@@ -292,7 +292,22 @@ pub async fn observe_session_events(
                 serde_json::to_string(ev).unwrap_or_default()
             );
             let tx = tx.clone();
-            async move { tx.send(frame).await.is_ok() }
+            let state = state_for_task.clone();
+            let session_id = manager_session_id.clone();
+            let headers = headers.clone();
+            async move {
+                if crate::routes::session_reach::session_reach(
+                    state.session_manager(),
+                    &session_id,
+                    &headers,
+                )
+                .await
+                .is_err()
+                {
+                    return false;
+                }
+                tx.send(frame).await.is_ok()
+            }
         };
 
         // Join-mid-turn snapshot: the observer starts from the full stored

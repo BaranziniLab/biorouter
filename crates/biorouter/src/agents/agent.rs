@@ -6327,6 +6327,9 @@ impl Agent {
         tool_name: &str,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String> {
+        crate::crew::manager()?
+            .authorize_session_tool(session_id, tool_name)
+            .await?;
         // Issue #56: one of the four production entries that sample a capability.
         // The pre-turn prefetch is its own entry because it dispatches outside
         // `Self::dispatch_tool_call` entirely.
@@ -7169,6 +7172,23 @@ impl Agent {
                 in_flight,
             };
 
+            let crew_admission = match crate::crew::manager() {
+                Ok(crew) => {
+                    if crew.is_scoped_session(&session_id).await {
+                        if let Err(error) = hooks_manager.ensure_crew_compatible() {
+                            tracing::warn!("Crew background compaction refused: {error}");
+                            return;
+                        }
+                    }
+                    crew.check_provider_dispatch(&session_id, provider.as_ref())
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = crew_admission {
+                tracing::warn!("Crew background compaction refused: {error}");
+                return;
+            }
             // Fire PreCompact only when compaction actually proceeds (the routine
             // calls this back after its threshold check passes) — never on a turn
             // that ended under budget.
@@ -7296,8 +7316,45 @@ impl Agent {
         }
     }
 
+    /// Resolve a binding for the human-only Crew grant route without running a
+    /// completion. Expired worker credentials must not prevent renewal.
+    pub async fn provider_for_crew_grant(&self, session: &Session) -> Result<Arc<dyn Provider>> {
+        let provider =
+            match self.bound_provider_unchecked().await {
+                Some(provider) => provider,
+                None => {
+                    crate::providers::create_from_persisted(
+                        session.provider_name.as_deref().ok_or_else(|| {
+                            anyhow!("Choose a model before granting Crew access.")
+                        })?,
+                        session.model_config.clone().ok_or_else(|| {
+                            anyhow!("Choose a model before granting Crew access.")
+                        })?,
+                    )
+                    .await?
+                }
+            };
+        crate::crew::manager()?
+            .check_provider_binding(&session.id, provider.as_ref())
+            .await?;
+        Ok(provider)
+    }
+
+    pub fn ensure_crew_compatible(&self) -> Result<()> {
+        self.hooks_manager.ensure_crew_compatible()
+    }
+
+    async fn ensure_session_crew_compatible(&self, session_id: &str) -> Result<()> {
+        if crate::crew::manager()?.is_scoped_session(session_id).await {
+            self.ensure_crew_compatible()?;
+        }
+        Ok(())
+    }
+
     /// Get a reference count clone to the provider
     pub async fn provider(&self) -> Result<Arc<dyn Provider>, anyhow::Error> {
+        self.ensure_session_crew_compatible(&self.cached_classification.session_id())
+            .await?;
         let provider = self
             .bound_provider_unchecked()
             .await
@@ -7328,6 +7385,9 @@ impl Agent {
             }
             .into());
         }
+        crate::crew::manager()?
+            .check_provider_dispatch(&self.cached_classification.session_id(), provider.as_ref())
+            .await?;
         Ok(provider)
     }
 
@@ -7517,7 +7577,15 @@ impl Agent {
             Err(error) => Err(error),
         };
         match rebuilt {
-            Ok(rebuilt) => Ok(Some(rebuilt)),
+            Ok(rebuilt) => {
+                crate::crew::manager()?
+                    .check_provider_dispatch(
+                        &self.cached_classification.session_id(),
+                        rebuilt.as_ref(),
+                    )
+                    .await?;
+                Ok(Some(rebuilt))
+            }
             Err(e) => {
                 warn!(
                     "Reasoning effort '{}' not applied to provider '{}' ({}); \
@@ -7981,6 +8049,23 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        let crew_admission = match crate::crew::manager() {
+            Ok(crew) => {
+                crew.authorize_session_tool(&session.id, tool_call.name.as_ref())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = crew_admission {
+            return (
+                request_id,
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_REQUEST,
+                    error.to_string(),
+                    None,
+                )),
+            );
+        }
         // BR-71 §5: no workspace control, and no nesting, inside a delegation tree.
         if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref()) {
             let message = if is_spawn_tool_call(tool_call.name.as_ref()) {
@@ -9012,6 +9097,27 @@ impl Agent {
             // children and for the human as well.
         }
 
+        if matches!(audience, ToolAudience::Model) {
+            match crate::crew::manager() {
+                Ok(crew) => {
+                    let mut admitted = Vec::with_capacity(prefixed_tools.len());
+                    for tool in prefixed_tools {
+                        if crew
+                            .authorize_session_tool(session_id, tool.name.as_ref())
+                            .await
+                            .is_ok()
+                        {
+                            admitted.push(tool);
+                        }
+                    }
+                    return admitted;
+                }
+                Err(error) => {
+                    tracing::error!("Crew policy could not be read: {error}");
+                    return Vec::new();
+                }
+            }
+        }
         prefixed_tools
     }
 
@@ -9208,6 +9314,13 @@ impl Agent {
         session_config: SessionConfig,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        self.ensure_session_crew_compatible(&session_config.id)
+            .await?;
+        if let Some(provider) = self.bound_provider_unchecked().await {
+            crate::crew::manager()?
+                .check_provider_dispatch(&session_config.id, provider.as_ref())
+                .await?;
+        }
         let task = self.extension_manager.computer_use.task_guard();
         let _ = self
             .extension_manager
@@ -10940,6 +11053,9 @@ impl Agent {
                 };
 
                 let iteration_provider = Arc::clone(&reply_provider);
+                crate::crew::manager()?.check_provider_dispatch(
+                    &session_config.id, iteration_provider.as_ref()
+                ).await?;
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 // A coding-agent provider drives a child process that has to call
                 // back in to use Biorouter's tools. The lease lives exactly as long
@@ -12756,6 +12872,11 @@ impl Agent {
         provider: Arc<dyn Provider>,
         session_id: &str,
     ) -> Result<()> {
+        self.ensure_session_crew_compatible(session_id).await?;
+        crate::agents::mcp_client::bind_sampling_session(&self.provider, session_id)?;
+        crate::crew::manager()?
+            .check_provider_binding(session_id, provider.as_ref())
+            .await?;
         self.extension_manager.computer_use.revoke();
         let provider_name = provider.get_name().to_string();
         let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
@@ -13304,15 +13425,8 @@ impl Agent {
 
         tracing::info!("Calling provider to generate workflow content");
         let (result, _usage) = self
-            .provider
-            .lock()
-            .await
-            .as_ref()
-            .ok_or_else(|| {
-                let error = anyhow!("Provider not available during workflow creation");
-                tracing::error!("{}", error);
-                error
-            })?
+            .provider()
+            .await?
             .complete(&system_prompt, messages.messages(), &tools)
             .await
             .map_err(|e| {

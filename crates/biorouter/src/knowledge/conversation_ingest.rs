@@ -346,6 +346,15 @@ pub async fn ingest_conversation_with_curation_profile(
         anyhow::bail!("no conversations selected for ingestion");
     }
 
+    let scoped = crate::crew::manager()?.scoped_session_ids().await;
+    anyhow::ensure!(
+        !args
+            .sessions
+            .iter()
+            .any(|session| scoped.contains(&session.id)),
+        "A selected conversation is unavailable for knowledge ingestion"
+    );
+
     // Issue #56 Gate G. Per session, not once: `sessions` is a caller-supplied
     // LIST, and a single up-front check on the first element admits the rest.
     // Placed before `render_conversations` so no refused transcript is ever

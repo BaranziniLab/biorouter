@@ -37,6 +37,61 @@ use tokio::sync::{
 };
 use tokio_util::sync::CancellationToken;
 
+type SamplingBinding = (
+    std::sync::Weak<Mutex<Option<Arc<dyn crate::providers::base::Provider>>>>,
+    Vec<String>,
+);
+static SAMPLING_BINDINGS: std::sync::LazyLock<std::sync::Mutex<Vec<SamplingBinding>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+pub(crate) fn bind_sampling_session(
+    provider: &SharedProvider,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let mut bindings = SAMPLING_BINDINGS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("MCP sampling attribution is unavailable"))?;
+    bindings.retain(|(provider, _)| provider.strong_count() > 0);
+    if let Some((_, sessions)) = bindings.iter_mut().find(|(entry, _)| {
+        entry
+            .upgrade()
+            .is_some_and(|bound| Arc::ptr_eq(&bound, provider))
+    }) {
+        if !sessions.iter().any(|id| id == session_id) {
+            sessions.push(session_id.to_string());
+        }
+    } else {
+        bindings.push((Arc::downgrade(provider), vec![session_id.to_string()]));
+    }
+    Ok(())
+}
+
+pub(crate) async fn crew_sampling_allowed(provider: &SharedProvider) -> anyhow::Result<()> {
+    let sessions = {
+        let mut bindings = SAMPLING_BINDINGS
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP sampling attribution is unavailable"))?;
+        bindings.retain(|(provider, _)| provider.strong_count() > 0);
+        bindings
+            .iter()
+            .find(|(entry, _)| {
+                entry
+                    .upgrade()
+                    .is_some_and(|bound| Arc::ptr_eq(&bound, provider))
+            })
+            .map(|(_, sessions)| sessions.clone())
+            .unwrap_or_default()
+    };
+    let crew = crate::crew::manager()?;
+    for session in sessions {
+        anyhow::ensure!(
+            !crew.is_scoped_session(&session).await,
+            "Unattributed auxiliary sampling is unavailable for Crew-scoped sessions"
+        );
+    }
+    Ok(())
+}
+
 pub type BoxError = Box<dyn std::error::Error + Sync + Send>;
 
 pub type Error = rmcp::ServiceError;
@@ -465,6 +520,32 @@ impl ClientHandler for BioRouterClient {
         params: CreateMessageRequestParams,
         _context: RequestContext<RoleClient>,
     ) -> Result<CreateMessageResult, ErrorData> {
+        // Attribute from local agent bindings and dispatch leases, never from
+        // session labels supplied by the external MCP server.
+        let admission = async {
+            crew_sampling_allowed(&self.provider).await?;
+            let sessions = self
+                .active_call_sessions
+                .lock()
+                .map_err(|_| anyhow::anyhow!("MCP sampling attribution is unavailable"))?
+                .clone();
+            let crew = crate::crew::manager()?;
+            for session in sessions {
+                anyhow::ensure!(
+                    !crew.is_scoped_session(&session).await,
+                    "MCP sampling is unavailable for Crew-scoped sessions"
+                );
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if admission.is_err() {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_REQUEST,
+                "MCP sampling is unavailable under the current Crew scope",
+                None,
+            ));
+        }
         let provider = self
             .provider
             .lock()

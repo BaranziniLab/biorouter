@@ -29,6 +29,7 @@ pub struct ManagedPolicy {
     /// The trusted path a policy was loaded from; `None` when absent/untrusted,
     /// which makes every query inert.
     source: Option<PathBuf>,
+    load_failed: bool,
 }
 
 impl ManagedPolicy {
@@ -63,19 +64,34 @@ impl ManagedPolicy {
             Ok(contents) => contents,
             Err(e) => {
                 warn!("managed policy: failed to read {}: {e}", path.display());
-                return Self::empty();
+                return Self {
+                    load_failed: true,
+                    ..Self::empty()
+                };
             }
         };
         match serde_yaml::from_str::<ManagedPolicyFile>(&contents) {
             Ok(file) => ManagedPolicy {
                 file,
                 source: Some(path),
+                load_failed: false,
             },
             Err(e) => {
                 warn!("managed policy: failed to parse {}: {e}", path.display());
-                Self::empty()
+                Self {
+                    load_failed: true,
+                    ..Self::empty()
+                }
             }
         }
+    }
+
+    pub fn ensure_crew_compatible(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.load_failed,
+            "Crew is unavailable because the managed policy could not be loaded. Contact your administrator.");
+        anyhow::ensure!(self.hooks().is_empty() && self.project_hooks_override() != Some(true),
+            "Crew is unavailable with required managed hooks. Contact your administrator for a compatible managed policy.");
+        Ok(())
     }
 
     /// Build directly from a parsed file (tests / in-memory policies). Marked
@@ -84,6 +100,7 @@ impl ManagedPolicy {
         ManagedPolicy {
             file,
             source: Some(PathBuf::from("<in-memory>")),
+            load_failed: false,
         }
     }
 

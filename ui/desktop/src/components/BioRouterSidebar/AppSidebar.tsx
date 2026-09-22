@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, Home, Plus, Settings } from '../icons/app-icons';
+import { ChevronDown, Home, Plus, Settings, Users } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { announceSameRouteReset } from '../../hooks/useSameRouteReset';
@@ -84,6 +84,13 @@ const primaryItems: NavigationItem[] = [
     label: 'New chat',
     icon: Plus,
     tooltip: 'Start a new chat',
+  },
+  {
+    type: 'item',
+    path: '/crew',
+    label: 'Crew',
+    icon: Users,
+    tooltip: 'Collaborate with your team over SSH',
   },
 ];
 

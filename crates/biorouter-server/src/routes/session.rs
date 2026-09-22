@@ -407,7 +407,17 @@ async fn list_sessions(
         .list_sessions_by_types(listed_session_types(query.include_subagents))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    sessions.retain(|session| caller.lists_session(session.privacy_tier));
+    let excluded_crew = if biorouter_server::auth::is_user_action(&headers) {
+        std::collections::HashSet::new()
+    } else {
+        biorouter::crew::manager()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .scoped_session_ids()
+            .await
+    };
+    sessions.retain(|session| {
+        caller.lists_session(session.privacy_tier) && !excluded_crew.contains(&session.id)
+    });
 
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -471,15 +481,22 @@ async fn list_sidebar_sessions(
         None => None,
     };
     let public_only = !caller.lists_session(SessionClassification::Private);
+    let excluded: Vec<_> = caller
+        .excluded_crew_sessions()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .collect();
 
     let mut rows = state
         .session_manager()
-        .list_session_summaries_page(
+        .list_session_summaries_page_excluding(
             limit.saturating_add(1),
             after.as_ref(),
             query.include_subagents,
             false,
             public_only,
+            &excluded,
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -571,10 +588,18 @@ async fn get_session(
 )]
 async fn get_session_insights(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<SessionInsights>, StatusCode> {
+    let excluded: Vec<_> = crate::routes::session_reach::http_caller(&headers)
+        .await
+        .excluded_crew_sessions()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .collect();
     let insights = state
         .session_manager()
-        .get_insights()
+        .get_insights_excluding(&excluded)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(insights))
@@ -612,10 +637,18 @@ fn default_activity_days() -> i64 {
 async fn get_session_activity(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ActivityQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<ActivityWindow>, StatusCode> {
+    let excluded: Vec<_> = crate::routes::session_reach::http_caller(&headers)
+        .await
+        .excluded_crew_sessions()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .collect();
     let activity = state
         .session_manager()
-        .get_activity(query.days)
+        .get_activity_excluding(query.days, &excluded)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(activity))

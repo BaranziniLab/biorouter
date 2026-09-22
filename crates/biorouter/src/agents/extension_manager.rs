@@ -3149,6 +3149,9 @@ impl ExtensionManager {
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools.
         let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
+        let crew = crate::crew::manager()?;
+        crew.authorize_session_tool(session_id, &prefixed_name)
+            .await?;
 
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
@@ -3168,6 +3171,10 @@ impl ExtensionManager {
             &client_config,
         )?;
 
+        if crew.is_scoped_session(session_id).await {
+            anyhow::ensure!(matches!(&client_config, ExtensionConfig::Platform { name, .. } if name == "crew" || name == "todo"),
+                "Crew tools must resolve to the built-in scoped extension, not an external tool with a similar name.");
+        }
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         let computer_permit = self
             .admit_computer_use(

@@ -121,6 +121,7 @@ which = { workspace = true}
 git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 boa_engine = "0.21.0"
 unbinder = "0.1.7"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 
 [features]
 default = ["aws-providers"]

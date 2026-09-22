@@ -1,0 +1,18 @@
+{
+  "fixture_revision": "<worktree git revision>",
+  "accounts": [
+    {"name": "crew_alice", "uid": 10001, "home": "/home/crew_alice", "ssh_key_id": "alice-key"},
+    {"name": "crew_bob", "uid": 10002, "home": "/home/crew_bob", "ssh_key_id": "bob-key"},
+    {"name": "crew_carol", "uid": 10003, "home": "/home/crew_carol", "ssh_key_id": "carol-key"}
+  ],
+  "broker": {"owner": "crew_alice", "uid": 10001, "state_path": "/home/crew_alice/.local/share/biorouter-crew"},
+  "product_workflow": {
+    "sudo_used": false,
+    "global_install": false,
+    "new_system_account": false,
+    "new_unix_group": false,
+    "ssh_policy_changed": false
+  },
+  "checks": [{"name": "placeholder", "result": "pass"}],
+  "cleanup": {"verified": true}
+}

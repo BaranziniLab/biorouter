@@ -192,6 +192,7 @@ pub async fn session_changes(
         // Through `storage()` rather than a `SessionManager` wrapper: this read
         // is deliberately the narrow one (four columns, no transcript), and the
         // manager's API is where the wide reads live.
+        let excluded = caller.excluded_crew_sessions().await;
         if let Ok(mut rows) = state
             .session_manager()
             .storage()
@@ -202,14 +203,22 @@ pub async fn session_changes(
             // that named a private chat and was then woken — or handed a higher
             // revision — the moment that chat's row moved would be timing it,
             // which is the oracle the change filter below exists to close.
-            rows.retain(|row| may_show(row.privacy_tier.as_deref()));
+            rows.retain(|row| {
+                may_show(row.privacy_tier.as_deref())
+                    && excluded
+                        .as_ref()
+                        .is_ok_and(|ids| !ids.contains(&row.session_id))
+            });
             events.observe(rows);
         }
 
         let mut delta = events.since(query.since);
-        delta
-            .changes
-            .retain(|change| may_show(change.privacy_tier.as_deref()));
+        delta.changes.retain(|change| {
+            may_show(change.privacy_tier.as_deref())
+                && excluded
+                    .as_ref()
+                    .is_ok_and(|ids| !ids.contains(&change.session_id))
+        });
         if !shows_every_chat && !delta.changes.is_empty() {
             delta.changes =
                 visible_changes(&state, std::mem::take(&mut delta.changes), &may_show).await;

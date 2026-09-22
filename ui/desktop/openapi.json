@@ -1977,6 +1977,408 @@
         }
       }
     },
+    "/crew/connections": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "list_connections",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "save_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "remove_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "update_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/auth-plan": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "authentication_plan",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/connect": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "connect",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/disconnect": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "disconnect",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/request": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/runs": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "start_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "cancel_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Crew run_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session_id}/grant": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "grant_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Crew session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/devices/prepare": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "prepare_device",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/diagnostics/{session_id}": {
       "get": {
         "tags": [
@@ -5503,6 +5905,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Human user-action proof required for aggregate billing data"
+          },
           "500": {
             "description": "Internal server error"
           }
@@ -5533,6 +5938,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Human user-action proof required for aggregate billing data"
           },
           "500": {
             "description": "Internal server error"
@@ -7557,6 +7965,23 @@
           "personal"
         ]
       },
+      "CrewRequest": {
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "params": {},
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CrossAffiliationGrantRequest": {
         "type": "object",
         "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n⚠ **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n— which is the one thing this control exists to prevent.",
@@ -8510,6 +8935,24 @@
             "type": "string"
           }
         }
+      },
+      "GrantSessionRequest": {
+        "type": "object",
+        "required": [
+          "channel_id"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "context_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Graph": {
         "type": "object",
@@ -12094,6 +12537,37 @@
           }
         }
       },
+      "RunView": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "connection_id",
+          "channel_id",
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "RunningSessionsResponse": {
         "type": "object",
         "description": "BR-71: the sessions holding a turn right now.",
@@ -13283,6 +13757,43 @@
             "type": "string"
           }
         }
+      },
+      "StartRunRequest": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "prompt",
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "context_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "model": {
+            "type": "string"
+          },
+          "posting_grant": {
+            "type": "boolean"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "SteerOutcome": {
         "type": "string",

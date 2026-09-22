@@ -2054,6 +2054,10 @@ impl WorkspaceClient {
             .await
             .map_err(|e| format!("agent manager unavailable: {e}"))?;
 
+        let excluded_crew = crate::crew::manager()
+            .map_err(|e| e.to_string())?
+            .scoped_session_ids()
+            .await;
         let mut rows = Vec::new();
         let mut matched = 0usize;
         let mut scanned = 0usize;
@@ -2075,6 +2079,9 @@ impl WorkspaceClient {
             }
             db_offset += summaries.len() as u32;
             for s in summaries {
+                if excluded_crew.contains(&s.id) {
+                    continue;
+                }
                 scanned += 1;
                 if scanned > MAX_SCAN_ROWS {
                     scan_truncated = true;

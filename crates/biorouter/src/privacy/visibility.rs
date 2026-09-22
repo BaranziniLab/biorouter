@@ -167,6 +167,10 @@ pub async fn refuse_unless_readable(
     session_manager: &crate::session::session_manager::SessionManager,
     target_session_id: &str,
 ) -> Result<(), String> {
+    let crew = crate::crew::manager().map_err(|_| super::refusal::workspace_out_of_reach())?;
+    if crew.is_scoped_session(target_session_id).await {
+        return Err(super::refusal::workspace_out_of_reach());
+    }
     if !cap.enforced() {
         return Ok(());
     }
