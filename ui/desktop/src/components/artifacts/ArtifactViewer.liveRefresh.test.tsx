@@ -416,8 +416,14 @@ describe('completed coding changes refresh the existing artifact', () => {
       text: '<html><body>Updated form</body></html>',
       revision: 'next-form',
     });
+    expect(frame.isConnected).toBe(true);
     fireEvent.click(update);
-    await waitFor(() => expect(frame.srcdoc).toContain('Updated form'));
+    await waitFor(() =>
+      expect((screen.getByLabelText('form.html') as HTMLIFrameElement).srcdoc).toContain(
+        'Updated form'
+      )
+    );
+    expect(frame.isConnected).toBe(false);
     expect(readArtifactFile).toHaveBeenCalledTimes(3);
   });
 
