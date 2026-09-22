@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CrewAuthentication from './CrewAuthentication';
 
@@ -144,6 +144,24 @@ describe('CrewAuthentication', () => {
     view.unmount();
 
     expect(mocks.disposeTerminalSession).not.toHaveBeenCalled();
+  });
+
+  it('connects only after an authenticated zero exit and has no manual completion bypass', async () => {
+    const onConnected = vi.fn();
+    mocks.createCrewAuthentication.mockResolvedValue({ success: true, sessionId: 'session-5' });
+    render(
+      <CrewAuthentication connectionId="connection-5" onConnected={onConnected} onClose={vi.fn()} />
+    );
+
+    await waitFor(() =>
+      expect(mocks.resizeTerminalSession).toHaveBeenCalledWith('session-5', 80, 12)
+    );
+    expect(screen.queryByRole('button', { name: /Authentication complete/ })).toBeNull();
+    await act(async () => {
+      mocks.exitListeners[0]?.({ sessionId: 'session-5', exitCode: 0 });
+    });
+    expect(onConnected).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('filters unrelated live events and unsubscribes listeners on unmount', async () => {

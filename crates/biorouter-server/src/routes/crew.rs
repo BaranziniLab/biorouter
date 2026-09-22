@@ -227,12 +227,12 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
         UserActionProof::Unproven => Err(CrewRouteError(
             StatusCode::FORBIDDEN,
             "crew_user_action_required".into(),
-            "Use the Crew panel to authorize this action. Agent tools use their separate task grant.".into(),
+            "Authorize this action in the Crew panel or native Crew CLI with your human approval secret. Agent tools use their separate task grant.".into(),
         )),
         UserActionProof::NoKeyInstalled => Err(CrewRouteError(
             StatusCode::FORBIDDEN,
-            "crew_desktop_required".into(),
-            "This daemon cannot verify human Crew actions. Open Crew in the BioRouter desktop app.".into(),
+            "crew_human_authority_unavailable".into(),
+            "This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret.".into(),
         )),
     }
 }
@@ -1269,6 +1269,15 @@ pub async fn grant_session(
     Ok(Json(
         json!({"run_id": admission.run_id, "session_id": session_id}),
     ))
+}
+
+pub async fn shutdown_owned_runs() {
+    let ledgers: Vec<_> = LEDGERS.lock().await.values().cloned().collect();
+    for ledger in ledgers {
+        for run in ledger.state.lock().await.runs.values() {
+            run.cancel.cancel();
+        }
+    }
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

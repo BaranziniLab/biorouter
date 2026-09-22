@@ -1435,6 +1435,8 @@ impl ServeOptions {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Collaborate through Crew using the shared local daemon.
+    Crew(crate::commands::crew::CrewOptions),
     /// Configure Biorouter settings
     #[command(about = "Configure Biorouter settings")]
     Configure {},
@@ -1841,6 +1843,7 @@ pub struct InputConfig {
 
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
+        Some(Command::Crew(_)) => "crew",
         Some(Command::Configure {}) => "configure",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
@@ -2787,6 +2790,7 @@ pub async fn cli() -> anyhow::Result<()> {
 /// cannot ship silently unreachable.
 async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
     match command {
+        Some(Command::Crew(options)) => crate::commands::crew::handle(options).await,
         Some(Command::Completion { shell, bin_name }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());

@@ -72,6 +72,11 @@ arboard = "3.6.1"
 url = "2.5.4"
 zeroize = "1"
 sha2 = "0.10"
+tokio-tungstenite = "0.28"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
 
 # jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,
 # so depend on it only off Windows. Windows uses the system allocator.

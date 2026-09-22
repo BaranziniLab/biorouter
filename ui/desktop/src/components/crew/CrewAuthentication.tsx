@@ -17,6 +17,10 @@ export default function CrewAuthentication({
   const [error, setError] = useState('');
   const activeSession = useRef('');
   const closeRequested = useRef(false);
+  const connectedCallback = useRef(onConnected);
+  useEffect(() => {
+    connectedCallback.current = onConnected;
+  }, [onConnected]);
   useEffect(() => {
     if (!container.current) return;
     setError('');
@@ -40,10 +44,15 @@ export default function CrewAuthentication({
     const pending: { sessionId: string; data: string }[] = [];
     const pendingExits: { sessionId: string; exitCode: number | null }[] = [];
     let pendingBytes = 0;
-    const showExit = (exitCode: number | null) =>
+    const showExit = (exitCode: number | null) => {
+      if (exitCode === 0) {
+        connectedCallback.current();
+        return;
+      }
       setError(
-        `SSH authentication ended (exit ${exitCode ?? 'unknown'}). Reconnect to check the connection.`
+        `Daemon SSH authentication ended (exit ${exitCode ?? 'unknown'}). Reconnect to check the connection.`
       );
+    };
     const observer = new ResizeObserver(() => {
       fit.fit();
       if (sessionId)
@@ -129,15 +138,12 @@ export default function CrewAuthentication({
       <p className="crew-small">
         Enter credentials only in this terminal. Prompts are not saved to Crew history. The SSH
         connection stays available when you switch to another page; close it explicitly when
-        finished.
+        finished. Crew connects automatically after the daemon verifies authentication.
       </p>
       <div className="crew-auth-terminal" ref={container} />
       {error && <p role="alert">{error}</p>}
       <CrewHostTrust />
       <div className="crew-inline">
-        <button className="crew-button primary" onClick={onConnected}>
-          Authentication complete · connect
-        </button>
         <button
           className="crew-button"
           onClick={() => {

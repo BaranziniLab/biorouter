@@ -1,4 +1,7 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
+pub mod authentication;
+mod credentials;
+pub use credentials::CredentialStatus;
 mod ssh_policy;
 mod transport;
 use crate::{
@@ -119,8 +122,18 @@ pub struct RunMetadata {
 }
 pub struct CrewManager {
     root: PathBuf,
+    credential_vault: Arc<credentials::CredentialVault>,
     registry: Mutex<Registry>,
     transports: Mutex<HashMap<String, Arc<Mutex<transport::Transport>>>>,
+    lifecycle: StdMutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+}
+pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
+    let mut value = serde_json::to_value(connection)?;
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("status");
+        fields.remove("last_error");
+    }
+    Ok(value)
 }
 static MANAGERS: LazyLock<StdMutex<HashMap<PathBuf, Arc<CrewManager>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
@@ -258,6 +271,10 @@ impl CrewManager {
         )?)
     }
     fn write_credential(&self, id: &str, value: &str) -> Result<()> {
+        self.credential_vault
+            .write(id, value, || self.write_legacy_credential(id, value))
+    }
+    fn write_legacy_credential(&self, id: &str, value: &str) -> Result<()> {
         if file_credentials_enabled() {
             let path = self.credential_path(id);
             let parent = path.parent().expect("credential parent");
@@ -282,7 +299,12 @@ impl CrewManager {
             Ok(())
         }
     }
-    fn read_credential(&self, id: &str) -> Result<String> {
+    fn read_credential(&self, id: &str) -> Result<zeroize::Zeroizing<String>> {
+        self.credential_vault.read(id, || {
+            self.read_legacy_credential(id).map(zeroize::Zeroizing::new)
+        })
+    }
+    fn read_legacy_credential(&self, id: &str) -> Result<String> {
         if file_credentials_enabled() {
             Ok(std::fs::read_to_string(self.credential_path(id))?)
         } else {
@@ -301,10 +323,40 @@ impl CrewManager {
             c.last_error = None;
         }
         Ok(Self {
+            credential_vault: Arc::new(credentials::CredentialVault::new(root.clone())),
             root,
             registry: Mutex::new(registry),
             transports: Mutex::new(HashMap::new()),
+            lifecycle: StdMutex::new(HashMap::new()),
         })
+    }
+    pub async fn credential_status(&self) -> Result<CredentialStatus> {
+        let vault = self.credential_vault.clone();
+        tokio::task::spawn_blocking(move || vault.status()).await?
+    }
+    pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
+        ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
+        let registry = self.registry.lock().await;
+        ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
+        let vault = self.credential_vault.clone();
+        let result = tokio::task::spawn_blocking(move || vault.init(passphrase)).await?;
+        drop(registry);
+        result
+    }
+    pub async fn unlock_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
+        let vault = self.credential_vault.clone();
+        tokio::task::spawn_blocking(move || vault.unlock(passphrase)).await?
+    }
+    pub async fn lock_vault(&self) -> Result<()> {
+        let vault = self.credential_vault.clone();
+        tokio::task::spawn_blocking(move || vault.lock()).await?
+    }
+    pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
+        self.connection(connection_id).await?;
+        let registry = self.registry.lock().await;
+        Ok(
+            json!({"grants": registry.scopes.iter().filter(|(_, scope)| scope.connection_id == connection_id).map(|(session, scope)| json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired})).collect::<Vec<_>>()}),
+        )
     }
     fn persist(&self, registry: &Registry) -> Result<()> {
         #[cfg(unix)]
@@ -448,7 +500,8 @@ impl CrewManager {
         self.save_inner(None, input).await
     }
     pub async fn update(&self, id: &str, input: SaveConnection) -> Result<Connection> {
-        self.disconnect(id).await?;
+        let _lifecycle = self.connection_guard(id).await?;
+        self.disconnect_locked(id).await?;
         self.save_inner(Some(id), input).await
     }
     fn validate_connection(input: &SaveConnection) -> Result<()> {
@@ -649,7 +702,8 @@ impl CrewManager {
         Ok(c)
     }
     pub async fn remove(&self, id: &str) -> Result<()> {
-        self.disconnect(id).await?;
+        let _lifecycle = self.connection_guard(id).await?;
+        self.disconnect_locked(id).await?;
         let mut r = self.registry.lock().await;
         r.connections.retain(|c| c.id != id);
         for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
@@ -721,7 +775,29 @@ impl CrewManager {
         VerifyingKey::from_bytes(&public_key)?.verify(&signed, &signature)?;
         Ok(node_id.to_string())
     }
+    pub async fn connection_guard(&self, id: &str) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = {
+            let mut locks = self
+                .lifecycle
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Connection lifecycle unavailable"))?;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(id).and_then(std::sync::Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(id.into(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        Ok(lock.lock_owned().await)
+    }
     pub async fn connect(&self, id: &str) -> Result<Connection> {
+        let _lifecycle = self.connection_guard(id).await?;
+        authentication::ensure_connect_available(id)?;
+        self.connect_locked(id).await
+    }
+    pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
         let c = self.connection(id).await?;
         let mut transport = transport::Transport::connect(&c, &self.control_path(id)?).await?;
         let challenge_nonce = uuid::Uuid::new_v4().to_string();
@@ -742,10 +818,7 @@ impl CrewManager {
             .find(|current| current.id == id)
             .ok_or_else(|| anyhow::anyhow!("Connection removed while connecting"))?;
         ensure!(
-            current.policy_epoch == c.policy_epoch
-                && current.workspace_id == c.workspace_id
-                && current.workspace_public_key == c.workspace_public_key
-                && current.ssh_target == c.ssh_target,
+            connection_binding(current)? == connection_binding(&c)?,
             "Connection changed while authentication was pending; reconnect"
         );
         if let Some(previous) = &current.node_id {
@@ -807,6 +880,11 @@ impl CrewManager {
         Ok(connected)
     }
     pub async fn disconnect(&self, id: &str) -> Result<()> {
+        let _lifecycle = self.connection_guard(id).await?;
+        self.disconnect_locked(id).await
+    }
+    pub(super) async fn disconnect_locked(&self, id: &str) -> Result<()> {
+        authentication::cancel_connection(id);
         if let Ok(connection) = self.connection(id).await {
             let control = self.control_path(id)?;
             if control.exists() {

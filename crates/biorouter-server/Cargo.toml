@@ -58,6 +58,10 @@ fs2 = "0.4.3"
 # produced by our tooling uses, exactly as that binary pinned it.
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 rustls = { version = "0.23", features = ["ring"] }
+cap-std = "3"
+zeroize = "1"
+tempfile = "3.15"
+uuid = { version = "1", features = ["v4"] }
 
 # jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,
 # so depend on it only off Windows. Windows uses the system allocator.
@@ -77,6 +81,7 @@ default = ["jemalloc"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 winreg = { version = "0.55.0" }
 
 [[bin]]

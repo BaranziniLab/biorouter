@@ -741,6 +741,9 @@ pub mod catalog;
 pub mod coding_agents;
 pub mod config_management;
 pub mod crew;
+pub mod crew_authentication;
+pub mod crew_profile;
+pub mod crew_transfers;
 pub mod errors;
 pub mod knowledge;
 pub mod llamacpp;
@@ -791,6 +794,10 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(setup::routes(state.clone()))
         .merge(coding_agents::routes(state.clone()))
         .merge(crew::routes(state.clone()))
+        .merge(crew_authentication::routes())
+        .merge(crew_transfers::routes())
+        .merge(crew_profile::routes())
+        .merge(biorouter_server::daemon_service::routes())
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // The interface's own endpoints -- the filesystem browser, settings,

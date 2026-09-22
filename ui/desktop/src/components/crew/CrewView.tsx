@@ -9,6 +9,7 @@ import {
   type CrewMessage,
 } from './crewApi';
 import CrewAuthentication from './CrewAuthentication';
+import CrewCredentials from './CrewCredentials';
 import CrewHostTrust from './CrewHostTrust';
 import { CrewUpload, CrewAttachment, CrewRemoteReference } from './CrewFiles';
 import { clearPublishedTransfers } from './crewTransfers';
@@ -404,7 +405,7 @@ export default function CrewView() {
         true
       );
       try {
-        clearPublishedTransfers(
+        await clearPublishedTransfers(
           connectionId,
           attachments.map((item) => item.id)
         );
@@ -470,7 +471,7 @@ export default function CrewView() {
                 {snapshot ? 'Connected · identity verified' : connection.status.replace(/_/g, ' ')}
               </span>
               <div className="crew-inline">
-                <button onClick={connect} disabled={busy}>
+                <button onClick={connect} disabled={busy || authentication}>
                   Reconnect
                 </button>
                 <button onClick={() => setAuthentication(true)}>Authenticate</button>
@@ -687,6 +688,7 @@ export default function CrewView() {
               )}
             </>
           )}
+          <CrewCredentials />
         </aside>
         <main className="crew-main">
           {visibleError && (
@@ -708,7 +710,11 @@ export default function CrewView() {
             <CrewAuthentication
               connectionId={connectionId}
               onConnected={() => {
-                void connect();
+                setAuthentication(false);
+                void act(async () => {
+                  await loadConnections();
+                  await refresh();
+                });
               }}
               onClose={() => setAuthentication(false)}
             />
@@ -724,7 +730,11 @@ export default function CrewView() {
                 Human conversations do not need a model.
               </p>
               {connection ? (
-                <button className="crew-button primary" disabled={busy} onClick={connect}>
+                <button
+                  className="crew-button primary"
+                  disabled={busy || authentication}
+                  onClick={connect}
+                >
                   Connect to {connection.name}
                 </button>
               ) : (

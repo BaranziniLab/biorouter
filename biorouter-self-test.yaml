@@ -25,6 +25,8 @@ activities:
   - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
   - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
   - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
+  - Exercise Crew CLI and daemon parity against an isolated synthetic profile, including help/version and explicit failure reporting
+  - Verify Crew transfer lifecycle receipts, resume/forget behavior, and bounded file cleanup using disposable fixtures only
   - Measure performance and resource usage
   - Generate comprehensive test report
 
@@ -171,6 +173,9 @@ instructions: |
   - Verify first-host preparation is explicit, host-key trust is visible, and no private key or provider credential is entered into the fixture
   - Repeat a start request with the same synthetic request id and verify the UI preserves one durable receipt; a changed payload must be rejected
   - Verify human-only Crew session/history access remains available before provider selection, while a normal-chat tool request outside the scoped allowlist is refused
+  - From the same isolated profile, run the built CLI's `crew --help` and version commands and query the local daemon status endpoint; record exact binary paths, target, and exit codes, and treat an unavailable Linux artifact as NOT OBSERVABLE rather than PASS.
+  - With a preauthorized synthetic Crew fixture only, register one small text file, verify its transfer SHA-256 and durable receipt, resume it after a simulated interrupted acknowledgement, then forget it; assert only the owned partial artifact and receipt are cleaned up while the caller-owned source remains intact, and that a duplicate request id does not create a second receipt.
+  - Without acquiring human proof, first-host approval, or credentials, exercise one refusal for an unapproved symlink/capability boundary and one refusal for an unknown transfer id; capture the refusal reason and verify no file, receipt, or profile state was created.
 
   {% endif %}
 

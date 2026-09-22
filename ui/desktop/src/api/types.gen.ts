@@ -2577,6 +2577,13 @@ export type PlannedSkill = {
     name: string;
 };
 
+export type Prepare = {
+    cols: number;
+    controller_id: string;
+    request_id: string;
+    rows: number;
+};
+
 export type PreviewBody = {
     commit_sha: string;
     path: string;
@@ -3072,6 +3079,10 @@ export type RestoreBody = {
 
 export type RestoreResponse = {
     new_commit_sha: string;
+};
+
+export type Resume = {
+    file_capability: string;
 };
 
 export type ResumeAgentRequest = {
@@ -5956,6 +5967,34 @@ export type ValidateConfigResponses = {
 
 export type ValidateConfigResponse = ValidateConfigResponses[keyof ValidateConfigResponses];
 
+export type CrewAuthenticationCancelData = {
+    body?: never;
+    path: {
+        /**
+         * Authentication session
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/authentication/{id}';
+};
+
+export type CrewAuthenticationCancelResponses = {
+    200: unknown;
+};
+
+export type CrewAuthenticationTerminalData = {
+    body?: never;
+    path: {
+        /**
+         * Authentication session
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/authentication/{id}/terminal';
+};
+
 export type ListConnectionsData = {
     body?: never;
     path?: never;
@@ -6026,6 +6065,22 @@ export type AuthenticationPlanResponses = {
     200: unknown;
 };
 
+export type CrewAuthenticationPrepareData = {
+    body: Prepare;
+    path: {
+        /**
+         * Saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/authentication';
+};
+
+export type CrewAuthenticationPrepareResponses = {
+    200: unknown;
+};
+
 export type ConnectData = {
     body?: never;
     path: {
@@ -6055,6 +6110,22 @@ export type DisconnectData = {
 };
 
 export type DisconnectResponses = {
+    200: unknown;
+};
+
+export type CrewProfileGrantsData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/grants';
+};
+
+export type CrewProfileGrantsResponses = {
     200: unknown;
 };
 
@@ -6146,6 +6217,90 @@ export type GrantSessionResponses = {
     200: unknown;
 };
 
+export type CrewProfileContextData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+        /**
+         * Session ID
+         */
+        session: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session}/context';
+};
+
+export type CrewProfileContextResponses = {
+    200: unknown;
+};
+
+export type CrewProfileRevokeData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+        /**
+         * Session ID
+         */
+        session: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session}/revoke';
+};
+
+export type CrewProfileRevokeResponses = {
+    200: unknown;
+};
+
+export type CrewProfileCredentialsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials';
+};
+
+export type CrewProfileCredentialsResponses = {
+    200: unknown;
+};
+
+export type CrewProfileInitData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/init';
+};
+
+export type CrewProfileInitResponses = {
+    200: unknown;
+};
+
+export type CrewProfileLockData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/lock';
+};
+
+export type CrewProfileLockResponses = {
+    200: unknown;
+};
+
+export type CrewProfileUnlockData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/unlock';
+};
+
+export type CrewProfileUnlockResponses = {
+    200: unknown;
+};
+
 export type PrepareDeviceData = {
     body?: never;
     path?: never;
@@ -6154,6 +6309,117 @@ export type PrepareDeviceData = {
 };
 
 export type PrepareDeviceResponses = {
+    200: unknown;
+};
+
+export type CrewTransferRegisterFileData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/files';
+};
+
+export type CrewTransferRegisterFileResponses = {
+    200: unknown;
+};
+
+export type CrewTransferListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers';
+};
+
+export type CrewTransferListResponses = {
+    200: unknown;
+};
+
+export type CrewTransferStartData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers';
+};
+
+export type CrewTransferStartResponses = {
+    200: unknown;
+};
+
+export type CrewTransferPreviewData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers/preview';
+};
+
+export type CrewTransferPreviewResponses = {
+    /**
+     * Digest-verified bounded image
+     */
+    200: unknown;
+};
+
+export type CrewTransferForgetData = {
+    body?: Resume | null;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}';
+};
+
+export type CrewTransferForgetResponses = {
+    200: unknown;
+};
+
+export type CrewTransferStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}';
+};
+
+export type CrewTransferStatusResponses = {
+    200: unknown;
+};
+
+export type CrewTransferPauseData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}/pause';
+};
+
+export type CrewTransferPauseResponses = {
+    200: unknown;
+};
+
+export type CrewTransferResumeData = {
+    body: unknown;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}/resume';
+};
+
+export type CrewTransferResumeResponses = {
     200: unknown;
 };
 

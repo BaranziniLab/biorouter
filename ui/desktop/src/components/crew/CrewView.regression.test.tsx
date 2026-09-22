@@ -28,7 +28,14 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mocks.navigate };
 });
-vi.mock('./CrewAuthentication', () => ({ default: () => <div /> }));
+vi.mock('./CrewAuthentication', () => ({
+  default: ({ onConnected, onClose }: { onConnected: () => void; onClose: () => void }) => (
+    <div data-testid="crew-authentication-fixture">
+      <button onClick={onConnected}>Simulate authenticated completion</button>
+      <button onClick={onClose}>Simulate authentication close</button>
+    </div>
+  ),
+}));
 vi.mock('./CrewHostTrust', () => ({ default: () => <div /> }));
 vi.mock('./CrewFiles', () => ({
   CrewUpload: () => <div />,
@@ -116,7 +123,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     defaultHttp();
     let next = 1;
     vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(
-      () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`,
+      () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`
     );
   });
 
@@ -149,6 +156,28 @@ describe('CrewView action and uncertain-start regressions', () => {
     expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
   });
 
+  it('refreshes after authenticated completion without issuing a second manual connect request', async () => {
+    renderCrew();
+    await screen.findByText('Welcome to #general');
+    mocks.crewHttp.mockClear();
+    mocks.crewRequest.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
+    );
+
+    await waitFor(() =>
+      expect(mocks.crewRequest).toHaveBeenCalledWith('conn-1', 'workspace.snapshot')
+    );
+    expect(
+      mocks.crewHttp.mock.calls.some(
+        ([path, method]) => path === '/connections/conn-1/connect' && method === 'POST'
+      )
+    ).toBe(false);
+    expect(mocks.crewHttp).toHaveBeenCalledWith('/connections');
+  });
+
   it('preserves a draft when an older history cursor becomes stale', async () => {
     const historyRequests: Record<string, unknown>[] = [];
     const olderMessages = Array.from({ length: 200 }, (_, index) => ({
@@ -178,9 +207,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'keep this unsent draft' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Older messages' }));
-    await waitFor(() =>
-      expect(historyRequests.some((params) => 'before' in params)).toBe(true)
-    );
+    await waitFor(() => expect(historyRequests.some((params) => 'before' in params)).toBe(true));
     await waitFor(() => expect(screen.queryByText('Viewing earlier messages')).toBeNull());
     expect(screen.getByLabelText('Message #general')).toHaveValue('keep this unsent draft');
   });

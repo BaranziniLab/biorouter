@@ -1977,6 +1977,59 @@
         }
       }
     },
+    "/crew/authentication/{id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Authentication session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/authentication/{id}/terminal": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_terminal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Authentication session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Human-authorized terminal websocket"
+          }
+        }
+      }
+    },
     "/crew/connections": {
       "get": {
         "tags": [
@@ -2112,6 +2165,45 @@
         }
       }
     },
+    "/crew/connections/{id}/authentication": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_prepare",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Prepare"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/connections/{id}/connect": {
       "post": {
         "tags": [
@@ -2152,6 +2244,35 @@
             "name": "id",
             "in": "path",
             "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/grants": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_grants",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
             "required": true,
             "schema": {
               "type": "string"
@@ -2361,12 +2482,403 @@
         }
       }
     },
+    "/crew/connections/{id}/sessions/{session}/context": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_context",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session}/revoke": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_credentials",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/init": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_init",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/lock": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_lock",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/unlock": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_unlock",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/devices/prepare": {
       "post": {
         "tags": [
           "Crew"
         ],
         "operationId": "prepare_device",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/files": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_register_file",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/preview": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Digest-verified bounded image"
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_forget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Resume"
+                  }
+                ],
+                "nullable": true
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}/pause": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_pause",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}/resume": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "",
@@ -11469,6 +11981,34 @@
           }
         }
       },
+      "Prepare": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "controller_id",
+          "cols",
+          "rows"
+        ],
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "controller_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "PreviewBody": {
         "type": "object",
         "required": [
@@ -12406,6 +12946,18 @@
             "type": "string"
           }
         }
+      },
+      "Resume": {
+        "type": "object",
+        "required": [
+          "file_capability"
+        ],
+        "properties": {
+          "file_capability": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "ResumeAgentRequest": {
         "type": "object",

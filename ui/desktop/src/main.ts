@@ -1,4 +1,6 @@
 import './developmentProfile';
+import { createCrewDaemonTerminal } from './crewDaemonTerminal';
+import { promptNativeSecret } from './nativeSecretPrompt';
 import type {
   MenuItemConstructorOptions,
   OpenDialogOptions,
@@ -36,7 +38,12 @@ import { spawn, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip } from './utils/safeZip';
 import 'dotenv/config';
-import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
+import {
+  checkServerStatus,
+  startBiorouterd,
+  getBiorouterCliBinaryPath,
+  validateDaemonApprovalSecret,
+} from './biorouterd';
 import {
   TerminalSessionRegistry,
   maxTerminalSessionsPerOwner,
@@ -1343,6 +1350,29 @@ interface ChatWindowOptions {
   resumeSessionTitle?: string;
 }
 
+const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
+  const secret = await promptNativeSecret(
+    'Set approval secret for shared BioRouter daemon',
+    'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
+  );
+  if (secret === undefined)
+    throw new Error(
+      'Shared daemon startup cancelled. No daemon was started. Reopen the app when ready to supply your approval secret.'
+    );
+  validateDaemonApprovalSecret(secret);
+  const confirmation = await promptNativeSecret(
+    'Confirm shared daemon approval secret',
+    'Enter the same independently held approval secret again. BioRouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
+  );
+  if (confirmation === undefined)
+    throw new Error('Shared daemon startup cancelled. No daemon was started.');
+  if (confirmation !== secret)
+    throw new Error(
+      'Approval secrets did not match. No daemon was started. Reopen the app to try again.'
+    );
+  return secret;
+};
+
 const createChat = async (
   app: App,
   initialMessage?: string,
@@ -1398,6 +1428,23 @@ const createChat = async (
         dir: app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
+        requestNewUserActionKey: requestNewDaemonApprovalSecret,
+        requestUserActionKey: async (runtime) => {
+          if (!runtime.userActionInstalled)
+            throw new Error(
+              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+            );
+          const key = await promptNativeSecret(
+            'Connect to existing BioRouter daemon',
+            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+          );
+          if (!key)
+            throw new Error(
+              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+            );
+          validateDaemonApprovalSecret(key);
+          return key;
+        },
       })
     : await startBiorouterd({
         app,
@@ -1406,6 +1453,23 @@ const createChat = async (
         dir: dir || app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
+        requestNewUserActionKey: requestNewDaemonApprovalSecret,
+        requestUserActionKey: async (runtime) => {
+          if (!runtime.userActionInstalled)
+            throw new Error(
+              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+            );
+          const key = await promptNativeSecret(
+            'Connect to existing BioRouter daemon',
+            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+          );
+          if (!key)
+            throw new Error(
+              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+            );
+          validateDaemonApprovalSecret(key);
+          return key;
+        },
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
@@ -4452,7 +4516,8 @@ const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
   log.warn('[terminal] failed to dispose session:', error)
 );
 let nodePtyModule: NodePtyModule | null | undefined;
-const crewAuthenticationSessions = new Map<string, { sessionId: string; plan: string }>();
+const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
+const crewAuthenticationPending = new Set<string>();
 
 /**
  * Free every shell a renderer owns once its document goes away.
@@ -4671,140 +4736,275 @@ function registerCliInstallHandlers() {
     };
   });
 
-  ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
-    if (typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId)) {
-      return { success: false, error: 'Invalid Crew connection ID.' };
+  ipcMain.handle('crew:credentials', async (event, action: unknown) => {
+    if (!['status', 'init', 'unlock', 'lock'].includes(String(action)))
+      throw new Error('Invalid Crew credential action.');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    const settings = loadSettings();
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Secret-Key': getServerSecret(settings),
+      'X-User-Action': getUserActionKey(settings),
+    };
+    let passphrase: string | undefined;
+    try {
+      if (action === 'init' || action === 'unlock') {
+        passphrase = await promptNativeSecret(
+          action === 'init' ? 'Initialize Crew encrypted vault' : 'Unlock Crew encrypted vault',
+          action === 'init'
+            ? 'Choose a new vault passphrase for this fresh Crew profile. This is separate from the daemon approval secret. Existing keyring identities are not migrated.'
+            : 'Enter this Crew vault’s passphrase. This is separate from the daemon approval secret.'
+        );
+        if (passphrase === undefined) return { cancelled: true };
+        if (Buffer.byteLength(passphrase, 'utf8') > 1024)
+          throw new Error('Vault passphrase must be at most 1024 UTF-8 bytes.');
+        if (action === 'init') {
+          const confirmation = await promptNativeSecret(
+            'Confirm Crew vault passphrase',
+            'Enter the new Crew vault passphrase again.'
+          );
+          if (confirmation === undefined) return { cancelled: true };
+          if (confirmation !== passphrase)
+            throw new Error('Passphrases do not match. The vault was not initialized.');
+        }
+      }
+      if (event.sender.isDestroyed()) throw new Error('The Crew window closed.');
+      if (action !== 'status') {
+        const response = await fetch(`${baseUrl}/crew/credentials/${action}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(passphrase === undefined ? {} : { passphrase }),
+          signal: AbortSignal.timeout(30000),
+        });
+        passphrase = undefined;
+        if (!response.ok)
+          throw new Error(
+            action === 'init'
+              ? 'Vault initialization was refused. Use a fresh Crew profile with no existing identities or credential backend.'
+              : action === 'unlock'
+                ? 'Vault unlock was refused. Check the passphrase and selected profile.'
+                : 'Vault lock was refused by the daemon.'
+          );
+      }
+      const response = await fetch(`${baseUrl}/crew/credentials`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error('Crew credential status is unavailable.');
+      const status = await response.json();
+      if (
+        !['keyring', 'encrypted_vault'].includes(status.backend) ||
+        typeof status.initialized !== 'boolean' ||
+        typeof status.locked !== 'boolean'
+      )
+        throw new Error('Invalid Crew credential status.');
+      return { backend: status.backend, initialized: status.initialized, locked: status.locked };
+    } finally {
+      passphrase = undefined;
     }
+  });
+
+  ipcMain.handle('crew:select-transfer-file', async (event, raw: unknown) => {
+    if (!raw || typeof raw !== 'object') throw new Error('Invalid transfer request.');
+    const options = raw as Record<string, unknown>;
+    if (
+      !['upload', 'download'].includes(String(options.direction)) ||
+      typeof options.connectionId !== 'string' ||
+      typeof options.channelId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.connectionId) ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.channelId)
+    )
+      throw new Error('Invalid transfer destination.');
+    for (const field of ['blobId', 'transferId']) {
+      const value = options[field];
+      if (
+        value !== undefined &&
+        (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
+      )
+        throw new Error('Invalid transfer capability binding.');
+    }
+    const purpose = options.purpose ?? 'transfer';
+    if (!['transfer', 'cleanup'].includes(String(purpose)))
+      throw new Error('Invalid transfer selection purpose.');
+    if (purpose === 'cleanup' && (options.direction !== 'download' || !options.transferId))
+      throw new Error('Temporary download cleanup needs its original transfer.');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    let selected: string | undefined;
+    if (purpose === 'cleanup') {
+      if (
+        typeof options.suggestedName !== 'string' ||
+        !options.suggestedName ||
+        path.basename(options.suggestedName) !== options.suggestedName ||
+        ['.', '..'].includes(options.suggestedName)
+      )
+        throw new Error('The original download filename is unavailable.');
+      const folder = await dialog.showOpenDialog(owner, {
+        title: `Locate the original folder for ${options.suggestedName}`,
+        properties: ['openDirectory'],
+      });
+      if (folder.canceled || !folder.filePaths[0]) return null;
+      selected = path.join(folder.filePaths[0], options.suggestedName);
+      const cleanup = await dialog.showMessageBox(owner, {
+        type: 'question',
+        title: 'Remove incomplete Crew download',
+        message: `Remove the temporary download for ${options.suggestedName}?`,
+        detail:
+          'Only this transfer’s verified temporary file will be removed. The destination file and the attachment in Crew are kept.',
+        buttons: ['Cancel', 'Remove temporary file'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (cleanup.response !== 1) return null;
+    } else if (options.direction === 'upload') {
+      const result = await dialog.showOpenDialog(owner, {
+        title: 'Choose a file for Crew',
+        properties: ['openFile'],
+      });
+      if (!result.canceled) selected = result.filePaths[0];
+    } else {
+      const suggested =
+        typeof options.suggestedName === 'string'
+          ? Array.from(path.basename(options.suggestedName))
+              .filter((character) => character.charCodeAt(0) >= 32)
+              .join('')
+          : 'crew-download';
+      const result = await dialog.showSaveDialog(owner, {
+        title: 'Save Crew file',
+        defaultPath: suggested,
+      });
+      if (!result.canceled) selected = result.filePath;
+    }
+    if (!selected) return null;
+    let overwrite = false;
+    if (options.direction === 'download' && purpose !== 'cleanup') {
+      let existing: Awaited<ReturnType<typeof fs.lstat>> | undefined;
+      try {
+        existing = await fs.lstat(selected);
+      } catch (error) {
+        if ((error as Error & { code?: string }).code !== 'ENOENT')
+          throw new Error('The selected destination could not be inspected.');
+      }
+      if (existing) {
+        if (!existing.isFile() || existing.isSymbolicLink())
+          throw new Error('Choose a regular file or a new destination filename.');
+        const replacement = await dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'Replace Crew download destination',
+          message: `Replace ${path.basename(selected)} after the download is verified?`,
+          detail:
+            'The existing file remains in place until the complete downloaded file passes verification.',
+          buttons: ['Cancel', 'Replace file'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (replacement.response !== 1) return null;
+        overwrite = true;
+      }
+    }
+    if (event.sender.isDestroyed()) throw new Error('The file selection window closed.');
+    const settings = loadSettings();
+    const response = await fetch(`${baseUrl}/crew/files`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Secret-Key': getServerSecret(settings),
+        'X-User-Action': getUserActionKey(settings),
+      },
+      body: JSON.stringify({
+        direction: options.direction,
+        purpose,
+        path: selected,
+        overwrite,
+        connection_id: options.connectionId,
+        channel_id: options.channelId,
+        blob_id: options.blobId,
+        transfer_id: options.transferId,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok)
+      throw new Error(
+        'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
+      );
+    const result = await response.json();
+    if (typeof result.capability_id !== 'string' || typeof result.name !== 'string')
+      throw new Error('Invalid daemon file capability.');
+    return {
+      capability_id: result.capability_id,
+      name: result.name,
+      ...(typeof result.size === 'number' ? { size: result.size } : {}),
+    };
+  });
+
+  ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
+    if (typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId))
+      return { success: false, error: 'Invalid Crew connection ID.' };
     const owner = event.sender;
     const ownerWindow = BrowserWindow.fromWebContents(owner);
-    const daemon = ownerWindow && biorouterdClients.get(ownerWindow.id);
-    const baseUrl = daemon?.getConfig().baseUrl;
+    const baseUrl = ownerWindow && biorouterdClients.get(ownerWindow.id)?.getConfig().baseUrl;
     if (!baseUrl) return { success: false, error: 'The local daemon is not available.' };
+    const key = `${owner.id}:${connectionId}`;
+    const existing = crewAuthenticationSessions.get(key);
+    if (existing && terminalSessions.getOwned(existing.sessionId, owner.id))
+      return { success: true, sessionId: existing.sessionId, backend: 'pty', cwd: '' };
+    if (crewAuthenticationPending.has(key))
+      return { success: false, error: 'SSH authentication is already opening.' };
+    crewAuthenticationPending.add(key);
     try {
+      if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner())
+        throw new Error('Close an existing terminal before opening SSH authentication.');
       const settings = loadSettings();
-      const response = await fetch(
-        `${baseUrl}/crew/connections/${encodeURIComponent(connectionId)}/auth-plan`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Secret-Key': getServerSecret(settings),
-            'X-User-Action': getUserActionKey(settings),
-          },
-          body: '{}',
-          signal: AbortSignal.timeout(15000),
+      const sessionId = crypto.randomUUID();
+      let ended = false;
+      const terminal = await createCrewDaemonTerminal(
+        { baseUrl, secret: getServerSecret(settings), userAction: getUserActionKey(settings) },
+        connectionId,
+        (data) => {
+          if (!owner.isDestroyed()) owner.send('terminal:data', { sessionId, data });
+        },
+        (exitCode) => {
+          ended = true;
+          if (crewAuthenticationSessions.get(key)?.sessionId === sessionId)
+            crewAuthenticationSessions.delete(key);
+          terminalSessions.forget(sessionId)?.removeOwnerDestroyedListener();
+          if (!owner.isDestroyed()) owner.send('terminal:exit', { sessionId, exitCode });
         }
       );
-      const plan = await response.json();
-      if (!response.ok) throw new Error(plan.error || 'Could not prepare SSH authentication.');
-      if (
-        plan.program !== 'ssh' ||
-        plan.connection_id !== connectionId ||
-        !Array.isArray(plan.args) ||
-        plan.args.length > 64 ||
-        !plan.args.every(
-          (arg: unknown) => typeof arg === 'string' && arg.length < 4096 && !arg.includes('\0')
-        ) ||
-        !plan.args.includes('StrictHostKeyChecking=yes') ||
-        !plan.args.includes('-N')
-      ) {
-        throw new Error('The daemon returned an invalid SSH authentication plan.');
-      }
-      const authOwnerKey = `${owner.id}:${connectionId}`;
-      const planIdentity = JSON.stringify(plan.args);
-      const existingAuth = crewAuthenticationSessions.get(authOwnerKey);
-      if (existingAuth && terminalSessions.getOwned(existingAuth.sessionId, owner.id)) {
-        if (existingAuth.plan === planIdentity)
-          return {
-            success: true,
-            sessionId: existingAuth.sessionId,
-            backend: 'pty',
-            cwd: app.getPath('home'),
-          };
-        disposeTerminalSession(existingAuth.sessionId);
-      }
-      const pty = await loadNodePty();
-      if (!pty) throw new Error('Native SSH authentication requires the desktop terminal runtime.');
-      const concurrentAuth = crewAuthenticationSessions.get(authOwnerKey);
-      if (concurrentAuth && terminalSessions.getOwned(concurrentAuth.sessionId, owner.id)) {
-        if (concurrentAuth.plan === planIdentity)
-          return {
-            success: true,
-            sessionId: concurrentAuth.sessionId,
-            backend: 'pty',
-            cwd: app.getPath('home'),
-          };
-        disposeTerminalSession(concurrentAuth.sessionId);
-      }
-      if (owner.isDestroyed()) throw new Error('The authentication window closed.');
-      if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner()) {
-        throw new Error('Close an existing terminal before opening SSH authentication.');
+      if (owner.isDestroyed() || ended) {
+        terminal.dispose();
+        throw new Error('The authentication window or connection closed.');
       }
       registerTerminalOwnerTeardown(owner);
-      const sessionId = crypto.randomUUID();
-      const terminal = pty.spawn('ssh', plan.args, {
-        name: 'xterm-256color',
-        cols: 80,
-        rows: 12,
-        cwd: app.getPath('home'),
-        env: process.env.BIOROUTER_DEV_PROFILE_ROOT
-          ? ({
-              ...Object.fromEntries(
-                Object.entries(process.env).filter(
-                  ([key, value]) =>
-                    value !== undefined &&
-                    [
-                      'PATH',
-                      'LANG',
-                      'LC_ALL',
-                      'TERM',
-                      'SystemRoot',
-                      'WINDIR',
-                      'ComSpec',
-                      'PATHEXT',
-                    ].includes(key)
-                )
-              ),
-              HOME: app.getPath('home'),
-              USERPROFILE: app.getPath('home'),
-              TMPDIR: app.getPath('temp'),
-              TMP: app.getPath('temp'),
-              TEMP: app.getPath('temp'),
-            } as Record<string, string>)
-          : (process.env as Record<string, string>),
-      });
-      const handleDestroyed = () => disposeTerminalSession(sessionId);
-      owner.once('destroyed', handleDestroyed);
+      const destroyed = () => disposeTerminalSession(sessionId);
+      owner.once('destroyed', destroyed);
       terminalSessions.add(sessionId, {
         ownerId: owner.id,
         backend: 'pty',
-        cwd: app.getPath('home'),
-        write: (data) => terminal.write(data),
-        resize: (cols, rows) => terminal.resize(cols, rows),
+        cwd: '',
+        write: terminal.write,
+        resize: terminal.resize,
         dispose: () => {
-          if (crewAuthenticationSessions.get(authOwnerKey)?.sessionId === sessionId)
-            crewAuthenticationSessions.delete(authOwnerKey);
-          terminal.kill();
+          if (crewAuthenticationSessions.get(key)?.sessionId === sessionId)
+            crewAuthenticationSessions.delete(key);
+          terminal.dispose();
         },
-        removeOwnerDestroyedListener: () => owner.removeListener('destroyed', handleDestroyed),
+        removeOwnerDestroyedListener: () => owner.removeListener('destroyed', destroyed),
       });
-      crewAuthenticationSessions.set(authOwnerKey, { sessionId, plan: planIdentity });
-      terminal.onData((data) => {
-        if (!owner.isDestroyed()) owner.send('terminal:data', { sessionId, data });
-      });
-      terminal.onExit(({ exitCode, signal }) => {
-        if (crewAuthenticationSessions.get(authOwnerKey)?.sessionId === sessionId)
-          crewAuthenticationSessions.delete(authOwnerKey);
-        const registered = terminalSessions.forget(sessionId);
-        registered?.removeOwnerDestroyedListener();
-        if (!owner.isDestroyed()) owner.send('terminal:exit', { sessionId, exitCode, signal });
-      });
-      return { success: true, sessionId, backend: 'pty', cwd: app.getPath('home') };
+      crewAuthenticationSessions.set(key, { sessionId });
+      return { success: true, sessionId, backend: 'pty', cwd: '' };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'SSH authentication failed.',
       };
+    } finally {
+      crewAuthenticationPending.delete(key);
     }
   });
 

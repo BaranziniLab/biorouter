@@ -380,6 +380,40 @@ mod tests {
         );
     }
 
+    fn safe_validation_settings() -> Settings {
+        [
+            ("stricthostkeychecking", "yes"),
+            ("forwardagent", "no"),
+            ("forwardx11", "no"),
+            ("permitlocalcommand", "no"),
+            ("clearallforwardings", "yes"),
+            ("nohostauthenticationforlocalhost", "no"),
+            ("tunnel", "no"),
+            ("proxycommand", "none"),
+            ("gssapidelegatecredentials", "no"),
+            ("controlmaster", "no"),
+            ("controlpersist", "no"),
+            ("controlpath", "none"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect()
+    }
+
+    #[test]
+    fn validation_accepts_legacy_dump_without_optional_fork_field() {
+        let settings = safe_validation_settings();
+        validate(&settings, "legacy-gate", true).unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_reported_fork_after_authentication_yes() {
+        let mut settings = safe_validation_settings();
+        settings.insert("forkafterauthentication".into(), "yes".into());
+        let error = validate(&settings, "unsafe-gate", true).unwrap_err();
+        assert!(error.to_string().contains("ForkAfterAuthentication no"));
+    }
+
     #[tokio::test]
     async fn native_preflight_accepts_safe_two_hop_config() {
         let root = tempfile::tempdir().unwrap();

@@ -503,6 +503,21 @@ type ElectronAPI = {
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
+  crewCredentials: (
+    action: 'status' | 'init' | 'unlock' | 'lock'
+  ) => Promise<
+    | { backend: 'keyring' | 'encrypted_vault'; initialized: boolean; locked: boolean }
+    | { cancelled: true }
+  >;
+  crewSelectTransferFile: (options: {
+    direction: 'upload' | 'download';
+    purpose?: 'transfer' | 'cleanup';
+    suggestedName?: string;
+    connectionId: string;
+    channelId: string;
+    blobId?: string;
+    transferId?: string;
+  }) => Promise<{ capability_id: string; name: string; size?: number } | null>;
   createCrewAuthentication?: (connectionId: string) => Promise<TerminalCreateResult>;
   createTerminalSession: (options?: {
     workingDir?: string;
@@ -824,6 +839,8 @@ const electronAPI: ElectronAPI = {
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
+  crewCredentials: (action) => ipcRenderer.invoke('crew:credentials', action),
+  crewSelectTransferFile: (options) => ipcRenderer.invoke('crew:select-transfer-file', options),
   createCrewAuthentication: (connectionId: string) =>
     ipcRenderer.invoke('crew:authenticate', connectionId),
   createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>

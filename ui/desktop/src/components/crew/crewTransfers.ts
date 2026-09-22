@@ -1,113 +1,150 @@
-export interface PendingCrewTransfer {
-  connectionId: string;
-  channelId: string;
-  sha256: string;
+import { crewHttp } from './crewApi';
+
+export type TransferDirection = 'upload' | 'download';
+export interface CrewTransfer {
+  id: string;
+  request_id: string;
+  connection_id: string;
+  channel_id: string;
+  direction: TransferDirection;
+  name: string;
   size: number;
-  beginKey: string;
-  blobId?: string;
-  updatedAt: number;
+  sha256: string;
+  offset: number;
+  blob_id: string | null;
+  state: string;
+  error: string | null;
+  destination_identity?: string | null;
 }
-
-const KEY = 'biorouter:crew:pending-transfers:v1';
-const MAX_PENDING = 32;
-const CHANGE_EVENT = 'biorouter:crew-transfers-changed';
-
-export function onPendingTransfersChanged(callback: () => void): () => void {
-  window.addEventListener(CHANGE_EVENT, callback);
-  return () => window.removeEventListener(CHANGE_EVENT, callback);
+export interface FileSelectionRequest {
+  purpose?: 'transfer' | 'cleanup';
+  connection_id: string;
+  channel_id: string;
+  direction: TransferDirection;
+  blob_id?: string;
+  transfer_id?: string;
+  suggestedName?: string;
 }
-
-export function forgetAllPendingTransfers(): void {
-  window.localStorage.removeItem(KEY);
-  window.dispatchEvent(new Event(CHANGE_EVENT));
+interface FileCapability {
+  capability_id: string;
+  name: string;
+  size?: number | null;
 }
-
-export function readPendingTransfers(
+export async function chooseTransferFile(
+  request: FileSelectionRequest
+): Promise<FileCapability | null> {
+  const picker = window.electron.crewSelectTransferFile;
+  if (!picker)
+    throw new Error(
+      'This desktop build does not provide the secure Crew file picker. Update the desktop app before transferring local files.'
+    );
+  return picker({
+    purpose: request.purpose,
+    direction: request.direction,
+    connectionId: request.connection_id,
+    channelId: request.channel_id,
+    blobId: request.blob_id,
+    transferId: request.transfer_id,
+    suggestedName: request.suggestedName,
+  });
+}
+export async function listTransfers(
   connectionId: string,
-  channelId: string
-): PendingCrewTransfer[] {
-  return readAll().filter(
-    (item) => item.connectionId === connectionId && item.channelId === channelId
-  );
+  channelId?: string
+): Promise<CrewTransfer[]> {
+  const query = new URLSearchParams({ connection_id: connectionId });
+  if (channelId) query.set('channel_id', channelId);
+  return (await crewHttp<{ transfers: CrewTransfer[] }>(`/transfers?${query}`)).transfers;
 }
-
-function readAll(): PendingCrewTransfer[] {
-  const value: unknown = JSON.parse(window.localStorage.getItem(KEY) || '[]');
-  if (!Array.isArray(value) || value.length > MAX_PENDING)
-    throw new Error(
-      'The saved Crew transfer list is invalid. Remove pending transfers in Crew before starting another upload.'
-    );
-  const transfers: PendingCrewTransfer[] = [];
-  for (const [index, item] of value.entries()) {
-    const valid =
-      item !== null &&
-      typeof item === 'object' &&
-      typeof item.connectionId === 'string' &&
-      item.connectionId.length <= 128 &&
-      typeof item.channelId === 'string' &&
-      item.channelId.length <= 128 &&
-      typeof item.sha256 === 'string' &&
-      /^[a-f0-9]{64}$/.test(item.sha256) &&
-      Number.isSafeInteger(item.size) &&
-      item.size >= 0 &&
-      item.size <= 64 * 1024 * 1024 &&
-      typeof item.beginKey === 'string' &&
-      /^[a-zA-Z0-9-]{1,128}$/.test(item.beginKey) &&
-      (item.blobId === undefined ||
-        (typeof item.blobId === 'string' && item.blobId.length <= 128)) &&
-      Number.isSafeInteger(item.updatedAt);
-    if (
-      !valid ||
-      Object.keys(item).some(
-        (key) =>
-          ![
-            'connectionId',
-            'channelId',
-            'sha256',
-            'size',
-            'beginKey',
-            'blobId',
-            'updatedAt',
-          ].includes(key)
-      )
-    ) {
-      throw new Error(
-        `Saved Crew transfer ${index + 1} has an invalid metadata shape. Reset saved transfer records in this profile to continue.`
-      );
-    }
-    transfers.push(item as PendingCrewTransfer);
+export async function beginTransfer(request: FileSelectionRequest): Promise<CrewTransfer | null> {
+  const file = await chooseTransferFile(request);
+  if (!file) return null;
+  return crewHttp<CrewTransfer>('/transfers', 'POST', {
+    request_id: crypto.randomUUID(),
+    connection_id: request.connection_id,
+    channel_id: request.channel_id,
+    direction: request.direction,
+    file_capability: file.capability_id,
+    blob_id: request.blob_id,
+  });
+}
+export async function resumeTransfer(transfer: CrewTransfer): Promise<CrewTransfer | null> {
+  const file = await chooseTransferFile({
+    connection_id: transfer.connection_id,
+    channel_id: transfer.channel_id,
+    direction: transfer.direction,
+    transfer_id: transfer.id,
+    blob_id: transfer.blob_id ?? undefined,
+    suggestedName: transfer.name,
+  });
+  if (!file) return null;
+  return crewHttp<CrewTransfer>(`/transfers/${encodeURIComponent(transfer.id)}/resume`, 'POST', {
+    file_capability: file.capability_id,
+  });
+}
+export function pauseTransfer(id: string): Promise<CrewTransfer> {
+  return crewHttp(`/transfers/${encodeURIComponent(id)}/pause`, 'POST', {});
+}
+export async function forgetTransfer(id: string): Promise<unknown> {
+  const transfer = await crewHttp<CrewTransfer>(`/transfers/${encodeURIComponent(id)}`);
+  if (
+    transfer.direction === 'download' &&
+    transfer.state !== 'completed' &&
+    transfer.destination_identity
+  ) {
+    const file = await chooseTransferFile({
+      connection_id: transfer.connection_id,
+      channel_id: transfer.channel_id,
+      direction: 'download',
+      purpose: 'cleanup',
+      transfer_id: transfer.id,
+      blob_id: transfer.blob_id ?? undefined,
+      suggestedName: transfer.name,
+    });
+    if (!file) return null;
+    return crewHttp(`/transfers/${encodeURIComponent(id)}`, 'DELETE', {
+      file_capability: file.capability_id,
+    });
   }
-  return transfers;
+  return crewHttp(`/transfers/${encodeURIComponent(id)}`, 'DELETE');
 }
-
-export function savePendingTransfer(transfer: PendingCrewTransfer): void {
-  const entries = readAll().filter((item) => item.beginKey !== transfer.beginKey);
-  if (entries.length >= MAX_PENDING)
-    throw new Error(
-      '32 uploads are pending. Resume or forget a pending upload before starting another.'
-    );
-  entries.push(transfer);
-  window.localStorage.setItem(KEY, JSON.stringify(entries));
-  window.dispatchEvent(new Event(CHANGE_EVENT));
-}
-
-export function removePendingTransfer(beginKey: string): void {
-  window.localStorage.setItem(
-    KEY,
-    JSON.stringify(readAll().filter((item) => item.beginKey !== beginKey))
-  );
-  window.dispatchEvent(new Event(CHANGE_EVENT));
-}
-
-export function clearPublishedTransfers(connectionId: string, blobIds: string[]): void {
-  window.localStorage.setItem(
-    KEY,
-    JSON.stringify(
-      readAll().filter(
-        (item) =>
-          item.connectionId !== connectionId || !item.blobId || !blobIds.includes(item.blobId)
-      )
+export async function clearPublishedTransfers(
+  connectionId: string,
+  blobIds: string[]
+): Promise<void> {
+  const transfers = await listTransfers(connectionId);
+  for (const transfer of transfers) {
+    if (
+      transfer.direction === 'upload' &&
+      transfer.state === 'completed' &&
+      transfer.blob_id &&
+      blobIds.includes(transfer.blob_id)
     )
-  );
-  window.dispatchEvent(new Event(CHANGE_EVENT));
+      await forgetTransfer(transfer.id);
+  }
+}
+
+export async function previewAttachment(
+  connectionId: string,
+  channelId: string,
+  blobId: string
+): Promise<Blob> {
+  const { client } = await import('../../api/client.gen');
+  const { userActionHeaders } = await import('../../utils/userAction');
+  const config = client.getConfig();
+  const headers = new Headers(config.headers as HeadersInit);
+  headers.set('X-Secret-Key', await window.electron.getSecretKey());
+  Object.entries(await userActionHeaders()).forEach(([key, value]) => headers.set(key, value));
+  headers.set('Content-Type', 'application/json');
+  const response = await fetch(`${config.baseUrl ?? ''}/crew/transfers/preview`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ connection_id: connectionId, channel_id: channelId, blob_id: blobId }),
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error || 'Image preview was refused');
+  }
+  return response.blob();
 }

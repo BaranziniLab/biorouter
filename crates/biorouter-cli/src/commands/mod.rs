@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod bench;
 pub mod configure;
+pub mod crew;
 pub mod doctor;
 pub mod exe_path;
 pub mod extension;
