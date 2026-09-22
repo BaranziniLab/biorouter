@@ -5,6 +5,10 @@ import type { DroppedFile } from '../hooks/useFileDrop';
  * images and dropped files — kept for the TAB it was typed into (or for Home),
  * so it outlives the composer that shows it.
  *
+ * Existing chats use a separate tab+session namespace in this same renderer-memory
+ * store. Their drafts survive tab switches but are released when the tab closes
+ * or binds to a different session; they never enter sessionless-tab adoption.
+ *
  * A fresh tab's composer is rebuilt far more often than a person would guess,
  * and every rebuild used to start empty:
  *
@@ -30,7 +34,7 @@ import type { DroppedFile } from '../hooks/useFileDrop';
  * the right one.
  *
  * SO THE IDENTITY IS THE TAB, and the channel is addressed. A key is made only
- * by `composerDraftKeyForTab` / `HOME_COMPOSER_DRAFT_KEY`, and nothing reaches a
+ * by `composerDraftKeyForTab`, `existingChatComposerDraftKey`, or Home's key, and nothing reaches a
  * composer except under the key it was mounted with.
  *
  * THE STORE IS WRITTEN ON EVERY CHANGE, NOT ON THE WAY OUT. A replacement
@@ -70,8 +74,8 @@ import type { DroppedFile } from '../hooks/useFileDrop';
  * tab, so its draft follows it; a draft is only ever handed to a composer
  * mounted under its own key.
  *
- * WHY IT CANNOT GROW: at most one entry per tab that exists and has no chat,
- * plus Home's, each one message's text, at most the composer's per-message
+ * WHY IT CANNOT GROW: at most one entry per sessionless tab or existing tab/session
+ * pair, plus Home's, each one message's text, at most the composer's per-message
  * image cap, and its dropped files. An empty draft is deleted, not stored. The
  * stamps and send marks are one number per such key.
  */
@@ -93,6 +97,11 @@ export type ComposerDraft = {
 export const EMPTY_COMPOSER_DRAFT: ComposerDraft = { text: '', images: [], files: [] };
 
 const TAB_KEY_PREFIX = 'tab:';
+const EXISTING_CHAT_KEY_PREFIX = 'existing-chat:';
+
+export function existingChatComposerDraftKey(tabId: string, sessionId: string): string {
+  return `${EXISTING_CHAT_KEY_PREFIX}${JSON.stringify([tabId, sessionId])}`;
+}
 
 /** The key a chat TAB's composer is mounted with. The only tab constructor. */
 export function composerDraftKeyForTab(tabId: string): string {
@@ -169,7 +178,7 @@ const drafts = new Map<string, ComposerDraft>();
 const versions = new Map<string, number>();
 let lastVersion = 0;
 /** Keys with a message handed to a send that has not answered yet, and how many. */
-const sending = new Map<string, number>();
+const sending = new Map<string, Set<symbol>>();
 const giveBackListeners = new Map<string, Set<(returned: ComposerDraft) => void>>();
 
 function stamp(key: string): number {
@@ -196,7 +205,7 @@ export function hasComposerDraft(key: string): boolean {
 }
 
 export function isComposerSending(key: string): boolean {
-  return (sending.get(key) ?? 0) > 0;
+  return (sending.get(key)?.size ?? 0) > 0;
 }
 
 /** A draft, or a message still in flight: either way, not a blank tab. */
@@ -253,19 +262,24 @@ export type ComposerSend = {
  */
 export function beginComposerSend(key: string): ComposerSend {
   saveComposerDraft(key, EMPTY_COMPOSER_DRAFT);
-  sending.set(key, (sending.get(key) ?? 0) + 1);
+  const token = Symbol();
+  const tokens = sending.get(key) ?? new Set<symbol>();
+  tokens.add(token);
+  sending.set(key, tokens);
   let open = true;
   const settle = () => {
     if (!open) return;
     open = false;
-    const left = (sending.get(key) ?? 0) - 1;
-    if (left > 0) sending.set(key, left);
-    else sending.delete(key);
+    const current = sending.get(key);
+    if (!current?.delete(token)) return;
+    if (current.size === 0) sending.delete(key);
   };
   return {
     settle,
     giveBack(returned) {
-      giveBackToComposer(key, returned);
+      if (!open) return;
+      if (sending.get(key)?.has(token)) giveBackToComposer(key, returned);
+      else for (const image of returned.images) window.electron?.deleteTempFile(image.filePath);
       settle();
     },
   };
@@ -299,7 +313,7 @@ export function unsentComposerTabs(): { drafted: string[]; sending: string[] } {
     drafted: tabIdsOf(
       [...drafts].filter(([, draft]) => !isEmptyComposerDraft(draft)).map(([key]) => key)
     ),
-    sending: tabIdsOf([...sending].filter(([, count]) => count > 0).map(([key]) => key)),
+    sending: tabIdsOf([...sending].filter(([, tokens]) => tokens.size > 0).map(([key]) => key)),
   };
 }
 
@@ -312,9 +326,23 @@ export function unsentComposerTabs(): { drafted: string[]; sending: string[] } {
  */
 export function retainTabComposerDrafts(sessionlessTabIds: Iterable<string>): void {
   const live = new Set([...sessionlessTabIds].map(composerDraftKeyForTab));
+  retainDraftKeys(TAB_KEY_PREFIX, live);
+}
+
+/** Existing chats keep drafts per tab; rebinding a tab must never carry its old chat's draft. */
+export function retainExistingChatComposerDrafts(
+  tabs: Iterable<{ tabId: string; sessionId: string }>
+): void {
+  retainDraftKeys(
+    EXISTING_CHAT_KEY_PREFIX,
+    new Set([...tabs].map((tab) => existingChatComposerDraftKey(tab.tabId, tab.sessionId)))
+  );
+}
+
+function retainDraftKeys(prefix: string, live: ReadonlySet<string>): void {
   const keys = new Set([...drafts.keys(), ...versions.keys(), ...sending.keys()]);
   for (const key of keys) {
-    if (!key.startsWith(TAB_KEY_PREFIX) || live.has(key)) continue;
+    if (!key.startsWith(prefix) || live.has(key)) continue;
     const draft = drafts.get(key);
     drafts.delete(key);
     versions.delete(key);

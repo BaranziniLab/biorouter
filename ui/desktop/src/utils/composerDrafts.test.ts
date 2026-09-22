@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   EMPTY_COMPOSER_DRAFT,
+  existingChatComposerDraftKey,
+  retainExistingChatComposerDrafts,
   HOME_COMPOSER_DRAFT_KEY,
   beginComposerSend,
   composerDraftVersion,
@@ -209,6 +211,53 @@ describe('beginComposerSend — a message in flight (D4)', () => {
     retainTabComposerDrafts([]);
 
     expect(composerDraftVersion(key)).toBe(0);
+    expect(isComposerSending(key)).toBe(false);
+  });
+});
+
+describe('existing-chat draft lifetime', () => {
+  it('retains only open tab/session pairs and leaves sessionless ownership separate', () => {
+    const key = existingChatComposerDraftKey('tab-a', 'session-a');
+    const newChatKey = composerDraftKeyForTab('new-tab');
+    saveComposerDraft(key, {
+      text: 'quote and draft',
+      images: [{ id: 'image', filePath: '/tmp/owned-quote.png', dataUrl: '' }],
+      files: [],
+    });
+    saveComposerDraft(newChatKey, { text: 'new chat', images: [], files: [] });
+    retainTabComposerDrafts(['new-tab']);
+    retainExistingChatComposerDrafts([{ tabId: 'tab-a', sessionId: 'session-a' }]);
+    expect(readComposerDraft(key)?.text).toBe('quote and draft');
+    expect(deleteTempFile).not.toHaveBeenCalled();
+    expect(unsentComposerTabs().drafted).toEqual(['new-tab']);
+    retainExistingChatComposerDrafts([{ tabId: 'tab-a', sessionId: 'session-b' }]);
+    expect(readComposerDraft(key)).toBeUndefined();
+    expect(deleteTempFile).toHaveBeenCalledWith('/tmp/owned-quote.png');
+    expect(readComposerDraft(newChatKey)?.text).toBe('new chat');
+  });
+});
+
+describe('send ownership after an existing tab disappears', () => {
+  it('discards a late failed send after close or rebinding instead of reviving an orphan', () => {
+    const key = existingChatComposerDraftKey('tab', 'original');
+    const send = beginComposerSend(key);
+    retainExistingChatComposerDrafts([{ tabId: 'tab', sessionId: 'replacement' }]);
+    send.giveBack(draft('late quote', { images: [image(4)] }));
+    expect(readComposerDraft(key)).toBeUndefined();
+    expect(isComposerSending(key)).toBe(false);
+    expect(deleteTempFile).toHaveBeenCalledWith(image(4).filePath);
+  });
+  it('retains a failed send across ordinary tab switching and does not settle a newer owner', () => {
+    const key = existingChatComposerDraftKey('tab', 'same-session');
+    const gone = beginComposerSend(key);
+    retainExistingChatComposerDrafts([]);
+    const current = beginComposerSend(key);
+    gone.giveBack(draft('old owner', { images: [image(5)] }));
+    expect(isComposerSending(key)).toBe(true);
+    expect(readComposerDraft(key)).toBeUndefined();
+    retainExistingChatComposerDrafts([{ tabId: 'tab', sessionId: 'same-session' }]);
+    current.giveBack(draft('current question'));
+    expect(readComposerDraft(key)?.text).toBe('current question');
     expect(isComposerSending(key)).toBe(false);
   });
 });

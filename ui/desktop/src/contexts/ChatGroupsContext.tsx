@@ -63,6 +63,7 @@ import {
   composerDraftKeyForTab,
   holdsUnsentMessage,
   retainTabComposerDrafts,
+  retainExistingChatComposerDrafts,
   unsentComposerTabs,
 } from '../utils/composerDrafts';
 import { retainComposerQueues } from '../utils/composerQueues';
@@ -178,16 +179,13 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     saveChatGroups(state, windowIdRef.current);
   }, [state]);
 
-  // An unsent new chat lives as long as its tab exists AND has no chat. Closing
-  // the tab, or its message starting the chat it binds to, releases the draft
-  // (and the temp images it owned). Runs after every commit's unmount cleanups,
-  // so a composer closing with its tab has already saved what it held. This is
-  // the whole of `utils/composerDrafts.ts`'s bound: nothing else adds a tab key.
+  // Run after unmount cleanups: closing composers save before owner cleanup
+  // removes their drafts and staged images.
   useEffect(() => {
-    retainTabComposerDrafts(
-      leafGroupIds(state.layout).flatMap((id) =>
-        state.groups[id].tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId)
-      )
+    const tabs = leafGroupIds(state.layout).flatMap((id) => state.groups[id].tabs);
+    retainTabComposerDrafts(tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId));
+    retainExistingChatComposerDrafts(
+      tabs.flatMap((tab) => (tab.sessionId ? [{ tabId: tab.tabId, sessionId: tab.sessionId }] : []))
     );
   }, [state]);
 

@@ -156,6 +156,7 @@ instructions: |
   - Change an already-open report and app; verify same-tab updates and preserved user edits
   - Check absolute and later shorthand report links against the actual session directory
   - In a disposable chat, select response text and choose Ask about it or Quote it; verify a removable source-labelled quotation appears without sending and preserves the draft and resource chips
+  - Switch away from the existing chat tab and back; verify the draft, quote and resource chips survive within the app session, then remove the quote and verify removal survives another switch
   - Repeat with Word, Markdown and text previews, and the quote button beside preview capture; preserve exact newlines and punctuation
   - Verify quoted command-like source text (/ext:developer, /skill(example), kb_id:fixture) never activates resources
   - In a disposable Recents row, verify Copy conversation ID against the exact fixture ID; cancel permanent deletion once, then confirm deletion and verify history and open tabs update
