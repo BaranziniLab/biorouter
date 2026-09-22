@@ -105,7 +105,7 @@ describe('the shared Select option row geometry', () => {
   });
 
   it('keeps the 32px menu rung, as a floor', () => {
-    expect(optionBaseClasses().split(/\s+/)).toContain('min-h-8');
+    expect(optionBaseClasses().split(/\s+/)).toContain('min-h-control-md');
   });
 
   it('pins no fixed height on a row that can wrap to two lines', () => {

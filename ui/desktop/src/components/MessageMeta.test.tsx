@@ -12,7 +12,7 @@ describe('MessageMeta', () => {
     expect(screen.getByText('3:14 PM')).toHaveClass('text-supporting', 'text-text-muted');
   });
 
-  it('keeps actions visible beside the timestamp instead of swapping on hover', () => {
+  it('keeps timestamp and actions together in the reserved footer', () => {
     render(
       <MessageMeta timestamp="3:14 PM">
         <MessageMetaAction icon={<svg />}>Copy</MessageMetaAction>
@@ -20,10 +20,6 @@ describe('MessageMeta', () => {
     );
 
     const action = screen.getByRole('button', { name: 'Copy' });
-    // The three hand-copied meta rows each hid their actions behind
-    // `opacity-0 group-hover:opacity-100` and slid the timestamp out of the way
-    // with `-translate-y-4`. Copy and Diverge were undiscoverable, and the two
-    // could never be read at once. Neither class may come back.
     expect(action.className).not.toMatch(/opacity-0/);
     expect(action.className).not.toMatch(/translate-y/);
     expect(screen.getByText('3:14 PM')).toBeInTheDocument();

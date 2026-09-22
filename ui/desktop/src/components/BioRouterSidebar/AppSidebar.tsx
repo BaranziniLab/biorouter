@@ -286,7 +286,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           // text edge moves, by 24px. Shrinking it would say it is a lesser kind
           // of destination, which it is not.
           className={cn(
-            'relative h-8 w-full justify-start rounded-lg py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar',
+            'relative h-control-md w-full justify-start rounded-lg py-0 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar',
             options?.indented ? 'pl-9 pr-3' : 'px-3'
           )}
         >
@@ -398,7 +398,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                     aria-expanded={showComponentChildren}
                     aria-controls="sidebar-components-group"
                     onClick={toggleComponents}
-                    className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 hover:bg-sidebar-hover"
+                    className="relative h-control-md w-full justify-start rounded-lg px-3 py-0 text-sm transition-colors duration-150 hover:bg-sidebar-hover"
                   >
                     <ChevronDown
                       aria-hidden="true"
@@ -412,7 +412,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 </SidebarMenuItem>
 
                 {showComponentChildren && (
-                  <div id="sidebar-components-group" data-testid="sidebar-components-group">
+                  <div
+                    id="sidebar-components-group"
+                    data-testid="sidebar-components-group"
+                    className="flex flex-col gap-0.5"
+                  >
                     {componentItems.map((entry) => renderMenuItem(entry, { indented: true }))}
                   </div>
                 )}
@@ -455,7 +459,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               onClick={() => handleNavigation(settingsItem.path)}
               isActive={isActivePath(settingsItem.path)}
               tooltip={settingsItem.tooltip}
-              className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+              className="relative h-control-md w-full justify-start rounded-lg px-3 py-0 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
             >
               <Settings className="h-4 w-4" />
               <span>{settingsItem.label}</span>

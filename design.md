@@ -441,7 +441,7 @@ Arial is a defensible choice for a tool that must render identically on a lab Wi
 
 #### Canonical type scale
 
-The values below are the Small baseline. Settings → App → Appearance offers Small (1×), Standard (the default, 1.07×), and Large (1.15×). Scale typography and absolute line heights together, including code and terminal text; keep layout dimensions and window zoom independent. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
+The values below are the Small baseline. Settings → App → Appearance offers Small (1×), Standard (the default, 1.07×), and Large (1.15×). Scale typography and absolute line heights together, including code and terminal text. Padding, gaps, positive margins, and shared control/row heights follow the same preference so larger text has room; pane widths, viewport geometry, and window zoom remain independent. Relative em spacing already follows its text and must not scale twice. Sidebar navigation and recent-conversation rows share the same scalable 32px baseline height and 2px row gap; Components children keep their indentation within that rhythm. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
 
 | Role | Size / line-height | Weight | Tracking |
 |---|---|---|---|
@@ -1135,6 +1135,8 @@ Assistant prose is the page. Wrapping it in a bubble would halve the effective m
 Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
 
 An empty chat's welcome sentence belongs to its tab. Select and animate it once, preserve it through tab switching, split/move/merge layouts and Settings visits, and start a fresh lifetime in a new tab or renderer. Keep the selected tab's complete frame and close control visible; use subtle neutral tab boundaries and mark the active tab with a bold label and thin bottom accent, without an accent border or surrounding shadow.
+
+Message timestamps and actions sit in a reserved footer with an 8px baseline top gap that follows the size preference. Reveal the footer when its own message is hovered or contains keyboard focus; keep it hidden at rest without shifting the conversation. On touch devices without hover, keep actions reachable. Allow wrapping at narrow widths and larger sizes.
 
 Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on completion.
 

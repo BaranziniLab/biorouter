@@ -167,7 +167,7 @@ export default function BioRouterMessage({
   }, [messages, messageIndex, toolRequests]);
 
   return (
-    <div className="biorouter-message flex w-full justify-start min-w-0">
+    <div className="biorouter-message br-message-meta-scope flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
         {/* Chain of thought is a disclosure, not a card. It used to be a native
             `<details>` on a filled, bordered 4px box with the browser's own

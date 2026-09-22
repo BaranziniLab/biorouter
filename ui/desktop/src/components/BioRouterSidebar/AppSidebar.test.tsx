@@ -100,7 +100,7 @@ describe('AppSidebar chat navigation', () => {
     const primaryMenu = homeButton.closest('[data-sidebar="menu"]');
 
     expect(newSessionButton).toHaveTextContent('New chat');
-    expect(newSessionButton).toHaveClass('h-8', 'w-full', 'px-3', 'py-2', 'text-sm');
+    expect(newSessionButton).toHaveClass('h-control-md', 'w-full', 'px-3', 'py-0', 'text-sm');
     expect(newSessionButton).not.toHaveClass(
       'h-9',
       'border',
@@ -150,7 +150,7 @@ describe('AppSidebar chat navigation', () => {
     expect(homeButton.compareDocumentPosition(newSessionButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
-    expect(homeButton).toHaveClass('h-8', 'px-3', 'py-2', 'text-sm');
+    expect(homeButton).toHaveClass('h-control-md', 'px-3', 'py-0', 'text-sm');
     // 2px between rail rows, not the flush `gap-0` this asserted before. At zero
     // the rows' rounded washes touch, so a hover bleeds into its neighbours and
     // the destinations read as one block of colour. 2px is the gap the app's own
@@ -159,7 +159,7 @@ describe('AppSidebar chat navigation', () => {
     expect(primaryMenu).toContainElement(newSessionButton);
     expect(homeButton).not.toHaveClass('text-text-muted');
     expect(footer).toContainElement(settingsButton);
-    expect(settingsButton).toHaveClass('h-8', 'w-full', 'px-3', 'py-2', 'text-sm');
+    expect(settingsButton).toHaveClass('h-control-md', 'w-full', 'px-3', 'py-0', 'text-sm');
     expect(settingsButton).not.toHaveClass('text-text-muted');
     expect(screen.getByTestId('sidebar-biorouter-mark')).toBeInTheDocument();
     // §4.1.4 — the UPPER rule is gone. The Components row and the Recents header
@@ -239,9 +239,15 @@ describe('AppSidebar — the Components disclosure', () => {
 
     const workflows = screen.getByTestId('sidebar-workflows-button');
     expect(screen.getByTestId('sidebar-components-group')).toContainElement(workflows);
+    expect(screen.getByTestId('sidebar-components-group')).toHaveClass(
+      'flex',
+      'flex-col',
+      'gap-0.5'
+    );
+    expect(workflows).toHaveClass('py-0');
     // Hierarchy by INDENT, never by size (§4.1.3): the text edge moves 24px, the
     // row height and type do not move at all.
-    expect(workflows).toHaveClass('h-8', 'pl-9', 'text-sm');
+    expect(workflows).toHaveClass('h-control-md', 'pl-9', 'text-sm');
     expect(workflows).not.toHaveClass('h-7', 'text-xs');
     // The parent rows keep the unindented edge, so the indent reads as a step.
     expect(screen.getByTestId('sidebar-home-button')).toHaveClass('px-3');
