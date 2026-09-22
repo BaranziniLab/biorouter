@@ -5515,7 +5515,11 @@ mod tests {
         let target = resolve_bundled_extension("Biorouter Copilot").unwrap();
         let entry = custom("Biorouter Copilot");
         assert_eq!(
-            exact_custom_reference_key("Biorouter Copilot", Some(&target), &[entry.clone()]),
+            exact_custom_reference_key(
+                "Biorouter Copilot",
+                Some(&target),
+                std::slice::from_ref(&entry)
+            ),
             Some(entry.key())
         );
         assert_eq!(
