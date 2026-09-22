@@ -102,7 +102,7 @@ function defaultHttp() {
   });
   mocks.crewRequest.mockImplementation(async (_id: string, method: string) => {
     if (method === 'workspace.snapshot') return snapshot;
-    if (method === 'messages.history') return { messages: [], cursor: 0 };
+    if (method === 'messages.history') return { messages: [], cursor: null };
     return {};
   });
   mocks.getProviders.mockResolvedValue([{ name: 'fixture-provider', is_configured: true }]);
@@ -149,6 +149,60 @@ describe('CrewView action and uncertain-start regressions', () => {
     expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
   });
 
+  it('preserves a draft when an older history cursor becomes stale', async () => {
+    const historyRequests: Record<string, unknown>[] = [];
+    const olderMessages = Array.from({ length: 200 }, (_, index) => ({
+      id: `message-${index}`,
+      sequence: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      channel_id: channel.id,
+      actor_id: actor.id,
+      body: `message ${index}`,
+      created_at: 1_700_000_000 + index,
+      restricted: false,
+      source_channels: [channel.id],
+      attachments: [],
+    }));
+    mocks.crewRequest.mockImplementation(async (_id: string, method: string, params = {}) => {
+      if (method === 'workspace.snapshot') return snapshot;
+      if (method === 'messages.history') {
+        historyRequests.push(params);
+        if ('before' in params) throw new Error('stale_cursor');
+        return {
+          messages: olderMessages,
+          cursor: olderMessages[olderMessages.length - 1]?.sequence ?? null,
+        };
+      }
+      return {};
+    });
+    renderCrew();
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'keep this unsent draft' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Older messages' }));
+    await waitFor(() =>
+      expect(historyRequests.some((params) => 'before' in params)).toBe(true)
+    );
+    await waitFor(() => expect(screen.queryByText('Viewing earlier messages')).toBeNull());
+    expect(screen.getByLabelText('Message #general')).toHaveValue('keep this unsent draft');
+  });
+
+  it('clears the composer after the selected channel is revoked', async () => {
+    let activeSnapshot = snapshot;
+    mocks.crewRequest.mockImplementation(async (_id: string, method: string) => {
+      if (method === 'workspace.snapshot') return activeSnapshot;
+      if (method === 'messages.history') return { messages: [], cursor: null };
+      return {};
+    });
+    renderCrew();
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'discard after revocation' } });
+    activeSnapshot = { ...snapshot, channels: [], teams: [] };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh channel' }));
+    await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
+    activeSnapshot = snapshot;
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
+  });
+
   it('retains the action error across failed, recovered, and successful background polls', async () => {
     let pollMode: 'success' | 'failure' = 'success';
     renderCrew();
@@ -166,7 +220,7 @@ describe('CrewView action and uncertain-start regressions', () => {
         if (pollMode === 'failure') throw new Error('poll failed');
         return snapshot;
       }
-      if (method === 'messages.history') return { messages: [], cursor: 0 };
+      if (method === 'messages.history') return { messages: [], cursor: null };
       return {};
     });
     fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));

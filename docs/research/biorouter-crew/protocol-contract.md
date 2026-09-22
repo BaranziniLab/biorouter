@@ -16,7 +16,7 @@ Each frame is a newline-terminated JSON object, maximum 1 MiB:
 {"version":1,"id":"client-request-id","method":"messages.history","params":{"channel_id":"uuid"},"auth":{"device_id":"sha256-hex","nonce":"challenge","signature":"ed25519-signature-hex"}}
 ```
 
-Responses are `{id,result}` or `{id,error:{code,message}}`. Unknown operations return `unsupported`; authorization, privacy and expiry failures are explicit errors, never empty-history success. Parameter strings are bounded, IDs opaque, binary file content hexadecimal. At most 64 live connections are admitted, each with bounded framing, write timeout and a five-minute idle timeout. Reconnect performs fresh identity proof and challenge signing.
+Responses are `{id,result}` or `{id,error:{code,message}}`. Unknown operations return `unsupported`; authorization, privacy and expiry failures are explicit errors, never empty-history success. Parameter strings are bounded, IDs opaque, binary file content hexadecimal. At most 256 live connections, with at most eight per kernel UID, are admitted. Each has bounded framing, a write timeout and a five-minute idle timeout. Reconnect performs fresh identity proof and challenge signing.
 
 `hello {challenge_nonce}` returns protocol, workspace_id, host_uid, mode, policy_epoch, workspace_public_key (raw Ed25519 public key hex), workspace_key_fingerprint (SHA256 of raw public key), node_id (stable machine identity digest), echoed challenge_nonce, signature, capabilities and unsupported facilities. Verify signature over UTF-8 JSON serialization of `[workspace_id,host_uid,challenge_nonce,workspace_public_key,node_id]`. Supply a fresh unpredictable nonce. Changed keys or workspace/host identities require explicit trusted recovery; do not silently repin.
 
@@ -26,12 +26,12 @@ Responses are `{id,result}` or `{id,error:{code,message}}`. Unknown operations r
 
 ## Human collaboration
 
-Every mutation below requires `idempotency_key` in params, signed together with the operation. Keys are scoped to human principal or worker run. Repeating identical bytes returns the same result; reusing a key for different bytes fails `conflict`. Read operations do not require keys.
+Every mutation below requires `idempotency_key` in params, signed together with the operation. Keys are scoped to human principal or worker run. Repeating identical bytes returns the same authorized operation result; reusing a key for different bytes fails `conflict`. Cached results are rechecked and projected through current visibility rules before return. Read operations do not require keys.
 
 | Method | Parameters besides mutation key | Result |
 |---|---|---|
 | `workspace.snapshot` | none | `{workspace,actor,principals,teams,channels,invitations,runs}` filtered to actor-visible objects |
-| `channel.read` | channel_id, sequence | Durable monotonic read position; snapshot includes authorized `read_positions` and `unread` maps |
+| `channel.read` | channel_id, sequence (opaque visible message token) | Durable monotonic read position; snapshot includes authorized `read_positions` and `unread` maps |
 | `profile.update` | nickname, optional avatar | Principal; avatar is at most 12 printable Unicode characters, rendered only as text |
 | `team.create` | name | `{team,channel}` with automatic general channel |
 | `channel.create` | team_id, name, classification | Channel; classification `public_safe` or `restricted`, default restricted |
@@ -46,7 +46,7 @@ Every mutation below requires `idempotency_key` in params, signed together with 
 | `messages.search` | channel_id, query, optional after, before, limit, latest | same, authorized literal case-insensitive text search |
 | `policy.set` | mode (`private`/`public`) | Workspace; host-device only, increments policy epoch |
 
-Public data types live in `src/lib.rs`. Principal includes id, verified uid, canonical username, nickname, textual avatar, active. Channel includes id, team_id, name, created_by, owner_id, members, archived, classification, pending_owner. Message includes id, sequence, channel_id, actor_id, optional run_id, body, created_at (Unix seconds), restricted, source_channels, attachments, optional status. A team's general room adds accepted team members automatically. Restricted channels require their current owner's invitation. Transfers remove the previous owner's implicit membership (a separate successor invitation is needed to rejoin) and invalidate old-owner invitations and all worker grants through the global policy epoch. Joining a channel never grants access to another channel's derived content.
+Persisted data types live in `src/lib.rs`; wire projections replace internal message sequence counters with opaque tokens. Principal includes id, verified uid, canonical username, nickname, textual avatar, active. Channel includes id, team_id, name, created_by, owner_id, members, archived, classification, pending_owner. Message includes id, sequence, channel_id, actor_id, optional run_id, body, created_at (Unix seconds), restricted, source_channels, attachments, optional status. A team's general room adds accepted team members automatically. Restricted channels require their current owner's invitation. Transfers remove the previous owner's implicit membership (a separate successor invitation is needed to rejoin) and invalidate old-owner invitations and all worker grants through the global policy epoch. Joining a channel never grants access to another channel's derived content.
 
 ## Attachments
 
@@ -80,7 +80,7 @@ The journal refuses a delta record or logical state beyond 16 MiB, and total ret
 
 Worker attachment uploads bind `Blob.run_id` to the admitted run, fix the destination to that run's channel, and inherit every selected source channel and restriction. Chunk and finish refuse human uploads and other runs' uploads, including those of the same owner. Remote-derived uploads and projections remain restricted even in a Public workspace. Exact retries of an already committed terminal projection can recover their acknowledgment after terminal revocation, but only while UID, active identity, expiry, policy epoch and all memberships still match; no new operation is authorized.
 
-`messages.history` and `messages.search` accept `latest:true` to return the newest authorized window in ascending order. The default remains forward cursor paging. `channel.read` commits a monotonically increasing last-read sequence; snapshot exposes per-channel read positions and counts of authorized newer messages from other principals. There is no push/OS notification facility yet.
+`messages.history` and `messages.search` accept `latest:true` to return the newest authorized window in ascending order. The default remains forward cursor paging. `channel.read` resolves an authorized opaque message token to a monotonically increasing internal read watermark. Snapshot exposes a visible message token or `null` for each read position, plus counts of authorized newer messages from other principals. There is no push/OS notification facility yet.
 
 
 ### Large dataset references
@@ -108,7 +108,11 @@ Worker attachment uploads bind `Blob.run_id` to the admitted run, fix the destin
 
 Every public-worker operation now rechecks whether selected channels acquired restricted messages after admission. That transition denies the next dispatch/read/publication rather than silently supplying a partial context. Worker contribution labels derive from the admitted run's personal mode, not a missing or forged per-tool mode field; remote-derived output remains restricted.
 
-History/search `before` is an optional exclusive upper sequence bound, combined with exclusive `after`. `latest:true` selects the newest authorized page within those bounds; each page rechecks current membership and provenance.
+History/search `after` and `before` are optional exclusive bounds containing the random UUID of a currently visible message in the requested channel. The wire `Message.sequence` equals that message UUID; it is not a number or an offset. Numeric anchors are rejected explicitly. Missing, wrong-channel and no-longer-visible string anchors return the same `stale_cursor` refusal; refresh authorized history instead of guessing another position. Absent or null bounds select an open end. `latest:true` selects the newest authorized page within those bounds; each page rechecks current membership and provenance.
+
+The returned `cursor` is the last visible message UUID, or the validated `after` token when the page is empty, or `null` if neither exists. Message post/projection acknowledgments, cached replies, history, search and context manifests all use this projection. Snapshot/read acknowledgments expose the latest currently visible message at or before the internal read watermark, or `null` if none remains visible. Revoking access to a source channel cannot expose that source's former read anchor. Internal journal ordering and durable read watermarks stay numeric and never become public room cursors; existing journals retain their format and message UUIDs across restart.
+
+The workspace policy epoch is a separate workspace-wide authority version. Membership and policy changes invalidate grants globally; it is not a room activity or message counter.
 
 
 ### Capacity and preservation limits

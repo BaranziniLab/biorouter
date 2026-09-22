@@ -700,7 +700,8 @@ impl Broker {
         ) {
             return self.read(&actor, req);
         }
-        self.apply_mutation(&actor, req)
+        let result = self.apply_mutation(&actor, req)?;
+        self.project_mutation_result(&actor, req, result)
     }
     fn authenticate_actor(
         &self,
@@ -799,7 +800,13 @@ impl Broker {
                             .is_some_and(|s| matches!(s, "completed" | "failed" | "cancelled")),
                         "grant_expired: run revoked"
                     );
-                    return Ok(Some(cached.result.clone()));
+                    let actor = Actor {
+                        id: run.owner_id.clone(),
+                        run: Some(live),
+                    };
+                    return self
+                        .project_mutation_result(&actor, req, cached.result.clone())
+                        .map(Some);
                 }
             }
         }
@@ -1097,6 +1104,88 @@ impl Broker {
             _ => bail!("unsupported: method unavailable"),
         }
     }
+    fn message_wire(message: &Message) -> Value {
+        let mut value = json!(message);
+        value["sequence"] = json!(message.id);
+        value
+    }
+    fn read_position_wire(&self, s: &State, actor: &Actor, channel: &str, sequence: u64) -> Value {
+        json!(s
+            .messages
+            .iter()
+            .rev()
+            .find(|message| {
+                message.channel_id == channel
+                    && message.sequence <= sequence
+                    && self.visible(s, actor, message)
+            })
+            .map(|message| &message.id))
+    }
+    fn resolve_cursor(
+        &self,
+        s: &State,
+        actor: &Actor,
+        channel: &str,
+        value: Option<&Value>,
+        default: u64,
+    ) -> Result<u64> {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return Ok(default);
+        };
+        let token = value.as_str().ok_or_else(|| {
+            anyhow!(
+                "invalid_params: cursor must be an opaque message token; refresh channel history"
+            )
+        })?;
+        s.messages
+            .iter()
+            .find(|message| {
+                message.id == token
+                    && message.channel_id == channel
+                    && self.visible(s, actor, message)
+                    && actor
+                        .run
+                        .as_ref()
+                        .is_none_or(|run| run.source_channels.contains(channel))
+            })
+            .map(|message| message.sequence)
+            .ok_or_else(|| {
+                anyhow!("stale_cursor: cursor unavailable; refresh authorized channel history")
+            })
+    }
+    fn project_mutation_result(
+        &self,
+        actor: &Actor,
+        req: &Request,
+        mut result: Value,
+    ) -> Result<Value> {
+        match req.method.as_str() {
+            "message.post" | "run.project" => {
+                let message = self
+                    .state
+                    .messages
+                    .iter()
+                    .find(|message| {
+                        Some(message.id.as_str()) == result.get("id").and_then(Value::as_str)
+                            && self.visible(&self.state, actor, message)
+                    })
+                    .ok_or_else(|| anyhow!("forbidden: message unavailable"))?;
+                Ok(Self::message_wire(message))
+            }
+            "channel.read" => {
+                let channel = text(&req.params, "channel_id")?;
+                let token = text(&req.params, "sequence")?;
+                self.resolve_cursor(&self.state, actor, channel, Some(&json!(token)), 0)?;
+                let sequence = result
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow!("storage_corrupt: read watermark unavailable"))?;
+                result["sequence"] = self.read_position_wire(&self.state, actor, channel, sequence);
+                Ok(result)
+            }
+            _ => Ok(result),
+        }
+    }
     fn read_workspace_snapshot(&self, actor: &Actor, _req: &Request) -> Result<Value> {
         let s = &self.state;
         let mut positions = BTreeMap::new();
@@ -1110,7 +1199,10 @@ impl Broker {
                 .read_positions
                 .get(&format!("{}:{}", actor.id, channel.id))
                 .unwrap_or(&0);
-            positions.insert(channel.id.clone(), sequence);
+            positions.insert(
+                channel.id.clone(),
+                self.read_position_wire(s, actor, &channel.id, sequence),
+            );
             let count = s
                 .messages
                 .iter()
@@ -1138,8 +1230,8 @@ impl Broker {
                 "forbidden: channel outside run grant"
             );
         }
-        let after = p.get("after").and_then(Value::as_u64).unwrap_or(0);
-        let before = p.get("before").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        let after = self.resolve_cursor(s, actor, channel, p.get("after"), 0)?;
+        let before = self.resolve_cursor(s, actor, channel, p.get("before"), u64::MAX)?;
         let limit = p
             .get("limit")
             .and_then(Value::as_u64)
@@ -1164,7 +1256,11 @@ impl Broker {
         } else {
             matching.take(limit).collect()
         };
-        let cursor = messages.last().map(|m| m.sequence).unwrap_or(after);
+        let cursor = messages
+            .last()
+            .map(|message| message.id.clone())
+            .or_else(|| p.get("after").and_then(Value::as_str).map(str::to_owned));
+        let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
         Ok(json!({"messages":messages,"cursor":cursor}))
     }
     fn read_run_remote_scope(&self, actor: &Actor, _req: &Request) -> Result<Value> {
@@ -1197,8 +1293,10 @@ impl Broker {
             .rev()
             .take(200)
             .collect();
+        let restricted = messages.iter().any(|message| message.restricted);
+        let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
         Ok(
-            json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":messages.iter().any(|m|m.restricted)}),
+            json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":restricted}),
         )
     }
     fn read_reference_get(&self, actor: &Actor, req: &Request) -> Result<Value> {
@@ -1312,11 +1410,8 @@ impl Broker {
         let who = &actor.id;
         let channel = text(p, "channel_id")?;
         self.channel(s, who, channel, false)?;
-        let sequence = number(p, "sequence")?;
-        ensure!(
-            sequence <= s.sequence,
-            "invalid_params: read sequence beyond journal"
-        );
+        let token = text(p, "sequence")?;
+        let sequence = self.resolve_cursor(s, actor, channel, Some(&json!(token)), 0)?;
         let entry = s
             .read_positions
             .entry(format!("{who}:{channel}"))

@@ -63,7 +63,7 @@ export interface CrewRun {
   model?: string;
 }
 export interface Snapshot {
-  read_positions?: Record<string, number>;
+  read_positions?: Record<string, string | null>;
   unread?: Record<string, number>;
   workspace: { id: string; host_uid: number; mode: 'private' | 'public'; policy_epoch: number };
   actor: Principal;
@@ -75,7 +75,7 @@ export interface Snapshot {
 }
 export interface CrewMessage {
   id: string;
-  sequence: number;
+  sequence: string;
   channel_id: string;
   actor_id: string;
   run_id?: string;

@@ -79,7 +79,7 @@ export default function CrewView() {
   const [teamId, setTeamId] = useState('');
   const [channelId, setChannelId] = useState('');
   const [messages, setMessages] = useState<CrewMessage[]>([]);
-  const [historyBefore, setHistoryBefore] = useState<number | null>(null);
+  const [historyBefore, setHistoryBefore] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [error, setError] = useState('');
   const [refreshError, setRefreshError] = useState('');
@@ -146,17 +146,31 @@ export default function CrewView() {
       setMessages([]);
     }
     if (channelId && next.channels.some((item) => item.id === channelId)) {
-      const history = await crewRequest<{ messages: CrewMessage[]; cursor: number }>(
-        connectionId,
-        'messages.history',
-        {
-          channel_id: channelId,
-          limit: 200,
-          latest: true,
-          ...(historyBefore === null ? {} : { before: historyBefore }),
+      try {
+        const history = await crewRequest<{ messages: CrewMessage[]; cursor: string | null }>(
+          connectionId,
+          'messages.history',
+          {
+            channel_id: channelId,
+            limit: 200,
+            latest: true,
+            ...(historyBefore === null ? {} : { before: historyBefore }),
+          }
+        );
+        if (current === generation.current) setMessages(history.messages);
+      } catch (failure) {
+        if (current !== generation.current) return;
+        if (
+          historyBefore !== null &&
+          failure instanceof Error &&
+          failure.message.includes('stale_cursor')
+        ) {
+          setMessages([]);
+          setHistoryBefore(null);
+          return;
         }
-      );
-      if (current === generation.current) setMessages(history.messages);
+        throw failure;
+      }
     }
   }, [connectionId, channelId, historyBefore]);
 
