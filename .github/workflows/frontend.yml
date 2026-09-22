@@ -123,6 +123,18 @@ jobs:
       - name: Packaged dependency isolation regressions
         run: node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs
 
+      # Windows allocates a NEW, VISIBLE console for every console-subsystem
+      # child of a process that owns none — which the Electron main process is.
+      # The Node option that suppresses it, `windowsHide`, defaults to FALSE, so
+      # the damaging behaviour is what you get by writing nothing (#368). This
+      # census requires every spawn site under ui/desktop/src to state the option
+      # either way, and carries its own fixtures proving it reports a violation
+      # when there is one. It runs here, on Linux, because reading source needs
+      # no Windows; whether the flag WORKS is asked on Windows by the job below.
+      - name: Console-window census (ui/desktop/src)
+        if: ${{ !cancelled() }}
+        run: node --test scripts/console-window-census.test.mjs
+
       # Each gate is its own step rather than a single `npm run lint:check`, and
       # each runs even if an earlier one failed. `lint:check` chains with && and
       # stops at the first failure, which means a contributor fixes one gate,
@@ -344,3 +356,61 @@ jobs:
           path: ui/desktop/preview-panel-evidence
           if-no-files-found: error
           retention-days: 14
+
+  # ── Do console windows actually appear? ───────────────────────────────────
+  # The census above can only prove the option is WRITTEN. Whether it does
+  # anything is a property of Windows and of the Node that Electron ships, and
+  # no amount of source reading settles it — so this job asks Windows.
+  #
+  # It is worth the runner because the assertion is PAIRED: a control spawn with
+  # no `windowsHide` must report a VISIBLE console. If that control ever reports
+  # `hidden`, the instrument is broken and every other assertion in the file is
+  # vacuous — so the control failing is a red build, not a skip.
+  #
+  # Only this one file runs here. The rest of the suite is covered on ubuntu by
+  # `unit`, and running it twice would buy a long red build rather than a signal.
+  windows-console:
+    name: Console windows (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Spawn a child and ask Windows whether it showed a console
+        run: npx vitest run src/utils/windowsConsoleWindow.test.ts --reporter=default --reporter=junit --outputFile.junit=./windows-console-junit.xml
+
+      # A test file that stops being collected — renamed, moved, or skipped by a
+      # platform predicate that quietly stopped matching — reports zero failures
+      # and passes. That is the failure mode this whole area keeps producing, so
+      # the count is asserted rather than assumed.
+      - name: The Windows console tests actually ran
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content ./windows-console-junit.xml
+          $cases = $report.SelectNodes('//testcase')
+          $skipped = $report.SelectNodes('//testcase/skipped')
+          Write-Host "testcases=$($cases.Count) skipped=$($skipped.Count)"
+          if ($cases.Count -lt 6) {
+            throw "expected at least 6 Windows console testcases, saw $($cases.Count) - the file was not collected"
+          }
+          if ($skipped.Count -gt 0) {
+            throw "$($skipped.Count) Windows console testcases were SKIPPED on a Windows runner"
+          }
+
+      - name: Upload the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-console-junit
+          path: ui/desktop/windows-console-junit.xml
+          if-no-files-found: warn
+          retention-days: 7

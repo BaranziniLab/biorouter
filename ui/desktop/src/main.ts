@@ -2888,7 +2888,9 @@ ipcMain.handle('get-dock-icon-state', () => {
 ipcMain.handle('open-notifications-settings', async () => {
   try {
     if (process.platform === 'darwin') {
-      spawn('open', ['x-apple.systempreferences:com.apple.preference.notifications']);
+      spawn('open', ['x-apple.systempreferences:com.apple.preference.notifications'], {
+        windowsHide: true,
+      });
       return true;
     } else if (process.platform === 'win32') {
       // Windows: Open notification settings in Settings app
@@ -2898,7 +2900,7 @@ ipcMain.handle('open-notifications-settings', async () => {
       // Linux: Try different desktop environments
       // GNOME
       try {
-        spawn('gnome-control-center', ['notifications']);
+        spawn('gnome-control-center', ['notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('GNOME control center not found, trying other options');
@@ -2906,7 +2908,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // KDE Plasma
       try {
-        spawn('systemsettings5', ['kcm_notifications']);
+        spawn('systemsettings5', ['kcm_notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('KDE systemsettings5 not found, trying other options');
@@ -2914,7 +2916,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // XFCE
       try {
-        spawn('xfce4-settings-manager', ['--socket-id=notifications']);
+        spawn('xfce4-settings-manager', ['--socket-id=notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('XFCE settings manager not found, trying other options');
@@ -2922,7 +2924,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // Fallback: Try to open general settings
       try {
-        spawn('gnome-control-center');
+        spawn('gnome-control-center', [], { windowsHide: true });
         return true;
       } catch {
         console.warn('Could not find a suitable settings application for Linux');
@@ -3260,8 +3262,12 @@ ipcMain.handle('check-ollama', async () => {
   try {
     return new Promise((resolve) => {
       // Run `ps` and filter for "ollama"
-      const ps = spawn('ps', ['aux']);
-      const grep = spawn('grep', ['-iw', '[o]llama']);
+      // `ps` and `grep` are POSIX tools, but Git for Windows puts `ps.exe`
+      // and `grep.exe` on PATH on plenty of developer machines, where they
+      // resolve and each pop a console window. Hidden rather than guarded by
+      // platform, so the flag survives the handler being reached from anywhere.
+      const ps = spawn('ps', ['aux'], { windowsHide: true });
+      const grep = spawn('grep', ['-iw', '[o]llama'], { windowsHide: true });
 
       let output = '';
       let errorOutput = '';
@@ -4879,6 +4885,11 @@ function registerCliInstallHandlers() {
           env: SPAWN_ENV,
           detached: true,
           stdio: 'ignore',
+          // DELIBERATELY VISIBLE. The user clicked "open the CLI in a terminal";
+          // the console window IS the feature. Stated rather than left to the
+          // default so the console-window census can tell this apart from a
+          // site that simply forgot (#368).
+          windowsHide: false,
         });
         child.unref();
         return { success: true };
@@ -4901,6 +4912,9 @@ function registerCliInstallHandlers() {
             env: SPAWN_ENV,
             detached: true,
             stdio: 'ignore',
+            // DELIBERATELY VISIBLE, same as the Windows branch above: this is
+            // the user's terminal emulator, opened because they asked for it.
+            windowsHide: false,
             ...(cwd ? { cwd } : {}),
           });
           child.unref();
