@@ -47,6 +47,12 @@ reqwest = { version = "0.12.9", features = [
     "blocking"
 ], default-features = false }
 tokio = { workspace = true }
+# `net::bind_non_inheritable` creates listening sockets through socket2 so that
+# Windows child processes cannot inherit them (socket2 passes
+# `WSA_FLAG_NO_HANDLE_INHERIT` by default; mio, under tokio's `bind`, does not).
+# Same version `biorouter-server` and tokio already resolve, so the lock file
+# gains no second copy.
+socket2 = "0.6.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
@@ -205,6 +211,19 @@ aws-smithy-runtime-api = "=1.9.3"
 # this adds no new package to the lock.
 walkdir = "2.5.0"
 aws-smithy-http-client = { version = "=1.1.5", default-features = false, features = ["test-util"] }
+
+# Test-only: `net.rs`'s Windows inheritance tests re-run one case in a fresh copy
+# of the test binary, and must start that copy with handle inheritance OFF, or it
+# would inherit every socket the rest of the binary's tests hold (std's `Command`
+# always passes `bInheritHandles = TRUE`; `CommandExt::inherit_handles` is
+# unstable). The same `windows` 0.61 the crate already depends on, with the
+# features `CreateProcessW` needs, so the lock file gains no package.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
 
 [[example]]
 name = "agent"

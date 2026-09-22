@@ -3291,9 +3291,11 @@ This is the body of the skill.
 
     #[tokio::test]
     async fn office_contexts_seed_discover_load_and_respect_session_revocation() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _guard =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _guard = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let root = skills_root(&Paths::config_dir());
         SkillsClient::ensure_builtin_skills(&root);
         let skills = SkillsClient::discover_skills_in_directories(&[root]);
@@ -3355,9 +3357,11 @@ This is the body of the skill.
 
     #[tokio::test]
     async fn office_workflow_loads_only_its_requested_contexts() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _guard =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _guard = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         SkillsClient::ensure_builtin_skills(&skills_root(&Paths::config_dir()));
         skill_catalog::invalidate();
         let manager = SessionManager::new(temp.path().join("sessions"));
@@ -4607,6 +4611,9 @@ Working dir biorouter content
 
     #[test]
     fn test_get_default_skill_directories_includes_extensions() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp_dir = TempDir::new().unwrap();
         let ext_skills = temp_dir
             .path()
@@ -4624,16 +4631,12 @@ Working dir biorouter content
         .unwrap();
 
         // `BIOROUTER_PATH_ROOT` is process-global and is read on every
-        // `Paths::*` call, so a bare set/remove pair leaks this scratch root
-        // into whatever else is running concurrently (it made `logging::tests`
-        // resolve into this `TempDir` and fail once it was dropped). The guard
-        // both serialises against the other tests that pin this variable and
-        // restores the previous value even if the assertions below panic.
+        // `Paths::*` call, so moving it here would move it for every test in
+        // the process — which is why this one runs in a process of its own
+        // (above). The guard still restores the previous value even if the
+        // assertions below panic.
         let dirs = {
-            let _guard = env_lock::lock_env([(
-                "BIOROUTER_PATH_ROOT",
-                Some(temp_dir.path().to_str().unwrap()),
-            )]);
+            let _guard = crate::test_sandbox::relocate_path_root(temp_dir.path().to_str().unwrap());
             SkillsClient::get_default_skill_directories()
         };
 
@@ -4793,9 +4796,11 @@ Working dir biorouter content
     /// arrived inside an installed extension.
     #[tokio::test(flavor = "current_thread")]
     async fn search_skills_tells_shipped_extension_and_user_installed_skills_apart() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let installed = skills_root(&Paths::config_dir());
         let from_extension = Paths::config_dir().join("extensions/UCSFOMOPAgent/skills");
         fs::create_dir_all(installed.join("my-package")).unwrap();
@@ -5133,9 +5138,11 @@ Working dir biorouter content
 
     #[tokio::test(flavor = "current_thread")]
     async fn removal_batches_preflight_cancel_without_mutation_and_report_each_commit() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let skills_root = crate::agents::skill_package::install::install_root();
         for name in ["alpha", "beta"] {
             let directory = skills_root.join(name);
@@ -6162,9 +6169,11 @@ Working dir biorouter content
 
     #[tokio::test(flavor = "current_thread")]
     async fn workflow_skills_resolve_the_live_body_and_fail_when_session_disabled() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let skill_dir = skills_root(&Paths::config_dir()).join("required-procedure");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
@@ -6223,9 +6232,11 @@ Working dir biorouter content
     /// falsify a claim about bundles.
     #[tokio::test(flavor = "current_thread")]
     async fn a_workflow_may_require_a_whole_bundle() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let bundle = skills_root(&Paths::config_dir()).join("office-pack");
         for (name, body) in [("write-docx", "DOCX-BODY"), ("write-xlsx", "XLSX-BODY")] {
             let dir = bundle.join(name);
@@ -6695,8 +6706,7 @@ mod continued_import_origin_tests {
     /// card's ARGUMENTS, which are published before anyone decides.
     async fn card_for(origin: serde_json::Value) -> JsonObject {
         let temp = TempDir::new().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         let session_manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
         let session = session_manager
             .create_session(
@@ -6776,6 +6786,9 @@ mod continued_import_origin_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_continued_local_archive_import_names_the_archive() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         // Catches the status quo, where this sole consent gate renders four
         // fields, three of them null, and no file name at all.
         let card = card_for(serde_json::json!({
@@ -6789,6 +6802,9 @@ mod continued_import_origin_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_continued_url_import_still_names_its_url() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         // Catches "fixing" the pathless card by dropping the `source` key for
         // a bare `planId`, which removes the source line from BOTH variants.
         let card = card_for(serde_json::json!({

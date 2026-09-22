@@ -2919,6 +2919,9 @@ mod cli_tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn cli_knowledge_startup_purges_legacy_bases_and_preserves_current_profiles() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         fn make_legacy(
             svc: &biorouter::knowledge::service::KnowledgeService,
             id: &str,
@@ -2932,13 +2935,10 @@ mod cli_tests {
         }
 
         let tmp = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([
-            (
-                "BIOROUTER_PATH_ROOT",
-                Some(tmp.path().to_string_lossy().into_owned()),
-            ),
-            ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
-        ]);
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            tmp.path(),
+            [("BIOROUTER_DISABLE_KEYRING", Some("1".to_string()))],
+        );
         let svc = biorouter::knowledge::service::KnowledgeService::new_default().unwrap();
         make_legacy(&svc, "soul", "Soul");
         make_legacy(&svc, "legacy-notes", "Legacy notes");
@@ -3004,6 +3004,9 @@ mod cli_tests {
     /// the thing it is reporting leaves the user no moment at which to choose.
     #[tokio::test]
     async fn cli_knowledge_list_reports_legacy_bases_without_purging_them() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         fn make_legacy(
             svc: &biorouter::knowledge::service::KnowledgeService,
             id: &str,
@@ -3017,13 +3020,10 @@ mod cli_tests {
         }
 
         let tmp = tempfile::tempdir().unwrap();
-        let _env = env_lock::lock_env([
-            (
-                "BIOROUTER_PATH_ROOT",
-                Some(tmp.path().to_string_lossy().into_owned()),
-            ),
-            ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
-        ]);
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            tmp.path(),
+            [("BIOROUTER_DISABLE_KEYRING", Some("1".to_string()))],
+        );
         let svc = biorouter::knowledge::service::KnowledgeService::new_default().unwrap();
         make_legacy(&svc, "legacy-notes", "Legacy notes");
         let legacy_marker = svc.root().join("legacy-notes").join("legacy.txt");

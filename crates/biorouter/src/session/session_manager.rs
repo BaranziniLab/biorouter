@@ -24,7 +24,7 @@ use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
@@ -575,10 +575,21 @@ impl std::str::FromStr for SessionType {
 /// `BIOROUTER_PATH_ROOT` after start, so this resolves to the same directory it
 /// always did, and it was already effectively frozen — only the instant it is
 /// captured moved earlier.
-static SHARED_STORE_ROOT: LazyLock<PathBuf> = LazyLock::new(Paths::data_dir);
+///
+/// A `OnceLock` resolved by [`SessionManager::shared_store_root`] rather than a
+/// `LazyLock`, and only so that [`SessionManager::shared_store_root_if_resolved`]
+/// can look at it without resolving it. The two resolve identically — the
+/// first caller runs `Paths::data_dir()` and everyone after reads that answer.
+/// A `LazyLock` offers no such look on this toolchain (`LazyLock::get` is the
+/// unstable `lazy_get` feature on 1.92, E0658), and without it a test cannot
+/// tell "frozen before `main`" from "frozen by my own question just now".
+static SHARED_STORE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
-    LazyLock::new(|| Arc::new(SessionStorage::new(SHARED_STORE_ROOT.clone())));
+static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> = LazyLock::new(|| {
+    Arc::new(SessionStorage::new(
+        SessionManager::shared_store_root().to_path_buf(),
+    ))
+});
 
 pub const DEFAULT_SESSION_NAME: &str = "New chat";
 
@@ -1775,7 +1786,20 @@ impl SessionManager {
     /// In production this is a plain accessor — the daemon's data dir does not
     /// move while it runs.
     pub fn shared_store_root() -> &'static Path {
-        &SHARED_STORE_ROOT
+        SHARED_STORE_ROOT.get_or_init(Paths::data_dir)
+    }
+
+    /// [`Self::shared_store_root`] if something has already resolved it, and
+    /// `None` otherwise — **without** resolving it.
+    ///
+    /// Exists for the test binaries' sandbox guards, and nothing in production
+    /// calls it. A guard that asks `shared_store_root()` whether the root was
+    /// frozen before `main` cannot fail: with the freeze missing, its own call
+    /// is the first touch, lands while the ctor's sandbox is still the ambient
+    /// root, and answers "sandboxed". This read is how a guard tells the two
+    /// apart.
+    pub fn shared_store_root_if_resolved() -> Option<&'static Path> {
+        SHARED_STORE_ROOT.get().map(PathBuf::as_path)
     }
 
     pub fn storage(&self) -> &Arc<SessionStorage> {

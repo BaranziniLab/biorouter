@@ -1,4 +1,5 @@
 pub mod lapstone;
+pub mod ws_connect;
 
 #[cfg(test)]
 mod lapstone_test;

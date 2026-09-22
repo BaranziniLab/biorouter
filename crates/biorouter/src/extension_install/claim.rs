@@ -159,11 +159,18 @@ fn claim_filename(install_id: &str) -> String {
 /// a reader must never see a half-written claim, and a claim rewritten from
 /// `Extracting` to `Parked` must not pass through a state where it is neither.
 pub fn write_claim(claim: &InstallClaim) -> std::io::Result<()> {
-    let directory = claims_dir();
-    std::fs::create_dir_all(&directory)?;
+    write_claim_in(&claims_dir(), claim)
+}
+
+/// [`write_claim`], [`read_claims`] and [`remove_claim`] over `directory`
+/// rather than [`claims_dir`]. The tests pass a directory of their own here
+/// instead of pointing `BIOROUTER_PATH_ROOT` at one: every test in the binary
+/// that resolves `Paths` without the env lock would otherwise follow it.
+fn write_claim_in(directory: &std::path::Path, claim: &InstallClaim) -> std::io::Result<()> {
+    std::fs::create_dir_all(directory)?;
     let body = serde_json::to_vec(claim)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let mut temp = tempfile::NamedTempFile::new_in(&directory)?;
+    let mut temp = tempfile::NamedTempFile::new_in(directory)?;
     temp.write_all(&body)?;
     temp.as_file_mut().sync_all()?;
     temp.persist(directory.join(claim_filename(&claim.install_id)))
@@ -179,8 +186,11 @@ pub fn write_claim(claim: &InstallClaim) -> std::io::Result<()> {
 /// file that cannot be parsed, and one whose tree has since been deleted,
 /// describe nothing a resume could use, so they are dropped and cleaned up.
 pub fn read_claims() -> Vec<InstallClaim> {
-    let directory = claims_dir();
-    let Ok(entries) = std::fs::read_dir(&directory) else {
+    read_claims_in(&claims_dir())
+}
+
+fn read_claims_in(directory: &std::path::Path) -> Vec<InstallClaim> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
     };
     let mut claims: Vec<InstallClaim> = Vec::new();
@@ -206,7 +216,11 @@ pub fn read_claims() -> Vec<InstallClaim> {
 
 /// Drop the claim for `install_id`, if there is one. Absent is success.
 pub fn remove_claim(install_id: &str) {
-    let _ = std::fs::remove_file(claims_dir().join(claim_filename(install_id)));
+    remove_claim_in(&claims_dir(), install_id)
+}
+
+fn remove_claim_in(directory: &std::path::Path, install_id: &str) {
+    let _ = std::fs::remove_file(directory.join(claim_filename(install_id)));
 }
 
 fn now_secs() -> u64 {
@@ -222,20 +236,29 @@ mod tests {
 
     use super::*;
 
-    /// Point the whole config tree at a temp dir and prove it landed there
-    /// before anything writes or deletes. The developer's real
-    /// `~/.config/biorouter` holds live extensions; a fixture that resolved to
-    /// it would delete their files.
-    fn sandbox() -> (tempfile::TempDir, env_lock::EnvGuard<'static>) {
+    /// A config tree of the test's own and the claims directory inside it,
+    /// handed to the `_in` functions. It used to be `BIOROUTER_PATH_ROOT`,
+    /// relocated under the env lock, which every unlocked `Paths` reader in the
+    /// binary then followed; a directory passed in is nobody's ambient root.
+    /// Being a fresh `TempDir`, it cannot be the developer's real
+    /// `~/.config/biorouter`, which holds live extensions.
+    fn sandbox() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("a temp dir");
-        let root = tmp.path().to_str().expect("a utf-8 temp path").to_string();
-        let guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root))]);
-        assert!(
-            claims_dir().starts_with(tmp.path()),
-            "the fixture is pointed at {} — refusing to touch it",
-            claims_dir().display()
+        let claims = tmp.path().join("config").join("extension-installs");
+        (tmp, claims)
+    }
+
+    /// Production keeps the claims where the fixture's shape puts them:
+    /// `<config>/extension-installs/`. Paths only.
+    #[test]
+    fn claims_live_in_the_config_dir() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        assert_eq!(
+            claims_dir(),
+            std::path::Path::new(crate::test_sandbox::sandbox_path_root())
+                .join("config")
+                .join("extension-installs")
         );
-        (tmp, guard)
     }
 
     fn claim_in(tree: &Path, install_id: &str) -> InstallClaim {
@@ -256,13 +279,13 @@ mod tests {
     /// One corrupt file must not hide every real pending install.
     #[test]
     fn an_unparseable_claim_is_skipped_not_fatal() {
-        let (tmp, _guard) = sandbox();
+        let (tmp, claims_at) = sandbox();
         let tree = tmp.path().join("config/extensions/spokeagent");
-        write_claim(&claim_in(&tree, "i-good")).unwrap();
-        let junk = claims_dir().join("6465616462656566");
+        write_claim_in(&claims_at, &claim_in(&tree, "i-good")).unwrap();
+        let junk = claims_at.join("6465616462656566");
         std::fs::write(&junk, b"{ this is not json").unwrap();
 
-        let claims = read_claims();
+        let claims = read_claims_in(&claims_at);
         assert_eq!(claims.len(), 1, "{claims:?}");
         assert_eq!(claims[0].install_id, "i-good");
         assert_eq!(claims[0].phase, ClaimPhase::Parked);
@@ -274,38 +297,41 @@ mod tests {
     /// finish — the manifest it would read its variables out of is gone.
     #[test]
     fn a_claim_whose_tree_is_gone_is_dropped() {
-        let (tmp, _guard) = sandbox();
+        let (tmp, claims_at) = sandbox();
         let tree = tmp.path().join("config/extensions/spokeagent");
-        write_claim(&claim_in(&tree, "i-stale")).unwrap();
+        write_claim_in(&claims_at, &claim_in(&tree, "i-stale")).unwrap();
         std::fs::remove_dir_all(&tree).unwrap();
 
-        assert!(read_claims().is_empty());
+        assert!(read_claims_in(&claims_at).is_empty());
         assert!(
-            std::fs::read_dir(claims_dir()).unwrap().next().is_none(),
+            std::fs::read_dir(&claims_at).unwrap().next().is_none(),
             "the stale claim should be cleaned up too"
         );
     }
 
     #[test]
     fn a_claim_is_rewritten_in_place_and_removable() {
-        let (tmp, _guard) = sandbox();
+        let (tmp, claims_at) = sandbox();
         let tree = tmp.path().join("config/extensions/spokeagent");
         let claim = claim_in(&tree, "i-1");
-        write_claim(&claim).unwrap();
-        write_claim(&InstallClaim {
-            phase: ClaimPhase::Extracting,
-            ..claim
-        })
+        write_claim_in(&claims_at, &claim).unwrap();
+        write_claim_in(
+            &claims_at,
+            &InstallClaim {
+                phase: ClaimPhase::Extracting,
+                ..claim
+            },
+        )
         .unwrap();
 
-        let claims = read_claims();
+        let claims = read_claims_in(&claims_at);
         assert_eq!(claims.len(), 1, "a rewrite must not add a second file");
         assert_eq!(claims[0].phase, ClaimPhase::Extracting);
 
-        remove_claim("i-1");
-        assert!(read_claims().is_empty());
+        remove_claim_in(&claims_at, "i-1");
+        assert!(read_claims_in(&claims_at).is_empty());
         // Removing what is not there is success, not an error.
-        remove_claim("i-1");
+        remove_claim_in(&claims_at, "i-1");
     }
 
     /// The filename is derived, not taken. An id spelled as a path must not be

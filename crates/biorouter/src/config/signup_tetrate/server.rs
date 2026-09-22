@@ -27,7 +27,7 @@ pub async fn run_callback_server(
 ) -> Result<()> {
     let app = Router::new().route("/", get(handle_callback));
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::net::bind_non_inheritable(addr).await?;
     let state = std::sync::Arc::new(tokio::sync::Mutex::new(Some(code_tx)));
 
     axum::serve(listener, app.with_state(state.clone()).into_make_service())

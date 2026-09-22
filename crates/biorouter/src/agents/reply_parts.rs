@@ -1375,9 +1375,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn every_tool_absent_from_the_code_execution_catalogue_stays_directly_callable() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let path_root = tempfile::TempDir::new().expect("an isolated capability root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
+        let _env = crate::test_sandbox::relocate_path_root(path_root_value.as_str());
 
         // ⚠ `BIOROUTER_SESSION_BLOB_LAZY_LOAD` is set as a TASK-LOCAL config
         // override, never in the process environment. It decides whether

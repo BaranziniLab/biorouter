@@ -15,10 +15,7 @@ impl Paths {
         // desktop `biorouterPaths.ts` — so this was the last holdout, and the one
         // that could aim a recursive-delete writer at `<cwd>/config`.
         // Pinned by `tests/path_resolver_agreement.rs`.
-        if let Some(test_root) = std::env::var("BIOROUTER_PATH_ROOT")
-            .ok()
-            .filter(|root| !root.trim().is_empty())
-        {
+        if let Some(test_root) = Self::path_root_override() {
             let base = PathBuf::from(test_root);
             match dir_type {
                 DirType::Config => base.join("config"),
@@ -39,6 +36,30 @@ impl Paths {
                 DirType::State => strategy.state_dir().unwrap_or(strategy.data_dir()),
             }
         }
+    }
+
+    /// The `BIOROUTER_PATH_ROOT` value [`Self::get_dir`] honours, or `None`
+    /// when it reads the variable as absent: unset, not valid UTF-8, or blank
+    /// after `trim()`. A root it honours is used as given, untrimmed.
+    ///
+    /// ⚠ Public for the test binaries' `#[ctor]` sandboxes (`biorouter`,
+    /// `biorouter-cli`, `biorouter-server`), which each ask "is a root already
+    /// in force, or must I install one?" and must ask it with THIS predicate
+    /// rather than a spelling of their own. The lib and CLI ctors spelled it
+    /// `var_os(..).is_none_or(|v| v.is_empty())`, which honours `"   "`: the
+    /// ctor then records `"   "` as the sandbox while every cell, reading it
+    /// as absent here, resolves the platform's real directories. Measured on
+    /// the lib and CLI test binaries 2026-09-21, under a throwaway `HOME`:
+    /// with `BIOROUTER_PATH_ROOT='   '` each binary's config and session-store
+    /// guards failed, naming `<HOME>/.config/biorouter/config.yaml` and
+    /// `<HOME>/.local/share/biorouter`; with this predicate, both pass.
+    /// In production it has exactly two callers, `get_dir` and
+    /// [`Self::managed_policy_path`], so the managed-policy file and every
+    /// directory above read a blank root the same way. (Some `biorouter`
+    /// integration binaries ask it too, for the same question the ctors ask.)
+    #[doc(hidden)]
+    pub fn path_root_override() -> Option<String> {
+        usable_path_root(std::env::var("BIOROUTER_PATH_ROOT").ok())
     }
 
     /// The user's home directory, resolved the SAME way on every platform.
@@ -111,7 +132,12 @@ impl Paths {
     /// test seam `BIOROUTER_PATH_ROOT` is honored (it relocates the whole config
     /// root under a temp dir the test owns).
     pub fn managed_policy_path() -> Option<PathBuf> {
-        if let Ok(test_root) = std::env::var("BIOROUTER_PATH_ROOT") {
+        // The same reading of the variable as `get_dir`, so a blank root is
+        // absent here too. A raw `std::env::var` honoured `""` and `"   "`,
+        // turning them into the RELATIVE path `managed/managed-policy.yaml` —
+        // a file under whatever directory the process happens to run in —
+        // while every other `Paths` resolution read them as absent.
+        if let Some(test_root) = Self::path_root_override() {
             return Some(
                 PathBuf::from(test_root)
                     .join("managed")
@@ -147,6 +173,66 @@ enum DirType {
     Config,
     Data,
     State,
+}
+
+/// The rule [`Paths::path_root_override`] applies to the variable's raw
+/// value, apart from the environment read so a test can state it without
+/// setting a process-global.
+fn usable_path_root(raw: Option<String>) -> Option<String> {
+    raw.filter(|root| !root.trim().is_empty())
+}
+
+#[cfg(test)]
+mod path_root_override_tests {
+    use super::{usable_path_root, Paths};
+
+    /// Blank is absent, whatever the whitespace; anything else is honoured
+    /// exactly as given. This is the one predicate `get_dir` and the three
+    /// test-binary ctors share, so pinning it pins all four.
+    #[test]
+    fn a_blank_path_root_is_no_override_and_any_other_is_taken_verbatim() {
+        let cases: [(Option<&str>, Option<&str>); 7] = [
+            (None, None),
+            (Some(""), None),
+            (Some(" "), None),
+            (Some("   "), None),
+            (Some("\t\n "), None),
+            (Some("/tmp/root"), Some("/tmp/root")),
+            (Some(" /tmp/padded "), Some(" /tmp/padded ")),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                usable_path_root(raw.map(str::to_owned)).as_deref(),
+                expected,
+                "BIOROUTER_PATH_ROOT = {raw:?}: Paths must read a blank root as absent \
+                 (a sandbox ctor that honoured it would record it while every cell \
+                 resolved the real directories) and must not rewrite one it honours"
+            );
+        }
+    }
+
+    /// `managed_policy_path` reads the variable the way `get_dir` does, so a
+    /// blank root moves the managed policy nowhere. It read it raw, and made
+    /// `""` and `"   "` into the relative `managed/managed-policy.yaml` — a
+    /// file under whatever directory the process was started in.
+    ///
+    /// In a process of its own, because it has to set the variable.
+    #[test]
+    fn a_blank_path_root_does_not_relocate_the_managed_policy() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        for blank in ["", "   "] {
+            let _root = crate::test_sandbox::relocate_path_root(blank);
+            let resolved = Paths::managed_policy_path();
+            assert!(
+                resolved.as_deref().is_none_or(std::path::Path::is_absolute),
+                "BIOROUTER_PATH_ROOT = {blank:?} put the managed policy at {resolved:?}, \
+                 relative to the working directory; a blank root is no root here, as in \
+                 get_dir"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -198,9 +284,16 @@ mod home_dir_tests {
     }
 
     /// …and on THIS platform, relocation actually works end to end.
+    ///
+    /// In a process of its own: the home directory is as process-global as
+    /// `BIOROUTER_PATH_ROOT`, and the skill catalog reads `~/.claude/skills`
+    /// from it for every test that builds one.
     #[test]
     #[serial_test::serial]
     fn relocating_the_home_directory_takes_effect_here() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let tmp = tempfile::tempdir().expect("a relocation target");
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let _env = env_lock::lock_env([(var, Some(tmp.path().to_string_lossy().into_owned()))]);
@@ -211,10 +304,14 @@ mod home_dir_tests {
         );
     }
 
-    /// A blank value is absent, not a relative root.
+    /// A blank value is absent, not a relative root. In a process of its own,
+    /// for the reason above.
     #[test]
     #[serial_test::serial]
     fn a_blank_home_falls_back_rather_than_resolving_to_nothing() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let _env = env_lock::lock_env([(var, Some(String::new()))]);
         let resolved = Paths::home_dir();

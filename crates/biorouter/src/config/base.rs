@@ -685,6 +685,24 @@ impl Config {
         GLOBAL_CONFIG.get_or_init(Config::default)
     }
 
+    /// [`Config::global`] if something has already initialized it, and `None`
+    /// otherwise — **without** initializing it. A read of the cell and nothing
+    /// else: no environment read, no file, no keyring.
+    ///
+    /// For the test binaries' sandbox guards (`biorouter`, `biorouter-cli`,
+    /// `biorouter-server`), and nothing in production calls it. Public rather
+    /// than `#[cfg(test)]` because the CLI and server test binaries link this
+    /// crate built WITHOUT `cfg(test)`. `global()` cannot answer "was this
+    /// frozen before `main`?": with the ctor's freeze missing, the guard's own
+    /// call is the first touch, resolves the sandbox root the ctor has just
+    /// set, and reports "sandboxed" — while a relocating test that got there
+    /// first would have pinned every config write in the binary to its
+    /// `TempDir`.
+    #[doc(hidden)]
+    pub fn global_if_initialized() -> Option<&'static Config> {
+        GLOBAL_CONFIG.get()
+    }
+
     /// Create a new configuration instance with custom paths
     ///
     /// This is primarily useful for testing or for applications that need
@@ -2378,6 +2396,29 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::NamedTempFile;
+
+    /// The config file every config write follows is the one the diagnostics
+    /// bundle redacts and ships. The bundle's own tests hand it a directory of
+    /// their own (`session::diagnostics::tests::sources_in`), so nothing else
+    /// pins this pairing: without it, `DiagnosticsSources::resolve()` could
+    /// look somewhere else and every bundle would silently ship no
+    /// `config.yaml`.
+    ///
+    /// Paths only, no file. The pin holds `BIOROUTER_PATH_ROOT` at the
+    /// sandbox root, where `Config::global()` was frozen before `main`, so the
+    /// bundle's resolution is taken against the same root.
+    #[test]
+    fn the_config_file_is_the_one_the_diagnostics_bundle_reads() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let written = Config::global().path();
+        let sources = crate::session::DiagnosticsSources::resolve();
+        assert_eq!(
+            sources.config_path(),
+            Path::new(&written),
+            "config writes land in {written} but the diagnostics bundle reads {}",
+            sources.config_path().display()
+        );
+    }
     #[test]
     fn test_basic_config() -> Result<(), ConfigError> {
         let config = new_test_config();

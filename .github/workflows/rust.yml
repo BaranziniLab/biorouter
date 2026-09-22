@@ -132,6 +132,25 @@ jobs:
               cross_windows "cargo check --workspace --all-targets --locked" /cross-target ;;
           esac
 
+      # The socket gate again (the `test` job runs it on ubuntu), for the target
+      # where the bug it guards against lives: `cfg(windows)` production code is
+      # compiled only here, so a Windows-only tokio bind would pass the ubuntu
+      # run. `cross_windows` appends `--target x86_64-pc-windows-gnu`, which the
+      # script hands to cargo, and the script adds `--release` itself, so this
+      # leg lints exactly what the ubuntu one does, for the other target.
+      # rust-toolchain.toml's `default` profile is what puts clippy in the
+      # container's toolchain; the image's python3 (3.11+, for tomllib) runs
+      # gate.py. `!cancelled()` for the same reason as in the `test` job: a
+      # failed `cargo check` above must not hide a site the gate would report.
+      - name: No production socket a Windows child process can inherit (${{ matrix.target }})
+        if: matrix.target == 'x86_64-pc-windows-gnu' && !cancelled()
+        run: |
+          set -euo pipefail
+          export CROSS_REGISTRY_MOUNT="$PWD/.cross-cache/registry"
+          export CROSS_TARGET_MOUNT="$PWD/.cross-cache/target/${{ matrix.target }}"
+          . scripts/cross-env.sh
+          cross_windows "./scripts/check-non-inheritable-sockets.sh" /cross-target
+
   # ── 3. Native unit tests on REAL kernels. This is where platform BEHAVIOUR is
   #      proven: PowerShell selection + taskkill (windows), Seatbelt (macos),
   #      Landlock (ubuntu, once BR-69 slice 2 lands — this runner is its venue).
@@ -391,6 +410,28 @@ jobs:
             'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
             env HOME="$HOME" PATH="$PATH" \
             cargo test --workspace --locked --no-fail-fast "${args[@]}"
+
+      # ⚠ BLOCKING, unlike the clippy step below it. No production code may open
+      # a socket a Windows child process inherits (tokio's `TcpListener::bind`
+      # and `TcpStream::connect`, the websocket `connect_async` family: see
+      # scripts/clippy-non-inheritable/clippy.toml for the list and why). It is
+      # clippy's `disallowed_methods`, force-warned so no `#[allow]` hides a
+      # site, over `--lib --bins` in the release profile with every other lint
+      # allowed, so it neither waits on the warnings below nor touches test code.
+      # It checks the dependencies itself, in release and without
+      # dev-dependency features, so it shares little with the steps around it
+      # (measured on an M-series Mac: 1m48s with no release clippy cache, a few
+      # seconds after that; a runner is slower). Exit 1 is a site, 2 a gate that could not run, 3 a rotten
+      # configuration; the script's header says more.
+      # `!cancelled()`: it runs even when a test step above has failed. Without
+      # it a red test skipped the gate, and a PR that broke a test AND added an
+      # inheritable socket was told about the test only. A failure here still
+      # fails the job: there is no `continue-on-error`.
+      # The `cross-check` job runs it again for the Windows target, where
+      # `cfg(windows)` code is compiled and this ubuntu run cannot see it.
+      - name: No production socket a Windows child process can inherit
+        if: matrix.os == 'ubuntu-latest' && !cancelled()
+        run: ./scripts/check-non-inheritable-sockets.sh
 
       - name: clippy (host, informational until warnings are burned down)
         if: matrix.os == 'ubuntu-latest'

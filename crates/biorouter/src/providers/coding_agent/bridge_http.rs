@@ -180,6 +180,14 @@ pub struct LoopbackBridge {
     base_url: String,
     published: bool,
     shutdown: tokio_util::sync::CancellationToken,
+    /// The task that owns the listening socket. Dropping the bridge only *asks*
+    /// it to stop; the socket is closed later, when that task leaves its accept
+    /// loop. Nothing in production waits for that, and dropping this handle with
+    /// the bridge detaches the task exactly as discarding it at `spawn` used to.
+    /// It is kept so a test can wait for the socket to really be gone instead of
+    /// racing it -- see the listener-close test below.
+    #[cfg_attr(not(test), allow(dead_code))]
+    serving: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LoopbackBridge {
@@ -195,8 +203,41 @@ impl LoopbackBridge {
         Self::bind().await
     }
 
+    /// Hands a test the task that owns the listening socket, so it can wait for
+    /// the socket to be released after the bridge is dropped.
+    #[cfg(test)]
+    pub(crate) fn take_serving_for_test(&mut self) -> tokio::task::JoinHandle<()> {
+        self.serving
+            .take()
+            .expect("the serving task is taken at most once")
+    }
+
     async fn bind() -> std::io::Result<Self> {
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        // Bound through `std`, then handed to tokio, rather than with
+        // `tokio::net::TcpListener::bind`, because of who else can end up holding
+        // the listening socket. On Windows, tokio binds through mio (1.1.1), which
+        // creates the socket with plain `socket()` -- a handle Windows makes
+        // INHERITABLE by default -- while `std` passes `WSA_FLAG_NO_HANDLE_INHERIT`.
+        // `std::process::Command` spawns with handle inheritance on, so every child
+        // started while this listener is open (the `claude`/`codex` CLI this bridge
+        // exists for, or any test running beside this one in a test binary) gets
+        // its own handle to the listening socket, and a socket stays open until
+        // its last handle closes: the port can go on accepting after Biorouter
+        // closes it, for as long as that child lives. (Read from the mio and std
+        // sources and Microsoft's `WSASocketW` docs, then measured on
+        // windows-latest by `crate::net`'s inheritance tests.)
+        // On Unix the two paths produce the same socket (close-on-exec,
+        // `SO_REUSEADDR`, `SO_NOSIGPIPE` on Apple, non-blocking). The one
+        // difference is the listen backlog: std asks for 128, and mio asks for
+        // -1, which the kernel reads as its own maximum. On Linux that is
+        // `net.core.somaxconn` (4096, measured in Docker), so the queue is 128
+        // where tokio's would be 4096. On macOS the maximum is
+        // `kern.ipc.somaxconn`, 128 by default, and on Windows mio asks for 128
+        // too, so on both the two are the same. 128 pending connections is
+        // ample for one child's tool calls.
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
         let base_url = format!("http://{}", listener.local_addr()?);
         let shutdown = tokio_util::sync::CancellationToken::new();
         let request_shutdown = shutdown.clone();
@@ -213,7 +254,7 @@ impl LoopbackBridge {
             },
         ));
         let stop = shutdown.clone();
-        tokio::spawn(async move {
+        let serving = tokio::spawn(async move {
             if let Err(error) = axum::serve(listener, app)
                 .with_graceful_shutdown(stop.cancelled_owned())
                 .await
@@ -225,6 +266,7 @@ impl LoopbackBridge {
             base_url,
             published: false,
             shutdown,
+            serving: Some(serving),
         })
     }
 
@@ -249,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn standalone_listener_has_no_host_api_and_closes_existing_connections() {
-        let listener = LoopbackBridge::start_for_test().await.unwrap();
+        let mut listener = LoopbackBridge::start_for_test().await.unwrap();
         let address = listener
             .base_url()
             .strip_prefix("http://")
@@ -268,6 +310,7 @@ mod tests {
         let mut pending = tokio::net::TcpStream::connect(&address).await.unwrap();
         pending.write_all(b"POST /tool_bridge/not-a-grant HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{}").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let serving = listener.take_serving_for_test();
         drop(listener);
         let mut response = Vec::new();
         tokio::time::timeout(
@@ -277,6 +320,39 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert!(tokio::net::TcpStream::connect(&address).await.is_err());
+        // Wait for the serving task to finish before asserting the port refuses.
+        // `drop(listener)` only cancels a token: the listening socket belongs to
+        // the spawned `axum::serve` task, which closes it only when it next runs
+        // and leaves its accept loop, and nothing orders that against the pending
+        // connection reaching EOF above. Measured on macOS: once this task has
+        // finished, a connect is refused 20 times in 20. (A blocking connect made
+        // straight after `drop(listener)` is accepted every time, but read that
+        // with care: on this single-threaded test runtime the blocking call also
+        // stops the serving task from running, so it could not have come out any
+        // other way. It shows only that `drop` does not close the socket
+        // synchronously, which the code already makes plain, not how wide the
+        // window is anywhere else.) The old immediate async
+        // connect still passed on macOS (accepted 0 times in 600 runs of the old
+        // sequence), because it yields before completing and the listener is
+        // gone by the time it looks again -- an ordering nothing guarantees on
+        // Windows. This assertion failed in `test (windows-latest)` on PR #356
+        // (rust.yml run 35647604671), whose Rust source was identical to main's,
+        // while the same job passed on main at 847c73c0 (run 35641865006). Do not
+        // reintroduce an immediate connect.
+        //
+        // The task finishing is a real signal, not a sleep: `axum::serve` drops
+        // the listener as it leaves the accept loop, waits for every connection
+        // to close, and only then returns. The deadline FAILS the test; a bridge
+        // whose socket never closes must not pass by timing out. The other way
+        // this connect can succeed on Windows -- a child process holding an
+        // inherited handle to the listening socket -- is closed off in `bind`.
+        tokio::time::timeout(std::time::Duration::from_secs(2), serving)
+            .await
+            .expect("the bridge's serving task did not stop within 2s of the bridge being dropped")
+            .expect("the bridge's serving task panicked");
+        assert!(
+            tokio::net::TcpStream::connect(&address).await.is_err(),
+            "a closed bridge must refuse new connections on its port"
+        );
     }
 }

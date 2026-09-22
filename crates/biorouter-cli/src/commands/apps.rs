@@ -239,7 +239,7 @@ pub(crate) fn configured_port() -> u16 {
 /// avoid pulling in an HTTP client dependency.
 pub(crate) async fn daemon_ok(host: &str, port: u16) -> bool {
     let addr = format!("{host}:{port}");
-    let connect = tokio::net::TcpStream::connect(&addr);
+    let connect = biorouter::net::connect_non_inheritable(&addr);
     let mut stream = match tokio::time::timeout(Duration::from_millis(600), connect).await {
         Ok(Ok(s)) => s,
         _ => return false,

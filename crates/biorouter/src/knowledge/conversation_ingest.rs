@@ -688,11 +688,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn soul_curator_receives_the_exact_live_skill_and_untrusted_evidence_rule() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         const EDITED_SKILL: &str =
             "EDITED-SOUL-PROCEDURE: keep stable preferences and discard greetings.";
         let temp = tempfile::tempdir().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
         install_edited_soul_skill(EDITED_SKILL);
 
         let manager = Arc::new(crate::session::SessionManager::new(
@@ -796,6 +798,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn missing_or_disabled_soul_skill_fails_before_raw_staging() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         // ⚠ HOME as well as BIOROUTER_PATH_ROOT, and that is the whole isolation
         // (#162). `skill_catalog::roots()` reads THREE domains: `~/.claude/skills`
@@ -813,10 +818,10 @@ mod tests {
         // The product is right to read those roots — a skill in `~/.claude/skills`
         // IS available to BioRouter, deliberately (`SkillSourceKind::ClaudeHome`).
         // It is the test's isolation that was partial.
-        let _env = env_lock::lock_env([
-            ("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap())),
-            ("HOME", Some(temp.path().to_str().unwrap())),
-        ]);
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            temp.path().to_str().unwrap(),
+            [("HOME", Some(temp.path().to_str().unwrap()))],
+        );
         crate::agents::skill_catalog::invalidate();
         let manager = Arc::new(crate::session::SessionManager::new(
             temp.path().join("sessions"),

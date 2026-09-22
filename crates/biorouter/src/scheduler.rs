@@ -3155,6 +3155,50 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time::{sleep, Duration};
 
+    /// The schedule and the workflow copies land where the diagnostics bundle
+    /// reads them. The bundle's own tests hand it a directory of their own
+    /// (`session::diagnostics::tests::sources_in`), so nothing else pins this
+    /// pairing: without it, `DiagnosticsSources::resolve()` could look in
+    /// another data dir and every bundle would silently ship no
+    /// `schedule.json` and no `scheduled_workflows/`.
+    ///
+    /// Three writers: the CLI and `recurring` write through
+    /// `get_default_scheduler_storage_path`, the daemon's scheduler through
+    /// `SessionManager::shared_store_root()` (`AgentManager::instance`), and
+    /// every job's workflow copy through `get_default_scheduled_workflows_dir`.
+    /// The pin holds `BIOROUTER_PATH_ROOT` at the sandbox root, where the
+    /// store root was frozen before `main`. Paths only; the two helpers
+    /// create their directories, inside the sandbox.
+    #[test]
+    fn the_schedule_lands_where_the_diagnostics_bundle_reads() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let sources = crate::session::DiagnosticsSources::resolve();
+        let storage = get_default_scheduler_storage_path().unwrap();
+        assert_eq!(
+            sources.schedule_json(),
+            storage,
+            "the scheduler writes {} but the diagnostics bundle reads {}",
+            storage.display(),
+            sources.schedule_json().display()
+        );
+        assert_eq!(
+            sources.schedule_json().parent(),
+            Some(crate::session::session_manager::SessionManager::shared_store_root()),
+            "the daemon's scheduler writes schedule.json under {} but the diagnostics \
+             bundle reads {}",
+            crate::session::session_manager::SessionManager::shared_store_root().display(),
+            sources.schedule_json().display()
+        );
+        let workflows = get_default_scheduled_workflows_dir().unwrap();
+        assert_eq!(
+            sources.scheduled_workflows_dir(),
+            workflows,
+            "scheduled workflows are copied into {} but the diagnostics bundle lists {}",
+            workflows.display(),
+            sources.scheduled_workflows_dir().display()
+        );
+    }
+
     fn create_test_workflow(dir: &Path, name: &str) -> PathBuf {
         let workflow_path = dir.join(format!("{}.yaml", name));
         fs::write(&workflow_path, "prompt: test\n").unwrap();

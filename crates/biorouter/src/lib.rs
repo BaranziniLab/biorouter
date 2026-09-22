@@ -26,6 +26,7 @@ pub mod context_mgmt;
 pub mod conversation;
 pub mod execution;
 pub mod extension_install;
+pub mod fork_safety;
 pub mod guardrails;
 pub mod hints;
 pub mod hooks;
@@ -35,6 +36,7 @@ pub mod managed;
 pub mod marketplace;
 pub mod mcp_utils;
 pub mod model;
+pub mod net;
 pub mod oauth;
 pub mod observability;
 pub mod pending_user_action;
@@ -57,6 +59,10 @@ pub mod system;
 /// developer's real `~/.config/biorouter`.
 #[cfg(test)]
 mod test_sandbox;
+/// Test-binary-only: register inert tracing dispatchers before any test runs,
+/// so a thread-local capture cannot miss its own events.
+#[cfg(test)]
+mod test_tracing;
 pub mod token_counter;
 pub mod tool_inspection;
 pub mod tool_monitor;

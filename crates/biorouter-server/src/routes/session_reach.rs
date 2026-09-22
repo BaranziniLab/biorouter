@@ -5811,8 +5811,19 @@ mod bypass_tests {
         limit: u32,
         headers: &[(&str, &str)],
     ) -> Vec<String> {
+        sidebar_ids_from(state, limit, None, headers).await
+    }
+
+    /// [`sidebar_ids`], starting from a continuation value the route issued
+    /// (`Some`) rather than from the top (`None`).
+    async fn sidebar_ids_from(
+        state: &Arc<AppState>,
+        limit: u32,
+        start: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> Vec<String> {
         let mut ids = Vec::new();
-        let mut cursor: Option<String> = None;
+        let mut cursor: Option<String> = start.map(str::to_owned);
         for _ in 0..10_000 {
             let page = sidebar_page(state, limit, cursor.as_deref(), headers).await;
             ids.extend(page_ids(&page));
@@ -5829,117 +5840,201 @@ mod bypass_tests {
         panic!("the sidebar never reported its last page");
     }
 
+    /// Walk the sidebar from the top, one row per page, until the row is one of
+    /// `seeded`; return that chat and the continuation value its page carried.
+    ///
+    /// ⚠ **Why walk instead of reading page 1.** The head of this listing is the
+    /// newest visible chat in the ONE store this binary shares, and tests
+    /// elsewhere in the binary that are not `#[serial]` write chats into that
+    /// store while a serial test runs (`routes::reply`'s
+    /// `reply_streams_the_turn_and_an_observer_sees_the_same_frames`, for one,
+    /// creates a chat and posts a turn to it). So page 1's row, and the value
+    /// issued after it, may be a sibling's, and it moves when the sibling
+    /// writes. The value issued after a row this test seeded is that row's own
+    /// sort key, and only the test that seeded it writes it.
+    async fn walk_to_first_seeded(
+        state: &Arc<AppState>,
+        seeded: &[&str],
+        headers: &[(&str, &str)],
+    ) -> (String, serde_json::Value) {
+        let mut cursor: Option<String> = None;
+        for _ in 0..10_000 {
+            let page = sidebar_page(state, 1, cursor.as_deref(), headers).await;
+            if let Some(id) = page_ids(&page)
+                .into_iter()
+                .find(|id| seeded.contains(&id.as_str()))
+            {
+                return (id, page["next_cursor"].clone());
+            }
+            assert_eq!(
+                page["has_more"],
+                serde_json::Value::Bool(true),
+                "the sidebar ended without reaching any of {seeded:?}"
+            );
+            cursor = Some(
+                page["next_cursor"]
+                    .as_str()
+                    .expect("has_more without next_cursor")
+                    .to_string(),
+            );
+        }
+        panic!("the sidebar never reached any of {seeded:?}");
+    }
+
     /// **The count oracle, as a named regression test** (adversarial security
     /// review 2026-09-12, HIGH). This is the test that would have caught it.
     ///
     /// The sidebar filters its rows for a caller that may not open a private
     /// chat, and it used to resume the next page from the position it had
     /// reached in the UNFILTERED ordering. So the continuation value counted the
-    /// rows it had hidden: ask for page 1 twice with N private chats created in
-    /// between and the value moves by exactly N. `updated_at` is stamped on
-    /// every token written in this tree, so a private chat merely *running a
-    /// turn* moves it — which turns a listing into a live activity monitor on
-    /// chats the singular read refuses outright.
+    /// rows it had hidden: ask for the same page twice with N private chats
+    /// created in between and the value moves by exactly N. `updated_at` is
+    /// stamped on every token written in this tree, so a private chat merely
+    /// *running a turn* moves it — which turns a listing into a live activity
+    /// monitor on chats the singular read refuses outright.
     ///
     /// Two assertions, and the first is the one that fails on the old code:
     ///
     /// 1. the continuation value does not move when hidden chats appear; and
-    /// 2. the walk still reaches the same visible rows across that churn — a
+    /// 2. the value still reaches the same visible rows across that churn — a
     ///    position-based resume does not, because the position it was given now
     ///    points at a different row.
     ///
+    /// Both are taken at the first chat THIS test seeded, never at whatever
+    /// heads the listing. When nothing newer is visible that chat is the head
+    /// and this is page 1, exactly as before — which held in 5 of 5 runs of
+    /// `routes::session_reach` alone (measured 2026-09-21), where every test
+    /// that seeds a chat into the shared store is `#[serial]`.
+    ///
+    /// ⚠ It used to read page 1 and retry when the head's id changed, which
+    /// left the premise to the non-serial tests elsewhere in this binary (see
+    /// [`walk_to_first_seeded`]). Measured 2026-09-21: against the unchanged
+    /// route, a stand-in sibling that kept writing to its own public chat held
+    /// the head's id still while its `updated_at` moved, so the continuation
+    /// value moved with it and the test failed with the count-oracle message
+    /// in 5 of 5 runs; a stand-in that kept creating public chats moved the
+    /// head under all three attempts, 5 of 5. Nor was that only a stand-in's
+    /// doing: in 15 runs of the whole `--lib` binary under load (same day), the
+    /// old test found a sibling's chat at the head in 6 of its 16 attempts. Its
+    /// retry absorbed one of them, and the other five passed only because that
+    /// chat did not move while the test waited.
+    ///
     /// The sleep is load-bearing: `updated_at` is `datetime('now')`, one-second
     /// granularity, so without it the seeded rows tie and SQLite breaks the tie
-    /// by `id ASC` — which would put the private rows *below* the boundary and
-    /// leave the old code's value accidentally unmoved.
-    ///
-    /// ⚠ The measurement is **retried**, and that is a statement about this
-    /// binary rather than about the route. The head of the listing is the whole
-    /// machine's newest visible chat; `#[serial]` keeps the other serial tests
-    /// out, but a non-serial test that creates a chat can land a foreign row at
-    /// the head inside the second this waits — which makes the test's PREMISE
-    /// false (a different visible row) rather than its subject wrong. A repeated
-    /// displacement still fails, and says so.
+    /// by `id ASC` — a TEXT comparison, so unless the ids change width the later
+    /// private rows sort *below* the visible ones and leave the old code's value
+    /// accidentally unmoved. That premise is asserted, not assumed.
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn the_sidebar_continuation_value_is_not_a_count_of_the_chats_it_hid() {
         install_test_user_action_key();
         let state = AppState::new().await.unwrap();
 
-        // Two visible rows, in one `datetime('now')` second. Which of them sorts
-        // first does not matter — only that the pair is stable across the churn
-        // below, which it is, because nothing here touches them again.
-        let _visible_a = seed_chat(
+        // Two visible rows. Which of them sorts first does not matter — only
+        // that the pair is stable across the churn below, which it is, because
+        // nothing but this test writes them.
+        let visible_a = seed_chat(
             &state,
             "count-oracle visible A (test fixture)",
             SessionClassification::Public,
         )
         .await;
-        let _visible_b = seed_chat(
+        let visible_b = seed_chat(
             &state,
             "count-oracle visible B (test fixture)",
             SessionClassification::Public,
         )
         .await;
+        let visible = [visible_a.id(), visible_b.id()];
 
         // "Secret only" — the caller AR-11 measured, and the one this gate
         // answers as a public model.
         let secret_only: &[(&str, &str)] = &[];
         const HIDDEN: usize = 3;
-        let mut displacements = Vec::new();
 
-        for _ in 0..3 {
-            let before = sidebar_page(&state, 1, None, secret_only).await;
-            let first_page_ids = page_ids(&before);
-            let token_before = before["next_cursor"].clone();
-            assert!(
-                !token_before.is_null(),
-                "two visible chats were just seeded and the first page reported no next page: \
-                 {before}"
-            );
-            let second_page_ids =
-                page_ids(&sidebar_page(&state, 1, token_before.as_str(), secret_only).await);
-
-            // Now the hidden rows, stamped into a strictly later second so they
-            // sort above everything seeded above. The guards drop at the end of
-            // each attempt, so a retry starts from the state this one did.
-            tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-            let mut hidden = Vec::new();
-            for i in 0..HIDDEN {
-                hidden.push(
-                    seed_private_chat(&state, &format!("count-oracle hidden {i} (test fixture)"))
-                        .await,
-                );
-            }
-
-            let after = sidebar_page(&state, 1, None, secret_only).await;
-            if page_ids(&after) != first_page_ids {
-                displacements.push(format!("{first_page_ids:?} -> {:?}", page_ids(&after)));
-                continue;
-            }
-            assert_eq!(
-                after["next_cursor"], token_before,
-                "the continuation value moved when {HIDDEN} private chats were created. Its \
-                 displacement IS their count, and because `updated_at` is stamped on every token \
-                 written, polling this route reports when a private chat is running."
-            );
-
-            // …and the value the caller was given still walks to the same row,
-            // which a position into the unfiltered ordering no longer does once
-            // that ordering has shifted underneath it.
-            assert_eq!(
-                page_ids(&sidebar_page(&state, 1, token_before.as_str(), secret_only).await),
-                second_page_ids,
-                "the same continuation value reached a different visible row after private chats \
-                 were created"
-            );
-            return;
-        }
-
-        panic!(
-            "the head of the listing moved under every attempt, so nothing was measured — \
-             another test in this binary is creating chats: {displacements:?}"
+        let (first, token_before) = walk_to_first_seeded(&state, &visible, secret_only).await;
+        let other = *visible.iter().find(|id| **id != first).unwrap();
+        let token_before = token_before
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{other} was seeded to sort after {first}, yet that page reported no next page"
+                )
+            })
+            .to_string();
+        let reached_before = seeded_ids_from(&state, &token_before, &visible, secret_only).await;
+        assert_eq!(
+            reached_before,
+            [other.to_string()],
+            "premise: the value issued after {first} reaches {other} and nothing else this test \
+             seeded"
         );
+
+        // Now the hidden rows, stamped into a strictly later second so they
+        // sort above both visible ones.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let mut hidden = Vec::new();
+        for i in 0..HIDDEN {
+            hidden.push(
+                seed_private_chat(&state, &format!("count-oracle hidden {i} (test fixture)")).await,
+            );
+        }
+        let seeded: Vec<&str> = visible
+            .iter()
+            .copied()
+            .chain(hidden.iter().map(SeededChat::id))
+            .collect();
+
+        // The premise, measured: the person at the keyboard, who is shown
+        // private chats, meets a hidden one before either visible one. Were the
+        // hidden rows below the boundary, the old code's value would not move
+        // and assertion 1 would pass on the very bug it exists to catch.
+        let (first_for_the_person, _) = walk_to_first_seeded(&state, &seeded, &[PROOF]).await;
+        assert!(
+            hidden.iter().any(|chat| chat.id() == first_for_the_person),
+            "premise: the {HIDDEN} private chats must sort above both visible ones, but the \
+             person's sidebar reached {first_for_the_person} first"
+        );
+
+        let (first_after, token_after) = walk_to_first_seeded(&state, &visible, secret_only).await;
+        assert_eq!(
+            first_after, first,
+            "premise: nothing but this test writes the two visible chats, so which of them sorts \
+             first cannot change"
+        );
+        assert_eq!(
+            token_after.as_str(),
+            Some(token_before.as_str()),
+            "the continuation value moved when {HIDDEN} private chats were created. Its \
+             displacement IS their count, and because `updated_at` is stamped on every token \
+             written, polling this route reports when a private chat is running."
+        );
+
+        // …and the value the caller was given still walks to the same row,
+        // which a position into the unfiltered ordering no longer does once
+        // that ordering has shifted underneath it.
+        assert_eq!(
+            seeded_ids_from(&state, &token_before, &seeded, secret_only).await,
+            reached_before,
+            "the same continuation value reached a different visible row after private chats \
+             were created"
+        );
+    }
+
+    /// Of `seeded`, the chats the sidebar hands this caller from `cursor` to the
+    /// end, in the order it hands them. Every other chat in the shared store is
+    /// dropped, so what a sibling test writes meanwhile cannot enter the answer.
+    async fn seeded_ids_from(
+        state: &Arc<AppState>,
+        cursor: &str,
+        seeded: &[&str],
+        headers: &[(&str, &str)],
+    ) -> Vec<String> {
+        sidebar_ids_from(state, 50, Some(cursor), headers)
+            .await
+            .into_iter()
+            .filter(|id| seeded.contains(&id.as_str()))
+            .collect()
     }
 
     /// A private chat with no message at all — `/workflows/create` answers such

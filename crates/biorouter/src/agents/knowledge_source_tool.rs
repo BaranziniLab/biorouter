@@ -85,20 +85,51 @@ pub(crate) async fn handle_ingest_source_with_provider(
     chat_provider: Option<Arc<dyn Provider>>,
 ) -> ToolResult<Vec<Content>> {
     let svc = KnowledgeService::new_default().map_err(internal)?;
+    ingest_sources_through(
+        &svc,
+        arguments,
+        session,
+        cancel,
+        chat_capability,
+        chat_provider,
+    )
+    .await
+}
 
+/// [`handle_ingest_source_with_provider`] against `svc` — the knowledge root
+/// every production call resolves once, first, from `Paths`, and a test hands
+/// in as a directory of its own. One service for the whole call: the tests
+/// used to build theirs from `new_default()` too, so the base they created and
+/// the base the handler looked up were two resolutions of a process-global
+/// variable, and a relocating test between them made the handler answer
+/// "knowledge base '…' does not exist" for a base the test had just made.
+/// Measured 2026-09-21: the lib binary's 121 `knowledge` tests, run 30 times
+/// before this and the relocation changes in `test_sandbox`, failed both Gate
+/// H tests in every run — 53 of the 60 failures that way, the other 7 because
+/// the same relocating test's `BIOROUTER_KNOWLEDGE_TEST_MODE` had leaked too —
+/// and 0 of 30 after. With a foreign root held between the two resolutions on
+/// purpose: 3 of 3 runs red before, 3 of 3 green after.
+async fn ingest_sources_through(
+    svc: &KnowledgeService,
+    arguments: Value,
+    session: &Session,
+    cancel: Option<CancellationToken>,
+    chat_capability: crate::privacy::CallCapability,
+    chat_provider: Option<Arc<dyn Provider>>,
+) -> ToolResult<Vec<Content>> {
     let sources = parse_sources(&arguments, &session.working_dir).map_err(invalid_params)?;
 
     // Issue #56. The identity of the model *in this chat* — the audience of
     // the candidate list `resolve_target_kb` may put in its no-target error.
     // The bridge hands in the same once-per-call capability its dispatcher and
     // privacy gates use, so this path cannot re-sample a different model.
-    let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
+    let kb_id = resolve_target_kb(svc, &arguments, &session.id, &kb_caller(chat_capability))
         .map_err(invalid_params)?;
 
     let chosen = choose_ingest_model(&arguments, session, cancel.clone(), chat_provider).await?;
 
     let report = ingest_sources(
-        &svc,
+        svc,
         SourceIngestArgs {
             kb_id,
             // Issue #56. The tier and affiliation of the provider that will
@@ -498,10 +529,24 @@ mod tests {
     const A_PRIVATE_HOST: &str = "http://127.0.0.1:1";
     const A_PUBLIC_HOST: &str = "https://api.example-saas.invalid";
 
-    async fn ingest_on(kb: &str, session: &Session, host: &str) -> ToolResult<Vec<Content>> {
+    /// A knowledge root of the test's own, passed to the handler rather than
+    /// resolved from `Paths` — see `ingest_sources_through`.
+    fn scratch_service() -> (tempfile::TempDir, KnowledgeService) {
+        let root = tempfile::TempDir::new().expect("a scratch knowledge root");
+        let svc = KnowledgeService::new(root.path().join("knowledge"));
+        (root, svc)
+    }
+
+    async fn ingest_on(
+        svc: &KnowledgeService,
+        kb: &str,
+        session: &Session,
+        host: &str,
+    ) -> ToolResult<Vec<Content>> {
         crate::config::with_config_overrides(
             ollama_at(host),
-            handle_ingest_source_with_provider(
+            ingest_sources_through(
+                svc,
                 serde_json::json!({
                     "kb_id": kb,
                     "text": "Ordinary public notes, ingested from a public chat.",
@@ -542,7 +587,7 @@ mod tests {
         use biorouter_mcp::knowledge::caller::KbCaller;
         use biorouter_mcp::knowledge::tier;
 
-        let svc = KnowledgeService::new_default().expect("the lib binary's sandboxed root");
+        let (_root, svc) = scratch_service();
         let kb = "gate-h-private-model-from-public-chat";
         svc.create_base(kb, "Gate H", None).expect("create");
         assert!(
@@ -551,7 +596,7 @@ mod tests {
         );
 
         let session = public_session("gate-h-public");
-        let err = ingest_on(kb, &session, A_PRIVATE_HOST)
+        let err = ingest_on(&svc, kb, &session, A_PRIVATE_HOST)
             .await
             .expect_err("a public chat may not run an ingest on a private model")
             .message
@@ -591,12 +636,12 @@ mod tests {
         use biorouter_mcp::knowledge::caller::KbCaller;
         use biorouter_mcp::knowledge::tier;
 
-        let svc = KnowledgeService::new_default().expect("the lib binary's sandboxed root");
+        let (_root, svc) = scratch_service();
         let kb = "gate-h-public-model-from-public-chat";
         svc.create_base(kb, "Gate H", None).expect("create");
 
         let session = public_session("gate-h-public-sideways");
-        let report = ingest_on(kb, &session, A_PUBLIC_HOST)
+        let report = ingest_on(&svc, kb, &session, A_PUBLIC_HOST)
             .await
             .expect("a public chat on a public alternate model is a sideways choice");
         let text = format!("{report:?}");

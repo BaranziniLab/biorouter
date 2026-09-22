@@ -143,24 +143,26 @@ mod tests {
     /// temp root has no `biorouter` component, so pinning would turn this test
     /// red rather than fix it.
     ///
-    /// A macro rather than a function because `env_lock`'s guard borrows the
-    /// strings, so it cannot outlive a helper that owns them.
+    /// ⚠ Clearing the override moves it for every test in the process, so
+    /// only a test in a process of its own may do it
+    /// (`crate::test_sandbox::in_a_process_of_its_own`): held in the shared
+    /// process, every sibling resolving `Paths` without the lock resolved this
+    /// test's temporary `HOME` instead of the sandbox.
+    ///
+    /// A macro rather than a function so the `TempDir` and the guard live in
+    /// the calling test's scope, dropped in reverse order at its end.
     macro_rules! scoped_default_home {
         ($temp:ident) => {
             let $temp = TempDir::new().unwrap();
-            let home = $temp.path().to_string_lossy().into_owned();
-            let _guard = env_lock::lock_env([
-                (
-                    if cfg!(windows) { "USERPROFILE" } else { "HOME" },
-                    Some(home.as_str()),
-                ),
-                ("BIOROUTER_PATH_ROOT", None),
-            ]);
+            let _guard = crate::test_sandbox::relocate_home_off_the_path_root($temp.path());
         };
     }
 
     #[test]
     fn test_log_directory_creation() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         scoped_default_home!(_temp_dir);
         let log_dir = biorouter::logging::prepare_log_directory("cli", true).unwrap();
         assert!(log_dir.exists());

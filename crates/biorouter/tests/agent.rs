@@ -31,7 +31,10 @@ use futures::StreamExt;
 /// the sandbox.
 #[ctor::ctor]
 fn sandbox_config_root_for_this_test_binary() {
-    if std::env::var_os("BIOROUTER_PATH_ROOT").is_some() {
+    // An outer root wins only if `Paths` will honour it. `var_os(..).is_some()`
+    // also accepted a blank one, which `Paths` reads as absent: this ctor then
+    // returned, and every test resolved the developer's real directories.
+    if biorouter::config::paths::Paths::path_root_override().is_some() {
         return;
     }
     let root = tempfile::TempDir::new().expect("scratch config root");

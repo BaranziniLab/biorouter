@@ -22,6 +22,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// has overflowed its stack". `run_on_agent_stack` gives the body the same
 /// 16 MiB the runtime's workers get.
 fn main() -> ExitCode {
+    biorouter::fork_safety::complete_libnotify_init(); // before any thread; see fork_safety
     biorouter::execution::runtime::run_on_agent_stack(|| {
         biorouter::execution::runtime::build_agent_runtime()
             .expect("build the agent runtime")

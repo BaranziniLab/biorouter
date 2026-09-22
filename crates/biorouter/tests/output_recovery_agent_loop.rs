@@ -35,13 +35,36 @@ const CONTINUATION: &str = "Your previous response was cut off because it reache
 
 #[ctor::ctor]
 fn sandbox_global_config() {
-    if std::env::var_os("BIOROUTER_PATH_ROOT").is_some() {
+    // An outer root wins only if `Paths` will honour it. `var_os(..).is_some()`
+    // also accepted a blank one, which `Paths` reads as absent: this ctor then
+    // returned, and every test resolved the developer's real directories.
+    if biorouter::config::paths::Paths::path_root_override().is_some() {
         return;
     }
     let root = TempDir::new().expect("scratch config root");
     std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
     static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
     let _ = ROOT.set(root);
+}
+
+/// `observe_private_provider_error` captures through a thread-local
+/// subscriber, and tracing caches each callsite's interest process-wide from
+/// whichever thread reaches it first: a sibling test's agent loop reaching the
+/// agent's error diagnostic first, while one capture is the only subscriber
+/// registered, caches `never` and that capture reads a real diagnostic as
+/// absent. Mechanism and measurement: `biorouter_mcp::test_tracing`.
+#[ctor::ctor]
+fn register_inert_tracing_dispatchers_before_main() {
+    biorouter_mcp::test_tracing::register_inert_dispatchers();
+}
+
+#[test]
+fn the_inert_tracing_dispatchers_are_registered_before_main() {
+    assert!(
+        biorouter_mcp::test_tracing::inert_dispatchers_registered(),
+        "the ctor no longer registers the inert tracing dispatchers, so a diagnostic \
+         capture in this binary can miss an event another test reached first"
+    );
 }
 
 struct AlternatingStormProvider {

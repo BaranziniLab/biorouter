@@ -489,7 +489,12 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // left unbuffered/uncompressed. Outermost, so it covers the interface too.
     let app = app.layer(CompressionLayer::new());
 
-    let listener = tokio::net::TcpListener::bind(settings.socket_addr()).await?;
+    // Not `tokio::net::TcpListener::bind`: on Windows that socket is inherited by
+    // every MCP extension, shell and coding agent this daemon spawns, and any one
+    // of them that outlives the daemon keeps the port listening, which on a fixed
+    // port stops the next daemon from binding it. See
+    // `biorouter::net::bind_non_inheritable`.
+    let listener = biorouter::net::bind_non_inheritable(settings.socket_addr()).await?;
     let local_addr = listener.local_addr()?;
     info!("listening on {}", local_addr);
     // Publish the base URL so in-process MCP tools (e.g. Agent Drafter's

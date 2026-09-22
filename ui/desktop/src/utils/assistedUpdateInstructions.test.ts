@@ -3,8 +3,10 @@ import { assistedUpdateInstructions, assistedUpdateKind } from './assistedUpdate
 
 // The real candidate names, from `githubUpdater.ts`. If those drift, these
 // fixtures should drift with them.
-const WIN_INSTALLER = 'C:\\Users\\x\\AppData\\Roaming\\Biorouter\\updates\\Biorouter-Setup-1.91.0.exe';
-const WIN_ZIP = 'C:\\Users\\x\\AppData\\Roaming\\Biorouter\\updates\\Biorouter-win32-x64-1.91.0.zip';
+const WIN_INSTALLER =
+  'C:\\Users\\x\\AppData\\Roaming\\Biorouter\\updates\\Biorouter-Setup-1.91.0.exe';
+const WIN_ZIP =
+  'C:\\Users\\x\\AppData\\Roaming\\Biorouter\\updates\\Biorouter-win32-x64-1.91.0.zip';
 const LINUX_DEB = '/home/x/.cache/biorouter/updates/biorouter_1.91.0_amd64.deb';
 const MAC_APP = '/Users/x/Library/Caches/biorouter/updates/Biorouter.app';
 

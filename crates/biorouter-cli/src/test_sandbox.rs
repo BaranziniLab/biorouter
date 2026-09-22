@@ -38,10 +38,12 @@
 //!
 //! ## Setting the variable is not enough — the cells have to be PINNED
 //!
-//! `BIOROUTER_PATH_ROOT` is process-global, and seven files here legitimately
+//! `BIOROUTER_PATH_ROOT` is process-global, and six files here legitimately
 //! relocate it under a `TempDir` of their own with `env_lock::lock_env`
-//! (`cli.rs`, `logging.rs`, `commands/{serve,knowledge,skill,schedule,
-//! extension}.rs`). `SHARED_STORE_ROOT` and `GLOBAL_CONFIG` are one-shot cells
+//! (`cli.rs`, `logging.rs`, `commands/{knowledge,skill,schedule,
+//! extension}.rs`) — since 2026-09-22 only in a process of their own
+//! ([`in_a_process_of_its_own`]), where the freeze below still decides where
+//! that child's cells live. `SHARED_STORE_ROOT` and `GLOBAL_CONFIG` are one-shot cells
 //! that resolve their path the first time anything touches them, and the tests
 //! run in parallel — so whichever test gets there first decides for the whole
 //! binary, and that test may be one holding such a lock. Its `TempDir` then
@@ -73,21 +75,39 @@
 /// This binary's sandbox root, recorded before any test could move it.
 ///
 /// ⚠ **`std::env::var("BIOROUTER_PATH_ROOT")` is NOT a way to ask what the
-/// sandbox root is, at any point after `main` starts.** The seven files listed
-/// above point that variable at a `TempDir` of their own and put it back, so a
-/// read taken at test time answers "whichever test is relocating it at this
-/// instant" — a different directory on every run, deleted moments later. This
-/// cell is the only stable answer, and that is why it exists rather than the
+/// sandbox root is, at any point after `main` starts.** The six files listed
+/// above pointed that variable at a `TempDir` of their own and put it back, so a
+/// read taken at test time answered "whichever test is relocating it at this
+/// instant" — a different directory on every run, deleted moments later. They
+/// now do it only in a process of their own, but this cell is still the only
+/// answer that cannot move, and that is why it exists rather than the
 /// assertions re-deriving the root themselves.
 static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Run before `main`, because the placement is the whole point: a guard
 /// installed inside whichever test module "owns" the hazard fixes nothing
 /// whenever another test got to the singleton first.
+///
+/// "Is a root already in force?" is asked through
+/// `Paths::path_root_override`, the predicate `Paths::get_dir` itself uses, so
+/// a root this ctor honours is one every cell will resolve. The
+/// `var_os(..).is_none_or(|v| v.is_empty())` test this replaced honoured a
+/// whitespace-only root that `Paths` reads as absent: it recorded `"   "` as the
+/// sandbox, and `Config::global()` and the session store then resolved the
+/// developer's real directories. Measured on this binary 2026-09-21, under a
+/// throwaway `HOME`, with that test put back: `BIOROUTER_PATH_ROOT='   '`
+/// failed both cell guards, naming `<HOME>/.config/biorouter/config.yaml` and
+/// `<HOME>/.local/share/biorouter`.
 #[ctor::ctor]
 fn sandbox_config_root_for_this_test_binary() {
-    if std::env::var_os("BIOROUTER_PATH_ROOT").is_none_or(|v| v.is_empty()) {
-        let root = tempfile::TempDir::new().expect("scratch config root for the cli test binary");
+    if biorouter::config::paths::Paths::path_root_override().is_none() {
+        let root = match tempfile::TempDir::new() {
+            Ok(root) => root,
+            Err(error) => refuse_to_run_unsandboxed(&format!(
+                "could not create a scratch config root under {}: {error}",
+                std::env::temp_dir().display()
+            )),
+        };
         std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
         // Leaked deliberately: a `static` is never dropped, which is exactly the
         // lifetime the sandbox needs — it must outlive the last test in the
@@ -105,6 +125,54 @@ fn sandbox_config_root_for_this_test_binary() {
     // Unconditional: an externally supplied root needs the same protection.
     let _ = biorouter::session::session_manager::SessionManager::shared_store_root();
     let _ = biorouter::config::Config::global();
+
+    // Observed, not assumed, after both freezes: each read is the cell's
+    // non-initializing `get`, so an entry is `Some` only if something above
+    // really resolved it before `main`. See [`ResolvedBeforeMain`].
+    let _ = RESOLVED_BEFORE_MAIN.set(ResolvedBeforeMain {
+        session_store_root:
+            biorouter::session::session_manager::SessionManager::shared_store_root_if_resolved(),
+        global_config: biorouter::config::Config::global_if_initialized(),
+    });
+}
+
+/// Stop the binary before `main` rather than run it unsandboxed: without a root
+/// of its own, the cells frozen below resolve the developer's real
+/// `~/.config/biorouter` and every test writes there. `abort`, not a panic — a
+/// panic cannot unwind out of a ctor, and the message is the point.
+fn refuse_to_run_unsandboxed(why: &str) -> ! {
+    eprintln!(
+        "biorouter-cli test binary: {why}. Refusing to run: without a sandbox root every \
+         test would read and write the developer's real config and data directories. \
+         Fix the temp directory, or export BIOROUTER_PATH_ROOT to a directory to use."
+    );
+    std::process::abort()
+}
+
+/// What each cell the ctor freezes held when the ctor returned, read WITHOUT
+/// resolving it; `None` means nothing had resolved it before `main`.
+///
+/// ⚠ This is the half of each guard below that can notice a deleted freeze.
+/// `cell().starts_with(sandbox_path_root())` alone cannot: with the freeze
+/// deleted, the guard's own call is the first touch, lands while the ctor's
+/// sandbox is still the ambient root, and passes. A review of this module
+/// measured exactly that on 2026-09-21: both freeze lines deleted, the guards
+/// still green (3 of 3). What they could catch was a cell resolved too early
+/// with a non-sandbox value — not the one that matters, an unfrozen cell first
+/// touched by one of the six relocating files' tests, which depends on
+/// scheduling and so is a coin flip for any guard that waits for it.
+struct ResolvedBeforeMain {
+    session_store_root: Option<&'static std::path::Path>,
+    global_config: Option<&'static biorouter::config::Config>,
+}
+
+static RESOLVED_BEFORE_MAIN: std::sync::OnceLock<ResolvedBeforeMain> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn resolved_before_main() -> &'static ResolvedBeforeMain {
+    RESOLVED_BEFORE_MAIN
+        .get()
+        .expect("the ctor records what it froze before main; an absent record means it did not run")
 }
 
 fn record_sandbox_root(root: &std::ffi::OsStr) {
@@ -130,6 +198,147 @@ fn sandbox_path_root() -> &'static str {
         .as_str()
 }
 
+/// Names, in a child this binary started, the one test that child runs. See
+/// [`in_a_process_of_its_own`].
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+const OWN_PROCESS_TEST: &str = "BIOROUTER_TEST_IN_A_PROCESS_OF_ITS_OWN";
+
+/// **No test in this binary moves `BIOROUTER_PATH_ROOT` or the home directory
+/// while other tests are running.** A test that has to — because its subject
+/// resolves `Paths` or the home directory itself and cannot be handed a root —
+/// calls this first:
+///
+/// ```ignore
+/// if !crate::test_sandbox::in_a_process_of_its_own() {
+///     return;
+/// }
+/// let _env = crate::test_sandbox::relocate_path_root(tmp.path());
+/// ```
+///
+/// In the test run it re-executes this binary with `--exact <this test>` under
+/// a sandbox root of its own, waits, and returns `false` once that child has
+/// passed (a failure panics here, carrying the child's output). In the child it
+/// returns `true` and the body runs — alone in its process, so the relocation
+/// it makes is seen by nothing else.
+///
+/// ⚠ Why this and not the env lock: a lock orders only the tests that take it,
+/// and tests here resolve `Paths` without it — through
+/// `KnowledgeService::new_default()`, `skills_root()` and `extensions_root()`,
+/// among others. While a sibling held the variable on its `TempDir` they
+/// resolved THAT directory, and then it was deleted; `logging`'s test removed
+/// the variable altogether, pointing each of them at a temporary `HOME`'s
+/// default directories for as long as it ran.
+/// The same collision is what failed the `biorouter-server` lib binary's
+/// knowledge-gate test (see that crate's copy of this helper).
+///
+/// A copy of the `biorouter` lib test binary's helper of the same name, which
+/// is `cfg(test)` in that crate and so cannot be shared without shipping it.
+/// The child is checked for `1 passed`, not just a zero exit: a test name that
+/// matched nothing would exit 0 having run nothing. It is spawned under
+/// `env_lock` and waited for outside it, so it cannot copy a value a sibling
+/// set only for itself (see the `biorouter` helper).
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+pub(crate) fn in_a_process_of_its_own() -> bool {
+    let current = std::thread::current();
+    let test = current
+        .name()
+        .expect("libtest names each test's thread after the test");
+    match std::env::var(OWN_PROCESS_TEST) {
+        Ok(marked) if marked == test => return true,
+        Ok(marked) => panic!(
+            "this process was started to run `{marked}` alone, but `{test}` asked for a \
+             process of its own from inside it"
+        ),
+        Err(_) => {}
+    }
+    let root = tempfile::TempDir::new().expect("a sandbox root for the child process");
+    let mut command =
+        std::process::Command::new(std::env::current_exe().expect("the path of this test binary"));
+    command
+        .args(["--exact", test, "--test-threads=1"])
+        .env(OWN_PROCESS_TEST, test)
+        .env("BIOROUTER_PATH_ROOT", root.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = {
+        // Setting nothing: the lock alone keeps a sibling's temporary value out
+        // of the environment the child copies.
+        let _env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
+        command
+            .spawn()
+            .expect("start this test binary again for one test")
+    };
+    let output = child
+        .wait_with_output()
+        .expect("collect the child test process's output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "`{test}`, run in a process of its own, did not pass ({}):\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
+        output.status
+    );
+    false
+}
+
+/// Hold `BIOROUTER_PATH_ROOT` at `root` for as long as the guard lives — only
+/// inside a process [`in_a_process_of_its_own`] started; it panics anywhere
+/// else.
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+pub(crate) fn relocate_path_root(root: &std::path::Path) -> env_lock::EnvGuard<'static> {
+    relocate_path_root_and(root, [])
+}
+
+/// [`relocate_path_root`], setting (or, with `None`, removing) `also` under the
+/// same lock.
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+pub(crate) fn relocate_path_root_and(
+    root: &std::path::Path,
+    also: impl IntoIterator<Item = (&'static str, Option<String>)>,
+) -> env_lock::EnvGuard<'static> {
+    let root = root.to_str().expect("a UTF-8 temp path").to_owned();
+    let mut vars = vec![("BIOROUTER_PATH_ROOT", Some(root))];
+    vars.extend(also);
+    relocate(vars)
+}
+
+/// Hold the platform's home variable (`USERPROFILE` on Windows, `HOME`
+/// elsewhere) at `home` and REMOVE `BIOROUTER_PATH_ROOT`, so `Paths` resolves
+/// the platform's default directories under that home — in a process of its
+/// own only, like [`relocate_path_root`].
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+pub(crate) fn relocate_home_off_the_path_root(
+    home: &std::path::Path,
+) -> env_lock::EnvGuard<'static> {
+    let home = home.to_str().expect("a UTF-8 temp path").to_owned();
+    relocate(vec![
+        (
+            if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+            Some(home),
+        ),
+        ("BIOROUTER_PATH_ROOT", None),
+    ])
+}
+
+#[cfg(test)]
+#[allow(dead_code)] // `#[path]`-included by integration binaries that relocate nothing
+fn relocate(vars: Vec<(&'static str, Option<String>)>) -> env_lock::EnvGuard<'static> {
+    assert!(
+        std::env::var_os(OWN_PROCESS_TEST).is_some(),
+        "a test moved BIOROUTER_PATH_ROOT or the home directory in the shared test process. \
+         Every test that resolves them without the env lock would follow it into a \
+         directory it does not own; start the test with \
+         `if !crate::test_sandbox::in_a_process_of_its_own() {{ return; }}`"
+    );
+    env_lock::lock_env(vars)
+}
+
 #[cfg(test)]
 mod tests {
     use biorouter::config::Config;
@@ -144,8 +353,11 @@ mod tests {
     /// frozen `GLOBAL_CONFIG` at the developer's real `config.yaml`.
     /// `Config::global().path()` is the file a write actually follows.
     ///
-    /// It fails if a future edit drops the pin from the ctor and a relocating
-    /// test wins the race to `GLOBAL_CONFIG`.
+    /// The first assertion fails if anything reached `GLOBAL_CONFIG` under a
+    /// different root before this runs. The second is the one that fails if a
+    /// future edit drops the pin from the ctor — the first cannot see that,
+    /// because its own call then resolves the sandbox (see
+    /// [`super::ResolvedBeforeMain`]).
     #[test]
     fn the_config_file_is_not_the_developers() {
         // The recorded root, not `std::env::var` — a read taken here answers
@@ -156,8 +368,19 @@ mod tests {
         assert!(
             path.starts_with(root),
             "Config::global() resolved to {path}, outside the sandbox at {root}. \
-             Something reached Config::global() before the sandbox was installed, so \
-             config writes from this binary land in the developer's real config."
+             Either something reached Config::global() before the sandbox was \
+             installed, or nothing froze it before main and a test holding \
+             BIOROUTER_PATH_ROOT on a TempDir of its own touched it first — and every \
+             config write from this binary now follows that path."
+        );
+        assert!(
+            super::resolved_before_main().global_config.is_some(),
+            "Config::global() was not initialized before main: the ctor's freeze is \
+             missing. The first test to touch it now decides where this binary's \
+             config.yaml lives, and a test holding BIOROUTER_PATH_ROOT on a TempDir of \
+             its own pins every later config write inside a directory that is deleted \
+             when it ends. (This call resolved {path} only because the ctor's sandbox \
+             happened to be the ambient root when it ran.)"
         );
     }
 
@@ -199,6 +422,9 @@ mod tests {
     /// pinned somewhere else entirely — the exact hole this module exists to
     /// close. `shared_store_root()` is the directory a query follows, frozen for
     /// the life of the process.
+    ///
+    /// ⚠ The second assertion is the one that notices a deleted freeze; the
+    /// first cannot, for the reason [`super::ResolvedBeforeMain`] gives.
     #[test]
     fn the_session_store_is_pinned_inside_the_sandbox() {
         let root = super::sandbox_path_root();
@@ -206,10 +432,21 @@ mod tests {
         assert!(
             pinned.starts_with(root),
             "the process session store is pinned at {}, outside the sandbox at {root}. \
-             Something resolved it before the ctor did, so a test that relocates \
-             BIOROUTER_PATH_ROOT can move this binary's sessions.db into a TempDir \
-             it then deletes — and the failure surfaces as (code: 14) in whatever \
-             test queried next.",
+             Either something resolved it before the ctor installed the sandbox, or \
+             nothing froze it before main and a test holding BIOROUTER_PATH_ROOT on a \
+             TempDir of its own reached it first — so this binary's sessions.db lives \
+             in a directory that test deletes, and the failure surfaces as (code: 14) \
+             in whatever test queried next.",
+            pinned.display()
+        );
+        assert!(
+            super::resolved_before_main().session_store_root.is_some(),
+            "the process session store's root was not resolved before main: the ctor's \
+             freeze is missing. The first test to reach SessionManager::instance() now \
+             decides where this binary's sessions.db lives; if it holds \
+             BIOROUTER_PATH_ROOT on a TempDir it deletes, the next query that needs a \
+             second connection fails with (code: 14). (This call resolved {} only \
+             because the ctor's sandbox happened to be the ambient root when it ran.)",
             pinned.display()
         );
     }

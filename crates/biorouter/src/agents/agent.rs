@@ -17258,14 +17258,17 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn coding_agent_bridge_ingests_searches_and_lints_knowledge() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
 
         let path_root = tempfile::TempDir::new().expect("an isolated Knowledge root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([
-            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
-            ("BIOROUTER_KNOWLEDGE_TEST_MODE", Some("true")),
-        ]);
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            path_root_value.as_str(),
+            [("BIOROUTER_KNOWLEDGE_TEST_MODE", Some("true"))],
+        );
         crate::knowledge::soul::install_assets(&crate::config::paths::Paths::config_dir());
 
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
@@ -18016,11 +18019,14 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn coding_agent_bridge_recovers_managers_hidden_by_code_execution() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
 
         let path_root = tempfile::TempDir::new().expect("an isolated capability root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
+        let _env = crate::test_sandbox::relocate_path_root(path_root_value.as_str());
 
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
         for name in ["knowledge", "skills", "Extension Manager", "code_execution"] {
@@ -18274,9 +18280,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn code_execution_mode_keeps_the_agent_dispatched_platform_tools_callable() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let path_root = tempfile::TempDir::new().expect("an isolated capability root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
+        let _env = crate::test_sandbox::relocate_path_root(path_root_value.as_str());
 
         // ⚠ `BIOROUTER_SESSION_BLOB_LAZY_LOAD` is set as a TASK-LOCAL config
         // override, never in the process environment. It decides whether
