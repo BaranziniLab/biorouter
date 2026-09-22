@@ -413,7 +413,7 @@ jobs:
           pass=$(grep -c '^ok ' windows-console.tap || true)
           skip=$(grep -c '# SKIP' windows-console.tap || true)
           echo "pass=$pass skip=$skip"
-          [ "$pass" -ge 9 ] || { echo "::error::expected at least 9 passing cases, saw $pass"; exit 1; }
+          [ "$pass" -ge 10 ] || { echo "::error::expected at least 10 passing cases, saw $pass"; exit 1; }
           [ "$skip" -eq 0 ] || { echo "::error::$skip cases were SKIPPED on a Windows runner"; exit 1; }
 
       - name: Upload the measurement
