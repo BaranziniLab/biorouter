@@ -4,7 +4,7 @@ Status: implementation in progress September 22, 2026 under the user's approved 
 
 ## 1. Recommendation and scope
 
-Build **BioRouter Crew as a native sidebar capability and a policy-aware built-in agent extension**, backed by a small, ordinary-user Linux collaboration process reached through existing SSH access. Installation, persistent data, configuration and user preferences are based in users' home directories; no sudo, new Unix service account, group creation or elevated access is required. Use the existing BioRouter agent runtime through separate, owner-scoped workers. The shared service handles people, teams, rooms, messages, files, permissions, history and audit; it does not execute everyone's tools as the hosting member.
+Build **BioRouter Crew with functionally equivalent native `biorouter crew` and desktop interfaces, plus a policy-aware built-in agent extension**, backed by a small, ordinary-user Linux collaboration process reached through existing SSH access. Installation, persistent data, configuration and user preferences are based in users' home directories; no sudo, new Unix service account, group creation or elevated access is required. Use the existing BioRouter agent runtime through separate, owner-scoped workers. The shared service handles people, teams, rooms, messages, files, permissions, history and audit; it does not execute everyone's tools as the hosting member.
 
 Favor the user's requested simplicity: native OpenSSH, bounded JSON Lines streams, a broker-owned append-only JSON Lines journal, ordinary attachment files and rebuildable indexes. Human collaboration must work without a model provider, PostgreSQL, Redis, a container platform or a new externally exposed network listener. Additional compute isolation may be required for agents; the chat service itself must not depend on it.
 
@@ -69,7 +69,9 @@ Three blockers are substantive new work, not UI wiring:
 
 ```mermaid
 flowchart LR
-  UI[BioRouter Crew tab and normal agent chat] --> Local[Shared saved-SSH connection manager]
+  UI[BioRouter Crew desktop] --> Local[Profile daemon: connections, auth, transfers and tasks]
+  CLI[Native biorouter crew CLI] --> Local
+  Chat[Scoped normal agent chat] --> Local
   Local --> SSH[Native OpenSSH and human MFA]
   SSH --> Gates[Zero or more existing jump hosts]
   Gates --> Bridge[Bridge on canonical node under each user's UID]
@@ -89,7 +91,7 @@ Every member logs in as their own SSH account. The workspace creator initially h
 
 **Desktop Crew UI and ordinary agent chat:** share one saved-connection registry, verified cluster identity, authentication state and policy service. Crew adds people, teams, rooms, files and owned-agent activity. The existing conversation can use built-in MCP tools to select an admitted connection, work on permitted remote files/jobs, post to a room or retrieve authorized context. These are two interfaces to the same connection and policy, not independent SSH credential stores.
 
-**Local connection manager:** a Rust module behind the local daemon API, with a narrow Electron main-process adapter for interactive authentication. It owns exact SSH child PIDs/control sockets and keeps per-user/per-workspace transports, caches and grants separate. Reusing a connection never transfers another user's device authority or changes the normal local chat's provider silently.
+**Local connection manager:** a Rust module behind the local daemon API. Under the expanded parity contract, the daemon owns the authentication PTY and lifecycle; narrow terminal and Electron adapters supply human input, resize and presentation. The existing Electron-owned PTY is an implementation seam to migrate, not the target architecture. It owns exact SSH child PIDs/control sockets and keeps per-user/per-workspace transports, caches and grants separate. Reusing a connection never transfers another user's device authority or changes the normal local chat's provider silently.
 
 **Home-installed executable:** place `biorouter-crew` under `~/.local/bin/` or a user-selected home subdirectory. Each account may install its own verified copy. Do not require other users to execute a file inside the host user's inaccessible home, or change HOME permissions to expose it.
 
@@ -236,7 +238,7 @@ Avoid first-writer-wins enrollment: bind the invitation to the intended device-k
 
 For sensitive approvals/authority changes, bind a nonce to exact operation, arguments/payload digest, workspace, run/channel, policy epoch and expiry. A trusted human UI invokes the signer; worker tools/PTY automation do not receive it. Hardware-backed keys are optional where supported. Workers get separate run-scoped credentials and cannot mint a human grant. All software under an already compromised host/user UID is outside this application's strong identity claim; an unrestricted remote process must not be treated as proof of a human approval.
 
-Publish the requested task, intended commands/tool calls, status/progress, shareable output and artifact references as structured events. Keep full owner session state separate. Credential prompts, environment secrets, raw provider internals and hidden reasoning are not indiscriminately broadcast. If results include additional restrictions from another channel, send them only to recipients permitted by all sources; a broader-audience room can receive a non-sensitive status when policy allows it.
+Publish the requested task, intended commands/tool calls, status/progress, shareable output and artifact references as structured events. Match tool outcome events by their typed request ID; expose failures and successful response receipt without broadcasting raw tool payloads. An execution receipt is not job completion. Only a job-status result establishes the process outcome. Model summaries remain model-authored claims, and acceptance tests must compare them with actual tool results and artifact hashes. Keep full owner session state separate. Crew-scoped turns must not read or inject the desktop working directory, workspace map, local project hints, or unrelated platform context; use the approved SSH directory and explicit scoped tools. This applies when a preexisting personal chat receives a Crew grant as well as to a new owned task. Credential prompts, environment secrets, raw provider internals and hidden reasoning are not indiscriminately broadcast. If results include additional restrictions from another channel, send them only to recipients permitted by all sources; a broader-audience room can receive a non-sensitive status when policy allows it.
 
 Workers execute as the invoking user's Unix identity and scheduler allocation, never through a different member's hosting account. On Narrows, expensive processing belongs in Slurm rather than an interactive login daemon. The controller records job IDs and exit status, reattaches logs under the same identity, and supports explicit cancellation. No Slurm job was submitted in the feasibility probes.
 
@@ -427,6 +429,8 @@ Support foreground operation and user-owned start/status/stop with explicit home
 
 ## 11. Implementation sequence and delivery gates
 
+The phase table below is the original delivery breakdown. Section 15 adds mandatory daemon-owned CLI/GUI parity to every relevant phase and supersedes any GUI-only completion interpretation; these historical effort ranges do not estimate parity progress.
+
 Effort ranges below are planning estimates, not commitments: the earlier roughly 20–32 engineering person-weeks remains provisional pending the rootless bootstrap and full dev-app test spikes, with overlap possible across independent UI/protocol/security lanes. A useful synthetic human-chat preview comes earlier; broad Linux and desktop MFA parity plus protected multi-user agents is the larger scope. Validate estimates after Phase 1.
 
 | Phase | Deliverable | Exit evidence | Approximate effort |
@@ -444,7 +448,7 @@ Security infrastructure starts in Phase 1 and gates every phase. Phase 6 is inte
 
 ### Proposed repository units
 
-- New `crates/biorouter-crew/`: domain types, policy, journal/recovery, broker/bridge and portable CLI. Add dependencies with `cargo add`; do not hand-edit dependency/version files.
+- New `crates/biorouter-crew/`: domain types, policy, journal/recovery and remote broker/bridge lifecycle. The human CLI belongs in `crates/biorouter-cli/` as `biorouter crew`, using the shared daemon client. Add dependencies with `cargo add`; do not hand-edit dependency/version files.
 - `crates/biorouter/src/agents/crew_extension.rs` plus registry integration: admitted agent operations, no direct unfiltered disk access.
 - `crates/biorouter-server/src/routes/crew.rs` and a connection manager module: local UI API and event bridge. Generate OpenAPI with `just generate-openapi`.
 - `ui/desktop/src/components/crew/` and Crew hooks/state: navigation, auth, timeline, files, owned agents and accessibility.
@@ -593,3 +597,119 @@ Narrows is currently refused by the persistent-storage guard. Supporting qualifi
 The remote runner separately requires full Landlock ABI 3 support and the syscall filter. Report actual kernel capability results rather than inferring support from a distribution name or silently falling back to unrestricted execution. Narrows may also lack the pidfd-based safe stop path. The local Linux test container validates its own kernel and storage configuration; it does not qualify either institutional host.
 
 Configured optional hooks are withheld from Crew sessions because command hooks and alternate prompt providers would create independent access paths. Required managed hook policies, forced project hooks and unreadable/unparseable trusted managed policy instead cause explicit Crew admission and resume refusal. Crew never disables a required institutional hook to make a task run. Existing MCP transports are bound to trusted local session identity and cannot request unsolicited sampling for Crew; server-supplied session labels are not authority.
+
+
+### Current delivery and validation record
+
+The implementation is on `codex/biorouter-crew` in
+[draft PR #366](https://github.com/BaranziniLab/biorouter/pull/366). The
+[acceptance ledger](implementation-status.md), [repository validation](validation-report.md),
+[actual app workflow](crew-ui-acceptance-report.md), and
+[requirement coverage map](regression-coverage-map.md) are the evidence indexes
+for this plan. Hosted CI and live acceptance continue; publishing a draft is
+not completion of the gates above.
+
+An actual local-model task supplied an invented connection ID and local path;
+the scope guard rejected it before file access. The agent interface now
+resolves an omitted connection ID from its already approved conversation,
+continues to reject an explicitly wrong ID, and supplies destination and
+relative-remote-path guidance. This removes a discovery burden without giving
+the model any additional authority. Fresh tests and app runs must validate
+this change. A failed tool call and a subsequent model-written summary are
+recorded separately; the summary is not evidence of file processing.
+
+
+### Linux delivery qualification
+
+The broker must be shipped through the repository's existing pinned Linux x86_64 build and CLI packages, with the same glibc and runtime-dependency checks as the other executables. Development ARM64 binaries built in `rust:latest` are fixture artifacts: the observed GLIBC_2.39 failure on Debian 11 showed why they cannot be described as portable releases. The packaging integration now includes Crew explicitly, rejects an invalid individual ELF even when other binaries inspect successfully, and exercises the shipped broker's help/version entry points in package and oldest-distro checks. See [Linux portability](linux-portability.md) for the explicit Bash recipe, exact artifact results, rootless installation and remaining kernel/filesystem limits. Native macOS daemon, ARM64 Linux collaboration fixture, and x86_64 Linux package evidence remain distinct.
+
+Injected journal write/fsync failures now test preservation of prior acknowledged records, refusal of further physical mutations while storage recovery is required, and exact replay after restart. A blob involved in an uncertain commit must remain available for possible recovered journal references; automatic orphan sweeping is not implemented. These checks and the wire-framing negatives are recorded in [adversarial validation](adversarial-validation.md). They do not establish power-loss durability or qualify NFS.
+
+### Conversational navigation, context discovery and cancellation
+
+The exact `/crew` command is local navigation. Enter, Send and slash-menu selection must work without a configured model and must not dispatch, steer or queue a model request. If files, images or reference chips accompany the command, keep the draft and explain how to open Crew separately. Clear a consumed command synchronously before navigation so it cannot reappear when a new-chat draft remounts. A new personal chat has no session to grant until its first message creates one; the initial implementation explains the non-sensitive first-message or existing-conversation path. Navigation alone grants nothing.
+
+An admitted task receives the destination's recent history and the IDs of its explicitly authorized source channels. The connection-discovery tool exposes the same metadata for personal conversations and revalidates the local grant before returning it. Additional history is retrieved explicitly through `context.manifest` (at most 200 recent visible messages across the selected sources) or a per-channel `messages.search`. Metadata is not fresh broker authorization: retrieval and provider dispatch still enforce live policy and membership. A model-written answer without retrieved source evidence is not a successful cross-channel test.
+
+Cancellation reserves the local stop token and status under the same ledger lock used by completion and progress. Late events cannot turn a reserved or finished cancellation back into running or completed work. The API and final stream event report the stored outcome; an already completed task remains completed. Persist failures remain `outcome_not_durable`; failed remote grant revocation remains `cancellation_unconfirmed`. The owner can explicitly retry pending/unconfirmed, interrupted and non-durable outcomes. Revoking a grant and stopping a local model turn do not prove that an already-started remote process terminated.
+
+Required follow-up tests exercise both cancellation/completion orderings, late progress, failed persistence, failed revocation with explicit recovery, independent event identities under parallel tests, and the same controls through the actual app. Agent-processing acceptance must match the requested executable/arguments, terminal job status, actual generated bytes/digest and attached object. A prevalidated synthetic program may isolate the existing-program workflow from a small model's code-generation failures; its fixture-check output must remain separate from the output created by the app's agent.
+
+
+### Opaque history cursors
+
+Room history, search, context manifests, post/projection acknowledgments and read positions expose random message UUID tokens. They never expose the workspace journal counter, including through cached mutation replies. A paging token must still name a currently visible message in the requested channel. Unknown, wrong-channel or newly inaccessible tokens receive the same `stale_cursor` refusal; the client refreshes authorized history. Numeric anchors are rejected. Internal ordering and read watermarks remain durable numeric state, so existing journals need no rewrite. Focused acceptance must interleave inaccessible rooms and same-room messages with hidden source provenance, then verify paging, read counts, cached replies and restart without numeric-counter or hidden-anchor disclosure.
+
+
+### Native SSH hop admission
+
+Before authentication or opening a Crew bridge, evaluate the actual final OpenSSH invocation and every implicit ProxyJump child with bounded `ssh -G` calls. Final-host options do not protect jump processes automatically. Refuse weak hop host checking, credential forwarding/delegation, local commands, inherited jump masters, custom proxy commands, cycles and unsupported shell-sensitive route/configuration syntax with host-specific remediation. Preserve native user/site configuration, identities and MFA; do not reconstruct configuration from the lossy diagnostic output or silently choose another route. See the [hop policy](ssh-hop-policy.md) for the safe Host stanza and compatibility limits. This validates trusted user/admin configuration; it is not isolation from malicious same-UID configuration or concurrent edits. Maximum authentication age is not implemented, and idle ControlPersist is not an MFA lifetime. Explicit Close and server closure remain the current lifetime contract.
+
+
+## 15. Daemon-owned workflows and CLI/GUI parity
+
+The user expanded the completion requirement on September 22: Crew must be usable through both the native `biorouter crew` CLI and the desktop. The earlier GUI-first implementation and percentage estimates do not establish this broader completion. The active implementation goal references this document; its completion criteria now include the parity work below, in addition to the existing privacy, rootless, SSH and collaboration gates.
+
+The daemon owns connection/authentication state, transfer/resume orchestration, task lifecycles, durable receipts, authorization and recovery. The broker remains authoritative for workspace identity, membership, policy, messages and attachments. GUI and CLI are adapters for human input, file selection, terminal display, progress and presentation; neither implements a second authorization or transfer state machine. The remote `biorouter-crew` executable remains the small broker/bridge, while the human command family belongs in `biorouter crew`.
+
+| Capability | Shared owner | CLI/GUI completion requirement |
+|---|---|---|
+| Profile/daemon attachment and human authorization | Daemon launch/authentication services | Headless operation and reuse of a running profile without treating API credentials, local UID, discovery metadata or an arbitrary PTY as human proof |
+| Saved connections, host trust, enrollment and identity | Crew manager and broker | Both interfaces create/update/list/connect/disconnect the same saved connections and use the same identity verification |
+| Native SSH/MFA/jump lifecycle | Daemon-owned PTY and connection service | Both interfaces display the same human-only authentication stream, resize/input/cancel it, and report errors without logging or sending secret bytes to models |
+| Teams, channels, invitations, ownership, profile and privacy | Broker with typed daemon adapters | Both interfaces perform the same authorized operations; every denial remains authoritative |
+| History, search, context and watching updates | Shared daemon query/watch service | Opaque scoped cursors, consistent ACL refresh, unread behavior and reconnect recovery |
+| Human messages, files and references | Shared daemon mutation/transfer services | Stable retry identities, bounded streaming, hash verification, pause/resume and authorized atomic download publication |
+| Owned agents and personal-chat grants | Existing daemon task/session service | Start, inspect, follow, steer/cancel where supported and grant/revoke through the same scoped provider/tool policy |
+| Recovery and lifecycle | Profile-owned daemon services | GUI exit, CLI exit, SSH interruption and daemon restart have explicit outcomes without duplicate admitted actions |
+
+The human-action gate must remain intact. A supported terminal controller needs an explicit trusted bootstrap and separately held human-approval capability, using the existing protected startup/proof mechanism where possible. A missing human key must remain a refusal. Do not equate `isatty`, a model-created PTY, a general daemon bearer token or a same-UID discovery file with human approval. Never expose controller secrets to worker environments, tools, transcript streams, command arguments or logs. The accepted bootstrap and credential contract below preserves this gate; implementation and independent security acceptance remain required.
+
+For transfers, the trusted human adapter registers a narrowly scoped local source/destination capability. The daemon owns hashing, chunking, broker offsets, stable idempotency keys, metadata-only durable receipts, cancellation and resume. File selection and approved overwrite intent remain explicit user-interface actions. On restart, require file reselection and identity/hash verification unless the user granted persistent local access. Keep memory bounded and preserve arbitrary binary data. A generic authenticated path parameter must not become an agent-accessible filesystem bypass.
+
+Implementation sequence: first agree typed service/authority contracts; extract daemon authentication and transfer workflows; add a typed CLI client and command family; adapt the GUI to those same services; remove duplicate renderer/Electron business logic; regenerate OpenAPI through the repository command; then run parity and security acceptance on the resulting artifacts. Product code remains GPT-6 Astra work; all test code, execution and computer-use driving remain GPT-5.6 Luna work.
+
+Required acceptance additions:
+
+1. Run the supported CLI workflow with all Crew Electron clients closed and no Electron dependency in its process tree. Create or attach a headless profile, authenticate with native terminal MFA, connect/enroll, create/join rooms, invite members, exchange/search/watch messages, upload/resume/download files, invoke an owned agent, inspect/cancel work and reconnect after restart.
+2. Run mixed GUI/CLI collaboration with three distinct Unix accounts and separate identities. A CLI post/upload/task must appear correctly in the GUI; GUI actions must be visible through CLI history/watch and file download. Compare exact message IDs, file hashes, run ownership, scoped context and policy outcomes.
+3. Exercise the same negative matrix through both interfaces: absent/wrong human proof, worker attempting human operations, another user's run, restricted context sent to a public sink, stale grants/cursors, revoked transfers and changed SSH host keys. Refusal means no forbidden remote mutation or provider payload.
+4. Verify transfer interruption/restart without duplicate publication or corrupt files, bounded memory on large binary attachments, source/destination replacement and symlink/reparse negatives, and refusal of unauthorized overwrite.
+5. Verify auth prompt echo/cancel/reconnect and daemon/controller teardown without secret recording. Native UI-specific access approval gaps remain separate from headless terminal evidence.
+6. Record exact final commit/artifact hashes, CLI help/commands, daemon/API schemas, test counts and mixed-interface traces. The final PR and goal cannot be marked complete from the earlier GUI-only evidence.
+
+
+### Accepted bootstrap and credential design
+
+These contracts are accepted. Uncommitted source now implements the principal services described below; implementation integration, independent review and acceptance remain incomplete. No native CLI-only or mixed-interface acceptance is claimed.
+
+The explicit trusted headless launcher receives a separately held human secret through no-echo input or an explicitly selected secret stdin/file descriptor. It passes only the SHA-256 digest through the existing one-shot startup pipe with `EXPECTED=1`, then validates daemon readiness. It never automatically obtains the secret from argv, environment, a discovery descriptor or desktop settings. A missing or invalid proof continues to fail the existing Proven-only gate; having the daemon API secret is insufficient.
+
+The default credential backend is the operating-system keyring. Linux may explicitly opt into an encrypted vault using Argon2id and XChaCha20Poly1305 with bounded, fixed version-1 parameters, associated data bound to the stable expected profile, and a fresh nonce for each encryption. The vault has a separate passphrase; initialization and unlock require human proof. It starts locked on every daemon start, holds unlocked material in zeroizing memory, and atomically publishes ciphertext with fsync durability. There is no automatic fallback, plaintext development-store promotion or equivalence between a vault passphrase and human approval.
+
+Discovery binds profile, daemon instance and endpoint under a lifetime lock. The client must authenticate server identity before transmitting any human proof or vault secret. The implementation committed in `8d6c2ae4` (not pushed) uses a private Unix-domain socket with peer-UID and same-socket HTTP identity checks before proof. Shared IPC is Unix-only; Windows keeps the legacy GUI path and shared native CLI is unavailable there. This transport has not passed parity acceptance. A descriptor alone is not authenticated server identity or human authority.
+
+### Current source milestone and unresolved review
+
+The shared services, thin adapters and native command tree are committed in `8d6c2ae4` (not pushed), including tests and generated API. Native/Linux builds, bounded lifecycle checks and three-user CLI collaboration subsets pass; a clean 43-byte shared-file download now passes exact hash comparison across the three-user CLI sequence, while larger resume/agent/context work, mixed GUI/CLI acceptance remain open; all local repository gates pass on `8d6c2ae4`, while hosted checks for the unpushed commit are not established. The [current parity ledger](implementation-status.md#feature-and-interface-parity-ledger) is the single current milestone summary; [the coverage map](regression-coverage-map.md#daemon-owned-parity-regressions) preserves the acceptance boundaries.
+
+Reviewed source corrections cover exact-ID cleanup and synchronized kill/reap, pending-MFA connect guards, same-connection identity before WebSocket proof, cleanup independent of live connections, macOS ACLs, unlink-only hardlink recovery and semantic transfer-start idempotency with a fresh replay capability. Sidecar shutdown is bounded to 5 seconds with a 2-second join, and CLI owner release to 30 seconds. These source-review closures do not prove all remote jobs stopped. The Windows helper is fully integrated and its real parent cross-compiles; native Windows durability/transfer remains unqualified. Required Windows desktop functionality is unchanged.
+
+### Contract decisions still requiring review
+
+The [CLI source inventory](cli-parity-source-plan.md) proposes integration seams and a command tree; it is source/design evidence, not a delivered CLI/API contract. The bootstrap/credential requirements above are accepted; other proposed command/API details still need integration review. The [feature parity ledger](implementation-status.md#feature-and-interface-parity-ledger) records implementation and acceptance separately. Keep the remaining choices and implementation gaps explicit:
+
+| Decision | Required property | Not yet established |
+|---|---|---|
+| Human-controller bootstrap and pairing | Accepted no-echo/explicit secret input, digest-only startup pipe and Proven-only contract above | GUI secret reopening runtime validation, pairing/revocation details and independent missing/wrong/replayed-proof acceptance |
+| Credential storage | Accepted OS-keyring default and explicit Linux encrypted-vault contract above | Vault primitive review closed after fresh-registry guard; integration, platform qualification, lock/restart and corruption/substitution acceptance remain |
+| Shared daemon discovery and lifetime | Accepted profile/instance/endpoint descriptor under lifetime lock; authenticate server before any proof/vault secret | Unix UDS source present; launch/attach races, bounded shutdown/restart acceptance and missing Windows shared transport remain |
+| Native authentication sessions | Daemon owns SSH/PTY lifecycle; prompts and secrets stay outside models and durable transcripts | Daemon PTY/thin Electron source present; controller exclusivity/re-attachment, prompt echo, cancel and reconnect acceptance remain |
+| Local file capabilities and transfers | Narrow human-selected source/destination authority, bounded binary streaming, durable metadata receipts and atomic verified publication | Shared capabilities/streaming receipts and thin GUI source present; active independent transfer review, overwrite/path identity, limits and restart/reselection acceptance remain |
+| Typed commands, watching and grants | One shared schema and service behavior; broker authorization remains authoritative | Native command tree and grant/context/revoke source present; final schema/client integration, room-watch replay/backpressure and error semantics acceptance remain |
+
+API credentials, same UID, terminal discovery, `isatty`, SSH authentication and an arbitrary PTY are never substitutes for human proof. Host-account trust and SSH access do not establish HIPAA compliance. No design choice above authorizes weaker admission while its implementation is pending.
+
+### Parity completion evidence
+
+Track G10–G15 in the [acceptance ledger](implementation-status.md#release-gates) and P01–P10 in the [parity regression map](regression-coverage-map.md#daemon-owned-parity-regressions). They supplement G01–G09 and I01–I24. A feature is complete only when its shared service, native CLI adapter, GUI adapter and applicable CLI-only/mixed-interface/security evidence agree on the final revision. Existing GUI, broker/helper CLI and SSH-probe evidence remains useful under its original scope and cannot close native `biorouter crew` acceptance.

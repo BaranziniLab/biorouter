@@ -100,8 +100,25 @@
     }
   ],
   "cleanup": {
-    "status": "pending",
-    "command": "python3 /Users/wgu/.codex/worktrees/biorouter-crew/BioRouter/docs/research/biorouter-crew/smoke/aws/cleanup_fixture.py /tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/fixture-state.json"
+    "status": "verified",
+    "command": "python3 /Users/wgu/.codex/worktrees/biorouter-crew/BioRouter/docs/research/biorouter-crew/smoke/aws/cleanup_fixture.py /tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/fixture-state.json",
+    "instance": "terminated",
+    "vol-084c96be40d83a693": "deleted",
+    "security_group": "deleted",
+    "bootstrap_key_pair": "deleted",
+    "verified_at": "2026-09-22T13:40:00Z",
+    "independent_verification": {
+      "instance": "terminated",
+      "volume": "InvalidVolume.NotFound",
+      "security_group": "InvalidGroup.NotFound",
+      "bootstrap_key_pair": "InvalidKeyPair.NotFound",
+      "local_fixture_key_files": [],
+      "remaining_fixture_files": [
+        "fixture-state.json",
+        "user-data.b64"
+      ],
+      "local_docker_gui_fixtures_touched": false
+    }
   },
   "aws_account": "882959136602",
   "source_ip": "169.230.180.159",

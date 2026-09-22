@@ -1,9 +1,10 @@
 # Crew validation report
 
-Validation was run in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter` on
-branch `codex/biorouter-crew`, with Rust revision `26f2a496` and current HEAD
-`8f2ea8df5778e7e8c4e8b08e62bcd31d6bcdbf57`. No AWS source or
-binary export was used.
+The initial validation below ran in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`
+on branch `codex/biorouter-crew`, with Rust revision `26f2a496` and then-HEAD
+`8f2ea8df5778e7e8c4e8b08e62bcd31d6bcdbf57`. Later sections identify their own
+artifacts and results, including the final local check at `367fe588`.
+No AWS source or product binary export was used.
 
 ## Checks and focused regressions
 
@@ -64,8 +65,1046 @@ The process exited 1 with `Error: the turn did not complete: tool_loop` after
 the model repeatedly issued `workspace_list`. This is recorded as a failed
 self-test; the model/tool loop did not provide a passing workflow result.
 
-## Limits
+## Follow-up validation (2026-09-22)
 
-The disposable AWS fixture remains owned by the fixture lifecycle record and
-must be cleaned up by its deadline. Source export approval remains absent, so
-no source or product binary was transferred to AWS.
+The scoped request regressions passed with four selected tests: the omitted
+connection ID reached a fake `remote.list` target, an explicit wrong ID was
+refused, null/number/object IDs were refused, and an omitted ID without a
+grant was refused. Three control-path regressions passed for long `TMPDIR`,
+private ownership/mode, and symlink collision denial. The two existing Crew
+provider-sampling regressions passed after moving path-root relocation into an
+isolated test process. The three hosted-CI source guards each passed with one
+selected test:
+
+```text
+privacy::system_auth::tests::no_caller_raises_a_prompt_without_a_bound_on_it — 1 passed
+test_sandbox::tests::only_the_resolver_and_the_sandbox_read_the_path_root_variable — 1 passed
+test_sandbox::tests::only_the_sandbox_relocates_the_path_root_and_only_in_a_process_of_its_own — 1 passed
+```
+
+Strict Clippy passed with `cargo clippy -p biorouter --lib --tests --no-deps
+-- -D warnings`, and `cargo fmt --all -- --check` passed. A fresh
+`biorouter-server` build completed with `CARGO_BUILD_JOBS=2` and
+`CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target`; the source and
+worktree daemon hashes match:
+
+```text
+sha256: 1ffa69d980d4664b452b2c492100af96fd4055ba3d0e875f076b331fc83b8d86
+version: biorouter-server 1.91.1
+```
+
+The current `just check-everything` run did not complete. It stopped during
+Clippy on the newly added `crates/biorouter-crew/tests/adversarial_contract.rs`
+with six `-D warnings` findings (`let_unit_value` and
+`redundant_closure_call` at lines 217, 403, and 585). The earlier failed
+bounded local-model self-test above remains a failure; this follow-up does not
+replace or reinterpret it.
+
+## AWS export limitation and cleanup
+
+Source export approval remained absent, so no source or product binary was
+transferred to AWS. The disposable fixture was subsequently cleaned up at
+13:40 UTC as verified below; it is not an active acceptance environment.
+
+## Final lifecycle verification
+
+At 13:40 UTC, the exact recorded cleanup command completed with status
+`verified`. Independent follow-up checks against the state-recorded resources
+confirmed instance `i-0b2896cc361853bf7` is `terminated`, EBS volume
+`vol-084c96be40d83a693` returns `InvalidVolume.NotFound`, security group
+`sg-0b6976a48c2117188` returns `InvalidGroup.NotFound`, and bootstrap key pair
+`bootstrap` returns `InvalidKeyPair.NotFound`. The fixture directory contains
+only `fixture-state.json` and `user-data.b64`; no private-key or public-key
+files remain. Local Docker and GUI fixtures were not touched. The then-current
+post-merge `just check-everything` and four-test Crew UI regression run passed,
+superseding the earlier incomplete-check note for that revision. Later product
+changes have their own validation below.
+
+## Current validation refresh (2026-09-22)
+
+After the adversarial test cleanup, the repository gate completed successfully:
+
+```text
+source bin/activate-hermit && CARGO_BUILD_JOBS=2 just check-everything
+all style, Rust, UI, schema, version, registry, privacy, and drift checks passed
+registry tests: 61 passed; privacy-registry tests: 21 passed
+```
+
+The fresh CLI build also completed in the reused target:
+
+```text
+source bin/activate-hermit && CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  cargo build -p biorouter-cli
+artifact: /private/tmp/biorouter-crew-target/debug/biorouter
+sha256: 2661b979eb5dba004a1be8d1c7aa0030722c64bdea925cab9ded8ca4d0c7fcb4
+architecture: Mach-O arm64
+version: biorouter-cli 1.91.1
+```
+
+A read-only documentation check covered 27 Markdown files under this report's
+Crew documentation tree: zero broken local links, zero unclosed fenced blocks,
+and zero trailing-whitespace lines. At that point the isolated 8b self-test was
+queued; its later failed and zero-exit-without-assertions outcomes are recorded
+below, neither as a passing workflow.
+
+## Linux portability refresh (2026-09-22)
+
+The broker-only cross build was run through the pinned `rust:1.92-bullseye`
+x86_64 toolchain using the documented Bash heredoc (the helper depends on
+Bash's `BASH_SOURCE` when resolving the worktree root):
+
+```text
+bash <<'BASH'
+set -euo pipefail
+source scripts/cross-env.sh
+cross_linux 'cargo build --locked --release -p biorouter-crew -j 2' /usr/src/myapp/target/crew-portable
+BASH
+```
+
+The resulting artifact is an x86_64 ELF at
+`target/crew-portable/x86_64-unknown-linux-gnu/release/biorouter-crew`, with
+SHA-256 `2a72d02df3d57b9785305d3bdf978d24f4e2cb248652ba8a459983ca8335594d`.
+In a Debian 11 x86_64 container under macOS emulation, UID 65532 ran
+`--version`, `--help`, and an invalid command. The version was
+`biorouter-crew 1.91.1`; the invalid command returned nonzero. ELF imports
+reached GLIBC 2.30, below the pinned 2.31 floor. DT_NEEDED contained only
+`libgcc_s.so.1`, `libpthread.so.0`, `libdl.so.2`, `libc.so.6`, and
+`ld-linux-x86-64.so.2`.
+
+The per-binary glibc guard passed with max 2.30, and the runtime-dependency
+and nfpm payload guard passed with no undeclared non-glibc dependency. Both
+guards rejected a malformed `biorouter-crew` third artifact when the other two
+fixture binaries were valid, confirming a failure in that binary cannot be
+masked. Bash syntax checks, `check-no-cross-drift`, `cargo fmt --all -- --check`,
+and `git diff --check` passed.
+
+The same pinned artifact also passed a bounded rootless service smoke in a
+disposable Debian 11 x86_64 container under macOS emulation: UID 65532 used a
+private HOME/state directory and synthetic root-owned machine identity;
+`start`, `status`, and a bridge-mediated Unix-socket `hello` returned matching
+workspace/UID/socket metadata and private mode. The lifecycle `stop` command
+was attempted with the exact recorded PID under both default Docker seccomp
+and seccomp-unconfined containers, but both returned
+`unsupported: safe stop requires Linux pidfd_open`. This is recorded as an
+emulated-kernel limitation; native Linux is required to qualify the exact-pid
+stop path. No remote execution or network qualification is claimed.
+
+## Fresh CLI local-model self-test (2026-09-22)
+
+The fresh CLI artifact
+`/private/tmp/biorouter-crew-target/debug/biorouter` (SHA-256
+`2661b979eb5dba004a1be8d1c7aa0030722c64bdea925cab9ded8ca4d0c7fcb4`) was run
+with an isolated synthetic profile at
+`/private/tmp/biorouter-selftest-luna-8b-20260922`, private loopback Ollama,
+model `qwen3:8b` (digest
+`500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41`), and a
+180-second bound:
+
+```text
+BIOROUTER_PATH_ROOT=/private/tmp/biorouter-selftest-luna-8b-20260922
+BIOROUTER_PROVIDER=ollama
+OLLAMA_HOST=http://127.0.0.1:11434
+OLLAMA_TIMEOUT=30
+timeout 180 /private/tmp/biorouter-crew-target/debug/biorouter run \
+  --workflow biorouter-self-test.yaml --model qwen3:8b \
+  --params test_phases=basic --params test_depth=quick \
+  --params cleanup_after=true
+```
+
+The run started session `20260922_1` but exited 70 with provider failure:
+`Request failed: Stream decode error: error decoding response body`, followed
+by `Error: the turn did not complete: provider_failure`. The full log is
+`/private/tmp/biorouter-selftest-luna-8b-20260922.log`. This remains a failed
+self-test and provides no Crew MCP or end-to-end workflow evidence.
+
+The single higher-timeout retry used a new isolated profile at
+`/private/tmp/biorouter-selftest-luna-8b-20260922-retry`, the same fresh CLI,
+`OLLAMA_TIMEOUT=120`, and a 240-second total bound. It exited 0 after one
+qwen3:8b response (60,314 ms; 15,599 input, 782 output, 23,923 total tokens;
+733 chunks), but the CLI emitted no assistant report or workflow assertion.
+The persisted session evidence contains one user message and one empty
+assistant message, no tool messages, no checkpoints, no message blobs, and one
+token event. The banner classified the session as Public; Ollama itself was a
+local private endpoint/provider. This is a model-response/zero-exit result,
+not a passing self-test or Crew MCP proof. The earlier 30-second timeout
+`provider_failure` remains recorded above.
+
+## Census wiring refresh (2026-09-22)
+
+The focused census rerun used the shared target with incremental compilation
+disabled and two build jobs:
+
+```text
+source bin/activate-hermit && CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  cargo test -p biorouter --test privacy_guard_wiring -- --test-threads=1
+```
+
+Result: 3 tests passed, 0 failed. The console-window census then ran with the
+same environment:
+
+```text
+source bin/activate-hermit && CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  cargo test -p biorouter-mcp --test no_console_window_census -- --test-threads=1
+```
+
+Result: 19 tests passed, 0 failed. Formatting and whitespace checks also
+passed:
+
+```text
+source bin/activate-hermit && cargo fmt --all -- --check
+git diff --check
+```
+
+The privacy registry audit added `excluded_crew_sessions` with its five live
+callers (`GET /schedule/{id}/sessions`; `GET /sessions/sidebar`,
+`GET /sessions/insights`, and `GET /sessions/activity`; and
+`GET /sessions/changes`). It also reconciled
+the existing rows against current production calls: `session_reach` now records
+agent 7/7, Crew 1/1, session 8/13, and session-events 2/2 (calls/refs), while
+`http_caller` records session 5/0. The console census exempts only the two
+Crew modules declared under `#[cfg(unix)]` in `biorouter-crew/src/lib.rs`; the
+cross-platform core Crew spawn sites remain covered by the live assertion. The
+new Crew guard caller is `POST /crew/connections/{id}/sessions/{session_id}/grant`
+(`grant_session`), which requires human proof before attaching conversation
+authority.
+
+These are local source-census results. They do not qualify Windows desktop
+acceptance; the hosted Linux rerun remains required for that lane.
+
+## Final local repository check at `367fe588` (2026-09-22)
+
+The validation lane completed the full repository command with the explicit
+shared target, incremental compilation disabled and two build jobs:
+
+```text
+source bin/activate-hermit && CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 just check-everything
+```
+
+Result: **passed all ten checks**. The production socket-inheritance gate
+checked 17 targets with zero warnings; registry tests passed 61/61 and
+privacy-registry tests passed 21/21. This final local run supersedes the
+earlier incomplete local-gate state and is distinct from hosted CI and
+graphical agent acceptance.
+
+The refreshed daemon used for ongoing GUI acceptance is SHA-256
+`3133646fa1fc6b6369677f0c6b769b7ead5ce1bd145bf803e38bea29d3f71cc3`.
+The corrected private Ollama API tool/result evidence and four public-sink
+cases in [the provider report](local-provider-boundary-report.md) used the
+earlier daemon `1ffa69d9…`; they do not establish a new-daemon graphical pass.
+Historical CLI model failures and the empty zero-exit response remain recorded
+above. No full end-to-end model, native named-Save, Windows desktop or AWS
+product acceptance is inferred from the repository gate.
+
+## ToolActivity projection unit refresh (2026-09-22)
+
+The focused unit suite was run against the shared target with incremental
+compilation disabled and two build jobs:
+
+```text
+source bin/activate-hermit && cargo fmt --all && \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  cargo test -p biorouter-server --lib routes::crew::tests -- --test-threads=1 && \
+  git diff --check
+```
+
+Result: **5 passed, 0 failed, 712 filtered out**. The tests cover matching
+Crew requests and responses, typed job receipts versus `Err(ErrorData)`
+failures, same-request and same-response deduplication, and unmatched response
+ids. They also prove that synthetic private success/error payloads never enter
+Crew activity text, and that unknown methods and non-Crew requests are ignored.
+
+The shared branch still contains the concurrent Crew implementation's 367+
+line uncommitted source delta; Luna's change here is test-only coverage in
+`routes/crew.rs`, with no product-logic change or durability claim.
+
+## Scoped local-context regressions and artifact refresh at `373acdf5` (2026-09-22)
+
+The focused regressions ran against the shared target with incremental
+compilation disabled and two build jobs:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib authoritative_crew_context_omits_local_moim_context -- --nocapture
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib ordinary_context_retains_local_moim_and_prompt_context -- --nocapture
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib crew_prompt_omits_local_hints_while_ordinary_prompt_keeps_them -- --nocapture
+```
+
+Result: **1 passed, 0 failed, 4191 filtered out** for each command. The Crew
+MOIM test proves a real scoped session omits the local path, workspace-map
+canary, and `AGENTS.md` canary while retaining Crew remote guidance. The
+ordinary-session control retains the local path and workspace-map canary. The
+reply preparation test uses the actual created `Session.id` for the Crew
+scope, proves the local hint is absent there, and proves it remains present for
+an ordinary session.
+
+Formatting and whitespace checks passed:
+
+```text
+source bin/activate-hermit && cargo fmt --all -- --check
+git diff --check
+```
+
+The committed daemon and CLI were rebuilt from `373acdf5` with the same shared
+target settings. The current daemon artifact is
+`/private/tmp/biorouter-crew-target/debug/biorouterd`, version `1.91.1`,
+SHA-256
+`6c19b87f661f78a65011b33c00951206aecc14a19cbe75dab6d88a53ae1ca5ef`; the
+worktree `target/debug/biorouterd` was replaced atomically and has the same
+hash. The current CLI artifact is
+`/private/tmp/biorouter-crew-target/debug/biorouter`, version `1.91.1`,
+SHA-256
+`3fe16d8f49650aef87565ba79cb45bd33a8f8e486111b7329c796d50bfa37f87`.
+
+The required final local command passed all ten checks at `373acdf5`:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 just check-everything
+```
+
+This current artifact supersedes the earlier local daemon hash
+`3133646fa1fc6b6369677f0c6b769b7ead5ce1bd145bf803e38bea29d3f71cc3`.
+The historical `1ffa69d9…` daemon was used for earlier provider-boundary
+evidence; neither historical artifact is the current `373acdf5` build.
+
+## Run cancellation ledger regressions (pending final source commit, 2026-09-22)
+
+The focused server route tests ran in the shared target with incremental
+compilation disabled and two build jobs:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-server routes::crew::tests:: --lib -- --nocapture
+```
+
+Result: **11 passed, 0 failed, 0 ignored, 0 measured, 712 filtered out** in
+0.17 seconds. The 11 selected tests include the five existing ToolActivity
+unit tests and six cancellation regressions. The cancellation fixtures use a
+real temporary `RunLedger`, persist and read its JSON status where durable,
+and subscribe to the session bus with a bounded event wait. They cover both
+reservation-before-success and success-before-cancellation races; queued and
+progress updates after reservation; failed remote revocation followed by the
+same-endpoint retry; interrupted and `outcome_not_durable` retry states; real
+ledger persistence failure reporting; and the already-completed `complete`
+final event. These are helper/state/event tests, not live HTTP or network
+cancellation tests.
+
+`cargo fmt --all` and `git diff --check` passed after the test additions. The
+route test process is idle; no daemon rebuild or installation was performed
+for this test-only validation.
+
+## Final committed snapshot gate and artifacts at `aac5f4ac` (2026-09-22)
+
+After the cancellation route regressions and the two Crew core tests were
+committed as `aac5f4ac`, capacity was 206 GiB free and no Rust process was
+active. The required repository gate passed with the shared target, disabled
+incremental compilation, and two build jobs:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 just check-everything
+```
+
+All ten checks passed, including strict clippy, the non-inheritable socket
+check (17 production targets, zero ordinary warnings), UI typecheck/lint,
+OpenAPI generation/schema comparison, version/brand/Copilot/cross-drift checks,
+registry 61/61, privacy registry 21/21, and consistency.
+
+The final native artifacts were built from `aac5f4ac` with:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo build -p biorouter-server --bin biorouterd \
+    -p biorouter-cli --bin biorouter
+```
+
+Build passed. `biorouterd --version` reported `biorouter-server 1.91.1`, and
+`biorouter --version` reported `1.91.1`; `--help` exited successfully for both.
+The shared-target hashes are:
+
+```text
+1ce50cb31f63dca70c7bb25c571facd1672fe9271801ddbf5e82f5785483e407  /private/tmp/biorouter-crew-target/debug/biorouterd
+af43d934f73ae14c3708da5eb5b9febc6ce3516f5fcbc93a9e8a4e7fb24cc44c  /private/tmp/biorouter-crew-target/debug/biorouter
+```
+
+Both artifacts were copied to temporary sibling files and atomically renamed
+over the worktree destinations `target/debug/biorouterd` and
+`target/debug/biorouter`; staged, source, and installed hashes matched. GUI
+clients were not restarted, so their running processes remain separate from
+this newly installed artifact.
+
+## Final Crew documentation and harness hygiene (2026-09-22)
+
+A read-only hygiene pass covered the 14 pending tracked or untracked paths under
+`docs/research/biorouter-crew`. It found:
+
+- Python AST parsing: 15 files, 0 syntax errors.
+- JSON parsing: 4 files, 0 parse errors.
+- Markdown fences: 29 files, 0 unbalanced fence pairs.
+- Relative Markdown links: 73 checked, 0 broken. External, anchor, `codex://`, and `app://` links were excluded from the local-file check.
+- `git diff --check`: passed.
+- Pending text files contained 0 private-key-block, AWS-access-key, or SSH-private-key markers. No credentials or session-state files were added by this pass.
+
+The selected pending evidence screenshots inspected with image preview were
+`/private/tmp/biorouter-crew-ui-attachments/synthetic-crew.png`,
+`downloaded-blocks-320x180.png`, `synthetic-blocks-320x180.png`,
+`/private/tmp/carol-fresh-ui.png`, `/private/tmp/bob-current-ui.png`,
+`/private/tmp/bob-owned-task.png`, `/private/tmp/bob-personal-crew-grant.png`,
+`/private/tmp/carol-processing-correction.png`, and
+`/private/tmp/carol-agent-final.png`. Eight were readable and showed only
+synthetic UI/task data, identifiers, hashes, or local fixture paths; no private
+key or credential material was visible. `synthetic-crew.png` rendered as a
+uniform black image and is not readable evidence. No evidence screenshots are
+committed under the Crew research tree. No fixtures, UI profiles, or model
+services were mutated during this pass.
+
+## Ignored Crew evidence-image review (read-only, 2026-09-22)
+
+The repository evidence directory was inventoried with `rg --files --no-ignore`: 28 PNGs were present under `docs/research/biorouter-crew/evidence/`. Every file decoded successfully as an RGB PNG at 1440x1000. Contact-sheet review covered all 28 images; full-size review included the fresh-control member/result views, Carol connection/PAM cancellation views, and Bob personal/Crew views. No repository evidence image was blank or uniformly black. The known one-pixel `synthetic-crew.png` fixture is outside this directory and remains historical fixture input, not repository screenshot evidence.
+
+The following 26 unique evidence files are approved for reference in reports. The evidence directory is ignored, so this is a review list; no image was staged or committed by this pass:
+
+```text
+alice-cross-channel.png
+bob-current-ui.png
+bob-personal-crew-grant.png
+bob-personal-greeting.png
+bob-personal-ready.png
+bob-slash-existing2.png
+carol-agent-final.png
+carol-agent-session.png
+carol-blocks-preview.png
+carol-blocks-uploaded.png
+carol-crew-home.png
+carol-fresh-pam-after-password.png
+carol-fresh-pam-prompt.png
+carol-fresh-ui.png
+carol-opaque-uploaded.png
+carol-pam-cancelled.png
+carol-png-preview.png
+carol-png-uploaded.png
+carol-processing-correction.png
+carol-reconnected.png
+final-9411-reconnected.png
+final-9412-reconnected.png
+final2-9411.png
+final2-9412.png
+fresh-control-members.png
+fresh-control-result.png
+```
+
+Two files remain historical but are excluded from the unique reference list because they are byte-identical duplicates of `carol-agent-final.png` (SHA-256 `5bc5937ed37121c26fa14d26f47f96675806eeca0dbbcf2745f85005d1a64104`): `carol-personal-crew-after.png` and `final-9413-reconnected.png`. They were not deleted. The screenshots show synthetic UI/task content, local fixture paths, public enrollment-key metadata, and result hashes; no private-key body or credential/password value is visible.
+
+A separate read-only SSH fixture inspection found the Carol helper at mode `0700`, owned by the fixture Carol UID, size 1748 bytes, SHA-256 `901605725a653a05544cd83bb7af79f711321475fb6d812a91cb991cc7f544d6`; `crew-task.csv` was mode `0644`, same owner, 31 bytes, SHA-256 `b8d8853f57f79b6bc9e4c3736b9f7c840e0975ea0606d31cc934349d5606335a`; and no `python3`, helper, or job-ID process was running at inspection time. Existing `summary.csv` and `fixture-check-summary.csv` were preserved.
+
+## Live HTTP Crew cancellation regression (2026-09-22)
+
+The bounded `cancellation-http` scenario in
+`smoke/local_provider_boundary.py` was run once against the freshly installed
+daemon, using a new temporary profile root, a loopback OpenAI-compatible mock
+provider, and the disposable SSH broker fixture. It did not use any of the
+three UI profiles, Ollama, or a model call. The exact command was:
+
+```text
+python3 -m py_compile docs/research/biorouter-crew/smoke/local_provider_boundary.py && \
+python3 docs/research/biorouter-crew/smoke/local_provider_boundary.py --scenario cancellation-http
+```
+
+The daemon SHA-256 was
+`1ce50cb31f63dca70c7bb25c571facd1672fe9271801ddbf5e82f5785483e407`; the
+fixture broker SHA-256 was
+`7311f126d0e77f6b7e6f4b75e0ac32b099ff38b4e7757ca04e92737e9ffbc759`. The
+scenario printed `api_harness: pass` and exercised two mock-provider requests:
+
+- A held streaming run (`930769d6-b497-4a28-b520-4fc1fab2b9f4`) first refused
+  cancellation through `wrong-luna-owner` with HTTP 400 and the exact
+  ownership refusal `This task is not owned by this device and connection.`.
+  Cancellation through the owning connection returned HTTP 200 with
+  `cancelled: true`, `status: cancelled`, and
+  `remote_revocation_confirmed: true`.
+- The session observer received exactly one terminal `Finish` SSE frame with
+  `reason: cancelled`. Releasing the held provider stream afterward left the
+  persisted run status `cancelled`, proving a late provider completion did not
+  overwrite the cancellation.
+- A second run (`4cd39ba6-6ad1-4e71-9142-709be8f7069b`) completed before its
+  cancel request. The cancel response was HTTP 200 with
+  `already_finished: true`, `status: completed`, and `cancelled: false`.
+
+This is live route evidence for confirmed cancellation, owner mismatch,
+completion-before-cancel, persisted terminal status, and the matched observer
+event. The synthetic fixture does not force an unconfirmed remote revocation;
+that failure-and-retry behavior remains covered by the six focused Rust route
+tests recorded above. The mock server logged one expected client connection
+reset after the daemon stopped the held upstream request; the scenario itself
+completed with exit status 0 and all status-bearing assertions passed.
+
+## Repository gate after remote FIOCLEX fix (2026-09-22)
+
+The required gate was run on the current working tree after the reviewed
+11-line `crates/biorouter-crew/src/remote.rs` FIOCLEX fix. Capacity before the
+run was 206 GiB free, zero swap, and load averages 4.75/6.34/7.07. The exact
+command was:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  just check-everything
+```
+
+It passed all ten checks: Rust formatting; strict and baseline clippy; the
+non-inheritable production socket gate (17 targets, zero ordinary warnings);
+UI typecheck, lint, themes, contrast (404 assertions), and tokens; OpenAPI
+schema; version consistency; brand consistency; Biorouter Copilot naming;
+vendored computer-use source; cross-compile drift; registry (61/61); and
+privacy/consistency (21/21). The command exited 0. `git diff --check` also
+passed afterward.
+
+Source fingerprint for this gate: committed `HEAD`
+`aac5f4acdc11da8c0a5b7b95d4054a2850a46ed8`; current uncommitted
+`crates/biorouter-crew/src/remote.rs` SHA-256
+`937cce9f67dd71d11775f2ba73d5b029aa01c331be0247012719cca5288f7f2c`.
+No daemon or CLI rebuild was performed because this change is confined to the
+broker crate.
+
+## Linux arm64 FIOCLEX regression artifact (2026-09-22)
+
+The earlier artifact at `/private/tmp/crew-linux-target/debug/biorouter-crew`
+was excluded from acceptance evidence because it was a macOS arm64 Mach-O
+binary (SHA-256
+`d32208e1ada515b3c7d9f348e6679b1f0bcee2334108ce796c338c31b7b0ddc3`), which
+also explains its disposable Linux canary exit 126. A fresh Linux build used
+the cached `rust:latest` image, digest
+`sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082`,
+which is Debian 13.6 arm64. The cached toolchain versions were `rustc 1.98.1
+(48a229cea 2026-09-01)` and `cargo 1.98.1 (797e8a9bc 2026-08-05)`. The exact
+build command was:
+
+```text
+docker run --rm --platform linux/arm64 \
+  -v /Users/wgu/.codex/worktrees/biorouter-crew/BioRouter:/workspace \
+  -v /private/tmp/crew-linux-cargo-target-luna:/cargo-target \
+  -w /workspace \
+  -e CARGO_TARGET_DIR=/cargo-target -e CARGO_INCREMENTAL=0 \
+  -e RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu \
+  -e PATH=/usr/local/cargo/bin:/usr/local/rustup/toolchains/1.98.1-aarch64-unknown-linux-gnu/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  rust:latest cargo build -p biorouter-crew --target aarch64-unknown-linux-gnu
+```
+
+The resulting artifact at
+`/private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew`
+is an executable ELF 64-bit LSB PIE ARM aarch64 binary with SHA-256
+`a38b34be38201fe6a1aacd21451d4c8b9311cc3478fd9d919f36810a037d83f5`. Its
+highest imported GLIBC symbol is `GLIBC_2.39`.
+
+The exact disposable harness command was:
+
+```text
+python3 docs/research/biorouter-crew/smoke/local_file_script_regression.py \
+  --binary /private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew \
+  --container biorouter-crew-regression-test-luna \
+  --docker /usr/local/bin/docker --expect-file-script allow
+```
+
+It passed in the separate `biorouter-crew-regression-test-luna` container.
+The exact helper argv was `["python3", "summarize_csv.py", "crew-task.csv",
+"summary.csv"]`; stdout was `row_count=3 total=60\n`, and the output bytes
+were exactly `row_count,total\n3,60\n` (21 bytes, SHA-256
+`29f857b262032224f20e849e76bed6907e8e02846835a632c8380b2bafb91ab3`). The
+network, subprocess, unknown ioctl (`0x12345678`), FIONCLEX (`0x5450`),
+outside-file read, `/etc/passwd`, and `../.ssh` path negatives all failed with
+the expected permission refusal. The test container was stopped and removed;
+the live canary and three-user regression containers were left untouched.
+
+The test-only harness source fingerprint is
+`ae63572f7657eaed0f15035ae0cac25669796032b1f9dce385f30e93b9ef3e9a`, and the
+synthetic fixture source fingerprint is
+`901605725a653a05544cd83bb7af79f711321475fb6d812a91cb991cc7f544d6`.
+`git diff --check` passed after recording this evidence.
+
+## Rootless live fixture broker upgrade (2026-09-22)
+
+After the UI lane paused model calls, a fresh process check found no active
+remote helper jobs in `biorouter-crew-ssh-luna`; only Alice's broker and the
+known idle bridge sessions were present. The verified ELF was uploaded through
+each ordinary SSH account using its distinct fixture key. For each user, the
+operation used a temporary path under that user's `.local/bin`, verified the
+SHA-256 over SSH, set mode `700`, and atomically renamed the temporary file:
+
+```text
+scp -q -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=/private/tmp/biorouter-crew-ssh-fixture/known_hosts \
+  -i /private/tmp/biorouter-crew-ssh-fixture/keys/$user -P 56928 \
+  /private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew \
+  $user@127.0.0.1:/home/$user/.local/bin/.biorouter-crew.a38b34be3820.tmp
+
+ssh ... "$user@127.0.0.1" \
+  'got=$(sha256sum /home/$user/.local/bin/.biorouter-crew.a38b34be3820.tmp | cut -d" " -f1); \
+   test "$got" = a38b34be38201fe6a1aacd21451d4c8b9311cc3478fd9d919f36810a037d83f5; \
+   chmod 700 /home/$user/.local/bin/.biorouter-crew.a38b34be3820.tmp; \
+   mv -f /home/$user/.local/bin/.biorouter-crew.a38b34be3820.tmp \
+         /home/$user/.local/bin/biorouter-crew'
+```
+
+Alice, Bob, and Carol each reported the new artifact SHA-256
+`a38b34be38201fe6a1aacd21451d4c8b9311cc3478fd9d919f36810a037d83f5`, mode
+`700`, and ELF 64-bit ARM aarch64 type. Their ordinary SSH identity checks
+returned UIDs 1101, 1102, and 1103 respectively.
+
+The existing Alice broker was stopped only through Alice's stateful stop
+command, which returned workspace ID `0fb6e0c6-32c0-4d0a-957e-8a76240d54c2`.
+It was restarted as Alice with the new binary and the existing state directory,
+without a bootstrap key or state reset. The new broker PID was `4891`. Runtime
+metadata preserved host UID `1101`, node ID
+`3469076c14385846f21a17d3e823e621c09cbaa33b73a32560cb31323d0bcd3b`, socket
+`/tmp/crew-1101-d9f258fd97f241a3bf55a6b56b20e0e5/broker.sock`, the same
+workspace ID, workspace key fingerprint
+`a4489c000171b2f739dc571d42fa2911259500d674c181b97a59748456eb8f8a`, and the
+same workspace public key. Existing profile, enrollment, journal, and history
+state were preserved. The Bob bridge exited during the broker restart; no Bob
+or Carol broker was restarted, and the Alice bridge remained idle.
+
+## Pinned x86_64 Bullseye portability refresh (2026-09-22)
+
+This refresh was built after the current FIOCLEX source change. The source
+fingerprint for `crates/biorouter-crew/src/remote.rs` was
+`937cce9f67dd71d11775f2ba73d5b029aa01c331be0247012719cca5288f7f2c`. Using the
+pinned `rust:1.92-bullseye` image (`rust@sha256:c6d501c039204c21e9fa374f234bd41bdc8b36cfd455a407ef145d9bef19f2b7`)
+with two cargo jobs produced:
+
+```text
+/private/tmp/crew-linux-portable-luna/x86_64-unknown-linux-gnu/release/biorouter-crew
+SHA-256 eefaece19ce99b3ba54f7358c64a6d0ed4efb6788b37a8b080fefe3b7a9cb3e4
+BuildID a7bbd1aa01020ae37fbd942978ad2caa1547df35
+ELF64 x86-64 PIE, interpreter /lib64/ld-linux-x86-64.so.2
+highest imported GLIBC symbol GLIBC_2.30
+DT_NEEDED libgcc_s.so.1 libpthread.so.1 libdl.so.2 libc.so.6 ld-linux-x86-64.so.2
+```
+
+The artifact was exercised in the disposable `rust:1.92-bullseye` container
+`biorouter-crew-portable-smoke-luna` as ordinary UID `65532` (not root). The
+synthetic machine ID was valid hexadecimal and the state parent was private to
+that user. Exact CLI outcomes were:
+
+```text
+--version: biorouter-crew 1.91.1
+--help: Usage: biorouter-crew serve|start|status|stop --state-dir PATH [--bootstrap-key HEX]
+        biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID
+        biorouter-crew --version
+        Broker and bridge operations require Linux.
+start: {"started_pid":181,"state":"starting","status_command":"status"}
+status: {"host_uid":65532,"node_id":"3469076c14385846f21a17d3e823e621c09cbaa33b73a32560cb31323d0bcd3b","pid":181,"protocol":1,"socket":"/tmp/crew-65532-eaf34679c115467986f7b98075fd0284/broker.sock","workspace_id":"0d18c3da-90d7-4e47-9dba-58c653fdd0cc","workspace_key_fingerprint":"090794a6c9f8ec14fbf65846e47c4653d684b737c84b5915f0443cb17ab22032","workspace_public_key":"5ece1f49812a442e68929029dcac983db2e2a5a03937bfb78de430569fbe0074"}
+hello: response id hello-1, protocol 1, host_uid 65532, mode private, workspace_id 0d18c3da-90d7-4e47-9dba-58c653fdd0cc, capabilities human_chat/signed_devices/resumable_blobs/scoped_runs, unsupported arbitrary_shell/remote_filesystem/network_filesystem/cross_workspace_release
+```
+
+The process was observed as UID `65532` inside the disposable container. This
+is a Debian Bullseye container/emulated x86_64 smoke, not evidence of a native
+Debian 11 host or a remote SSH deployment. The exact disposable container was
+removed after capture; the live three-user fixture and its profiles were not
+touched.
+
+## Provider-boundary broker artifact validation (2026-09-22)
+
+The local provider-boundary harness no longer has a Mach-O-prone broker default.
+`--broker-binary` is now explicit and is validated before the sink, temporary
+profile, daemon, Docker fixture, or remote state is created. The validator
+accepts only little-endian ELF64 x86_64 or aarch64 artifacts, which covers the
+native Debian aarch64 fixture as well as the pinned x86_64 floor.
+
+The lightweight command checks were run after the edit:
+
+```text
+python3 -m py_compile docs/research/biorouter-crew/smoke/local_provider_boundary.py
+python3 docs/research/biorouter-crew/smoke/local_provider_boundary.py --scenario cancellation-http
+python3 docs/research/biorouter-crew/smoke/local_provider_boundary.py \
+  --scenario cancellation-http \
+  --broker-binary /private/tmp/crew-linux-target/debug/biorouter-crew
+```
+
+Results: syntax check exited 0; omission of `--broker-binary` exited 1 with an
+actionable request for a Linux ELF64 broker path; the known Mach-O artifact
+exited 1 with `broker binary is not an ELF file` and an actionable Linux ELF64
+replacement; and no fixture setup occurred in either rejection case. An
+offline helper check using temporary 20-byte ELF headers accepted both
+`x86_64` and `aarch64` machine ids. No build, daemon, model, or live fixture
+was started for these checks, and the existing live fixtures were preserved.
+
+## Refreshed Linux broker artifact and contracts (2026-09-22)
+
+The ARM64 Linux artifact was rebuilt from current uncommitted broker source
+SHA-256 `af3a1efdd43ad168a162ea2379bf76cfedc88a607ac864148678677494b3ef6e`
+and committed FIOCLEX source SHA-256
+`937cce9f67dd71d11775f2ba73d5b029aa01c331be0247012719cca5288f7f2c`, at
+commit `3145dfc504ec51d92d299dfdc493669e61457bbd`. The cached Debian 13.6
+arm64 `rust:latest` image and toolchain were unchanged (`rustc 1.98.1`,
+`cargo 1.98.1`). The build used the existing isolated target directory,
+`CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=2`, and target
+`aarch64-unknown-linux-gnu`.
+
+The refreshed artifact at
+`/private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew`
+is ELF 64-bit LSB PIE ARM aarch64, executable mode `755`, size 26,884,752
+bytes, BuildID `3caf9f6d0fc1196bced7358e556e1788c3704a20`, and SHA-256
+`4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`.
+Its highest imported GLIBC symbol is `GLIBC_2.39`.
+
+The Linux broker contract command was run in a disposable ARM64 container with
+the synthetic machine-id prerequisite and two build/test jobs. The suite
+passed 4/4 `adversarial_contract`, 23/23 `broker_contract`, and 4/4
+`cursor_contract` tests: 31 total tests, 30 passed, 0 failed, and 1 ignored.
+The ignored `journal_fault_contract` test requires its disposable Linux
+LD_PRELOAD interposer fixture. The initial run without the synthetic machine
+ID had 26 passes and one environment-only `node_identity_unavailable` failure;
+the rerun passed the complete contract suite.
+
+The refreshed file-script command ran against a newly named disposable
+container, `biorouter-crew-regression-refresh-luna`:
+
+```text
+python3 docs/research/biorouter-crew/smoke/local_file_script_regression.py \
+  --binary /private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew \
+  --container biorouter-crew-regression-refresh-luna \
+  --docker /usr/local/bin/docker --expect-file-script allow
+```
+
+It passed the exact helper argv with stdout `row_count=3 total=60\n`; output
+bytes were `row_count,total\n3,60\n` (21 bytes, SHA-256
+`29f857b262032224f20e849e76bed6907e8e02846835a632c8380b2bafb91ab3`). The
+network, subprocess, unknown ioctl `0x12345678`, FIONCLEX `0x5450`,
+outside-file, `/etc/passwd`, and `../.ssh` negatives all failed with the
+expected permission refusals. The disposable container was stopped and
+removed. No live fixture installation or restart was performed during this
+refresh.
+
+## Repository gate refresh (2026-09-22)
+
+The required generated-schema command was run with Hermit after the initial
+sandbox cache-access refusal:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 just generate-openapi
+```
+
+Server OpenAPI generation completed and wrote `ui/desktop/openapi.json`, but
+the frontend generation step failed with exit 1 because the generated schema
+contains a missing reference: `#/components/schemas/Resume`. No OpenAPI JSON
+was hand-edited. The generated schema diff is 540 added lines; the frontend
+client generation did not complete.
+
+The full gate was then run with:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 just check-everything
+```
+
+Rust formatting completed. Clippy then exited 101, so later checks in the
+ten-check recipe did not run. The blocking diagnostics were both in the
+current uncommitted `crates/biorouter/src/crew/authentication.rs`: a
+`clippy::collapsible_if` at line 306 and
+`clippy::items_after_test_module` at line 394. No product fixes were applied
+in response. `git diff --check` passed after the gate attempt. Existing
+uncommitted source changes from the parallel Crew lanes were preserved.
+
+## Headless Linux CLI and daemon artifacts (2026-09-22)
+
+The CLI and daemon were built from the read-only working tree using the
+immutable cached `rust:latest` arm64 image
+(`rust@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082`),
+with `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`, target
+`aarch64-unknown-linux-gnu`, and a separate Cargo target and home. `Cargo.lock`
+was SHA-256 `ec966981755fa832c56f7bf22502dfd73bcc7629923f0965d112530a5de4ddc5`
+both before and after the locked build. Critical source fingerprints at build
+time were broker.rs `af3a1efdd43ad168a162ea2379bf76cfedc88a607ac864148678677494b3ef6e`,
+remote.rs `937cce9f67dd71d11775f2ba73d5b029aa01c331be0247012719cca5288f7f2c`,
+CLI main `3130ea2cfe220b7f205a49651eccb2172fdefacee19d696853398d4c657c6fa0`,
+and server main `45c2777616e2ce3cff73f96c4d3c54ac8bede014344525e7377eeb92f749e70f`.
+
+The exact build selected only the two requested binaries:
+
+```text
+docker run --rm --platform linux/arm64 \
+  -v /Users/wgu/.codex/worktrees/biorouter-crew/BioRouter:/workspace:ro \
+  -v /private/tmp/crew-linux-cli-daemon-target-luna:/cargo-target \
+  -v /private/tmp/crew-linux-cli-cargo-home-luna:/cargo-home \
+  -w /workspace -e CARGO_TARGET_DIR=/cargo-target -e CARGO_HOME=/cargo-home \
+  -e CARGO_INCREMENTAL=0 -e CARGO_BUILD_JOBS=2 \
+  -e RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu \
+  -e PATH=/usr/local/cargo/bin:/usr/local/rustup/toolchains/1.98.1-aarch64-unknown-linux-gnu/bin:$PATH \
+  rust@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082 \
+  /usr/local/cargo/bin/cargo build --locked \
+  -p biorouter-cli --bin biorouter -p biorouter-server --bin biorouterd \
+  --target aarch64-unknown-linux-gnu
+```
+
+The resulting debug artifacts are native ARM64 ELF PIE binaries from
+`rustc 1.98.1` / `cargo 1.98.1`:
+
+```text
+/private/tmp/crew-linux-cli-daemon-target-luna/aarch64-unknown-linux-gnu/debug/biorouter
+  SHA-256 9e8ba2a3b525021ff385639dbdc2e3b5052d85f26f9282cbeb1fddb51a6b69c9
+  size 1,373,891,624 bytes; BuildID dab7e6a5b472f95b991871b2a14530347ec0047e
+  highest imported GLIBC symbol GLIBC_2.39
+
+/private/tmp/crew-linux-cli-daemon-target-luna/aarch64-unknown-linux-gnu/debug/biorouterd
+  SHA-256 3955a5b1b1abeeefeb5aba29f3aa73e150dc4fa5499c40a8435e56a5a8d22319
+  size 1,490,646,696 bytes; BuildID 3fddc00c9aeede0e9fb3759af5b14f09005cbad1
+  highest imported GLIBC symbol GLIBC_2.39
+```
+
+Inside the immutable Linux image, `biorouter --version` printed `1.91.1` and
+`biorouterd --version` printed `biorouter-server 1.91.1`. Read-only headless
+help checks with an isolated `HOME` and `BIOROUTER_DISABLE_KEYRING=1` completed
+for `doctor --help`, `serve --help`, and `crew --help`, confirming the Linux
+CLI's no-keystore command surface without starting a daemon, model, or live
+profile. No live fixture or installed binary was changed by this build.
+
+The same new CLI was also exercised under synthetic Linux UIDs 1101, 1102,
+and 1103 in a disposable container, with an isolated `HOME` and
+`BIOROUTER_DISABLE_KEYRING=1`. Each principal returned its expected UID,
+`biorouter --version` printed `1.91.1`, and `biorouter crew --help` exited 0.
+These were CLI-only probes with no daemon, provider, model, keystore, or live
+fixture access.
+
+## Latest repository gate refresh (2026-09-22)
+
+After the Resume schema registration and unique Crew operation-id fixes, the
+exact regeneration command was rerun:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 just generate-openapi
+```
+
+The server schema and frontend client generation both completed successfully
+(`openapi-ts` 0.90.10). The earlier missing `Resume` reference was not
+reproduced. The OpenAPI check still exits 1 until the generated
+`ui/desktop/openapi.json` and `ui/desktop/src/api/` changes are included in
+the pending source change; no JSON was hand-edited.
+
+The latest full gate used the same bounded Hermit environment and exits 101 at
+clippy. The sole Rust diagnostic is
+`crates/biorouter-cli/src/daemon_client.rs:403`,
+`clippy::redundant_async_block`, for
+`tokio::spawn(async move { connection.await })`. No product fix was applied
+in this lane.
+
+Independent checks after that gate were: version consistency pass, brand
+consistency pass, Biorouter Copilot naming pass, cross-drift pass, registry
+61/61 tests pass with all outputs current, and privacy-registry 21/21 tests
+pass with all copies agreeing. UI lint exits 1 with eight errors and one
+warning: existing `NodeJS`/`RequestInfo` global typing diagnostics,
+`no-control-regex` in `ui/desktop/src/main.ts:4871`, and a missing
+`onConnected` effect dependency in `CrewAuthentication.tsx:130`. These are
+reported as failures rather than promoted to green. No live fixture or profile
+was changed. `git diff --check` remains required after generated files are
+staged by the owning lane.
+
+## Synthetic Linux 50-UID broker soak refresh (2026-09-22)
+
+A fresh disposable ARM64 Docker fixture exercised the standalone broker with
+50 synthetic real UIDs for the requested 1,800-second workload. The verified
+ELF artifact was `/private/tmp/crew-linux-cargo-target-luna/aarch64-unknown-linux-gnu/debug/biorouter-crew` with SHA-256
+`4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`; the harness
+`docs/research/biorouter-crew/smoke/local_real_uid_soak.py` had SHA-256
+`02d9d4f9d8fa1a61bd3e08f9752772ab45884debc0fd9d6dbfe7e6a21690970a`. The cached image digest was
+`sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082`. The fixture used a four-CPU cap and no network.
+
+The run sent and acknowledged `1500` messages, read back
+`1500` unique IDs, and reported zero disconnects or
+harness errors. Opaque cursor pagination was exercised during the workload and
+after same-state restart; replay matched all `1500`
+expected body hashes (`replayed=1500`,
+`missing=[]`, `mismatched=[]`). Broker maxima were RSS
+`1260260` KiB, `106` open
+file descriptors, and `2233383` journal bytes.
+
+All users, keys, messages, and identifiers were synthetic. The run was
+standalone broker evidence and did not exercise the GUI, daemon, providers,
+installed profiles, or the existing three-user SSH fixture. The fresh container
+and synthetic runtime state were removed after evidence capture. See the
+curated record at
+[`evidence/crew-50-uid-soak-20260922.md`](evidence/crew-50-uid-soak-20260922.md).
+
+## Native CLI refresh and Crew self-test coverage (2026-09-22)
+
+The native macOS arm64 CLI and daemon were refreshed in the bounded shared
+target with `CARGO_BUILD_JOBS=2` and `CARGO_INCREMENTAL=0`:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
+  cargo build --locked -p biorouter-cli --bin biorouter \
+  -p biorouter-server --bin biorouterd
+```
+
+These outputs are native Mach-O arm64 binaries for the macOS refresh, not
+Linux acceptance evidence:
+
+```text
+/private/tmp/biorouter-crew-target/debug/biorouter
+  SHA-256 784c945022ca661b2cb97c8677686c044061226e00a9fa26bc752b0aa5b2271c
+/private/tmp/biorouter-crew-target/debug/biorouterd
+  SHA-256 5aa6d1c3e539e3c3c635ef0660af599aba51a008f49fa44c12a7c29937d2ded3
+```
+
+With isolated writable `HOME` and `BIOROUTER_PATH_ROOT`, `biorouter
+--version` printed `1.91.1` and `biorouter crew --help` exited 0. The default
+path smoke attempt hit a log-file permission boundary and was not treated as
+a pass.
+
+The self-test workflow now covers Crew CLI/daemon parity, SHA-verified text
+transfer receipts and owned-partial cleanup, duplicate receipt idempotency,
+and no-proof refusal cases for symlink/capability and unknown-transfer
+boundaries. Its focused workflow isolation test passed 4/4. The workflow does
+not acquire human proof, first-host approval, credentials, or provider access.
+
+The subsequent native clippy run reached a source compile blocker in the
+latest daemon stop test change: `crates/biorouter-cli/src/daemon_client.rs:796`
+spawns `wait_for_daemon_stop(&expected_descriptor(&directory))`, leaving a
+temporary borrowed value in a `'static` task (`E0716`).
+
+## Actual isolated self-test workflow run (2026-09-22)
+
+The required workflow was launched once with a fresh isolated root and no live
+profile access:
+
+```text
+timeout 600 env \
+  HOME=/private/tmp/crew-selftest-actual-luna \
+  BIOROUTER_PATH_ROOT=/private/tmp/crew-selftest-actual-luna \
+  BIOROUTER_PROVIDER=ollama BIOROUTER_MODEL=qwen3:8b \
+  biorouter run --workflow biorouter-self-test.yaml \
+  --params test_phases=computer_use --params test_depth=quick \
+  --params parallel_tests=false --params cleanup_after=true \
+  --params workspace_dir=/private/tmp/crew-selftest-actual-luna/workspace \
+  --output-format stream-json --max-turns 10 --debug
+```
+
+The run used the approved local Ollama `qwen3:8b` model, session
+`20260922_1`, and did reach the actual workflow agent. It created only the
+isolated profile state under `/private/tmp/crew-selftest-actual-luna`; no
+human proof, first-host approval, secret, live profile, or fixture was
+entered. The agent confirmed no GUI workspace was attached.
+
+The run terminated after about two minutes with provider failure:
+`Ollama completed without answer text or tool calls. The model may have
+returned reasoning only.` The CLI explicitly advised that retrying would not
+help until the cause changes. This is a provider failure, not a passing or
+skipped workflow result; no Crew acceptance assertions were observed. The
+isolated state was retained for inspection and was not used against any live
+profile.
+
+## Full desktop Vitest run (2026-09-22)
+
+The bounded full desktop suite was run once from `ui/desktop` with the
+repository test script and two workers:
+
+```text
+npm run test:run -- --maxWorkers=2
+```
+
+Vitest was `4.0.18` (`test:run` is `vitest run`). The result was **547 test
+files passed**, **6,242 tests passed**, **19 skipped**, and **0 failed**
+(6,261 total), in `181.80s`. The run produced existing non-failing React
+`act(...)`, jsdom canvas, and mocked-network stderr diagnostics; no test
+failed. Captured output is at
+`/private/tmp/crew-ui-test-run-luna.log`.
+
+The uncommitted source scope was recorded as 27 existing `ui/desktop` tracked
+or untracked files with manifest SHA-256
+`5f2473a9d64205a684c95fbec795d84204f5d940581ca71d872318634fbc3fab`. This
+entry records the concurrent working-tree scope; the test command made no
+source edits.
+
+## Final repository gate (2026-09-22)
+
+Against commit `8d6c2ae4` plus the owned documentation/evidence changes, the
+required command passed end to end:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 just check-everything
+```
+
+All ten checks passed: Rust formatting; production and baseline clippy; the
+banned-TLS scan; non-inheritable production socket scan across 17 targets; UI
+lint/typecheck, themes, 404 contrast assertions, and token mirrors; OpenAPI
+generation/schema drift; version, brand, and Biorouter Copilot naming;
+vendored source; cross-drift; registry (61/61 tests, 38 extensions and 129
+skills current); and privacy registry (21/21 tests, all copies agreeing).
+`git diff --check` passed afterward. No live fixture or profile was changed by
+this gate.
+
+### Native Crew CLI MFA/ProxyJump acceptance (2026-09-22)
+
+A separate disposable profile and synthetic Linux PAM fixture were exercised with refreshed native CLI/daemon artifacts (CLI SHA-256 `784c945022ca661b2cb97c8677686c044061226e00a9fa26bc752b0aa5b2271c`; daemon SHA-256 `5aa6d1c3e539e3c3c635ef0660af599aba51a008f49fa44c12a7c29937d2ded3`). The native `biorouter crew auth` path succeeded through a strict two-hop localhost ProxyJump using an encrypted synthetic key and final keyboard-interactive PAM; `authenticated: true`, exit code 0. Daemon status remained connected after CLI exit. Wrong-secret rejection, prompt cancellation, PTY resize recovery, and file/log secret sweeps passed. This is synthetic fixture evidence only and does not claim institutional MFA, Duo/TOTP, or production identity behavior.
+
+
+## Consolidated Crew-focused Rust filters (2026-09-22)
+
+These filters were run against HEAD `8d6c2ae4` with the shared bounded target
+`/private/tmp/biorouter-crew-target`, `CARGO_INCREMENTAL=0`, and
+`CARGO_BUILD_JOBS=2`. They were run sequentially; the counts below are
+independent of earlier narrower authentication, transfer, and stop tests.
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib 'crew::' -- --nocapture
+```
+
+Result: **37 passed, 0 failed, 4,179 filtered out**.
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-server --lib 'crew' -- --nocapture
+```
+
+Result: **18 passed, 0 failed, 712 filtered out**.
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-cli --lib 'commands::crew' -- --nocapture
+```
+
+Result: **3 passed, 0 failed, 489 filtered out**. The CLI filter selected
+three real command-output/input tests; it was not a zero-test filter.
+
+At the time of this entry, `git rev-parse --short HEAD` returned `8d6c2ae4`,
+and `git status --short` contained only documentation and evidence paths under
+`docs/research/biorouter-crew`; no product source paths were dirty. The earlier
+focused authentication (5), transfer (4), filesystem (9), and stop (3) counts
+are retained as separate evidence and are not added to these consolidated
+filter totals.
