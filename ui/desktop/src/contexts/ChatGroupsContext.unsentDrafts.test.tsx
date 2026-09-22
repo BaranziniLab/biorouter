@@ -11,6 +11,7 @@ import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import {
   beginComposerSend,
+  existingChatComposerDraftKey,
   composerDraftKeyForTab,
   hasComposerDraft,
   readComposerDraft,
@@ -310,5 +311,29 @@ describe('a chat started elsewhere does not take a tab holding an unsent message
     expect(screen.getByTestId('sessions').textContent).toContain(`${unsent}=,`);
     expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(true);
     expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('existing chat composer ownership', () => {
+  it('retains an inactive existing-chat draft across provider remount and releases it on close', async () => {
+    const view = mount();
+    act(() =>
+      ctx!.dispatch({
+        type: 'openTab',
+        payload: { sessionId: 'existing-chat', title: 'Existing chat' },
+      })
+    );
+    await waitFor(() => expect(tabIds()).toHaveLength(1));
+    const tabId = tabIds()[0];
+    const key = existingChatComposerDraftKey(tabId, 'existing-chat');
+    saveComposerDraft(key, { text: 'quoted follow-up', images: [], files: [] });
+    act(() => void requestNewTab());
+    await waitFor(() => expect(tabIds()).toHaveLength(2));
+    expect(readComposerDraft(key)?.text).toBe('quoted follow-up');
+    view.unmount();
+    mount();
+    expect(readComposerDraft(key)?.text).toBe('quoted follow-up');
+    act(() => ctx!.dispatch({ type: 'closeTab', tabId }));
+    await waitFor(() => expect(readComposerDraft(key)).toBeUndefined());
   });
 });

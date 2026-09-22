@@ -376,9 +376,8 @@ interface ChatInputProps {
   commandHistory?: string[];
   initialValue?: string;
   /**
-   * The TAB this composer belongs to while its chat does not exist yet
-   * (`composerDraftKeyForTab`), Home's key (`HOME_COMPOSER_DRAFT_KEY`), or
-   * nothing for a composer of an existing chat.
+   * The owning tab's draft address: a sessionless tab key, a tab+session key
+   * for an existing chat, or Home's key. The owner retains it while the tab exists.
    *
    * With a key, what the composer holds is not this instance's alone: it is
    * seeded from, and saved on every change to, the draft in
