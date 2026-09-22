@@ -196,14 +196,42 @@ test(
 );
 
 test(
-  'THE HAZARD: inherited stdio shows a window even with windowsHide: true',
+  "CONTROL: inherited stdio defeats Electron's own console hiding",
   { ...onWindows, timeout: 3 * MINUTE },
   async () => {
+    // This is what makes the stdio rule in console-window-census.mjs worth
+    // having. Electron forces the hiding branch for every spawn, but libuv only
+    // ORs CREATE_NO_WINDOW in when NO stdio entry is an inherited fd — so an
+    // inheriting site escapes the app's blanket protection. If this ever stops
+    // being visible, the rule guards nothing and should be re-derived rather
+    // than kept out of habit.
+    const results = await electron();
+    assert.equal(
+      results['inherit-without-windowsHide'],
+      'visible',
+      'an inherited-fd spawn no longer shows a console window inside Electron'
+    );
+  }
+);
+
+test(
+  'THE OPEN QUESTION: does windowsHide rescue an inherit-stdio spawn?',
+  { ...onWindows, timeout: 3 * MINUTE },
+  async () => {
+    // libuv sets STARTF_USESHOWWINDOW unconditionally and maps `windowsHide` to
+    // SW_HIDE, and Microsoft says STARTUPINFO "affects the console window if a
+    // new console is created for the process" — so the option may well hide a
+    // console that CREATE_NO_WINDOW was never applied to. The alternative
+    // reading, that it only reaches GUI children, would make it a silent no-op
+    // here. The two readings give opposite advice about what to require, so the
+    // answer is pinned rather than argued: whichever it is, changing it changes
+    // what console-window-census.mjs must enforce, and that should be a red
+    // build and a conversation, not a quiet drift.
     const results = await electron();
     assert.equal(
       results['inherit-with-windowsHide'],
       'visible',
-      'an inherited-fd spawn no longer shows a console window. If libuv has changed, the stdio rule in console-window-census.mjs is guarding nothing and should be re-derived rather than kept out of habit.'
+      `windowsHide now changes the outcome for an inherit-stdio spawn (got ${results['inherit-with-windowsHide']} where the control got ${results['inherit-without-windowsHide']}). That is GOOD news and a real finding: it means the option rescues a site the stdio rule currently calls unsafe. Update this assertion AND the "Rule 2 first" rationale in console-window-census.mjs together — the rule and its reason must not drift apart.`
     );
   }
 );
