@@ -14,29 +14,41 @@
  * `crates/biorouter-mcp/tests/no_console_window_census.rs`. This is the same
  * tripwire for the half of the app that census cannot see.
  *
- * # The two rules, and why the second one is the load-bearing one
+ * # The two rules, and which one is load-bearing — measured, not argued
  *
- * **Rule 2 first, because it is the one that actually governs.** Electron sets
+ * Both were rewritten after the answers came back from real Windows (Electron
+ * 39.8.10, 2026-09-22), because reading the source alone got the emphasis
+ * exactly backwards twice.
+ *
+ * **Rule 1: every site states `windowsHide` explicitly.** This is the
+ * load-bearing one. There are two independent levers and they cover different
+ * sites: `CREATE_NO_WINDOW` gives a child no console at all but libuv applies
+ * it only when no stdio entry is an inherited fd, while `SW_HIDE` — which
+ * `windowsHide: true` also requests, because libuv sets STARTF_USESHOWWINDOW
+ * unconditionally — hides a console that did get created. So an inherit-stdio
+ * spawn falls through the first lever and is caught by the second alone.
+ * Measured: inherit + `windowsHide: true` reports `hidden` (a console exists,
+ * no window), where a non-inheriting spawn reports `none` (no console at all).
+ * The one shape that puts a black box on screen is a site that inherits an fd
+ * AND omits the option.
+ *
+ * ⚠ It is easy to conclude the option does nothing, and that conclusion is
+ * wrong for a reason worth writing down. Electron sets
  * `EnvironmentFlags::kHideConsoleWindows` on every Node environment it creates
- * (shell/common/node_bindings.cc, unconditionally, since Electron 16), so
- * libuv enters its console-hiding branch for every spawn in the main process
- * whether or not the caller passed `windowsHide`. What then decides whether
- * `CREATE_NO_WINDOW` is really applied is the STDIO SHAPE: libuv ORs the flag
- * in only if no stdio entry is an inherited fd (src/win/process.c ~1034-1042,
- * deliberate since 2017 — inheriting a console and then severing it made child
- * output disappear). So one `stdio: 'inherit'`, one raw fd, or a `fork()`
- * without `silent: true` is a visible black box, and `windowsHide: true` next
- * to it is a silent no-op that makes the diff look correct. That is the defect
- * shape this file exists to catch, and it is invisible to a code review that is
- * looking for a missing option.
+ * (shell/common/node_bindings.cc, unconditionally, since Electron 16), so a
+ * piped spawn from the main process is already hidden with no `windowsHide` at
+ * all — confirmed by measurement, not inferred. That is why nothing in
+ * `ui/desktop/src` was drawing a black box when this was investigated, and it
+ * is precisely what makes the option look decorative. It is not: it is the only
+ * thing standing between an inherit-stdio site and a visible console, and it is
+ * the only thing that does not depend on an embedder detail Electron could drop.
  *
- * **Rule 1** is still worth having and is not the fix: every site states
- * `windowsHide` explicitly. It costs a line, it hides a GUI-subsystem child's
- * window (a different window from #368's), and it means the app does not
- * depend silently on an embedder detail that Electron could drop. What it does
- * NOT do is move the console-window behaviour on today's Electron —
- * `scripts/windows-console.test.mjs` measures that on Windows and pins it, so
- * the day it changes is a red build rather than a bug report.
+ * **Rule 2: no site inherits a standard handle.** Defence in depth, and a
+ * strictly stronger outcome where it holds (`none` beats `hidden`: there is no
+ * console to show, so nothing can later reveal it). It is NOT justified by "an
+ * inheriting site draws a window" — measurement says it does not, so long as
+ * rule 1 holds. It is justified by not wanting the two rules to be load-bearing
+ * one at a time.
  *
  * # What it asserts
  *

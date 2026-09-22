@@ -312,10 +312,8 @@ test('the Windows behavioural test still exists, and still has its controls', ()
     behavioural,
     /CONTROL: the same grandchild behind an unhidden cmd\.exe shows a window/
   );
-  assert.match(
-    behavioural,
-    /THE HAZARD: inherited stdio shows a window even with windowsHide: true/
-  );
+  assert.match(behavioural, /CONTROL: inherited stdio with NO windowsHide is the black box/);
+  assert.match(behavioural, /CONTROL: inherited stdio defeats Electron/);
   // The embedder pin. Deleted, the app goes back to depending silently on
   // Electron's kHideConsoleWindows with nothing watching it.
   assert.match(behavioural, /kHideConsoleWindows/);
