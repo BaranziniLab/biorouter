@@ -19,10 +19,17 @@
  * silent mismatch inside an ipcMain handler that nothing can exercise.
  */
 
-export type AssistedUpdateKind = 'windows-installer' | 'windows-zip' | 'linux-package' | 'macos-app';
+export type AssistedUpdateKind =
+  | 'windows-installer'
+  | 'windows-zip'
+  | 'linux-package'
+  | 'macos-app';
 
 /** Classify a downloaded update by its file extension. */
-export function assistedUpdateKind(updatePath: string, platform: typeof process.platform): AssistedUpdateKind {
+export function assistedUpdateKind(
+  updatePath: string,
+  platform: typeof process.platform
+): AssistedUpdateKind {
   const lower = updatePath.toLowerCase();
   if (platform === 'win32') {
     return lower.endsWith('.exe') ? 'windows-installer' : 'windows-zip';
@@ -48,7 +55,8 @@ export function updateRequiresQuitFirst(kind: AssistedUpdateKind): boolean {
   return kind === 'windows-installer';
 }
 
-const PRESERVED = 'Your settings, chats and extensions live outside the app folder and are preserved.';
+const PRESERVED =
+  'Your settings, chats and extensions live outside the app folder and are preserved.';
 
 /**
  * The dialog body for a downloaded update.
@@ -57,7 +65,10 @@ const PRESERVED = 'Your settings, chats and extensions live outside the app fold
  * only the old zip still gets the old instructions and a release that ships the
  * installer gets the installer ones.
  */
-export function assistedUpdateInstructions(updatePath: string, platform: typeof process.platform): string {
+export function assistedUpdateInstructions(
+  updatePath: string,
+  platform: typeof process.platform
+): string {
   switch (assistedUpdateKind(updatePath, platform)) {
     case 'windows-installer':
       // Squirrel replaces the installed app directory and keeps the existing
@@ -69,10 +80,10 @@ export function assistedUpdateInstructions(updatePath: string, platform: typeof 
         '1. Click "Open Folder & Quit" to reveal Biorouter Setup and close Biorouter',
         '2. Run the installer once Biorouter has closed',
         '',
-        'Biorouter must be closed before the installer runs. Squirrel deletes the existing '
-          + 'app directory before it checks whether anything is using it, so running the '
-          + 'installer over a running Biorouter leaves a half-removed install and shortcuts '
-          + 'that no longer work. Running it again with Biorouter closed repairs that.',
+        'Biorouter must be closed before the installer runs. Squirrel deletes the existing ' +
+          'app directory before it checks whether anything is using it, so running the ' +
+          'installer over a running Biorouter leaves a half-removed install and shortcuts ' +
+          'that no longer work. Running it again with Biorouter closed repairs that.',
         '',
         PRESERVED,
       ].join('\n');
