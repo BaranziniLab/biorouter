@@ -86,7 +86,7 @@ jobs:
 
       # Actions artifacts do not preserve the executable bit.
       - name: Restore executable modes
-        run: chmod +x target/x86_64-unknown-linux-gnu/release/biorouter target/x86_64-unknown-linux-gnu/release/biorouterd
+        run: chmod +x target/x86_64-unknown-linux-gnu/release/biorouter target/x86_64-unknown-linux-gnu/release/biorouterd target/x86_64-unknown-linux-gnu/release/biorouter-crew
 
       # Re-assert the floor on THIS job's copy. The check in `backend` proved the
       # bytes it compiled; this proves the bytes that are about to be packaged,

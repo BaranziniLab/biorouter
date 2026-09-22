@@ -46,3 +46,14 @@ All four findings are addressed in the revised design or probe harness. This is 
 The optional journal follow-up is also incorporated: revised `implementation-plan.md:296` defines a retry horizon, retains payload digests and stable results across snapshots/compaction and live operations, and refuses expired keys instead of treating them as fresh mutations. The companion source-investigation document now points to the consolidated plan and matches its all-worker authority and future-reader ACL requirements.
 
 Verification in this follow-up was inspection of the revised files and saved rerun JSON only; no additional host test or application build was launched by the reviewer. The original findings remain above as the review history. No unresolved material finding from this review remains in the plan.
+
+## Linux packaging follow-up — September 22, 2026
+
+A bounded source review of the new Linux broker packaging integration found two P2 validation gaps: failed broker inspection could be hidden by a successful aggregate `readelf` pipeline over the existing binaries, and packaged/oldest-distribution startup checks did not execute the newly shipped broker. Both are addressed in the revised source:
+
+1. `scripts/check-glibc-floor.sh:25` and `scripts/check-linux-runtime-deps.sh:77` inspect each named binary separately. Any failed `readelf` command exits the container with status 2, and the caller exits 2 before aggregation. Filenames are passed as quoted positional arguments. The existing maximum glibc-version comparison, runtime-library allowlist, and package-dependency checks remain in force.
+2. `crates/biorouter-crew/src/main.rs:6` provides successful, side-effect-free version/help commands before operational dispatch. Debian and Rocky package smoke checks (`scripts/build-cli-linux-packages.sh:87` and `:108`) now locate the installed broker, require successful version output with its expected prefix, and execute help. The Debian Bullseye boot step (`.github/workflows/rust.yml:509`) also requires an executable broker and runs these commands.
+
+The explicit Bash broker-only recipe in `linux-portability.md` uses the centralized pinned cross-build function and documents its output path. Linux build selection, backend artifact staging, nfpm destination/mode, and the documented ordinary-user remote installation path remain consistent. The GUI intentionally invokes the remote broker rather than bundling a local Linux broker.
+
+Both reported findings are closed at source review. This follow-up did not run builds, scripts, tests, package installations, or remote commands; it does not establish that the new CI/package assertions have passed or that operational broker behavior works on every supported host.

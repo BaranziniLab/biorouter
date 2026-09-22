@@ -15,16 +15,22 @@ cd "$(dirname "$0")/.."
 . "$(dirname "$0")/cross-env.sh"
 
 BIN_DIR="${1:-target/x86_64-unknown-linux-gnu/release}"
-for b in biorouterd biorouter; do
+for b in biorouterd biorouter biorouter-crew; do
   [ -f "$BIN_DIR/$b" ] || { echo "::error::missing binary $BIN_DIR/$b — run the cross build first"; exit 2; }
 done
 
-# objdump lives in the pinned cross image; run it there so the host needs no
+# readelf supports cross-architecture ELF and lives in the pinned image; the host needs no
 # binutils. Extract every GLIBC_x.y symbol version the binaries import and keep
 # the highest.
-worst=$(docker run --rm -v "$PWD":/w -w /w "$LINUX_RUST_IMG" sh -c "
-    objdump -T $BIN_DIR/biorouterd $BIN_DIR/biorouter 2>/dev/null \
-      | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1")
+if ! versions=$(docker run --rm -v "$PWD":/w -w /w "$LINUX_RUST_IMG" sh -ec '
+    for binary do
+      readelf --version-info "$binary" || exit 2
+    done
+  ' sh "$BIN_DIR/biorouterd" "$BIN_DIR/biorouter" "$BIN_DIR/biorouter-crew"); then
+  echo "::error::could not inspect every Linux binary's glibc versions" >&2
+  exit 2
+fi
+worst=$(printf '%s\n' "$versions" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
 
 [ -n "$worst" ] || { echo "::error::could not read glibc symbol versions from $BIN_DIR"; exit 2; }
 

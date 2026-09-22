@@ -156,7 +156,7 @@ build-cross:
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/cross-env.sh
-    cross_linux   "cargo build --release --bin biorouterd --bin biorouter"
+    cross_linux   "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew"
     cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
     ./scripts/check-glibc-floor.sh
 

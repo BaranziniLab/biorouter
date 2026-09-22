@@ -1,6 +1,7 @@
 # The CLI-only Linux packages (deb + rpm) — the headless half of BioRouter.
 #
 # Ships the interactive `biorouter` CLI, the `biorouterd` REST/WebSocket daemon,
+# the `biorouter-crew` SSH broker,
 # the browser interface they serve, and the native Biorouter Copilot helper. No
 # Electron and no desktop GUI: this is the package for a server, a container, or
 # a workstation driven over `biorouter serve`.
@@ -49,6 +50,11 @@ contents:
       mode: 0755
   - src: ./target/x86_64-unknown-linux-gnu/release/biorouterd
     dst: /usr/bin/biorouterd
+    file_info:
+      mode: 0755
+
+  - src: ./target/x86_64-unknown-linux-gnu/release/biorouter-crew
+    dst: /usr/bin/biorouter-crew
     file_info:
       mode: 0755
 

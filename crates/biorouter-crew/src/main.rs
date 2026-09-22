@@ -3,6 +3,15 @@ use anyhow::{bail, Result};
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("help");
+    if matches!(command, "--version" | "-V") {
+        println!("biorouter-crew {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if matches!(command, "help" | "--help" | "-h") {
+        println!("Usage: biorouter-crew serve|start|status|stop --state-dir PATH [--bootstrap-key HEX]\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew --version\nBroker and bridge operations require Linux.");
+        return Ok(());
+    }
+
     let option = |name: &str| -> Option<&str> {
         args.windows(2)
             .find(|pair| pair[0] == name)
