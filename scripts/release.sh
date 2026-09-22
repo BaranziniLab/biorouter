@@ -421,11 +421,31 @@ cmd_backends() {
      $WIN_DLL_STAGE"
 
   cmd_linux-backend "$v"
-  for helper_target in darwin-arm64 darwin-x64 win32-x64 linux-x64; do
-    python3 "$ROOT/scripts/computer-use-runtime.py" build "$helper_target" --signing-identity "$SIGN_IDENTITY"
+  # Only the payloads the release path packages here. The win32 and linux ones
+  # are built by the phases that package them (see build_computer_use_helper).
+  for helper_target in darwin-arm64 darwin-x64; do
+    build_computer_use_helper "$helper_target"
   done
   assert_release_source "$v"
   log "all 4 backends compiled"
+}
+
+# Build one Biorouter Copilot helper payload into target/computer-use/<target>.
+# The darwin helpers are Swift, built with the Xcode toolchain the mac phases
+# already need. The win32 and linux helpers are Go, and only the local windows,
+# linux and cli-linux phases consume them; the release path takes those
+# packages from CI (adopt-ci), which installs Go itself. So `backends` builds
+# the two darwin payloads and each of those phases builds its own. Measured
+# 2026-09-22: v1.91.1's `backends` died on `go` not found, after every Rust
+# backend had compiled, building payloads nothing on the release path reads.
+build_computer_use_helper() { # <target>
+  local target="$1"
+  case "$target" in
+    darwin-*) ;;
+    *) command -v go >/dev/null 2>&1 \
+         || die "the $target Biorouter Copilot helper is built with Go, which is not on PATH. Install Go (.github/workflows/computer-use-native.yml pins the version CI uses), or take this platform's packages from CI: scripts/release.sh adopt-ci <version>" ;;
+  esac
+  python3 "$ROOT/scripts/computer-use-runtime.py" build "$target" --signing-identity "$SIGN_IDENTITY"
 }
 
 stage_bin() { # <src-dir> <ext>
@@ -474,6 +494,7 @@ cmd_windows() {
   local v="$1"; assert_release_source "$v"; activate_hermit; ensure_host_node_deps
   local WR="$ROOT/target/x86_64-pc-windows-gnu/release"
   [ -f "$WR/biorouterd.exe" ] || die "windows backend missing — run: scripts/release.sh backends $v"
+  build_computer_use_helper win32-x64
   rm -rf "$DESK/src/bin"; mkdir -p "$DESK/src/bin"
   cp -f "$WR/biorouterd.exe" "$WR/biorouter.exe" "$WR"/*.dll "$DESK/src/bin/"
   log "packaging Windows zip"
@@ -499,6 +520,7 @@ cmd_windows() {
 cmd_linux() {
   local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" ] || die "linux backend missing — run: scripts/release.sh backends $v"
+  build_computer_use_helper linux-x64
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
@@ -536,6 +558,7 @@ cmd_cli-linux() {
   # this call for the same reason; it is needed here now that the payload moved.
   local v="$1"; assert_release_source "$v"; ensure_docker; ensure_host_node_deps
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" ] || die "linux backend missing — run: scripts/release.sh backends $v"
+  build_computer_use_helper linux-x64
   log "building CLI-only Linux packages (deb + rpm)"
   bash "$ROOT/scripts/build-cli-linux-packages.sh" "$v"
   record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" "linux-x64"
