@@ -21,6 +21,9 @@ pub struct ObserveRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ObserveEvent {
     State {
+        connection_id: String,
+        #[schema(inline)]
+        connection_mode: super::ClusterMode,
         snapshot: Value,
         runs: Vec<Value>,
     },

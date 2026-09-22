@@ -510,6 +510,7 @@ type ElectronAPI = {
     | { cancelled: true }
   >;
   crewSelectTransferFile: (options: {
+    expectedMode?: 'private' | 'public';
     direction: 'upload' | 'download';
     purpose?: 'transfer' | 'cleanup';
     suggestedName?: string;

@@ -21,7 +21,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ClusterMode {
     Public,
@@ -115,6 +115,11 @@ pub struct PreparedDevice {
 pub struct RunAdmission {
     pub run_id: String,
     pub context: String,
+}
+#[derive(Default)]
+pub struct RunPolicy {
+    pub origin_restricted: bool,
+    pub expected_mode: Option<ClusterMode>,
 }
 pub struct RunMetadata {
     pub run_id: String,
@@ -945,8 +950,22 @@ impl CrewManager {
     ) -> Result<Value> {
         ensure!(params.is_object(), "Crew params must be an object");
         let c = self.connection(id).await?;
+        if method == "run.create" {
+            let expected = params.as_object_mut().unwrap().remove("expected_mode");
+            ensure!(
+                expected.as_ref().is_none_or(|mode| mode == &json!(c.mode)),
+                "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+            );
+        }
         if matches!(method, "message.post" | "blob.begin") {
-            params["personal_mode"] = json!(c.mode);
+            let mode = json!(c.mode);
+            ensure!(
+                params
+                    .get("personal_mode")
+                    .is_none_or(|expected| expected == &mode),
+                "Crew connection privacy changed; refresh the verified workspace before sending"
+            );
+            params["personal_mode"] = mode;
         }
         if params.get("idempotency_key").is_none() {
             params["idempotency_key"] = json!(request_id
@@ -1141,21 +1160,32 @@ impl CrewManager {
         sources: Vec<String>,
         provider: &dyn Provider,
     ) -> Result<RunAdmission> {
-        self.begin_run_with_origin(session, id, channel, sources, provider, false)
-            .await
+        self.begin_run_with_policy(
+            session,
+            id,
+            channel,
+            sources,
+            provider,
+            RunPolicy::default(),
+        )
+        .await
     }
-    #[allow(clippy::too_many_arguments)]
-    async fn begin_run_with_origin(
+    pub async fn begin_run_with_policy(
         &self,
         session: &str,
         id: &str,
         channel: &str,
         mut sources: Vec<String>,
         provider: &dyn Provider,
-        mut origin_restricted: bool,
+        policy: RunPolicy,
     ) -> Result<RunAdmission> {
+        let mut origin_restricted = policy.origin_restricted;
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let c = self.connection(id).await?;
+        ensure!(
+            policy.expected_mode.is_none_or(|mode| mode == c.mode),
+            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+        );
         let public = provider.tier() == ProviderTier::Public;
         ensure!(
             !public || c.mode == ClusterMode::Public,
@@ -1181,7 +1211,7 @@ impl CrewManager {
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
-        let result=self.signed_request(id,"run.create",json!({"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
+        let result=self.signed_request(id,"run.create",json!({"expected_mode":c.mode,"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
         let run_id = result["run"]["id"]
             .as_str()
             .or_else(|| result["run"]["run_id"].as_str())
@@ -1240,8 +1270,18 @@ impl CrewManager {
         provider: &dyn Provider,
         origin_restricted: bool,
     ) -> Result<RunAdmission> {
-        self.begin_run_with_origin(session, id, channel, sources, provider, origin_restricted)
-            .await
+        self.begin_run_with_policy(
+            session,
+            id,
+            channel,
+            sources,
+            provider,
+            RunPolicy {
+                origin_restricted,
+                expected_mode: None,
+            },
+        )
+        .await
     }
     pub async fn worker_request(
         &self,
@@ -1469,6 +1509,170 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[tokio::test]
+    async fn message_and_blob_mode_mismatches_refuse_before_credentials_or_transport() {
+        let root = fixture_root("mode-guard");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "mode-guard-connection";
+        manager.registry.lock().await.connections.push(Connection {
+            id: connection_id.into(),
+            node_id: None,
+            name: "mode guard fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "mode-guard-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "mode-guard-cluster".into(),
+            mode: ClusterMode::Public,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        });
+
+        for method in ["message.post", "blob.begin"] {
+            let mismatch = manager
+                .human_request(
+                    connection_id,
+                    method,
+                    json!({"personal_mode":"private"}),
+                    None,
+                )
+                .await
+                .expect_err("a stale private mode must be refused before I/O");
+            assert_eq!(
+                mismatch.to_string(),
+                "Crew connection privacy changed; refresh the verified workspace before sending"
+            );
+
+            let missing = manager
+                .human_request(connection_id, method, json!({}), None)
+                .await
+                .expect_err("the fixture intentionally has no device credential");
+            assert!(
+                !missing.to_string().contains("privacy changed"),
+                "omitted mode should remain backward-compatible: {missing}"
+            );
+
+            let matching = manager
+                .human_request(
+                    connection_id,
+                    method,
+                    json!({"personal_mode":"public"}),
+                    None,
+                )
+                .await
+                .expect_err("matching mode reaches the credential boundary in this fixture");
+            assert!(
+                !matching.to_string().contains("privacy changed"),
+                "matching mode was rejected by the privacy guard: {matching}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn run_admission_mode_policy_refuses_before_transport_and_preserves_private_origin() {
+        let root = fixture_root("run-mode-policy");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "run-mode-policy-connection";
+        manager.registry.lock().await.connections.push(Connection {
+            id: connection_id.into(),
+            node_id: None,
+            name: "run mode policy fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "run-mode-policy-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "run-mode-policy-cluster".into(),
+            mode: ClusterMode::Public,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        });
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("missing-cassette.json")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+
+        let mismatch = manager
+            .begin_run_with_policy(
+                "run-mode-policy-session",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy {
+                    origin_restricted: false,
+                    expected_mode: Some(ClusterMode::Private),
+                },
+            )
+            .await
+            .err()
+            .expect("a stale private mode must stop admission before signing");
+        assert_eq!(
+            mismatch.to_string(),
+            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+        );
+
+        let legacy = manager
+            .begin_run_with_policy(
+                "run-mode-policy-legacy-session",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy::default(),
+            )
+            .await
+            .err()
+            .expect("the fixture intentionally has no device credential");
+        assert!(
+            !legacy.to_string().contains("privacy changed"),
+            "missing expected_mode must preserve the legacy path: {legacy}"
+        );
+
+        let private_origin = manager
+            .begin_run_with_policy(
+                "run-mode-policy-private-origin",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy {
+                    origin_restricted: true,
+                    expected_mode: Some(ClusterMode::Public),
+                },
+            )
+            .await
+            .err()
+            .expect("a private-origin run must not be admitted to a public provider");
+        assert_eq!(
+            private_origin.to_string(),
+            "Private-origin local conversation cannot be admitted to a public Crew worker"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

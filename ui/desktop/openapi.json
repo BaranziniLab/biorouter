@@ -9503,6 +9503,18 @@
             "items": {
               "type": "string"
             }
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -11826,11 +11838,23 @@
           {
             "type": "object",
             "required": [
+              "connection_id",
+              "connection_mode",
               "snapshot",
               "runs",
               "type"
             ],
             "properties": {
+              "connection_id": {
+                "type": "string"
+              },
+              "connection_mode": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              },
               "runs": {
                 "type": "array",
                 "items": {}
@@ -14495,6 +14519,18 @@
             "items": {
               "type": "string"
             }
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
           },
           "model": {
             "type": "string"

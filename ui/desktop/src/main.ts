@@ -4810,6 +4810,14 @@ function registerCliInstallHandlers() {
     if (!raw || typeof raw !== 'object') throw new Error('Invalid transfer request.');
     const options = raw as Record<string, unknown>;
     if (
+      options.expectedMode !== undefined &&
+      options.expectedMode !== 'private' &&
+      options.expectedMode !== 'public'
+    )
+      throw new Error(
+        'Invalid expected transfer privacy. Refresh the workspace before choosing a file.'
+      );
+    if (
       !['upload', 'download'].includes(String(options.direction)) ||
       typeof options.connectionId !== 'string' ||
       typeof options.channelId !== 'string' ||
@@ -4925,13 +4933,21 @@ function registerCliInstallHandlers() {
         channel_id: options.channelId,
         blob_id: options.blobId,
         transfer_id: options.transferId,
+        expected_mode: options.expectedMode,
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!response.ok)
+    if (!response.ok) {
+      const failure = await response.json().catch(() => null);
+      if (
+        failure?.error ===
+        'Crew connection privacy changed; refresh the verified workspace before selecting a file'
+      )
+        throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
       throw new Error(
         'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
       );
+    }
     const result = await response.json();
     if (typeof result.capability_id !== 'string' || typeof result.name !== 'string')
       throw new Error('Invalid daemon file capability.');

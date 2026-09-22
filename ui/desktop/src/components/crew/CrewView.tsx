@@ -76,6 +76,10 @@ export default function CrewView() {
   const [runs, setRuns] = useState<ObservedRun[]>([]);
   const [connections, setConnections] = useState<CrewConnection[]>([]);
   const [connectionId, setConnectionId] = useState('');
+  const [observedPrivacy, setObservedPrivacy] = useState<{
+    connectionId: string;
+    mode: 'private' | 'public';
+  } | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [teamId, setTeamId] = useState('');
   const [channelId, setChannelId] = useState('');
@@ -116,7 +120,11 @@ export default function CrewView() {
     unfinishedRunAttempt?.unknownDestination ?? ''
   );
   const [inspectedPriorRun, setInspectedPriorRun] = useState(false);
-  const connection = connections.find((item) => item.id === connectionId);
+  const savedConnection = connections.find((item) => item.id === connectionId);
+  const connection =
+    savedConnection && observedPrivacy?.connectionId === connectionId
+      ? { ...savedConnection, mode: observedPrivacy.mode }
+      : savedConnection;
   const channel = snapshot?.channels.find((item) => item.id === channelId);
   const team = snapshot?.teams.find((item) => item.id === teamId);
   const owner = channel?.owner_id === snapshot?.actor.id;
@@ -147,6 +155,7 @@ export default function CrewView() {
   }, []);
   const clearProtectedState = useCallback(() => {
     setSnapshot(null);
+    setObservedPrivacy(null);
     setRuns([]);
     setMessages([]);
     setHistoryBefore(null);
@@ -181,12 +190,51 @@ export default function CrewView() {
     },
     [clearProtectedState, clearDraft]
   );
+  const loadConnections = useCallback(async (signal?: AbortSignal, current?: number) => {
+    const result = await crewHttp<{ connections: CrewConnection[] }>(
+      '/connections',
+      'GET',
+      undefined,
+      signal
+    );
+    if (signal?.aborted || (current !== undefined && generation.current !== current)) return;
+    setConnections(result.connections);
+    setConnectionId((old) =>
+      result.connections.some((item) => item.id === old) ? old : (result.connections[0]?.id ?? '')
+    );
+  }, []);
   const refresh = useCallback(async () => {
     observer.current?.abort();
-    generation.current += 1;
+    const controller = new AbortController();
+    observer.current = controller;
+    const current = ++generation.current;
+    setSnapshot(null);
+    setObservedPrivacy(null);
+    setRuns([]);
+    setMessages([]);
+    setPanel(null);
     setRefreshError('');
-    setObservationRevision((revision) => revision + 1);
-  }, []);
+    try {
+      await loadConnections(controller.signal, current);
+      if (!controller.signal.aborted && generation.current === current)
+        setObservationRevision((revision) => revision + 1);
+    } catch (failure) {
+      if (!controller.signal.aborted && generation.current === current)
+        observationFailure(
+          failure instanceof Error
+            ? failure.message
+            : 'Saved Crew connections could not be refreshed.',
+          failure instanceof CrewHttpError ? failure.code : undefined
+        );
+    }
+  }, [loadConnections, observationFailure]);
+  useEffect(
+    () => () => {
+      observer.current?.abort();
+      generation.current += 1;
+    },
+    []
+  );
 
   const act = async (operation: () => Promise<unknown>) => {
     setBusy(true);
@@ -199,13 +247,6 @@ export default function CrewView() {
       setBusy(false);
     }
   };
-  const loadConnections = useCallback(async () => {
-    const result = await crewHttp<{ connections: CrewConnection[] }>('/connections');
-    setConnections(result.connections);
-    setConnectionId((old) =>
-      result.connections.some((item) => item.id === old) ? old : (result.connections[0]?.id ?? '')
-    );
-  }, []);
   useEffect(() => {
     void loadConnections().catch((err: Error) => setError(err.message));
   }, [loadConnections]);
@@ -255,11 +296,15 @@ export default function CrewView() {
           (frame) => {
             if (!active()) return;
             if (frame.type === 'state') {
+              if (frame.connection_id !== connectionId)
+                throw new Error(
+                  'The daemon returned a different Crew connection. Retry to verify the workspace.'
+                );
               const previousScope = verifiedScope.current;
               if (
                 previousScope?.connection === connectionId &&
                 (previousScope.epoch !== frame.snapshot.workspace.policy_epoch ||
-                  previousScope.mode !== connection?.mode ||
+                  previousScope.mode !== frame.connection_mode ||
                   selectedSources.current.some(
                     (id) => !frame.snapshot.channels.some((item) => item.id === id)
                   ))
@@ -272,8 +317,14 @@ export default function CrewView() {
               verifiedScope.current = {
                 connection: connectionId,
                 epoch: frame.snapshot.workspace.policy_epoch,
-                mode: connection?.mode,
+                mode: frame.connection_mode,
               };
+              setObservedPrivacy({ connectionId, mode: frame.connection_mode });
+              setConnections((items) =>
+                items.map((item) =>
+                  item.id === connectionId ? { ...item, mode: frame.connection_mode } : item
+                )
+              );
               setSnapshot(frame.snapshot);
               setRuns(frame.runs);
               setRefreshError('');
@@ -336,17 +387,11 @@ export default function CrewView() {
     });
     return () => {
       controller.abort();
-      if (observer.current === controller) observer.current = null;
+      observer.current?.abort();
+      observer.current = null;
       generation.current += 1;
     };
-  }, [
-    connectionId,
-    connection?.mode,
-    channelId,
-    observationRevision,
-    observationFailure,
-    clearDraft,
-  ]);
+  }, [connectionId, channelId, observationRevision, observationFailure, clearDraft]);
 
   useEffect(() => {
     if (historyBefore === null || !connectionId || !channelId) return;
@@ -455,6 +500,10 @@ export default function CrewView() {
       await refresh();
     });
   const submitOwnedRun = async (deliberateRestart = false) => {
+    if (!snapshot || observedPrivacy?.connectionId !== connectionId)
+      throw new Error(
+        'Refresh the workspace to verify connection privacy before granting agent access.'
+      );
     if (pendingRun.current?.unknownDestination && !deliberateRestart) {
       throw new Error(
         'Inspect the previous task conversations and remote effects, then acknowledge the inspection before starting another task.'
@@ -464,6 +513,7 @@ export default function CrewView() {
       throw new Error('Confirm that you inspected the previous task before starting a new one.');
     }
     const payload = {
+      expected_mode: observedPrivacy.mode,
       channel_id: channelId,
       prompt: body,
       provider,
@@ -508,7 +558,6 @@ export default function CrewView() {
     setBusy(true);
     try {
       await refresh();
-      setRefreshError('');
     } catch (failure) {
       setRefreshError(failure instanceof Error ? failure.message : String(failure));
       setSnapshot(null);
@@ -520,7 +569,10 @@ export default function CrewView() {
 
   const send = () =>
     act(async () => {
+      if (!snapshot || observedPrivacy?.connectionId !== connectionId)
+        throw new Error('Refresh the workspace to verify connection privacy before sending.');
       const payload = {
+        personal_mode: observedPrivacy.mode,
         channel_id: channelId,
         body,
         attachments: attachments.map((item) => item.id),
@@ -1168,6 +1220,11 @@ export default function CrewView() {
                   }}
                 />
                 <CrewUpload
+                  expectedMode={
+                    observedPrivacy?.connectionId === connectionId
+                      ? observedPrivacy.mode
+                      : undefined
+                  }
                   key={`${connectionId}:${channelId}`}
                   connectionId={connectionId}
                   channelId={channelId}
@@ -1568,10 +1625,18 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                         successor_id: personId,
                       });
                     if (panel === 'grant' && grantSessionId) {
+                      if (!snapshot || observedPrivacy?.connectionId !== connectionId)
+                        throw new Error(
+                          'Refresh the workspace to verify connection privacy before granting agent access.'
+                        );
                       await crewHttp(
                         `/connections/${connectionId}/sessions/${encodeURIComponent(grantSessionId)}/grant`,
                         'POST',
-                        { channel_id: channelId, context_channels: [channelId, ...contextChannels] }
+                        {
+                          expected_mode: observedPrivacy.mode,
+                          channel_id: channelId,
+                          context_channels: [channelId, ...contextChannels],
+                        }
                       );
                       navigate(`/pair?resumeSessionId=${encodeURIComponent(grantSessionId)}`);
                     }

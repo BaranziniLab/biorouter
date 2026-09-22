@@ -179,6 +179,8 @@ function observationFrame(line: string): CrewObservation {
   const cursorValid = frame.cursor === null || typeof frame.cursor === 'string';
   if (
     frame.type === 'state' &&
+    typeof frame.connection_id === 'string' &&
+    (frame.connection_mode === 'private' || frame.connection_mode === 'public') &&
     frame.snapshot?.actor &&
     frame.snapshot?.workspace &&
     Array.isArray(frame.snapshot.principals) &&

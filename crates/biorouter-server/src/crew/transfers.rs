@@ -33,6 +33,8 @@ pub enum FilePurpose {
 #[serde(deny_unknown_fields)]
 pub struct FileRequest {
     #[serde(default)]
+    pub expected_mode: Option<biorouter::crew::ClusterMode>,
+    #[serde(default)]
     pub purpose: FilePurpose,
     pub connection_id: String,
     pub channel_id: String,
@@ -311,7 +313,8 @@ impl TransferService {
     }
     async fn selection_binding(&self, request: &FileRequest) -> Result<String> {
         if request.purpose == FilePurpose::Transfer {
-            return connection_binding(&request.connection_id).await;
+            return connection_binding_with_expected(&request.connection_id, request.expected_mode)
+                .await;
         }
         let state = self.state.lock().await;
         let receipt = request
@@ -639,7 +642,20 @@ fn transfer_recovery_message(error: &anyhow::Error, publication_unconfirmed: boo
 }
 
 async fn connection_binding(id: &str) -> Result<String> {
+    connection_binding_with_expected(id, None).await
+}
+async fn connection_binding_with_expected(
+    id: &str,
+    expected_mode: Option<biorouter::crew::ClusterMode>,
+) -> Result<String> {
     let connection = biorouter::crew::manager()?.connection(id).await?;
+    ensure!(
+        expected_mode.is_none_or(|mode| mode == connection.mode),
+        "Crew connection privacy changed; refresh the verified workspace before selecting a file"
+    );
+    binding_for_connection(&connection)
+}
+fn binding_for_connection(connection: &biorouter::crew::Connection) -> Result<String> {
     Ok(digest(&serde_json::to_vec(&json!([
         connection.workspace_id,
         connection.workspace_public_key,
@@ -649,11 +665,18 @@ async fn connection_binding(id: &str) -> Result<String> {
         connection.owner_uid,
     ]))?))
 }
-async fn remote(receipt: &Receipt, method: &str, params: Value) -> Result<Value> {
+async fn remote(receipt: &Receipt, method: &str, mut params: Value) -> Result<Value> {
+    let connection = biorouter::crew::manager()?
+        .connection(&receipt.connection_id)
+        .await?;
     ensure!(
-        connection_binding(&receipt.connection_id).await? == receipt.binding,
+        binding_for_connection(&connection)? == receipt.binding,
         "Connection identity or privacy policy changed; create a new approved transfer"
     );
+    if method == "blob.begin" {
+        ensure!(params.is_object(), "Blob parameters must be an object");
+        params["personal_mode"] = json!(connection.mode);
+    }
     let result = biorouter::crew::manager()?
         .human_request(&receipt.connection_id, method, params, None)
         .await?;

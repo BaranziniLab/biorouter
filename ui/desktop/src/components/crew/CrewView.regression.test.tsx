@@ -97,12 +97,26 @@ const snapshot = {
   runs: [],
 };
 
-function renderCrew() {
+function renderCrew(entry = '/crew') {
   return render(
-    <MemoryRouter initialEntries={['/crew']}>
+    <MemoryRouter initialEntries={[entry]}>
       <CrewView />
     </MemoryRouter>
   );
+}
+
+function observerState(
+  nextSnapshot: { workspace: { mode: 'private' | 'public' } } = snapshot,
+  connectionMode: 'private' | 'public' = nextSnapshot.workspace.mode
+) {
+  return {
+    type: 'state' as const,
+    connection_id: connection.id,
+    connection_mode: connectionMode,
+    snapshot: nextSnapshot,
+    runs: [],
+    cursor: null,
+  };
 }
 
 function installObservation(
@@ -118,7 +132,7 @@ function installObservation(
       receive: (frame: unknown) => void
     ) => {
       if (signal.aborted) return 'terminal';
-      receive({ type: 'state', snapshot: nextSnapshot, runs: [], cursor: null });
+      receive(observerState(nextSnapshot));
       receive({
         type: 'messages',
         channel_id: channel.id,
@@ -134,6 +148,7 @@ function installObservation(
 function defaultHttp() {
   mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
     if (path === '/connections') return { connections: [connection] };
+    if (path.startsWith('/transfers?')) return { transfers: [] };
     if (path === '/connections/conn-1/runs' && method === 'GET') return { runs: [] };
     if (path === '/connections/conn-1/runs' && method === 'POST')
       return { run_id: 'run-1', session_id: 'session-1' };
@@ -201,7 +216,7 @@ describe('CrewView action and uncertain-start regressions', () => {
         ([path, method]) => path === '/connections/conn-1/connect' && method === 'POST'
       )
     ).toBe(false);
-    expect(mocks.crewHttp).toHaveBeenCalledWith('/connections');
+    expect(mocks.crewHttp.mock.calls.some(([path]) => path === '/connections')).toBe(true);
   });
 
   it('preserves a draft when an older history cursor becomes stale', async () => {
@@ -253,7 +268,7 @@ describe('CrewView action and uncertain-start regressions', () => {
         receive: (frame: unknown) => void
       ) => {
         if (signal.aborted) return 'terminal';
-        receive({ type: 'state', snapshot: activeSnapshot, runs: [], cursor: null });
+        receive(observerState(activeSnapshot));
         return 'terminal';
       }
     );
@@ -290,7 +305,7 @@ describe('CrewView action and uncertain-start regressions', () => {
             error: 'observer temporarily unavailable',
           });
         } else {
-          receive({ type: 'state', snapshot, runs: [], cursor: null });
+          receive(observerState());
         }
         return 'terminal';
       }
@@ -309,6 +324,159 @@ describe('CrewView action and uncertain-start regressions', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Message #general')).toHaveValue('retain while reconnecting')
     );
+  });
+
+  it('reloads changed connection metadata before retrying observation after a policy terminal', async () => {
+    const refreshedConnection = {
+      ...connection,
+      name: 'Renamed workspace',
+      ssh_target: 'alice@new-host',
+      remote_root: '/srv/new-workspace',
+    };
+    let connectionReads = 0;
+    let observationCalls = 0;
+    const events: string[] = [];
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') {
+        connectionReads += 1;
+        events.push(`connections:${connectionReads}`);
+        return { connections: [connectionReads > 1 ? refreshedConnection : connection] };
+      }
+      if (path === '/connections/conn-1/runs' && method === 'GET') return { runs: [] };
+      return {};
+    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        observationCalls += 1;
+        events.push(`observe:${observationCalls}`);
+        if (signal.aborted) return 'terminal';
+        receive(observerState());
+        if (observationCalls === 1) {
+          receive({
+            type: 'error',
+            clear: true,
+            code: 'policy_changed',
+            error: 'Workspace policy changed while observing.',
+          });
+          // A late frame from the retired observer must not restore the old metadata.
+          receive(observerState());
+        } else {
+          receive(observerState());
+        }
+        return 'terminal';
+      }
+    );
+    renderCrew();
+    await screen.findByText(/Workspace policy changed while observing/);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
+
+    await waitFor(() => expect(screen.getByText('alice@new-host')).toBeInTheDocument());
+    expect(screen.getByRole('option', { name: 'Renamed workspace' })).toBeInTheDocument();
+    expect(events).toEqual(['connections:1', 'observe:1', 'connections:2', 'observe:2']);
+  });
+
+  it('uses observer privacy across stale connection refreshes and clears drafts on mode changes', async () => {
+    const publicSnapshot = {
+      ...snapshot,
+      workspace: { ...snapshot.workspace, mode: 'public' as const },
+    };
+    let observedMode: 'private' | 'public' = 'private';
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive(observerState(observedMode === 'public' ? publicSnapshot : snapshot, observedMode));
+        return 'terminal';
+      }
+    );
+    renderCrew('/crew?sessionId=agent-1');
+    const privateComposer = await screen.findByLabelText('Message #general');
+    fireEvent.change(privateComposer, { target: { value: 'private draft to clear' } });
+
+    observedMode = 'public';
+    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Connection privacy' })).toHaveValue('public')
+    );
+    expect(screen.getByText(/Effective: public/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Message #general')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review access and posting permission' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Allow this conversation to read and post here' })
+    );
+    await waitFor(() =>
+      expect(
+        mocks.crewHttp.mock.calls.some(
+          ([path, method, params]) =>
+            path === '/connections/conn-1/sessions/agent-1/grant' &&
+            method === 'POST' &&
+            params.expected_mode === 'public'
+        )
+      ).toBe(true)
+    );
+
+    fireEvent.change(screen.getByLabelText('Message #general'), {
+      target: { value: 'public message' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() =>
+      expect(
+        mocks.crewRequest.mock.calls.some(
+          ([, method, params]) => method === 'message.post' && params.personal_mode === 'public'
+        )
+      ).toBe(true)
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Ask my agent' })).toBeInTheDocument()
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    fireEvent.change(await screen.findByLabelText('Task'), {
+      target: { value: 'public task' },
+    });
+    fireEvent.change(screen.getByLabelText('Configured provider'), {
+      target: { value: 'fixture-provider' },
+    });
+    fireEvent.change(screen.getByLabelText('Model'), {
+      target: { value: 'fixture-model' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
+    await waitFor(() =>
+      expect(
+        mocks.crewHttp.mock.calls.some(
+          ([path, method, params]) =>
+            path === '/connections/conn-1/runs' &&
+            method === 'POST' &&
+            params.expected_mode === 'public'
+        )
+      ).toBe(true)
+    );
+
+    observedMode = 'private';
+    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Connection privacy' })).toHaveValue('private')
+    );
+    expect(screen.getByText(/Effective: private/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
 
   it('keeps one request id across a retry with the same payload', async () => {

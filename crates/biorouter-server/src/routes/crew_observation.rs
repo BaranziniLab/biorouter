@@ -175,7 +175,9 @@ impl Observer {
                 self.last_state = Some(tokio::time::Instant::now());
                 self.state_due = false;
                 self.sleep_due = true;
-                return Ok(json!({"type":"state","snapshot":snapshot,"runs":runs}));
+                return Ok(
+                    json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"snapshot":snapshot,"runs":runs}),
+                );
             }
             if !self.pending.is_empty() {
                 self.authorize(cancel).await?;
@@ -455,6 +457,44 @@ mod tests {
         assert_eq!(value["code"], "response_too_large");
         assert!(value["clear"].as_bool().unwrap_or(false));
         assert!(observer.done);
+    }
+
+    #[test]
+    fn state_wire_contract_requires_connection_identity_and_mode() {
+        for mode in [
+            biorouter::crew::ClusterMode::Public,
+            biorouter::crew::ClusterMode::Private,
+        ] {
+            let event = ObserveEvent::State {
+                connection_id: "connection-123".into(),
+                connection_mode: mode,
+                snapshot: json!({}),
+                runs: vec![],
+            };
+            let encoded = serde_json::to_vec(&event).unwrap();
+            let decoded: ObserveEvent = serde_json::from_slice(&encoded).unwrap();
+            match decoded {
+                ObserveEvent::State {
+                    connection_id,
+                    connection_mode,
+                    ..
+                } => {
+                    assert_eq!(connection_id, "connection-123");
+                    assert_eq!(connection_mode, mode);
+                }
+                _ => panic!("unexpected observer event type"),
+            }
+        }
+
+        for invalid in [
+            json!({"type":"state","snapshot":{},"runs":[]}),
+            json!({"type":"state","connection_id":"connection-123","connection_mode":"restricted","snapshot":{},"runs":[]}),
+        ] {
+            assert!(
+                serde_json::from_value::<ObserveEvent>(invalid).is_err(),
+                "state without a valid connection mode must be rejected"
+            );
+        }
     }
 
     #[test]

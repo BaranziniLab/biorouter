@@ -116,6 +116,84 @@ fn private_partial_permissions_are_required_for_cleanup() {
     assert!(validate_cleanup_partial(&file, 7).is_err());
 }
 
+#[test]
+fn file_request_expected_mode_defaults_for_legacy_and_round_trips() {
+    let legacy: FileRequest = serde_json::from_value(json!({
+        "purpose":"transfer",
+        "connection_id":"connection",
+        "channel_id":"channel",
+        "direction":"upload",
+        "path":"/tmp/fixture.txt",
+        "overwrite":false,
+        "blob_id":null,
+        "transfer_id":null
+    }))
+    .unwrap();
+    assert!(legacy.expected_mode.is_none());
+
+    let private: FileRequest = serde_json::from_value(json!({
+        "expected_mode":"private",
+        "purpose":"transfer",
+        "connection_id":"connection",
+        "channel_id":"channel",
+        "direction":"upload",
+        "path":"/tmp/fixture.txt",
+        "overwrite":false,
+        "blob_id":null,
+        "transfer_id":null
+    }))
+    .unwrap();
+    assert_eq!(
+        private.expected_mode,
+        Some(biorouter::crew::ClusterMode::Private)
+    );
+}
+
+#[tokio::test]
+async fn cleanup_selection_uses_receipt_binding_without_requiring_a_live_connection_mode() {
+    let root = private_root();
+    let service = TransferService::open(root.path()).unwrap();
+    let transfer_id = "0123456789abcdef0123456789abcdef";
+    service.state.lock().await.receipts.insert(
+        transfer_id.into(),
+        Receipt {
+            id: transfer_id.into(),
+            request_id: "request".into(),
+            connection_id: "removed-connection".into(),
+            channel_id: "channel".into(),
+            direction: Direction::Download,
+            name: "fixture.txt".into(),
+            size: 4,
+            sha256: "a".repeat(64),
+            offset: 4,
+            blob_id: Some("blob".into()),
+            state: "needs_file_selection".into(),
+            error: None,
+            binding: "receipt-binding".into(),
+            intent: "intent".into(),
+            local_selection: String::new(),
+            destination_identity: None,
+        },
+    );
+
+    let binding = service
+        .selection_binding(&FileRequest {
+            expected_mode: Some(biorouter::crew::ClusterMode::Private),
+            purpose: FilePurpose::Cleanup,
+            connection_id: "removed-connection".into(),
+            channel_id: "channel".into(),
+            direction: Direction::Download,
+            path: root.path().join("fixture.txt"),
+            overwrite: false,
+            blob_id: Some("blob".into()),
+            transfer_id: Some(transfer_id.into()),
+            request_id: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(binding, "receipt-binding");
+}
+
 struct NoopWaker;
 
 impl Wake for NoopWaker {

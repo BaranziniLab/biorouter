@@ -1234,6 +1234,7 @@ export type GetToolsQuery = {
 export type GrantSessionRequest = {
     channel_id: string;
     context_channels?: Array<string>;
+    expected_mode?: 'public' | 'private' | null;
 };
 
 export type Graph = {
@@ -2449,6 +2450,8 @@ export type ModelUsageRow = {
 };
 
 export type ObserveEvent = {
+    connection_id: string;
+    connection_mode: 'public' | 'private';
     runs: Array<unknown>;
     snapshot: unknown;
     type: 'state';
@@ -3898,6 +3901,7 @@ export type StartAgentRequest = {
 export type StartRunRequest = {
     channel_id: string;
     context_channels?: Array<string>;
+    expected_mode?: 'public' | 'private' | null;
     model: string;
     posting_grant?: boolean;
     prompt: string;

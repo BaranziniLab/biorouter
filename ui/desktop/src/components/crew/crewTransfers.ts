@@ -17,6 +17,7 @@ export interface CrewTransfer {
   destination_identity?: string | null;
 }
 export interface FileSelectionRequest {
+  expected_mode?: 'private' | 'public';
   purpose?: 'transfer' | 'cleanup';
   connection_id: string;
   channel_id: string;
@@ -39,6 +40,7 @@ export async function chooseTransferFile(
       'This desktop build does not provide the secure Crew file picker. Update the desktop app before transferring local files.'
     );
   return picker({
+    expectedMode: request.expected_mode,
     purpose: request.purpose,
     direction: request.direction,
     connectionId: request.connection_id,

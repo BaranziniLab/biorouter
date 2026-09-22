@@ -277,11 +277,11 @@ async fn register(
         .request(
             "POST",
             "/crew/files",
-            Some(json!({
+            Some(api.with_expected_mode(json!({
                 "connection_id":connection,"channel_id":channel,"direction":direction,
                 "path":path,"overwrite":overwrite,"blob_id":blob,"transfer_id":transfer,
                 "request_id":if transfer.is_none() { Some(&api.request_id) } else { None }
-            })),
+            }))),
         )
         .await?;
     Ok(result["capability_id"]

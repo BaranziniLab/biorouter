@@ -34,6 +34,7 @@ pub async fn handle(mut options: CrewOptions) -> Result<()> {
 async fn execute(options: CrewOptions) -> Result<()> {
     let CrewOptions {
         connection,
+        expected_mode,
         no_start,
         approval_key_stdin,
         output_format,
@@ -69,6 +70,7 @@ async fn execute(options: CrewOptions) -> Result<()> {
     let api = Api {
         client,
         selected: connection,
+        expected_mode,
         request_id,
         format: output_format,
     };
@@ -180,11 +182,16 @@ async fn send_message(api: &Api, args: SendArgs) -> Result<Value> {
 struct Api {
     client: CrewClient,
     selected: Option<String>,
+    expected_mode: Option<PrivacyMode>,
     request_id: String,
     format: OutputFormat,
 }
 
 impl Api {
+    fn with_expected_mode(&self, body: Value) -> Value {
+        add_expected_mode(body, self.expected_mode)
+    }
+
     async fn connections(&self) -> Result<Value> {
         self.client.request("GET", "/crew/connections", None).await
     }
@@ -228,6 +235,7 @@ impl Api {
             .await
     }
     async fn broker(&self, method: &str, mut params: Value, mutation: bool) -> Result<Value> {
+        add_personal_mode(method, &mut params, self.expected_mode);
         if mutation {
             params["idempotency_key"] = json!(self.request_id);
         }
@@ -250,6 +258,21 @@ impl Api {
             .await?;
         self.client.request("GET", &path, None).await
     }
+}
+
+fn add_expected_mode(mut body: Value, expected_mode: Option<PrivacyMode>) -> Value {
+    let Some(mode) = expected_mode else {
+        return body;
+    };
+    body["expected_mode"] = Value::from(mode.as_str());
+    body
+}
+
+fn add_personal_mode(method: &str, params: &mut Value, expected_mode: Option<PrivacyMode>) {
+    let ("message.post" | "blob.begin", Some(mode)) = (method, expected_mode) else {
+        return;
+    };
+    params["personal_mode"] = Value::from(mode.as_str());
 }
 
 async fn connections(api: &Api, command: ConnectionCommand) -> Result<Value> {
@@ -517,7 +540,7 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<()> {
                 allow_posting,
                 "Starting a Crew task requires --allow-posting for its destination channel"
             );
-            api.connection_action("runs", json!({"request_id":api.request_id,"channel_id":channel,"prompt":text_input(prompt)?,"provider":provider,"model":model,"context_channels":context_channels,"posting_grant":allow_posting})).await?
+            api.connection_action("runs", api.with_expected_mode(json!({"request_id":api.request_id,"channel_id":channel,"prompt":text_input(prompt)?,"provider":provider,"model":model,"context_channels":context_channels,"posting_grant":allow_posting}))).await?
         }
         TaskCommand::List => {
             api.client
@@ -597,7 +620,9 @@ async fn grants(api: &Api, command: GrantCommand) -> Result<Value> {
         } => {
             api.connection_action(
                 &format!("sessions/{}/grant", component(&session)?),
-                json!({"channel_id":channel,"context_channels":context_channels}),
+                api.with_expected_mode(
+                    json!({"channel_id":channel,"context_channels":context_channels}),
+                ),
             )
             .await
         }
@@ -650,5 +675,45 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Value> {
             api.broker("policy.set", json!({"mode":mode.as_str()}), true)
                 .await
         }
+    }
+}
+
+#[cfg(test)]
+mod expected_mode_tests {
+    use super::{add_expected_mode, add_personal_mode};
+    use crate::commands::crew::args::PrivacyMode;
+    use serde_json::json;
+
+    #[test]
+    fn expected_mode_is_added_only_when_requested() {
+        assert_eq!(
+            add_expected_mode(json!({"request_id":"r"}), None),
+            json!({"request_id":"r"})
+        );
+        assert_eq!(
+            add_expected_mode(json!({"request_id":"r"}), Some(PrivacyMode::Private)),
+            json!({"request_id":"r","expected_mode":"private"})
+        );
+        assert_eq!(
+            add_expected_mode(json!({"request_id":"r"}), Some(PrivacyMode::Public)),
+            json!({"request_id":"r","expected_mode":"public"})
+        );
+    }
+
+    #[test]
+    fn personal_mode_is_guarded_to_message_and_blob_methods() {
+        let mut message = json!({"body":"hello"});
+        add_personal_mode("message.post", &mut message, Some(PrivacyMode::Private));
+        assert_eq!(message["personal_mode"], "private");
+        let mut blob = json!({"blob_id":"b"});
+        add_personal_mode("blob.begin", &mut blob, Some(PrivacyMode::Public));
+        assert_eq!(blob["personal_mode"], "public");
+        let mut unrelated = json!({"body":"hello"});
+        add_personal_mode(
+            "workspace.snapshot",
+            &mut unrelated,
+            Some(PrivacyMode::Private),
+        );
+        assert!(unrelated.get("personal_mode").is_none());
     }
 }

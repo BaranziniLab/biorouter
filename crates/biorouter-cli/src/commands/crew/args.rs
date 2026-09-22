@@ -44,6 +44,9 @@ pub struct CrewOptions {
     /// Saved connection ID. Required when more than one connection is saved.
     #[arg(long, global = true)]
     pub connection: Option<String>,
+    /// Require this privacy mode for send, task start, grants, and file upload/download/resume.
+    #[arg(long, global = true, value_enum)]
+    pub expected_mode: Option<PrivacyMode>,
     /// Require an already-running shared daemon.
     #[arg(long, global = true)]
     pub no_start: bool,
@@ -118,6 +121,46 @@ pub enum CrewCommand {
     Grants(GrantCommand),
     #[command(subcommand)]
     Privacy(PrivacyCommand),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CrewCommand, CrewOptions, PrivacyMode};
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        crew: CrewOptions,
+    }
+
+    #[test]
+    fn expected_mode_accepts_private_and_public() {
+        let private = TestCli::try_parse_from(["crew", "--expected-mode", "private", "status"])
+            .expect("private expected mode should parse");
+        assert!(matches!(
+            private.crew.expected_mode,
+            Some(PrivacyMode::Private)
+        ));
+
+        let public = TestCli::try_parse_from(["crew", "--expected-mode", "public", "status"])
+            .expect("public expected mode should parse");
+        assert!(matches!(
+            public.crew.expected_mode,
+            Some(PrivacyMode::Public)
+        ));
+        assert!(matches!(public.crew.command, CrewCommand::Status));
+    }
+
+    #[test]
+    fn expected_mode_is_omitted_by_default_and_rejects_unknown_values() {
+        let omitted =
+            TestCli::try_parse_from(["crew", "status"]).expect("expected mode is optional");
+        assert!(omitted.crew.expected_mode.is_none());
+
+        let invalid = TestCli::try_parse_from(["crew", "--expected-mode", "internal", "status"]);
+        assert!(invalid.is_err());
+    }
 }
 
 #[derive(Subcommand)]

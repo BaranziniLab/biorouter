@@ -95,6 +95,7 @@ function TransferRows({
 }
 
 export function CrewUpload({
+  expectedMode,
   connectionId,
   channelId,
   disabled,
@@ -103,6 +104,7 @@ export function CrewUpload({
 }: {
   connectionId: string;
   channelId: string;
+  expectedMode: 'private' | 'public' | undefined;
   disabled: boolean;
   onReady: (blob: { id: string; name: string }) => void;
   onRemoteReference: () => void;
@@ -150,7 +152,10 @@ export function CrewUpload({
     setChoosing(true);
     setError('');
     try {
+      if (!expectedMode)
+        throw new Error('Refresh the workspace to verify connection privacy before uploading.');
       const transfer = await beginTransfer({
+        expected_mode: expectedMode,
         connection_id: connectionId,
         channel_id: channelId,
         direction: 'upload',

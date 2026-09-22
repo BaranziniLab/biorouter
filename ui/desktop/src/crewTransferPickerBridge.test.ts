@@ -38,4 +38,25 @@ describe('Crew transfer picker opaque-capability bridge', () => {
     expect(transfers).toMatch(/file_capability: file\.capability_id/);
     expect(transfers).not.toMatch(/file\.(path|bytes|contents)/);
   });
+
+  it('rejects an invalid privacy enum before opening a native picker and keeps daemon errors safe', () => {
+    const main = source('main.ts');
+    const start = main.indexOf("ipcMain.handle('crew:select-transfer-file'");
+    const end = main.indexOf("ipcMain.handle('crew:authenticate'", start);
+    const handler = main.slice(start, end);
+    const validation = handler.indexOf('Invalid expected transfer privacy.');
+    const firstDialog = handler.indexOf('dialog.showOpenDialog');
+    expect(validation).toBeGreaterThanOrEqual(0);
+    expect(firstDialog).toBeGreaterThan(validation);
+    expect(handler).toMatch(/options\.expectedMode !== undefined/);
+    expect(handler).toMatch(/options\.expectedMode !== 'private'/);
+    expect(handler).toMatch(/options\.expectedMode !== 'public'/);
+    expect(handler).toContain(
+      'Connection privacy changed. Refresh Crew and choose the file again.'
+    );
+    expect(handler).toContain(
+      'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
+    );
+    expect(handler).not.toMatch(/throw new Error\(failure\?\.error/);
+  });
 });

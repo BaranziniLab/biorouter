@@ -339,6 +339,9 @@ pub async fn request(
 #[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartRunRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(inline)]
+    pub expected_mode: Option<biorouter::crew::ClusterMode>,
     #[serde(default)]
     pub request_id: Option<String>,
     pub channel_id: String,
@@ -567,12 +570,16 @@ async fn launch_run(
     agent.ensure_crew_compatible()?;
     let crew = manager()?;
     let admission = match crew
-        .begin_run(
+        .begin_run_with_policy(
             &session_id,
             &id,
             &body.channel_id,
             body.context_channels,
             provider.as_ref(),
+            biorouter::crew::RunPolicy {
+                origin_restricted: false,
+                expected_mode: body.expected_mode,
+            },
         )
         .await
     {
@@ -1197,6 +1204,9 @@ async fn finish_cancellation(
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GrantSessionRequest {
+    #[serde(default)]
+    #[schema(inline)]
+    pub expected_mode: Option<biorouter::crew::ClusterMode>,
     pub channel_id: String,
     #[serde(default)]
     pub context_channels: Vec<String>,
@@ -1239,13 +1249,16 @@ pub async fn grant_session(
     let origin_restricted =
         origin.privacy_tier == biorouter::privacy::SessionClassification::Private;
     let admission = manager()?
-        .grant_session(
+        .begin_run_with_policy(
             &session_id,
             &id,
             &body.channel_id,
             body.context_channels,
             provider.as_ref(),
-            origin_restricted,
+            biorouter::crew::RunPolicy {
+                origin_restricted,
+                expected_mode: body.expected_mode,
+            },
         )
         .await?;
     if provider.tier().is_private() {
