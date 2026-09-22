@@ -1,5 +1,7 @@
 # BioRouter Crew: SSH, identity, desktop and file integration investigation
 
+> September 22 design update: [the implementation plan](implementation-plan.md) now follows the user's no-administrator, home-based deployment requirement, 2–50-user scope, cluster Public/Private toggle and built-in saved-SSH/MCP integration. It also contains the required three-user AWS/dev-app computer-use testing plan. Earlier deployment recommendations in this research snapshot are superseded; recorded source findings and probe results remain historical evidence, not rootless product acceptance.
+
 Investigated 2026-09-21 against commit `314f3b268c24663a8696dbbbd5aa76a171d0fab8`. This is a source investigation and proposed design, not implemented functionality. Paths and line numbers below refer to that baseline. Remote measurements belong to the parent investigation; no SSH connections, builds or running-app changes were made in this lane.
 
 ## Principal findings

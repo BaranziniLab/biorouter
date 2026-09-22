@@ -1,5 +1,7 @@
 # BioRouter Crew: external platform and protocol research
 
+> September 22 design update: [the implementation plan](implementation-plan.md) now follows the user's no-administrator, home-based deployment requirement, 2–50-user scope, cluster Public/Private toggle and built-in saved-SSH/MCP integration. It also contains the required three-user AWS/dev-app computer-use testing plan. Earlier deployment recommendations in this research snapshot are superseded; recorded source findings and probe results remain historical evidence, not rootless product acceptance.
+
 Research snapshot: 2026-09-21 America/Los_Angeles (2026-09-22 UTC). Primary sources only support technical conclusions. GitHub API observations below are a snapshot, not a claim about future maintenance. No third-party server was installed, executed, or penetration-tested for this comparison. Security findings are source review findings at the identified commits.
 
 ## Recommendation

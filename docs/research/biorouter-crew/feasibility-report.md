@@ -1,5 +1,7 @@
 # BioRouter Crew feasibility results
 
+> September 22 design update: [the implementation plan](implementation-plan.md) now follows the user's no-administrator, home-based deployment requirement, 2–50-user scope, cluster Public/Private toggle and built-in saved-SSH/MCP integration. It also contains the required three-user AWS/dev-app computer-use testing plan. Earlier deployment recommendations in this research snapshot are superseded; recorded source findings and probe results remain historical evidence, not rootless product acceptance.
+
 Tested September 21, 2026 Pacific / September 22 UTC. These are synthetic architecture probes, not tests of an implemented Crew product. No PHI, private research records, real model prompts, production daemon installation or institutional compute jobs were involved.
 
 ## Result

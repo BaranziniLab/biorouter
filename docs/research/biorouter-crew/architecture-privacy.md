@@ -1,5 +1,7 @@
 # BioRouter Crew: existing architecture and required security boundaries
 
+> September 22 design update: [the implementation plan](implementation-plan.md) now follows the user's no-administrator, home-based deployment requirement, 2–50-user scope, cluster Public/Private toggle and built-in saved-SSH/MCP integration. It also contains the required three-user AWS/dev-app computer-use testing plan. Earlier deployment recommendations in this research snapshot are superseded; recorded source findings and probe results remain historical evidence, not rootless product acceptance.
+
 Research date: 2026-09-21. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8`. This is source investigation and proposed architecture, not a claim that Crew is implemented or that existing deployments satisfy HIPAA requirements. No private records, real patient data, provider credentials, or production configuration contents were read for this investigation.
 
 The [implementation plan](implementation-plan.md) is the authoritative consolidated design, including the more detailed SSH authentication and human-device enrollment contracts added after independent review. This document supplies the source investigation and architecture rationale.

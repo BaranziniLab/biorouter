@@ -1,16 +1,33 @@
 # BioRouter Crew implementation plan
 
-Status: researched design and synthetic feasibility work; Crew is not yet implemented. Research performed September 21, 2026 Pacific / September 22 UTC. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8` on `main`. Implementation branch: `codex/biorouter-crew` in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`.
+Status: updated September 22, 2026 with the user's clarified requirements; design and test plan only, Crew is not yet implemented. This revision supersedes the earlier administrator-managed deployment recommendation. Research performed September 21, 2026 Pacific / September 22 UTC. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8` on `main`. Implementation branch: `codex/biorouter-crew` in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`.
 
 ## 1. Recommendation and scope
 
-Build **BioRouter Crew as a native sidebar capability and a policy-aware built-in agent extension**, backed by a small Linux collaboration service reached through normal institutional SSH. Use the existing BioRouter agent runtime through separate, owner-scoped workers. The shared service handles people, teams, rooms, messages, files, permissions, history and audit; it does not execute everyone's tools as one service account.
+Build **BioRouter Crew as a native sidebar capability and a policy-aware built-in agent extension**, backed by a small, ordinary-user Linux collaboration process reached through existing SSH access. Installation, persistent data, configuration and user preferences are based in users' home directories; no sudo, new Unix service account, group creation or elevated access is required. Use the existing BioRouter agent runtime through separate, owner-scoped workers. The shared service handles people, teams, rooms, messages, files, permissions, history and audit; it does not execute everyone's tools as the hosting member.
 
 Favor the user's requested simplicity: native OpenSSH, bounded JSON Lines streams, a broker-owned append-only JSON Lines journal, ordinary attachment files and rebuildable indexes. Human collaboration must work without a model provider, PostgreSQL, Redis, a container platform or a new externally exposed network listener. Additional compute isolation may be required for agents; the chat service itself must not depend on it.
 
 Do not adopt any listed terminal chat project unchanged as the security foundation. `room` is the closest interaction/deployment reference; it is not sufficient proof of trustworthy Unix identity and protected multi-user storage. Matrix is the strongest protocol/platform alternative if reusing an entire collaboration server becomes more important than a small installation. Zulip is the strongest ready-made topic collaboration alternative. Both add a separate account/control plane and still need Crew's owner-agent and data-policy layers. See the [sourced platform comparison](platform-research.md).
 
-The intended first production scope is one institution-approved Linux service host per workspace, tens of concurrent team members and modest message rates. Support multiple independent workspaces in one desktop. Do not introduce federation, automatic cross-workspace mirroring, multi-master storage or an internet chat service in v1. These are design scope decisions, not measured capacity limits.
+The target is a lab of **2–3 through 30–50 people**, with a whole-team general chat and smaller channels containing selected members. A user can belong to multiple teams, and a desktop can hold multiple SSH workspaces. Keep identifiers, protocol versions and indexes extensible, but hundreds/thousands of participants, federation and multi-master storage are not first-release requirements. One ordinary user hosts each workspace's single-writer broker on a specific reachable cluster node. This user is a trusted application host, not a system administrator.
+
+### Accepted decisions from September 22
+
+| User decision | Implementation consequence |
+|---|---|
+| 1. No administrator or elevated access | Install binaries/configuration/state in ordinary homes; use existing accounts and user-owned processes. No mandatory service account, system service, new group, container runtime or privileged isolation setup. |
+| 2. Lab teams of 2–50 | Whole-team general channel plus small membership-scoped channels; test 3 real users and exercise 30–50-client bounded scale. |
+| 3. Synthetic data, including pretend-sensitive data | Maintain public-safe and explicitly private synthetic fixtures; private fixtures pass through the real policy path. No real PHI is needed for development or acceptance scenarios. |
+| 4. User-controlled cluster Public/Private setting | Private blocks every public-model dispatch through that connection/workspace regardless of channel visibility. Public allows eligible public models; changing the setting does not declassify existing content. |
+| 5. Generic authentication accommodating real workflows | Native OpenSSH, configurable routes, per-hop MFA/host verification and capability-specific compatibility results. |
+| 6. Recommended context scope | Current channel by default, with saved, explicitly selected additional channels searchable automatically; explicit cross-workspace selection. |
+| 7. Recommended posting authority | Grant an agent permission per task and destination channel; request additional approval when audience or permitted data boundary changes. |
+| 8. Recommended disconnected execution | Continue already authorized work where user processes/jobs survive; pause new approval-dependent steps and honor expiry/revocation. |
+| 9. Recommended files/local storage | Resumable ordinary attachments; remote references for large datasets; explicit policy-controlled downloads; protected offline history off initially. |
+| 10. Recommended channel lifecycle | Archive first, retain required audit history, permit explicit current-owner-approved ownership transfer; physical deletion follows configured retention. |
+
+The user also requires a three-account Linux AWS test environment, actual dev builds from this worktree, computer-use-driven collaboration, and conversational MCP tools that reuse saved Crew SSH connections. Section 13 defines that release gate. These decisions are recorded in this implementation document; they are not requests for additional confirmation.
 
 ### User requirements translated into invariants
 
@@ -19,11 +36,11 @@ The intended first production scope is one institution-approved Linux service ho
 | One SSH server feels like a Slack workspace | A stable service workspace UUID is discovered after authenticated SSH; aliases and jump paths can reach the same workspace. |
 | SSH username is the identity | Broker derives the Unix UID from the kernel, resolves a verified enrolled account, and displays its SSH username. Nickname/avatar never confer authority. |
 | Multiple teams and self-created channels | Every registered user may create a team when workspace policy permits; team memberships, invitations and channel memberships are explicit records. |
-| Only channel creator removes it | Immutable creator principal authorizes archive/removal; emergency operator quarantine is a separately named, audited action. |
+| Channel ownership and removal | Creator starts as owner; only current owner archives/removes or explicitly transfers ownership. Original creator remains immutable audit history. App-level quarantine is a separately audited role. |
 | Human and agent work in the same room | Channel receives human messages and structured, policy-checked agent activity/events. Only an agent's owner may invoke, steer, approve or cancel it. |
 | Arbitrary files, images and downloads | Durable opaque attachment objects, resumable transfers and membership checks; unsupported previews remain downloadable. |
 | Context from other channels | Search only channels the actor and worker may access; retain provenance and all source restrictions through model calls and outputs. |
-| Private/public boundaries always hold | Mandatory server policy, attested worker/model grants and appropriate process/filesystem/network isolation. No local preference can weaken it. |
+| Private/public boundaries always hold inside Crew | Effective cluster mode is enforced at tools, context and provider dispatch; Private denies public models. Public cannot override source labels or another user's/shared workspace restrictions. Host-account trust and available isolation are explicit. |
 | MFA and jump gates | Use institutional OpenSSH configuration and interactive authentication, verify every host, and support reauthentication throughout the connection lifecycle. |
 | Simple, broadly portable Linux stack | One small service binary, text protocol/storage, files, no required network database or container service for chat. Detect unsupported facilities and refuse the affected feature explicitly. |
 
@@ -46,51 +63,63 @@ Three blockers are substantive new work, not UI wiring:
 
 1. Existing workspace session visibility intentionally allows same-tier local sessions to be controlled without an owner boundary. Add ownership and team/channel authorization before reusing these APIs.
 2. The local daemon secret and a supplied provider header are not multi-user authentication or provider attestation. Never expose them as Crew authority.
-3. The current shell sandbox permits broad filesystem reads. A public-model agent on a user's protected home can bypass chat policy through file tools. A separate process is insufficient. Public execution in a protected workspace is unavailable until a tested read/egress boundary exists.
+3. The current shell sandbox permits broad filesystem reads. Private clusters categorically disable public models; a public-model agent cannot bypass this through a saved SSH tool. On a Public cluster, historical private material and human credentials still need isolation from model-controlled tools. Separate processes and file modes do not protect files from their owning UID. Rootless execution must restrict or withhold affected tools when the required boundary is unavailable.
 
-## 3. Architecture
+## 3. Architecture without administrator support
 
 ```mermaid
 flowchart LR
-  UI[BioRouter Crew tab] --> Local[Local trusted connection manager]
+  UI[BioRouter Crew tab and normal agent chat] --> Local[Shared saved-SSH connection manager]
   Local --> SSH[Native OpenSSH and human MFA]
-  SSH --> Gates[Zero or more approved jump hosts]
-  Gates --> Bridge[Remote bridge under SSH user UID]
-  Bridge --> UDS[Protected Unix socket and kernel identity]
-  UDS --> Broker[Crew broker and mandatory policy]
-  Broker --> Store[JSONL journal and attachment files]
+  SSH --> Gates[Zero or more existing jump hosts]
+  Gates --> Bridge[Bridge on canonical node under each user's UID]
+  Bridge --> UDS[User-owned local socket and verified peer identity]
+  UDS --> Broker[Crew broker hosted by an ordinary lab member]
+  Broker --> Store[Host user's private HOME: JSONL and files]
   Broker --> Grant[Owner and run scoped grants]
-  Grant --> Worker[Owner's isolated BioRouter worker]
-  Worker --> Model[Approved model endpoint]
+  Grant --> Worker[Each user's own BioRouter worker]
+  Worker --> Model[Model allowed by effective cluster mode]
   Worker --> Job[Owner's permitted cluster or scheduler job]
   Worker --> Broker
 ```
 
-The diagram is logical. The initial worker controller runs through the owner's authenticated SSH session on an approved service/task host; expensive tools are submitted to the scheduler. A job on another compute node cannot acquire trustworthy identity by simply sending a UID. Its messages return through the owner controller, or a later approved authenticated relay with scoped grants.
+Every member logs in as their own SSH account. The workspace creator initially hosts the broker as their normal Unix UID; nobody receives that account's SSH credentials. The broker stores collaboration records and enforces application permissions. It never executes another member's shell commands as the hosting account. Each member starts their worker under their own UID and keeps personal session/configuration state in their own home.
 
 ### Components
 
-**Desktop Crew UI:** multiple connections; people, teams, channels, threads, files, agent activity and human approvals. It never handles untrusted remote paths as local paths. Credentials and auth prompts stay in a dedicated trusted surface.
+**Desktop Crew UI and ordinary agent chat:** share one saved-connection registry, verified cluster identity, authentication state and policy service. Crew adds people, teams, rooms, files and owned-agent activity. The existing conversation can use built-in MCP tools to select an admitted connection, work on permitted remote files/jobs, post to a room or retrieve authorized context. These are two interfaces to the same connection and policy, not independent SSH credential stores.
 
-**Local connection manager:** Rust module behind the existing local daemon API, with a narrow Electron main-process adapter for interactive authentication. Own exact SSH child PIDs and app-specific control sockets. Maintain separate transports, caches, policy and workspace identities per connection. Do not change the app's single global backend URL to switch workspaces.
+**Local connection manager:** a Rust module behind the local daemon API, with a narrow Electron main-process adapter for interactive authentication. It owns exact SSH child PIDs/control sockets and keeps per-user/per-workspace transports, caches and grants separate. Reusing a connection never transfers another user's device authority or changes the normal local chat's provider silently.
 
-**`biorouter-crew bridge --stdio`:** a fixed-command remote bridge. It relays bounded frames between SSH stdin/stdout and the service Unix socket. It runs under the logged-in Unix user. Human-readable diagnostics go to stderr; banners or invalid bytes on stdout produce a clear framing error. No shell interpolation of message text, room names or file names.
+**Home-installed executable:** place `biorouter-crew` under `~/.local/bin/` or a user-selected home subdirectory. Each account may install its own verified copy. Do not require other users to execute a file inside the host user's inaccessible home, or change HOME permissions to expose it.
 
-**`biorouter-crew serve`:** small shared broker, installed/supervised by the institution as a dedicated unprivileged service account. It owns storage and the policy configuration. On the same Linux host it obtains `SO_PEERCRED` for each connecting bridge; kernel identity is distinct from a submitted nickname or username. Unix peer credentials are documented in [Linux unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html).
+**`biorouter-crew bridge --stdio`:** fixed-command protocol bridge, run via the member's existing SSH login on the canonical broker node. It connects locally to the broker socket, validates expected owner/workspace identity, and relays bounded JSONL. Message bodies and filenames never enter a constructed shell command. Diagnostics go to stderr. The bridge's UID is kernel-authenticated; it also supplies an enrolled-device/session credential or a limited worker grant.
 
-**Owned worker adapter:** private BioRouter session + provider binding + channel projection, admitted by the broker with a short-lived grant. Separate process and configuration per owner and data compartment; untrusted tool processes also require appropriate read and egress confinement. Model credentials remain in the owner's approved credential context, never in the shared channel store.
+**`biorouter-crew serve`:** ordinary host-owned process with private home storage. A dedicated, securely created node-local runtime directory (for example, a random short `/tmp/crew-<uid>-<nonce>/`) can be `0711`, with a socket accessible for connection (`0666`). The owner controls directory entries; peers cannot replace the socket. No chat data, tokens or keys live in that traversable directory. Private state remains `0700` directories/`0600` files in HOME. A `0700` runtime directory would prevent other users from reaching the socket, even if its mode were `0666`.
 
-**Built-in Crew extension:** exposes allowed listing, history/context retrieval, posting, files and owned agent actions to a local or remote BioRouter agent. It talks to the same policy engine as the UI. UI clicks and model-generated requests have different authority; the agent never receives a generic human-control credential.
+The socket permits an attempted connection, not record access. Broker admission checks kernel peer UID, enrollment, request capability and policy, with bounded unauthenticated work. Clients verify path ownership/no symlink substitution, broker peer identity and the pinned workspace public key; the broker also authenticates every client. These Linux socket primitives do not require creating groups or granting another user access to the host's private storage. [Linux unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html).
 
-ACP is useful inside the owned agent adapter; MCP is useful for the tools an agent uses. Neither protocol defines the full team chat authorization and durable storage model. Pin to BioRouter's actual supported versions and negotiate extensions; the [ACP transport specification](https://agentclientprotocol.com/protocol/v1/transports) should not be read as a ready-made collaboration server.
+**Owned worker adapter and built-in MCP capability:** per-owner BioRouter sessions, scoped model binding, remote tools and channel projections. Credentials remain with their owner. The local chat never receives raw SSH secrets, MFA codes or the broker's unscoped human-control credential. Sections 6 and 9 define enforcement and tool operations.
 
-### Service placement and trust
+ACP remains useful within an owned agent adapter; MCP exposes Crew and saved-SSH operations to the user's conversation. Neither replaces identity, membership or durable chat semantics. Use BioRouter's supported protocol versions. [ACP transport specification](https://agentclientprotocol.com/protocol/v1/transports).
 
-SSH access alone does not authorize installation of a persistent shared daemon on an institutional login node. Production requires the institution to choose a service location, service account, socket group, durable storage, provider destinations, backup policy and supervisor. Use systemd when available; otherwise provide a foreground process contract compatible with the approved supervisor. Do not depend on `systemd --user` lingering, `nohup`, Docker or a compute allocation remaining alive forever.
+### Workspace discovery, joining and node placement
 
-A personal unprivileged daemon is acceptable for a synthetic prototype where everyone trusts its owner with all content. It is not the production protection boundary for other users' restricted rooms. Root administrators and the host/service operator remain trusted; SSH cannot protect plaintext from a compromised endpoint or an administrator of the service.
+One shared workspace can host the whole lab and several teams. Its ordinary hosting user creates a workspace UUID, key and invitation descriptor. A descriptor contains the canonical broker node, expected host-account identity, workspace fingerprint and non-secret endpoint information; it does not contain a private key or executable SSH configuration. A recipient connects using their own SSH profile, verifies the descriptor, enrolls and then appears in that workspace's searchable people list. All enrolled, discoverable Crew members are visible as policy permits; invitations to teams/channels use this directory.
 
-No application port must be exposed to the internet. A Unix socket is preferred to localhost TCP because localhost is reachable by other accounts and is not an account-authentication mechanism. If the broker must live on a separate host, authenticate to that host/identity realm through an approved SSH route or deploy an explicitly authenticated relay. Do not forward untrusted UID headers across TCP.
+Save accepted descriptors in each member's home/local settings, so subsequent logins automatically rediscover the same workspace. Persist the chosen short runtime basename in the host manifest and invitation; reuse it on restart only after checking expected ownership/type. If a path is occupied by another UID or has been replaced, fail closed and require a verified descriptor update rather than unlinking someone else's files. Runtime relocation uses a signed generation update authenticated by the already pinned workspace key. A connection alone is not authority to scan other users' private homes or OS account lists. Optional cluster-wide discovery can publish minimal opt-in, account-owned announcements at a pre-existing mutually accessible location; validate filesystem owner and workspace identity and treat announcements only as discovery hints. No shared writable authoritative registry is required. If no suitable discovery location exists, joining once by invitation remains fully supported; do not create an insecure registry to imitate universal discovery.
+
+All participating bridges must reach **one actual kernel/node** hosting the socket. Shared NFS homes do not make Unix sockets work across login nodes. Resolve generic aliases to an explicit reachable broker node and reuse the permitted SSH/jump route. If there is no mutually reachable node, report this deployment limitation. Do not silently substitute an unauthenticated TCP relay or multi-writer shared-file mailbox. A signed cross-node relay/mailbox could be a later protocol, with separate feasibility work.
+
+### Process lifecycle and trust
+
+Provide `crew start/status/stop` for exact owned processes, a foreground `serve` mode, and an optional user service only where it already works. No systemd system unit, `sudo`, `loginctl enable-linger`, account creation, new Unix groups or cluster-policy changes are prerequisites. A site may kill ordinary processes at logout, reboot or allocation expiry; `nohup`, terminal multiplexers and disowning cannot guarantee survival. Report observed capabilities and keep durable history even when the host process goes offline. Other members can reconnect but cannot restart a process as its owner.
+
+A host migration is an explicit owner-authorized state/key transfer with verified writer shutdown and a new deployment generation. Never infer permission for another node to write from a missed heartbeat or stale PID file. Channel ownership transfer and workspace hosting transfer are distinct operations.
+
+The hosting account **and unrestricted software running under that UID are trusted with plaintext, policy and availability**, including invite-only room contents. Application ACLs protect against other ordinary member accounts; they cannot protect the home-owned journal from its owner. Host root also remains outside an application-only confidentiality guarantee. This is the selected rootless deployment model, not an assertion that private channels are cryptographically hidden from the host. End-to-end encryption against the host would require a separate key/search/agent architecture and is outside this first plan.
+
+Existing site rules on user processes and jobs still apply, but Crew does not require an administrator to provision new infrastructure. Heavy processing uses the user's existing scheduler permissions. Every rootless feature must have explicit supported/unsupported behavior rather than requesting elevated privileges behind the scenes.
 
 ## 4. SSH, MFA and multiple gates
 
@@ -134,11 +163,11 @@ Use a dedicated authentication terminal as a compatibility surface; use askpass 
 
 Authentication responses must never enter model prompts, chat messages, run event streams, logs, telemetry, saved config or agent-visible screenshots of the auth surface. Sanitize terminal control sequences and phishing-like prompt text; identify the verified endpoint and do not assert a particular hop when OpenSSH's prompt does not establish it. Do not auto-approve repeated push requests or cache OTPs. Cancellation kills only the connection's owned process tree.
 
-Use existing trusted known_hosts or institution host certificates. First-use trust is a visible human/admin enrollment decision; changed keys block. Never default to `StrictHostKeyChecking=no`, strip known_hosts, forward the user's SSH agent through all gates, or ingest an SSH config supplied in a team invitation. User-selected SSH config can contain executable `ProxyCommand`/`Match exec` directives and is trusted local configuration, not inert data.
+Use existing trusted known_hosts or institution host certificates. First-use trust is a visible human decision using existing trusted fingerprints/host certificates; changed keys block. Never default to `StrictHostKeyChecking=no`, strip known_hosts, forward the user's SSH agent through all gates, or ingest an SSH config supplied in a team invitation. User-selected SSH config can contain executable `ProxyCommand`/`Match exec` directives and is trusted local configuration, not inert data.
 
 The example disables inherited multiplexing on every hop. If Crew enables multiplexing, every hop must use an app-owned private control socket keyed by destination, user, route and policy realm. Do not inherit an unrelated user's or pre-existing bastion master. Bound idle persistence and independently enforce maximum authentication age **per hop**. Expiring only the final host can reuse an old bastion's MFA session; close/recreate the affected app-owned jump connections and their dependents. `ControlPersist` is an idle timeout, so an active chat can otherwise keep authentication alive indefinitely. Keepalive is liveness detection, not reauthentication. Effective host checking, delegation restrictions and control-socket policy must apply to all jump hosts, not just final-host command-line options. [OpenSSH configuration manual](https://man.openbsd.org/ssh_config).
 
-A desktop disconnect must not silently cancel previously approved scheduler jobs. Show whether a run is attached, awaiting reauthentication, still executing remotely, or finished. Revoked access stops new work and new result delivery; already launched tools/jobs follow an explicit cancel/contain policy, with owner/operator audit. Long-lived workers cannot renew grants forever after their owner is offboarded.
+A desktop disconnect must not silently cancel previously approved scheduler jobs. Show whether a run is attached, awaiting reauthentication, still executing remotely, or finished. Revoked access stops new work and new result delivery; already launched tools/jobs follow an explicit cancel/contain policy, with owner/application-manager audit. Long-lived workers cannot renew grants forever after their owner is offboarded.
 
 ### Required SSH acceptance matrix
 
@@ -160,11 +189,11 @@ Authoritative records live on the server. Use immutable opaque IDs; preserve use
 
 | Record | Key fields |
 |---|---|
-| Workspace | UUID, identity realm, enrollment generation, policy version, supported protocol range |
+| Workspace | UUID, canonical cluster/node identity, hosting principal, identity realm, shared Public/Private baseline, deployment/enrollment generation, policy version, protocol range |
 | Principal | UUID, verified UID, canonical username, account generation, status, discoverability |
 | Profile | Principal ID, nickname, avatar attachment ID, preferences |
 | Team | UUID, creator, name, policy, membership and invitation records |
-| Channel | UUID, team ID, immutable creator, name, visibility, data labels, status |
+| Channel | UUID, team ID, immutable created-by principal, current owner, name, visibility, data labels, status |
 | Membership | Principal/team/channel, role, granted/revoked event, membership epoch |
 | Event/message | Event UUID, journal order, channel message ID, actor kind/owner, body, revision, source labels, idempotency key |
 | Attachment | Opaque ID, owner/channel, size, digest, media type, display name, labels, upload state |
@@ -181,19 +210,19 @@ Distinguish **visibility** (`team-visible`, `invite-only`, DM) from **data class
 | Operation | Default authority |
 |---|---|
 | Create team | Enrolled human, subject to workspace quota/policy |
-| Invite to team | Team creator/admin; invitee accepts |
+| Invite to team | Team creator or delegated application manager; invitee accepts |
 | Create channel | Team member if team policy permits |
-| Invite to restricted channel | Channel creator or explicitly assigned invite manager; invitee must be eligible for the team/data |
-| Remove/archive channel | Original creator only; never implicit transfer on departure |
+| Invite to restricted channel | Current channel owner or explicitly assigned invite manager; invitee must be eligible for the team/data |
+| Remove/archive/transfer channel | Current owner; creator is initial owner, transfer requires explicit owner approval and successor acceptance |
 | Read/post/search/download | Active identity, appropriate memberships, object grants and data/device policy |
 | Edit own message | Original human author, policy-permitted revision; preserve audit |
 | Start/prompt/cancel/change/approve agent | That agent's owner only, through admitted owner action |
 | Observe agent | Recipients authorized for that run's published channel projection |
-| Emergency quarantine/retention hold | Named operator role, separately audited; does not masquerade as creator deletion |
+| Emergency quarantine/retention hold | Named workspace application-manager role held by an ordinary member, separately audited; no OS administrator privilege |
 
-Creator departure leaves an orphan channel readable under policy and eligible for operator quarantine/retention handling; ownership transfer is deferred until the product explicitly defines a creator-approved transfer rule. Removal hides/archives the room immediately but physical deletion follows retention and legal-hold policy. Deletion does not erase an audit obligation by default.
+Archive channels by default. The creator is the initial owner and may explicitly transfer ownership to an eligible member who accepts; subsequent transfers require the current owner. Preserve the immutable creator and full transfer history, and allow only the current owner to archive/remove. Transfer revokes old-owner capabilities, including invitations and pending owner approvals; retained access requires a separate explicit membership/delegation. The successor gains owner actions only when the transfer commits. If an owner disappears without transfer, the application manager may quarantine the orphan rather than impersonating its owner. Actual content deletion follows the configured retention/hold rules and is distinct from UI archival. All of these are application roles held by normal users, not elevated Unix accounts.
 
-Membership revocation invalidates subscriptions, uploads, downloads, search results, context snapshots and queued worker grants at their next authorized action. Recheck before delivering each download chunk and before model dispatch. Do not promise to recall already downloaded or model-submitted bytes. Broker identity uses a UID plus enrollment generation because Unix accounts can be recycled; identity realm mappings and offboarding are administrator responsibilities.
+Membership revocation invalidates subscriptions, uploads, downloads, search results, context snapshots and queued worker grants at their next authorized action. Recheck before delivering each download chunk and before model dispatch. Do not promise to recall already downloaded or model-submitted bytes. Broker identity uses a UID plus enrollment generation because Unix accounts can be recycled; the hosting user and workspace managers maintain enrollment/offboarding records without requiring OS administration; ambiguous recycled identities require re-enrollment.
 
 ## 6. Agent ownership, context and private/public enforcement
 
@@ -201,27 +230,49 @@ Membership revocation invalidates subscriptions, uploads, downloads, search resu
 
 Use explicit composer actions: **Message channel** and **Ask my agent**. An admitted owner command creates a run. A coworker's message or `@alice-agent` mention does not. In one channel Alice and Bob may both run their agents; neither can prompt, stop, approve a tool call for, or change the other's agent/model. Shared “team agents” are deferred because they need an explicit owner/delegation model.
 
-Human authority needs a concrete second layer beyond the Unix account. Enroll a desktop/device public key bound to the verified principal through an institution-approved ceremony: an operator-authorized enrollment or an existing enrolled human device with user presence. Bare UID access cannot enroll/replace a human-control key. Keep the signing key in a protected local credential/signer service; use non-exportable keys where supported. The broker issues a nonce for each sensitive approval or authority-changing action, and verifies a human signature over the exact operation, argument/payload digest, workspace, run/channel, policy epoch and expiry. The trusted UI obtains an explicit human gesture; model tool APIs, generic PTY automation and agent-visible IPC cannot invoke the signer. Enrollment, rotation and recovery are audited control-plane operations. Ordinary sessions may receive bounded interaction grants; workers receive separate run-scoped credentials and never a generic human grant. A remote bridge is transport, not proof that its caller is human.
+Human authority needs a concrete second layer beyond the Unix account, without administrator enrollment. The desktop generates a device key in its local credential/signer service. Through the user's SSH-authenticated bridge, the broker issues a short-lived challenge bound to the actual peer UID, workspace, enrollment generation, device public key and live connection. The desktop displays the verified identity and signs after human enrollment. A signature proves possession of that device key, not human intent by itself.
 
-Publish the requested task, intended commands/tool calls, status/progress, shareable output and artifact references as structured events. Keep full owner session state separate. Credential prompts, environment secrets, raw provider internals and hidden reasoning are not indiscriminately broadcast. If results include additional restrictions from another channel, send them only to recipients permitted by all sources; the public room can receive a non-sensitive status when policy allows it.
+Avoid first-writer-wins enrollment: bind the invitation to the intended device-key fingerprint or have the hosting user/workspace manager confirm it through an already trusted interaction. This is ordinary application ownership. Additional devices and recovery require an existing enrolled device or an explicit, audited manager recovery using a verified recipient fingerprint. No privileged account or institution-provisioned identity service is required.
 
-Workers execute as the invoking user's Unix identity and scheduler allocation, never the broker service account. On Narrows, expensive processing belongs in Slurm rather than an interactive login daemon. The controller records job IDs and exit status, reattaches logs under the same identity, and supports explicit cancellation. No Slurm job was submitted in the feasibility probes.
+For sensitive approvals/authority changes, bind a nonce to exact operation, arguments/payload digest, workspace, run/channel, policy epoch and expiry. A trusted human UI invokes the signer; worker tools/PTY automation do not receive it. Hardware-backed keys are optional where supported. Workers get separate run-scoped credentials and cannot mint a human grant. All software under an already compromised host/user UID is outside this application's strong identity claim; an unrestricted remote process must not be treated as proof of a human approval.
 
-### Mandatory policy decision
+Publish the requested task, intended commands/tool calls, status/progress, shareable output and artifact references as structured events. Keep full owner session state separate. Credential prompts, environment secrets, raw provider internals and hidden reasoning are not indiscriminately broadcast. If results include additional restrictions from another channel, send them only to recipients permitted by all sources; a broader-audience room can receive a non-sensitive status when policy allows it.
 
-For each operation evaluate:
+Workers execute as the invoking user's Unix identity and scheduler allocation, never through a different member's hosting account. On Narrows, expensive processing belongs in Slurm rather than an interactive login daemon. The controller records job IDs and exit status, reattaches logs under the same identity, and supports explicit cancellation. No Slurm job was submitted in the feasibility probes.
 
-`identity ∩ membership ∩ object ACL ∩ run capability ∩ source restrictions ∩ destination policy ∩ device/egress policy`.
+### Cluster Public/Private toggle and mandatory policy
 
-Any denial wins. Missing or unknown labels/endpoints fail restricted/denied; absent provider metadata is not permission to export. Existing local privacy opt-outs cannot disable Crew enforcement. The broker/approved runner binds a grant to an actual configured provider endpoint and policy version; request fields such as `provider: private` are descriptive, never evidence.
+On adding a saved SSH connection, the human explicitly declares whether the cluster hosts Private or Public information. Default an unclassified connection to **Private**. Define a client-managed canonical `cluster_connection_id` separately from remote `workspace_id`: it groups the user's saved aliases and verified destination-node identities for that cluster. Pin host identities through the existing SSH trust flow and require explicit association for additional nodes/aliases; a broker-supplied workspace UUID or display name cannot create a new Public cluster identity. Persist the personal mode against `cluster_connection_id`, so all its aliases, additional workspaces, Crew UI, normal chats and scheduled work share that floor. Each workspace also has its independent shared baseline. Host-key/identity changes suspend reuse until resolved.
 
-The provider allowlist is per exact deployment and data compartment. An institution-hosted model is not automatically entitled to another institution's data. A commercial deployment may be allowed for specific restricted workloads only by institutional configuration covering its agreements, retention and permitted use. Never infer permission from a vendor brand, private IP address, SSH hostname or a user's toggle.
+**Private means no public models on that connection/workspace.** Channel discoverability, a public-safe message or a model's popularity cannot override this. Public means public providers may be considered, not that all stored material is public. Apply the same rule to embeddings, OCR, transcription, summaries, titles, plugins and other Crew-managed model calls. No silent fallback to a public provider.
 
-This rule applies to the whole processing path: main LLM, embeddings, OCR, speech transcription, title generation, summarization, attachment scanning/previews, link unfurls, telemetry, error reporting, plugins and arbitrary tools. Crew's desktop-to-server collaboration traffic stays inside SSH. Server-to-model traffic uses the institution-approved protected endpoint/egress route, usually authenticated TLS inside the approved environment; SSH does not automatically encrypt or authorize that separate leg. If policy requires an SSH tunnel for that leg too, the deployment must provide and validate it.
+For shared collaboration keep both a personal connection setting and a host-owned shared workspace baseline. The workspace creator selects its initial baseline. An enrolled human may tighten their connection to Private; a workspace policy change to Private is an explicit shared change, available to an authorized ordinary workspace manager. Lowering the shared baseline requires the current workspace owner/manager's human action, not a member's personal preference or an agent. This is an application permission, requiring no system administrator. The UI always displays effective mode and explains when a Private workspace overrides a personal Public selection.
+
+An agent's admission rule is:
+
+`identity ∩ membership ∩ object ACL ∩ workspace baseline ∩ personal connection mode ∩ source restrictions ∩ pinned run policy ∩ approved endpoint/tool scope`.
+
+Every denial wins. Bind these inputs and their policy epoch to the run/worker grant and recheck on reads, provider dispatch and publication. Missing/unknown labels and endpoint identity fail restricted/denied. Never trust a request's `provider: private`, permit a local privacy-off switch to bypass Crew, or use a second SSH tool path with weaker rules.
+
+| User action/state | Required behavior |
+|---|---|
+| New connection, classification not yet resolved | Effective Private; no public-provider call. |
+| Private connection or Private shared workspace | Public providers unavailable for Crew and saved-SSH tools, regardless of channel visibility. |
+| Public connection in Public workspace | Public providers allowed only for authorized public-safe inputs and tools. |
+| Public → Private | Persist a new policy epoch, revoke incompatible grants, block queued/new public requests and cancel/detach incompatible active work where supported. Bytes already submitted cannot be recalled; report that honestly. |
+| Private → Public | Explicit human change; invalidate old grants and start fresh policy-compatible runs. Existing private messages/files/caches/context remain private. |
+| Conflicting member preferences | The more restrictive setting governs that member's work; personal Public never lowers a shared Private baseline. |
+| Reconnect, another workspace on the same cluster, alias change or stale offline grant | Resolve the same canonical `cluster_connection_id` and current shared baseline before any read, model call, upload or publication; a new workspace ID does not reset the cluster mode. |
+
+Every contribution made in a Private context receives a private-processing label, so another member cannot send it to a public model after the original author disconnects. Reject posting it into a destination that cannot preserve this restriction. Private→Public does not automatically rewrite history or enable public-model filesystem access to retained private state. Initially require a fresh public run/channel context containing only public-safe data; retained protected files remain inaccessible to public tools. The rootless isolation limitations below still apply.
+
+Provider classification is for the actual configured endpoint/deployment. A private model must satisfy the permitted data compartments; merely being local or sharing a vendor brand does not grant access. The plan retains BioRouter's existing endpoint/affiliation checks while making the cluster Private setting an additional non-bypassable denial of public providers. Synthetic testing uses private-classified fixtures and controlled endpoints rather than assuming an endpoint is approved for real data.
+
+Desktop-to-cluster collaboration traffic stays inside SSH. Cluster-to-model traffic is a separate leg using the configured protected endpoint/egress route, normally authenticated TLS; SSH does not authorize that leg automatically. Network restrictions enforced by Crew apply to Crew-managed tools/dispatch. Without OS administration, the app cannot impose a host-wide firewall on unrelated user software.
 
 ### Cross-channel context without accidental disclosure
 
-Default context is the current channel's authorized history window plus selected artifacts. Let an owner opt into specific channels or an approved same-workspace search scope. Search filters run before scoring, counts, snippets and pagination; fetch rechecks permissions. Scope ambiguity requires a visible workspace/channel selector, not a guessed post destination.
+Default context is the current channel's authorized history window plus selected artifacts. Save an owner-selected set of additional channels that the agent may search automatically for that task or explicitly saved preference. Cross-workspace retrieval always requires explicit selection and compatible policy; do not default to all joined rooms. Search filters run before scoring, counts, snippets and pagination; fetch rechecks permissions. Scope ambiguity requires a visible workspace/channel selector, not a guessed post destination.
 
 Record a context manifest of exact source event/file versions and the policy epoch. Derived context and outputs inherit the union of source restrictions. An agent “learning” across channels means authorized retrieval and session context; it does not mean silently training a model, pooling all team memories, or retaining revoked data in a global memory index.
 
@@ -229,32 +280,42 @@ If a private run reads channels A and B, its summary cannot be posted to A unles
 
 Initially prohibit private-to-public export in restricted workspaces. A later controlled release flow can present exact text/files and provenance for human/institutional approval, bound to destination, digest, expiry and policy. Approval of one release never changes the source channel's label or grants standing release rights. Do not reuse a generic first-crossing-per-session consent for PHI.
 
-### Required execution isolation
+### Rootless worker isolation and boundary limits
 
-Same-UID authentication proves an account, not human intent or model clearance. A model-controlled shell running as Alice can otherwise open Alice's Crew socket, home, private cache, SSH control socket or provider credentials. Scoped MCP tokens alone cannot stop that. **Every worker, including private-model workers, must be isolated from human-control keys, enrollment/approval authority and unscoped human sessions.** Broker application admission requires a valid enrolled-device/session credential or a limited worker grant in addition to the kernel account; there is no bare-UID fallback to human authority. The worker API cannot change actor kind or mint/renew a human credential.
+Same-UID authentication proves an account, not human intent, provider clearance or a safe process. Every worker, including private-model workers, must be separated from the desktop's human signing authority and must use scoped broker credentials. A raw SSH/broker connection does not acquire a human credential automatically. A private-model worker is not authorized to change memberships, approve its own sensitive actions or alter the cluster mode.
 
-Public-mode execution in a protected environment needs an administrator-approved boundary that hides protected filesystem roots and process state, prevents access to human-control transports, and restricts egress. Options include a separately provisioned public-only execution host/account, or tested namespaces/mount restrictions plus privilege/process/network controls. Do not make a newer Linux feature a universal prerequisite: Narrows currently reports kernel 4.18; newer isolation facilities cannot be assumed. [Linux Landlock documentation](https://docs.kernel.org/userspace-api/landlock.html) illustrates why runtime feature detection and a deployment support matrix matter.
+Private clusters categorically deny public models, so there is no same-host public-model exception based on a channel's label or a supposedly stronger sandbox. Public-model sessions using the ordinary chat's built-in SSH tools are denied access to a Private connection before remote retrieval. Private derived context cannot flow to a Public connection merely because the user changed the selected connection.
 
-If the host cannot enforce the data-read boundary, human Crew chat and private workers that satisfy the separate human-authority, tool-scope and egress requirements can still be supported under institutional policy, while public-model cluster-file execution remains unavailable. If human-authority isolation is unavailable too, support human chat only and withhold agent execution/control integration. These are explicit feature limits, not hidden weakening of the boundary. A same-UID user intentionally running arbitrary software outside Crew remains outside an application-only guarantee; institutional account and endpoint controls are part of the threat model.
+On Public clusters, scoped tool implementations should allow only selected remote paths/operations and hide Crew stores, SSH/control sockets, human credentials and previously private artifacts. Use an already available unprivileged isolation mechanism if it has been tested on that host; do not require sudo, privileged containers, new accounts, sysctl changes or newer kernel features to make human chat work. If sufficient isolation for arbitrary shell or unrestricted file tools is unavailable, expose only the supported broker-mediated operations and report those tools unavailable. [Linux Landlock documentation](https://docs.kernel.org/userspace-api/landlock.html) is a compatibility reference, not a universal dependency.
+
+An unrestricted agent running under the **hosting user's UID** can otherwise read/modify all plaintext Crew state in that home. Ordinary file permissions cannot prevent this. Consequently, unrestricted software under the host account is part of the trusted base; rootless Crew does not claim to withstand a malicious host or arbitrary same-UID code. Test and document this limitation rather than calling file modes a sandbox. Where the required authority/data isolation is unavailable, human collaboration and narrowly scoped supported agent actions remain usable; withhold the affected arbitrary execution features.
+
+Do not attempt system-wide network/credential controls that require elevated privileges. The release claim is enforced routing, provenance and authorization in the shipped Crew/SSH capability under the stated trusted-account model, with explicit tool restrictions. Any stronger protection against the hosting user would be a separate encryption/isolation project.
 
 ## 7. Simple text storage with explicit durability
 
-Suggested service-owned layout:
+Suggested home-based layout, repeated separately for each hosting or participating account:
 
 ```text
-/var/lib/biorouter-crew/<workspace-id>/
+~/.local/bin/biorouter-crew
+~/.config/biorouter/crew/connections.json
+~/.local/share/biorouter-crew/workspaces/<workspace-id>/
   manifest.json
   policy.json
   journal/000000000001.jsonl
   snapshots/<sequence>.json
   blobs/<opaque-prefix>/<opaque-id>
   uploads/<opaque-id>.part
-  derived/                         # disposable search/lookup indexes
+  derived/                         # disposable indexes
   audit-checkpoints/
-/run/biorouter-crew/<workspace-id>.sock
+~/.local/share/biorouter-crew/owned-runs/<run-id>/
+~/.local/state/biorouter-crew/      # private logs and lifecycle records
+/tmp/crew-<uid>-<random>/broker.sock # ephemeral local IPC only
 ```
 
-`manifest.json` establishes storage schema, workspace identity and generation. It is written atomically and durable before accepting enrollment. `policy.json` is operator-controlled; client requests cannot replace it. Members have access to the socket under an approved Unix group but cannot directly read or edit journal/blob directories. Service data uses restrictive permissions and approved encrypted storage/backups; text format does not require world-readable or unencrypted media.
+The host account owns workspace files; members keep their own connection references, preferences and owned-run state in their own homes. `manifest.json` records workspace identity, host account, canonical writer node and deployment generation. `policy.json` is managed through authorized human application actions and changes appear in the canonical journal; a worker cannot overwrite policy through a tool. Snapshots/config views do not independently override journaled policy.
+
+Use private state directories/files (`0700`/`0600`) without changing permissions of the entire home. No newly created Unix group, ACL grant on HOME, writable shared history folder, `/var/lib` installation or privileged `/run` directory is required. Peers use the socket API, not the host's data files. Encryption/backup properties depend on the available user/storage environment; rootless installation does not establish at-rest encryption by itself. A user-managed encrypted backup can be supported without claiming protection from the running host account.
 
 Use **one canonical ordered journal per workspace initially**. A record is a single versioned mutation or atomic batch: sequence, unique event ID, operation, actor, target, timestamp, policy/membership epoch, idempotency information, payload and checksum over defined serialized bytes. Do not duplicate memberships in a second independently committed store. Snapshots and room/search views are derived. A future segmented/partitioned design must preserve authorization ordering explicitly.
 
@@ -267,13 +328,13 @@ Use **one canonical ordered journal per workspace initially**. A record is a sin
 5. Replay verifies schema, sequence continuity, checksums and mutation invariants. A demonstrably incomplete final record may be quarantined/truncated under exclusive ownership. A complete record with a bad checksum or interior corruption stops recovery; never skip a membership revocation to make startup succeed.
 6. Snapshots use a temp file, flush/fsync, same-filesystem atomic rename and directory fsync. Include the committed journal sequence/digest; keep old generations until recovery and backup verification complete.
 
-The process must have exclusive local ownership of the store and fail if another broker is active. Advisory locking plus permissions is adequate only under the documented trusted-operator, single-host model. No automatic failover to a second host in v1. NFS lock/rename/durability behavior and fencing require validation; text does not make distributed locking safe.
+The process must have exclusive ownership of the store and fail if another broker is active. Pin the writer to the manifest's canonical node and deployment generation; verify locking on the actual filesystem. Only the hosting account can restart its broker, and a stale timestamp or failed heartbeat cannot authorize a second node to write. No automatic failover in v1. Lock semantics depend on local/NFS configuration, so tests must cover the selected mount rather than assuming `flock` is universal fencing. [Linux flock(2)](https://man7.org/linux/man-pages/man2/flock.2.html).
 
-Prefer durable local storage on the approved service host, with institution-managed backups. Narrows HOME is NFS, so do not default there. The probe's `/tmp` filesystem is only a disposable test site, never recommended production storage. If only shared storage is available, an administrator must select a supported single-writer deployment and validate crash/lock/restore semantics before launch. SQLite WAL is also unsuitable as a shared network-filesystem default; its official limitations explicitly identify that constraint. [SQLite WAL documentation](https://www.sqlite.org/wal.html).
+HOME is the default persistent location, including clusters where HOME is NFS. Qualify that exact user-writable mount for single-writer locking, file/directory fsync, atomic replacement, restart recovery, quota failures and disconnect behavior before treating it as supported. Prior Narrows probes used XFS temporary storage, so they do **not** establish this. If the required primitives fail or stall, suspend writes with an actionable filesystem limitation; do not request sudo, silently move canonical history to `/tmp`, or acknowledge undurable operations. A user may select another existing permitted home/project location after the same checks. Backups are user-owned exports/snapshots to an available permitted destination; do not assume institution-managed backup service. [Linux fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html).
 
 A simple in-memory keyword index rebuilt from authorized events is enough for the first deployment. Apply ACL filters before returning results. Optional derived indexes may later improve restart/search time, but canonical recovery must not depend on them. Avoid vector search until provider/embedding permissions and provenance deletion are implemented.
 
-Audit records for reads, downloads, model dispatch, approvals, exports, membership/policy changes and administrative actions must be durable according to policy; if mandatory audit cannot be recorded, deny the action. A checksum chain detects accidents/tampering only relative to a trusted checkpoint, not an administrator who can rewrite the whole store. Restricted production needs protected external checkpoints/backup retention under institutional operations.
+Audit reads, downloads, model dispatch, approvals, exports, mode/membership changes, transfers and application-manager actions according to configured retention. If a required audit write fails, deny the action. A checksum chain plus independently retained signed checkpoints can expose some alteration, but the host account can rewrite its own store. Do not call this administrator-proof or immutable compliance logging. Offer user-controlled checkpoint exports/backup verification and state the actual trust/retention properties.
 
 Text logs do entail more recovery code than SQLite. This is a deliberate preference tradeoff, not a claim that hand-built journals are intrinsically safer. Keep the journal small and single-writer, test power-loss boundaries, and revisit storage only if those tests or deployment needs justify added machinery.
 
@@ -307,11 +368,11 @@ Define a retry horizon before journal compaction: retain each operation's key, p
 
 All kinds of files may be stored subject to institutional quotas/content rules. Render only safe supported previews. Never execute HTML/SVG/scripts or fetch external resources merely because someone posted them. Images/avatars are bounded, sanitized or served without active content; private previews/OCR must stay in approved processing destinations. Use opaque filenames internally; user-supplied names are display metadata. Reject traversal, symlink/hardlink escapes, special files and archive expansion attacks. No public pre-signed object URLs or inline external image URLs for restricted attachments.
 
-For very large datasets offer **shared file reference** separately from **uploaded snapshot**. A reference describes a version/digest and intended target; the recipient/worker accesses it under its own Unix permissions. The broker does not use its service account to read arbitrary submitted paths or change Unix ACLs. An uploaded snapshot is an explicit sharing operation and new protected object. Moving between two SSH workspaces is an explicit policy-checked transfer, never an automatic local download/upload shortcut.
+For very large datasets offer **shared file reference** separately from **uploaded snapshot**. A reference describes a version/digest and intended target; the recipient/worker accesses it under its own Unix permissions. The broker does not use the hosting member's account to read arbitrary submitted paths or change Unix ACLs. An uploaded snapshot is an explicit sharing operation and new protected object. Moving between two SSH workspaces is an explicit policy-checked transfer, never an automatic local download/upload shortcut.
 
 ## 9. UI and agent tools
 
-The Crew tab contains a workspace switcher; connection/MFA status; teams; channels/DMs; people; files; and a room timeline. Display `workspace / team / channel`, the verified SSH username, room visibility and data policy independently. Include accessible reconnect/error states and a context-scope picker. Authentication problems must not look like an empty room.
+The Crew tab contains a saved SSH connection/workspace switcher; a visible, user-changeable Public/Private control showing effective mode; connection/MFA status; teams; a whole-team general channel and smaller channels/DMs; people; files; and a room timeline. Display `workspace / team / channel`, the verified SSH username, room visibility and data policy independently. Include accessible reconnect/error states and a context-scope picker. Authentication problems must not look like an empty room.
 
 The composer selects ordinary message vs owned-agent invocation. Agent activity cards show owner, model endpoint policy, status, commands and artifacts. Only the owner sees enabled run controls. A room can host parallel runs without sharing their private session state. Human-only collaboration must work before selecting a model provider or enabling agent extensions.
 
@@ -331,30 +392,53 @@ Suggested tool/command surface:
 | `crew.run_agent`, `crew.cancel_agent` | Only admitted owned runs, no cross-owner authority |
 | `/crew send`, `/crew context`, `/crew files`, `/crew agent` | Human-friendly discovery over the same typed operations |
 
-A local private conversation is not posted simply because a channel is selected. Sharing produces a bounded destination-specific payload; model-generated posting uses narrow grants and any required human approval. A coworker's chat text cannot manufacture a slash-command invocation or an approval event.
+A local conversation is not posted simply because a channel is selected. The user can grant posting permission for a particular task and destination channel, avoiding a confirmation for every ordinary in-scope message. Widening the audience or permitted data boundary requires a new explicit approval, and forbidden private-to-public flows remain denied. Sharing creates a bounded, provenance-carrying payload. A coworker's message cannot manufacture a slash-command invocation or an owner approval event.
+
+### Built-in MCP Crew and SSH manager in ordinary conversations
+
+Ship a built-in, discoverable MCP tool surface, enabled through BioRouter's existing extension/capability machinery. A thin in-process/platform adapter may implement the registered tools, but users and acceptance tests must invoke them through the normal agent tool-dispatch path. The remote collaboration stream remains the versioned JSONL protocol. No separately configured external MCP server or duplicated SSH credentials are prerequisites.
+
+Both the Crew page and this extension use the **same connection IDs, credentials broker, live transports, known-host verification, effective cluster mode, reconnect lifecycle and permission engine**. A saved connection is available to the user's other chats by explicit selection, subject to that chat's provider clearance and grants. Selecting it binds remote working directory and allowed operations to that conversation/run; it must not globally change another chat's connection or treat remote paths as local paths. Supporting multi-connection work does not authorize automatic data transfer between connections.
+
+Proposed typed operations (final registered names can follow repository naming conventions):
+
+| Capability | Required behavior |
+|---|---|
+| `crew.list_connections`, `crew.connection_status` | List the current user's admitted saved connections and effective mode/status without credentials or inaccessible workspace metadata. |
+| `crew.connect`, `crew.use_connection` | Resolve an explicit saved connection ID, request human MFA in the trusted UI when necessary, and bind a scoped lease to this chat/run. Never answer an authentication prompt through the model. |
+| `crew.list_remote_files`, `crew.read_remote_file` | Access only permitted remote paths as the selected SSH user; check provider/cluster mode before retrieving bytes; label returned content for persistence and subsequent model calls. |
+| `crew.execute_remote`, `crew.job_status`, `crew.cancel_job` | Execute permitted actions as the owner, reuse existing sensitive-operation approvals, respect tool/scheduler scope and available isolation, and persist invocation IDs so uncertain execution is not blindly retried. |
+| `crew.upload`, `crew.download`, `crew.attach` | Explicit scoped transfer with digest, policy, quota and destination checks; distinguish local files, remote references and uploaded snapshots. |
+| `crew.list_channels`, `crew.read`, `crew.search` | Use membership-filtered data and current/selected-channel context with provenance. |
+| `crew.post`, `crew.check_updates` | Post only under a task/channel grant; read real updates using a scoped cursor. Do not silently mark human messages read merely because a background agent checked them. |
+| `crew.run_agent`, `crew.cancel_agent` | Control only the caller's owned agents; a room mention or another user's request is not authority. |
+
+Natural language and slash commands resolve to these same operations. Acceptance examples include “Using my saved Leo connection, inspect my synthetic project folder,” “Send this result to my lab's analysis channel,” and “Check that channel for updates since my last request.” Ambiguous workspace/channel names require a selection instead of guessing. If the current chat uses a public model and the saved connection is Private, reject before remote context/file retrieval and explain that an allowed private model/session is needed. Do not silently switch provider, launch a raw `ssh` tool outside the manager, or create a second less-restricted connection to satisfy the prompt.
+
+Publication from a normal chat follows the accepted task/channel permission grant. Reading a room, saving a connection or selecting a workspace is not permission to copy the rest of the local conversation there. Returned remote data follows the local session-persistence restrictions above. Tool results and UI report actual observed success/failure; the agent's claim to have sent a message or run a job is not evidence that it occurred.
 
 ## 10. Linux portability and packaging
 
-Use a dedicated small Rust domain/service crate rather than shipping the full Electron app or a Python environment to every cluster. Reuse the repository's Rust/serde patterns. Keep the Python stdlib probes as evidence only. Package a standalone Linux executable for x86_64 and aarch64 with an explicitly tested old-enough glibc floor; explore a musl build only after checking institution identity resolution. Static musl is not a guarantee of SSSD/LDAP/NSS compatibility. Kernel UID plus administrator enrollment is the authority; display-name lookup must match the site's identity system.
+Use a dedicated small Rust domain/service crate rather than shipping the full Electron app or a Python environment to every cluster. Reuse the repository's Rust/serde patterns. Keep the Python stdlib probes as evidence only. Package a standalone Linux executable for x86_64 and aarch64 with an explicitly tested old-enough glibc floor; explore a musl build only after checking institution identity resolution. Static musl is not a guarantee of SSSD/LDAP/NSS compatibility. Kernel UID plus invitation/device enrollment is the authority; display-name lookup must match the site's identity system.
 
 `crew doctor` should inspect protocol compatibility, executable architecture/runtime, socket support, UID resolution, selected storage semantics, permissions, supervisor readiness and worker isolation capabilities. Report feature-level outcomes: chat ready, uploads ready, private worker approved, public execution unavailable, and so on. Do not report “HIPAA compliant” from a feature probe.
 
-Support a foreground service with signal handling and explicit config/data/runtime paths; systemd units are an optional installation convenience. Upgrades use verified signed/hash-pinned artifacts, schema compatibility checks, maintenance mode and a restorable backup. Client/server version negotiation supports a bounded rolling-upgrade window. Do not auto-download and execute a binary from a room message or a model tool result.
+Support foreground operation and user-owned start/status/stop with explicit home/config/runtime paths. An optional `systemd --user` unit is used only if already supported; installation never enables linger or installs a system service. An ordinary user must complete every install, upgrade, migration and recovery operation. Upgrades use verified signed/hash-pinned artifacts, schema compatibility checks, maintenance mode and a restorable backup. Client/server version negotiation supports a bounded rolling-upgrade window. Do not auto-download and execute a binary from a room message or a model tool result.
 
 ## 11. Implementation sequence and delivery gates
 
-Effort ranges below are planning estimates, not commitments: roughly 20–32 engineering person-weeks plus institutional/security review, with overlap possible across independent UI/protocol/security lanes. A useful synthetic human-chat preview comes earlier; broad Linux and desktop MFA parity plus protected multi-user agents is the larger scope. Validate estimates after Phase 1.
+Effort ranges below are planning estimates, not commitments: the earlier roughly 20–32 engineering person-weeks remains provisional pending the rootless bootstrap and full dev-app test spikes, with overlap possible across independent UI/protocol/security lanes. A useful synthetic human-chat preview comes earlier; broad Linux and desktop MFA parity plus protected multi-user agents is the larger scope. Validate estimates after Phase 1.
 
 | Phase | Deliverable | Exit evidence | Approximate effort |
 |---|---|---|---|
 | 0 — This investigation | Source map, alternatives, SSH probes, isolated worktree, design | Reproducible results with explicit gaps | Completed research artifacts; no product code |
-| 1 — Contract and threat model | `crew` record/protocol/policy module; fixture broker; signed deployment assumptions | Independent adversarial review of ownership, privacy, recovery and MFA flows | 2–3 person-weeks |
+| 1 — Rootless contract and threat model | Home-only install, socket/bootstrap, canonical node, JSONL recovery, cluster-mode contract | Three ordinary UIDs; no sudo/group changes; home/NFS qualification; review of host trust, mode transitions and enrollment | 2–3 person-weeks |
 | 2 — SSH connection foundation | Native process manager, MFA surface, jumps, host trust, reconnect, doctor | Real 2-user/2-hop tests; simulated and actual approved MFA; macOS/Linux/Windows lifecycle matrix | 3–5 person-weeks |
-| 3 — Human collaboration | Protected broker, journal, profiles, teams/invites, channels/DMs, timeline, creator-only removal | Unauthorized user/channel tests, crash/replay/idempotency, two desktops and revocation live | 4–6 person-weeks |
+| 3 — Human collaboration | User-hosted broker, general/small channels, profiles, teams/invites, timeline, archive/ownership transfer | Three isolated dev app sessions; natural conversation, denied channel access, revocation and restart | 4–6 person-weeks |
 | 4 — Files and usability | Resumable files/images, downloads, safe previews, threads/reactions/search/preferences | Large-file interruption, disk-full, digest/path attacks, ACL checks and accessibility | 3–4 person-weeks |
-| 5 — Owned agents | Per-user workers, ACP adapter, progress projection, approvals and scheduler integration | Real UID/job ownership, other-user denials, reconnect without duplicate tools | 3–5 person-weeks |
-| 6 — Mandatory data boundary | Endpoint policy, provenance, scoped context, constrained tools/egress, restricted caches | Real approved private model and public model with synthetic canaries; no unauthorized outbound bytes | 3–5 person-weeks |
-| 7 — Institutional pilot and release | Packaging, operations, backup/restore, migration, monitoring, incident/offboarding procedures | Approved deployment, restore drill, independent review, installed desktop and hosted CI evidence | 2–4 person-weeks |
+| 5 — Owned agents and shared SSH tools | Per-user workers, ACP adapter, built-in MCP Crew/SSH manager, slash/natural-language actions | Real conversation tool calls on saved connections; own UID/jobs; other-user denials; disconnected continuation | 3–5 person-weeks |
+| 6 — Mandatory data boundary | Cluster Public/Private toggle, provider/context/tool policy, source labels and restricted caches | Synthetic public/private datasets; spy endpoints verify denial; toggle/reconnect/alias tests across UI and MCP; real approved endpoints where available | 3–5 person-weeks |
+| 7 — Lab pilot and release | Home-only packaging, user-owned backup/restore, migration, monitoring and offboarding | Actual worktree dev-app computer-use suite, 3-user AWS evidence, 30–50-client checks, rootless install/restore and regression closure | 2–4 person-weeks |
 
 Security infrastructure starts in Phase 1 and gates every phase. Phase 6 is integration/acceptance completion, not permission to postpone authorization until after implementation. Early phases use synthetic data. A PHI pilot cannot start merely because human chat and model calls work.
 
@@ -365,7 +449,7 @@ Security infrastructure starts in Phase 1 and gates every phase. Phase 6 is inte
 - `crates/biorouter-server/src/routes/crew.rs` and a connection manager module: local UI API and event bridge. Generate OpenAPI with `just generate-openapi`.
 - `ui/desktop/src/components/crew/` and Crew hooks/state: navigation, auth, timeline, files, owned agents and accessibility.
 - `crates/biorouter-crew/tests/`: actual broker/process/authorization/recovery tests; fixtures use two real Linux UIDs where needed.
-- Deployment assets: supervisor example, `crew doctor`, compatibility matrix, packaging/integrity checks and operator docs.
+- Deployment assets: home installer, user-owned lifecycle examples, `crew doctor`, compatibility matrix, packaging/integrity checks and lab-hosting-user docs. No mandatory privileged service provisioning.
 
 Reviewable PR order: protocol/domain → journal/recovery → broker identity/ACL → SSH/auth → human UI → attachments → owned workers → context/provider isolation → operations/packaging. Split by actual dependency boundaries, not parallel edits of the same registry/router files.
 
@@ -378,15 +462,106 @@ See [smoke-test report](feasibility-report.md), [institutional raw results](inst
 The most important remaining tests are not throughput benchmarks:
 
 1. Real institutional MFA, renewed MFA after expiry, restrictive jump-gate policies and every supported desktop client.
-2. Two actual institution users and a site-approved broker service account/storage location; UID/NSS/offboarding behavior and namespace boundaries.
-3. Fault injection around journal/blob fsync/rename/ack, storage exhaustion, full restore and unsupported NFS semantics.
+2. Three actual Unix accounts with separate homes and SSH usernames, installing/running Crew without elevated access; UID/NSS, enrollment, host-account trust and offboarding.
+3. Fault injection around home-based journal/blob fsync/rename/ack, storage exhaustion, rootless restore and the actual NFS HOME semantics; no automatic cross-node writer failover.
 4. Concurrent revocation during search, context construction, uploads/downloads and queued/running model work.
-5. Public-model attempts to read private files, broker/control sockets, caches, process state and credentials; malicious room text and attachments.
+5. Public-model denial on Private connections through both Crew and ordinary chat SSH tools; attempted reads of synthetic private history/caches after a Public toggle; same-UID tool/credential boundaries and malicious room input.
 6. Real institution-approved private endpoint routing, no private-to-public provider fallback, and policy on OCR/embeddings/telemetry.
 7. Installed macOS/Windows/Linux desktop behavior and packaged remote binary compatibility. Source/unit tests alone are insufficient evidence.
 
 The security target is support for an institution's HIPAA-controlled deployment, not a certification inferred from SSH. HHS identifies access control, auditability, integrity, authentication and transmission safeguards alongside administrative and physical controls. [HHS Security Rule summary](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html). Hosting/provider agreements, risk analysis, retention, operational controls and approved endpoints remain deployment decisions; encryption alone does not settle them. [HHS cloud guidance](https://www.hhs.gov/hipaa/for-professionals/special-topics/health-information-technology/cloud-computing/index.html).
 
-### Decisions to settle before a real-data pilot
+### Remaining deployment facts, not unanswered product choices
 
-Institution operator/service host and Unix group; allowed durable storage and encryption; initial provider endpoint/compartment matrix; supported MFA mechanisms and maximum auth age; download/offline-cache policy; retention/backups and recovery objectives; creator-departure workflow; scheduler allocation and worker isolation mode. The plan can proceed through synthetic implementation without assuming answers to these deployment-specific questions.
+The rootless deployment, team scale, synthetic-sensitive testing, cluster mode, context/posting defaults, disconnected work, file policy and channel transfer/archival are now settled above. Implementation should discover actual home filesystem semantics, permitted canonical node/process lifetime, current MFA routes, available user-level isolation, model configurations, quotas and backup destinations. Do not invent these facts or turn discovery into an administrator-support prerequisite. Real PHI use remains a later deployment decision; development and the cohesive acceptance workflow use synthetic records throughout.
+
+## 13. Cohesive testing and validation in the actual development app
+
+This is a required implementation acceptance track, integrated with the phases above. It will run the actual BioRouter Electron development application built from the Crew worktree, with computer-use agents operating the visible UI as three coworkers. It is planned work; the existing Python/SSH feasibility probes do not satisfy it. Protocol tests and deterministic fixtures support this track, but neither a mocked Crew page nor successful API calls count as a completed user workflow.
+
+### Test environment and provenance
+
+Provision a disposable AWS Linux fixture with three real Unix accounts, for example `crew_alice`, `crew_bob` and `crew_carol`, with different UIDs, home directories, SSH credentials and private fixture files. A fixture provisioner may create those OS accounts and configure test sshd/MFA gateways. After provisioning, every Crew install, broker start, helper, agent, upgrade and recovery action must run as one of those ordinary accounts, from user-writable paths, without sudo, a new system account, a new Unix group, global installation or changes to system SSH policy. Alice hosts the rootless broker in her home; all three use their own SSH identities to reach its canonical node. Evidence must separate privileged fixture setup from the privilege-free product workflow.
+
+Use synthetic research inputs with known results: three small CSVs with different ownership, a text readme, PNG, PDF and an arbitrary binary file containing every byte value. Give each input a recorded digest and use conspicuous, unique synthetic canaries for restricted content. Include a shared uploaded snapshot and a same-named file with different content in each user's home, so path/identity confusion has an observable result. No patient data, personal credentials or real institutional MFA responses belong in fixture recordings.
+
+The SSH fixture needs direct access, an approved multi-hop configuration, and configurable authentication failures. If several gate sshd processes run on one VM, identify that as a simulated topology; do not report it as independent hosts or institutional MFA validation. Add a controlled keyboard-interactive challenge fixture for repeatable prompt/cancel/expiry tests, then perform a separate approved institutional MFA run with human-entered credentials. The computer-use driver must hand off secret entry and suppress authentication recording; fixture prompt testing must not weaken production host verification or MFA handling.
+
+Run three separate Electron main processes and three local daemon processes, one per coworker. Each requires its own Electron userData/session/cache/log directories, BioRouter config/data/state, session store, settings, credential namespace or fixture-only credential store, extension/MCP process pool, SSH connection registry/control sockets, temporary attachment staging and connection identity. Multiple windows in one app are not three isolated users. Shared immutable build artifacts are acceptable; shared mutable profiles, daemon secrets or authenticated MCP clients are not.
+
+Current source already supplies `BIOROUTER_PATH_ROOT` for Rust config/data/state (`crates/biorouter/src/config/paths.rs:18-27`) and a configurable CDP port (`ui/desktop/src/main.ts:749-753`). These do not by themselves prove Electron userData or credential isolation. The Windows/Linux single-instance lock (`main.ts:789-796`) also needs a verified isolated-profile launch path. Add a narrow development-test launcher if needed, or use separate desktop OS sessions; verify the resulting runtime paths rather than assuming environment variables are sufficient. Do not repurpose the operator's actual home or credentials.
+
+The verified build/launch starting points are `cargo build`, `just copy-binary debug`, and `npm run start-gui` from `ui/desktop`; the latter generates the client and invokes Electron Forge (`justfile:293-311`, `ui/desktop/package.json`). Build/generate once and launch three isolated instances through the reproducible test launcher, avoiding concurrent writes to the same generated files or build outputs. Distinct debug ports and explicit PID/window ownership let each computer-use driver select the intended coworker. If all clients share one physical desktop, serialize input ownership; three drivers must not race for global keyboard/mouse focus.
+
+Before any scenario, record an evidence manifest containing the worktree path, commit plus uncommitted patch digest, Rust/Node/Electron versions, build commands/results, renderer/main/preload artifact digests, actual daemon executable path/hash, all main/daemon PIDs, per-profile storage paths and remote helper/broker/agent binary hashes. The dev resolver prefers `target/debug`, then release and staged binaries (`ui/desktop/src/biorouterd.ts:544-554`), so a source checkout or UI title alone does not establish the running backend's provenance. Confirm all three clients show a unique profile sentinel and remote username, and that a local draft, setting change and session created in one do not appear in either other profile. This gate must pass before interpreting collaboration results.
+
+### One coherent three-person collaboration exercise
+
+Use a written scenario with seeded data and expected results, but let the computer-use agents navigate the actual application, read the screen, compose normal messages and operate controls. Each driver has a coworker role and records its actions/outcomes. API/journal reads may corroborate effects after UI actions; they must not pre-create the teams, inject messages, click via hidden application functions or bypass the interactions being accepted. The product's BioRouter agents doing the work are separate from the computer-use drivers operating the application.
+
+| Step | Actual UI action and example conversation | Required observed outcome |
+|---|---|---|
+| 1. Connect and enroll | Alice, Bob and Carol independently open Crew, save their own SSH connection and authenticate. Alice creates the workspace/team and invites the other two; each accepts and sets nickname/avatar. | All three execute as their actual remote UID. Enrollment and invitation state are visible; no shared key or copied application secret substitutes for individual identity. Human chat works before selecting an LLM. |
+| 2. Start a project | The lab first uses its automatically created whole-team `general` channel; Alice then creates `analysis` and invites Bob and Carol. Bob: “I uploaded the synthetic samples. Alice, can you check the counts? Carol, please review the plot.” Carol joins the discussion from her own app. | Each human message appears once, with correct author, ordering, unread/read state and useful timestamps in all authorized clients. A same nickname does not merge identities. Each user can create their own channel and belong to multiple teams. |
+| 3. Share real files | Bob drags the CSV and PNG into the composer, sends them, then Alice downloads the CSV and Carol previews the PNG. Repeat with PDF and arbitrary binary content. | UI shows upload progress, completion, preview/download affordances and actionable errors. Downloads match seeded digests; unsupported content remains downloadable without execution. No local path is misread as another user's remote file. |
+| 4. Invoke owned agents | Alice selects “Ask my agent”: “Count the rows in Bob's uploaded CSV and put the totals here.” Bob separately asks his agent to generate a simple plot in his own work directory. Carol then invokes her own agent to validate the totals and checksums and discusses its findings. | At least two real owner agents run concurrently and all three users invoke their own real agents during the scenario. Commands, progress and artifacts are attributable to the correct owner and visible only in the authorized room projection. Recorded OS/job ownership matches each invoking user; generated results match the fixture oracle. Other members cannot steer, approve, cancel or replace either agent. |
+| 5. Reuse Crew from ordinary chat | In Alice's normal BioRouter chat, type: “Using my saved Crew connection to the test cluster, list my synthetic project folder and summarize samples.csv.” Then: “Send that summary to analysis,” followed by “Check analysis for Bob's latest update.” Repeat the supported slash-command equivalent. | Built-in MCP tools resolve the already saved connection and explicit destination, use the same SSH manager/identity/policy, and report results truthfully. Reuse the valid transport where the server supports it, without redundant credential prompts; server channel limits and expiry still invoke explicit connection handling or normal reauthentication. The room sees the actual post and Alice's ordinary chat reads the actual update. Tool traces identify the connection/workspace/channel IDs; this must not be implemented as model-generated ad hoc `ssh` shell strings or a second connection registry. |
+| 6. Execute via the saved connection | From Bob's ordinary agent chat: “On my saved test-cluster connection, compute the column totals in my project folder, save totals.csv, and attach it to analysis.” | A real permitted remote command runs as Bob, output files remain in the intended remote scope, and the final attachment is downloadable by authorized teammates. Remote command failure, cancellation and retry are represented accurately; no success is inferred from the agent's prose. |
+| 7. Control context | Alice creates `methods` with Bob but without Carol. Alice explicitly asks her agent to use `methods` and `analysis`, then requests a summary in `analysis`. Carol tries to discover/read the restricted context. | Retrieval identifies source channels/events and respects membership. Because Carol cannot read `methods`, its restricted content cannot be published into the all-three `analysis` room without an allowed release. Carol receives no hidden channel names, counts, snippets, filenames or bytes. A current-channel-only request does not silently gather every team channel. |
+| 8. Exercise ownership and permissions | Bob attempts to remove Alice's channel; Alice removes/archives it through the proper UI. Separately revoke Carol while she is viewing a channel, downloading a file or waiting on a context query. | Non-owner removal is refused; owner archival succeeds subject to retention. Then explicitly transfer a separate channel to Bob: Bob gains owner and invitation controls, Alice loses those controls and stale capabilities, and immutable creator/transfer history remain correct. Any retained invite delegation must be explicitly recorded. Revocation closes or denies future authorized deliveries without pretending already downloaded bytes can be recalled. Pending UI state resolves into a clear permission change, not an indefinite spinner. |
+| 9. Prove the cluster privacy floor | Set the cluster to Private, then attempt a public-model invocation from a public-safe channel and from an ordinary local agent chat using the saved remote connection. Then use an explicit user-approved transition of the fixture connection to Public with fresh public-safe context and retained restricted history; test one allowed public-safe request and one denied restricted request. A concurrent test may instead use a separately provisioned Public-declared cluster. | Private blocks public destinations on every shipped entry path regardless of room labels. Public mode remains constrained by source labels and provider policy. Denials happen before model dispatch or tool exposure. Changing the toggle does not relabel history/files; local privacy-off settings cannot bypass the Crew floor. |
+| 10. Recover without duplicates | Interrupt one user's SSH connection during message acknowledgement and file upload; close/reopen a dev app; restart the ordinary-user broker after a committed event; reconnect an approved running agent job where the host permits survival. | Messages and blobs recover with correct digests, cursor ordering and no duplicate admitted action. Uncertain command execution is inspected, never blindly replayed. MFA/host-key/permission failures are distinct from empty history. The UI distinguishes a disconnected observer, a running remote job and a terminated worker. |
+
+Include a genuine short natural conversation after the scripted steps: the three drivers plan a small analysis, ask each other clarifying questions, exchange two revisions, invoke their respective agents and agree on a final artifact. Assess what each person understood from the interface, including whether sender/agent ownership, current destination, privacy state and remote/local file location were clear without consulting debug logs. Record observed friction as bugs, including misleading success, unclear permission explanations, focus loss, empty-looking reconnect states, clipped content, inaccessible controls and contradictory activity indicators.
+
+### Evidence and negative-test gates
+
+For each scenario retain the exact natural-language/slash prompt, driver action timeline, sanitized screenshots or video of meaningful states, all participating session/run/channel/event IDs, relevant sanitized application/broker logs and fixture checks. A successful conversational tool call requires three agreeing observations: the correct tool/connection was invoked, the intended remote or broker effect occurred, and the user saw an accurate result in the real UI. “The model said it posted” is insufficient. Do not capture OTPs, passphrases, private keys or credential-bearing process environments.
+
+Use deterministic local provider sinks with synthetic canaries for precise negative assertions, then run a separate allowed real-model integration pass through the actual BioRouter provider path. A denied request must produce zero forbidden payload bytes at the designated public sink; also inspect tool, preview, title/summary and context-transfer paths. A fake provider is valid for an exact dispatch-denial test, but cannot establish real institution-hosted model compatibility or real agent behavior. Identify each provider and test mode in the report. Rootless operation also does not prove protection from hostile software already running as the broker owner; keep that documented threat boundary intact.
+
+Add focused tests below the UI for cases difficult to reproduce safely by hand: forged owner/channel IDs, duplicated request keys, invalid framed input, traversal/symlink attempts, corrupt/torn journal tails, policy changes between search and fetch, revocation between file chunks, stale owner capabilities, and direct other-user requests absent from the UI. Check server denials and absence of mutation as well as disabled controls. Every security refusal expected in a scenario must be distinguishable from a broken connection or unavailable feature.
+
+Require explicit pass/fail/blocked/not-run status for each gate, with the exact evidence location. A blocked real MFA prompt, unsupported process survival or untested client OS remains visible as such. These statuses do not turn green because the lower-level fixture passed. Keep tests self-contained so the profile sentinels, fixture checksums, unique event IDs and failure injection seeds make replay deterministic enough to diagnose regressions.
+
+### Bug-to-fix loop and capacity expansion
+
+When a scenario fails, record its first failing user-visible step, expected/actual behavior, evidence and owning component. Fix the implementation, add a focused regression at the smallest level that catches the defect, rerun that regression, then replay the failed UI scenario with the same three actors. Replay dependent scenarios when the fix touches shared identity, SSH pooling, policy, journal/recovery or attachment handling. Before accepting a milestone, run the complete three-person exercise on the final worktree revision; do not combine green fragments from different revisions. Follow the repository's required formatting/lint/schema checks and use independent adversarial review for ownership and privacy changes.
+
+Expand in stages: first two users establish transport and messaging; three real dev-app users exercise collaboration and owner isolation; then 10, 30 and 50 independently authenticated Unix participants exercise bounded capacity. Extra accounts are created only by fixture provisioning, never by Crew. Keep the three real UI clients active during load so typing, scrolling, unread state, agent controls, upload progress and reconnect remain observable. Additional participants may be headless protocol clients using separate principals and the same production bridge/protocol; explicitly report that their traffic is load evidence, not 50 graphical users or 50 real LLM runs.
+
+Record message-commit/delivery percentiles, reconnect catch-up time, upload throughput and integrity, broker CPU/RSS/open files, journal growth/replay time, per-principal fairness and UI responsiveness. Define the workload and acceptance budgets before execution; a reasonable initial target is a 30-minute 50-user soak with a documented mixture of room messages, presence, small files, one larger resumable upload and a few concurrent owner jobs. No lost acknowledged events, duplicate admitted actions, cross-user leakage or unbounded queues is acceptable. Performance budgets are provisional until the selected fixture size and baseline are measured; do not infer production scale from one successful send.
+
+Resource-check the local Mac before launching three applications plus drivers or expanding load, cap actual model jobs, and serialize expensive builds. Test load should run chiefly on the disposable fixture rather than spawning dozens of Electron instances on the operator's desktop. The final evidence bundle includes reproducible provisioning/build/launch/replay commands, fixture and test revisions, outcomes/bugs/retests, sanitized UI evidence, and verification that cloud resources and temporary credentials were removed. Real macOS, Windows and Linux desktop runs remain separate compatibility gates; the macOS three-app run cannot stand in for Windows OpenSSH/MFA/process-lifecycle behavior.
+
+### Explicit privacy-state and rootless regression matrix
+
+The natural workflow must be supplemented by reproducible policy-transition cases using fake-sensitive canaries:
+
+| Case | Required evidence |
+|---|---|
+| Private cluster + public provider through Crew UI, slash command or natural-language SSH tool | Denial before protected bytes reach the provider or remote context is exposed to that public agent; zero canary bytes in the public sink. |
+| Public cluster + public-safe fixture | Real allowed tool/model activity as the correct owner; positive controls ensure denials are not merely a broken provider. |
+| Public cluster + restricted source/file or Private-origin contribution | Deny the public consumer even when it knows object IDs; no hidden snippets, filenames, preview requests or summaries. |
+| Private → Public with existing history, attachments and a resumed chat | Old labels/context remain restricted; stale worker grants cannot dispatch; a new public-safe run works only with permitted inputs. |
+| Public → Private while work is queued/streaming | New policy epoch blocks subsequent public dispatch and publication; UI reports cancellation/unknown already-submitted work without claiming recall. |
+| Member Public preference against shared Private baseline | Effective Private across UI, ordinary conversation, saved aliases, additional workspace IDs on the same cluster connection, reconnect and background jobs. |
+| New member joins after a cross-channel-derived artifact was posted | Original source-ACL dependencies still gate that future reader; invitation does not grant unrelated source permissions. |
+| Owner application closes; owner SSH/MFA credential expires | Already approved remote computation survives only where measured; new model calls/tools/publication requiring a renewed grant pause. No endless retries or duplicate jobs. |
+| Ordinary-user installation and recovery | Home-only writes except dedicated node-local runtime IPC; broker/worker/helper UIDs are non-root; no privilege request, group creation, global service or broad HOME chmod. |
+| Rootless NFS HOME and broker host loss | Probe the actual persistent mount; replay/corruption/lock/disk-full tests; never start a competing writer on another node from a stale heartbeat. |
+| Protected user-home artifacts and broker-host account | Other accounts cannot read private store files directly. Tests document the hosting account's own access instead of claiming protection against its owner. |
+
+In fault-injection tests, force failures before and after journal/blob flush, fsync, rename, commit acknowledgement and snapshot replacement; verify recovery against a deterministic record/digest oracle. Inject full disk/quota and interrupted home-mount I/O only in controlled disposable fixtures, not against institutional data. Include malformed frames, non-owner tool requests, replayed approvals, unsigned/mismatched enrollment keys, prompt injection in other users' messages, symlink/filename attacks and archive/active-content previews. Confirm refusal on the server and absence of unauthorized effects, not only a disabled button.
+
+### AWS fixture operation and completion gates
+
+Use a current supported Linux image and a fixture size adequate for three users and a lightweight broker; start small and right-size using measured resource pressure rather than assuming the earlier `t3.micro` proves real-agent capacity. LLM inference may use approved remote endpoints; do not accidentally buy GPU capacity for this exercise. Require encrypted delete-on-termination volumes, IMDSv2, short-lived fixture keys, strict host-key trust established through the cloud control plane, and SSH-only ingress limited to the tester's source address or approved private route. Give each coworker a different key/account; never copy one user's provider credential into another profile. Establish runtime/cost limits and tag the fixture before launch.
+
+Record a capability matrix for real/direct SSH, simulated multi-hop, separately hosted gates when needed, controlled MFA and actual institutional MFA. Test the whole rootless lifecycle on the initial fixture; additional node/NFS failure fixtures may be provisioned later as a bounded, specifically justified scenario. Their results remain separate from ordinary single-node success.
+
+A milestone is complete only when the same final worktree revision passes the required code checks and the real three-user dev-app workflow, all critical/high security or data-loss defects are fixed and replayed, and remaining limitations have explicit blocked/not-run results. Do not claim every possible vulnerability is eliminated; retain the independent review, threat boundary and reproducible regression evidence. Keep substantive UI defects and authorization/provider inconsistencies as tracked failures rather than accepting a polished screenshot as completion.
+
+Finally terminate the test instance(s), remove temporary volumes/security groups/keys and user-profile credentials created for the fixture, and independently verify cleanup. Preserve only sanitized source, scripts and evidence in the worktree. This revision adds the execution/testing contract; it does not claim the fixture, product implementation or real-app scenarios have already been run.
+
+Documentation revision review: two independent reviewers checked the no-admin/home-storage design, shared privacy floor, SSH/MFA lifecycle, conversational MCP manager and real-app test plan. Their corrections are included above: invitation authority and stale capabilities move with current ownership, and canonical cluster connection identity is distinct from workspace IDs so a Private preference survives aliases/additional workspaces. This records a document review, not implementation or test completion.
