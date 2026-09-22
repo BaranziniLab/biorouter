@@ -474,7 +474,9 @@ export const startBiorouterd = async (
     try {
       if (isWindows) {
         const pid = biorouterdProcess.pid?.toString() || '0';
-        spawn('taskkill', ['/pid', pid, '/T', '/F'], { shell: false });
+        // `taskkill.exe` is a console program, so without this the last
+        // thing the user sees on the way out is a black box (#368).
+        spawn('taskkill', ['/pid', pid, '/T', '/F'], { shell: false, windowsHide: true });
       } else {
         biorouterdProcess.kill?.();
       }

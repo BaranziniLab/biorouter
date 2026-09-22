@@ -220,6 +220,11 @@ export async function runProbe(
       timeout: timeoutMs,
       env: SPAWN_ENV,
       shell: needsShell(cmd),
+      // Every probe is a console program, and `needsShell` routes a bare name
+      // through `cmd.exe`, which is one too. Without this the Electron main
+      // process — which owns no console — makes Windows allocate a visible one
+      // per probe, and the user watches black boxes flash (#368).
+      windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     });
@@ -249,6 +254,7 @@ export async function runProbe(
         await execFileAsync('where.exe', [cmd], {
           encoding: 'utf8',
           env: SPAWN_ENV,
+          windowsHide: true,
           maxBuffer: 1024 * 1024,
         });
       } catch {
@@ -694,12 +700,17 @@ function runInstallCommand(dep: string, cmd: string, send: SendFn): void {
     child = spawn('cmd.exe', ['/c', cmd], {
       env: SPAWN_ENV,
       shell: false,
+      // The installer's output is streamed into the modal, so the console this
+      // would otherwise pop up shows the user nothing they are not already
+      // being shown — it only steals their focus mid-install.
+      windowsHide: true,
     });
   } else {
     // macOS/Linux: run via sh -c so pipes (curl | sh) work
     child = spawn('sh', ['-c', cmd], {
       env: SPAWN_ENV,
       shell: false,
+      windowsHide: true,
     });
   }
 
