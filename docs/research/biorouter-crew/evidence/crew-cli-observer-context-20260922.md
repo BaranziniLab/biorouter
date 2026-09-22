@@ -140,3 +140,77 @@ This case used observer artifacts: CLI
 `0450257748d1870047ee311cccd387a66f950b12de562ca6eeb440523d34a197`, daemon
 `56e254bc6a7b1c1a1f51404c19c5f4d9f6d869fb4f13edf97f0f35aee5a52d1f`, and
 Linux broker `4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`.
+
+## Authority and provider-counter API checks
+
+The bounded isolated loopback-provider harness was run with daemon
+`45d42240af92ce4a0d43618bd4d496249f095fcdad88af768ad9f2ecd086baa9` and Linux
+broker `4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`.
+The public control run completed and produced exactly one loopback sink request.
+After switching the synthetic connection to private mode, an equivalent public
+provider run was refused with `crew_request_refused: Private cluster blocks
+public models`; the sink count remained exactly one. This is local loopback
+provider evidence and does not use an external provider.
+
+On the fresh Alice daemon, direct `POST /crew/files` attempts with a synthetic
+file and both missing and wrong `X-User-Action` proof returned HTTP 403
+`crew_transfer_refused` with `A verified human action is required for local file
+and transfer access; agent grants and API keys do not authorize it`. A
+human-authenticated read-only transfer list contained six existing receipts and
+no receipt with either negative-test request ID. No file or transfer side effect
+was observed.
+
+The same isolated loopback harness exercised foreign-owner cancellation: the
+wrong connection returned HTTP 400 `crew_request_refused` with `This task is not
+owned by this device and connection.` The owned cancellation returned 200 with
+`cancelled: true`, `remote_revocation_confirmed: true`, and one cancelled finish
+event; a completion-first cancellation returned `already_finished: true` and
+`cancelled: false`. The sink saw two requests total (one held cancellation run,
+one completion control), with no late completion overwriting cancellation.
+
+## Follow-up observer backpressure attempt
+
+The pinned daemon hash was rechecked directly:
+`45d42240af92ce4a0d43618bd4d496249f095fcdad88af768ad9f2ecd086baa9`.
+No backpressure pass is claimed. A slow-reader attempt against the retained
+adaptive channel exited before the eight-second unread interval with
+`observation_refused`: `Room observation ended ... a stale cursor requires an
+explicit fresh history selection`. A fresh private channel creation was then
+attempted twice on the connected Alice profile; both returned HTTP 400
+`Broken pipe (os error 32)`. Read-only status immediately afterward confirmed
+the daemon remained connected/private with no last error. Because a fresh
+channel could not be admitted and the retained channel had a stale cursor,
+slow-reader expiry, fairness under sustained backlog, and ACL-revocation
+transport recovery remain unexecuted rather than inferred from this attempt.
+
+## Broken-pipe recovery diagnosis
+
+The owned Alice profile was checked after the observer attempt. Read-only status
+reported the connection `connected`, mode `private`, and `last_error: null`.
+The retained broker process was alive (PID 5350) and its owned stdio bridge was
+also alive. A simple history request still returned HTTP 400 `Broken pipe (os
+error 32)`. An explicit supported disconnect completed successfully; a fresh
+supported connect completed in 0.094 seconds and returned the same connection
+identity, workspace, and socket, but a subsequent status/history round-trip
+still reproduced the same broken-pipe history error. The broker log contained
+only its startup metadata and no additional sanitized error category.
+
+This isolates the observation failure to the bridge/backend request path after
+reconnect, rather than proving a stopped broker or evicted product connection.
+No process was killed, no profile state was edited, and no backpressure pass is
+claimed.
+
+## Direct SSH bridge protocol isolation
+
+One fresh strict-host-key SSH bridge session was opened using the owned Alice
+fixture. Two successive public `hello` frames and one synthetic
+`auth.challenge` frame each received a valid response: 3/3 responses, at about
+0.071 seconds elapsed by the third frame. The challenge response had the
+expected synthetic workspace/UID shape; nonce, signatures, endpoint details,
+and credential material were discarded. The probe then terminated its own SSH
+process, so its exit 255 is expected cleanup rather than a bridge failure.
+
+This shows the SSH bridge and broker can answer successive direct frames while
+the higher-level daemon history request still returns broken pipe. It narrows
+the unresolved problem to the daemon request/response path or its bridge
+session lifecycle; it does not qualify observer backpressure or recovery.

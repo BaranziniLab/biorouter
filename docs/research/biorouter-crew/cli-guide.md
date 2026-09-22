@@ -151,6 +151,8 @@ biorouter crew --connection "$CONNECTION_ID" files download "$BLOB_ID" --output 
 
 Uploads and downloads return a transfer receipt before completion. Uploading does not automatically post a message; publish the completed `blob_id` with `send --attachment`. Repeat `--attachment` to attach multiple blobs. Add `--overwrite` to download only when you authorize replacing the selected destination. Images and other file types use the same attachment transfer service.
 
+Overwrite approval applies to the file selected at registration. If that file is replaced or changes during the download, publication is refused; a previously absent target cannot be silently replaced. Reselect the destination to approve a changed target when the receipt permits resume. If publication is unconfirmed, inspect the destination first; the daemon will not automatically repeat it.
+
 Choose an existing download destination directory owned by your user and not writable by group or others. The service refuses symlink path components and unsafe destination directories; choose a suitable directory rather than weakening its checks.
 
 `files pending` lists daemon transfer receipts for the selected connection. `files pause TRANSFER_ID` requests a pause; wait until the receipt is inactive before resuming or forgetting it. `files resume TRANSFER_ID PATH` reapproves the upload source or original download destination; retain `--overwrite` when that replacement permission is needed. Ctrl-C on `files watch` leaves the transfer running.

@@ -566,7 +566,7 @@ Record a capability matrix for real/direct SSH, simulated multi-hop, separately 
 
 A milestone is complete only when the same final worktree revision passes the required code checks and the real three-user dev-app workflow, all critical/high security or data-loss defects are fixed and replayed, and remaining limitations have explicit blocked/not-run results. Do not claim every possible vulnerability is eliminated; retain the independent review, threat boundary and reproducible regression evidence. Keep substantive UI defects and authorization/provider inconsistencies as tracked failures rather than accepting a polished screenshot as completion.
 
-Finally terminate the test instance(s), remove temporary volumes/security groups/keys and user-profile credentials created for the fixture, and independently verify cleanup. Preserve only sanitized source, scripts and evidence in the worktree. This revision adds the execution/testing contract; it does not claim the fixture, product implementation or real-app scenarios have already been run.
+Finally terminate the test instance(s), remove temporary volumes/security groups/keys and user-profile credentials created for the fixture, and independently verify cleanup. Preserve only sanitized source, scripts and evidence in the worktree. Historical contract checkpoint: this paragraph originally introduced the execution plan before implementation. Current scoped execution and open gates are recorded in §15 and the acceptance ledger.
 
 Documentation revision review: two independent reviewers checked the no-admin/home-storage design, shared privacy floor, SSH/MFA lifecycle, conversational MCP manager and real-app test plan. Their corrections are included above: invitation authority and stale capabilities move with current ownership, and canonical cluster connection identity is distinct from workspace IDs so a Private preference survives aliases/additional workspaces. This records a document review, not implementation or test completion.
 
@@ -581,11 +581,11 @@ Product source is authored by GPT-6 Astra. Test cases, builds, checks and visibl
 - Crew's built-in MCP tools and `/crew` grant flow reuse the saved connection. The daemon creates real BioRouter agent sessions for owned tasks. A human grants destination, context channels, remote directory and execution scope. Ordinary-chat grants require an idle turn; prior private context remains restricted. Regranting cannot silently change destination, resolved model or retained source channels. Provider binding can be restored for viewing/renewal, while actual dispatch still requires a live grant.
 - Mandatory scope checks cover the shared tool dispatcher, provider calls and generic conversation recall/ingestion. Crew transcripts cannot be copied, exported or declassified into an unscoped session. Non-human session lists, history search, activity and event streams exclude Crew data, even when general privacy tiers are disabled. Billing aggregates require the human surface because deleted-session totals no longer retain enough source identity for channel filtering.
 - Remote operations execute under the member's SSH UID. Public models receive no arbitrary remote file/job access. Private remote execution requires a selected ordinary directory, full Linux Landlock confinement and a restrictive syscall filter; there is no weaker execution fallback. The initial runner supports bounded single-process analysis, not arbitrary shell pipelines or general scheduler submission. Unsupported kernels/runtime behavior must be reported in the capability matrix rather than treated as a passing compute path.
-- Desktop uploads accept arbitrary bytes within a 64 MiB memory bound. Larger datasets use restricted opaque remote references, with no implicit fetch/execute behavior. Upload recovery stores IDs, digests and offsets rather than file contents, paths or conversation history. Downloads verify SHA-256; only supported raster formats preview. Older message pages remain accessible and undergo current authorization checks on refresh.
+- The daemon now owns streaming transfer capabilities, durable receipts and resume; the former 64 MiB renderer-buffered upload was an earlier desktop checkpoint superseded by §15. Remote references retain restricted, opaque semantics with no implicit fetch/execute. Recovery metadata excludes file contents, paths and conversation history. Downloads verify SHA-256 and only supported raster formats preview; full memory, replacement and fault qualification remains required. History paging rechecks current authorization.
 
 Current limitations requiring explicit qualification include network-filesystem homes, genuinely separate gateway hosts and per-hop authentication expiry, real institutional MFA, unsupported client OpenSSH multiplexing, and broader scheduler workflows. The Linux broker currently refuses known network filesystems pending a qualified fencing/storage design; it never silently puts the canonical journal in temporary storage. Application permissions do not hide the journal from its hosting Unix account or host root.
 
-The real three-account AWS fixture has been provisioned with distinct UIDs/keys, encrypted delete-on-termination storage, IMDSv2, source-limited SSH and a recorded cleanup deadline. Copying development source to that instance was separately stopped by automatic approval review; the scoped transfer awaits the user's answer. This is not a failed broker test. Local compilation and test work continues, and no remote product workflow is recorded as passed until the exact code actually runs there. See [desktop launch/provenance instructions](desktop-integration-handoff.md), [wire/storage contract](protocol-contract.md), and [acceptance results](implementation-status.md).
+Historical AWS checkpoint: a three-account fixture was provisioned, but product-source transfer was rejected by automatic approval review. The fixture was independently cleaned up at 13:40 UTC without product validation. Source-export approval remains pending; a future approved run requires a fresh fixture. Local work remains available and no AWS product workflow is claimed. See [desktop handoff](desktop-integration-handoff.md), [wire/storage contract](protocol-contract.md) and [acceptance results](implementation-status.md).
 
 
 ### Live host qualification and remaining compatibility work
@@ -599,23 +599,26 @@ The remote runner separately requires full Landlock ABI 3 support and the syscal
 Configured optional hooks are withheld from Crew sessions because command hooks and alternate prompt providers would create independent access paths. Required managed hook policies, forced project hooks and unreadable/unparseable trusted managed policy instead cause explicit Crew admission and resume refusal. Crew never disables a required institutional hook to make a task run. Existing MCP transports are bound to trusted local session identity and cannot request unsolicited sampling for Crew; server-supplied session labels are not authority.
 
 
-### Current delivery and validation record
+### Delivery evidence and historical checkpoint
 
 The implementation is on `codex/biorouter-crew` in
 [draft PR #366](https://github.com/BaranziniLab/biorouter/pull/366). The
 [acceptance ledger](implementation-status.md), [repository validation](validation-report.md),
 [actual app workflow](crew-ui-acceptance-report.md), and
 [requirement coverage map](regression-coverage-map.md) are the evidence indexes
-for this plan. Hosted CI and live acceptance continue; publishing a draft is
-not completion of the gates above.
+for this plan. Current product is `906bf68b`, workflow/tests `0fb6cd13` and
+documentation `39775203`. Hosted checks cover only the older published head;
+current local and live evidence is scoped in §15. A draft PR is not completion.
 
 An actual local-model task supplied an invented connection ID and local path;
 the scope guard rejected it before file access. The agent interface now
 resolves an omitted connection ID from its already approved conversation,
 continues to reject an explicitly wrong ID, and supplies destination and
 relative-remote-path guidance. This removes a discovery burden without giving
-the model any additional authority. Fresh tests and app runs must validate
-this change. A failed tool call and a subsequent model-written summary are
+the model any additional authority. This was an earlier implementation
+checkpoint; scoped discovery/tool tests and subsequent CLI execution now have
+recorded passes. Broader current-artifact and graphical acceptance remain
+separate in §15. A failed tool call and a subsequent model-written summary are
 recorded separately; the summary is not evidence of file processing.
 
 
@@ -667,6 +670,8 @@ The human-action gate must remain intact. A supported terminal controller needs 
 
 For transfers, the trusted human adapter registers a narrowly scoped local source/destination capability. The daemon owns hashing, chunking, broker offsets, stable idempotency keys, metadata-only durable receipts, cancellation and resume. File selection and approved overwrite intent remain explicit user-interface actions. On restart, require file reselection and identity/hash verification unless the user granted persistent local access. Keep memory bounded and preserve arbitrary binary data. A generic authenticated path parameter must not become an agent-accessible filesystem bypass.
 
+The daemon captures whether a download target is absent or is a specific existing file, including its identity and change stamp. Native selection registers an inactive capability before the Replace dialog; confirmation activates that exact capability through a Proven-only endpoint, without recapturing the pathname. CLI selection captures the same authority during registration. A new file at a previously absent target never gains implicit overwrite permission. Revalidate the target and held partial descriptor before the publication marker, immediately before publication, and verify the final file identity afterward. A known pre-publication mismatch permits fresh explicit reselection; an uncertain publication remains unconfirmed. Start replay returns only the original receipt and cannot authorize resume or new writes. Cleanup retains its independent receipt-bound directory/name authority.
+
 Implementation sequence: first agree typed service/authority contracts; extract daemon authentication and transfer workflows; add a typed CLI client and command family; adapt the GUI to those same services; remove duplicate renderer/Electron business logic; regenerate OpenAPI through the repository command; then run parity and security acceptance on the resulting artifacts. Product code remains GPT-6 Astra work; all test code, execution and computer-use driving remain GPT-5.6 Luna work.
 
 Required acceptance additions:
@@ -701,6 +706,10 @@ Earlier matched artifacts have bounded CLI lifecycle/MFA, collaboration, resume,
 
 All newer local commits remain unpublished. Hosted head `3145dfc5` has 22 successful checks and one skip; that result excludes newer source. Screenshot-publication, AWS source-export and native CUA approvals remain pending, with no retry/workaround. The current observer admission test passes 16 admitted/17th HTTP 429 and detach/replacement with cleanup; adaptive history also passes for 20 × 59,983-byte private messages: explicit limit 200 is refused as too large, and default watch drains all exact IDs/body hashes once with exit 0. This does not establish slow-reader or backlog State fairness. Source review or successful local tests do not close the remaining gates or prove every remote job stopped.
 
+Two independently confirmed P2 findings affected stale overwrite-target approval on Unix and Windows, and Unix named-partial replacement after held-descriptor validation. Corrections are now independently reviewed in the working tree; focused regression execution, refreshed artifacts and runtime replay remain pending. Earlier `906bf68b` checks do not validate these corrections.
+
+Bounded independent API checks now measure one allowed public-provider request followed by private-mode refusal with the sink count unchanged, missing/wrong human proof refused with no new receipt, and foreign-owner cancellation refused alongside authorized controls. These do not close the full interface/privacy matrix. Unblocked local work remains on regression/runtime validation of the transfer corrections, broader restart/replacement faults and observer backpressure/fairness. The latest observer attempt stopped before its assertions on a broken SSH request stream; source inspection confirms fatal transport errors can leave stale connected metadata, and that recovery issue is under investigation. These requirements are not suspended by the external GUI, publication or AWS approvals.
+
 ### Remaining contract acceptance
 
 The accepted contracts below are implemented and independently reviewed. Bounded CLI checks pass; the complete runtime, graphical and platform matrix remains incomplete. The [feature ledger](implementation-status.md#feature-and-interface-parity-ledger) records exact evidence. The [CLI source inventory](cli-parity-source-plan.md) remains historical design context.
@@ -711,7 +720,7 @@ The accepted contracts below are implemented and independently reviewed. Bounded
 | Credential storage | Accepted OS-keyring default and explicit Linux encrypted-vault contract above | Vault review closed; isolated init/lock/unlock, wrong-passphrase refusal and locked restart pass. Broader corruption/substitution, platform keyring and mixed-GUI qualification remain open. |
 | Shared daemon discovery and lifetime | Accepted profile/instance/endpoint descriptor under lifetime lock; authenticate server before any proof/vault secret | Reviewed Unix UDS implementation and bounded CLI stop/restart, stable-profile/new-instance and owner-lock checks pass. Wider concurrent launch/attach, fault/shutdown/recovery, GUI reuse and missing Windows shared transport remain open. |
 | Native authentication sessions | Daemon owns SSH/PTY lifecycle; prompts and secrets stay outside models and durable transcripts | Source review and bounded CLI two-hop/encrypted-key/PAM, wrong-secret/cancel, retained connection and secret-sweep checks pass. Controller exclusivity/re-attachment, broader MFA/expiry, graphical and cross-platform cases remain open. |
-| Local file capabilities and transfers | Narrow human-selected source/destination authority, bounded binary streaming, durable metadata receipts and atomic verified publication | Source reviews closed; focused guards, 43-byte cross-user transfer and corrected 32 MiB restart/resume pass on recorded artifacts. Broader overwrite/path-replacement, resource/fault/reselection, graphical and Windows runtime matrices remain open. |
+| Local file capabilities and transfers | Narrow human-selected source/destination authority, bounded binary streaming, durable metadata receipts and atomic verified publication | Earlier source reviews closed for their recorded scope; two P2 overwrite/partial-replacement findings have reopened transfer review. Focused guards, 43-byte cross-user transfer and corrected 32 MiB restart/resume retain their bounded passes. Broader overwrite/path-replacement, resource/fault/reselection, graphical and Windows runtime matrices remain open. |
 | Typed commands, watching and grants | One shared schema and service behavior; broker authorization remains authoritative | Source review, focused tests/schema generation and bounded matched-artifact CLI watch/detach, context/MCP and revocation checks pass. Pinned-current-artifact replay, full backpressure/fault coverage and mixed GUI runtime acceptance remain open. |
 
 API credentials, same UID, terminal discovery, `isatty`, SSH authentication and an arbitrary PTY are never substitutes for human proof. Host-account trust and SSH access do not establish HIPAA compliance. No remaining acceptance gap authorizes weaker admission.
