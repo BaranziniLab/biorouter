@@ -5,7 +5,13 @@ import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
 import RecentChats from './RecentChats';
 
-const mocks = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  deleteConversation: vi.fn(),
+}));
+
+vi.mock('../../utils/deleteConversation', () => ({ deleteConversation: mocks.deleteConversation }));
 
 vi.mock('../../toasts', () => ({
   toastSuccess: mocks.toastSuccess,
@@ -68,7 +74,7 @@ function renderRecents(onOpen = vi.fn()) {
  * could not be got out of the sidebar at all.
  */
 describe('sidebar Recents right-click menu', () => {
-  it('offers the three actions on a right-click', async () => {
+  it('offers open, copy and permanent delete actions on a right-click', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
 
@@ -77,6 +83,7 @@ describe('sidebar Recents right-click menu', () => {
       'Open in new tab',
       'Open in new window',
       'Copy conversation ID',
+      'Delete conversation',
     ]);
   });
 
@@ -130,5 +137,40 @@ describe('sidebar Recents right-click menu', () => {
     const row = screen.getByTestId('recent-chat-20260823_2');
     expect(row.tagName).toBe('BUTTON');
     expect(row.getAttribute('aria-label')).toBe('Open chat: Excel research');
+  });
+});
+
+describe('permanent Recents deletion', () => {
+  it('requires confirmation and cancel leaves the session intact', async () => {
+    renderRecents();
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    expect(await screen.findByText(/This action cannot be undone/)).toBeInTheDocument();
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+  });
+  it('deletes exactly the confirmed conversation', async () => {
+    mocks.deleteConversation.mockResolvedValue(undefined);
+    renderRecents();
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
+    expect(mocks.deleteConversation).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+  });
+  it('keeps the dialog open and shows an actionable API error', async () => {
+    mocks.deleteConversation.mockRejectedValue(new Error('Server unavailable'));
+    renderRecents();
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        expect.objectContaining({ msg: 'Server unavailable' })
+      )
+    );
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 });

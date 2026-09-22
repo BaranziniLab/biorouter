@@ -13,10 +13,13 @@
  * (a port of the backend's) claimed, so a chip on screen is always a resource
  * the agent will actually load.
  */
+import { splitComposerText } from '../utils/composerRefs';
+import type { QuoteReference } from '../utils/quotedText';
+import { QuotedTextChip } from './QuotedTextChip';
 import { X } from './icons/app-icons';
 import { ENTITY_ICONS, type EntityKind } from './icons/entity-icons';
 import { Badge } from './ui/badge';
-import { segmentRefTags, type RefKind, type RefSpan } from '../utils/resourceRefs';
+import { type RefKind, type RefSpan } from '../utils/resourceRefs';
 
 /** How each kind is named to the user. */
 export const REF_KIND_LABEL: Record<RefKind, string> = {
@@ -44,7 +47,7 @@ export const refDisplayName = (ref: Pick<RefSpan, 'value' | 'label'>): string =>
   ref.label?.trim() || ref.value;
 
 interface ResourceRefChipProps {
-  refSpan: Pick<RefSpan, 'kind' | 'value' | 'label'>;
+  refSpan: Pick<RefSpan, 'kind' | 'value' | 'label'> | QuoteReference;
   /** Renders a remove control. Omitted where the reference is already sent. */
   onRemove?: () => void;
   className?: string;
@@ -75,6 +78,7 @@ interface ResourceRefChipProps {
  * `check-contrast.mjs` asserts the blended pair for every discovered family.
  */
 export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChipProps) {
+  if (refSpan.kind === 'quote') return <QuotedTextChip quote={refSpan} onRemove={onRemove} />;
   const Icon = ENTITY_ICONS[REF_KIND_ENTITY[refSpan.kind]];
   const name = refDisplayName(refSpan);
   const kindLabel = REF_KIND_LABEL[refSpan.kind];
@@ -131,17 +135,22 @@ interface ResourceRefTextProps {
  * backend will not resolve it either.
  */
 export function ResourceRefText({ text, className }: ResourceRefTextProps) {
-  const segments = segmentRefTags(text);
-
+  const { refs } = splitComposerText(text);
+  let cursor = 0;
+  const nodes = refs.map((ref, index) => {
+    const preceding = text.slice(cursor, ref.start);
+    cursor = ref.end;
+    return (
+      <span key={index}>
+        {preceding}
+        <ResourceRefChip refSpan={ref} className={className} />
+      </span>
+    );
+  });
   return (
     <>
-      {segments.map((segment, index) =>
-        segment.type === 'text' ? (
-          <span key={index}>{segment.text}</span>
-        ) : (
-          <ResourceRefChip key={index} refSpan={segment.ref} className={className} />
-        )
-      )}
+      {nodes}
+      {text.slice(cursor)}
     </>
   );
 }

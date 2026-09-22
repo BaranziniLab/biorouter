@@ -138,3 +138,22 @@ describe('copyConversationId', () => {
     expect(mocks.toastError).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('native conversation ID clipboard', () => {
+  it('uses the app bridge without requesting browser clipboard permission', async () => {
+    const nativeCopy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(window.electron, { copyConversationId: nativeCopy });
+    await copyConversationId('20260921_2');
+    expect(nativeCopy).toHaveBeenCalledWith('20260921_2');
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalled();
+  });
+  it('shows native write failures rather than reporting false success', async () => {
+    Object.assign(window.electron, {
+      copyConversationId: vi.fn().mockRejectedValue(new Error('denied')),
+    });
+    await copyConversationId('20260921_2');
+    expect(mocks.toastError).toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+});

@@ -1,3 +1,6 @@
+import { deleteConversation } from '../../utils/deleteConversation';
+import { toastError, toastSuccess } from '../../toasts';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import type { SessionSummary } from '../../api';
 import { ChevronDown, Clock, Folder } from '../icons/app-icons';
@@ -169,6 +172,30 @@ interface RecentChatRowProps {
 }
 
 function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletePending = useRef(false);
+  const handleDelete = async () => {
+    if (deletePending.current) return;
+    deletePending.current = true;
+    setDeleting(true);
+    try {
+      await deleteConversation(session.id);
+      setConfirmDelete(false);
+      toastSuccess({
+        title: 'Chat deleted',
+        msg: `"${session.name}" was removed from chat history.`,
+      });
+    } catch (error) {
+      toastError({
+        title: 'Failed to delete chat',
+        msg: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      deletePending.current = false;
+      setDeleting(false);
+    }
+  };
   const title = session.name.trim() || 'Untitled chat';
   const accessibleLabel = `${isRunning ? 'Open ongoing chat' : 'Open chat'}: ${title}`;
   const messageLabel = `${session.message_count} ${session.message_count === 1 ? 'message' : 'messages'}`;
@@ -259,7 +286,20 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           </div>
         </TooltipContent>
       </Tooltip>
-      <ChatRowContextMenuContent target={target} />
+      <ChatRowContextMenuContent target={target} onDelete={() => setConfirmDelete(true)} />
+      <ConfirmationModal
+        isOpen={confirmDelete}
+        title="Delete chat?"
+        message={`Are you sure you want to permanently delete the chat "${title}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        isSubmitting={deleting}
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        onConfirm={() => void handleDelete()}
+        onCancel={() => {
+          if (!deleting) setConfirmDelete(false);
+        }}
+      />
     </ContextMenu>
   );
 }

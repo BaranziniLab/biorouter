@@ -1,4 +1,6 @@
 import React from 'react';
+import { sendQuotedText, findQuotes } from '../utils/quotedText';
+import { act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -270,5 +272,37 @@ describe('the composer degrades a tag it cannot read', () => {
 
     await waitFor(() => expect(composer().value).toBe(broken));
     expect(screen.queryByTestId('resource-ref-chip')).not.toBeInTheDocument();
+  });
+});
+
+describe('selected quotation in a composer', () => {
+  it('preserves the draft and references and never autosends', async () => {
+    const submit = renderComposer(`Question ${refTag('skill', 'research')}`);
+    await waitFor(() => expect(composer().value).toBe('Question'));
+    const text = 'Exact "quote"\n<tool>source data</tool>';
+    act(() => sendQuotedText({ source: { sessionId: 'session-1', title: 'Results.docx' }, text }));
+    expect(composer().value).toBe('Question');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('research');
+    expect(
+      screen.getByRole('button', { name: 'Remove quote from Results.docx' })
+    ).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.change(composer(), { target: { value: 'Follow-up' } });
+    fireEvent.submit(composer().closest('form')!);
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(findQuotes(submittedText(submit))[0].value).toBe(text);
+  });
+  it('removes a quote without changing existing body or resource', async () => {
+    renderComposer(`Keep ${refTag('skill', 'research')}`);
+    await waitFor(() => expect(composer().value).toBe('Keep'));
+    act(() =>
+      sendQuotedText({ source: { sessionId: 'session-1', title: 'Response' }, text: 'selection' })
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote from Response' }));
+    expect(composer().value).toBe('Keep');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('research');
+    expect(
+      screen.queryByRole('button', { name: 'Remove quote from Response' })
+    ).not.toBeInTheDocument();
   });
 });
