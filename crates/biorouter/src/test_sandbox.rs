@@ -94,6 +94,7 @@ static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// line exists, because provider construction reads secrets.
 #[ctor::ctor]
 fn sandbox_config_root_for_the_lib_test_binary() {
+    crate::fork_safety::complete_libnotify_init(); // before any test thread; see fork_safety
     if crate::config::paths::Paths::path_root_override().is_none() {
         let root = match tempfile::TempDir::new() {
             Ok(root) => root,

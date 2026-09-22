@@ -26,6 +26,7 @@ pub mod context_mgmt;
 pub mod conversation;
 pub mod execution;
 pub mod extension_install;
+pub mod fork_safety;
 pub mod guardrails;
 pub mod hints;
 pub mod hooks;
