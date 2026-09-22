@@ -6,6 +6,8 @@ Shared profile IPC currently requires Unix: an authenticated, owner-protected Un
 
 ## Start the daemon and choose credential storage
 
+For privacy-sensitive actions, add `--expected-mode private` or `--expected-mode public`, for example `biorouter crew --connection CONNECTION_ID --expected-mode private send CHANNEL_ID --text 'Hello'`. The daemon refuses a mismatched saved mode instead of changing it. This optional expectation applies to `send`, `tasks start`, `grants grant`, and file upload, download, and resume selection; omission preserves existing behavior. It does not change the connection's privacy setting or apply to file cleanup.
+
 ```sh
 biorouter crew --help
 biorouter crew daemon status
@@ -128,7 +130,7 @@ biorouter crew --connection "$CONNECTION_ID" search "$CHANNEL_ID" 'analysis' --l
 biorouter crew --connection "$CONNECTION_ID" watch "$CHANNEL_ID"
 ```
 
-History accepts `--before CURSOR` or `--after CURSOR`, and search accepts `--after CURSOR`. Use the opaque cursors returned by Crew without modifying them. `watch` starts from the oldest available messages unless given `--after CURSOR`; it polls and drains new pages. Ctrl-C detaches the watcher. `channels mark-read CHANNEL_ID CURSOR` advances your read marker.
+History accepts `--before CURSOR` or `--after CURSOR`, and search accepts `--after CURSOR`. Use the opaque cursors returned by Crew without modifying them. `watch` starts from the oldest available messages unless given `--after CURSOR`. The daemon polls, checks channel access and streams authorized pages; the CLI renders that shared stream. Ctrl-C detaches the watcher. `channels mark-read CHANNEL_ID CURSOR` advances your read marker.
 
 Use `--output-format json` for structured single responses. Watch commands emit one JSON value per line with either `json` or `stream-json`. Text output escapes terminal control characters. Content in messages, files and agent output remains untrusted input.
 
