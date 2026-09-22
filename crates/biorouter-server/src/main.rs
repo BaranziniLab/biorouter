@@ -81,6 +81,7 @@ enum Commands {
 /// it. The CLI hit that limit outright; the daemon shares the shape, so it
 /// shares the fix. See `biorouter::execution::runtime::run_on_agent_stack`.
 fn main() -> anyhow::Result<()> {
+    biorouter::fork_safety::complete_libnotify_init(); // before any thread; see fork_safety
     biorouter::execution::runtime::run_on_agent_stack(|| {
         biorouter::execution::runtime::build_agent_runtime()?.block_on(async_main())
     })?

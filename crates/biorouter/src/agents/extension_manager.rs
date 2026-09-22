@@ -12,7 +12,7 @@ use rmcp::transport::{
     ConfigureCommandExt, DynamicTransportError, StreamableHttpClientTransport, TokioChildProcess,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -813,6 +813,29 @@ fn resolve_command(cmd: &str) -> PathBuf {
         })
 }
 
+/// The `uvx` command that runs an InlinePython extension's script.
+///
+/// `uvx` is named the way a stdio extension's `cmd` is: by what
+/// [`resolve_command`] returns, which is the absolute path it finds or, when it
+/// finds none, the bare name (so the spawn still fails with the OS's own "not
+/// found"). It used to be the bare name always, and on macOS that is not a
+/// harmless spelling: [`prepare_child_environment`] sets `PATH` on the command,
+/// and for a bare program under an overridden `PATH` std cannot use
+/// `posix_spawn`, so it runs `fork` + `execvp` instead. A `fork` that coincides
+/// with another thread's first libnotify call kills the child before it runs
+/// (see [`crate::fork_safety`]). Measured 2026-09-21 on macOS 26.6 with a
+/// `pthread_atfork` child handler counting forks: adding an InlinePython
+/// extension forked once with the bare name and not at all with the resolved one.
+fn inline_python_command(file_path: &Path, dependencies: Option<&Vec<String>>) -> Command {
+    Command::new(resolve_command("uvx")).configure(|command| {
+        command.arg("--with").arg("mcp");
+        dependencies.into_iter().flatten().for_each(|dep| {
+            command.arg("--with").arg(dep);
+        });
+        command.arg("python").arg(file_path.to_str().unwrap());
+    })
+}
+
 fn require_str_parameter<'a>(v: &'a serde_json::Value, name: &str) -> Result<&'a str, ErrorData> {
     let v = v.get(name).ok_or_else(|| {
         ErrorData::new(
@@ -1440,13 +1463,7 @@ impl ExtensionManager {
                         temp_dir = Some(dir);
                         tokio::fs::write(&file_path, code).await?;
 
-                        let command = Command::new("uvx").configure(|command| {
-                            command.arg("--with").arg("mcp");
-                            dependencies.iter().flatten().for_each(|dep| {
-                                command.arg("--with").arg(dep);
-                            });
-                            command.arg("python").arg(file_path.to_str().unwrap());
-                        });
+                        let command = inline_python_command(&file_path, dependencies.as_ref());
 
                         let client = child_process_client(
                             command,
@@ -5801,7 +5818,7 @@ mod tests {
                     "declared-acp-token-9f2c".to_string(),
                 );
             }
-            let mut command = Command::new("printenv");
+            let mut command = probe_command("printenv");
             command.envs(declared);
             prepare_child_environment(&mut command, working_dir);
             let out = command.output().await.expect("extension child must spawn");
@@ -5989,6 +6006,93 @@ mod tests {
 
     // ---- issue #68 / F1: the parent half of the jail-widening defect ---------
 
+    /// A probe child's `Command`, naming its program by the absolute path
+    /// [`resolve_command`] finds, which is how `add_extension` names a stdio
+    /// extension's.
+    ///
+    /// ⚠ **The absolute path is what keeps the probe from being killed before
+    /// it runs.** [`prepare_child_environment`] sets `PATH` on the command, and
+    /// for a bare program name under an overridden `PATH` std cannot use
+    /// `posix_spawn` (it would search the parent's `PATH`), so it falls back to
+    /// `fork` + `execvp`. On macOS `fork` runs libSystem's child-side handlers,
+    /// and libnotify's (`_notify_fork_child`) waits on the once-gate of
+    /// libnotify's process-wide state. If another thread was inside that
+    /// one-time initialisation when `fork` ran, the gate belongs to a thread
+    /// the child does not have: the child aborts with "os_once_t is corrupt"
+    /// before `exec`, and the parent sees `unix_wait_status(9)` with empty
+    /// stderr. In this binary the other thread is a sibling test building a
+    /// `reqwest` client, whose native-root loading reads Security.framework's
+    /// trust settings and makes the process's first libnotify call (found by
+    /// interposing `notify_register_check`). So whichever probe forks while the
+    /// module's first tests are starting is the one at risk. Measured
+    /// 2026-09-21 on macOS 26.6: 8 of 240 runs of this module (eight binaries
+    /// at once) lost a probe child this way, and the vanished-dir test run
+    /// alone lost none in 1200; every crash report named this abort.
+    ///
+    /// `posix_spawn` runs no code in the child, so no gate is consulted. With
+    /// the race forced (eight threads making the process's first libnotify call
+    /// as the probe spawned, one fresh process per run, 360 runs of each shape
+    /// across both probe tests), bare-name probes were killed in 146 runs and
+    /// resolved ones in none, and a `pthread_atfork` child handler never ran
+    /// for a resolved probe: it did not fork.
+    ///
+    /// This binary's constructor now finishes that initialisation before any
+    /// test thread exists ([`crate::fork_safety::complete_libnotify_init`]).
+    /// With the race forced the same way and the vanished-dir probe named bare,
+    /// so that it forked, that took the losses from 101 of 320 runs to 0 of 320.
+    /// The absolute path still matters: it is how production names a stdio
+    /// extension's program, and it keeps the probe off `fork` altogether.
+    #[cfg(unix)]
+    fn probe_command(program: &str) -> Command {
+        let resolved = resolve_command(program);
+        assert!(
+            resolved.is_absolute(),
+            "probe program {program:?} resolved to {resolved:?}, not an absolute path; \
+             a bare name under the PATH prepare_child_environment sets makes std fork() \
+             rather than posix_spawn(), and a fork() that races another thread's first \
+             libnotify call kills the child before exec"
+        );
+        Command::new(resolved)
+    }
+
+    /// An InlinePython extension's `uvx` is named by exactly what
+    /// [`resolve_command`] returns for it, the resolution a stdio extension's
+    /// `cmd` gets, and the rest of its invocation is unchanged.
+    ///
+    /// Where `uvx` is installed that is an absolute path, which keeps the spawn
+    /// on `posix_spawn` rather than `fork` (see [`inline_python_command`]).
+    /// Where it is not, both sides are the bare name and this pins the
+    /// fallback instead.
+    #[test]
+    fn inline_python_names_uvx_by_the_path_resolve_command_finds() {
+        let script = PathBuf::from("/scratch/probe.py");
+        let dependencies = vec!["numpy".to_string(), "pandas".to_string()];
+        let command = inline_python_command(&script, Some(&dependencies));
+        let command = command.as_std();
+
+        assert_eq!(
+            command.get_program(),
+            resolve_command("uvx").as_os_str(),
+            "an InlinePython extension must name uvx the way resolve_command names a stdio \
+             extension's cmd: a bare name under the PATH prepare_child_environment sets makes \
+             std fork() rather than posix_spawn()"
+        );
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "--with",
+                "mcp",
+                "--with",
+                "numpy",
+                "--with",
+                "pandas",
+                "python",
+                "/scratch/probe.py"
+            ]
+        );
+    }
+
     /// The value of `BIOROUTER_WORKING_DIR` the child actually received, read
     /// out of a **real spawned process** rather than off the `Command` builder.
     /// Reading the builder would prove only that a field was set; the defect is
@@ -5998,7 +6102,8 @@ mod tests {
         let out = command.output().await.expect("extension child must spawn");
         assert!(
             out.status.success(),
-            "probe child failed: {}",
+            "probe child failed ({:?}): {}",
+            out.status,
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout)
@@ -6034,7 +6139,7 @@ mod tests {
             "the directory under test must really be gone"
         );
 
-        let mut command = Command::new("printenv");
+        let mut command = probe_command("printenv");
         prepare_child_environment(&mut command, Some(&vanished));
 
         // The other half of the fix: a directory that does not exist must NOT
@@ -6066,7 +6171,7 @@ mod tests {
         let scratch = tempdir().expect("temp dir");
         let dir = scratch.path().to_path_buf();
 
-        let mut command = Command::new("sh");
+        let mut command = probe_command("sh");
         command.args(["-c", "printf ran > ./marker; printenv"]);
         prepare_child_environment(&mut command, Some(&dir));
 
@@ -8480,19 +8585,122 @@ mod tests {
         (dir, em, provider)
     }
 
+    /// A native client that IGNORES cancellation and answers only when the
+    /// test releases it.
+    ///
+    /// The test below used to drive `SlowMockClient { delay: 50ms }` and assert
+    /// the call was still pending inside a 5 ms `timeout`. That raced the OS
+    /// scheduler. The review that flagged it reported one failing whole-binary
+    /// run in nine under load; that is the reviewer's figure and was not
+    /// re-measured. Measured on 2026-09-21 with four `cargo test -p biorouter
+    /// --lib` binaries running concurrently for three rounds, the old shape
+    /// failed 3 of 12 runs, every one at that 5 ms assertion. A thread
+    /// descheduled past the sleep's deadline wakes with BOTH timers expired,
+    /// `Timeout` polls its inner future before checking its own deadline, and
+    /// the finished call wins. Blocking the runtime thread for 80 ms after the
+    /// timeout's first poll failed that assertion in 50 of 50 runs. Here the
+    /// call cannot return until `release` is notified, so "still in flight"
+    /// holds by construction, whatever the clock does.
+    #[derive(Default)]
+    struct GatedMockClient {
+        /// Notified once `call_tool` has been entered: the call is in flight.
+        entered: tokio::sync::Notify,
+        /// The only thing that lets `call_tool` return.
+        release: tokio::sync::Notify,
+        /// Whether the token the host handed `call_tool` was already cancelled
+        /// when the call answered `Ok` regardless. `None` until it answers.
+        token_cancelled_at_answer: std::sync::Mutex<Option<bool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for GatedMockClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            self.entered.notify_one();
+            // Deliberately NOT raced against `cancellation_token`: a native
+            // helper that has already acted may finish and answer anyway, and
+            // that answer is what the host must not share.
+            self.release.notified().await;
+            *self.token_cancelled_at_answer.lock().unwrap() =
+                Some(cancellation_token.is_cancelled());
+            Ok(CallToolResult {
+                content: vec![],
+                is_error: None,
+                structured_content: None,
+                meta: None,
+            })
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// Stop while a native call is in flight, then let the client answer `Ok`
+    /// anyway: the answer must be withheld, not shared.
     #[tokio::test]
     async fn revoked_native_result_is_withheld_even_when_the_client_ignores_cancellation() {
         let _serial = crate::security::computer_use::tests::test_serial()
             .lock()
             .await;
         let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
         manager
-            .add_mock_extension(
-                "computercontroller".into(),
-                Arc::new(SlowMockClient {
-                    delay: Duration::from_millis(50),
-                }),
-            )
+            .add_mock_extension("computercontroller".into(), client.clone())
             .await;
         let _task = manager.computer_use.task_guard();
         manager
@@ -8511,6 +8719,9 @@ mod tests {
             CancellationToken::new(),
         );
         tokio::pin!(admission);
+        // Not a race: admission parks until approval and cannot finish without
+        // it, so this times out however the thread is scheduled. It is here to
+        // drive admission to the point where it has asked for approval.
         assert!(
             tokio::time::timeout(Duration::from_millis(5), &mut admission)
                 .await
@@ -8523,14 +8734,54 @@ mod tests {
             .unwrap();
         let mut admitted = admission.await.unwrap();
         assert!(admitted.notification_stream.is_none());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(5), &mut admitted.result)
-                .await
-                .is_err()
-        );
+
+        // Drive the call until the native client is running it. The client
+        // cannot answer before `release`, so the result settling first is a
+        // failure whatever it says.
+        tokio::select! {
+            biased;
+            early = &mut admitted.result => {
+                panic!("the call settled before its client was released: {early:?}")
+            }
+            () = client.entered.notified() => {}
+        }
+
         manager.computer_use.revoke();
-        let error = admitted.result.await.unwrap_err();
-        assert!(error.message.contains("no result was shared"));
+        // One poll while the client is still parked, so the host meets the
+        // revoke with the call outstanding. The client cannot answer before
+        // `release`, so `Pending` is the only outcome of this poll a correct
+        // host produces: settling here means it gave up on a call that was
+        // still running rather than waiting for its answer.
+        if let std::task::Poll::Ready(early) = futures::poll!(&mut admitted.result) {
+            panic!(
+                "the host settled the revoked call while its client was still running \
+                 ({early:?}): it never let the client answer, so this run cannot show \
+                 that an answer arriving after revoke is withheld"
+            );
+        }
+        // The client now answers `Ok`, ignoring the cancellation it was sent.
+        client.release.notify_one();
+        let error = admitted
+            .result
+            .await
+            .expect_err("a revoked native call's answer was shared");
+        assert!(
+            error.message.contains("no result was shared"),
+            "unexpected refusal: {error:?}"
+        );
+        let answered = *client.token_cancelled_at_answer.lock().unwrap();
+        match answered {
+            Some(true) => {}
+            None => panic!(
+                "the client never answered: the host stopped polling the revoked call \
+                 before the released client could reply, so there was no answer for it \
+                 to withhold"
+            ),
+            Some(false) => panic!(
+                "the client answered with its cancellation token still live: the host \
+                 never cancelled the call on revoke"
+            ),
+        }
     }
 
     impl ExtensionManager {
