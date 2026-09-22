@@ -128,6 +128,12 @@ const EXEMPT: &[(&str, &str)] = &[
         "`gh` runs only from the maintainer bug-report flow, never on a user turn",
     ),
     (
+        "crates/biorouter/src/test_sandbox.rs",
+        "test code: lib.rs declares it only as `#[cfg(test)] mod test_sandbox;`, so \
+         it is never compiled into a shipped binary. Its spawn re-execs the test \
+         binary itself for a test that must run in a process of its own.",
+    ),
+    (
         "crates/biorouter-cli/",
         "the CLI is a console application: its children inherit its console and \
          open no window of their own. Only the GUI daemon flashes.",

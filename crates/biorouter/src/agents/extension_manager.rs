@@ -826,8 +826,14 @@ fn resolve_command(cmd: &str) -> PathBuf {
 /// (see [`crate::fork_safety`]). Measured 2026-09-21 on macOS 26.6 with a
 /// `pthread_atfork` child handler counting forks: adding an InlinePython
 /// extension forked once with the bare name and not at all with the resolved one.
+///
+/// It also carries the no-console-window flag itself. `child_process_client`
+/// applies the same flag again before spawning, so the child is identical; the
+/// flag is set here as well so the function that BUILDS the command is the one
+/// that shows it, which is what the console census reads.
 fn inline_python_command(file_path: &Path, dependencies: Option<&Vec<String>>) -> Command {
     Command::new(resolve_command("uvx")).configure(|command| {
+        configure_command_no_window(command);
         command.arg("--with").arg("mcp");
         dependencies.into_iter().flatten().for_each(|dep| {
             command.arg("--with").arg(dep);
