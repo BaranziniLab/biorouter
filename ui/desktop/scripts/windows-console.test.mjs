@@ -14,13 +14,17 @@
  *     16), so libuv enters its hide block for every spawn whether or not the
  *     caller passed `windowsHide`. Source-reading the app's own spawn options
  *     therefore predicts nothing about the app's behaviour.
- *  2. **What actually decides it is the stdio shape.** libuv only ORs
- *     `CREATE_NO_WINDOW` in if NO stdio entry is an inherited fd
- *     (src/win/process.c, the loop at ~1034-1042, deliberate since libuv
- *     491848a0ad20 in 2017 — inheriting a console and then severing it made
- *     child output vanish). One `stdio: 'inherit'`, one raw fd, or a `fork()`
- *     without `silent: true`, and the flag is never set — with `windowsHide:
- *     true` sitting right there in the diff looking like it does something.
+ *  2. **There are TWO levers, not one, and they cover different sites.**
+ *     `CREATE_NO_WINDOW` gives the child no console at all, but libuv only ORs
+ *     it in when NO stdio entry is an inherited fd (src/win/process.c, the loop
+ *     at ~1034-1042, deliberate since libuv 491848a0ad20 in 2017 — inheriting a
+ *     console and then severing it made child output vanish). `SW_HIDE` is the
+ *     other: libuv sets STARTF_USESHOWWINDOW unconditionally, so `windowsHide:
+ *     true` also hides a console that DID get created. An inherit-stdio spawn
+ *     therefore falls through the first lever and is caught only by the second
+ *     — which is why every site stating `windowsHide` is the load-bearing
+ *     requirement, and why a site that both inherits an fd and omits the option
+ *     is the one shape that puts a black box on screen.
  *
  * So the app is protected today by an EMBEDDER DETAIL it never asked for, and
  * the one thing that would break that protection is invisible in a code review.
@@ -215,23 +219,46 @@ test(
 );
 
 test(
-  'THE OPEN QUESTION: does windowsHide rescue an inherit-stdio spawn?',
+  'SETTLED: windowsHide rescues an inherit-stdio spawn, by hiding the console rather than preventing it',
   { ...onWindows, timeout: 3 * MINUTE },
   async () => {
-    // libuv sets STARTF_USESHOWWINDOW unconditionally and maps `windowsHide` to
-    // SW_HIDE, and Microsoft says STARTUPINFO "affects the console window if a
-    // new console is created for the process" — so the option may well hide a
-    // console that CREATE_NO_WINDOW was never applied to. The alternative
-    // reading, that it only reaches GUI children, would make it a silent no-op
-    // here. The two readings give opposite advice about what to require, so the
-    // answer is pinned rather than argued: whichever it is, changing it changes
-    // what console-window-census.mjs must enforce, and that should be a red
-    // build and a conversation, not a quiet drift.
+    // Measured on real Windows, 2026-09-22, Electron 39.8.10. This case returned
+    // `hidden`, and the difference between `hidden` and `none` is the whole
+    // finding: `none` is what CREATE_NO_WINDOW produces, so a console WAS
+    // created here — libuv really did skip the flag because an fd is inherited,
+    // exactly as src/win/process.c reads. No window was drawn anyway, because
+    // libuv sets STARTF_USESHOWWINDOW unconditionally and `windowsHide: true`
+    // therefore also asks for SW_HIDE, which hides the console that did get
+    // created.
+    //
+    // So the two levers are independent and this is the site where only the
+    // second one is left:
+    //   * CREATE_NO_WINDOW — no console at all; needs non-inherited stdio;
+    //   * SW_HIDE — a console exists but is not shown; needs `windowsHide`.
+    // Which makes `windowsHide: true` the load-bearing requirement, not the
+    // cosmetic one it looked like when Electron appeared to be hiding
+    // everything by itself.
     const results = await electron();
     assert.equal(
       results['inherit-with-windowsHide'],
+      'hidden',
+      `an inherit-stdio spawn with windowsHide: true now reports ${results['inherit-with-windowsHide']}. If it is 'none', libuv has started applying CREATE_NO_WINDOW despite the inherited fd. If it is 'visible', SW_HIDE has stopped reaching console children and every inherit-stdio site in the app is a black box — fix that before anything else.`
+    );
+  }
+);
+
+test(
+  'CONTROL: inherited stdio with NO windowsHide is the black box',
+  { ...onWindows, timeout: 3 * MINUTE },
+  async () => {
+    // The arm that makes the case above mean something. Without it, `hidden`
+    // could just as well be a machine that never draws, and the requirement
+    // that every site state `windowsHide` would be guarding nothing.
+    const results = await electron();
+    assert.equal(
+      results['inherit-without-windowsHide'],
       'visible',
-      `windowsHide now changes the outcome for an inherit-stdio spawn (got ${results['inherit-with-windowsHide']} where the control got ${results['inherit-without-windowsHide']}). That is GOOD news and a real finding: it means the option rescues a site the stdio rule currently calls unsafe. Update this assertion AND the "Rule 2 first" rationale in console-window-census.mjs together — the rule and its reason must not drift apart.`
+      `inherited stdio with no windowsHide reported ${results['inherit-without-windowsHide']} rather than showing a window. If this is no longer visible, nothing in the app can produce a console window any more and the census rules should be re-derived rather than kept out of habit.`
     );
   }
 );

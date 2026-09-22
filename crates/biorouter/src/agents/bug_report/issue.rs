@@ -260,20 +260,20 @@ pub async fn gh_ready() -> bool {
     if running_under_test() {
         return false;
     }
-    let Ok(result) = tokio::time::timeout(
-        GH_PROBE_TIMEOUT,
-        tokio::process::Command::new("gh")
-            .args(["auth", "status", "--hostname", "github.com"])
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("GH_NO_UPDATE_NOTIFIER", "1")
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    )
-    .await
-    else {
+    let mut probe = tokio::process::Command::new("gh");
+    probe
+        .args(["auth", "status", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // `gh` is a console program and `biorouterd` is started DETACHED on Windows,
+    // so it owns no console for a child to inherit and Windows gives this one a
+    // brand-new, VISIBLE console unless it is asked not to (#368).
+    biorouter_mcp::developer::shell::no_console_window(&mut probe);
+    let Ok(result) = tokio::time::timeout(GH_PROBE_TIMEOUT, probe.status()).await else {
         return false;
     };
     result.is_ok_and(|status| status.success())
@@ -348,29 +348,28 @@ pub async fn file_with_gh(
         anyhow::bail!("refusing to create a GitHub issue from a test build; nothing was posted");
     }
     tokio::fs::write(body_file, body).await?;
-    let output = tokio::time::timeout(
-        GH_TIMEOUT,
-        tokio::process::Command::new("gh")
-            .args([
-                "issue",
-                "create",
-                "--repo",
-                repo,
-                "--title",
-                title,
-                "--body-file",
-                &body_file.to_string_lossy(),
-                "--label",
-                LABEL,
-            ])
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("GH_NO_UPDATE_NOTIFIER", "1")
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("`gh issue create` did not finish within {GH_TIMEOUT:?}"))??;
+    let mut create = tokio::process::Command::new("gh");
+    create
+        .args([
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            &body_file.to_string_lossy(),
+            "--label",
+            LABEL,
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null());
+    biorouter_mcp::developer::shell::no_console_window(&mut create);
+    let output = tokio::time::timeout(GH_TIMEOUT, create.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("`gh issue create` did not finish within {GH_TIMEOUT:?}"))??;
 
     // Best effort: the file holds the report, not a credential, but it does not
     // need to outlive the call.
