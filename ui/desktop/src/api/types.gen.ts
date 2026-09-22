@@ -6376,6 +6376,38 @@ export type CrewTransferRegisterFileResponses = {
     200: unknown;
 };
 
+export type CrewTransferDiscardFileData = {
+    body?: never;
+    path: {
+        /**
+         * Unused file selection capability
+         */
+        capability_id: string;
+    };
+    query?: never;
+    url: '/crew/files/{capability_id}';
+};
+
+export type CrewTransferDiscardFileResponses = {
+    200: unknown;
+};
+
+export type CrewTransferConfirmFileData = {
+    body?: never;
+    path: {
+        /**
+         * Pending file selection capability
+         */
+        capability_id: string;
+    };
+    query?: never;
+    url: '/crew/files/{capability_id}/confirm';
+};
+
+export type CrewTransferConfirmFileResponses = {
+    200: unknown;
+};
+
 export type CrewTransferListData = {
     body?: never;
     path?: never;

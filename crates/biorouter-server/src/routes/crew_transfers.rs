@@ -1,7 +1,7 @@
 use axum::extract::{DefaultBodyLimit, Path, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use biorouter_server::crew::transfers::{service, FileRequest, PreviewRequest, StartRequest};
@@ -35,6 +35,16 @@ fn human(headers: &HeaderMap) -> Result<(), TransferError> {
 pub async fn register_file(headers: HeaderMap, Json(body): Json<FileRequest>) -> TransferResult {
     human(&headers)?;
     Ok(Json(service().await?.register(body).await?))
+}
+#[utoipa::path(post, operation_id = "crew_transfer_confirm_file", path = "/crew/files/{capability_id}/confirm", params(("capability_id" = String, Path, description = "Pending file selection capability")), responses((status = 200, body = Value)), tag = "Crew")]
+pub async fn confirm_file(headers: HeaderMap, Path(capability_id): Path<String>) -> TransferResult {
+    human(&headers)?;
+    Ok(Json(service().await?.confirm(&capability_id).await?))
+}
+#[utoipa::path(delete, operation_id = "crew_transfer_discard_file", path = "/crew/files/{capability_id}", params(("capability_id" = String, Path, description = "Unused file selection capability")), responses((status = 200, body = Value)), tag = "Crew")]
+pub async fn discard_file(headers: HeaderMap, Path(capability_id): Path<String>) -> TransferResult {
+    human(&headers)?;
+    Ok(Json(service().await?.discard(&capability_id).await?))
 }
 #[utoipa::path(post, operation_id = "crew_transfer_start", path = "/crew/transfers", request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
 pub async fn start(headers: HeaderMap, Json(body): Json<StartRequest>) -> TransferResult {
@@ -136,6 +146,8 @@ pub async fn preview(
 pub fn routes() -> Router {
     Router::new()
         .route("/crew/files", post(register_file))
+        .route("/crew/files/{capability_id}/confirm", post(confirm_file))
+        .route("/crew/files/{capability_id}", delete(discard_file))
         .route("/crew/transfers", get(list).post(start))
         .route("/crew/transfers/preview", post(preview))
         .route("/crew/transfers/{id}", get(status).delete(forget))
@@ -147,11 +159,44 @@ pub fn routes() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     #[test]
     fn transfer_operations_require_verified_human_action() {
         let error = human(&HeaderMap::new()).unwrap_err();
         assert_eq!(error.0, StatusCode::FORBIDDEN);
         assert!(error.1.contains("verified human action"));
+    }
+
+    #[tokio::test]
+    async fn confirm_and_discard_refuse_missing_human_proof_before_service_lookup() {
+        let confirm = confirm_file(HeaderMap::new(), Path("missing-capability".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(confirm.0, StatusCode::FORBIDDEN);
+
+        let discard = discard_file(HeaderMap::new(), Path("missing-capability".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(discard.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn api_key_is_not_human_proof_for_confirm_or_discard() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-secret-key",
+            HeaderValue::from_static("synthetic-api-key"),
+        );
+
+        let confirm = confirm_file(headers.clone(), Path("missing-capability".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(confirm.0, StatusCode::FORBIDDEN);
+
+        let discard = discard_file(headers, Path("missing-capability".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(discard.0, StatusCode::FORBIDDEN);
     }
 }

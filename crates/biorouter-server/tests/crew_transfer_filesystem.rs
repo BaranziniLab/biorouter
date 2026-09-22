@@ -17,9 +17,16 @@ fn private_directory(root: &Path, name: &str) -> std::path::PathBuf {
     path
 }
 
+fn private_root() -> tempfile::TempDir {
+    let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root = tempfile::tempdir_in(base).unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    root
+}
+
 #[test]
 fn directory_selection_rejects_symlink_components_and_unsafe_output_modes() {
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = private_root();
     let output = private_directory(root.path(), "output");
     let opened = open_directory(&output, false).unwrap();
     protected_directory(&opened).unwrap();
@@ -36,7 +43,7 @@ fn directory_selection_rejects_symlink_components_and_unsafe_output_modes() {
 
 #[test]
 fn source_and_destination_selection_refuse_symlinks_and_nonregular_targets() {
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = private_root();
     let directory = private_directory(root.path(), "files");
     let source = directory.join("source.csv");
     fs::write(&source, b"a,b\n1,2\n").unwrap();
@@ -71,7 +78,7 @@ fn source_and_destination_selection_refuse_symlinks_and_nonregular_targets() {
 
 #[test]
 fn publication_is_atomic_and_leaves_one_private_destination_link() {
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = private_root();
     let output = private_directory(root.path(), "output");
     let directory = open_directory(&output, false).unwrap();
     let id = "0123456789abcdef0123456789abcdef";
@@ -100,7 +107,7 @@ fn publication_is_atomic_and_leaves_one_private_destination_link() {
 
 #[test]
 fn publication_refuses_a_symlink_destination_and_identity_is_directory_bound() {
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = private_root();
     let first = private_directory(root.path(), "first");
     let second = private_directory(root.path(), "second");
     let first_dir = open_directory(&first, false).unwrap();
@@ -120,7 +127,7 @@ fn publication_refuses_a_symlink_destination_and_identity_is_directory_bound() {
 fn private_file_with_acl_allow_is_rejected_even_when_mode_is_0600() {
     use std::process::Command;
 
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = private_root();
     let file = root.path().join("partial");
     fs::write(&file, b"partial").unwrap();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();

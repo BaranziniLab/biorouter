@@ -22,13 +22,14 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW,
-    GetVolumeInformationByHandleW, MoveFileExW, BY_HANDLE_FILE_INFORMATION, DELETE,
-    FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
-    FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TYPE_DISK, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+    FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType,
+    GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, MoveFileExW,
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DELETE_CHILD, FILE_EXECUTE,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+    FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
+    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, MOVEFILE_REPLACE_EXISTING,
+    MOVEFILE_WRITE_THROUGH, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -108,6 +109,19 @@ pub fn file_identity(file: &File) -> Result<FileIdentity> {
         volume: info.dwVolumeSerialNumber,
         index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
     })
+}
+
+pub fn change_time(file: &File) -> Result<i64> {
+    let mut basic: FILE_BASIC_INFO = unsafe { zeroed() };
+    checked(unsafe {
+        GetFileInformationByHandleEx(
+            handle(file),
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    })?;
+    Ok(basic.ChangeTime)
 }
 
 fn current_user() -> Result<Vec<usize>> {
@@ -494,6 +508,17 @@ impl DirectoryLease {
         name: &str,
         overwrite: bool,
     ) -> Result<Publication> {
+        self.publish_selected(source, part, name, overwrite, None)
+    }
+
+    pub fn publish_selected(
+        &self,
+        source: &File,
+        part: &str,
+        name: &str,
+        overwrite: bool,
+        target: Option<&super::TargetApproval>,
+    ) -> Result<Publication> {
         simple_name(part)?;
         simple_name(name)?;
         ensure!(part != name, "Partial and final file names must differ");
@@ -527,6 +552,9 @@ impl DirectoryLease {
         let target_path = wide(&self.path.join(name))?;
         // MoveFileEx documents WRITE_THROUGH; neither COPY_ALLOWED nor deferred
         // operations are permitted. This is not a directory FlushFileBuffers.
+        if let Some(target) = target {
+            target.verify(&Dir::from_std_file(self.directory.try_clone()?), name)?;
+        }
         let moved = unsafe {
             MoveFileExW(
                 source_path.as_ptr(),

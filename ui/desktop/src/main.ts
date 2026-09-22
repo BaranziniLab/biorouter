@@ -4888,69 +4888,91 @@ function registerCliInstallHandlers() {
       if (!result.canceled) selected = result.filePath;
     }
     if (!selected) return null;
-    let overwrite = false;
-    if (options.direction === 'download' && purpose !== 'cleanup') {
-      let existing: Awaited<ReturnType<typeof fs.lstat>> | undefined;
-      try {
-        existing = await fs.lstat(selected);
-      } catch (error) {
-        if ((error as Error & { code?: string }).code !== 'ENOENT')
-          throw new Error('The selected destination could not be inspected.');
+    const pendingDownload = options.direction === 'download' && purpose !== 'cleanup';
+    const postSelection = async (
+      endpoint: string,
+      body: Record<string, unknown>,
+      method: 'POST' | 'DELETE' = 'POST'
+    ) => {
+      if (event.sender.isDestroyed() || owner.isDestroyed())
+        throw new Error('The file selection window closed.');
+      const settings = loadSettings();
+      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Secret-Key': getServerSecret(settings),
+          'X-User-Action': getUserActionKey(settings),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        if (
+          failure?.error ===
+          'Crew connection privacy changed; refresh the verified workspace before selecting a file'
+        )
+          throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
+        if (endpoint)
+          throw new Error(
+            'The selected destination could not be confirmed. Choose the destination again and review any replacement request.'
+          );
+        throw new Error(
+          'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
+        );
       }
-      if (existing) {
-        if (!existing.isFile() || existing.isSymbolicLink())
-          throw new Error('Choose a regular file or a new destination filename.');
+      return method === 'DELETE' ? null : response.json();
+    };
+    let result = await postSelection('', {
+      direction: options.direction,
+      purpose,
+      path: selected,
+      overwrite: pendingDownload,
+      approval_pending: pendingDownload,
+      connection_id: options.connectionId,
+      channel_id: options.channelId,
+      blob_id: options.blobId,
+      transfer_id: options.transferId,
+      expected_mode: options.expectedMode,
+    });
+    if (
+      typeof result?.capability_id !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(result.capability_id) ||
+      typeof result.name !== 'string'
+    )
+      throw new Error('Invalid daemon file capability.');
+    if (pendingDownload) {
+      if (typeof result.target_exists !== 'boolean')
+        throw new Error(
+          'The daemon did not verify this destination. Update the daemon before downloading.'
+        );
+      if (event.sender.isDestroyed() || owner.isDestroyed())
+        throw new Error('The file selection window closed.');
+      if (result.target_exists) {
         const replacement = await dialog.showMessageBox(owner, {
           type: 'warning',
           title: 'Replace Crew download destination',
           message: `Replace ${path.basename(selected)} after the download is verified?`,
           detail:
-            'The existing file remains in place until the complete downloaded file passes verification.',
+            'The daemon has checked the existing file. It remains in place until the download passes verification; any destination change requires a new selection.',
           buttons: ['Cancel', 'Replace file'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
         });
-        if (replacement.response !== 1) return null;
-        overwrite = true;
+        if (replacement.response !== 1) {
+          await postSelection(`/${encodeURIComponent(result.capability_id)}`, {}, 'DELETE').catch(
+            () => undefined
+          );
+          return null;
+        }
       }
+      const capabilityId = result.capability_id;
+      result = await postSelection(`/${encodeURIComponent(capabilityId)}/confirm`, {});
+      if (result?.capability_id !== capabilityId || typeof result.name !== 'string')
+        throw new Error('The daemon did not confirm the selected destination. Choose it again.');
     }
-    if (event.sender.isDestroyed()) throw new Error('The file selection window closed.');
-    const settings = loadSettings();
-    const response = await fetch(`${baseUrl}/crew/files`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Secret-Key': getServerSecret(settings),
-        'X-User-Action': getUserActionKey(settings),
-      },
-      body: JSON.stringify({
-        direction: options.direction,
-        purpose,
-        path: selected,
-        overwrite,
-        connection_id: options.connectionId,
-        channel_id: options.channelId,
-        blob_id: options.blobId,
-        transfer_id: options.transferId,
-        expected_mode: options.expectedMode,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) {
-      const failure = await response.json().catch(() => null);
-      if (
-        failure?.error ===
-        'Crew connection privacy changed; refresh the verified workspace before selecting a file'
-      )
-        throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
-      throw new Error(
-        'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
-      );
-    }
-    const result = await response.json();
-    if (typeof result.capability_id !== 'string' || typeof result.name !== 'string')
-      throw new Error('Invalid daemon file capability.');
     return {
       capability_id: result.capability_id,
       name: result.name,

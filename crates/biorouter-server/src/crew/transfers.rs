@@ -33,6 +33,8 @@ pub enum FilePurpose {
 #[serde(deny_unknown_fields)]
 pub struct FileRequest {
     #[serde(default)]
+    pub approval_pending: bool,
+    #[serde(default)]
     pub expected_mode: Option<biorouter::crew::ClusterMode>,
     #[serde(default)]
     pub purpose: FilePurpose,
@@ -78,8 +80,13 @@ pub struct Receipt {
     local_selection: String,
     #[serde(default)]
     destination_identity: Option<String>,
+    #[serde(default)]
+    destination_selection: Option<String>,
+    #[serde(default)]
+    initial_target: Option<local_files::TargetApproval>,
 }
 struct Capability {
+    approval_pending: bool,
     purpose: FilePurpose,
     selection: Selection,
     connection_id: String,
@@ -90,6 +97,17 @@ struct Capability {
     binding: String,
     request_id: Option<String>,
     replay_receipt_id: Option<String>,
+}
+fn capability_result(id: &str, cap: &Capability) -> Value {
+    let exists = matches!(
+        &cap.selection,
+        Selection::Destination {
+            target: local_files::TargetApproval::Existing(_),
+            ..
+        }
+    );
+    json!({"capability_id":id,"name":cap.selection.name(),"size":cap.selection.size(),
+        "target_exists":exists,"approval_pending":cap.approval_pending})
 }
 #[derive(Default)]
 struct State {
@@ -234,6 +252,12 @@ impl TransferService {
                     && !request.overwrite),
             "Cleanup approval requires a download transfer_id and cannot authorize replacement"
         );
+        ensure!(
+            !request.approval_pending
+                || (request.purpose == FilePurpose::Transfer
+                    && request.direction == Direction::Download),
+            "Pending approval is only supported for download transfers"
+        );
         let binding = self.selection_binding(&request).await?;
         let replay_receipt_id = self.registration_replay(&request, &binding).await?;
         let replay_download =
@@ -249,7 +273,7 @@ impl TransferService {
             Ok::<_, anyhow::Error>((request, selected))
         })
         .await??;
-        let (request, selection) = selection;
+        let (request, mut selection) = selection;
         let mut state = self.state.lock().await;
         state
             .capabilities
@@ -258,12 +282,12 @@ impl TransferService {
             state.capabilities.len() < 32,
             "Too many pending file selections"
         );
+        Self::bind_replay_selection(&state, replay_receipt_id.as_deref(), &mut selection)?;
         let capability_id = id();
-        let result =
-            json!({"capability_id":capability_id,"name":selection.name(),"size":selection.size()});
         state.capabilities.insert(
-            capability_id,
+            capability_id.clone(),
             Capability {
+                approval_pending: request.approval_pending,
                 purpose: request.purpose,
                 selection,
                 connection_id: request.connection_id,
@@ -276,7 +300,75 @@ impl TransferService {
                 replay_receipt_id,
             },
         );
-        Ok(result)
+        Ok(capability_result(
+            &capability_id,
+            &state.capabilities[&capability_id],
+        ))
+    }
+    fn bind_replay_selection(
+        state: &State,
+        replay: Option<&str>,
+        selection: &mut Selection,
+    ) -> Result<()> {
+        let Some(receipt) = replay.and_then(|id| state.receipts.get(id)) else {
+            return Ok(());
+        };
+        if matches!(selection, Selection::Destination { .. }) {
+            ensure!(
+                receipt.destination_selection.is_some()
+                    && receipt.destination_selection
+                        == local_files::destination_selection_identity(selection)?,
+                "Replay destination differs from the original selection"
+            );
+            let original = receipt
+                .initial_target
+                .clone()
+                .context("Original destination approval unavailable; inspect the saved receipt")?;
+            if let Selection::Destination { target, .. } = selection {
+                *target = original;
+            }
+        }
+        Ok(())
+    }
+    pub async fn confirm(&self, capability_id: &str) -> Result<Value> {
+        let connection_id = {
+            let state = self.state.lock().await;
+            state
+                .capabilities
+                .get(capability_id)
+                .context("File approval expired")?
+                .connection_id
+                .clone()
+        };
+        let binding = connection_binding(&connection_id).await?;
+        let mut state = self.state.lock().await;
+        let cap = state
+            .capabilities
+            .get_mut(capability_id)
+            .context("File approval expired")?;
+        ensure!(
+            cap.approval_pending && cap.expires > Instant::now() && cap.binding == binding,
+            "File approval expired or connection policy changed; select the file again"
+        );
+        let Selection::Destination {
+            directory,
+            name,
+            target,
+            ..
+        } = &cap.selection
+        else {
+            anyhow::bail!("Only download selections can be confirmed");
+        };
+        directory.revalidate()?;
+        if cap.replay_receipt_id.is_none() {
+            target.verify(directory, name)?;
+        }
+        cap.approval_pending = false;
+        Ok(capability_result(capability_id, cap))
+    }
+    pub async fn discard(&self, capability_id: &str) -> Result<Value> {
+        self.state.lock().await.capabilities.remove(capability_id);
+        Ok(json!({"discarded":true}))
     }
     async fn registration_replay(
         &self,
@@ -355,7 +447,8 @@ impl TransferService {
             .remove(capability)
             .context("Select the local file again")?;
         ensure!(
-            cap.purpose == purpose
+            !cap.approval_pending
+                && cap.purpose == purpose
                 && cap.binding == receipt.binding
                 && cap.expires > Instant::now()
                 && cap.connection_id == receipt.connection_id
@@ -412,6 +505,8 @@ impl TransferService {
             intent: String::new(),
             local_selection: String::new(),
             destination_identity: None,
+            destination_selection: None,
+            initial_target: None,
         };
         let selection = Self::take_file(
             &mut state,
@@ -421,6 +516,10 @@ impl TransferService {
             FilePurpose::Transfer,
         )?;
         receipt.local_selection = local_files::selection_identity(&selection)?;
+        receipt.destination_selection = local_files::destination_selection_identity(&selection)?;
+        if let Selection::Destination { target, .. } = &selection {
+            receipt.initial_target = Some(target.clone());
+        }
         receipt.intent = digest(&serde_json::to_vec(&json!([
             "crew-transfer-intent-v2",
             receipt.connection_id,
@@ -737,8 +836,9 @@ impl TransferService {
                 directory,
                 name,
                 overwrite,
+                target,
             } => {
-                self.download(receipt, directory, name, overwrite, cancel)
+                self.download(receipt, directory, name, overwrite, target, cancel)
                     .await
             }
         }
@@ -836,6 +936,7 @@ impl TransferService {
         directory: local_files::ProtectedDirectory,
         name: String,
         overwrite: bool,
+        target: local_files::TargetApproval,
         cancel: &CancellationToken,
     ) -> Result<()> {
         let blob_id = receipt
@@ -916,7 +1017,7 @@ impl TransferService {
             receipt.offset = next;
             self.save(receipt, cancel).await?;
         }
-        self.finish_download(receipt, file, directory, name, overwrite, cancel)
+        self.finish_download(receipt, file, directory, name, (overwrite, target), cancel)
             .await
     }
     async fn finish_download(
@@ -925,9 +1026,10 @@ impl TransferService {
         mut file: std::fs::File,
         directory: local_files::ProtectedDirectory,
         name: String,
-        overwrite: bool,
+        approval: (bool, local_files::TargetApproval),
         cancel: &CancellationToken,
     ) -> Result<()> {
+        let (overwrite, target) = approval;
         let size = receipt.size;
         let blob_id = receipt
             .blob_id
@@ -959,29 +1061,20 @@ impl TransferService {
         );
         file.sync_all()?;
         validate_partial(&file, receipt.size)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let current = directory
-                .open_with(&part, local_files::nofollow_options().read(true))?
-                .into_std();
-            let original = file.metadata()?;
-            let current = current.metadata()?;
-            ensure!(
-                original.dev() == current.dev() && original.ino() == current.ino(),
-                "Partial file identity changed; publication refused"
-            );
-        }
         let mut state = self.state.lock().await;
         ensure!(!cancel.is_cancelled(), "Transfer paused");
+        target.verify(&directory, &name)?;
+        #[cfg(unix)]
+        local_files::verify_named_file(&directory, &part, &file)?;
         receipt.state = "publishing".into();
         state.receipts.insert(receipt.id.clone(), receipt.clone());
         self.persist(&mut state)?;
-        directory.publish_file(
+        directory.publish_selected(
             &file,
             part.to_str().context("Invalid partial filename")?,
             &name,
             overwrite,
+            &target,
         )?;
         receipt.state = "completed".into();
         state.receipts.insert(receipt.id.clone(), receipt.clone());
@@ -1070,6 +1163,8 @@ impl TransferService {
             intent: String::new(),
             local_selection: String::new(),
             destination_identity: None,
+            destination_selection: None,
+            initial_target: None,
         };
         let blob: Blob = serde_json::from_value(
             remote(&receipt, "blob.status", json!({"blob_id":request.blob_id})).await?,

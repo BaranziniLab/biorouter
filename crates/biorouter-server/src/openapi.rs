@@ -384,6 +384,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew_authentication::cancel,
         super::routes::crew_authentication::terminal,
         super::routes::crew_transfers::register_file,
+        super::routes::crew_transfers::confirm_file,
+        super::routes::crew_transfers::discard_file,
         super::routes::crew_transfers::start,
         super::routes::crew_transfers::list,
         super::routes::crew_transfers::status,

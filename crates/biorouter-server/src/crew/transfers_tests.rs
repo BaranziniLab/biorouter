@@ -8,10 +8,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 fn private_root() -> tempfile::TempDir {
-    #[cfg(target_os = "macos")]
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
-    #[cfg(not(target_os = "macos"))]
-    let root = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root = tempfile::tempdir_in(base).unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     root
 }
@@ -173,11 +171,14 @@ async fn cleanup_selection_uses_receipt_binding_without_requiring_a_live_connect
             intent: "intent".into(),
             local_selection: String::new(),
             destination_identity: None,
+            destination_selection: None,
+            initial_target: None,
         },
     );
 
     let binding = service
         .selection_binding(&FileRequest {
+            approval_pending: false,
             expected_mode: Some(biorouter::crew::ClusterMode::Private),
             purpose: FilePurpose::Cleanup,
             connection_id: "removed-connection".into(),
@@ -192,6 +193,292 @@ async fn cleanup_selection_uses_receipt_binding_without_requiring_a_live_connect
         .await
         .unwrap();
     assert_eq!(binding, "receipt-binding");
+}
+
+#[tokio::test]
+async fn pending_download_capability_cannot_be_consumed_by_start_or_resume_gate() {
+    let root = private_root();
+    let service = TransferService::open(root.path()).unwrap();
+    let receipt = Receipt {
+        id: "55555555555555555555555555555555".into(),
+        request_id: "pending-request".into(),
+        connection_id: "pending-connection".into(),
+        channel_id: "pending-channel".into(),
+        direction: Direction::Download,
+        name: "pending.bin".into(),
+        size: 4,
+        sha256: "a".repeat(64),
+        offset: 0,
+        blob_id: Some("pending-blob".into()),
+        state: "needs_file_selection".into(),
+        error: None,
+        binding: "pending-binding".into(),
+        intent: "pending-intent".into(),
+        local_selection: String::new(),
+        destination_identity: None,
+        destination_selection: None,
+        initial_target: None,
+    };
+    let mut state = service.state.lock().await;
+    for resuming in [false, true] {
+        let destination = root.path().join(if resuming {
+            "pending-resume.bin"
+        } else {
+            "pending-start.bin"
+        });
+        let selection = local_files::select(&destination, Direction::Download, false).unwrap();
+        state.capabilities.insert(
+            format!("pending-capability-{resuming}"),
+            Capability {
+                approval_pending: true,
+                purpose: FilePurpose::Transfer,
+                selection,
+                connection_id: receipt.connection_id.clone(),
+                channel_id: receipt.channel_id.clone(),
+                blob_id: receipt.blob_id.clone(),
+                transfer_id: resuming.then(|| receipt.id.clone()),
+                expires: Instant::now() + Duration::from_secs(300),
+                binding: receipt.binding.clone(),
+                request_id: Some(receipt.request_id.clone()),
+                replay_receipt_id: None,
+            },
+        );
+        let capability = format!("pending-capability-{resuming}");
+        let error = match TransferService::take_file(
+            &mut state,
+            &capability,
+            &receipt,
+            resuming,
+            FilePurpose::Transfer,
+        ) {
+            Ok(_) => panic!("a pending capability must not be consumed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("Local file approval"));
+    }
+    assert!(state.capabilities.is_empty());
+}
+
+#[tokio::test]
+async fn expired_capability_cannot_be_consumed_and_does_not_receive_a_new_ttl() {
+    let root = private_root();
+    let service = TransferService::open(root.path()).unwrap();
+    let destination = root.path().join("expired.bin");
+    let selection = local_files::select(&destination, Direction::Download, false).unwrap();
+    let receipt = Receipt {
+        id: "99999999999999999999999999999999".into(),
+        request_id: "expired-request".into(),
+        connection_id: "expired-connection".into(),
+        channel_id: "expired-channel".into(),
+        direction: Direction::Download,
+        name: "expired.bin".into(),
+        size: 0,
+        sha256: "c".repeat(64),
+        offset: 0,
+        blob_id: Some("expired-blob".into()),
+        state: "needs_file_selection".into(),
+        error: None,
+        binding: "expired-binding".into(),
+        intent: "expired-intent".into(),
+        local_selection: String::new(),
+        destination_identity: None,
+        destination_selection: None,
+        initial_target: None,
+    };
+    let expired_at = Instant::now() - Duration::from_secs(1);
+    let mut state = service.state.lock().await;
+    state.capabilities.insert(
+        "expired-capability".into(),
+        Capability {
+            approval_pending: false,
+            purpose: FilePurpose::Transfer,
+            selection,
+            connection_id: receipt.connection_id.clone(),
+            channel_id: receipt.channel_id.clone(),
+            blob_id: receipt.blob_id.clone(),
+            transfer_id: None,
+            expires: expired_at,
+            binding: receipt.binding.clone(),
+            request_id: Some(receipt.request_id.clone()),
+            replay_receipt_id: None,
+        },
+    );
+    let error = match TransferService::take_file(
+        &mut state,
+        "expired-capability",
+        &receipt,
+        false,
+        FilePurpose::Transfer,
+    ) {
+        Ok(_) => panic!("an expired capability must not be consumed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("Local file approval"));
+    assert!(state.capabilities.is_empty());
+}
+
+#[tokio::test]
+async fn discarding_a_pending_capability_releases_a_selection_slot() {
+    let root = private_root();
+    let service = TransferService::open(root.path()).unwrap();
+    let sentinel = root.path().join("protected-target.bin");
+    fs::write(&sentinel, b"protected receipt sentinel").unwrap();
+    let receipt_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    service.state.lock().await.receipts.insert(
+        receipt_id.into(),
+        Receipt {
+            id: receipt_id.into(),
+            request_id: "protected-request".into(),
+            connection_id: "connection".into(),
+            channel_id: "channel".into(),
+            direction: Direction::Download,
+            name: "protected-target.bin".into(),
+            size: 0,
+            sha256: String::new(),
+            offset: 0,
+            blob_id: Some("blob".into()),
+            state: "needs_file_selection".into(),
+            error: None,
+            binding: "binding".into(),
+            intent: "intent".into(),
+            local_selection: String::new(),
+            destination_identity: None,
+            destination_selection: None,
+            initial_target: None,
+        },
+    );
+    let receipt_before = service.get(receipt_id).await.unwrap();
+    for index in 0..32 {
+        let path = root.path().join(format!("target-{index}.bin"));
+        let selection = local_files::select(&path, Direction::Download, false).unwrap();
+        service.state.lock().await.capabilities.insert(
+            format!("capability-{index}"),
+            Capability {
+                approval_pending: true,
+                purpose: FilePurpose::Transfer,
+                selection,
+                connection_id: "connection".into(),
+                channel_id: "channel".into(),
+                blob_id: Some("blob".into()),
+                transfer_id: None,
+                expires: Instant::now() + Duration::from_secs(300),
+                binding: "binding".into(),
+                request_id: None,
+                replay_receipt_id: None,
+            },
+        );
+    }
+    assert_eq!(service.state.lock().await.capabilities.len(), 32);
+    let discarded = service.discard("capability-0").await.unwrap();
+    assert_eq!(discarded["discarded"], true);
+    assert_eq!(service.state.lock().await.capabilities.len(), 31);
+    assert_eq!(
+        service.get(receipt_id).await.unwrap().state,
+        receipt_before.state
+    );
+    assert_eq!(fs::read(&sentinel).unwrap(), b"protected receipt sentinel");
+
+    let replacement = local_files::select(
+        &root.path().join("replacement.bin"),
+        Direction::Download,
+        false,
+    )
+    .unwrap();
+    service.state.lock().await.capabilities.insert(
+        "replacement-capability".into(),
+        Capability {
+            approval_pending: true,
+            purpose: FilePurpose::Transfer,
+            selection: replacement,
+            connection_id: "connection".into(),
+            channel_id: "channel".into(),
+            blob_id: Some("blob".into()),
+            transfer_id: None,
+            expires: Instant::now() + Duration::from_secs(300),
+            binding: "binding".into(),
+            request_id: None,
+            replay_receipt_id: None,
+        },
+    );
+    assert_eq!(service.state.lock().await.capabilities.len(), 32);
+}
+
+#[tokio::test]
+async fn completed_replay_helpers_restore_original_receipt_and_target_approval() {
+    let root = private_root();
+    let service = TransferService::open(root.path()).unwrap();
+    let destination = root.path().join("completed.bin");
+    fs::write(&destination, b"approved target").unwrap();
+    let selection = local_files::select(&destination, Direction::Download, true).unwrap();
+    let destination_selection = local_files::destination_selection_identity(&selection).unwrap();
+    let initial_target = match &selection {
+        Selection::Destination { target, .. } => target.clone(),
+        Selection::Source { .. } => panic!("expected a destination selection"),
+    };
+    let receipt_id = "66666666666666666666666666666666";
+    let request_id = "completed-replay-request";
+    service.state.lock().await.receipts.insert(
+        receipt_id.into(),
+        Receipt {
+            id: receipt_id.into(),
+            request_id: request_id.into(),
+            connection_id: "connection".into(),
+            channel_id: "channel".into(),
+            direction: Direction::Download,
+            name: "completed.bin".into(),
+            size: 15,
+            sha256: "b".repeat(64),
+            offset: 15,
+            blob_id: Some("blob".into()),
+            state: "completed".into(),
+            error: None,
+            binding: "binding".into(),
+            intent: "intent".into(),
+            local_selection: local_files::selection_identity(&selection).unwrap(),
+            destination_identity: Some(
+                local_files::destination_identity(
+                    match &selection {
+                        Selection::Destination { directory, .. } => directory,
+                        Selection::Source { .. } => panic!("expected destination"),
+                    },
+                    "completed.bin",
+                )
+                .unwrap(),
+            ),
+            destination_selection,
+            initial_target: Some(initial_target),
+        },
+    );
+
+    let request = FileRequest {
+        approval_pending: false,
+        expected_mode: None,
+        purpose: FilePurpose::Transfer,
+        connection_id: "connection".into(),
+        channel_id: "channel".into(),
+        direction: Direction::Download,
+        path: destination.clone(),
+        overwrite: true,
+        blob_id: Some("blob".into()),
+        transfer_id: None,
+        request_id: Some(request_id.into()),
+    };
+    let replay = service
+        .registration_replay(&request, "binding")
+        .await
+        .unwrap();
+    assert_eq!(replay.as_deref(), Some(receipt_id));
+    fs::remove_file(&destination).unwrap();
+    fs::write(&destination, b"published new bytes").unwrap();
+    let state = service.state.lock().await;
+    let mut replay_selection = local_files::select_download_replay(&destination, true).unwrap();
+    TransferService::bind_replay_selection(&state, replay.as_deref(), &mut replay_selection)
+        .unwrap();
+    assert_eq!(
+        local_files::selection_identity(&replay_selection).unwrap(),
+        state.receipts[receipt_id].local_selection
+    );
+    assert_eq!(fs::read(&destination).unwrap(), b"published new bytes");
 }
 
 struct NoopWaker;
@@ -225,6 +512,8 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
         intent: "intent".into(),
         local_selection: String::new(),
         destination_identity: None,
+        destination_selection: None,
+        initial_target: None,
     };
 
     let mut state = service.state.lock().await;

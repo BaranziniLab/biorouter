@@ -2731,6 +2731,64 @@
         }
       }
     },
+    "/crew/files/{capability_id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_discard_file",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "description": "Unused file selection capability",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/files/{capability_id}/confirm": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_confirm_file",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "description": "Pending file selection capability",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/transfers": {
       "get": {
         "tags": [

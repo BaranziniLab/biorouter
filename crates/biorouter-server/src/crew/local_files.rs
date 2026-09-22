@@ -30,7 +30,63 @@ pub enum Selection {
         directory: ProtectedDirectory,
         name: String,
         overwrite: bool,
+        target: TargetApproval,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum TargetApproval {
+    Cleanup,
+    Absent,
+    Existing(String),
+}
+impl TargetApproval {
+    pub fn capture(directory: &Dir, name: &str) -> Result<Self> {
+        let file = match directory.open_with(name, nofollow_options().read(true)) {
+            Ok(file) => file.into_std(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Absent),
+            Err(error) => return Err(error.into()),
+        };
+        reject_reparse(&file)?;
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file(), "Destination must be a regular file");
+        #[cfg(unix)]
+        let stamp = {
+            use std::os::unix::fs::MetadataExt;
+            serde_json::json!([
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec()
+            ])
+        };
+        #[cfg(windows)]
+        let stamp = {
+            use std::os::windows::fs::MetadataExt;
+            let identity = windows::file_identity(&file)?;
+            serde_json::json!([
+                identity.volume,
+                identity.index,
+                metadata.len(),
+                metadata.last_write_time(),
+                metadata.creation_time(),
+                windows::change_time(&file)?
+            ])
+        };
+        Ok(Self::Existing(hex::encode(Sha256::digest(
+            serde_json::to_vec(&stamp)?,
+        ))))
+    }
+    pub fn verify(&self, directory: &Dir, name: &str) -> Result<()> {
+        ensure!(
+            *self != Self::Cleanup && *self == Self::capture(directory, name)?,
+            "Destination changed since selection; select it again to approve publication"
+        );
+        Ok(())
+    }
 }
 
 /// Holds the selected directory identity for the full transfer. Windows also
@@ -76,7 +132,45 @@ impl ProtectedDirectory {
         #[cfg(not(windows))]
         {
             file.sync_all()?;
-            publish_named(&self.directory, temporary.as_ref(), name, overwrite)
+            publish_named(
+                &self.directory,
+                file,
+                temporary.as_ref(),
+                name,
+                overwrite,
+                None,
+            )
+        }
+    }
+    pub fn publish_selected(
+        &self,
+        file: &File,
+        temporary: &str,
+        name: &str,
+        overwrite: bool,
+        target: &TargetApproval,
+    ) -> Result<()> {
+        let overwrite = overwrite && matches!(target, TargetApproval::Existing(_));
+        self.revalidate()?;
+        #[cfg(windows)]
+        return require_publication(self.lease.publish_selected(
+            file,
+            temporary,
+            name,
+            overwrite,
+            Some(target),
+        )?);
+        #[cfg(not(windows))]
+        {
+            file.sync_all()?;
+            publish_named(
+                &self.directory,
+                file,
+                temporary.as_ref(),
+                name,
+                overwrite,
+                Some(target),
+            )
         }
     }
 }
@@ -231,6 +325,21 @@ pub fn select_download_replay(path: &Path, overwrite: bool) -> Result<Selection>
     select_local(path, Direction::Download, overwrite, true)
 }
 
+pub fn destination_selection_identity(selection: &Selection) -> Result<Option<String>> {
+    let Selection::Destination {
+        directory,
+        name,
+        overwrite,
+        ..
+    } = selection
+    else {
+        return Ok(None);
+    };
+    Ok(Some(hex::encode(Sha256::digest(serde_json::to_vec(
+        &serde_json::json!([destination_identity(directory, name)?, overwrite]),
+    )?))))
+}
+
 pub fn selection_identity(selection: &Selection) -> Result<String> {
     let value = match selection {
         Selection::Source { file, stamp, name } => {
@@ -270,11 +379,13 @@ pub fn selection_identity(selection: &Selection) -> Result<String> {
             directory,
             name,
             overwrite,
+            target,
         } => {
             serde_json::json!([
                 "destination",
                 destination_identity(directory, name)?,
-                overwrite
+                overwrite,
+                target
             ])
         }
     };
@@ -317,7 +428,13 @@ fn select_local(
                     "Destination exists; explicitly approve replacement or select another filename"
                 );
             }
+            let target = if cleanup {
+                TargetApproval::Cleanup
+            } else {
+                TargetApproval::capture(&directory, &name)?
+            };
             Ok(Selection::Destination {
+                target,
                 directory: ProtectedDirectory::new(directory)?,
                 name,
                 overwrite,
@@ -419,12 +536,28 @@ pub fn publish(directory: &Dir, id: &str, name: &str, overwrite: bool) -> Result
         )
     }
     #[cfg(not(windows))]
-    publish_named(directory, &part, name, overwrite)
+    {
+        let file = directory
+            .open_with(&part, nofollow_options().read(true).write(true))?
+            .into_std();
+        publish_named(directory, &file, &part, name, overwrite, None)
+    }
 }
 
 #[cfg(not(windows))]
-fn publish_named(directory: &Dir, part: &Path, name: &str, overwrite: bool) -> Result<()> {
+fn publish_named(
+    directory: &Dir,
+    file: &File,
+    part: &Path,
+    name: &str,
+    overwrite: bool,
+    target: Option<&TargetApproval>,
+) -> Result<()> {
     protected_directory(directory)?;
+    verify_named_file(directory, part, file)?;
+    if let Some(target) = target {
+        target.verify(directory, name)?;
+    }
     if overwrite {
         if let Ok(metadata) = directory.symlink_metadata(name) {
             ensure!(
@@ -437,7 +570,23 @@ fn publish_named(directory: &Dir, part: &Path, name: &str, overwrite: bool) -> R
         directory.hard_link(part, directory, name)?;
         directory.remove_file(part)?;
     }
+    verify_named_file(directory, Path::new(name), file)?;
     namespace_checkpoint(directory)?.accept_receipt_reload_recovery();
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_named_file(directory: &Dir, name: &Path, file: &File) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let named = directory
+        .open_with(name, nofollow_options().read(true))?
+        .into_std();
+    let expected = file.metadata()?;
+    let actual = named.metadata()?;
+    ensure!(
+        actual.is_file() && actual.dev() == expected.dev() && actual.ino() == expected.ino(),
+        "Publication file identity changed; inspect the destination before retrying"
+    );
     Ok(())
 }
 
