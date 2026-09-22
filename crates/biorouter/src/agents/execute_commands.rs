@@ -54,6 +54,17 @@ fn extension_command_guidance(params: &str) -> String {
     }
 }
 
+fn workflow_parameter_guidance(command: &str, path: &std::path::Path, names: &[String]) -> String {
+    format!(
+        "The /{command} workflow requires {} parameters: {}.\n\n\
+        Slash command workflows only support 1 parameter.\n\n\
+        **To use this workflow:**\n\
+        • **CLI:** Pass the workflow file at {} to `biorouter run --workflow` and supply a `--params KEY=VALUE` argument for each parameter.\n\
+        • **Desktop:** Launch from the workflows sidebar to fill in parameters",
+        names.len(), names.join(", "), path.display()
+    )
+}
+
 impl Agent {
     pub async fn execute_command(
         &self,
@@ -306,28 +317,11 @@ impl Agent {
                     })
                     .unwrap_or_default();
 
-                let error_message = format!(
-                    "The /{} workflow requires {} parameters: {}.\n\n\
-                    Slash command workflows only support 1 parameter.\n\n\
-                    **To use this workflow:**\n\
-                    • **CLI:** `biorouter run --workflow {} {}`\n\
-                    • **Desktop:** Launch from the workflows sidebar to fill in parameters",
+                return Err(anyhow!(workflow_parameter_guidance(
                     command,
-                    params_without_default,
-                    param_names
-                        .iter()
-                        .map(|name| format!("**{}**", name))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    command,
-                    param_names
-                        .iter()
-                        .map(|name| format!("--params {}=\"...\"", name))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-
-                return Err(anyhow!(error_message));
+                    &workflow_path,
+                    &param_names
+                )));
             }
         };
 
@@ -386,6 +380,16 @@ mod slash_command_audit_tests {
         let guidance = extension_command_guidance("unconfigured-extension");
         assert!(guidance.contains("/ext:<extension-id>"));
         assert!(guidance.contains("slash menu"));
+    }
+
+    #[test]
+    fn multi_parameter_guidance_uses_the_actual_file_not_the_slash_alias() {
+        let path = std::path::Path::new("/tmp/workflows/a 'quoted' workflow.yaml");
+        let guidance =
+            workflow_parameter_guidance("review", path, &["input".into(), "output".into()]);
+        assert!(guidance.contains(&path.display().to_string()));
+        assert!(guidance.contains("--params KEY=VALUE"));
+        assert!(!guidance.contains("--workflow review"));
     }
 
     #[tokio::test]
