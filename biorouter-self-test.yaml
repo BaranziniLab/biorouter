@@ -35,7 +35,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -256,12 +256,14 @@ instructions: |
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
-# {% if test_depth != "fixture_only" %}
+# {% if test_depth != "fixture_only" and test_phases != "crew" %}
   - type: platform
     name: skills
     bundled: true
     description: Discover and load the built-in contexts under test
 
+# {% endif %}
+# {% if test_depth != "fixture_only" %}
   - type: builtin
     name: developer
     display_name: Developer
@@ -269,7 +271,15 @@ extensions:
     bundled: true
     description: Core tool for file operations, shell commands, and code analysis
 
+# {% if test_phases == "all" or "crew" in test_phases %}
+  - type: platform
+    name: crew
+    bundled: true
+    description: Crew request and scope-denial tools for the isolated Crew contract phase
 # {% endif %}
+
+# {% endif %}
+# {% if test_phases != "crew" %}
   - type: builtin
     name: computercontroller
     display_name: Biorouter Copilot
@@ -277,7 +287,9 @@ extensions:
     bundled: true
     description: Native application observation and control after per-chat task approval
 
+# {% endif %}
 # {% if test_depth != "fixture_only" %}
+# {% if test_phases != "crew" %}
   - type: builtin
     name: webdocuments
     display_name: Web & Documents
@@ -305,7 +317,11 @@ extensions:
     description: Sandboxed JavaScript orchestration for nested extension and artifact validation
   
 # {% endif %}
+# {% endif %}
 prompt: |
+  {% if test_phases == "crew" %}
+  /no_think
+  {% endif %}
   Execute the BioRouter Self-Testing Integration Suite in {{ workspace_dir }}.
   Test phases: {{ test_phases }}, Depth: {{ test_depth }}, Parallel: {{ parallel_tests }}
 
@@ -485,6 +501,45 @@ prompt: |
      helper version, exact fixture, tool results and remaining gaps in
      {{ workspace_dir }}/phase2d_computer_use.md.
   {% endif %}
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "crew" in test_phases) %}
+  ## PHASE 2E: Crew CLI and MCP scope without human proof
+
+  This phase is selected explicitly with `test_phases=crew` (and is included by
+  `test_phases=all`). It is a headless Crew contract check. Use
+  only an isolated synthetic profile rooted under `{{ workspace_dir }}`. Never
+  read an approval secret, private key, SSH key, keyring entry, saved
+  credential, or real profile. Never request or manufacture human proof, start
+  a daemon, open an SSH connection, select or mutate a provider, create a team,
+  create a connection, send an invitation, or write to a live workspace.
+
+  1. Set `BIOROUTER_PATH_ROOT` below `{{ workspace_dir }}` and set
+     `BIOROUTER_DISABLE_KEYRING=1`. Snapshot only phase-owned files below that
+     root and phase-owned daemon/process/socket resources created by this run.
+     Do not inspect the user's normal home, SSH directory, keyring, or provider
+     configuration, or inventory resources owned by another task.
+  2. Resolve the locally installed native binaries without building or starting
+     anything. Run `<biorouter> --version`, `<biorouter> crew --help`,
+     `<biorouterd> --version`, and `<biorouterd> --help`; record exact paths,
+     exit codes, and bounded output. An unavailable binary is NOT OBSERVABLE,
+     not a pass, and must not trigger a build or fallback.
+  3. With no Crew grant or bound connection, make exactly one read-only built-in
+     MCP request through `crew__request` for `messages.history` using a
+     synthetic channel id and limit 1, omitting `connection_id`. Require an
+     explicit denial/refusal before any message content is returned. A success,
+     returned content, a grant attempt, or a retry is a failure. Do not call
+     `crew__connections` to discover real saved connections.
+  4. Recheck the isolated snapshots. Require no daemon process, listener, SSH
+     file, team, connection, invitation, provider, credential, or live profile
+     mutation. Record only synthetic paths and refusal metadata. If an
+     assertion cannot be observed without human proof or credentials, mark it
+     NOT OBSERVABLE rather than PASS.
+  5. Log the exact commands, exit codes, denial result, and before/after
+     mutation audit to `{{ workspace_dir }}/phase2e_crew.md`. Keep all test
+     inputs synthetic and remove only artifacts created by this phase when
+     `cleanup_after` is true.
+
   {% endif %}
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "apps" in test_phases) %}
