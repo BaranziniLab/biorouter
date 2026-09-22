@@ -1,4 +1,5 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
+mod ssh_policy;
 mod transport;
 use crate::{
     privacy::{CallCapability, ProviderTier},
@@ -664,8 +665,9 @@ impl CrewManager {
             "-N".into(),
             "-o".into(),
             "ControlPersist=600".into(),
-            c.ssh_target,
+            c.ssh_target.clone(),
         ]);
+        ssh_policy::preflight(&args, &c.ssh_target).await?;
         Ok(AuthenticationPlan {
             program: "ssh".into(),
             args,
@@ -1563,6 +1565,16 @@ mod tests {
         let ssh = format!(
             r#"#!/bin/sh
 log='{}'
+if [ "$1" = "-G" ]; then
+  printf '%s\n' \
+    'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
+    'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
+    'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
+    'tunnel no' 'forkafterauthentication no' \
+    'gssapidelegatecredentials no' 'proxycommand none' \
+    'controlmaster no' 'controlpersist no' 'controlpath none'
+  exit 0
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -1742,6 +1754,16 @@ done
 log='{}'
 gate='{}'
 release='{}'
+if [ "$1" = "-G" ]; then
+  printf '%s\n' \
+    'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
+    'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
+    'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
+    'tunnel no' 'forkafterauthentication no' \
+    'gssapidelegatecredentials no' 'proxycommand none' \
+    'controlmaster no' 'controlpersist no' 'controlpath none'
+  exit 0
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -2354,6 +2376,16 @@ done
         let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let ssh = format!(
             r#"#!/bin/sh
+if [ "$1" = "-G" ]; then
+  printf '%s\n' \
+    'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
+    'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
+    'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
+    'tunnel no' 'forkafterauthentication no' \
+    'gssapidelegatecredentials no' 'proxycommand none' \
+    'controlmaster no' 'controlpersist no' 'controlpath none'
+  exit 0
+fi
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
   if printf '%s' "$line" | grep -q 'auth.challenge'; then

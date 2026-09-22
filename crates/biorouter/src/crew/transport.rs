@@ -67,9 +67,10 @@ impl Transport {
         );
         uuid::Uuid::parse_str(&c.workspace_id)?;
         let mut args = ssh_args(c, control);
-        args.extend(["-o".into(), "BatchMode=yes".into(), c.ssh_target.clone(),
+        args.extend(["-o".into(), "BatchMode=yes".into(), "-o".into(), "ControlMaster=no".into(), "-o".into(), "ControlPersist=no".into(), c.ssh_target.clone(),
             // Every remote argument has a restricted grammar; no content or credential enters this shell command.
             format!("~/.local/bin/biorouter-crew bridge --stdio --socket {} --owner-uid {} --workspace-id {}", c.socket_path, c.owner_uid, c.workspace_id)]);
+        super::ssh_policy::preflight(&args, &c.ssh_target).await?;
         let mut command = tokio::process::Command::new("ssh");
         command
             .args(args)
