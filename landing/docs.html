@@ -236,7 +236,7 @@
       <div class="doc-page active" id="doc-getstarted">
         <span class="doc-eyebrow">Get started</span>
 <h1>Getting started</h1>
-<p class="doc-intro">Biorouter is a desktop research environment that connects local, institution-hosted, and commercial AI models in one interface. It runs on your machine, stores its data as plain files on disk, and talks only to the provider you choose. Setup is a few minutes: download, put the bundled command-line tool on your PATH if you want it, connect a provider, and start a session. This guide covers <code>biorouter&nbsp;1.91.0</code> on macOS, Windows, and Linux.</p>
+<p class="doc-intro">Biorouter is a desktop research environment that connects local, institution-hosted, and commercial AI models in one interface. It runs on your machine, stores its data as plain files on disk, and talks only to the provider you choose. Setup is a few minutes: download, put the bundled command-line tool on your PATH if you want it, connect a provider, and start a session. This guide covers <code>biorouter&nbsp;1.91.1</code> on macOS, Windows, and Linux.</p>
 
 <div class="step-row">
   <div class="step-num">1</div>
@@ -316,7 +316,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
         <span class="doc-eyebrow">Using Biorouter</span>
 <h1>Using the desktop app</h1>
 
-<p class="doc-intro">The Biorouter desktop app (v1.91.0) is where most people do their day-to-day work: you type a research question, watch the agent plan and call tools, and read the files, figures, and apps it produces, all in one window. This guide walks through every surface of the app: the sidebar and titlebar, the chat composer and its toolbar, the browser-style tabs and side-by-side split panes, the in-app terminal, and the Home, History, and Settings pages. It assumes you have the app installed and a model provider connected. If you do not, start with <a href="#getstarted" onclick="showDoc('getstarted');return false;">Biorouter in 5 minutes</a>.</p>
+<p class="doc-intro">The Biorouter desktop app (v1.91.1) is where most people do their day-to-day work: you type a research question, watch the agent plan and call tools, and read the files, figures, and apps it produces, all in one window. This guide walks through every surface of the app: the sidebar and titlebar, the chat composer and its toolbar, the browser-style tabs and side-by-side split panes, the in-app terminal, and the Home, History, and Settings pages. It assumes you have the app installed and a model provider connected. If you do not, start with <a href="#getstarted" onclick="showDoc('getstarted');return false;">Biorouter in 5 minutes</a>.</p>
 
 <h2>The window at a glance</h2>
 
@@ -741,7 +741,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
       <div class="doc-page" id="doc-cli">
         <span class="doc-eyebrow">Using Biorouter</span>
 <h1>Command line</h1>
-<p class="doc-intro">The <code>biorouter</code> command-line interface is the terminal side of Biorouter. It runs the same agent that powers the desktop app: you can hold an interactive chat, run a one-shot task in a script, manage sessions and providers, install extensions and skills, maintain knowledge bases, schedule recurring workflows, and start local web or server interfaces. This page documents every subcommand, every flag, the interactive session (the REPL), the terminal integration, and the <code>biorouterd</code> daemon that the GUI talks to. It targets Biorouter 1.91.0 (Node 24+, Rust 1.92).</p>
+<p class="doc-intro">The <code>biorouter</code> command-line interface is the terminal side of Biorouter. It runs the same agent that powers the desktop app: you can hold an interactive chat, run a one-shot task in a script, manage sessions and providers, install extensions and skills, maintain knowledge bases, schedule recurring workflows, and start local web or server interfaces. This page documents every subcommand, every flag, the interactive session (the REPL), the terminal integration, and the <code>biorouterd</code> daemon that the GUI talks to. It targets Biorouter 1.91.1 (Node 24+, Rust 1.92).</p>
 
 <h2>Top-level usage and global structure</h2>
 <p>The CLI is a single binary named <code>biorouter</code> with one subcommand per task. Run it with no subcommand to drop straight into an interactive session (Biorouter runs first-time configuration instead if no config file exists yet).</p>
@@ -749,7 +749,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 biorouter                      # start (or first-time-configure then start) an interactive session
 biorouter --help               # print the top-level help and the full subcommand list
-biorouter --version            # print the installed version (1.91.0)
+biorouter --version            # print the installed version (1.91.1)
 biorouter &lt;subcommand&gt; --help  # per-subcommand help, flags, and defaults</code></pre>
 
 <div class="doc-table-scroll"><table class="doc-table">
@@ -1398,7 +1398,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 <div class="info-box">
   <h4>The in-app model picker is the source of truth</h4>
   <p>Model lineups change constantly, so Biorouter does not ship a fixed per-model list. It reads each provider's <strong>live catalog</strong> and shows it in <strong>Settings &rarr; Models</strong> (and via <code>biorouter models list &lt;provider&gt;</code>). Trust the picker for the exact models available to you today.</p>
-  <p>What a provider does ship is a <strong>default model</strong>: the one Biorouter selects when you configure that provider without naming a model. Those defaults are listed below, and they reflect <code>biorouter v1.91.0</code>.</p>
+  <p>What a provider does ship is a <strong>default model</strong>: the one Biorouter selects when you configure that provider without naming a model. Those defaults are listed below, and they reflect <code>biorouter v1.91.1</code>.</p>
 </div>
 
 <h2>Local: zero setup</h2>
@@ -1480,7 +1480,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
       <div class="doc-page" id="doc-extensions">
         <span class="doc-eyebrow">Features</span>
 <h1>Extensions and skills</h1>
-<p class="doc-intro">Biorouter connects to databases, APIs, file systems, and services through pluggable parts instead of built-in special cases. <strong>Extensions</strong> add tools the agent can call over the Model Context Protocol (MCP); <strong>skills</strong> teach the agent repeatable methods for using those tools; and the <strong>BAAM marketplace</strong> one-click-installs both. Add a capability once and it works in every session. This section covers <code>biorouter&nbsp;1.91.0</code>.</p>
+<p class="doc-intro">Biorouter connects to databases, APIs, file systems, and services through pluggable parts instead of built-in special cases. <strong>Extensions</strong> add tools the agent can call over the Model Context Protocol (MCP); <strong>skills</strong> teach the agent repeatable methods for using those tools; and the <strong>BAAM marketplace</strong> one-click-installs both. Add a capability once and it works in every session. This section covers <code>biorouter&nbsp;1.91.1</code>.</p>
 
 <h2>What an MCP extension is</h2>
 <p>An extension is an <a href="https://github.com/modelcontextprotocol" target="_blank">MCP</a> server that Biorouter connects to. Because MCP is an open standard, any server anyone writes can become a Biorouter extension. An MCP server can expose three kinds of thing:</p>
@@ -1648,7 +1648,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
       <div class="doc-page" id="doc-knowledge">
         <span class="doc-eyebrow">Features</span>
 <h1>Knowledge bases</h1>
-<p class="doc-intro">A <strong>knowledge base</strong> is a personal, LLM-maintained wiki: a folder of markdown pages backed by a full git history, all on your own machine. You do not hand-edit it. You add sources (a file, a URL, or pasted text) and Biorouter converts each one to markdown, has a bounded sub-agent digest it into cross-linked pages, grades the source's credibility, and commits the change. Because a base is plain markdown under git, everything about it stays local, readable, diffable, and reversible. This section covers the whole feature, then <strong>Sol</strong>, the one knowledge base Biorouter ships and grows for you automatically. Documented for Biorouter <code>1.91.0</code>.</p>
+<p class="doc-intro">A <strong>knowledge base</strong> is a personal, LLM-maintained wiki: a folder of markdown pages backed by a full git history, all on your own machine. You do not hand-edit it. You add sources (a file, a URL, or pasted text) and Biorouter converts each one to markdown, has a bounded sub-agent digest it into cross-linked pages, grades the source's credibility, and commits the change. Because a base is plain markdown under git, everything about it stays local, readable, diffable, and reversible. This section covers the whole feature, then <strong>Sol</strong>, the one knowledge base Biorouter ships and grows for you automatically. Documented for Biorouter <code>1.91.1</code>.</p>
 
 <h2>What a knowledge base is</h2>
 <p>Each knowledge base is one directory and one git repository, stored under <code>~/.config/biorouter/knowledge/&lt;kb-id&gt;/</code>. Inside it, the raw sources you added and the pages the agent wrote are kept separate, so you can always re-derive a page from its original:</p>
@@ -1802,7 +1802,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
       <div class="doc-page" id="doc-workflows">
         <span class="doc-eyebrow">Features</span>
 <h1>Workflows and the scheduler</h1>
-<p class="doc-intro">A <strong>workflow</strong> is a single portable file (YAML or JSON) that bundles everything an agent needs to run a task the same way every time: the instructions, an optional starting prompt, typed parameters the user fills in, the extensions and skills to enable, the model to run on, and optional structured-output and retry rules. Save one from a chat you already ran, hand it to a colleague as a file or a link, and the <strong>scheduler</strong> can run any of them unattended on a cron schedule. Documented for Biorouter <code>1.91.0</code>.</p>
+<p class="doc-intro">A <strong>workflow</strong> is a single portable file (YAML or JSON) that bundles everything an agent needs to run a task the same way every time: the instructions, an optional starting prompt, typed parameters the user fills in, the extensions and skills to enable, the model to run on, and optional structured-output and retry rules. Save one from a chat you already ran, hand it to a colleague as a file or a link, and the <strong>scheduler</strong> can run any of them unattended on a cron schedule. Documented for Biorouter <code>1.91.1</code>.</p>
 
 <h2>What a workflow file is</h2>
 <p>Workflows are written in YAML (recommended) or JSON. One file packages an agent's whole setup, so loading it launches a pre-configured session instead of one you assemble by hand each time. A minimal workflow needs only a title, a description, and at least one of <code>instructions</code> or <code>prompt</code>:</p>
