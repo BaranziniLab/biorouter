@@ -39,7 +39,7 @@ describe('session title controls', () => {
     );
 
     await user.click(screen.getByRole('button', { name: /chat title actions/i }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Branch' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Diverge' }));
 
     expect(onDiverge).toHaveBeenCalledTimes(1);
   });

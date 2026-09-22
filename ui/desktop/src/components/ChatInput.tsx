@@ -2317,9 +2317,14 @@ export default function ChatInput({
       // user, correctly — the only thing in the box.
       const trimmedCandidate = splitComposerText(text ?? displayValue).body.trim();
       if (trimmedCandidate === DIVERGE_TRIGGER) {
-        if (sessionId) {
-          void diverge(sessionId);
+        if (!sessionId) {
+          toastWarning({
+            title: 'Start a chat first',
+            msg: '/diverge continues an existing conversation in a new chat. Send a message before using it.',
+          });
+          return;
         }
+        void diverge(sessionId);
         setDisplayValue('');
         setValue('');
         setHasUserTyped(false);

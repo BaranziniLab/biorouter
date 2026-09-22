@@ -91,7 +91,7 @@ describe('editing a sent message', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
       target: { value: 'hello there' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Branch with the edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith(
       'message-1',
@@ -111,7 +111,7 @@ describe('editing a sent message', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
     fireEvent.click(screen.getByRole('button', { name: /^remove/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Branch with the edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'hello', 'diverge');
   });

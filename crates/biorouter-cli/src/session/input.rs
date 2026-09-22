@@ -162,7 +162,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         s if s.starts_with(CMD_MODE) => Some(InputResult::BioRouterMode(
             s.get(CMD_MODE.len()..).unwrap_or("").to_string(),
         )),
-        s if s.starts_with(CMD_PLAN) => {
+        s if s == CMD_PLAN || s.starts_with("/plan ") => {
             parse_plan_command(s.get(CMD_PLAN.len()..).unwrap_or("").trim().to_string())
         }
         s if s == CMD_ENDPLAN => Some(InputResult::EndPlan),
@@ -183,7 +183,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
                 Some(InputResult::Rename(name.to_string()))
             }
         }
-        s if s.starts_with(CMD_WORKFLOW) => parse_workflow_command(s),
+        s if s == CMD_WORKFLOW || s.starts_with("/workflow ") => parse_workflow_command(s),
         s if s == CMD_COMPACT => Some(InputResult::Compact),
         s if s == CMD_SUMMARIZE_DEPRECATED => {
             println!("{}", console::style("Note: /summarize has been renamed to /compact and will be removed in a future release.").yellow());
@@ -274,7 +274,7 @@ fn print_help() {
         ("/clear", "Clear the current chat history"),
         (
             "/diverge [name]",
-            "Branch this chat into a new Biorouter window (keeps full history)",
+            "Diverge this chat into a new Biorouter window (keeps full history)",
         ),
         ("/rename <name>", "Rename the current chat"),
         (
@@ -556,5 +556,10 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn command_prefixes_do_not_capture_other_slash_names() {
+        assert!(handle_slash_command("/planet").is_none());
+        assert!(handle_slash_command("/workflow-analysis.yaml").is_none());
     }
 }

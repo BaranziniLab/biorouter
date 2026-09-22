@@ -138,7 +138,7 @@ impl Drop for Tui {
 pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Result<()> {
     let mut tui = Tui::new()?;
     let mut app = App::new(status_from_session(session));
-    app.set_catalog(build_catalog(session));
+    app.set_catalog(build_catalog(session).await);
     greeting_into(&mut app);
     push_startup_notices(&mut app).await;
     refresh_context(session, &mut app).await;
@@ -694,6 +694,7 @@ async fn drive_response(
     // Commit whatever streamed (including a partial reply if the user cancelled).
     commit_stream_to_session(app, &mut session.messages);
     app.thinking = None;
+    app.set_catalog(build_catalog(session).await);
     refresh_context(session, app).await;
     tui.draw(app)?;
     Ok(())
@@ -802,6 +803,21 @@ fn label_to_permission(label: &str) -> Permission {
     }
 }
 
+fn backend_slash_command(text: &str) -> bool {
+    let command = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('/');
+    command == "extend"
+        || command == "knowledge"
+        || command == "summarize"
+        || biorouter::agents::execute_commands::list_commands()
+            .iter()
+            .any(|def| def.name == command)
+        || biorouter::slash_commands::get_workflow_for_command(command).is_some()
+}
+
 /// Handle slash commands that the TUI services locally. Returns true if handled.
 /// (`/compact` is handled in `submit` since it drives a turn.)
 async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bool {
@@ -832,11 +848,11 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             match session.diverge_and_open(|url| open::that(url), name).await {
                 Ok(outcome) => match outcome.open_error {
                     None => app.push_note(&format!(
-                        "Branched into a new window (session ID {}). This chat is unchanged.",
+                        "Diverged into a new window (session ID {}). This chat is unchanged.",
                         outcome.new_session_id
                     )),
                     Some(err) => app.push_note(&format!(
-                        "Created a branched chat (session ID {}) but couldn't open a window ({}). Open Biorouter and run: {}",
+                        "Created a diverged chat (session ID {}) but couldn't open a window ({}). Open Biorouter and run: {}",
                         outcome.new_session_id, err, outcome.url
                     )),
                 },
@@ -869,12 +885,7 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
         // the deterministic resource-reference markers (/skill: /ext: /kb:, and
         // their function-call forms) — the agent's reply path extracts them, so
         // they must NOT be swallowed here.
-        s if ["/goal", "/loop", "/schedule"]
-            .iter()
-            .any(|cmd| s == *cmd || s.starts_with(&format!("{cmd} "))) =>
-        {
-            false
-        }
+        s if backend_slash_command(s) => false,
         s if ["/skill:", "/ext:", "/kb:", "/skill(", "/ext(", "/kb("]
             .iter()
             .any(|prefix| s.starts_with(prefix)) =>
@@ -1615,13 +1626,19 @@ fn pluralize(count: usize, singular: &str) -> String {
 /// rustyline completer so the two front-ends cannot drift.
 fn extension_completion_item(name: &str, description: &str, builtin: bool) -> app::CompletionItem {
     app::CompletionItem {
-        label: name.to_string(),
+        label: super::completion::extension_reference_label(name),
         description: description.to_string(),
         insert: format!("{} ", super::completion::extension_marker(name)),
         filter: if builtin {
-            format!("extension builtin {}", name.to_lowercase())
+            format!(
+                "extension builtin {}",
+                super::completion::extension_reference_search_terms(name)
+            )
         } else {
-            format!("extension {}", name.to_lowercase())
+            format!(
+                "extension {}",
+                super::completion::extension_reference_search_terms(name)
+            )
         },
         kind: app::CompletionKind::Extension,
     }
@@ -1676,7 +1693,7 @@ fn knowledge_completion_item(id: &str, display_name: &str) -> app::CompletionIte
 
 /// Build the completion catalog shown in the slash-command popup: the TUI slash
 /// commands, plus references to skills, extensions, and knowledge bases.
-fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
+async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
     use app::{CompletionItem, CompletionKind};
     let mut items: Vec<CompletionItem> = Vec::new();
 
@@ -1688,63 +1705,37 @@ fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
         kind: CompletionKind::Command,
     };
     items.push(cmd("/help", "Show commands and shortcuts"));
-    items.push(cmd("/compact", "Condense the chat to reclaim context"));
-    items.push(cmd("/clear", "Clear the chat"));
+    for def in biorouter::agents::execute_commands::list_commands() {
+        items.push(cmd(&format!("/{}", def.name), def.description));
+    }
+    for mapping in biorouter::slash_commands::list_commands() {
+        items.push(cmd(
+            &format!("/{}", mapping.command),
+            &format!("Run workflow · {}", mapping.workflow_path),
+        ));
+    }
+    items.push(cmd("/diverge", "Diverge this chat into a new window"));
+    items.push(cmd("/rename", "Rename this chat"));
     items.push(cmd("/exit", "Leave the chat"));
 
     for name in list_skills() {
         items.push(skill_completion_item(&name));
     }
 
-    // Extensions enabled for this chat plus bundled built-ins that can be
-    // enabled deterministically when selected.
-    let compact_extension_canonicals = ["agent_drafter", "autovisualiser", "Extension Manager"];
-    for ext in biorouter::config::get_enabled_extensions() {
-        let name = ext.name();
-        if compact_extension_canonicals
-            .iter()
-            .any(|canonical| name.eq_ignore_ascii_case(canonical))
-        {
-            continue;
-        }
+    let enabled = session
+        .agent
+        .extension_manager
+        .get_extension_configs()
+        .await;
+    for name in super::completion::extension_reference_names(
+        enabled.into_iter().map(|extension| extension.name()),
+    ) {
         items.push(extension_completion_item(
             &name,
-            "Ask the agent to use this extension",
+            "Use this extension for the request",
             false,
         ));
     }
-    for name in biorouter_mcp::BUILTIN_EXTENSIONS.keys() {
-        if compact_extension_canonicals.contains(name) {
-            continue;
-        }
-        items.push(extension_completion_item(
-            name,
-            "Ask the agent to use this built-in extension",
-            true,
-        ));
-    }
-    items.push(CompletionItem {
-        label: "agentdrafter".to_string(),
-        description: "Ask the agent to use Agent Drafter".to_string(),
-        insert: "/ext:agentdrafter ".to_string(),
-        filter: "extension builtin agentdrafter agent drafter".to_string(),
-        kind: CompletionKind::Extension,
-    });
-    items.push(CompletionItem {
-        label: "autovisualizer".to_string(),
-        description: "Ask the agent to use Auto Visualiser".to_string(),
-        insert: "/ext:autovisualizer ".to_string(),
-        filter: "extension builtin autovisualizer auto visualizer autovisualiser auto visualiser"
-            .to_string(),
-        kind: CompletionKind::Extension,
-    });
-    items.push(CompletionItem {
-        label: "extensionmanager".to_string(),
-        description: "Ask the agent to use Extension Manager".to_string(),
-        insert: "/ext:extensionmanager ".to_string(),
-        filter: "extension builtin extensionmanager extension manager".to_string(),
-        kind: CompletionKind::Extension,
-    });
 
     // Knowledge bases visible to the agent.
     if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
@@ -1824,24 +1815,31 @@ fn help_into(app: &mut App) {
         "Commands",
         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
     );
-    for (cmd, desc) in [
-        ("/help, /?", "show this help"),
-        ("/compact", "condense the chat to reclaim context"),
-        ("/clear", "clear the chat"),
+    let mut commands = vec![
+        ("/help, /?".to_string(), "show this help".to_string()),
         (
-            "/goal <condition>",
-            "keep working until the condition is met",
+            "/diverge [name]".to_string(),
+            "diverge this chat into a new window".to_string(),
         ),
-        (
-            "/loop <interval> <prompt>",
-            "run a prompt on an interval (5m, 2h…)",
-        ),
-        (
-            "/schedule <spec> <prompt>",
-            "recurring prompt: 5m, @daily, or cron",
-        ),
-        ("/exit, /quit", "leave the chat"),
-    ] {
+        ("/rename <name>".to_string(), "rename this chat".to_string()),
+        ("/exit, /quit".to_string(), "leave the chat".to_string()),
+    ];
+    commands.extend(
+        biorouter::agents::execute_commands::list_commands()
+            .iter()
+            .map(|def| (format!("/{}", def.name), def.description.to_string())),
+    );
+    commands.extend(
+        biorouter::slash_commands::list_commands()
+            .into_iter()
+            .map(|mapping| {
+                (
+                    format!("/{}", mapping.command),
+                    format!("Run workflow · {}", mapping.workflow_path),
+                )
+            }),
+    );
+    for (cmd, desc) in commands {
         app.push_line(Line::from(vec![
             Span::styled(format!("  {:<14}", cmd), Style::new().fg(ACCENT)),
             Span::styled(desc.to_string(), Style::new().add_modifier(Modifier::DIM)),
@@ -2411,5 +2409,25 @@ mod tests {
             count_user_skills_in(&["about-biorouter-notes".to_string()]),
             1
         );
+    }
+    #[test]
+    fn shared_backend_commands_are_forwarded_including_effort() {
+        for command in biorouter::agents::execute_commands::list_commands() {
+            assert!(backend_slash_command(&format!("/{} value", command.name)));
+        }
+        assert!(backend_slash_command("/extend computer controller"));
+        assert!(backend_slash_command("/knowledge"));
+        assert!(!backend_slash_command("/not-a-command"));
+    }
+
+    #[test]
+    fn computer_use_popup_shows_current_label_with_stable_wire_identity() {
+        let item = extension_completion_item("computercontroller", "Use this extension", true);
+        assert_eq!(item.label, "Biorouter Copilot");
+        assert_eq!(item.insert, "/ext:computercontroller ");
+        assert!(item.filter.contains("biorouter copilot"));
+        let american = extension_completion_item("autovisualiser", "Use this extension", true);
+        assert!(american.filter.contains("autovisualizer"));
+        assert_eq!(american.insert, "/ext:autovisualiser ");
     }
 }

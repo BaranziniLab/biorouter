@@ -54,7 +54,7 @@ describe('Branch control anchors (issue #167)', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /branch/i }));
+    await userEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() =>
       expect(mockDivergeSession).toHaveBeenCalledWith(

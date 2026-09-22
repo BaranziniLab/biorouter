@@ -5903,6 +5903,16 @@
           "200": {
             "description": "Slash command set successfully"
           },
+          "400": {
+            "description": "Invalid or reserved command",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
           },

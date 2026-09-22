@@ -186,44 +186,59 @@ fn migrate_computer_use_capabilities(extensions: &mut IndexMap<String, Extension
     extensions.insert("webdocuments".to_owned(), web);
 }
 
+const BUILTIN_EXTENSION_METADATA: &[(&str, &str, &str)] = &[
+    (
+        "developer",
+        "Developer",
+        "Read, write and run code, and run shell commands.",
+    ),
+    (
+        "computercontroller",
+        "Biorouter Copilot",
+        "View and control desktop apps for an approved task.",
+    ),
+    (
+        "webdocuments",
+        "Web & Documents",
+        "Read web pages and work with spreadsheets, documents, and PDFs.",
+    ),
+    (
+        "autovisualiser",
+        "Auto Visualiser",
+        "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+    ),
+    (
+        "memory",
+        "Memory",
+        "Teach Biorouter your preferences so it remembers them as you go.",
+    ),
+    (
+        "knowledge",
+        "Knowledge",
+        "Personal knowledge bases stored as markdown with full history.",
+    ),
+    (
+        "agent_drafter",
+        "Agent Drafter",
+        "Build interactive artifacts, static pages or apps with an embedded Biorouter agent.",
+    ),
+];
+
+pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Workspace" | "workspace" => return Some("Workspace Control"),
+        "code_execution" => return Some("Code Execution"),
+        "skills" => return Some("Skills"),
+        "todo" => return Some("Todo"),
+        _ => {}
+    }
+    BUILTIN_EXTENSION_METADATA
+        .iter()
+        .find_map(|(id, label, _)| (*id == name).then_some(*label))
+}
+
 fn inject_builtin_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) {
-    for (name, label, description) in [
-        (
-            "developer",
-            "Developer",
-            "Read, write and run code, and run shell commands.",
-        ),
-        (
-            "computercontroller",
-            "Biorouter Copilot",
-            "View and control desktop apps for an approved task.",
-        ),
-        (
-            "webdocuments",
-            "Web & Documents",
-            "Read web pages and work with spreadsheets, documents, and PDFs.",
-        ),
-        (
-            "autovisualiser",
-            "Auto Visualiser",
-            "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
-        ),
-        (
-            "memory",
-            "Memory",
-            "Teach Biorouter your preferences so it remembers them as you go.",
-        ),
-        (
-            "knowledge",
-            "Knowledge",
-            "Personal knowledge bases stored as markdown with full history.",
-        ),
-        (
-            "agent_drafter",
-            "Agent Drafter",
-            "Build interactive artifacts, static pages or apps with an embedded Biorouter agent.",
-        ),
-    ] {
+    for &(name, label, description) in BUILTIN_EXTENSION_METADATA {
         if !extensions.contains_key(name)
             && !extensions.values().any(|entry| entry.config.key() == name)
         {
