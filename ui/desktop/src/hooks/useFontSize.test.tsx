@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import FontSizeSelector from '../components/settings/app/FontSizeSelector';
-import { FONT_SIZE_STORAGE_KEY, loadFontSize, useFontSize } from './useFontSize';
+import { FONT_SIZE_STORAGE_KEY, FONT_SIZE_SCALE, loadFontSize, useFontSize } from './useFontSize';
 
 function Observer() {
   const { fontSize, fontScale } = useFontSize();
@@ -18,19 +18,22 @@ beforeEach(() => localStorage.clear());
 afterEach(cleanup);
 
 describe('app font size', () => {
-  it.each([null, 'unknown', 'Large', 'constructor'])('defaults to Standard for %s', (stored) => {
-    if (stored !== null) localStorage.setItem(FONT_SIZE_STORAGE_KEY, stored);
-    render(<FontSizeSelector />);
-    expect(screen.getByRole('radio', { name: 'Standard' })).toBeChecked();
-    expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe('1.07');
-  });
+  it.each([null, 'small', 'unknown', 'Large', 'constructor'])(
+    'defaults to Standard for %s',
+    (stored) => {
+      if (stored !== null) localStorage.setItem(FONT_SIZE_STORAGE_KEY, stored);
+      render(<FontSizeSelector />);
+      expect(screen.getByRole('radio', { name: 'Standard' })).toBeChecked();
+      expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe('1');
+    }
+  );
 
   it.each([
-    ['Small', 'small', '1'],
-    ['Standard', 'standard', '1.07'],
-    ['Large', 'large', '1.15'],
+    ['Standard', 'standard', '1'],
+    ['Large', 'large', '1.07'],
+    ['Larger', 'larger', '1.15'],
   ])('persists %s and restores it on remount', (label, value, scale) => {
-    localStorage.setItem(FONT_SIZE_STORAGE_KEY, value === 'small' ? 'large' : 'small');
+    localStorage.setItem(FONT_SIZE_STORAGE_KEY, value === 'standard' ? 'large' : 'standard');
     const view = render(
       <>
         <FontSizeSelector />
@@ -38,8 +41,7 @@ describe('app font size', () => {
       </>
     );
     fireEvent.click(screen.getByRole('radio', { name: label }));
-    // Clicking the already-selected default need not write a redundant preference.
-    if (value !== 'standard') expect(localStorage.getItem(FONT_SIZE_STORAGE_KEY)).toBe(value);
+    expect(localStorage.getItem(FONT_SIZE_STORAGE_KEY)).toBe(value);
     expect(screen.getByRole('status')).toHaveTextContent(`${value}:${scale}`);
     expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe(scale);
     view.unmount();
@@ -54,7 +56,7 @@ describe('app font size', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: FONT_SIZE_STORAGE_KEY }));
     });
     expect(screen.getByRole('radio', { name: 'Large' })).toBeChecked();
-    expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe('1.15');
+    expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe('1.07');
     act(() => {
       localStorage.clear();
       window.dispatchEvent(new StorageEvent('storage', { key: null }));
@@ -62,7 +64,7 @@ describe('app font size', () => {
     expect(screen.getByRole('radio', { name: 'Standard' })).toBeChecked();
   });
 
-  it.each([null, 'small', 'standard', 'large', 'invalid', 'constructor'])(
+  it.each([null, 'small', 'standard', 'large', 'larger', 'invalid', 'constructor'])(
     'first paint agrees with the hydrated preference for %s',
     (stored) => {
       if (stored !== null) localStorage.setItem(FONT_SIZE_STORAGE_KEY, stored);
@@ -71,6 +73,9 @@ describe('app font size', () => {
       expect(script).toBeDefined();
       new Function(script!)();
       expect(document.documentElement.dataset.fontSize).toBe(loadFontSize());
+      expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe(
+        String(FONT_SIZE_SCALE[loadFontSize()])
+      );
     }
   );
 });

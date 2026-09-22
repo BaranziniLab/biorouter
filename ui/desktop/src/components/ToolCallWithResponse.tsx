@@ -1468,7 +1468,7 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
                     PreTag="div"
                     customStyle={{
                       margin: 0,
-                      padding: 'calc(12px * var(--app-font-scale, 1.07))',
+                      padding: 'calc(12px * var(--app-font-scale, 1))',
                       background: 'transparent',
                       width: '100%',
                       maxWidth: '100%',

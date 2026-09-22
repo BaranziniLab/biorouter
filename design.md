@@ -441,7 +441,7 @@ Arial is a defensible choice for a tool that must render identically on a lab Wi
 
 #### Canonical type scale
 
-The values below are the Small baseline. Settings → App → Appearance offers Small (1×), Standard (the default, 1.07×), and Large (1.15×). Scale typography and absolute line heights together, including code and terminal text. Padding, gaps, positive margins, and shared control/row heights follow the same preference so larger text has room; pane widths, viewport geometry, and window zoom remain independent. Relative em spacing already follows its text and must not scale twice. Sidebar navigation and recent-conversation rows share the same scalable 32px baseline height and 2px row gap; Components children keep their indentation within that rhythm. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
+The values below are the Standard baseline. Settings → App → Appearance offers Standard (the default, 1×), Large (1.07×), and Larger (1.15×). Scale typography and absolute line heights together, including code and terminal text. Padding, gaps, positive margins, and shared control/row heights follow the same preference so larger text has room; pane widths, viewport geometry, and window zoom remain independent. Relative em spacing already follows its text and must not scale twice. Sidebar navigation and recent-conversation rows share the same scalable 32px baseline height and 2px row gap; Components children keep their indentation within that rhythm. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
 
 | Role | Size / line-height | Weight | Tracking |
 |---|---|---|---|

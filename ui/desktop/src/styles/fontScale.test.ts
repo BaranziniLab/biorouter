@@ -20,13 +20,11 @@ describe('typography scaling in compiled CSS', () => {
       margin-bottom: calc(100vh - 20px);
     }`);
     expect(css).toContain(
-      'padding: calc(8px * var(--app-font-scale, 1.07)) calc(1rem * var(--app-font-scale, 1.07))'
+      'padding: calc(8px * var(--app-font-scale, 1)) calc(1rem * var(--app-font-scale, 1))'
     );
-    expect(css).toContain('margin: calc(12px * var(--app-font-scale, 1.07)) auto -4px 0');
-    expect(css).toContain(
-      'margin-top: calc(calc(var(--spacing) * 2) * var(--app-font-scale, 1.07))'
-    );
-    expect(css).toContain('gap: calc(0.5rem * var(--app-font-scale, 1.07)) 1em');
+    expect(css).toContain('margin: calc(12px * var(--app-font-scale, 1)) auto -4px 0');
+    expect(css).toContain('margin-top: calc(calc(var(--spacing) * 2) * var(--app-font-scale, 1))');
+    expect(css).toContain('gap: calc(0.5rem * var(--app-font-scale, 1)) 1em');
     for (const unchanged of [
       'width: 400px',
       'height: 100vh',
@@ -47,10 +45,10 @@ describe('typography scaling in compiled CSS', () => {
       --tab-height: 32px; --measure-chat: 760px;
     }
     .control { height: var(--control-md); padding: var(--md-code-pad); }`);
-    expect(css).toContain('--control-md: calc(32px * var(--app-font-scale, 1.07))');
-    expect(css).toContain('--row-height: calc(40px * var(--app-font-scale, 1.07))');
+    expect(css).toContain('--control-md: calc(32px * var(--app-font-scale, 1))');
+    expect(css).toContain('--row-height: calc(40px * var(--app-font-scale, 1))');
     expect(css).toContain(
-      '--md-code-pad: calc(14px * var(--app-font-scale, 1.07)) calc(16px * var(--app-font-scale, 1.07))'
+      '--md-code-pad: calc(14px * var(--app-font-scale, 1)) calc(16px * var(--app-font-scale, 1))'
     );
     for (const unchanged of [
       '--spacing: .25rem',
@@ -74,10 +72,10 @@ describe('typography scaling in compiled CSS', () => {
     .xterm-screen { padding: 8px; }
     .monaco-editor { margin: 2px; }`);
     expect(css).toContain(
-      'margin-block-start: calc(calc(calc(var(--spacing) * 2) * var(--tw-space-y-reverse)) * var(--app-font-scale, 1.07))'
+      'margin-block-start: calc(calc(calc(var(--spacing) * 2) * var(--tw-space-y-reverse)) * var(--app-font-scale, 1))'
     );
     expect(css).toContain(
-      'margin-block-end: calc(calc(calc(var(--spacing) * 2) * calc(1 - var(--tw-space-y-reverse))) * var(--app-font-scale, 1.07))'
+      'margin-block-end: calc(calc(calc(var(--spacing) * 2) * calc(1 - var(--tw-space-y-reverse))) * var(--app-font-scale, 1))'
     );
     expect(css).toContain('.katex .vlist { margin: 2px; padding: 1rem; }');
     expect(css).toContain('.xterm-screen { padding: 8px; }');
@@ -90,11 +88,11 @@ describe('typography scaling in compiled CSS', () => {
       .relative-leading { font: 14px/1.5 Arial; }
       .math { font: normal 1.21em KaTeX_Main; }`);
     expect(css).toContain(
-      'font: calc(12px * var(--app-font-scale, 1.07))/calc(20px * var(--app-font-scale, 1.07)) var(--font-mono)'
+      'font: calc(12px * var(--app-font-scale, 1))/calc(20px * var(--app-font-scale, 1)) var(--font-mono)'
     );
-    expect(css).toContain('font: bold calc(14px * var(--app-font-scale, 1.07)) Arial');
+    expect(css).toContain('font: bold calc(14px * var(--app-font-scale, 1)) Arial');
     expect(css).toContain('font: normal 1.21em KaTeX_Main');
-    expect(css).toContain('font: calc(14px * var(--app-font-scale, 1.07))/1.5 Arial');
+    expect(css).toContain('font: calc(14px * var(--app-font-scale, 1))/1.5 Arial');
     expect(await transform(css)).toBe(css);
   });
 
@@ -106,12 +104,10 @@ describe('typography scaling in compiled CSS', () => {
     }
     .label { line-height: var(--tw-leading, var(--text-label--line-height)); }`);
     expect(css).toContain(
-      '--tw-leading: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1.07))'
+      '--tw-leading: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1))'
     );
-    expect(css).toContain(
-      'line-height: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1.07))'
-    );
-    expect(css).toContain('padding: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1.07))');
+    expect(css).toContain('line-height: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1))');
+    expect(css).toContain('padding: calc(calc(var(--spacing) * 3) * var(--app-font-scale, 1))');
     expect(css).toContain('line-height: var(--tw-leading, var(--text-label--line-height))');
     expect(await transform(css)).toBe(css);
   });
@@ -122,12 +118,12 @@ describe('typography scaling in compiled CSS', () => {
       .px { font-size: 11px; line-height: 16px; padding: 11px; }
       .rem { font-size: .875rem; }
       .nested { font-size: 1.2em; line-height: 1.5; }`);
-    expect(css).toContain('--text-label: calc(14px * var(--app-font-scale, 1.07))');
-    expect(css).toContain('--text-label--line-height: calc(20px * var(--app-font-scale, 1.07))');
+    expect(css).toContain('--text-label: calc(14px * var(--app-font-scale, 1))');
+    expect(css).toContain('--text-label--line-height: calc(20px * var(--app-font-scale, 1))');
     expect(css).toContain('font-size: var(--text-label)');
-    expect(css).toContain('font-size: calc(11px * var(--app-font-scale, 1.07))');
-    expect(css).toContain('font-size: calc(.875rem * var(--app-font-scale, 1.07))');
-    expect(css).toContain('padding: calc(11px * var(--app-font-scale, 1.07))');
+    expect(css).toContain('font-size: calc(11px * var(--app-font-scale, 1))');
+    expect(css).toContain('font-size: calc(.875rem * var(--app-font-scale, 1))');
+    expect(css).toContain('padding: calc(11px * var(--app-font-scale, 1))');
     expect(css).toContain('--text-default: #333');
     expect(css).toContain('font-size: 1.2em; line-height: 1.5');
     expect(await transform(css)).toBe(css);

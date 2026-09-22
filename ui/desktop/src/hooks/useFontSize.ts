@@ -1,11 +1,11 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
-export const FONT_SIZES = ['small', 'standard', 'large'] as const;
+export const FONT_SIZES = ['standard', 'large', 'larger'] as const;
 export type FontSize = (typeof FONT_SIZES)[number];
 export const FONT_SIZE_SCALE: Record<FontSize, number> = {
-  small: 1,
-  standard: 1.07,
-  large: 1.15,
+  standard: 1,
+  large: 1.07,
+  larger: 1.15,
 };
 export const FONT_SIZE_STORAGE_KEY = 'app_font_size';
 const CHANGE_EVENT = 'biorouter-font-size-changed';
