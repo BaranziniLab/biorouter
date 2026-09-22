@@ -254,8 +254,7 @@ impl Agent {
         params_str: &str,
         _session_id: &str,
     ) -> Result<Option<Message>> {
-        let full_command = format!("/{}", command);
-        let workflow_path = match crate::slash_commands::get_workflow_for_command(&full_command) {
+        let workflow_path = match crate::slash_commands::get_workflow_for_command(command) {
             Some(path) => path,
             None => return Ok(None),
         };
