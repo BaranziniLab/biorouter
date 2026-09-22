@@ -214,7 +214,7 @@ fn cleanup(root: &Path) {
 #[test]
 fn membership_revocation_between_blob_chunks_denies_completion_and_reads() {
     let root = temp_root("blob-revoke");
-    let result = (|| {
+    {
         let (mut broker, mut host_connection, host_key) = bootstrap(&root);
         let guest_key = SigningKey::from_bytes(&[8; 32]);
         let (mut guest_connection, guest_principal, guest_uid) =
@@ -392,15 +392,14 @@ fn membership_revocation_between_blob_chunks_denies_completion_and_reads() {
                 "denied blob read must not alter the partial blob"
             );
         }
-    })();
+    }
     cleanup(&root);
-    result
 }
 
 #[test]
 fn non_owner_cannot_archive_or_transfer_channel() {
     let root = temp_root("owner-controls");
-    let result = (|| {
+    {
         let (mut broker, mut host_connection, host_key) = bootstrap(&root);
         let guest_key = SigningKey::from_bytes(&[8; 32]);
         let (mut guest_connection, guest_principal, guest_uid) =
@@ -556,9 +555,8 @@ fn non_owner_cannot_archive_or_transfer_channel() {
         )
         .error
         .is_none());
-    })();
+    }
     cleanup(&root);
-    result
 }
 
 #[test]
@@ -582,7 +580,7 @@ fn broker_open_rejects_concurrent_writer_and_allows_reopen_after_release() {
 #[test]
 fn request_version_id_and_parameter_bounds_reject_malformed_inputs() {
     let root = temp_root("protocol-bounds");
-    let result = (|| {
+    {
         let (mut broker, mut connection, key) = bootstrap(&root);
         let device_id = digest(&key.verifying_key().to_bytes());
         let valid = broker.handle(
@@ -642,7 +640,6 @@ fn request_version_id_and_parameter_bounds_reject_malformed_inputs() {
                 .code,
             "invalid_params"
         );
-    })();
+    }
     cleanup(&root);
-    result
 }
