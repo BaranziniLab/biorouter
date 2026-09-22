@@ -1189,29 +1189,29 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn shared_provider_sampling_rejects_idle_crew_scope() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         scoped_registry_fixture(root.path(), "crew-session");
-        let previous = std::env::var_os("BIOROUTER_PATH_ROOT");
-        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
         let provider = empty_provider();
         bind_sampling_session(&provider, "crew-session").unwrap();
         let error = crew_sampling_allowed(&provider)
             .await
             .expect_err("auxiliary sampling must refuse a Crew-scoped provider");
         assert!(error.to_string().contains("Crew-scoped sessions"));
-        match previous {
-            Some(value) => std::env::set_var("BIOROUTER_PATH_ROOT", value),
-            None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
-        }
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn unscoped_sampling_remains_allowed_and_dropped_provider_binding_does_not_transfer() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         scoped_registry_fixture(root.path(), "crew-session");
-        let previous = std::env::var_os("BIOROUTER_PATH_ROOT");
-        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
         let old_provider = empty_provider();
         bind_sampling_session(&old_provider, "crew-session").unwrap();
         drop(old_provider);
@@ -1221,10 +1221,6 @@ mod tests {
         crew_sampling_allowed(&fresh_provider)
             .await
             .expect("an ordinary unscoped session remains allowed");
-        match previous {
-            Some(value) => std::env::set_var("BIOROUTER_PATH_ROOT", value),
-            None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
-        }
     }
 
     /// Session metadata supplied by an MCP server is not an authority for

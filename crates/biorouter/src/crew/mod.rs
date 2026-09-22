@@ -284,29 +284,75 @@ impl CrewManager {
         Ok(())
     }
     fn control_path(&self, id: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!(
-            "brcrew-{}",
-            hex(&Sha256::digest(self.root.to_string_lossy().as_bytes())[..6])
-        ));
-        std::fs::create_dir_all(&root)?;
-        ensure!(
-            !std::fs::symlink_metadata(&root)?.file_type().is_symlink(),
-            "SSH runtime directory must not be a symlink"
-        );
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::{
+                ffi::OsStrExt,
+                fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt},
+            };
+            // Darwin's per-user TMPDIR can consume most of sockaddr_un before
+            // the socket name is appended. A private directory under the short,
+            // verified system temporary directory keeps OpenSSH portable.
+            let temporary = std::fs::canonicalize("/tmp")?;
+            let parent = std::fs::symlink_metadata(&temporary)?;
+            let uid = unsafe { libc::geteuid() };
             ensure!(
-                std::fs::metadata(&root)?.uid() == unsafe { libc::geteuid() },
-                "SSH runtime directory owner mismatch"
+                parent.is_dir()
+                    && ((parent.uid() == 0 && parent.mode() & 0o1000 != 0)
+                        || (parent.uid() == uid && parent.mode() & 0o077 == 0)),
+                "SSH temporary directory must be root-owned and sticky or private to this user"
             );
+            let mut namespace = Sha256::new();
+            namespace.update(uid.to_be_bytes());
+            namespace.update([0]);
+            namespace.update(self.root.as_os_str().as_bytes());
+            let profile = hex(&namespace.finalize()[..16]);
+            let root = temporary.join(format!("brc-{profile}"));
+            match std::fs::DirBuilder::new().mode(0o700).create(&root) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            let directory = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&root)?;
+            let metadata = directory.metadata()?;
+            ensure!(
+                metadata.uid() == uid && metadata.mode() & 0o077 == 0,
+                "SSH runtime directory must be private and owned by this user"
+            );
+            let path = root.join(hex(&Sha256::digest(id.as_bytes())[..16]));
+            // OpenSSH first binds a temporary socket with a dot and sixteen
+            // random characters. Reserve those seventeen bytes plus the NUL
+            // terminator within Darwin's 104-byte sockaddr_un.sun_path.
+            ensure!(
+                path.as_os_str().as_bytes().len() <= 86,
+                "SSH control socket path exceeds the portable length limit including its temporary suffix"
+            );
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => ensure!(
+                    metadata.file_type().is_socket() && metadata.uid() == uid,
+                    "SSH control path must be an owned socket, not a symlink or another file"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            Ok(path)
         }
-        #[cfg(unix)]
+        #[cfg(not(unix))]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+            let root = std::env::temp_dir().join(format!(
+                "brcrew-{}",
+                hex(&Sha256::digest(self.root.to_string_lossy().as_bytes())[..6])
+            ));
+            std::fs::create_dir_all(&root)?;
+            ensure!(
+                !std::fs::symlink_metadata(&root)?.file_type().is_symlink(),
+                "SSH runtime directory must not be a symlink"
+            );
+            Ok(root.join(id))
         }
-        Ok(root.join(id))
     }
     pub async fn list(&self) -> Vec<Connection> {
         self.registry.lock().await.connections.clone()
@@ -857,7 +903,7 @@ impl CrewManager {
         let s = self.scope(session).await?;
         let c = self.connection(&s.connection_id).await?;
         Ok(
-            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id}]}),
+            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
     pub async fn is_scoped(&self, session: &str) -> bool {
@@ -1030,7 +1076,13 @@ impl CrewManager {
             .await?;
         Ok(RunAdmission {
             run_id,
-            context: serde_json::to_string(&context)?,
+            context: serde_json::to_string(&json!({
+                "connection_id": id,
+                "destination_channel_id": channel,
+                "remote_files_enabled": !public && c.remote_root.is_some(),
+                "remote_path_base": "the granted SSH work directory; use relative paths such as crew-task.csv, never the local task working directory",
+                "history": context
+            }))?,
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -1242,10 +1294,22 @@ impl CrewManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        agents::{
+            crew_extension::CrewClient,
+            extension::PlatformExtensionContext,
+            mcp_client::{McpClientTrait, McpMeta},
+        },
+        privacy::{CallCapability, ProviderTier},
+        session::SessionManager,
+    };
+    use rmcp::model::CallToolResult;
     use std::{
         fs,
+        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tokio_util::sync::CancellationToken;
 
     fn fixture_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -1439,6 +1503,342 @@ mod tests {
             .validate_worker_scope("session-public", &regranted, &aliased)
             .await
             .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn crew_client(label: &str) -> CrewClient {
+        CrewClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::new(SessionManager::new(fixture_root(label))),
+        })
+    }
+
+    #[tokio::test]
+    async fn crew_extension_rejects_invalid_explicit_connection_id_shapes() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let client = crew_client("invalid-connection-id-session");
+        let meta = McpMeta::new(
+            "invalid-connection-id-session",
+            CallCapability::for_test(ProviderTier::Private, true),
+        );
+
+        for connection_id in [Value::Null, json!(7), json!({"id": "connection"})] {
+            let result = client
+                .call_tool(
+                    "request",
+                    Some(
+                        json!({
+                            "connection_id": connection_id,
+                            "method": "remote.list"
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                    ),
+                    meta.clone(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                result_text(&result).contains("connection_id must be a string"),
+                "unexpected refusal: {}",
+                result_text(&result)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn crew_extension_omitted_connection_id_refuses_without_a_grant() {
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let client = crew_client("omitted-connection-id-without-grant-session");
+        let result = client
+            .call_tool(
+                "request",
+                Some(
+                    json!({"method": "remote.list"})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                McpMeta::new(
+                    "omitted-connection-id-without-grant-session",
+                    CallCapability::for_test(ProviderTier::Private, true),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result_text(&result).contains("Request a Crew grant"));
+    }
+
+    #[tokio::test]
+    async fn agent_request_rejects_an_explicit_connection_outside_the_run_scope() {
+        let root = fixture_root("wrong-connection-id");
+        let connection_id = "77777777-7777-4777-8777-777777777777".to_owned();
+        let connection = Connection {
+            id: connection_id.clone(),
+            node_id: None,
+            name: "fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "88888888-8888-4888-8888-888888888888".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "99999999-9999-4999-8999-999999999999".into(),
+            mode: ClusterMode::Private,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let scope = Scope {
+            connection_id: connection_id.clone(),
+            run_id: "run-1".into(),
+            channel_id: "channel-1".into(),
+            source_channels: vec!["channel-1".into()],
+            epoch: 1,
+            provider_binding: "private".into(),
+            public_provider: false,
+            origin_restricted: false,
+            expired: false,
+        };
+        let registry = Registry {
+            connections: vec![connection],
+            scopes: HashMap::from([("session-1".into(), scope)]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let error = manager
+            .agent_request(
+                "session-1",
+                &CallCapability::for_test(ProviderTier::Private, true),
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "remote.list",
+                json!({}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside the approved run scope"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_path_uses_short_system_tmp_even_when_tmpdir_is_long() {
+        use std::os::unix::fs::MetadataExt;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("control-path-length");
+        let long_tmpdir = root.join("a".repeat(160));
+        fs::create_dir_all(&long_tmpdir).unwrap();
+        let long_tmpdir_string = long_tmpdir.to_string_lossy().into_owned();
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            crate::test_sandbox::sandbox_path_root(),
+            [("TMPDIR", Some(long_tmpdir_string.as_str()))],
+        );
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let path = manager.control_path("length-check").unwrap();
+        assert!(path.starts_with(std::fs::canonicalize("/tmp").unwrap()));
+        assert!(path.as_os_str().len() <= 86);
+        let metadata = fs::metadata(path.parent().unwrap()).unwrap();
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert_eq!(metadata.mode() & 0o077, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_path_rejects_a_symlink_collision() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("control-path-symlink");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let path = manager.control_path("symlink-check").unwrap();
+        symlink("/tmp/does-not-exist", &path).unwrap();
+        let error = manager
+            .control_path("symlink-check")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("owned socket"), "{error}");
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_path_runtime_directory_is_private_and_owned() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = fixture_root("control-path-permissions");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let path = manager.control_path("permission-check").unwrap();
+        let metadata = fs::metadata(path.parent().unwrap()).unwrap();
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert_eq!(metadata.mode() & 0o077, 0);
+        assert!(!fs::symlink_metadata(path.parent().unwrap())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = fs::remove_dir(path.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn crew_extension_omitted_connection_id_reaches_the_bound_request_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("omitted-connection-id-target");
+        let profile_root = root.join("profile");
+        let fake_bin = root.join("bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let ssh = format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  if printf '%s' "$line" | grep -q 'auth.challenge'; then
+    printf '{{"id":"%s","result":{{"workspace_id":"{workspace_id}","nonce":"nonce"}}}}\n' "$id"
+  else
+    printf '{{"id":"%s","result":{{"accepted_method":"remote.list"}}}}\n' "$id"
+  fi
+done
+"#
+        );
+        let ssh_path = fake_bin.join("ssh");
+        fs::write(&ssh_path, ssh).unwrap();
+        fs::set_permissions(&ssh_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", fake_bin.display());
+        let profile_string = profile_root.to_string_lossy().into_owned();
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile_string.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_string.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        );
+        let manager_root = crate::config::paths::Paths::config_dir().join("crew");
+        fs::create_dir_all(&manager_root).unwrap();
+        let connection_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned();
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let connection = Connection {
+            id: connection_id.clone(),
+            node_id: None,
+            name: "fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace_id.into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: Some("/srv/crew".into()),
+            remote_execution: true,
+            cluster_connection_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(),
+            mode: ClusterMode::Private,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: hex(&Sha256::digest(device_key.verifying_key().to_bytes())),
+            public_key: hex(&device_key.verifying_key().to_bytes()),
+        };
+        let registry = Registry {
+            connections: vec![connection.clone()],
+            scopes: HashMap::from([(
+                "session-bound-target".into(),
+                Scope {
+                    connection_id: connection_id.clone(),
+                    run_id: "run-bound-target".into(),
+                    channel_id: "channel-bound-target".into(),
+                    source_channels: vec!["channel-bound-target".into()],
+                    epoch: 1,
+                    provider_binding: "private".into(),
+                    public_provider: false,
+                    origin_restricted: false,
+                    expired: false,
+                },
+            )]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            manager_root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = manager().unwrap();
+        manager
+            .write_credential(
+                &format!("device:{connection_id}"),
+                &hex(&device_key.to_bytes()),
+            )
+            .unwrap();
+        manager
+            .write_credential("run:session-bound-target", "run-credential")
+            .unwrap();
+        let control = manager.control_path(&connection_id).unwrap();
+        let transport = transport::Transport::connect(&connection, &control)
+            .await
+            .unwrap();
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(connection_id.clone(), Arc::new(Mutex::new(transport)));
+
+        let client = crew_client("omitted-connection-id-target-session");
+        let result = client
+            .call_tool(
+                "request",
+                Some(
+                    json!({"method": "remote.list"})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                McpMeta::new(
+                    "session-bound-target",
+                    CallCapability::for_test(ProviderTier::Private, true),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result_text(&result), r#"{"accepted_method":"remote.list"}"#);
+
+        manager.disconnect(&connection_id).await.unwrap();
         let _ = fs::remove_dir_all(root);
     }
 }

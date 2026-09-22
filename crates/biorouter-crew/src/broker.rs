@@ -683,7 +683,7 @@ impl Broker {
         if req.method == "auth.bootstrap" || req.method == "auth.enroll" {
             return self.enroll(uid, conn, req);
         }
-        let actor = match self.authenticate(uid, conn, req)? {
+        let actor = match self.authenticate_actor(uid, conn, req)? {
             Admission::Actor(actor) => *actor,
             Admission::Replay(result) => return Ok(result),
         };
@@ -702,7 +702,12 @@ impl Broker {
         }
         self.apply_mutation(&actor, req)
     }
-    fn authenticate(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Admission> {
+    fn authenticate_actor(
+        &self,
+        uid: u32,
+        conn: &mut Connection,
+        req: &Request,
+    ) -> Result<Admission> {
         let actor = if let Some(credential) = &req.credential {
             ensure!(req.auth.is_none(), "invalid_request: mixed authentication");
             let run_id = self
@@ -827,6 +832,10 @@ impl Broker {
             );
             return Ok(saved.result.clone());
         }
+        ensure!(
+            !self.poisoned,
+            "storage_failed: restart and recover before further mutations"
+        );
         ensure!(
             self.state.dedupe.len() < 100_000,
             "quota_exceeded: workspace operation quota requires maintenance"

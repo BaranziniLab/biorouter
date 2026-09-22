@@ -19,6 +19,9 @@ export default function CrewAuthentication({
   const closeRequested = useRef(false);
   useEffect(() => {
     if (!container.current) return;
+    setError('');
+    activeSession.current = '';
+    closeRequested.current = false;
     const terminal = new Terminal({
       cols: 80,
       rows: 12,
@@ -35,6 +38,12 @@ export default function CrewAuthentication({
     let sessionId = '';
     let cancelled = false;
     const pending: { sessionId: string; data: string }[] = [];
+    const pendingExits: { sessionId: string; exitCode: number | null }[] = [];
+    let pendingBytes = 0;
+    const showExit = (exitCode: number | null) =>
+      setError(
+        `SSH authentication ended (exit ${exitCode ?? 'unknown'}). Reconnect to check the connection.`
+      );
     const observer = new ResizeObserver(() => {
       fit.fit();
       if (sessionId)
@@ -44,14 +53,18 @@ export default function CrewAuthentication({
     });
     observer.observe(container.current);
     const removeData = window.electron.onTerminalData((event) => {
+      if (cancelled) return;
       if (sessionId === event.sessionId) terminal.write(event.data);
-      else if (!sessionId && pending.length < 30) pending.push(event);
+      else if (!sessionId && pending.length < 30 && pendingBytes < 65536) {
+        const data = event.data.slice(0, 65536 - pendingBytes);
+        pending.push({ sessionId: event.sessionId, data });
+        pendingBytes += data.length;
+      }
     });
     const removeExit = window.electron.onTerminalExit((event) => {
-      if (sessionId === event.sessionId)
-        setError(
-          `SSH authentication ended (exit ${event.exitCode ?? 'unknown'}). Reconnect to check the connection.`
-        );
+      if (cancelled) return;
+      if (sessionId === event.sessionId) showExit(event.exitCode);
+      else if (!sessionId && pendingExits.length < 30) pendingExits.push(event);
     });
     const input = terminal.onData((data) => {
       if (sessionId)
@@ -73,15 +86,22 @@ export default function CrewAuthentication({
         return;
       }
       sessionId = result.sessionId;
-      activeSession.current = sessionId;
       if (cancelled) {
         if (closeRequested.current) await window.electron.disposeTerminalSession(sessionId);
         return;
       }
+      activeSession.current = sessionId;
       pending
         .filter((event) => event.sessionId === sessionId)
         .forEach((event) => terminal.write(event.data));
       pending.length = 0;
+      pendingBytes = 0;
+      const earlyExit = pendingExits.find((event) => event.sessionId === sessionId);
+      pendingExits.length = 0;
+      if (earlyExit) {
+        showExit(earlyExit.exitCode);
+        return;
+      }
       fit.fit();
       await window.electron.resizeTerminalSession(sessionId, terminal.cols, terminal.rows);
       terminal.focus();
@@ -91,6 +111,8 @@ export default function CrewAuthentication({
     return () => {
       cancelled = true;
       pending.length = 0;
+      pendingExits.length = 0;
+      pendingBytes = 0;
       removeData();
       removeExit();
       input.dispose();
