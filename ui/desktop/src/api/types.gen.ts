@@ -8898,6 +8898,10 @@ export type SetWorkflowSlashCommandData = {
 
 export type SetWorkflowSlashCommandErrors = {
     /**
+     * Invalid or reserved command
+     */
+    400: string;
+    /**
      * Workflow not found
      */
     404: unknown;
@@ -8906,6 +8910,8 @@ export type SetWorkflowSlashCommandErrors = {
      */
     500: unknown;
 };
+
+export type SetWorkflowSlashCommandError = SetWorkflowSlashCommandErrors[keyof SetWorkflowSlashCommandErrors];
 
 export type SetWorkflowSlashCommandResponses = {
     /**

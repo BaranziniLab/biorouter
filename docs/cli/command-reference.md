@@ -1072,40 +1072,54 @@ Ask biorouter questions directly from your shell prompt, with command history in
 
 ### Slash commands
 
-Once you're in an interactive session (via `biorouter session` or `biorouter run --interactive`), you can use these slash commands. All commands support tab completion. Press `/ + <Tab>` to cycle through available commands.
+The desktop composer, terminal UI (TUI), and classic CLI share these agent commands:
 
-**Available Commands:**
+| Command | Action |
+| --- | --- |
+| `/compact` (alias `/summarize`) | Summarize the current chat to reduce context length. |
+| `/clear` | Clear the current chat history. |
+| `/effort [quick\|normal\|deep]` | Show or change this chat's reasoning effort. |
+| `/goal <condition>` or `/goal clear` | Work toward a condition, or clear the goal. |
+| `/loop <interval> <prompt>` | Run a prompt repeatedly; use `/loop` for status and stop syntax. |
+| `/schedule <schedule> <prompt>` | Schedule a recurring prompt; use `/schedule list` to inspect jobs. |
+| `/<workflow-command> [arguments]` | Run a configured workflow shortcut. A missing or invalid workflow reports an error. |
 
-- **`/?` or `/help`** - Display the help menu
-- **`/builtin <names>`** - Add builtin extensions by name (comma-separated)
-- **`/clear`** - Clear the current chat history
-- **`/endplan`** - Exit plan mode and return to 'normal' biorouter mode
-- **`/exit` or `/quit`** - Exit the chat
-- **`/extension <command>`** - Add a stdio extension (format: ENV1=val1 command args...)
-- **`/mode <name>`** - Set the biorouter mode to use ('auto', 'approve', 'chat', 'smart_approve')
-- **`/plan <message_text>`** - Enter 'plan' mode with optional message. Create a plan based on the current messages and ask user if they want to act on it
-- **`/workflow [filepath]`** - Generate a workflow from the current chat and save it to the specified filepath (must end with .yaml). If no filepath is provided, it will be saved to ./workflow.yaml
-- **`/compact`** - Compact and summarize the current chat to reduce context length while preserving key information
-- **`/t`** - Toggle between `light`, `dark`, and `ansi` themes. [More info](#themes).
-- **`/t <name>`** - Set theme directly (light, dark, ansi)
+Type `/` to browse commands in the desktop or TUI; the classic CLI uses Tab completion.
+Workflow shortcuts cannot reuse built-in command names or resource-reference syntax.
 
-**Examples:**
+Resource references select a capability, active extension, skill, or knowledge base for the
+agent's next response. They are not navigation commands and do not grant permissions:
 
-```bash
-# Create a plan for triaging test failures
-/plan let's create a plan for triaging test failures
+| Reference | Example |
+| --- | --- |
+| `/ext:<id>` | `/ext:developer Explain the current project` |
+| `/ext(<name with spaces>)` | `/ext(Biorouter Copilot) Inspect the approved test app` |
+| `/skill:<name>` or `/skill(<name with spaces>)` | `/skill(literature review) Summarize these papers` |
+| `/kb:<id>` or `/kb(<id with spaces>)` | `/kb:project-notes Find the latest decision` |
 
-# Switch to chat mode
-/mode chat
+The desktop picker inserts references as chips, keeping their exact identifiers and
+current display names. If a custom extension uses a bundled capability name, rename
+it in Settings → Extensions before referring to it explicitly; those ambiguous custom
+entries are omitted from the picker. Biorouter Copilot replaces the old computer-controller display
+name; the `computercontroller` identifier remains compatible. `/extend` is not an
+extension command: it gives guidance to use `/ext:` instead. Copilot still requires its
+normal runtime, OS permissions, and per-task approval.
 
-# Add a builtin extension during the session
-/builtin developer
+The desktop also offers `/knowledge` as a Knowledge reference shortcut and `/diverge`
+to continue an existing conversation in a new chat. The message action is also labelled
+**Diverge**. Start a chat before using it.
 
-# Clear the current chat history
-/clear
-```
+The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
+`/rename <name>`, and `/diverge [name]`. The following commands are **classic CLI only**;
+start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 
-You can also create custom slash commands for running workflows in biorouter Desktop or the CLI.
+- `/builtin <names>` — add built-in extensions by name, comma-separated.
+- `/extension <command>` — add a stdio extension, with optional `ENV=value` prefixes.
+- `/mode <name>` — select `auto`, `approve`, `chat`, or `smart_approve` mode.
+- `/plan [message]` and `/endplan` — enter or leave plan mode.
+- `/workflow [file.yaml]` — export the current conversation as a workflow.
+- `/t [light|dark|ansi]` — cycle or set the terminal theme.
+- `/r` — toggle full, untruncated tool output.
 
 ### Themes
 

@@ -19,11 +19,11 @@ import { isPrivateCopyRefusal, userActionHeaders } from '../utils/userAction';
  * more rarely, when the source chat was ratcheted private by a turn running
  * while the branch was being made.
  */
-export const PRIVATE_COPY_TOAST_TITLE = "Can't branch this private chat";
+export const PRIVATE_COPY_TOAST_TITLE = "Can't diverge this private chat";
 export const PRIVATE_COPY_TOAST_MSG =
-  'Branching a private chat creates another chat on the same private model, so only you can ' +
-  'do it, and this backend could not confirm the request came from you. Nothing was branched ' +
-  'and this chat is unchanged. If you started the backend yourself, branch from a Biorouter ' +
+  'Diverging a private chat creates another chat on the same private model, so only you can ' +
+  'do it, and this backend could not confirm the request came from you. No new chat was created ' +
+  'and this chat is unchanged. If you started the backend yourself, diverge from a Biorouter ' +
   'window instead.';
 
 export interface UseDivergeResult {
@@ -87,7 +87,7 @@ export function useDiverge(): UseDivergeResult {
         // Recents name disagree for a diverged session.
         const branchName = response.data?.name;
         if (!newSessionId) {
-          throw new Error('Branch did not return a new session ID');
+          throw new Error('Diverge did not return a new session ID');
         }
 
         // The branch is a brand-new session created purely over HTTP; it fires
@@ -124,7 +124,7 @@ export function useDiverge(): UseDivergeResult {
               ? err.message
               : typeof err === 'string' && err.trim()
                 ? err
-                : 'Could not branch this chat.',
+                : 'Could not diverge this chat.',
         });
         return null;
       }

@@ -506,6 +506,7 @@ async fn schedule_workflow(
     request_body = SetSlashCommandRequest,
     responses(
         (status = 200, description = "Slash command set successfully"),
+        (status = 400, description = "Invalid or reserved command", body = String),
         (status = 404, description = "Workflow not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -513,17 +514,25 @@ async fn schedule_workflow(
 )]
 async fn set_workflow_slash_command(
     Json(request): Json<SetSlashCommandRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, (StatusCode, String)> {
     let file_path = match get_workflow_file_path_by_id(&request.id) {
         Ok(path) => path,
-        Err(err) => return Err(err.status),
+        Err(err) => return Err((err.status, err.message)),
     };
 
     match slash_commands::set_workflow_slash_command(file_path, request.slash_command) {
         Ok(_) => Ok(StatusCode::OK),
         Err(e) => {
-            tracing::error!("Failed to set slash command: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            let status = if e
+                .downcast_ref::<slash_commands::InvalidWorkflowCommand>()
+                .is_some()
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                tracing::error!("Failed to set slash command: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, e.to_string()))
         }
     }
 }

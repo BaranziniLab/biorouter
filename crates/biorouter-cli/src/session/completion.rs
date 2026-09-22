@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::CompletionCache;
 use biorouter::agents::resource_refs::{reference_marker, RefKind};
-use biorouter::config::{get_enabled_extensions, paths::Paths};
+use biorouter::config::paths::Paths;
 
 /// Available in-session slash commands, in the order they should be offered.
 /// Keep in sync with `input::handle_slash_command`.
@@ -23,6 +23,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/goal",
     "/loop",
     "/schedule",
+    "/effort",
     "/mode",
     "/plan",
     "/endplan",
@@ -128,33 +129,52 @@ pub(crate) fn list_skill_reference_names() -> Vec<String> {
     skill_reference_names_from_dirs(&configured_skill_dirs())
 }
 
-fn enabled_extension_reference_names() -> Vec<String> {
-    const COMPACT_EXTENSION_CANONICALS: &[&str] =
-        &["agent_drafter", "autovisualiser", "Extension Manager"];
-
-    let mut names: Vec<String> = get_enabled_extensions()
+pub(super) fn extension_reference_names(enabled: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut names: Vec<String> = enabled
         .into_iter()
-        .map(|extension| extension.name())
         .filter(|name| {
-            !COMPACT_EXTENSION_CANONICALS
-                .iter()
-                .any(|canonical| name.eq_ignore_ascii_case(canonical))
+            biorouter::agents::extension_manager::resolve_bundled_extension(name).is_none()
         })
         .collect();
     names.extend(
         biorouter_mcp::BUILTIN_EXTENSIONS
             .keys()
-            .filter(|name| !COMPACT_EXTENSION_CANONICALS.contains(name))
             .map(|name| (*name).to_string()),
     );
-    names.extend([
-        "agentdrafter".to_string(),
-        "autovisualizer".to_string(),
-        "extensionmanager".to_string(),
-    ]);
+    names.extend(
+        biorouter::agents::extension::PLATFORM_EXTENSIONS
+            .keys()
+            .map(|name| name.to_string()),
+    );
     names.sort();
-    names.dedup();
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|name| {
+        seen.insert(
+            biorouter::agents::extension_manager::resolve_bundled_extension(name)
+                .map(|target| target.key())
+                .unwrap_or_else(|| name.clone()),
+        )
+    });
     names
+}
+
+pub(super) fn extension_reference_label(name: &str) -> String {
+    let Some(target) = biorouter::agents::extension_manager::resolve_bundled_extension(name) else {
+        return name.to_string();
+    };
+    target.display_name().to_string()
+}
+
+pub(super) fn extension_reference_search_terms(name: &str) -> String {
+    let mut terms = vec![name.to_lowercase()];
+    let label = extension_reference_label(name).to_lowercase();
+    if label != terms[0] {
+        terms.push(label);
+    }
+    if name == "autovisualiser" {
+        terms.push("autovisualizer".to_string());
+    }
+    terms.join(" ")
 }
 
 /// The reference to insert for an extension named `name` (issue #65, CLI half —
@@ -233,18 +253,19 @@ where
     }
 
     for name in extensions {
+        let label = extension_reference_label(&name);
         let key = format!("ext:{name}");
         if reference_matches_query(
             &query,
             &key.to_lowercase(),
-            &name.to_lowercase(),
+            &extension_reference_search_terms(&name),
             "extension",
         ) {
             pairs.push(Pair {
                 // The display keeps the full name — that is what the user is
                 // picking and filtering on. Only the INSERTED text may differ;
                 // see `extension_marker`.
-                display: format!("/{key}"),
+                display: format!("/ext:{label}"),
                 replacement: format!("{} ", extension_marker(&name)),
             });
         }
@@ -291,7 +312,7 @@ fn kb_reference_pairs(line: &str) -> Vec<Pair> {
 
 /// Completer for biorouter CLI commands
 pub struct BioRouterCompleter {
-    _completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
+    completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
     filename_completer: FilenameCompleter,
 }
 
@@ -299,7 +320,7 @@ impl BioRouterCompleter {
     /// Create a new BioRouterCompleter with a reference to the Session's completion cache
     pub fn new(completion_cache: Arc<std::sync::RwLock<CompletionCache>>) -> Self {
         Self {
-            _completion_cache: completion_cache,
+            completion_cache,
             filename_completer: FilenameCompleter::new(),
         }
     }
@@ -363,10 +384,27 @@ impl BioRouterCompleter {
             return Ok((0, matching_commands));
         }
 
+        matching_commands.extend(
+            biorouter::slash_commands::list_commands()
+                .into_iter()
+                .filter_map(|mapping| {
+                    let command = format!("/{}", mapping.command);
+                    command.starts_with(line).then(|| Pair {
+                        display: command.clone(),
+                        replacement: format!("{command} "),
+                    })
+                }),
+        );
         matching_commands.extend(reference_pairs_from_names(
             line,
             list_skill_reference_names(),
-            enabled_extension_reference_names(),
+            extension_reference_names(
+                self.completion_cache
+                    .read()
+                    .unwrap()
+                    .extension_names
+                    .clone(),
+            ),
         ));
         matching_commands.extend(kb_reference_pairs(line));
 
@@ -642,6 +680,7 @@ mod tests {
             "my-tool".to_string(),
             "Chat Recall".to_string(),
             "Extension Manager".to_string(),
+            "Biorouter Copilot".to_string(),
             "my spaced tool".to_string(),
         ];
 
@@ -689,6 +728,7 @@ mod tests {
         let needs_a_tag = vec![
             "Chat Recall".to_string(),
             "Extension Manager".to_string(),
+            "Biorouter Copilot".to_string(),
             "my spaced tool".to_string(),
         ];
         for pair in reference_pairs_from_names("/", Vec::<String>::new(), needs_a_tag) {
@@ -713,7 +753,7 @@ mod tests {
         assert_eq!(pos, "please use ".len());
         assert!(candidates
             .iter()
-            .any(|candidate| candidate.replacement == "/ext:agentdrafter "));
+            .any(|candidate| candidate.replacement == "/ext:agent_drafter "));
     }
 
     #[test]
@@ -747,5 +787,64 @@ mod tests {
                 "literature-review".to_string()
             ]
         );
+    }
+    #[test]
+    fn completions_use_current_labels_and_preserve_canonical_markers() {
+        let pairs = reference_pairs_from_names(
+            "/copilot",
+            Vec::<String>::new(),
+            vec!["computercontroller".to_string()],
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].display, "/ext:Biorouter Copilot");
+        assert_eq!(pairs[0].replacement, "/ext:computercontroller ");
+        assert!(SLASH_COMMANDS.contains(&"/effort"));
+        let aliases = reference_pairs_from_names(
+            "/ext:autovisualizer",
+            Vec::<String>::new(),
+            vec!["autovisualiser".to_string()],
+        );
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].replacement, "/ext:autovisualiser ");
+    }
+
+    #[test]
+    fn catalog_includes_platform_capabilities_and_session_only_extensions_without_duplicates() {
+        let names = extension_reference_names(vec![
+            "Session Tool".to_string(),
+            "Extension Manager".to_string(),
+            "Biorouter Copilot".to_string(),
+            "agentdrafter".to_string(),
+            "autovisualizer".to_string(),
+        ]);
+        assert!(names.contains(&"Session Tool".to_string()));
+        assert!(!names.contains(&"Biorouter Copilot".to_string()));
+        assert!(names.contains(&"computercontroller".to_string()));
+        assert!(names.contains(&"agent_drafter".to_string()));
+        assert!(names.contains(&"autovisualiser".to_string()));
+        assert!(!names.contains(&"agentdrafter".to_string()));
+        assert!(!names.contains(&"autovisualizer".to_string()));
+        for id in [
+            "workspace",
+            "skills",
+            "code_execution",
+            "todo",
+            "chatrecall",
+            "extensionmanager",
+        ] {
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(
+                        |name| biorouter::agents::extension_manager::resolve_bundled_extension(
+                            name
+                        )
+                        .is_some_and(|target| target.key() == id)
+                    )
+                    .count(),
+                1,
+                "{id}"
+            );
+        }
     }
 }

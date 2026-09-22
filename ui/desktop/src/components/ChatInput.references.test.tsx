@@ -76,10 +76,10 @@ beforeEach(() => {
   });
 });
 
-const renderComposer = (initialValue: string, handleSubmit = vi.fn()) => {
+const renderComposer = (initialValue: string, handleSubmit = vi.fn(), sessionId = 'session-1') => {
   render(
     <ChatInput
-      sessionId="session-1"
+      sessionId={sessionId}
       handleSubmit={handleSubmit}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
@@ -208,6 +208,14 @@ describe('the composer keeps references removable', () => {
 // would make an attached chip silently defeat a command that looks — to the
 // user, correctly — like the only thing in the box.
 describe('the composer recognises a command with a reference attached', () => {
+  it('keeps a typed /diverge in a new chat instead of silently discarding it', async () => {
+    const handleSubmit = renderComposer('', vi.fn(), '');
+    fireEvent.change(composer(), { target: { value: '/diverge' } });
+    fireEvent.submit(composer().closest('form')!);
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(composer().value).toBe('/diverge');
+  });
+
   it('still diverges', async () => {
     const handleSubmit = renderComposer(refTag('skill', 'my skill'));
 

@@ -9,7 +9,7 @@ The following slash commands are available
 - you can let the user know about them if they need help:
 
 - /exit or /quit - Exit the chat
-- /t - Toggle between Light/Dark/Ansi themes
+- /t - Toggle Light/Dark/Ansi themes in the classic CLI only (BIOROUTER_CLI_CLASSIC=1)
 - /? or /help - Display help message
 
 Additional keyboard shortcuts:

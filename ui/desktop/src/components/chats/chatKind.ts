@@ -158,7 +158,7 @@ export function chatIconFor(kind: ChatKind, mark: ChatPrivacyMark): ChatIcon {
     case 'scheduled':
       return { Icon: CalendarClock, label: `Scheduled run${suffix}` };
     case 'branch':
-      return { Icon: GitBranch, label: `Branched chat${suffix}` };
+      return { Icon: GitBranch, label: `Diverged chat${suffix}` };
     case 'chat':
     default:
       return mark === 'private'

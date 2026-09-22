@@ -323,7 +323,7 @@ export default function UserMessage({
             <div className="flex justify-between items-center gap-3 mt-3">
               <div className="text-supporting text-text-muted min-w-0">
                 <span className="font-semibold">Edit in place</span> updates this chat.{' '}
-                <span className="font-semibold">Branch</span> creates a new one.
+                <span className="font-semibold">Diverge</span> creates a new one.
               </div>
               <div className="flex shrink-0 gap-2">
                 <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
@@ -339,10 +339,10 @@ export default function UserMessage({
                 </Button>
                 <Button
                   onClick={() => handleSave('diverge')}
-                  aria-label="Branch with the edited message"
+                  aria-label="Diverge with the edited message"
                   title="Create a new chat from the edited message"
                 >
-                  Branch
+                  Diverge
                 </Button>
               </div>
             </div>

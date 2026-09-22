@@ -38,19 +38,14 @@ describe('UserMessage edit actions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
 
-    // Two: the explainer's bolded term and the button itself. 'Diverge
-    // Session' lost the redundant noun with the session/chat rename, and
-    // 'Diverge' itself went with #83's terminology pass: it was the internal
-    // name for the operation and the control's own aria-label already said
-    // Branch. 'Fork' remains the vocabulary this control must never use.
-    expect(screen.getAllByText('Branch')).toHaveLength(2);
+    expect(screen.getAllByText('Diverge')).toHaveLength(2);
     expect(screen.queryByText(/Fork/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Diverge/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Branch/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
       target: { value: 'updated prompt' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Branch with the edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });

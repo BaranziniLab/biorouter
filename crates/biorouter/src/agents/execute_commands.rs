@@ -47,6 +47,13 @@ pub fn list_commands() -> &'static [CommandDef] {
     COMMANDS
 }
 
+fn extension_command_guidance(params: &str) -> String {
+    match super::extension_manager::resolve_bundled_extension(params.trim()) {
+        Some(target) => format!("/extend is not a command. Select {} with /ext:{} followed by your request. Existing tool approvals still apply.", target.display_name(), target.key()),
+        None => "/extend is not a command. Use /ext:<extension-id> followed by your request, or choose an extension from the slash menu. For Biorouter Copilot, use /ext:computercontroller.".to_string(),
+    }
+}
+
 impl Agent {
     pub async fn execute_command(
         &self,
@@ -66,13 +73,13 @@ impl Agent {
 
         let command_str = trimmed.strip_prefix('/').unwrap_or(&trimmed);
         let (command, params_str) = command_str
-            .split_once(' ')
+            .split_once(char::is_whitespace)
             .map(|(cmd, p)| (cmd, p.trim()))
             .unwrap_or((command_str, ""));
 
-        if command.starts_with("skill:")
-            || command.starts_with("ext:")
-            || command.starts_with("kb:")
+        if ["skill:", "ext:", "kb:", "skill(", "ext(", "kb("]
+            .iter()
+            .any(|prefix| command.starts_with(prefix))
         {
             return Ok(None);
         }
@@ -84,6 +91,11 @@ impl Agent {
             "loop" => self.handle_loop_command(params_str, session_id).await,
             "schedule" => self.handle_schedule_command(params_str, session_id).await,
             "effort" => self.handle_effort_command(params_str, session_id).await,
+            "knowledge" => Ok(Some(Message::assistant().with_system_notification(SystemNotificationType::InlineMessage, "Select Knowledge with /ext:knowledge followed by your request, or choose a knowledge base with /kb:<id>."))),
+            "extend" => Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                extension_command_guidance(params_str),
+            ))),
             _ => {
                 self.handle_workflow_command(command, params_str, session_id)
                     .await
@@ -248,8 +260,11 @@ impl Agent {
             None => return Ok(None),
         };
 
-        if !workflow_path.exists() {
-            return Ok(None);
+        if crate::slash_commands::is_reserved_workflow_command(command) {
+            return Err(anyhow!("/{command} is reserved by Biorouter. Rename this workflow's slash-command binding."));
+        }
+        if !workflow_path.is_file() {
+            return Err(anyhow!("The /{command} workflow file is unavailable: {}. Restore the file or update this command's workflow binding.", workflow_path.display()));
         }
 
         let workflow_content = tokio::fs::read_to_string(&workflow_path)
@@ -351,5 +366,75 @@ impl Agent {
             .join("\n\n");
 
         Ok(Some(Message::user().with_text(prompt)))
+    }
+}
+
+#[cfg(test)]
+mod slash_command_audit_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_extend_explains_the_current_name_and_marker() {
+        let guidance = extension_command_guidance("computer controller");
+        assert!(guidance.contains("Biorouter Copilot"));
+        assert!(guidance.contains("/ext:computercontroller"));
+        assert!(guidance.contains("approvals still apply"));
+        assert_eq!(guidance, extension_command_guidance("Biorouter Copilot"));
+    }
+
+    #[test]
+    fn unknown_extend_targets_receive_actionable_guidance() {
+        let guidance = extension_command_guidance("unconfigured-extension");
+        assert!(guidance.contains("/ext:<extension-id>"));
+        assert!(guidance.contains("slash menu"));
+    }
+
+    #[tokio::test]
+    async fn legacy_commands_are_handled_without_a_provider() {
+        let agent = Agent::new();
+        let config: SessionConfig =
+            serde_json::from_value(serde_json::json!({"id": "slash-command-audit"})).unwrap();
+        for command in [
+            "/extend computer controller",
+            "/extend\tcomputer controller",
+            "/extend\ncomputer controller",
+            "/knowledge",
+        ] {
+            assert!(agent
+                .execute_command(command, &config)
+                .await
+                .unwrap()
+                .is_some());
+        }
+        assert!(agent
+            .execute_command("/effort\tdeep", &config)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            agent.reasoning_effort(&config.id).await,
+            ReasoningEffort::Deep
+        );
+        assert!(agent
+            .execute_command("/effort\nquick", &config)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            agent.reasoning_effort(&config.id).await,
+            ReasoningEffort::Quick
+        );
+        for resource in [
+            "/ext:computercontroller help",
+            "/ext(developer) help",
+            "/skill(rna) help",
+            "/kb(research) help",
+        ] {
+            assert!(agent
+                .execute_command(resource, &config)
+                .await
+                .unwrap()
+                .is_none());
+        }
     }
 }
