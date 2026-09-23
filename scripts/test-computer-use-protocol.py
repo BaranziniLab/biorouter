@@ -4,11 +4,13 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 TOOLS = {"list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag",
          "type_text", "press_key", "set_value", "screen_capture"}
 CONTRACT = Path(__file__).resolve().parents[1] / "crates/biorouter-mcp/tests/fixtures/computer-use-tools.json"
+RETIRED_PROMPT_NAME = re.compile(r"\b(?:open[ -]+computer[ -]+use|computer[ -]+controller|computer[ -]+use)\b", re.I)
 
 
 def semantic_schema(value):
@@ -27,6 +29,8 @@ def validate_tools(tools):
         raise ValueError(f"Native tool contract mismatch: received {sorted(names)}")
     for tool in expected:
         actual = next(item for item in tools if item["name"] == tool["name"])
+        if RETIRED_PROMPT_NAME.search(actual.get("description", "")):
+            raise ValueError(f"Retired Copilot name in native tool description: {tool['name']}")
         actual_schema = json.dumps(semantic_schema(actual.get("inputSchema")), sort_keys=True)
         expected_schema = json.dumps(tool["inputSchema"], sort_keys=True)
         if actual_schema != expected_schema:
@@ -50,6 +54,9 @@ def check(directory):
     if not replies.get(1, {}).get("result", {}).get("serverInfo"):
         raise ValueError("Native helper failed MCP initialization")
     initialized = replies[1]["result"]
+    instructions = initialized.get("instructions", "")
+    if "Biorouter Copilot" not in instructions or RETIRED_PROMPT_NAME.search(instructions):
+        raise ValueError("Native helper instructions must name Biorouter Copilot")
     if initialized.get("protocolVersion") != "2025-03-26":
         raise ValueError("Native helper MCP protocol version drift")
     if initialized["serverInfo"].get("version") != manifest["upstream_version"]:

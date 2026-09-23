@@ -1,0 +1,297 @@
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index 8634387..552cd56 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -27,7 +27,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
+ //go:embed runtime.py
+ var linuxRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
++const serverInstructions = "Biorouter Copilot tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -1242,7 +1242,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "click",
+-			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1256,7 +1256,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "drag",
+-			Description: "Drag from one point to another using pixel coordinates. This tool is part of plugin `Computer Use`.",
++			Description: "Drag from one point to another using pixel coordinates. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":    stringProperty("App name or bundle identifier"),
+@@ -1268,7 +1268,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "get_app_state",
+-			Description: "Get the state of an already running app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++			Description: "Get the state of an already running app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of Biorouter Copilot.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":            stringProperty("App name or bundle identifier"),
+@@ -1279,13 +1279,13 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "list_apps",
+-			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Biorouter Copilot.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{}, nil),
+ 		},
+ 		{
+ 			Name:        "perform_secondary_action",
+-			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1295,7 +1295,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "press_key",
+-			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of plugin `Computer Use`.",
++			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app": stringProperty("App name or bundle identifier"),
+@@ -1304,7 +1304,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "scroll",
+-			Description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++			Description: "Scroll an element in a direction by a number of pages. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1315,7 +1315,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "set_value",
+-			Description: "Set the value of a settable accessibility element. This tool is part of plugin `Computer Use`.",
++			Description: "Set the value of a settable accessibility element. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -1325,7 +1325,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "type_text",
+-			Description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++			Description: "Type literal text using keyboard input. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":  stringProperty("App name or bundle identifier"),
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index efba13e..c602987 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
+ //go:embed runtime.ps1
+ var windowsRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus."
++const serverInstructions = "Biorouter Copilot tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -815,7 +815,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "click",
+-			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -829,7 +829,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "drag",
+-			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of plugin `Computer Use`.",
++			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":    stringProperty("App name or bundle identifier"),
+@@ -841,7 +841,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "get_app_state",
+-			Description: "Get the state of an already running app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++			Description: "Get the state of an already running app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of Biorouter Copilot.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":            stringProperty("App name or bundle identifier"),
+@@ -852,13 +852,13 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "list_apps",
+-			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++			Description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Biorouter Copilot.",
+ 			Annotations: readOnlyAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{}, nil),
+ 		},
+ 		{
+ 			Name:        "perform_secondary_action",
+-			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++			Description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -868,7 +868,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "press_key",
+-			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of plugin `Computer Use`.",
++			Description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0). This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app": stringProperty("App name or bundle identifier"),
+@@ -877,7 +877,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "scroll",
+-			Description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++			Description: "Scroll an element in a direction by a number of pages. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -888,7 +888,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "set_value",
+-			Description: "Set the value of a settable accessibility element. This tool is part of plugin `Computer Use`.",
++			Description: "Set the value of a settable accessibility element. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":           stringProperty("App name or bundle identifier"),
+@@ -898,7 +898,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "type_text",
+-			Description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++			Description: "Type literal text using keyboard input. This tool is part of Biorouter Copilot.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":  stringProperty("App name or bundle identifier"),
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+index 93491ca..88a5d61 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+@@ -1,19 +1,19 @@
+ import Foundation
+ 
+ let computerUseServerInstructions = """
+-Computer Use tools let you interact with macOS apps by performing UI actions.
++Biorouter Copilot tools let you interact with macOS apps by performing UI actions.
+ 
+-Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Computer Use when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Computer Use may be appropriate for the missing interaction.
++Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Biorouter Copilot when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Biorouter Copilot may be appropriate for the missing interaction.
+ 
+-Begin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
++Begin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
+ 
+-The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
++The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Biorouter Copilot action tools.
+ 
+-Computer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
++Biorouter Copilot tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
+ 
+ After each action, use the action result or fetch the latest state to verify the UI changed as expected.
+ Prefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Note that element indices are the sequential integers from the app state's accessibility tree.
+-Avoid falling back to AppleScript during a computer use session. Prefer Computer Use tools as much as possible to complete tasks.
++Avoid falling back to AppleScript during a computer use session. Prefer Biorouter Copilot tools as much as possible to complete tasks.
+ Ask the user before taking destructive or externally visible actions such as sending, deleting, or purchasing. If helpful, you can ask follow-up questions before taking action to make sure you’re understanding the user’s request correctly.
+ """
+ 
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+index c0e7856..70da08f 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+@@ -42,7 +42,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "click",
+-            description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
++            description: "Click an element by index or pixel coordinates from screenshot. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -65,7 +65,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "drag",
+-            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of plugin `Computer Use`.",
++            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -80,7 +80,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "get_app_state",
+-            description: "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
++            description: "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of Biorouter Copilot.",
+             annotations: readOnlyAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -94,13 +94,13 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "list_apps",
+-            description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of plugin `Computer Use`.",
++            description: "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency. This tool is part of Biorouter Copilot.",
+             annotations: readOnlyAnnotations(),
+             inputSchema: objectSchema(properties: [:], required: [])
+         ),
+         ToolDefinition(
+             name: "perform_secondary_action",
+-            description: "Invoke a secondary accessibility action exposed by an element. This tool is part of plugin `Computer Use`.",
++            description: "Invoke a secondary accessibility action exposed by an element. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -113,7 +113,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "press_key",
+-            description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key). This tool is part of plugin `Computer Use`.",
++            description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key). This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -125,7 +125,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "scroll",
+-            description: "Scroll an element in a direction by a number of pages. This tool is part of plugin `Computer Use`.",
++            description: "Scroll an element in a direction by a number of pages. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -139,7 +139,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "set_value",
+-            description: "Set the value of a settable accessibility element. This tool is part of plugin `Computer Use`.",
++            description: "Set the value of a settable accessibility element. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
+@@ -152,7 +152,7 @@ public enum ToolDefinitions {
+         ),
+         ToolDefinition(
+             name: "type_text",
+-            description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
++            description: "Type literal text using keyboard input. This tool is part of Biorouter Copilot.",
+             annotations: defaultAnnotations(),
+             inputSchema: objectSchema(
+                 properties: [
