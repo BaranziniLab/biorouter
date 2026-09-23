@@ -328,6 +328,36 @@ fn canonical_realish(p: &Path) -> PathBuf {
     }
 }
 
+/// Is a resolved candidate inside the store?
+///
+/// Compared against the resolved base AND the literal one, and the second
+/// comparison is there because of a Windows failure that reads as an attack.
+///
+/// [`canonical_realish`] resolves each side independently, and it falls back to
+/// the literal path when `canonicalize` fails — which it can do *after*
+/// `exists()` said yes, because a concurrent delete lands in between. When that
+/// happens the two sides stop being expressed in the same vocabulary: on Windows
+/// the fallback keeps the 8.3 short name (`C:\Users\RUNNER~1\…`) while the side
+/// that did resolve carries the long one (`C:\Users\runneradmin\…`). Component
+/// comparison then says false for a path that never left the store, and the
+/// caller is told its category "resolves outside the memory store … most likely
+/// through a symlink" — an accusation, for an ordinary concurrent write. Seen on
+/// CI as `an_append_is_never_lost_to_a_concurrent_delete`; on a real machine it
+/// needs only a profile directory with a short-name alias, which is what Windows
+/// makes for any name it considers long.
+///
+/// **Accepting the literal base does not weaken the guard**, and that is worth
+/// stating because it looks like it should. A category has already been proven a
+/// plain file name by [`validated_category`] — no separator, no `..`, not
+/// absolute — so a path formed as `<literal base>/<category>.txt` is inside the
+/// store by construction. What this check exists to catch is a SYMLINK at that
+/// name whose target lies elsewhere, and such a target resolves to a path that
+/// starts with neither base. The traversal case is caught earlier, by the name
+/// check, exactly as this module's `get_memory_file` doc says.
+fn resolves_inside(candidate: &Path, base_real: &Path, base_literal: &Path) -> bool {
+    candidate.starts_with(base_real) || candidate.starts_with(base_literal)
+}
+
 /// The file every *mutation* of a store takes an exclusive advisory lock on
 /// (issue #63 review, finding 6).
 ///
@@ -1010,7 +1040,11 @@ impl MemoryServer {
         // Both sides get the same treatment so the comparison is apples to
         // apples: on macOS a store under /var canonicalizes to /private/var,
         // and resolving only one side would reject every legitimate write.
-        if !canonical_realish(&path).starts_with(canonical_realish(base_dir)) {
+        if !resolves_inside(
+            &canonical_realish(&path),
+            &canonical_realish(base_dir),
+            base_dir,
+        ) {
             return escaped("it resolves out of the store, most likely through a symlink");
         }
         // A dangling symlink resolves to nothing, so the check above cannot see
@@ -3952,6 +3986,61 @@ mod tests {
     /// in-process one: each mutation opens the lock file afresh, and an advisory
     /// file lock is held per open file description, so two `open`s in one
     /// process contend exactly as two processes do.
+    /// The containment decision, fed the divergence directly.
+    ///
+    /// The race that produces it — `canonical_realish` falling back to the
+    /// literal path because a concurrent delete landed between its `exists()`
+    /// and its `canonicalize()` — cannot be reproduced on demand, which is
+    /// exactly why the decision is a function and the function is tested with
+    /// data. `an_append_is_never_lost_to_a_concurrent_delete` below exercises
+    /// the same code by racing, and caught this once, on a Windows runner,
+    /// after months of green.
+    #[test]
+    fn a_path_inside_the_store_is_inside_it_however_the_two_sides_were_resolved() {
+        let short = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpX\global");
+        let long = Path::new(r"C:\Users\runneradmin\AppData\Local\Temp\.tmpX\global");
+
+        // The failure as CI produced it: the leaf kept the 8.3 short name
+        // because its canonicalize lost the race, the base resolved to the long
+        // one. Same directory, and the old check called it an escape.
+        assert!(resolves_inside(&short.join("clinical.txt"), long, short));
+        // And the mirror image, since which side loses the race is a coin flip.
+        assert!(resolves_inside(&long.join("clinical.txt"), long, short));
+
+        // macOS's own divergence, which the original comment was written for:
+        // a store under /var canonicalizes to /private/var.
+        assert!(resolves_inside(
+            Path::new("/private/var/folders/t/store/clinical.txt"),
+            Path::new("/private/var/folders/t/store"),
+            Path::new("/var/folders/t/store"),
+        ));
+    }
+
+    /// The negative control for the test above. Without it, a `resolves_inside`
+    /// that simply returned `true` would satisfy every assertion there.
+    #[test]
+    fn a_symlink_target_outside_the_store_is_still_refused() {
+        let short = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpX\global");
+        let long = Path::new(r"C:\Users\runneradmin\AppData\Local\Temp\.tmpX\global");
+        // What a symlink at <base>/clinical.txt pointing elsewhere resolves to.
+        assert!(!resolves_inside(
+            Path::new(r"C:\Users\runneradmin\.ssh\id_rsa"),
+            long,
+            short
+        ));
+        assert!(!resolves_inside(
+            Path::new("/etc/passwd"),
+            Path::new("/private/var/folders/t/store"),
+            Path::new("/var/folders/t/store"),
+        ));
+        // A sibling whose name merely starts with the store's is not inside it.
+        assert!(!resolves_inside(
+            Path::new("/private/var/folders/t/store-evil/clinical.txt"),
+            Path::new("/private/var/folders/t/store"),
+            Path::new("/var/folders/t/store"),
+        ));
+    }
+
     #[test]
     fn an_append_is_never_lost_to_a_concurrent_delete() {
         const APPENDS: usize = 120;
