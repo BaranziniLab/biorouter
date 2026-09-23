@@ -1970,3 +1970,57 @@ biorouter-server` and passed in 2m59s. Immutable 0555 artifacts are in
 - `biorouterd`: Mach-O 64-bit arm64, SHA-256
   `4a1082ec9e1e0cc0b464c8cd608156a21cd24544c27cd87a2d42e7f84b16185c`,
   version `biorouter-server 1.91.1`.
+
+### Native PTY continuation acceptance on immutable debug pair (Luna)
+
+Using the immutable debug pair in `/private/tmp/biorouter-crew-artifacts-532c3b7d/`, a fresh synthetic profile was launched with a shared daemon, private runtime descriptor, API secret, and a 39-character approval secret supplied through the daemon's stdin digest path. A loopback-only OpenAI-compatible HTTP fixture supplied deterministic streaming responses; no real provider, credential, or private fixture was used.
+
+The normal daemon APIs created active turns and admitted Stop-and-Send cancellation with `expected_turn_id`, `wait_for_idle`, `continuation_pending`, and a proven `X-User-Action` header. The CLI acceptance covered:
+
+- noninteractive shared resume with text: refused the pending continuation before dispatch, with `resubmit_automatically:false`;
+- interactive `leave`: refused with `Pending continuation left unchanged; input was not submitted`;
+- interactive `abandon`: resolved the claim and returned to an idle session;
+- interactive `takeover`: claimed the exact retired generation, accepted one successor input, and persisted the deterministic `successor` assistant response;
+- post-success resume: reported no active turn and no pending continuation.
+
+The flow used 1 noninteractive refusal, 1 leave refusal, 1 abandonment, 1 takeover, and 1 successful successor turn. The final transcript had no pending continuation and the successor was visible in the authoritative session response.
+
+### Hosted clean-install failure and lockfile repair
+
+At published `148415990b6126960517cab64ae3f71ae9e294b1`, seven hosted
+frontend/serve checks stopped before their test assertions because npm 11.19.0
+rejected the desktop lockfile: `encoding@0.1.13` and its nested
+`iconv-lite@0.6.3` were missing. The downstream missing TypeScript, lint tooling
+and preview evidence errors did not establish independent product defects.
+
+Astra regenerated the lock in an isolated manifest directory with
+`npm exec --yes --package=npm@11.19.0 -- npm install --package-lock-only
+--ignore-scripts --no-audit --no-fund`. Independent Astra review confirmed only
+the two optional development packages were added; 35 existing entries changed
+only peer metadata. Existing package versions, resolved URLs, integrity hashes
+and dependency edges are unchanged. Hermit npm 11.6.1 regeneration had left the
+original incomplete lock unchanged.
+
+Luna then passed separate clean `npm ci --ignore-scripts --no-audit --no-fund`
+installs with npm 11.19.0 and 11.6.1, both under local Node 26.9.0. Hermit
+activation in that agent was blocked by cache metadata permissions, so these
+are not claimed as Node 24 runtime tests. UI typecheck and lint passed, including
+ESLint, theme checks, 404 contrast checks and token mirrors; diff whitespace
+checks passed. Hosted Node 24 confirmation remains pending on the repaired
+revision. No full UI suite was repeated for this lock-only repair.
+
+### Windows authentication fixture compilation repair
+
+Hosted Windows MSVC Rust 1.92.0 on `14841599` stopped before assertions:
+`crew/authentication.rs`'s test-only `FakeChild` omitted the Windows-required
+`portable_pty::Child::as_raw_handle` method. Luna added the Windows-only method
+returning `None`, representing a synthetic child without an OS handle. Astra
+reviewed the five-line test-only change; production authentication and existing
+assertions are unchanged. Formatting checks passed.
+
+A follow-up focused authentication test attempt in that agent could not resolve
+crates.io's `chacha20poly1305`, and offline mode lacked `cap-std`; no passing
+count is claimed for that attempt. It used two Cargo jobs and disabled
+incremental compilation. The Windows-specific method requires confirmation by
+the next native Windows hosted build; a Unix test cannot establish that target's
+compilation or execution.

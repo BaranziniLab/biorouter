@@ -620,6 +620,11 @@ mod tests {
         fn process_id(&self) -> Option<u32> {
             Some(17)
         }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
     }
 
     fn owned_child(fake: FakeChild) -> OwnedChild {
