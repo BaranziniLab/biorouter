@@ -276,9 +276,14 @@ describe('CrewView action and uncertain-start regressions', () => {
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'discard after revocation' } });
     activeSnapshot = { ...snapshot, channels: [], teams: [] };
+    const observationsBeforeRefresh = mocks.observeCrew.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: 'Refresh channel' }));
+    await waitFor(() =>
+      expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observationsBeforeRefresh)
+    );
     await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
     activeSnapshot = snapshot;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
