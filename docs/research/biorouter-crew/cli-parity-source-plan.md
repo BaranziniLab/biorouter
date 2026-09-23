@@ -1,6 +1,25 @@
 # Native Crew CLI parity: source inventory and integration plan
 
-Source/design review on 2026-09-22. No product edits, builds, tests, or connections were performed. Terminal human-authority design is a separate security workstream; nothing below relaxes the existing human-action proof or permits a model to obtain that authority by invoking a CLI.
+Original source/design review on 2026-09-22, before the daemon-owned refactor. The original review performed no product edits, builds, tests or connections. Its inventory, line numbers and proposed command spellings below are historical; use the current implementation map and CLI guide for implemented behavior. Terminal human-authority design is a separate security workstream; nothing below relaxes the existing human-action proof or permits a model to obtain that authority by invoking a CLI.
+
+## Current implemented seams
+
+The original React/Electron orchestration inventory below is superseded by these implemented shared services. This map describes source, not completion of the [acceptance ledger](implementation-status.md). Product artifacts are scoped to `7ab40c81`, broad runtime evidence to `532c3b7d`, and `dd70051e` is a test-only portability checkpoint.
+
+| Current source | Implemented responsibility |
+| --- | --- |
+| [`commands/crew/args.rs`](../../../crates/biorouter-cli/src/commands/crew/args.rs), [`commands/crew/mod.rs`](../../../crates/biorouter-cli/src/commands/crew/mod.rs), [`daemon_client.rs`](../../../crates/biorouter-cli/src/daemon_client.rs) | Native Crew command tree and typed shared-daemon client; discovery/identity verification precedes explicit human proof. |
+| [`daemon_runtime.rs`](../../../crates/biorouter/src/daemon_runtime.rs), [`biorouterd.ts`](../../../ui/desktop/src/biorouterd.ts) | Profile identity, descriptor/lock lifetime and desktop attachment; closing a client does not substitute for an authorized daemon stop. |
+| [`crew/authentication.rs`](../../../crates/biorouter/src/crew/authentication.rs), [`crew_authentication.rs`](../../../crates/biorouter-server/src/routes/crew_authentication.rs) | Daemon-owned SSH/PTY sessions and typed input/resize/cancel transport; human prompts stay outside model context. |
+| [`crew/transfers.rs`](../../../crates/biorouter-server/src/crew/transfers.rs), [`crew/local_files.rs`](../../../crates/biorouter-server/src/crew/local_files.rs), [`crew_transfers.rs`](../../../crates/biorouter-server/src/routes/crew_transfers.rs) | Daemon transfer orchestration, durable receipts and narrowly approved local file authority; GUI/CLI supply selections and presentation. |
+| [`crew/observation.rs`](../../../crates/biorouter/src/crew/observation.rs), [`crew_observation.rs`](../../../crates/biorouter-server/src/routes/crew_observation.rs), [`CrewView.tsx`](../../../ui/desktop/src/components/crew/CrewView.tsx) | Typed daemon room observation replaces independent automatic room-poll loops; clients consume shared identity/state/messages/recovery outcomes. |
+| [`shared_conversation.rs`](../../../crates/biorouter-cli/src/commands/shared_conversation.rs), [`cli.rs`](../../../crates/biorouter-cli/src/cli.rs) | Explicit `run`/`session --shared-daemon` uses daemon agent/reply/session services and native continuation recovery. Default local mode remains separate; a grant does not confer human authority on a local worker. |
+
+See the [current CLI guide](cli-guide.md) for actual syntax, and [plan §15](implementation-plan.md#15-daemon-owned-workflows-and-cligui-parity) for unchanged security/completion requirements. Shared IPC remains Unix-only; mixed-GUI and native Windows acceptance are not inferred from these source pointers.
+
+## Historical design and original inventory
+
+Everything below records the pre-refactor inventory and proposed integration. Statements about what “currently” existed, absent APIs, React transfer orchestration, Electron PTY ownership or fixed-port discovery refer to that original checkpoint, not the current implementation. Requirements remain binding unless explicitly superseded in plan §15; the proposed command tree is not a current help reference.
 
 ## Architecture decision
 

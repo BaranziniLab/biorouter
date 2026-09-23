@@ -2245,3 +2245,56 @@ formatting and clippy, non-inheritable socket checks, UI lint/typecheck/theme/
 contrast/token checks, OpenAPI freshness, version/brand/naming/vendored-source/
 cross-drift checks, and registry/privacy-registry checks (61/61 and 21/21 Node
 assertions respectively). No generated API diff remained.
+
+### Shared-workflow source closure on dd70051e
+
+An independent GPT-6 Astra source review found no actionable finding in the
+audited connection/authentication, transfer, task and context parity seams.
+The daemon owns authentication and verified master adoption; successful GUI
+completion releases the terminal adapter without cancelling the adopted master
+(`crew/authentication.rs:406`, desktop `main.ts:5056`). Both interfaces use the
+same Proven-only transfer endpoints; the daemon owns target approval, durable
+receipts, execution and recovery (`routes/crew_transfers.rs:27`,
+`crew/transfers.rs:649`). Task launch/cancellation and grant/provider/source
+policy remain shared, and explicit `run/session --shared-daemon` reaches daemon
+conversation APIs before local agent/tool-bridge creation (`cli.rs:2237`,
+`routes/crew.rs:1216`, core `crew/mod.rs:1337`).
+
+This closes the bounded source review, not runtime acceptance. Mixed GUI/CLI,
+native Save, broader privacy/recovery races and final artifact qualification
+remain open. The reviewer performed no tests, builds or edits.
+
+A subsequent bounded Luna run on the recorded `7ab40c81` pair used supported
+`Initial::All` observation with no cursor, positively verified the existing
+A+B-derived message, and revoked only the source membership. The stream emitted
+`policy_changed` with `clear:true`, followed by CLI exit 1; neither of the two
+new owner controls reached that observer. The derived/history bytes had already
+reached the CLI pipe while authorized, so the full daemon-queued race remains
+unqualified. [Exact scope and frame](evidence/cli-7ab40c81-20260923.md#initial-history-and-source-revocation-terminal-behavior)
+are recorded separately from the earlier after-derived-cursor attempt.
+
+### Hosted closure and prepared GUI refresh
+
+Published `dd70051e90d4935fcc908cc28dbdb144f9e79ce5` passes Rust run
+`35818114269` on Windows, Ubuntu and macOS, including the previously failing
+Windows SSH fixtures and Ubuntu FIFO/child-census/sandbox-census assertions.
+Both cross-checks, serving, guards, native payload jobs and the commit-message
+check pass. Frontend run `35818114160` passes all seven jobs, with 563 Vitest
+files, 6,370 tests passed and 19 skipped. The optional nightly cross-build is
+skipped. [Per-target counts and run links](evidence/ci-dd70051e-20260923.md)
+avoid summing overlapping platform and library/binary targets.
+
+The three prepared QA apps now embed the exact `7ab40c81` native pair and pass
+ad-hoc deep/strict signature verification. [Preparation evidence](evidence/prepared-gui-7ab40c81-20260923.md)
+records hashes and source equivalence for unchanged production desktop code.
+No app was launched or registered, and no GUI/AWS acceptance is inferred.
+
+The ordinary Linux ARM64 CLI/daemon pair was also rebuilt from an immutable
+`dd70051e` archive with the pinned Rust image, locked dependencies, two jobs
+and incremental compilation disabled (4m57s). A fresh UID 1101 tmpfs profile
+passed start/status, wrong-valid-proof HTTP 403, stop, restart with the same
+profile and a new instance, final stop and missing-daemon status. The daemon
+hash matches the recorded 532 Linux daemon; the CLI includes the later Unicode
+output correction. [Linux provenance and hashes](evidence/linux-dd70051e-20260923.md)
+retain the GLIBC 2.39 limit and distinguish this local container from AWS or
+institutional acceptance.
