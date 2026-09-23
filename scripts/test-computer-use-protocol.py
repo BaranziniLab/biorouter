@@ -10,7 +10,7 @@ import subprocess
 TOOLS = {"list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag",
          "type_text", "press_key", "set_value", "screen_capture"}
 CONTRACT = Path(__file__).resolve().parents[1] / "crates/biorouter-mcp/tests/fixtures/computer-use-tools.json"
-RETIRED_PROMPT_NAME = re.compile(r"\b(?:open[ -]+computer[ -]+use|computer[ -]+controller|computer[ -]+use)\b", re.I)
+RETIRED_PROMPT_NAME = re.compile(r"(?:open[ _-]*computer[ _-]*use|computer[ _-]+controller|computer[ _-]+use)(?![a-z])", re.I)
 
 
 def semantic_schema(value):
@@ -22,6 +22,18 @@ def semantic_schema(value):
     return value
 
 
+def schema_descriptions(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "description" and isinstance(item, str):
+                yield item
+            else:
+                yield from schema_descriptions(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from schema_descriptions(item)
+
+
 def validate_tools(tools):
     expected = json.loads(CONTRACT.read_text())["tools"]
     names = {tool["name"] for tool in tools}
@@ -29,7 +41,8 @@ def validate_tools(tools):
         raise ValueError(f"Native tool contract mismatch: received {sorted(names)}")
     for tool in expected:
         actual = next(item for item in tools if item["name"] == tool["name"])
-        if RETIRED_PROMPT_NAME.search(actual.get("description", "")):
+        prompt_text = [actual.get("description", ""), *schema_descriptions(actual.get("inputSchema"))]
+        if any(RETIRED_PROMPT_NAME.search(text) for text in prompt_text):
             raise ValueError(f"Retired Copilot name in native tool description: {tool['name']}")
         actual_schema = json.dumps(semantic_schema(actual.get("inputSchema")), sort_keys=True)
         expected_schema = json.dumps(tool["inputSchema"], sort_keys=True)

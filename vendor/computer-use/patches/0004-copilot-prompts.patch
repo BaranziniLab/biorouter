@@ -91,7 +91,7 @@ index 8634387..552cd56 100644
  			InputSchema: objectSchema(map[string]any{
  				"app":  stringProperty("App name or bundle identifier"),
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
-index efba13e..c602987 100644
+index efba13e..0efe82f 100644
 --- a/apps/OpenComputerUseWindows/main.go
 +++ b/apps/OpenComputerUseWindows/main.go
 @@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -117,7 +117,7 @@ index efba13e..c602987 100644
  		{
  			Name:        "drag",
 -			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of plugin `Computer Use`.",
-+			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of Biorouter Copilot.",
++			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires the host to allow global pointer fallback, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of Biorouter Copilot.",
  			Annotations: defaultAnnotations(),
  			InputSchema: objectSchema(map[string]any{
  				"app":    stringProperty("App name or bundle identifier"),
@@ -183,7 +183,7 @@ index efba13e..c602987 100644
  			InputSchema: objectSchema(map[string]any{
  				"app":  stringProperty("App name or bundle identifier"),
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
-index 93491ca..88a5d61 100644
+index 93491ca..cda0291 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
 @@ -1,19 +1,19 @@
@@ -194,10 +194,10 @@ index 93491ca..88a5d61 100644
 +Biorouter Copilot tools let you interact with macOS apps by performing UI actions.
  
 -Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Computer Use when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Computer Use may be appropriate for the missing interaction.
-+Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Biorouter Copilot when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Biorouter Copilot may be appropriate for the missing interaction.
++Some apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Biorouter Copilot when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, Biorouter Copilot may be appropriate for the missing interaction.
  
 -Begin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
-+Begin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
++Begin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. Call it again in a new assistant turn before interacting with apps.
  
 -The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
 +The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Biorouter Copilot action tools.
@@ -208,12 +208,12 @@ index 93491ca..88a5d61 100644
  After each action, use the action result or fetch the latest state to verify the UI changed as expected.
  Prefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Note that element indices are the sequential integers from the app state's accessibility tree.
 -Avoid falling back to AppleScript during a computer use session. Prefer Computer Use tools as much as possible to complete tasks.
-+Avoid falling back to AppleScript during a computer use session. Prefer Biorouter Copilot tools as much as possible to complete tasks.
++Avoid falling back to AppleScript during a Copilot session. Prefer Biorouter Copilot tools as much as possible to complete tasks.
  Ask the user before taking destructive or externally visible actions such as sending, deleting, or purchasing. If helpful, you can ask follow-up questions before taking action to make sure you’re understanding the user’s request correctly.
  """
  
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
-index c0e7856..70da08f 100644
+index c0e7856..a05f47b 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
 @@ -42,7 +42,7 @@ public enum ToolDefinitions {
@@ -225,12 +225,21 @@ index c0e7856..70da08f 100644
              annotations: defaultAnnotations(),
              inputSchema: objectSchema(
                  properties: [
+@@ -56,7 +56,7 @@ public enum ToolDefinitions {
+                         enumValues: ["left", "right", "middle"]
+                     ),
+                     "click_method": stringProperty(
+-                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1.",
++                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires the host to allow global pointer fallback.",
+                         enumValues: ClickMethod.allCases.map(\.rawValue)
+                     ),
+                 ],
 @@ -65,7 +65,7 @@ public enum ToolDefinitions {
          ),
          ToolDefinition(
              name: "drag",
 -            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of plugin `Computer Use`.",
-+            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 in the server process environment, which may move the real pointer. The result reports which path was used. This tool is part of Biorouter Copilot.",
++            description: "Drag from one point to another using pixel coordinates. By default mouse events are posted directly to the target app and the system pointer does not move; that path cannot drive window-server drag sessions such as window moves, text selection, or Finder drag-and-drop. Those require the host to allow global pointer fallback, which may move the real pointer. The result reports which path was used. This tool is part of Biorouter Copilot.",
              annotations: defaultAnnotations(),
              inputSchema: objectSchema(
                  properties: [
