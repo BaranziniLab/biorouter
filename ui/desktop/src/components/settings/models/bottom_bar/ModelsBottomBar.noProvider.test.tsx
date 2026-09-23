@@ -45,13 +45,14 @@ vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () =
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
 
-const renderBar = () =>
+const renderBar = (effectiveModel?: { provider: string; model: string }) =>
   render(
     <ModelsBottomBar
       sessionId={null}
       dropdownRef={dropdownRef}
       setView={mocks.setView}
       alerts={[]}
+      effectiveModel={effectiveModel}
     />
   );
 
@@ -99,6 +100,11 @@ describe('the model chip with no provider configured', () => {
   it('leaves a configured chip alone', () => {
     mocks.currentProvider = 'versa_azure';
     renderBar();
+    expect(screen.queryByTestId('model-chip-choose-model')).toBeNull();
+  });
+
+  it('uses a persisted chat model for the chip guard when the global provider is unset', () => {
+    renderBar({ provider: 'ollama', model: 'qwen3:8b' });
     expect(screen.queryByTestId('model-chip-choose-model')).toBeNull();
   });
 });

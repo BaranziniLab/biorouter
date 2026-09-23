@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
   getProviders: vi.fn(),
   navigate: vi.fn(),
-  location: { pathname: '/' },
+  location: { pathname: '/', search: '' },
 }));
 
 vi.mock('./ConfigContext', () => ({
@@ -78,6 +78,7 @@ describe('ProviderGuard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.location.pathname = '/';
+    mocks.location.search = '';
     configReads({});
     mocks.upsert.mockResolvedValue(undefined);
     mocks.getProviders.mockResolvedValue([]);
@@ -113,12 +114,29 @@ describe('ProviderGuard', () => {
     expect(await screen.findByText('Application')).toBeInTheDocument();
     expect(screen.queryByText('CATALOG')).toBeNull();
   });
+
+  it('lets a nonblank pair resume link reach the resume loader without global setup', async () => {
+    mocks.location.pathname = '/pair';
+    mocks.location.search = '?resumeSessionId=20260923_1';
+    renderGuard();
+    expect(await screen.findByText('Application')).toBeInTheDocument();
+    expect(screen.queryByText('CATALOG')).toBeNull();
+  });
+
+  it('keeps a blank resume query on the normal onboarding path', async () => {
+    mocks.location.pathname = '/pair';
+    mocks.location.search = '?resumeSessionId=   ';
+    renderGuard();
+    expect(await screen.findByText('CATALOG')).toBeInTheDocument();
+    expect(screen.queryByText('Application')).toBeNull();
+  });
 });
 
 describe('ProviderGuard — entering without a provider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.location.pathname = '/';
+    mocks.location.search = '';
     configReads({});
     mocks.upsert.mockResolvedValue(undefined);
     mocks.getProviders.mockResolvedValue([]);

@@ -155,7 +155,10 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     };
   }, [needsCatalog, getProviders]);
 
-  if (location.pathname === '/crew') return <>{children}</>;
+  const resumingSession =
+    location.pathname === '/pair' &&
+    Boolean(new URLSearchParams(location.search).get('resumeSessionId')?.trim());
+  if (location.pathname === '/crew' || resumingSession) return <>{children}</>;
 
   if (isChecking) {
     return (

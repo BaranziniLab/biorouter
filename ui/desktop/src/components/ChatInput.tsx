@@ -2289,7 +2289,10 @@ export default function ChatInput({
    * at the moment they try to send rather than the daemon's own error toast a
    * round trip later.
    */
-  const noModelConfigured = hasNoModelConfigured(modelConfigStatus, currentProvider);
+  const noModelConfigured = hasNoModelConfigured(
+    modelConfigStatus,
+    effectiveModel?.provider ?? currentProvider
+  );
 
   const hasCrewCommandExtras =
     composerRefs.length > 0 || pastedImages.length > 0 || allDroppedFiles.length > 0;

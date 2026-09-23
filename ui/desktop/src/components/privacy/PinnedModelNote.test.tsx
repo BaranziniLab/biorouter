@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   currentModel: 'claude-opus-5' as string | null,
   currentProvider: 'claude_code' as string | null,
+  modelConfigStatus: 'ready' as 'loading' | 'ready',
 }));
 
 vi.mock('../ConfigContext', () => ({
@@ -25,6 +26,7 @@ vi.mock('../ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({
     currentModel: mocks.currentModel,
     currentProvider: mocks.currentProvider,
+    modelConfigStatus: mocks.modelConfigStatus,
   }),
 }));
 
@@ -55,6 +57,7 @@ beforeEach(() => {
   mocks.getProviders.mockResolvedValue(CATALOG);
   mocks.currentModel = 'claude-opus-5';
   mocks.currentProvider = 'claude_code';
+  mocks.modelConfigStatus = 'ready';
 });
 
 /**
@@ -237,6 +240,14 @@ describe('what the chip and gauge are told to state', () => {
     expect(mocks.getProviders).not.toHaveBeenCalled();
   });
 
+  it('keeps a persisted binding effective when the ready global selection is unset', async () => {
+    mocks.currentProvider = null;
+    mocks.currentModel = null;
+    const { result } = renderHook(() => usePinnedModel(chat('public'), undefined));
+    await waitFor(() => expect(result.current.effectiveModel).toEqual(BINDING));
+    expect(result.current.notice).toBeNull();
+  });
+
   /**
    * The just-switched case: no stale flash. Once the row has been patched with
    * the binding the daemon accepted, it AGREES with the selection, and agreement
@@ -289,6 +300,7 @@ describe('what the chip and gauge are told to state', () => {
   it('states nothing while the selection is still unresolved', async () => {
     mocks.currentProvider = null;
     mocks.currentModel = null;
+    mocks.modelConfigStatus = 'loading';
     const { result } = renderHook(() => usePinnedModel(chat('public'), undefined));
     await waitFor(() => expect(result.current.effectiveModel).toBeUndefined());
   });
