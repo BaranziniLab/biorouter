@@ -5,7 +5,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
+  ContextMenuSeparator,
 } from '../ui/context-menu';
+import { Trash2 } from '../icons/app-icons';
 import { chatRowActions, type ChatRowActionTarget } from './chatRowActions';
 
 /**
@@ -18,7 +20,13 @@ import { chatRowActions, type ChatRowActionTarget } from './chatRowActions';
  * what both paths share, so the item list, order and handlers stay single-source
  * either way.
  */
-export function ChatRowContextMenuContent({ target }: { target: ChatRowActionTarget }) {
+export function ChatRowContextMenuContent({
+  target,
+  onDelete,
+}: {
+  target: ChatRowActionTarget;
+  onDelete?: () => void;
+}) {
   return (
     <ContextMenuContent className="w-56">
       {chatRowActions(target).map(({ key, label, icon: Icon, run }) => (
@@ -27,6 +35,15 @@ export function ChatRowContextMenuContent({ target }: { target: ChatRowActionTar
           {label}
         </ContextMenuItem>
       ))}
+      {onDelete && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={onDelete} className="text-text-danger">
+            <Trash2 className="size-4" />
+            Delete conversation
+          </ContextMenuItem>
+        </>
+      )}
     </ContextMenuContent>
   );
 }

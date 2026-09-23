@@ -98,6 +98,7 @@ async function heicDimensions(filePath: string): Promise<{ width: number; height
   try {
     const { stdout } = await run(SIPS, ['-g', 'pixelWidth', '-g', 'pixelHeight', filePath], {
       timeout: 20_000,
+      windowsHide: true,
     });
     const width = Number(stdout.match(/pixelWidth:\s*(\d+)/)?.[1]);
     const height = Number(stdout.match(/pixelHeight:\s*(\d+)/)?.[1]);
@@ -171,7 +172,7 @@ export async function heicToPng(filePath: string): Promise<Buffer | null> {
         '--out',
         outPath,
       ],
-      { timeout: 20_000 }
+      { timeout: 20_000, windowsHide: true }
     );
 
     const handle = await fs.open(outPath, 'r');

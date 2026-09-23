@@ -221,6 +221,17 @@
       <h2>Latest updates</h2>
     </div>
     <div class="news-list">
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1" target="_blank" class="news-row">
+        <div class="news-date">
+          <div class="day">22</div>
+          <div class="mon">Sep</div>
+        </div>
+        <div class="news-body">
+          <h3>Biorouter v1.91.1: Windows sockets stop leaking into child processes, and a steadier macOS extension start</h3>
+          <p>On Windows, every network socket Biorouter opened was inherited by the programs it starts, so a port could stay taken after the app exited and the remote tunnel could not close cleanly. Every listener and connection is now non-inheritable, confirmed on a Windows machine, and a build check keeps it that way. On macOS, an extension started from inline Python could very occasionally be killed before it ran; it now starts the way every other extension does. The test suite also had a run of flaky failures fixed at their causes, so a red build now means something is broken.</p>
+          <div class="news-link">View the release notes &rarr;</div>
+        </div>
+      </a>
       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0" target="_blank" class="news-row">
         <div class="news-date">
           <div class="day">21</div>

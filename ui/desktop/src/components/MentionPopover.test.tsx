@@ -192,6 +192,20 @@ describe('mentionReference', () => {
     ).toEqual({ kind: 'extension', value: 'knowledge', label: undefined });
   });
 
+  it('does not reinterpret a resource or workflow named like a client command', () => {
+    expect(
+      mentionReference(item({ itemType: 'Skill', name: 'knowledge', relativePath: 'knowledge' }))
+    ).toEqual({ kind: 'skill', value: 'knowledge', label: undefined });
+    expect(
+      mentionReference(item({ itemType: 'Workflow', name: 'knowledge', relativePath: 'knowledge' }))
+    ).toBeNull();
+    expect(
+      getMentionInsertText(
+        item({ itemType: 'Workflow', name: 'knowledge', relativePath: 'knowledge' })
+      )
+    ).toBe('/knowledge');
+  });
+
   it('is null for anything that is not a resource reference', () => {
     expect(mentionReference(item({ itemType: 'File' }))).toBeNull();
     expect(

@@ -123,6 +123,18 @@ jobs:
       - name: Packaged dependency isolation regressions
         run: node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs
 
+      # Windows allocates a NEW, VISIBLE console for every console-subsystem
+      # child of a process that owns none — which the Electron main process is.
+      # The Node option that suppresses it, `windowsHide`, defaults to FALSE, so
+      # the damaging behaviour is what you get by writing nothing (#368). This
+      # census requires every spawn site under ui/desktop/src to state the option
+      # either way, and carries its own fixtures proving it reports a violation
+      # when there is one. It runs here, on Linux, because reading source needs
+      # no Windows; whether the flag WORKS is asked on Windows by the job below.
+      - name: Console-window census (ui/desktop/src)
+        if: ${{ !cancelled() }}
+        run: node --test scripts/console-window-census.test.mjs
+
       # Each gate is its own step rather than a single `npm run lint:check`, and
       # each runs even if an earlier one failed. `lint:check` chains with && and
       # stops at the first failure, which means a contributor fixes one gate,
@@ -344,3 +356,71 @@ jobs:
           path: ui/desktop/preview-panel-evidence
           if-no-files-found: error
           retention-days: 14
+
+  # ── Do console windows actually appear? ───────────────────────────────────
+  # The census above reads source. Whether any of it WORKS is a property of
+  # Windows, of the Node that Electron ships, and of an Electron embedder flag
+  # the app never asked for — so this job asks Windows instead of reasoning.
+  #
+  # Every assertion is PAIRED with a control. A spawn with no `windowsHide` must
+  # report a VISIBLE console; if that ever comes back otherwise, the instrument
+  # is broken and the rest of the file proves nothing, so it is a red build
+  # rather than a skip. That is not hypothetical: the first run of this probe on
+  # real hardware returned "no console" for all six cases, which read as "Node
+  # hides by default and the fix is a no-op". It was the harness — the shell it
+  # ran from owned no console, so no descendant could have one. The symmetry
+  # (cases expecting visible AND cases expecting hidden both failing) is what
+  # gave it away, and it is why the controls are assertions.
+  #
+  # Electron is installed here on purpose: the app's real behaviour depends on
+  # kHideConsoleWindows, which only exists inside Electron, so measuring under
+  # plain Node would answer a different question.
+  windows-console:
+    name: Console windows (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      # The workflow-level environment skips Electron everywhere else; this job
+      # needs the real binary, for the reason in the header.
+      - name: Install dependencies including Electron
+        run: env -u ELECTRON_SKIP_BINARY_DOWNLOAD npm ci
+        shell: bash
+
+      # BIOROUTER_REQUIRE_WINDOWS_CONSOLE makes the file THROW rather than skip
+      # if it is ever run somewhere that cannot measure this. A skipped suite
+      # and a passing one are otherwise the same exit code.
+      - name: Spawn children and ask Windows whether they showed a console
+        env:
+          BIOROUTER_REQUIRE_WINDOWS_CONSOLE: "1"
+        run: node --test --test-reporter=tap scripts/windows-console.test.mjs | tee windows-console.tap
+        shell: bash
+
+      # A test file that stops being collected — renamed, moved, or skipped by a
+      # platform predicate that quietly stopped matching — reports zero failures
+      # and passes.
+      - name: The Windows console tests actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          pass=$(grep -c '^ok ' windows-console.tap || true)
+          skip=$(grep -c '# SKIP' windows-console.tap || true)
+          echo "pass=$pass skip=$skip"
+          [ "$pass" -ge 10 ] || { echo "::error::expected at least 10 passing cases, saw $pass"; exit 1; }
+          [ "$skip" -eq 0 ] || { echo "::error::$skip cases were SKIPPED on a Windows runner"; exit 1; }
+
+      - name: Upload the measurement
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-console-tap
+          path: ui/desktop/windows-console.tap
+          if-no-files-found: warn
+          retention-days: 7

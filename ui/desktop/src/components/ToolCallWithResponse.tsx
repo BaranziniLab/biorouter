@@ -1,6 +1,8 @@
+import './tool-call.css';
+import { ToolContentPreview } from './ToolContentPreview';
 import { ToolIconWithStatus, ToolCallStatus } from './ToolCallStatusIndicator';
 import { getToolCallIcon } from '../utils/toolIconMapping';
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
 import {
@@ -9,7 +11,6 @@ import {
   CODE_LINE_HEIGHT,
   codeThemesByFamily,
 } from '../styles/codeTheme';
-import { Button } from './ui/button';
 import { ToolCallArguments, ToolCallArgumentValue } from './ToolCallArguments';
 import MarkdownContent from './MarkdownContent';
 import {
@@ -24,7 +25,7 @@ import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
-import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
+import { NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -397,20 +398,9 @@ function ToolCallWithResponseContent({
     return null;
   }
 
-  const isError = getToolResultError(toolResponse?.toolResult) !== null;
-
   return (
     <>
-      {/* D-17: a tool call is a LINE in the transcript, not a card. An outline
-          around every one of them reads as a focus ring and turns a quiet
-          transcript into a stack of boxes. Failure is signalled by colour — the
-          status icon and label — plus a faint danger wash, never by an outline. */}
-      <div
-        className={cn(
-          'w-full overflow-hidden rounded-md text-sm font-sans transition-colors',
-          isError && 'bg-background-danger/5'
-        )}
-      >
+      <div className="w-full overflow-hidden rounded-md text-sm font-sans">
         <ToolCallView
           {...{
             isCancelledMessage,
@@ -484,6 +474,7 @@ function ToolCallExpandable({
   children,
   className = '',
 }: ToolCallExpandableProps) {
+  const contentId = React.useId();
   const [isExpandedState, setIsExpanded] = React.useState<boolean | null>(null);
   const isExpanded = isExpandedState === null ? isStartExpanded : isExpandedState;
   const toggleExpand = () => setIsExpanded(!isExpanded);
@@ -493,11 +484,12 @@ function ToolCallExpandable({
 
   return (
     <div className={className}>
-      <Button
+      <button
+        type="button"
+        aria-expanded={isExpanded}
+        aria-controls={contentId}
         onClick={toggleExpand}
-        className="group h-6 min-h-0 max-w-full justify-start !px-0 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
-        variant="ghost"
-        size="xs"
+        className="br-tool-disclosure group inline-flex items-center h-6 min-h-0 max-w-full justify-start !px-0 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
       >
         <span className="flex min-w-0 max-w-full items-center overflow-hidden font-sans text-sm leading-6">
           {label}
@@ -511,13 +503,13 @@ function ToolCallExpandable({
             different scale (§3.8b: never two sizes in one cluster). */}
         <ChevronRight
           className={cn(
-            'ml-1.5 size-4 shrink-0 text-text-muted opacity-60',
+            'ml-1.5 size-4 shrink-0 opacity-60',
             'transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100',
             isExpanded && 'rotate-90 opacity-100'
           )}
         />
-      </Button>
-      {isExpanded && <div>{children}</div>}
+      </button>
+      {isExpanded && <div id={contentId}>{children}</div>}
     </div>
   );
 }
@@ -1122,23 +1114,6 @@ function ToolCallView({
   onOpenArtifact,
   workingDir,
 }: ToolCallViewProps) {
-  const [responseStyle, setResponseStyle] = useState(() => localStorage.getItem('response_style'));
-
-  useEffect(() => {
-    const handleStorageChange = () => {
-      setResponseStyle(localStorage.getItem('response_style'));
-    };
-
-    window.addEventListener('storage', handleStorageChange);
-
-    window.addEventListener('responseStyleChanged', handleStorageChange);
-
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('responseStyleChanged', handleStorageChange);
-    };
-  }, []);
-
   const isToolDetails = toolCall?.arguments && Object.entries(toolCall.arguments).length > 0;
 
   const toolError = getToolResultError(toolResponse?.toolResult);
@@ -1273,7 +1248,12 @@ function ToolCallView({
           anything to open), so it is the part that must never be cut. Making
           this a flex row with a `min-w-0` truncating summary and a `shrink-0`
           suffix is the fix; a wider clipper would only move the threshold. */}
-      <span className="flex min-w-0 flex-1 items-baseline text-text-muted">
+      <span
+        className={cn(
+          'flex min-w-0 flex-1 items-baseline',
+          loadingStatus === 'loading' && 'br-tool-running'
+        )}
+      >
         <span className="min-w-0 truncate">
           {loadingStatus === 'loading'
             ? 'Working on'
@@ -1282,17 +1262,10 @@ function ToolCallView({
               : loadingStatus === 'interrupted'
                 ? 'Stopped'
                 : 'Ran'}{' '}
-          <span className="text-text-default">{toolSummary}</span>
+          <span>{toolSummary}</span>
         </span>
         {liveDetail && (
-          <span
-            className={cn(
-              'shrink-0 whitespace-nowrap pl-1 text-text-muted/70',
-              loadingStatus === 'loading' && 'animate-pulse'
-            )}
-          >
-            · {liveDetail}
-          </span>
+          <span className={cn('shrink-0 whitespace-nowrap pl-1')}>· {liveDetail}</span>
         )}
         {/* The ONE deliberate visual difference in the whole mirror feature. A
             `child` call ran in the coding agent's own sandbox and passed none of
@@ -1303,10 +1276,7 @@ function ToolCallView({
             passed every gate an API provider's call passes, so it renders with
             nothing here at all. */}
         {providerExecution === 'child' && (
-          <span
-            className="shrink-0 whitespace-nowrap pl-1 text-text-muted/70"
-            title={CHILD_EXECUTED_TITLE}
-          >
+          <span className="shrink-0 whitespace-nowrap pl-1" title={CHILD_EXECUTED_TITLE}>
             · not gated by Biorouter
           </span>
         )}
@@ -1335,7 +1305,19 @@ function ToolCallView({
         if (hasToolGraph) {
           return (
             <div className="border-t border-border-subtle">
-              <ToolGraphView toolGraph={toolGraph} code={code} />
+              <ToolGraphView
+                toolGraph={toolGraph}
+                code={typeof code === 'string' ? code : undefined}
+              />
+              <ToolDetailsView
+                toolCall={{
+                  arguments: Object.fromEntries(
+                    Object.entries(toolCall.arguments).filter(
+                      ([key]) => key !== 'tool_graph' && key !== 'code'
+                    )
+                  ),
+                }}
+              />
             </div>
           );
         }
@@ -1343,7 +1325,7 @@ function ToolCallView({
         if (isToolDetails) {
           return (
             <div className="border-t border-border-subtle">
-              <ToolDetailsView toolCall={toolCall} isStartExpanded={false} />
+              <ToolDetailsView toolCall={toolCall} />
             </div>
           );
         }
@@ -1359,7 +1341,7 @@ function ToolCallView({
 
       {toolError && (
         <div className="border-t border-border-subtle p-3">
-          <NotificationContent status="error" title="Tool call failed" message={toolError} />
+          <ToolFailureNotice title="Tool call failed" message={toolError} />
           {/*
             Issue #56, DR-26 / Task 57 — the accept control, on the surface the
             refusal lands on and directly under the daemon's own words. DR-26
@@ -1375,13 +1357,7 @@ function ToolCallView({
 
       {logs && logs.length > 0 && (
         <div className="border-t border-border-subtle">
-          <ToolLogsView
-            logs={logs}
-            working={loadingStatus === 'loading'}
-            isStartExpanded={
-              loadingStatus === 'loading' || responseStyle === 'detailed' || responseStyle === null
-            }
-          />
+          <ToolLogsView logs={logs} working={loadingStatus === 'loading'} />
         </div>
       )}
 
@@ -1396,42 +1372,59 @@ function ToolCallView({
       {/* Tool Output */}
       {!isCancelledMessage && (
         <>
-          {toolResults.map((result, index) => (
-            <div key={index} className={cn('border-t border-border-subtle')}>
-              <ToolResultView
-                result={result}
-                isStartExpanded={false}
-                onOpenArtifact={onOpenArtifact}
-                workingDir={workingDir}
-              />
-            </div>
-          ))}
+          {toolResults
+            .filter(
+              (result) =>
+                !(
+                  toolError &&
+                  'text' in result &&
+                  typeof result.text === 'string' &&
+                  result.text.trim() === toolError.trim()
+                )
+            )
+            .map((result, index) => (
+              <div key={index} className={cn('border-t border-border-subtle')}>
+                <ToolResultView
+                  result={result}
+                  onOpenArtifact={onOpenArtifact}
+                  workingDir={workingDir}
+                />
+              </div>
+            ))}
         </>
       )}
     </ToolCallExpandable>
   );
 }
 
-interface ToolDetailsViewProps {
-  toolCall: {
-    name: string;
-    arguments: Record<string, unknown>;
-  };
-  isStartExpanded: boolean;
+function ToolFailureNotice({ title, message }: { title: string; message: string }) {
+  return (
+    <div role="alert" className="text-text-muted">
+      <div className="text-sm font-medium">{title}</div>
+      <ToolContentPreview text={message}>
+        {(text) => <div className="mt-1 whitespace-pre-wrap break-words text-sm">{text}</div>}
+      </ToolContentPreview>
+    </div>
+  );
 }
 
-function ToolDetailsView({ toolCall, isStartExpanded }: ToolDetailsViewProps) {
+function ToolSection({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
-    <ToolCallExpandable
-      label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View tool details</span>}
-      isStartExpanded={isStartExpanded}
-    >
+    <section>
+      <div className="px-3 pt-2 text-xs text-text-muted">{label}</div>
+      {children}
+    </section>
+  );
+}
+
+function ToolDetailsView({ toolCall }: { toolCall: { arguments: Record<string, unknown> } }) {
+  if (Object.keys(toolCall.arguments).length === 0) return null;
+  return (
+    <ToolSection label="Input">
       <div className={TOOL_INTERIOR_CLASS}>
-        {toolCall.arguments && (
-          <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
-        )}
+        <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
       </div>
-    </ToolCallExpandable>
+    </ToolSection>
   );
 }
 
@@ -1461,43 +1454,44 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
       </ol>
       {code && (
         <div className="-mx-3 mt-2 border-t border-border-subtle">
-          <ToolCallExpandable
-            label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View generated code</span>}
-            isStartExpanded={false}
-          >
+          <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Code</span>}>
             {/* bg-background-code: the ground the syntax palette is verified
                 against (see MarkdownContent's CodeBlock). No line numbers, so
                 long lines may wrap (never combine wrapping with line numbers
                 in react-syntax-highlighter). */}
             <div className="w-full overflow-x-auto bg-background-code">
-              <SyntaxHighlighter
-                style={codeStyle}
-                language="javascript"
-                PreTag="div"
-                customStyle={{
-                  margin: 0,
-                  padding: '12px',
-                  background: 'transparent',
-                  width: '100%',
-                  maxWidth: '100%',
-                }}
-                codeTagProps={{
-                  style: {
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    overflowWrap: 'break-word',
-                    fontFamily: CODE_FONT_FAMILY,
-                    fontSize: CODE_FONT_SIZE,
-                    lineHeight: CODE_LINE_HEIGHT,
-                  },
-                }}
-                showLineNumbers={false}
-                wrapLines={false}
-              >
-                {code}
-              </SyntaxHighlighter>
+              <ToolContentPreview text={code}>
+                {(text) => (
+                  <SyntaxHighlighter
+                    style={codeStyle}
+                    language="javascript"
+                    PreTag="div"
+                    customStyle={{
+                      margin: 0,
+                      padding: 'calc(12px * var(--app-font-scale, 1))',
+                      background: 'transparent',
+                      width: '100%',
+                      maxWidth: '100%',
+                    }}
+                    codeTagProps={{
+                      style: {
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'break-word',
+                        fontFamily: CODE_FONT_FAMILY,
+                        fontSize: CODE_FONT_SIZE,
+                        lineHeight: CODE_LINE_HEIGHT,
+                      },
+                    }}
+                    showLineNumbers={false}
+                    wrapLines={false}
+                  >
+                    {text}
+                  </SyntaxHighlighter>
+                )}
+              </ToolContentPreview>
             </div>
-          </ToolCallExpandable>
+          </ToolSection>
         </div>
       )}
     </div>
@@ -1524,15 +1518,14 @@ function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValu
 function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
   const total = calls.length + dropped;
   return (
-    <ToolCallExpandable
+    <ToolSection
       label={
         <span className={TOOL_DISCLOSURE_LABEL_CLASS}>
           {dropped > 0
-            ? `View recorded calls (${calls.length} of ${total} executed)`
-            : `View executed calls (${calls.length})`}
+            ? `Recorded calls (${calls.length} of ${total} executed)`
+            : `Executed calls (${calls.length})`}
         </span>
       }
-      isStartExpanded={false}
     >
       <div className={TOOL_INTERIOR_CLASS}>
         {calls.map((call, index) => (
@@ -1545,28 +1538,7 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
           </div>
         )}
       </div>
-    </ToolCallExpandable>
-  );
-}
-
-/**
- * Executed-call telemetry is untrusted wire data replayed from the result
- * meta, so keys and values render as PLAIN TEXT only — never through
- * `ToolCallArguments`, whose expanded strings go through `MarkdownContent`
- * and would turn crafted arguments into live links or remote-image fetches.
- */
-function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgumentValue> }) {
-  return (
-    <div className="my-2">
-      {Object.entries(args).map(([key, value]) => (
-        <div key={key} className="mb-2 flex flex-row text-secondary">
-          <span className="min-w-[140px] shrink-0 text-text-muted">{key}</span>
-          <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-code text-text-muted">
-            {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
-          </pre>
-        </div>
-      ))}
-    </div>
+    </ToolSection>
   );
 }
 
@@ -1583,7 +1555,7 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const summary =
     taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
   return (
-    <ToolCallExpandable
+    <ToolSection
       label={
         <span className="flex min-w-0 items-center gap-2 text-left leading-6">
           <ToolIconWithStatus
@@ -1597,42 +1569,39 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
           </span>
         </span>
       }
-      isStartExpanded={false}
     >
       <div className={TOOL_INTERIOR_CLASS}>
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
-          <ExecutedCallArguments args={parsedArgs} />
+          <ToolCallArguments args={parsedArgs} />
         ) : call.args ? (
           // Truncated/malformed JSON still shows the exact recorded text.
-          <pre className="whitespace-pre-wrap break-all font-mono text-code text-text-muted">
-            {call.args}
-          </pre>
+          <ToolContentPreview text={call.args}>
+            {(text) => (
+              <pre className="whitespace-pre-wrap break-all font-mono text-code text-text-muted">
+                {text}
+              </pre>
+            )}
+          </ToolContentPreview>
         ) : (
           <div className="text-supporting text-text-muted">No arguments recorded.</div>
         )}
         {call.error && (
           <div className="mt-2">
-            <NotificationContent status="error" title={`${summary} failed`} message={call.error} />
+            <ToolFailureNotice title={`${summary} failed`} message={call.error} />
           </div>
         )}
       </div>
-    </ToolCallExpandable>
+    </ToolSection>
   );
 }
 
 interface ToolResultViewProps {
   result: Content;
-  isStartExpanded: boolean;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
 
-function ToolResultView({
-  result,
-  isStartExpanded,
-  onOpenArtifact,
-  workingDir,
-}: ToolResultViewProps) {
+function ToolResultView({ result, onOpenArtifact, workingDir }: ToolResultViewProps) {
   const hasText = (c: Content): c is Content & { text: string } =>
     'text' in c && typeof (c as Record<string, unknown>).text === 'string';
 
@@ -1645,18 +1614,25 @@ function ToolResultView({
   const hasResource = (c: Content): c is Content & { resource: unknown } => 'resource' in c;
 
   return (
-    <ToolCallExpandable
-      label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View output</span>}
-      isStartExpanded={isStartExpanded}
-    >
+    <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Output</span>}>
       <div className={TOOL_INTERIOR_CLASS}>
         {hasText(result) && (
-          <MarkdownContent
-            content={result.text}
-            className="whitespace-pre-wrap max-w-full overflow-x-auto"
-            onOpenArtifact={onOpenArtifact}
-            workingDir={workingDir}
-          />
+          <ToolContentPreview text={result.text}>
+            {(text, truncated) =>
+              truncated ? (
+                <pre className="whitespace-pre-wrap break-words font-mono text-code [overflow-wrap:anywhere]">
+                  {text}
+                </pre>
+              ) : (
+                <MarkdownContent
+                  content={text}
+                  className="whitespace-pre-wrap max-w-full overflow-x-auto"
+                  onOpenArtifact={onOpenArtifact}
+                  workingDir={workingDir}
+                />
+              )
+            }
+          </ToolContentPreview>
         )}
         {hasImage(result) && (
           <img
@@ -1674,81 +1650,37 @@ function ToolResultView({
           // — the same value class the other two raw dumps in this file render
           // in `font-mono text-code` (ExecutedCallArguments above, and the
           // malformed-args fallback beside it). All three are disclosures of
-          // ONE tool call, so expanding "View output" and "View executed calls"
+          // ONE tool call, so expanding "Output" and "Executed calls"
           // put pretty-printed JSON on screen in two typefaces at once.
           // A proportional face also defeats the point of the <pre>: the
           // two-space indent `stringify` emits only reads as structure when the
           // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
-          <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
-            {JSON.stringify(result, null, 2)}
-          </pre>
+          <ToolContentPreview text={JSON.stringify(result, null, 2)}>
+            {(text) => (
+              <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+                {text}
+              </pre>
+            )}
+          </ToolContentPreview>
         )}
       </div>
-    </ToolCallExpandable>
+    </ToolSection>
   );
 }
 
-function ToolLogsView({
-  logs,
-  working,
-  isStartExpanded,
-}: {
-  logs: string[];
-  working: boolean;
-  isStartExpanded?: boolean;
-}) {
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  // Whenever logs update, jump to the newest entry
-  useEffect(() => {
-    if (boxRef.current) {
-      boxRef.current.scrollTop = boxRef.current.scrollHeight;
-    }
-  }, [logs.length]);
-  // normally we do not want to put .length on an array in react deps:
-  //
-  // if the objects inside the array change but length doesn't change you want updates
-  //
-  // in this case, this is array of strings which once added do not change so this cuts
-  // down on the possibility of unwanted runs
-
+function ToolLogsView({ logs, working }: { logs: string[]; working: boolean }) {
   return (
-    <ToolCallExpandable
-      label={
-        <span className={cn(TOOL_DISCLOSURE_LABEL_CLASS, 'flex items-center')}>
-          <span>View live logs</span>
-          {working && (
-            <div className="mx-2 inline-block">
-              <span
-                className="inline-block animate-spin rounded-full border-2 border-t-transparent border-current"
-                style={{ width: 8, height: 8 }}
-                role="status"
-                aria-label="Loading spinner"
-              />
-            </div>
+    <ToolSection label={working ? 'Live logs' : 'Logs'}>
+      <div className={TOOL_INTERIOR_CLASS}>
+        <ToolContentPreview text={logs.join('\n')}>
+          {(text) => (
+            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
+              {text}
+            </pre>
           )}
-        </span>
-      }
-      isStartExpanded={isStartExpanded}
-    >
-      <div
-        ref={boxRef}
-        className={cn(
-          TOOL_INTERIOR_CLASS,
-          'flex flex-col items-start space-y-2 overflow-y-auto',
-          working ? 'max-h-[4rem]' : 'max-h-[20rem]'
-        )}
-      >
-        {logs.map((log, i) => (
-          <span
-            key={i}
-            className="w-full whitespace-pre-wrap break-words font-mono text-code text-text-muted"
-          >
-            {log}
-          </span>
-        ))}
+        </ToolContentPreview>
       </div>
-    </ToolCallExpandable>
+    </ToolSection>
   );
 }
 

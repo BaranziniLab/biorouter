@@ -3,25 +3,6 @@ import { render, fireEvent, act } from '@testing-library/react';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
 
-/**
- * Defect 3.2. Resizing the window scrolled the ACTIVE tab off-screen and
- * nothing brought it back.
- *
- * The strip is a CSS scroll box; the browser preserves `scrollLeft` while both
- * `clientWidth` and the left gutter change under it. The only `scrollIntoView`
- * in the file was an effect keyed on `[activeTabId, tabs.length]` — neither of
- * which a resize touches — and the documented escape hatch, the ▾ overflow
- * menu, calls `onSelect(tabId)` with the comment "selecting scrolls it into
- * view through the effect above". For the tab that is ALREADY active, that
- * effect's deps are unchanged, so the one offered way back was a no-op for
- * exactly the tab that was off-screen.
- *
- * ⚠ Nothing here claims the tab is VISIBLE — jsdom computes no layout and has
- * no `scrollIntoView` at all (the production call is feature-detected for that
- * reason). What is asserted is that the reveal is REQUESTED on the active tab,
- * on each of the two paths that previously requested nothing. Whether it lands
- * is on the live checklist.
- */
 function tab(over: Partial<ChatTab> = {}): ChatTab {
   return { tabId: 'tab-1', sessionId: 's1', title: 'Cohort query', userSetName: false, ...over };
 }
@@ -48,19 +29,10 @@ function renderStrip(over: Partial<ChatTabStripProps> = {}) {
 }
 
 let resizeCallbacks: Array<() => void> = [];
-let scrollIntoView: ReturnType<typeof vi.spyOn>;
 const originalResizeObserver = globalThis.ResizeObserver;
 
 beforeEach(() => {
   resizeCallbacks = [];
-  // ⚠ A SPY, not a redefinition. `src/test/setup.ts` installs
-  // `Element.prototype.scrollIntoView` once for the whole process, and says why
-  // a per-test install-and-delete is a race the polyfill cannot win: the strip
-  // calls it from a PASSIVE effect, and vitest runs this file's `afterEach`
-  // BEFORE the shared `cleanup()` whose unmount flushes that effect. Spying
-  // leaves the shared no-op in place and `mockRestore` puts it back, so nothing
-  // here can strip the polyfill for the rest of the process.
-  scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {});
   class FakeResizeObserver {
     constructor(callback: () => void) {
       resizeCallbacks.push(callback);
@@ -74,38 +46,104 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.ResizeObserver = originalResizeObserver;
-  scrollIntoView.mockRestore();
 });
 
-describe('the active tab is brought back into view', () => {
-  it('after the strip is resized', () => {
+function geometry(container: HTMLElement, width = 160) {
+  const strip = container.querySelector('[role="tablist"]') as HTMLElement;
+  Object.defineProperty(strip, 'clientWidth', { configurable: true, value: width });
+  for (const [index, el] of [
+    ...container.querySelectorAll<HTMLElement>('[data-tab-id]'),
+  ].entries()) {
+    Object.defineProperty(el, 'offsetLeft', { configurable: true, value: index * 120 });
+    Object.defineProperty(el, 'offsetWidth', { configurable: true, value: 117 });
+  }
+  return strip;
+}
+function resize() {
+  act(() => {
+    for (const callback of resizeCallbacks) callback();
+  });
+}
+describe('the complete active tab is brought into view', () => {
+  it('reveals the trailing edge including the close control after resize', () => {
     const { container } = renderStrip();
-    scrollIntoView.mockClear();
-
-    act(() => {
-      for (const callback of resizeCallbacks) callback();
-    });
-
-    expect(scrollIntoView).toHaveBeenCalled();
-    // The ref sits on the tab's LABEL BUTTON, not on `.br-tab` — the wrapper
-    // owns the drag gesture and nothing new may be declared on it.
-    const active = container.querySelector('[data-tab-id="tab-3"] button[role="tab"]');
-    expect(scrollIntoView.mock.instances).toContain(active);
+    const strip = geometry(container);
+    resize();
+    expect(strip.scrollLeft).toBe(205);
+    expect(240 + 117).toBeLessThanOrEqual(strip.scrollLeft + strip.clientWidth - 8);
+  });
+  it('reveals the leading edge on selection', () => {
+    const { container, rerender, props } = renderStrip();
+    const strip = geometry(container);
+    strip.scrollLeft = 205;
+    rerender(<ChatTabStrip {...props} activeTabId="tab-1" />);
+    expect(strip.scrollLeft).toBe(0);
+    rerender(<ChatTabStrip {...props} />);
+    expect(strip.scrollLeft).toBe(205);
+  });
+  it('reveals an already selected tab and responds to split-pane shrink', () => {
+    const { container } = renderStrip();
+    const strip = geometry(container, 100);
+    fireEvent.click(container.querySelector('[data-tab-id="tab-3"] button[role="tab"]')!);
+    expect(strip.style.getPropertyValue('--chat-tab-available-width')).toBe('92px');
+    expect(strip.scrollLeft).toBe(265);
+    geometry(container, 200);
+    resize();
+    expect(strip.scrollLeft).toBe(240);
+  });
+  it('reveals the selected tab when keyboard focus returns to the strip', () => {
+    const { container } = renderStrip();
+    const strip = geometry(container);
+    fireEvent.focus(container.querySelector('[data-tab-id="tab-3"] button[role="tab"]')!);
+    expect(strip.scrollLeft).toBe(205);
   });
 
-  it('when the overflow menu selects the tab that is already active', async () => {
+  it('shows the new selection after arrow-key navigation', () => {
+    const { container, rerender, props } = renderStrip({ activeTabId: 'tab-2' });
+    const strip = geometry(container);
+    fireEvent.keyDown(container.querySelector('[data-tab-id="tab-2"] button[role="tab"]')!, {
+      key: 'ArrowRight',
+    });
+    expect(props.onSelect).toHaveBeenCalledWith('tab-3');
+    rerender(<ChatTabStrip {...props} activeTabId="tab-3" />);
+    expect(strip.scrollLeft).toBe(205);
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-tab-id="tab-3"] button[role="tab"]')
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(props.onSelect).toHaveBeenLastCalledWith('tab-1');
+    rerender(<ChatTabStrip {...props} activeTabId="tab-1" />);
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-tab-id="tab-1"] button[role="tab"]')
+    );
+    expect(strip.scrollLeft).toBe(0);
+  });
+
+  it('keeps arrow-key focus through the strip remount caused by a chat switch', () => {
+    const first = renderStrip({ activeTabId: 'tab-1' });
+    fireEvent.keyDown(first.container.querySelector('[data-tab-id="tab-1"] button[role="tab"]')!, {
+      key: 'ArrowRight',
+    });
+    first.unmount();
+    const second = renderStrip({ activeTabId: 'tab-2' });
+    expect(document.activeElement).toBe(
+      second.container.querySelector('[data-tab-id="tab-2"] button[role="tab"]')
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(second.props.onSelect).toHaveBeenLastCalledWith('tab-3');
+    second.unmount();
+    const third = renderStrip({ activeTabId: 'tab-3' });
+    expect(document.activeElement).toBe(
+      third.container.querySelector('[data-tab-id="tab-3"] button[role="tab"]')
+    );
+  });
+
+  it('does not scroll the page or chat transcript to reveal a tab', () => {
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
     const { container } = renderStrip();
-    scrollIntoView.mockClear();
-
-    // The ▾ menu and the tab itself share one `handleSelect`; the ▾ is gated on
-    // a measurement jsdom cannot make, so the shared handler is exercised
-    // through the tab. Selecting the tab you are ALREADY on is the case the
-    // effect's deps cannot see, and the case the ▾ exists to serve.
-    const activeTabButton = container.querySelector(
-      '[data-tab-id="tab-3"] button[role="tab"]'
-    ) as HTMLElement;
-    fireEvent.click(activeTabButton);
-
-    expect(scrollIntoView.mock.instances).toContain(activeTabButton);
+    geometry(container);
+    resize();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

@@ -1,3 +1,4 @@
+import { isTabKeyboardFocusPending } from './chatTabKeyboardFocus';
 import { useCallback, useMemo, useState, useEffect, useRef, Fragment, ReactElement } from 'react';
 import BaseChat from '../BaseChat';
 import InAppTerminalDock from '../InAppTerminalDock';
@@ -1555,7 +1556,7 @@ function ChatGroupPane({
           // a pane makes it the focused one (`onFocusCapture` above), so the
           // LAST pane used to win the caret and the focus — whichever pane an
           // arrival had just focused, and whichever the person had left.
-          autoFocusComposer={isActiveGroup}
+          autoFocusComposer={isActiveGroup && !isTabKeyboardFocusPending(tabKey)}
         />
       </div>
       {/* This pane's OWN terminals, stacked below its chat inside the pane's

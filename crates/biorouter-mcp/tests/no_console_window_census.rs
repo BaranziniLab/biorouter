@@ -102,15 +102,27 @@ const COVERING_CALLS: &[&str] = &[
 /// A path here is matched as a suffix of the repo-relative path. Keep the reason
 /// specific: "not Windows" is only true of a file that cannot compile on
 /// Windows, which is a `cfg` fact, not a naming one.
+///
+/// ⚠ **An exemption is a hole, and holes widen quietly.** Four rows were removed
+/// on 2026-09-22, and each had failed in a different way, which is the argument
+/// for [`every_exemption_still_names_something_real`] below:
+///
+///  * two named `computercontroller/platform/{macos,linux}.rs`, which **no
+///    longer exist**. A row whose path matches nothing exempts nothing today and
+///    silently exempts whatever is created at that path tomorrow.
+///  * one exempted `privacy/system_auth_polkit.rs` because "polkit is
+///    Linux-only". That is a naming argument of exactly the kind the paragraph
+///    above forbids: the file's own header says it "is compiled on every target,
+///    not just Linux", deliberately, so a Windows build does reach it. The site
+///    now sets the flag itself and needs no row.
+///  * one exempted `agents/bug_report/issue.rs` because "`gh` runs only from the
+///    maintainer bug-report flow, never on a user turn". `report_bug_tool()` is
+///    offered to the model whenever `PlatformToolGates::bug_report` is on
+///    (`agents/platform_tools.rs`), and the flow reaches `gh auth status` and
+///    `gh issue create` — so it runs on an ordinary user turn, inside a daemon
+///    that is started DETACHED and therefore hands its console-subsystem
+///    children a brand-new, VISIBLE console. Both sites now set the flag.
 const EXEMPT: &[(&str, &str)] = &[
-    (
-        "crates/biorouter-mcp/src/computercontroller/platform/macos.rs",
-        "whole file is #[cfg(target_os = \"macos\")] — osascript does not exist on Windows",
-    ),
-    (
-        "crates/biorouter-mcp/src/computercontroller/platform/linux.rs",
-        "`mod linux;` is #[cfg(target_os = \"linux\")] in platform/mod.rs, so this          file is never compiled for Windows — xdotool/xclip/wmctrl are X11 and          Wayland tools",
-    ),
     (
         "crates/biorouter-sandbox/src/shell_sandbox/linux.rs",
         "whole file is Linux-only (seccomp/landlock); never compiled for Windows",
@@ -118,14 +130,6 @@ const EXEMPT: &[(&str, &str)] = &[
     (
         "crates/biorouter/src/privacy/system_auth_macos.rs",
         "macOS authorization UI only",
-    ),
-    (
-        "crates/biorouter/src/privacy/system_auth_polkit.rs",
-        "polkit is Linux-only",
-    ),
-    (
-        "crates/biorouter/src/agents/bug_report/issue.rs",
-        "`gh` runs only from the maintainer bug-report flow, never on a user turn",
     ),
     (
         "crates/biorouter/src/test_sandbox.rs",
@@ -1844,6 +1848,28 @@ fn the_containment_check_is_not_vacuous() {
 /// Files where reviewers measured an over-exemption, pinned by production lines
 /// that an older reader read as test code. Each file's own test module must
 /// still be read as one, or the pin would pass for the wrong reason.
+/// Every `EXEMPT` row still names a path that exists.
+///
+/// A row whose file was renamed or deleted stops describing the tree and starts
+/// pre-authorising whatever is written at that path next — the permission
+/// outlives the reason for it, and nothing says so. Two such rows were found
+/// here, both pointing at `computercontroller/platform/`, a directory that no
+/// longer exists.
+#[test]
+fn every_exemption_still_names_something_real() {
+    let root = repo_root();
+    let dead: Vec<&str> = EXEMPT
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !root.join(path).exists())
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "these EXEMPT rows name paths that do not exist, so they exempt nothing today \
+         and will silently exempt whatever is created there tomorrow: {dead:?}"
+    );
+}
+
 #[test]
 fn the_measured_over_exemptions_are_gone() {
     let root = repo_root();

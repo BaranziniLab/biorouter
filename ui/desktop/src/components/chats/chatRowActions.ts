@@ -61,8 +61,12 @@ export type ChatRowActionTarget = {
  */
 export async function copyConversationId(sessionId: string): Promise<boolean> {
   try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-    await navigator.clipboard.writeText(sessionId);
+    if (window.electron?.copyConversationId) {
+      await window.electron.copyConversationId(sessionId);
+    } else {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(sessionId);
+    }
     toastSuccess({
       title: 'Conversation ID copied',
       msg: sessionId,

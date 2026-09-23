@@ -32,7 +32,7 @@ describe('MessageDivergeLink', () => {
     });
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /branch/i }));
+    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
@@ -67,7 +67,7 @@ describe('MessageDivergeLink', () => {
         truncateAfterId="assistant-message-1"
       />
     );
-    fireEvent.click(screen.getByRole('button', { name: /branch/i }));
+    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
@@ -86,7 +86,7 @@ describe('MessageDivergeLink', () => {
     mockDivergeSession.mockRejectedValue(new Error('boom'));
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /branch/i }));
+    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
@@ -97,7 +97,7 @@ describe('MessageDivergeLink', () => {
     mockDivergeSession.mockResolvedValue({ data: { workingDir: '/x' } });
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /branch/i }));
+    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
@@ -113,7 +113,7 @@ describe('MessageDivergeLink', () => {
     );
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    const btn = screen.getByRole('button', { name: /branch/i });
+    const btn = screen.getByRole('button', { name: /diverge/i });
     fireEvent.click(btn);
     fireEvent.click(btn);
     fireEvent.click(btn);

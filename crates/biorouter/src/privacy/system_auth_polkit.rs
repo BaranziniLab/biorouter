@@ -96,7 +96,14 @@ async fn check_authorization(req: &AuthRequest) -> PolkitSignal {
         return PolkitSignal::NoAuthenticationAgent;
     }
 
-    let output = tokio::process::Command::new(pkcheck)
+    let mut command = tokio::process::Command::new(pkcheck);
+    // This module compiles on every target (see the header), so it is reached by
+    // the console-window census on Windows too. `pkcheck` only ever RUNS on
+    // Linux, where the flag is a no-op — it is set so the site carries its own
+    // answer instead of leaning on an exemption row whose reason was a naming
+    // argument rather than a `cfg` fact (#368).
+    biorouter_mcp::developer::shell::no_console_window(&mut command);
+    let output = command
         .arg("--action-id")
         .arg(POLKIT_ACTION_ID)
         .arg("--process")

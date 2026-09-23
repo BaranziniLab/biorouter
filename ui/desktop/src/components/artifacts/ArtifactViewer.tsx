@@ -1,3 +1,5 @@
+import { hasSelectedText } from '../../utils/previewTextSelection';
+import { QuotedTextSelection, useTextSelection, attachSelectedText } from '../QuotedTextSelection';
 import { usePreviewMotion } from './usePreviewMotion';
 import { UIResourceRenderer } from '@mcp-ui/client';
 import {
@@ -535,6 +537,23 @@ export default function ArtifactViewer({
   const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
+  const quotedRevision =
+    preview.kind === 'file' && 'revision' in preview.preview ? preview.preview.revision : undefined;
+  const quotedSelection = useTextSelection(
+    previewBodyRef,
+    `${sessionId}:${isOpen}:${activeTab?.id ?? ''}:${preview.kind}:${previewSourceKey}:${quotedRevision ?? ''}`
+  );
+  const quoteSource = {
+    sessionId: sessionId ?? '',
+    title: activeArtifact?.title ?? 'Preview',
+    locator:
+      activeArtifact?.kind === 'file'
+        ? activeArtifact.path
+        : activeArtifact?.kind === 'externalUrl'
+          ? activeArtifact.url
+          : undefined,
+    revision: quotedRevision,
+  };
 
   /**
    * Turn a selected region into an attachment on the composer.
@@ -1430,6 +1449,25 @@ export default function ArtifactViewer({
             </button>
           )}
           {sessionId && (
+            <button
+              type="button"
+              disabled={!hasSelectedText(quotedSelection)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() =>
+                attachSelectedText(
+                  quoteSource,
+                  quotedSelection,
+                  previewBodyRef.current ?? undefined
+                )
+              }
+              className={cn(HEADER_ACTION_BUTTON_CLASS, 'shrink-0 disabled:opacity-50')}
+              aria-label="Quote selected text"
+              title="Select text in the preview, then quote it in this chat"
+            >
+              <span aria-hidden="true">“</span>
+            </button>
+          )}
+          {sessionId && (
             // Annotation is available on EVERY preview kind, not just one. Codex
             // shipped commenting in its browser but not its document pane, and
             // the open issue against that names our exact case: a researcher
@@ -1505,46 +1543,48 @@ export default function ArtifactViewer({
 
         {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
           preview sits directly on the panel ground — panel → strip → content. */}
-        <div
-          id={previewContentId}
-          data-testid="artifact-preview-content"
-          data-preview-open={isOpen ? 'true' : 'false'}
-          ref={previewBodyRef}
-          className="relative z-0 min-h-0 flex-1 overflow-hidden"
-        >
-          {isResizing && (
-            <div
-              data-testid="artifact-resize-shield"
-              aria-hidden="true"
-              className="absolute inset-0 z-50 cursor-col-resize"
+        <QuotedTextSelection source={quoteSource} selection={sessionId ? quotedSelection : ''}>
+          <div
+            id={previewContentId}
+            data-testid="artifact-preview-content"
+            data-preview-open={isOpen ? 'true' : 'false'}
+            ref={previewBodyRef}
+            className="relative z-0 min-h-0 flex-1 overflow-hidden"
+          >
+            {isResizing && (
+              <div
+                data-testid="artifact-resize-shield"
+                aria-hidden="true"
+                className="absolute inset-0 z-50 cursor-col-resize"
+              />
+            )}
+            {isAnnotating && (
+              <AnnotationOverlay
+                onCancel={finishAnnotation}
+                onSelect={(region) => {
+                  void captureAnnotation(region);
+                }}
+              />
+            )}
+            <ArtifactPreviewBody
+              preview={visiblePreview}
+              artifact={activeArtifact}
+              resolvedTheme={resolvedTheme}
+              isResizing={isResizing}
+              trustedFrameRef={trustedFrameRef}
+              onOpenArtifactInTab={openArtifactInTab}
+              isBrowsingUrl={
+                activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
+              }
+              onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
+              onLiveBrowserViewChange={handleLiveBrowserViewChange}
+              onLiveBrowserShareChange={onLiveBrowserShareChange}
+              isAnnotating={isAnnotating}
+              annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
+              refreshRevision={refreshRevision}
             />
-          )}
-          {isAnnotating && (
-            <AnnotationOverlay
-              onCancel={finishAnnotation}
-              onSelect={(region) => {
-                void captureAnnotation(region);
-              }}
-            />
-          )}
-          <ArtifactPreviewBody
-            preview={visiblePreview}
-            artifact={activeArtifact}
-            resolvedTheme={resolvedTheme}
-            isResizing={isResizing}
-            trustedFrameRef={trustedFrameRef}
-            onOpenArtifactInTab={openArtifactInTab}
-            isBrowsingUrl={
-              activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
-            }
-            onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
-            onLiveBrowserViewChange={handleLiveBrowserViewChange}
-            onLiveBrowserShareChange={onLiveBrowserShareChange}
-            isAnnotating={isAnnotating}
-            annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
-            refreshRevision={refreshRevision}
-          />
-        </div>
+          </div>
+        </QuotedTextSelection>
       </aside>
     </>
   );
@@ -1633,6 +1673,7 @@ function ArtifactPreviewBody({
     return (
       <iframe
         name="biorouter-artifact-preview"
+        key={preview.html}
         ref={trustedFrameRef}
         aria-label={artifact.title}
         // Inject the app theme so this preview matches the expanded/opened view,
@@ -2567,6 +2608,7 @@ function TextFilePreview({
           // that would inherit the preload IPC bridge.
           <iframe
             name="biorouter-artifact-preview"
+            key={file.preparedHtml ?? file.text}
             aria-label={file.title}
             srcDoc={injectArtifactBrowserCsp(
               withPreviewSizeReporting(

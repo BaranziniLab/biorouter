@@ -17,7 +17,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download Windows artifact from draft release
+      - name: Download Windows artifact from the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,12 +27,21 @@ jobs:
           $tag = "v$env:VERSION"
           $assetName = "Biorouter-win32-x64-$env:VERSION.zip"
           $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
-          $matches = @($releases | Where-Object { $_.tag_name -eq $tag -and $_.draft })
-          if ($matches.Count -ne 1) {
-            throw "Expected one draft release for $tag, found $($matches.Count)"
+          # The draft is what the publish gate asks about, so it wins. A
+          # PUBLISHED release of the same tag is accepted too, so this workflow
+          # can be re-run after publication — which is how the port-release step
+          # below is proven able to fail: dispatch it at a version whose daemon
+          # HAS the defect and require it to fail there.
+          $found = @($releases | Where-Object { $_.tag_name -eq $tag -and $_.draft })
+          if ($found.Count -eq 0) {
+            $found = @($releases | Where-Object { $_.tag_name -eq $tag -and -not $_.draft })
+            if ($found.Count -eq 1) { Write-Host "No draft for $tag; using the published release" }
+          }
+          if ($found.Count -ne 1) {
+            throw "Expected one draft or published release for $tag, found $($found.Count)"
           }
 
-          $assets = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($matches[0].id)/assets?per_page=100" | ConvertFrom-Json
+          $assets = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($found[0].id)/assets?per_page=100" | ConvertFrom-Json
           $assetMatches = @($assets | Where-Object { $_.name -eq $assetName })
           if ($assetMatches.Count -ne 1) {
             throw "Expected one $assetName asset, found $($assetMatches.Count)"
@@ -103,3 +112,34 @@ jobs:
           if ($process.HasExited) { throw "Packaged desktop exited during startup" }
           Stop-Process -Id $process.Id -Force
           Write-Host "Windows packaged runtime smoke passed for v$env:VERSION"
+
+      # ⚠ Proven able to fail, and repeatable: dispatch this workflow at a
+      # version whose daemon HAS the defect and the step below must fail with
+      # "PORT STILL HELD". Measured on v1.91.0 (2026-09-22, run 35763477213):
+      # the sleeper was spawned, the daemon was killed, the child stayed alive,
+      # and the listener was still attributed to the dead daemon's pid.
+      - name: A child the daemon spawns must not keep its port
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $desktopMatches = @(
+            Get-ChildItem -LiteralPath "artifact/unpacked" -File -Recurse |
+              Where-Object { $_.Name -ceq "Biorouter.exe" }
+          )
+          if ($desktopMatches.Count -ne 1) {
+            throw "Expected one packaged Biorouter.exe, found $($desktopMatches.Count)"
+          }
+          $daemon = Join-Path $desktopMatches[0].Directory.FullName "resources/bin/biorouterd.exe"
+
+          # Built by Windows PowerShell 5.1: pwsh 7 dropped Add-Type's
+          # -OutputAssembly / -OutputType, so `shell: pwsh` cannot build it.
+          $sleeper = Join-Path $env:RUNNER_TEMP "port-release-sleeper.exe"
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/windows/build-port-release-sleeper.ps1 -Output $sleeper
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sleeper)) {
+            throw "could not build the stand-in sidecar"
+          }
+
+          ./scripts/windows/port-release-regression.ps1 -Daemon $daemon -Sleeper $sleeper `
+            -Label "packaged v$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "the packaged daemon's port test failed" }

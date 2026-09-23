@@ -677,6 +677,10 @@ pub struct BundledExtensionTarget {
 }
 
 impl BundledExtensionTarget {
+    pub fn display_name(&self) -> &str {
+        crate::config::extensions::bundled_extension_display_name(&self.name).unwrap_or(&self.name)
+    }
+
     pub fn kind(&self) -> BundledExtensionKind {
         self.kind
     }
@@ -691,9 +695,10 @@ impl BundledExtensionTarget {
     pub fn into_config(self, description: String) -> ExtensionConfig {
         match self.kind {
             BundledExtensionKind::Builtin => ExtensionConfig::Builtin {
+                display_name: crate::config::extensions::bundled_extension_display_name(&self.name)
+                    .map(str::to_string),
                 name: self.name,
                 description,
-                display_name: None,
                 timeout: Some(300),
                 bundled: Some(true),
                 available_tools: Vec::new(),
@@ -756,7 +761,10 @@ pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarg
 
     let mut matches = Vec::new();
     for (registry_key, def) in PLATFORM_EXTENSIONS.iter() {
-        if extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+        if extension_reference_key(registry_key) == key
+            || extension_reference_key(def.name) == key
+            || crate::config::extensions::bundled_extension_display_name(def.name)
+                .is_some_and(|label| extension_reference_key(label) == key)
         {
             matches.push(BundledExtensionTarget {
                 kind: BundledExtensionKind::Platform,
@@ -766,7 +774,10 @@ pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarg
     }
 
     for (registry_key, def) in biorouter_mcp::BUILTIN_EXTENSIONS.iter() {
-        if extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+        if extension_reference_key(registry_key) == key
+            || extension_reference_key(def.name) == key
+            || crate::config::extensions::bundled_extension_display_name(def.name)
+                .is_some_and(|label| extension_reference_key(label) == key)
         {
             matches.push(BundledExtensionTarget {
                 kind: BundledExtensionKind::Builtin,
@@ -776,6 +787,23 @@ pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarg
     }
 
     (matches.len() == 1).then(|| matches.remove(0))
+}
+
+pub(crate) fn exact_custom_reference_key(
+    requested: &str,
+    target: Option<&BundledExtensionTarget>,
+    active: &[ExtensionConfig],
+) -> Option<String> {
+    active
+        .iter()
+        .find(|config| {
+            !matches!(
+                config,
+                ExtensionConfig::Builtin { .. } | ExtensionConfig::Platform { .. }
+            ) && config.name() == requested
+                && target.is_none_or(|target| config.key() != target.key())
+        })
+        .map(ExtensionConfig::key)
 }
 
 /// Generates extension name from server info; adds random suffix on collision.
@@ -5518,6 +5546,54 @@ mod tests {
         em.assert_extension_manageable("Custom", a_public_caller())
             .await
             .expect("`Custom` and `custom` are one extension to remove_extension");
+    }
+
+    #[test]
+    fn exact_active_custom_alias_is_not_redirected_to_a_builtin() {
+        let custom = |name: &str| ExtensionConfig::Frontend {
+            name: name.to_string(),
+            description: String::new(),
+            tools: vec![],
+            instructions: None,
+            bundled: None,
+            available_tools: vec![],
+        };
+        let target = resolve_bundled_extension("Biorouter Copilot").unwrap();
+        let entry = custom("Biorouter Copilot");
+        assert_eq!(
+            exact_custom_reference_key(
+                "Biorouter Copilot",
+                Some(&target),
+                std::slice::from_ref(&entry)
+            ),
+            Some(entry.key())
+        );
+        assert_eq!(
+            exact_custom_reference_key("computercontroller", Some(&target), &[entry]),
+            None
+        );
+        let target = resolve_bundled_extension("developer").unwrap();
+        assert_eq!(
+            exact_custom_reference_key("developer", Some(&target), &[custom("developer")]),
+            None
+        );
+    }
+
+    #[test]
+    fn current_capability_display_names_resolve_to_existing_registry_ids() {
+        for (label, id) in [
+            ("Biorouter Copilot", "computercontroller"),
+            ("Workspace Control", "workspace"),
+            ("Code Execution", "code_execution"),
+            ("Skills", "skills"),
+            ("Todo", "todo"),
+            ("Web & Documents", "webdocuments"),
+            ("Agent Drafter", "agent_drafter"),
+        ] {
+            let target = resolve_bundled_extension(label).expect(label);
+            assert_eq!(target.key(), id);
+            assert_eq!(target.display_name(), label);
+        }
     }
 
     // ---- issue #48: `/ext:` resolution by id + owning registry ----

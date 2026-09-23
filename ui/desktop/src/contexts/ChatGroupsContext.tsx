@@ -1,3 +1,4 @@
+import { retainTabGreetings } from '../components/common/Greeting';
 import {
   createContext,
   useContext,
@@ -63,6 +64,7 @@ import {
   composerDraftKeyForTab,
   holdsUnsentMessage,
   retainTabComposerDrafts,
+  retainExistingChatComposerDrafts,
   unsentComposerTabs,
 } from '../utils/composerDrafts';
 import { retainComposerQueues } from '../utils/composerQueues';
@@ -116,6 +118,13 @@ interface ChatGroupsContextValue {
   tabAnnotations: Record<string, TabAnnotation>;
 }
 
+// Route changes unmount this provider; only a new renderer ends these lifetimes.
+const liveTabsByWindow = new Map<string, Set<string>>();
+
+export function resetLiveChatTabsForTests() {
+  liveTabsByWindow.clear();
+}
+
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
 
 /** Returns null outside a provider (the ChatContext pattern) — never throws. */
@@ -130,12 +139,10 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // The navigation this provider mounts on. Read for its first state only.
   const mountLocation = useLocation();
   const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) => {
-    // A tab with no chat survives the re-read that coming back to /pair does
-    // only while it holds an unsent message — a draft, or a message whose start
-    // is still in flight — and that is renderer memory, so never across a
-    // reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
     const loaded = loadChatGroupsOrInitial(windowId, {
-      keepSessionlessTab: (tabId) => holdsUnsentMessage(composerDraftKeyForTab(tabId)),
+      keepSessionlessTab: (tabId) =>
+        liveTabsByWindow.get(windowId)?.has(tabId) === true ||
+        holdsUnsentMessage(composerDraftKeyForTab(tabId)),
     });
     // An ARRIVAL (sidebar New chat, or a Cmd+T remembered while another route
     // was showing) lands in the FIRST state, so every pane mounts already
@@ -175,19 +182,20 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // Persist. The transient route cargo is stripped inside saveChatGroups, not
   // here, so no caller can forget.
   useEffect(() => {
+    liveTabsByWindow.set(
+      windowIdRef.current,
+      new Set(Object.values(state.groups).flatMap((group) => group.tabs.map((tab) => tab.tabId)))
+    );
     saveChatGroups(state, windowIdRef.current);
   }, [state]);
 
-  // An unsent new chat lives as long as its tab exists AND has no chat. Closing
-  // the tab, or its message starting the chat it binds to, releases the draft
-  // (and the temp images it owned). Runs after every commit's unmount cleanups,
-  // so a composer closing with its tab has already saved what it held. This is
-  // the whole of `utils/composerDrafts.ts`'s bound: nothing else adds a tab key.
+  // Run after unmount cleanups: closing composers save before owner cleanup
+  // removes their drafts and staged images.
   useEffect(() => {
-    retainTabComposerDrafts(
-      leafGroupIds(state.layout).flatMap((id) =>
-        state.groups[id].tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId)
-      )
+    const tabs = leafGroupIds(state.layout).flatMap((id) => state.groups[id].tabs);
+    retainTabComposerDrafts(tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId));
+    retainExistingChatComposerDrafts(
+      tabs.flatMap((tab) => (tab.sessionId ? [{ tabId: tab.tabId, sessionId: tab.sessionId }] : []))
     );
   }, [state]);
 
@@ -565,6 +573,12 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     }),
     [state, activeSessionId, runningSessionIds, tabAnnotations]
   );
+
+  useEffect(() => {
+    retainTabGreetings(
+      Object.values(state.groups).flatMap((group) => group.tabs.map((tab) => tab.tabId))
+    );
+  }, [state.groups]);
 
   return <ChatGroupsContext.Provider value={value}>{children}</ChatGroupsContext.Provider>;
 }

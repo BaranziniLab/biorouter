@@ -1,0 +1,39 @@
+.br-tool-disclosure {
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.br-tool-disclosure:hover,
+.br-tool-disclosure:focus-visible,
+.br-tool-pending:hover {
+  color: var(--text-default);
+  background: transparent;
+}
+.br-tool-disclosure:focus-visible,
+.br-tool-more:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+.br-tool-running {
+  animation: br-tool-text-pulse 2.4s ease-in-out infinite;
+}
+.br-tool-disclosure:hover .br-tool-running,
+.br-tool-disclosure:focus-visible .br-tool-running,
+.br-tool-pending:hover .br-tool-running {
+  animation: none;
+}
+@keyframes br-tool-text-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .br-tool-running {
+    animation: none;
+  }
+}

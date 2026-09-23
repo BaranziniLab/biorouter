@@ -19,7 +19,7 @@ import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
 import { useConfig } from './ConfigContext';
 import { fetchSkillCatalog, pickerBundles, standaloneSkills } from './skills/useSkillCatalog';
-import bundledExtensionsData from './settings/extensions/bundled-extensions.json';
+import { extensionReferenceItems } from './extensionReferenceItems';
 
 type DisplayItemType = CommandType | 'Directory' | 'File' | 'KnowledgeBase' | 'Skill' | 'Extension';
 
@@ -51,45 +51,12 @@ const CLIENT_INSERT_COMMANDS: Record<
     insert: '/crew',
   },
   diverge: {
-    description: 'Branch this chat into a new one with full history. Press Enter',
+    description: 'Continue in a new chat with the full history. Press Enter',
     insert: '/diverge',
   },
 };
 
 const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
-const COMPACT_EXTENSION_ALIASES: Record<
-  string,
-  { canonical: string; name: string; label: string }
-> = {
-  agentdrafter: { canonical: 'agent_drafter', name: 'agentdrafter', label: 'Agent Drafter' },
-  autovisualiser: {
-    canonical: 'autovisualiser',
-    name: 'autovisualizer',
-    label: 'Auto Visualiser',
-  },
-  extensionmanager: {
-    canonical: 'Extension Manager',
-    name: 'extensionmanager',
-    label: 'Extension Manager',
-  },
-};
-
-const compactExtensionAliasFor = (name: string) =>
-  COMPACT_EXTENSION_ALIASES[name.replace(/[\s_-]+/g, '').toLowerCase()];
-
-const normalizedExtensionName = (name: string) => name.replace(/[\s_-]+/g, '').toLowerCase();
-
-const isKnownBuiltInExtension = (name: string) => {
-  const normalized = normalizedExtensionName(name);
-  return (
-    Boolean(COMPACT_EXTENSION_ALIASES[normalized]) ||
-    bundledExtensionsData.some(
-      (extension) => normalizedExtensionName(extension.name) === normalized
-    ) ||
-    ['todo', 'skills', 'extensionmanager', 'chatrecall', 'codeexecution'].includes(normalized)
-  );
-};
-
 /** The resource a picked item refers to, for the composer's chip rail. */
 export interface MentionReference {
   kind: RefKind;
@@ -144,7 +111,7 @@ const knowledgeBaseRole = (selection: KnowledgeSelection | null, kbId: string) =
  * part of the name they were configured with.
  */
 export const mentionReference = (item: DisplayItem): MentionReference | null => {
-  const clientCommand = CLIENT_INSERT_COMMANDS[item.name];
+  const clientCommand = item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name] : undefined;
   if (clientCommand) return clientCommand.reference ?? null;
 
   const kind = REFERENCE_KIND[item.itemType];
@@ -154,7 +121,12 @@ export const mentionReference = (item: DisplayItem): MentionReference | null => 
   // the id `kb_search` takes and `name` carries the `kb:`-prefixed display
   // string the user actually chose. The other kinds are named by the same
   // string they are resolved by, so a label would only be a duplicate.
-  const label = kind === 'knowledge_base' ? item.name.replace(/^kb:/, '') : undefined;
+  const label =
+    kind === 'knowledge_base'
+      ? item.name.replace(/^kb:/, '')
+      : kind === 'extension'
+        ? item.name.replace(/^ext:/, '')
+        : undefined;
 
   return { kind, value: item.relativePath, label: label === item.relativePath ? undefined : label };
 };
@@ -167,7 +139,7 @@ export const getMentionInsertText = (item: DisplayItem) => {
       : refTag(reference.kind, reference.value);
   }
 
-  const clientInsert = CLIENT_INSERT_COMMANDS[item.name]?.insert;
+  const clientInsert = item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
   if (clientInsert) return clientInsert;
 
   return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;
@@ -179,6 +151,7 @@ export interface DisplayItem {
   itemType: DisplayItemType;
   relativePath: string;
   builtIn?: boolean;
+  searchTerms?: string[];
 }
 
 export interface DisplayItemWithMatch extends DisplayItem {
@@ -602,7 +575,7 @@ const MentionPopover = forwardRef<
         if (includeCommands) {
           const existingNames = new Set(commandItems.map((c) => c.name));
           for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
-            if (existingNames.has(name)) continue;
+            if (existingNames.has(name) || (name === 'diverge' && !sessionId)) continue;
             commandItems.push({
               name,
               extra: def.description,
@@ -639,46 +612,13 @@ const MentionPopover = forwardRef<
           });
         }
 
-        const enabledSessionExtensions = new Set(
-          sessionExtensions?.data?.extensions?.map((extension) => extension.name) ?? []
+        commandItems.push(
+          ...extensionReferenceItems(
+            sessionId
+              ? (sessionExtensions?.data?.extensions ?? [])
+              : extensionsList.filter((extension) => extension.enabled)
+          )
         );
-        for (const extension of extensionsList) {
-          if (compactExtensionAliasFor(extension.name)) continue;
-          const enabled = sessionId
-            ? enabledSessionExtensions.has(extension.name)
-            : extension.enabled;
-          if (!enabled) continue;
-          commandItems.push({
-            name: `ext:${extension.name}`,
-            extra: extension.description || 'Enabled extension',
-            itemType: 'Extension',
-            relativePath: extension.name,
-            builtIn: isKnownBuiltInExtension(extension.name),
-          });
-        }
-
-        for (const extension of bundledExtensionsData) {
-          if (compactExtensionAliasFor(extension.name)) continue;
-          commandItems.push({
-            name: `ext:${extension.name}`,
-            extra: extension.description || extension.display_name || extension.name,
-            itemType: 'Extension',
-            relativePath: extension.name,
-            builtIn: true,
-          });
-        }
-        for (const alias of Object.values(COMPACT_EXTENSION_ALIASES)) {
-          const bundledExtension = bundledExtensionsData.find(
-            (extension) => extension.name === alias.canonical
-          );
-          commandItems.push({
-            name: `ext:${alias.name}`,
-            extra: bundledExtension?.description || alias.label,
-            itemType: 'Extension',
-            relativePath: alias.name,
-            builtIn: true,
-          });
-        }
 
         return uniqueDisplayItems(commandItems);
       },
@@ -715,6 +655,7 @@ const MentionPopover = forwardRef<
           const matches = [
             { match: fuzzyMatch(query, file.name), text: file.name },
             { match: fuzzyMatch(query, file.relativePath), text: file.relativePath },
+            ...(file.searchTerms ?? []).map((text) => ({ match: fuzzyMatch(query, text), text })),
           ];
           if (isSlashCommand) {
             matches.push({ match: fuzzyMatch(query, file.extra), text: file.extra });

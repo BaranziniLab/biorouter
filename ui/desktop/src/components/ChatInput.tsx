@@ -1,3 +1,4 @@
+import { onQuotedText, quoteReference } from '../utils/quotedText';
 import React, { useRef, useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { annotationContextText, onArtifactAnnotation } from '../utils/annotationChannel';
 import { ArrowUp, ChevronsDownUp, Plus, X } from './icons/app-icons';
@@ -375,9 +376,8 @@ interface ChatInputProps {
   commandHistory?: string[];
   initialValue?: string;
   /**
-   * The TAB this composer belongs to while its chat does not exist yet
-   * (`composerDraftKeyForTab`), Home's key (`HOME_COMPOSER_DRAFT_KEY`), or
-   * nothing for a composer of an existing chat.
+   * The owning tab's draft address: a sessionless tab key, a tab+session key
+   * for an existing chat, or Home's key. The owner retains it while the tab exists.
    *
    * With a key, what the composer holds is not this instance's alone: it is
    * seeded from, and saved on every change to, the draft in
@@ -1680,6 +1680,22 @@ export default function ChatInput({
     [updateValue]
   );
 
+  useEffect(
+    () =>
+      onQuotedText(
+        sessionId,
+        (quote) => {
+          const current = splitComposerText(displayValueRef.current);
+          const next = joinComposerText(current.body, [...current.refs, quoteReference(quote)]);
+          displayValueRef.current = next;
+          setComposerText(next);
+          requestAnimationFrame(() => textAreaRef.current?.focus());
+        },
+        () => textAreaRef.current
+      ),
+    [sessionId, setComposerText]
+  );
+
   /** Replace the prose, keeping whatever references are attached. */
   const setComposerBody = useCallback(
     (body: string) => setComposerText(joinComposerText(body, composerRefs)),
@@ -2340,9 +2356,14 @@ export default function ChatInput({
         return;
       }
       if (trimmedCandidate === DIVERGE_TRIGGER) {
-        if (sessionId) {
-          void diverge(sessionId);
+        if (!sessionId) {
+          toastWarning({
+            title: 'Start a chat first',
+            msg: '/diverge continues an existing conversation in a new chat. Send a message before using it.',
+          });
+          return;
         }
+        void diverge(sessionId);
         setDisplayValue('');
         setValue('');
         setHasUserTyped(false);
@@ -3205,7 +3226,7 @@ export default function ChatInput({
           >
             {composerRefs.map((ref, index) => (
               <ResourceRefChip
-                key={`${ref.kind}:${ref.value}`}
+                key={`${index}:${ref.kind}:${ref.value}`}
                 refSpan={ref}
                 onRemove={() => handleRemoveReference(index)}
               />

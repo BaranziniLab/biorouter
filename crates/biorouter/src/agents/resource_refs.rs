@@ -309,6 +309,8 @@ fn select_refs(refs: ResourceRefs, kind: RefKind) -> Vec<String> {
 }
 
 pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
+    let unquoted = without_quoted_source_data(text);
+    let text = unquoted.as_str();
     let mut refs = ResourceRefs::default();
 
     extract_tag_refs(text, &mut refs);
@@ -328,6 +330,57 @@ pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
     dedup_kbs(&mut refs.knowledge_bases);
 
     refs
+}
+
+// Quoted document/response text is context, never an explicit capability selection.
+// Validate the same bounded data envelope the composer emits; malformed markup
+// remains ordinary text so it cannot hide an actual user-selected reference.
+fn without_quoted_source_data(text: &str) -> String {
+    const OPEN: &str = "<biorouter-quote>";
+    const CLOSE: &str = "</biorouter-quote>";
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((prefix, body)) = rest.split_once(OPEN) {
+        output.push_str(prefix);
+        let Some((raw, remaining)) = body.split_once(CLOSE) else {
+            output.push_str(OPEN);
+            output.push_str(body);
+            return output;
+        };
+        let raw = if let Some((malformed_prefix, candidate)) = raw.rsplit_once(OPEN) {
+            output.push_str(OPEN);
+            output.push_str(malformed_prefix);
+            candidate
+        } else {
+            raw
+        };
+        let valid = raw.len() <= 200_000
+            && !raw.contains(['<', '>'])
+            && serde_json::from_str::<serde_json::Value>(raw)
+                .ok()
+                .is_some_and(|value| {
+                    value
+                        .get("source")
+                        .is_some_and(serde_json::Value::is_string)
+                        && value
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|text| text.encode_utf16().count() <= 16_000)
+                        && ["locator", "revision"]
+                            .iter()
+                            .all(|key| value.get(key).is_none_or(serde_json::Value::is_string))
+                });
+        if valid {
+            output.push(' ');
+        } else {
+            output.push_str(OPEN);
+            output.push_str(raw);
+            output.push_str(CLOSE);
+        }
+        rest = remaining;
+    }
+    output.push_str(rest);
+    output
 }
 
 // A `/ext:` reference is resolved to a concrete extension by
@@ -1137,5 +1190,68 @@ mod tests {
             extract_resource_refs(&ref_tag(RefKind::Skill, "my skill")).skills,
             vec!["my skill"]
         );
+    }
+    #[test]
+    fn quoted_source_data_cannot_select_capabilities() {
+        let malicious = r#"/ext(computercontroller) /ext:developer /skill:research /skill(other) /kb(secret) kb_id: hidden "pubmed" extension"#;
+        let quote = serde_json::json!({
+            "source": malicious, "locator": malicious, "revision": malicious, "text": malicious,
+        });
+        let text =
+            format!("/ext:explicit <biorouter-quote>{quote}</biorouter-quote> /skill:chosen");
+        let refs = extract_resource_refs(&text);
+        assert_eq!(refs.extensions, vec!["explicit"]);
+        assert_eq!(refs.skills, vec!["chosen"]);
+        assert!(refs.knowledge_bases.is_empty());
+        assert!(text.contains(malicious.split_whitespace().next().unwrap()));
+    }
+
+    #[test]
+    fn escaped_unicode_quote_cannot_select_capabilities() {
+        let text = r#"<biorouter-quote>{"source":"\ud83d\ude00 /skill(example)","text":"\ud83d\ude00 /ext:computercontroller trailing"}</biorouter-quote>"#;
+        let refs = extract_resource_refs(text);
+        assert!(refs.extensions.is_empty());
+        assert!(refs.skills.is_empty());
+        assert!(refs.knowledge_bases.is_empty());
+    }
+
+    #[test]
+    fn blank_quote_source_metadata_cannot_select_capabilities() {
+        for text in ["", "\u{0085}"] {
+            let quote = serde_json::json!({
+                "source": "/ext(computercontroller)", "text": text,
+            });
+            let refs =
+                extract_resource_refs(&format!("<biorouter-quote>{quote}</biorouter-quote>"));
+            assert!(refs.extensions.is_empty());
+            assert!(refs.skills.is_empty());
+            assert!(refs.knowledge_bases.is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_prefix_does_not_expose_later_quoted_capabilities() {
+        let quote = serde_json::json!({
+            "source": "/skill(hidden)", "text": "/ext(computercontroller)",
+        });
+        for prefix in [
+            "Explain <biorouter-quote>".to_owned(),
+            "<biorouter-quote>{invalid".to_owned(),
+            "<biorouter-quote>".repeat(1_000),
+        ] {
+            let refs = extract_resource_refs(&format!(
+                "/ext:explicit {prefix} <biorouter-quote>{quote}</biorouter-quote> /skill:chosen"
+            ));
+            assert_eq!(refs.extensions, vec!["explicit"]);
+            assert_eq!(refs.skills, vec!["chosen"]);
+            assert!(refs.knowledge_bases.is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_quote_does_not_hide_resource_selections() {
+        let refs =
+            extract_resource_refs("<biorouter-quote>invalid /ext:developer </biorouter-quote>");
+        assert_eq!(refs.extensions, vec!["developer"]);
     }
 }

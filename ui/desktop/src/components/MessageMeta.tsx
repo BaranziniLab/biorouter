@@ -1,30 +1,8 @@
+import './message-meta.css';
 import * as React from 'react';
 import { cn } from '../utils';
 
-/**
- * The one metadata unit under a message.
- *
- * Three copies of this row existed — one under an assistant answer, one under a
- * run of tool calls, one under the user's bubble — and each carried its own
- * hand-written animation stack: `text-sm` (14px, the SAME size as the message it
- * annotates) sliding up and fading out on `group-hover` while an absolutely
- * positioned action row slid down into the space it vacated. Two consequences,
- * both of them bugs rather than taste:
- *
- * 1. **The timestamp cost as much visual weight as the answer.** 14px repeated
- *    under every message is the transcript's single largest density cost, and it
- *    is the least important text on the surface. It drops to `supporting`
- *    (12/16) — the role the design of record names for timestamps, metadata and
- *    captions.
- * 2. **The actions were invisible until hovered**, so Copy and Diverge were
- *    undiscoverable, and the swap meant the timestamp and the actions could
- *    never be read at once. They now sit *beside* the timestamp permanently.
- *
- * The row is a fixed 20px box with `items-center`, which is the §3.10 optical
- * axis: whatever a caller puts in it — a 12px timestamp, a 14px glyph, a 20px
- * button — shares one centre line, so the meta row under a bubble and the one
- * under a tool run cannot drift apart by a pixel.
- */
+/** Shared message footer. Space stays reserved while hover/focus reveals it. */
 interface MessageMetaProps {
   /** Preformatted timestamp. Omitted for a row that is only actions. */
   timestamp?: React.ReactNode;
@@ -48,7 +26,7 @@ export function MessageMeta({ timestamp, align = 'start', className, children }:
     <div
       data-message-meta={align}
       className={cn(
-        'flex h-5 items-center gap-3 pt-px',
+        'mt-2 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1',
         align === 'end' ? 'justify-end' : 'justify-start',
         className
       )}

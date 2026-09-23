@@ -10,6 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Verify slash-command discovery, current resource names, and stale-command guidance
   - Validate native Biorouter Copilot, per-chat consent, isolation, and fixture-scoped desktop interaction
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Verify session-anchored file links and live updates without losing preview edits
@@ -131,6 +132,10 @@ instructions: |
   - Enable/disable extensions
   - Test extension interactions
   - Verify isolation between extensions
+  - In a disposable chat, browse `/` and `/ext:` and confirm current capability labels including Biorouter Copilot. Select a session-only extension and verify its exact reference identity.
+  - Submit `/extend computer controller` and verify actionable `/ext:` guidance without model execution or a permission grant.
+  - Verify `/effort` and a harmless configured workflow in the desktop, TUI, and classic CLI. A missing workflow must report its problem instead of falling through to the model.
+  - In a new desktop chat, verify `/diverge` is not suggested; typing it must preserve the draft and explain that an existing conversation is required.
 
   {% endif %}
 
@@ -155,6 +160,12 @@ instructions: |
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
   - Change an already-open report and app; verify same-tab updates and preserved user edits
   - Check absolute and later shorthand report links against the actual session directory
+  - In a disposable chat, select response text and choose Ask about it or Quote it; verify a removable source-labelled quotation appears without sending and preserves the draft and resource chips
+  - Switch away from the existing chat tab and back; verify the draft, quote and resource chips survive within the app session, then remove the quote and verify removal survives another switch
+  - Repeat with Word, Markdown and text previews, and the quote button beside preview capture; preserve exact newlines and punctuation
+  - Verify quoted command-like source text (/ext:developer, /skill(example), kb_id:fixture) never activates resources
+  - In a disposable Recents row, verify Copy conversation ID against the exact fixture ID; cancel permanent deletion once, then confirm deletion and verify history and open tabs update
+  - Record native desktop evidence; do not mark unavailable GUI checks as passed
   {% if cleanup_after == "true" %}
   - Delete only the preview app created by this run during cleanup
   {% endif %}
@@ -479,6 +490,13 @@ prompt: |
   2. Exercise contract, consent, non-pooling, ownership, cancellation and bridge/nested-call
      regression tests. Require removed tool names to fail rather than forward. A disabled
      capability or restricted roster must remain restricted after reload.
+     Verify ordinary replies never show a Copilot banner; only this conversation's actual
+     Copilot request may show one. Dismiss a completed banner, switch conversations and
+     return: it must stay dismissed until a new Copilot request. Dismissing an active banner
+     must retain Stop and must not revoke or grant control. OS checks must distinguish
+     denied permissions from a failed runtime probe. Settings actions target only the local
+     backend; remote sessions name the backend computer and require setup there. Opening
+     System Settings must never automatically grant an OS permission or task consent.
   3. Native GUI fixture: use only the exact disposable app/window {{ computer_use_fixture }}.
      If none is supplied, record GUI checks NOT OBSERVABLE and leave the acceptance gate open.
      Before any desktop observation, obtain the host's per-chat task grant for this model and
@@ -573,9 +591,11 @@ prompt: |
   5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
   6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.
   7. Create small synthetic Markdown, CSV, TSV, Python, R, and plain-text fixtures under {{ workspace_dir }}/preview-links only. Include repeated text `LYCHEE5` and a long code line. Verify the exact saved contents and return clickable absolute links. In the desktop, inspect the paper ground, syntax tokens, orange selection, and horizontal scrolling. Repeatedly open and close the panel, resize the actual window between stacked and side layouts, and check that an embedded page keeps its unsaved value. Enable Reduce Motion and verify that transitions stop. A delayed older open must not replace a newer file or reopen a closed panel. Never use a DevTools viewport override as evidence of a real window resize.
-  8. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, edit preservation, styling, and motion as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
+  8. Use docs/markdown-showcase.md as a synthetic Markdown template in both a chat response and a document preview. Inspect heading accents, soft gray sentence-case table headers, horizontal separators, callout tint, nested lists, Unicode, math, and distinct code headers. At narrow width, focus the table region by keyboard and scroll to its final column; require full numeric values and authored alignment. Copy both labelled and unlabelled code fences and compare the clipboard with the original content. Verify the default Appearance text size is Standard (1×), then switch through Large (1.07×) and Larger (1.15×), reload, and confirm the selection persists and visibly affects chat, document, menus, controls, and code without clipping. Check that padding, control heights, gaps, and the final-message-to-footer gap grow with the preference. Move the pointer away from messages to hide timestamp/actions, then hover each user and agent message to reveal only its footer without layout movement; verify keyboard access to Copy and Branch and narrow-pane wrapping. Record any surface unavailable to inspect as NOT OBSERVABLE.
+  9. Inspect a successful short tool call and a failed tool call. One click must reveal inputs and results or the diagnostic, without another disclosure for short text. Verify long content has a readable preview and Show more / Show less, hover changes text contrast without a background glow, and failures have no red background. Check keyboard expansion and reduced-motion behavior.
+  10. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, edit preservation, styling, and motion as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
   {% if cleanup_after == "true" %}
-  9. After recording the result, call `delete_app` for exactly `{{ preview_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
+  11. After recording the result, call `delete_app` for exactly `{{ preview_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
   {% endif %}
   {% endif %}
   

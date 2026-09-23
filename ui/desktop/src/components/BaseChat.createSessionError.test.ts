@@ -69,8 +69,9 @@ describe('the pre-session submit is wired to the give-back', () => {
     expect(preSession).toMatch(/catch \(err\) \{[\s\S]*?return handleCreateSessionError\(err\);/);
   });
 
-  it('addresses a new chat’s composer by its tab, and a chat’s by nothing', () => {
-    expect(source).toMatch(/draftKey=\{!sessionId \? composerDraftKey : undefined\}/);
+  it('addresses new-chat drafts by tab and existing-chat drafts by tab plus session', () => {
+    expect(source).toContain('draftKey={inputDraftKey}');
+    expect(source).toContain('existingChatComposerDraftKey(terminalKey, sessionId)');
     expect(source).toMatch(
       /const composerDraftKey = terminalKey \? composerDraftKeyForTab\(terminalKey\) : undefined;/
     );

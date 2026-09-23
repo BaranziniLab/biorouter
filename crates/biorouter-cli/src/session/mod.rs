@@ -241,12 +241,14 @@ pub struct CliSession {
 
 // Cache structure for completion data
 struct CompletionCache {
+    extension_names: Vec<String>,
     last_updated: Instant,
 }
 
 impl CompletionCache {
     fn new() -> Self {
         Self {
+            extension_names: Vec::new(),
             last_updated: Instant::now(),
         }
     }
@@ -555,6 +557,7 @@ impl CliSession {
         loop {
             self.display_context_usage().await?;
 
+            self.update_completion_cache().await?;
             let input = input::get_input(&mut editor)?;
             if matches!(input, InputResult::Exit) {
                 break;
@@ -756,7 +759,7 @@ impl CliSession {
         let new_session = manager
             .diverge_session(&self.session_id, name, None)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to branch chat: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to diverge chat: {}", e))?;
 
         let url = build_diverge_deeplink(&new_session.id, &new_session.working_dir);
         let open_error = opener(&url).err().map(|e| e.to_string());
@@ -1841,7 +1844,16 @@ impl CliSession {
     /// Update the completion cache with fresh data
     /// This should be called before the interactive session starts
     pub async fn update_completion_cache(&mut self) -> Result<()> {
+        let extension_names = self
+            .agent
+            .extension_manager
+            .get_extension_configs()
+            .await
+            .into_iter()
+            .map(|extension| extension.name())
+            .collect();
         let mut cache = self.completion_cache.write().unwrap();
+        cache.extension_names = extension_names;
         cache.last_updated = Instant::now();
         Ok(())
     }
@@ -2548,6 +2560,7 @@ mod tests {
     #[test]
     fn computer_use_prompt_requires_host_request_and_new_challenge() {
         let mut status = biorouter::security::computer_use::ComputerUseStatus {
+            activity_id: None,
             runtime: serde_json::json!({}),
             enabled: true,
             session_id: "chat".into(),

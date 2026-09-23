@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
+import { ChatGroupsProvider, resetLiveChatTabsForTests, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import { ARTIFACT_PANEL_ATTR } from '../utils/tabCycle';
 
@@ -62,6 +62,7 @@ const openTabs = async (n: number) => {
 describe('ChatGroupsProvider — the browser tab keyboard', () => {
   beforeEach(() => {
     localStorage.clear();
+    resetLiveChatTabsForTests();
     resetNewTabRegistry();
   });
 
@@ -71,6 +72,19 @@ describe('ChatGroupsProvider — the browser tab keyboard', () => {
     expect(tabs).toHaveLength(2);
     // The newest takes focus, as a browser's new tab does.
     expect(screen.getByTestId('active')).toHaveTextContent(tabs[1]);
+  });
+
+  it('preserves empty tab identities through Settings but drops them on renderer restart', async () => {
+    const view = mount();
+    const tabs = await openTabs(2);
+    view.unmount();
+    const returned = mount();
+    expect(screen.getByTestId('tabs').textContent).toBe(tabs.join(','));
+    expect(screen.getByTestId('active').textContent).toBe(tabs[1]);
+    returned.unmount();
+    resetLiveChatTabsForTests();
+    mount();
+    expect(screen.getByTestId('tabs').textContent).toBe('');
   });
 
   it('Ctrl+Tab cycles left-to-right and wraps; Ctrl+Shift+Tab goes back', async () => {

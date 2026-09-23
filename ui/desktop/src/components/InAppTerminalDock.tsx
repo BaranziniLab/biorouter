@@ -1,3 +1,4 @@
+import { useFontSize } from '../hooks/useFontSize';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -135,6 +136,9 @@ const TerminalPaneView: React.FC<{
   workingDir?: string;
   dockKey?: string;
 }> = ({ active, open, paneId, workingDir, dockKey }) => {
+  const { fontScale } = useFontSize();
+  const fontScaleRef = useRef(fontScale);
+  fontScaleRef.current = fontScale;
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -218,7 +222,7 @@ const TerminalPaneView: React.FC<{
       // absent from the test double.
       writeToBackend(terminalInputForCommand(command, term.modes?.bracketedPasteMode ?? false));
       // So the user can Ctrl-C it, or answer whatever it asks. A hidden dock's
-      // focus() is a browser no-op; `fitAndFocus` focuses again when it shows.
+      // focus() is a browser no-op; `fitTerminal` focuses again when it shows.
       term.focus();
       return true;
     },
@@ -255,37 +259,42 @@ const TerminalPaneView: React.FC<{
     return onTerminalRunRequest(dockKey, deliverRun);
   }, [active, dockKey, deliverRun]);
 
-  const fitAndFocus = useCallback(() => {
-    if (focusFrameRef.current !== null) {
-      window.cancelAnimationFrame(focusFrameRef.current);
-      focusFrameRef.current = null;
-    }
-    if (focusTimerRef.current !== null) {
-      window.clearTimeout(focusTimerRef.current);
-      focusTimerRef.current = null;
-    }
-    const term = terminalRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!term || !fitAddon || !open || !active) return;
-    focusFrameRef.current = window.requestAnimationFrame(() => {
-      focusFrameRef.current = null;
-      try {
-        fitAddon.fit();
-        const { cols, rows } = getTerminalSize(fitAddon);
-        const sessionId = backendSessionIdRef.current;
-        if (sessionId) {
-          window.electron.resizeTerminalSession(sessionId, cols, rows).catch(() => {});
-        }
-        term.focus();
-        focusTimerRef.current = window.setTimeout(() => {
-          focusTimerRef.current = null;
-          if (fitEnabledRef.current) term.focus();
-        }, 30);
-      } catch {
-        /* xterm can throw while the hidden dock has no measurable dimensions */
+  const fitTerminal = useCallback(
+    (focus: boolean) => {
+      if (focusFrameRef.current !== null) {
+        window.cancelAnimationFrame(focusFrameRef.current);
+        focusFrameRef.current = null;
       }
-    });
-  }, [active, open]);
+      if (focusTimerRef.current !== null) {
+        window.clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
+      }
+      const term = terminalRef.current;
+      const fitAddon = fitAddonRef.current;
+      if (!term || !fitAddon || !open || !active) return;
+      focusFrameRef.current = window.requestAnimationFrame(() => {
+        focusFrameRef.current = null;
+        try {
+          fitAddon.fit();
+          const { cols, rows } = getTerminalSize(fitAddon);
+          const sessionId = backendSessionIdRef.current;
+          if (sessionId) {
+            window.electron.resizeTerminalSession(sessionId, cols, rows).catch(() => {});
+          }
+          if (focus) {
+            term.focus();
+            focusTimerRef.current = window.setTimeout(() => {
+              focusTimerRef.current = null;
+              if (fitEnabledRef.current) term.focus();
+            }, 30);
+          }
+        } catch {
+          /* xterm can throw while the hidden dock has no measurable dimensions */
+        }
+      });
+    },
+    [active, open]
+  );
 
   useEffect(() => {
     const host = terminalHostRef.current;
@@ -301,7 +310,7 @@ const TerminalPaneView: React.FC<{
       cursorBlink: true,
       cursorStyle: 'block',
       fontFamily: TERMINAL_FONT,
-      fontSize: TERMINAL_FONT_SIZE,
+      fontSize: TERMINAL_FONT_SIZE * fontScaleRef.current,
       lineHeight: TERMINAL_LINE_HEIGHT,
       scrollback: 8000,
       theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current].terminal,
@@ -426,8 +435,16 @@ const TerminalPaneView: React.FC<{
   }, [paneId, workingDir, writeToBackend]);
 
   useEffect(() => {
-    fitAndFocus();
-  }, [fitAndFocus]);
+    fitTerminal(true);
+  }, [fitTerminal]);
+
+  useEffect(() => {
+    const term = terminalRef.current;
+    const nextFontSize = TERMINAL_FONT_SIZE * fontScale;
+    if (!term || term.options.fontSize === nextFontSize) return;
+    term.options.fontSize = nextFontSize;
+    fitTerminal(false);
+  }, [fontScale, fitTerminal]);
 
   useEffect(() => {
     return () => {

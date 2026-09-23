@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import MentionPopover from './MentionPopover';
 import { reachGatedGetActive, USER_ACTION_KEY } from '../test/reachGate';
@@ -37,18 +37,18 @@ function base(id: string, name: string) {
   return { id, name, color: '#cf6d47', created_at: '', schema_version: 1, tier: 'public' };
 }
 
-function renderPalette() {
+function renderPalette(query = 'kb', sessionId: string | null = PRIVATE_CHAT, onSelect = vi.fn()) {
   return render(
     <MentionPopover
       isOpen
       isSlashCommand
-      query="kb"
-      sessionId={PRIVATE_CHAT}
+      query={query}
+      sessionId={sessionId}
       workingDir="/w"
       position={{ x: 0, y: 400 }}
       selectedIndex={0}
       onSelectedIndexChange={() => {}}
-      onSelect={() => {}}
+      onSelect={onSelect}
       onClose={() => {}}
     />
   );
@@ -117,6 +117,45 @@ describe('the / palette in a private chat', () => {
         headers: { 'X-User-Action': USER_ACTION_KEY },
       })
     );
+  });
+
+  it('offers session-only extensions and inserts their exact identities', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: {
+        extensions: [
+          {
+            type: 'stdio',
+            name: 'session_tool-v2',
+            description: 'Session only',
+            cmd: 'fixture',
+            args: [],
+          },
+        ],
+      },
+    });
+    const select = vi.fn();
+    renderPalette('ext:', PRIVATE_CHAT, select);
+    fireEvent.click(await screen.findByText('ext:session_tool-v2'));
+    expect(select).toHaveBeenCalledWith(expect.stringContaining('session_tool-v2'));
+    expect(screen.getByText('ext:Biorouter Copilot')).toBeInTheDocument();
+    expect(screen.queryByText('ext:computercontroller')).not.toBeInTheDocument();
+  });
+
+  it('hides branching until a chat exists', async () => {
+    renderPalette('', null);
+    await screen.findByText('knowledge');
+    expect(screen.queryByText('diverge')).not.toBeInTheDocument();
+  });
+
+  it('finds current labels when searching a legacy canonical command', async () => {
+    renderPalette('ext:computercontroller');
+    expect(await screen.findByText('ext:Biorouter Copilot')).toBeInTheDocument();
+    expect(screen.queryByText('ext:computercontroller')).not.toBeInTheDocument();
+  });
+
+  it('keeps the American visualizer spelling searchable without a duplicate command', async () => {
+    renderPalette('ext:autovisualizer');
+    expect(await screen.findByText('ext:Auto Visualiser')).toBeInTheDocument();
   });
 
   /**

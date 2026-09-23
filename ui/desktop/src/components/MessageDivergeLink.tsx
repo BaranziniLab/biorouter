@@ -46,13 +46,10 @@ export default function MessageDivergeLink({
       onClick={handleDiverge}
       disabled={busy}
       icon={<GitBranch />}
-      aria-label="Branch this chat into a new window"
-      title="Branch this chat into a new window (keeps full history)"
+      aria-label="Diverge this chat into a new window"
+      title="Diverge this chat into a new window (keeps full history)"
     >
-      {/* "Diverge" is the internal name for this operation (#83 category 5).
-          The accessible name above already says "Branch", so leaving the
-          visible word as Diverge announced two names for one control. */}
-      {busy ? 'Branching…' : 'Branch'}
+      {busy ? 'Diverging…' : 'Diverge'}
     </MessageMetaAction>
   );
 }

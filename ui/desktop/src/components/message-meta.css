@@ -1,0 +1,25 @@
+[data-message-meta] {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.br-message-meta-scope:hover [data-message-meta],
+.br-message-meta-scope:focus-within [data-message-meta],
+[data-message-meta]:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  [data-message-meta] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-message-meta] {
+    transition: none;
+  }
+}

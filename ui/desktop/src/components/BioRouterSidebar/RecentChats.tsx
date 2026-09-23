@@ -1,3 +1,6 @@
+import { deleteConversation } from '../../utils/deleteConversation';
+import { toastError, toastSuccess } from '../../toasts';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import type { SessionSummary } from '../../api';
 import { ChevronDown, Clock, Folder } from '../icons/app-icons';
@@ -169,6 +172,30 @@ interface RecentChatRowProps {
 }
 
 function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletePending = useRef(false);
+  const handleDelete = async () => {
+    if (deletePending.current) return;
+    deletePending.current = true;
+    setDeleting(true);
+    try {
+      await deleteConversation(session.id);
+      setConfirmDelete(false);
+      toastSuccess({
+        title: 'Chat deleted',
+        msg: `"${session.name}" was removed from chat history.`,
+      });
+    } catch (error) {
+      toastError({
+        title: 'Failed to delete chat',
+        msg: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      deletePending.current = false;
+      setDeleting(false);
+    }
+  };
   const title = session.name.trim() || 'Untitled chat';
   const accessibleLabel = `${isRunning ? 'Open ongoing chat' : 'Open chat'}: ${title}`;
   const messageLabel = `${session.message_count} ${session.message_count === 1 ? 'message' : 'messages'}`;
@@ -192,7 +219,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           up carrying the tooltip's hover/focus listeners and the menu's
           `contextmenu` listener at once — which is what keeps the row one
           element. Wrapping the button in a div for the second trigger would put
-          a box inside the 2px row rhythm and break `space-y-0.5`. */}
+          a box inside the 2px row rhythm and break the shared row gap. */}
         <TooltipTrigger asChild>
           <ContextMenuTrigger asChild>
             <button
@@ -209,7 +236,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
               }
               aria-label={accessibleLabel}
               aria-current={isActive ? 'page' : undefined}
-              className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
+              className={`relative flex h-control-md w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
                 isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
               }`}
             >
@@ -259,7 +286,20 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           </div>
         </TooltipContent>
       </Tooltip>
-      <ChatRowContextMenuContent target={target} />
+      <ChatRowContextMenuContent target={target} onDelete={() => setConfirmDelete(true)} />
+      <ConfirmationModal
+        isOpen={confirmDelete}
+        title="Delete chat?"
+        message={`Are you sure you want to permanently delete the chat "${title}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        isSubmitting={deleting}
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        onConfirm={() => void handleDelete()}
+        onCancel={() => {
+          if (!deleting) setConfirmDelete(false);
+        }}
+      />
     </ContextMenu>
   );
 }
@@ -372,7 +412,7 @@ export default function RecentChats({
                   rhythm or it has none: with the destinations separated and the
                   history flush, the two halves of the same column read as two
                   different lists. */}
-              <div className="min-w-0 space-y-0.5">
+              <div className="flex min-w-0 flex-col gap-0.5">
                 {group.sessions.map((session) => (
                   <RecentChatRow
                     key={session.id}

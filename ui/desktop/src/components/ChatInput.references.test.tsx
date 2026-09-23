@@ -1,4 +1,7 @@
 import React from 'react';
+import { sendQuotedText, findQuotes } from '../utils/quotedText';
+import { act, cleanup } from '@testing-library/react';
+import { existingChatComposerDraftKey, resetComposerDraftsForTests } from '../utils/composerDrafts';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -63,6 +66,7 @@ import { labelledRefTag, refTag } from '../utils/resourceRefs';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetComposerDraftsForTests();
   Object.assign(window, {
     appConfig: { get: () => '/w' },
     electron: {
@@ -76,10 +80,21 @@ beforeEach(() => {
   });
 });
 
-const renderComposer = (initialValue: string, handleSubmit = vi.fn()) => {
+// #360 and #362 each added a THIRD positional parameter here and gave it a
+// different meaning — a session id and a draft key. Taking either side alone
+// would leave the other's tests passing an argument the helper reads as
+// something else, which is a merge that stays green and stops testing what it
+// names. Both are named, and the one call site that meant `sessionId` says so.
+const renderComposer = (
+  initialValue: string,
+  handleSubmit = vi.fn(),
+  draftKey?: string,
+  sessionId = 'session-1'
+) => {
   render(
     <ChatInput
-      sessionId="session-1"
+      sessionId={sessionId}
+      draftKey={draftKey}
       handleSubmit={handleSubmit}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
@@ -208,6 +223,14 @@ describe('the composer keeps references removable', () => {
 // would make an attached chip silently defeat a command that looks — to the
 // user, correctly — like the only thing in the box.
 describe('the composer recognises a command with a reference attached', () => {
+  it('keeps a typed /diverge in a new chat instead of silently discarding it', async () => {
+    const handleSubmit = renderComposer('', vi.fn(), undefined, '');
+    fireEvent.change(composer(), { target: { value: '/diverge' } });
+    fireEvent.submit(composer().closest('form')!);
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(composer().value).toBe('/diverge');
+  });
+
   it('still diverges', async () => {
     const handleSubmit = renderComposer(refTag('skill', 'my skill'));
 
@@ -262,5 +285,62 @@ describe('the composer degrades a tag it cannot read', () => {
 
     await waitFor(() => expect(composer().value).toBe(broken));
     expect(screen.queryByTestId('resource-ref-chip')).not.toBeInTheDocument();
+  });
+});
+
+describe('selected quotation in a composer', () => {
+  it('preserves the draft and references and never autosends', async () => {
+    const submit = renderComposer(`Question ${refTag('skill', 'research')}`);
+    await waitFor(() => expect(composer().value).toBe('Question'));
+    const text = 'Exact "quote"\n<tool>source data</tool>';
+    act(() => sendQuotedText({ source: { sessionId: 'session-1', title: 'Results.docx' }, text }));
+    expect(composer().value).toBe('Question');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('research');
+    expect(
+      screen.getByRole('button', { name: 'Remove quote from Results.docx' })
+    ).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.change(composer(), { target: { value: 'Follow-up' } });
+    fireEvent.submit(composer().closest('form')!);
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(findQuotes(submittedText(submit))[0].value).toBe(text);
+  });
+  it('removes a quote without changing existing body or resource', async () => {
+    renderComposer(`Keep ${refTag('skill', 'research')}`);
+    await waitFor(() => expect(composer().value).toBe('Keep'));
+    act(() =>
+      sendQuotedText({ source: { sessionId: 'session-1', title: 'Response' }, text: 'selection' })
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote from Response' }));
+    expect(composer().value).toBe('Keep');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('research');
+    expect(
+      screen.queryByRole('button', { name: 'Remove quote from Response' })
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('existing chat quote drafts outlive the composer', () => {
+  it('restores the same tab after unmount without leaking into another tab of the same session', async () => {
+    const origin = existingChatComposerDraftKey('origin-tab', 'session-1');
+    const other = existingChatComposerDraftKey('other-tab', 'session-1');
+    renderComposer(`Keep my draft ${refTag('skill', 'research')}`, vi.fn(), origin);
+    await waitFor(() => expect(composer().value).toBe('Keep my draft'));
+    const text = 'Exact "quotation"\nsecond line';
+    act(() => sendQuotedText({ source: { sessionId: 'session-1', title: 'Response' }, text }));
+    cleanup();
+    renderComposer('Other tab draft', vi.fn(), other);
+    expect(composer().value).toBe('Other tab draft');
+    expect(screen.queryByTestId('quoted-text-chip')).not.toBeInTheDocument();
+    cleanup();
+    renderComposer('', vi.fn(), origin);
+    expect(composer().value).toBe('Keep my draft');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('research');
+    expect(screen.getByTestId('quoted-text-chip').textContent).toContain(text);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote from Response' }));
+    cleanup();
+    renderComposer('', vi.fn(), origin);
+    expect(screen.queryByTestId('quoted-text-chip')).not.toBeInTheDocument();
+    expect(composer().value).toBe('Keep my draft');
   });
 });

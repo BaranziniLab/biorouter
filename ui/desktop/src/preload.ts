@@ -219,7 +219,12 @@ interface UpdaterEvent {
 
 // Define the API types in a single place
 type ElectronAPI = {
+  copyConversationId?: (id: string) => Promise<void>;
+  copySelectedText?: (text: string) => Promise<void>;
   platform: string;
+  openCopilotPermissionSettings: (
+    permission: 'accessibility' | 'screen_recording'
+  ) => Promise<void>;
   reactReady: () => void;
   getConfig: () => Record<string, unknown>;
   hideWindow: () => void;
@@ -616,7 +621,11 @@ type AppConfigAPI = {
 };
 
 const electronAPI: ElectronAPI = {
+  copyConversationId: (id: string) => ipcRenderer.invoke('copy-conversation-id', id),
+  copySelectedText: (text: string) => ipcRenderer.invoke('copy-selected-text', text),
   platform: process.platform,
+  openCopilotPermissionSettings: (permission) =>
+    ipcRenderer.invoke('open-copilot-permission-settings', permission),
   reactReady: () => ipcRenderer.send('react-ready'),
   getConfig: () => {
     if (!config || Object.keys(config).length === 0) {

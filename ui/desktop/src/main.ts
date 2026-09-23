@@ -1,6 +1,7 @@
 import './developmentProfile';
 import { createCrewDaemonTerminal } from './crewDaemonTerminal';
 import { promptNativeSecret } from './nativeSecretPrompt';
+import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
 import type {
   MenuItemConstructorOptions,
   OpenDialogOptions,
@@ -11,6 +12,7 @@ import {
   app,
   App,
   BrowserWindow,
+  clipboard,
   dialog,
   globalShortcut,
   ipcMain,
@@ -80,6 +82,7 @@ import {
   type GhostSpec,
   type GhostWindowHandle,
 } from './dragGhostWindow';
+import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
 import { expandTilde, reinterpretTildeAsAbsolute } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import {
@@ -1278,6 +1281,7 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
+const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
 
@@ -1596,6 +1600,7 @@ const createChat = async (
         JSON.stringify({
           ...appConfig,
           BIOROUTER_API_HOST: baseUrl,
+          BIOROUTER_LOCAL_BACKEND: !settings.externalBiorouterd?.enabled,
           BIOROUTER_WORKING_DIR: workingDir,
           REQUEST_DIR: dir,
           BIOROUTER_BASE_URL_SHARE: baseUrlShare,
@@ -1609,6 +1614,8 @@ const createChat = async (
       partition: RENDERER_PARTITION,
     },
   });
+
+  copilotPermissionSettings.bindWindow(mainWindow, Boolean(settings.externalBiorouterd?.enabled));
 
   if (!app.isPackaged) {
     installExtension(REACT_DEVELOPER_TOOLS, {
@@ -2661,6 +2668,32 @@ ipcMain.on('react-ready', (event) => {
   log.info('React ready - window is prepared for deep links');
 });
 
+ipcMain.handle('copy-conversation-id', (event, id: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  writeConversationId(
+    {
+      isAppWindow:
+        !!win && !win.isDestroyed() && windowMap.has(win.id) && win.webContents === event.sender,
+      isMainFrame: event.senderFrame === event.sender.mainFrame,
+    },
+    id,
+    (text) => clipboard.writeText(text)
+  );
+});
+
+ipcMain.handle('copy-selected-text', (event, id: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  writeSelectedText(
+    {
+      isAppWindow:
+        !!win && !win.isDestroyed() && windowMap.has(win.id) && win.webContents === event.sender,
+      isMainFrame: event.senderFrame === event.sender.mainFrame,
+    },
+    id,
+    (text) => clipboard.writeText(text)
+  );
+});
+
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || !Number.isFinite(minWidth)) {
@@ -2953,11 +2986,22 @@ ipcMain.handle('get-dock-icon-state', () => {
   }
 });
 
+ipcMain.handle('open-copilot-permission-settings', async (event, permission: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (!owner || owner.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error('Open permission settings from the Biorouter desktop window.');
+  }
+  const url = copilotPermissionSettings.urlForWindow(owner, process.platform, permission);
+  await shell.openExternal(url);
+});
+
 // Handle opening system notifications preferences
 ipcMain.handle('open-notifications-settings', async () => {
   try {
     if (process.platform === 'darwin') {
-      spawn('open', ['x-apple.systempreferences:com.apple.preference.notifications']);
+      spawn('open', ['x-apple.systempreferences:com.apple.preference.notifications'], {
+        windowsHide: true,
+      });
       return true;
     } else if (process.platform === 'win32') {
       // Windows: Open notification settings in Settings app
@@ -2967,7 +3011,7 @@ ipcMain.handle('open-notifications-settings', async () => {
       // Linux: Try different desktop environments
       // GNOME
       try {
-        spawn('gnome-control-center', ['notifications']);
+        spawn('gnome-control-center', ['notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('GNOME control center not found, trying other options');
@@ -2975,7 +3019,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // KDE Plasma
       try {
-        spawn('systemsettings5', ['kcm_notifications']);
+        spawn('systemsettings5', ['kcm_notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('KDE systemsettings5 not found, trying other options');
@@ -2983,7 +3027,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // XFCE
       try {
-        spawn('xfce4-settings-manager', ['--socket-id=notifications']);
+        spawn('xfce4-settings-manager', ['--socket-id=notifications'], { windowsHide: true });
         return true;
       } catch {
         console.log('XFCE settings manager not found, trying other options');
@@ -2991,7 +3035,7 @@ ipcMain.handle('open-notifications-settings', async () => {
 
       // Fallback: Try to open general settings
       try {
-        spawn('gnome-control-center');
+        spawn('gnome-control-center', [], { windowsHide: true });
         return true;
       } catch {
         console.warn('Could not find a suitable settings application for Linux');
@@ -3329,8 +3373,12 @@ ipcMain.handle('check-ollama', async () => {
   try {
     return new Promise((resolve) => {
       // Run `ps` and filter for "ollama"
-      const ps = spawn('ps', ['aux']);
-      const grep = spawn('grep', ['-iw', '[o]llama']);
+      // `ps` and `grep` are POSIX tools, but Git for Windows puts `ps.exe`
+      // and `grep.exe` on PATH on plenty of developer machines, where they
+      // resolve and each pop a console window. Hidden rather than guarded by
+      // platform, so the flag survives the handler being reached from anywhere.
+      const ps = spawn('ps', ['aux'], { windowsHide: true });
+      const grep = spawn('grep', ['-iw', '[o]llama'], { windowsHide: true });
 
       let output = '';
       let errorOutput = '';
@@ -5260,6 +5308,19 @@ function registerCliInstallHandlers() {
           env: SPAWN_ENV,
           detached: true,
           stdio: 'ignore',
+          // A VISIBLE WINDOW IS WANTED HERE — the user clicked "open the CLI in
+          // a terminal" — but this option is NOT what delivers it, and writing
+          // it as though it were is how the feature gets broken later. The
+          // window comes from `start`, which Microsoft documents as starting "a
+          // separate Command Prompt window to run a specified program"; `/b` is
+          // its opt-out. Inside Electron `windowsHide: false` cannot summon a
+          // console at all, because Electron sets kHideConsoleWindows on every
+          // Node environment it makes and libuv then takes the hiding branch
+          // whatever the caller passed. So this records intent for the
+          // console-window census, and nothing else. If anyone "simplifies"
+          // this to spawn `cmd /k biorouter` directly, the terminal silently
+          // stops appearing (#368).
+          windowsHide: false,
         });
         child.unref();
         return { success: true };
@@ -5282,6 +5343,12 @@ function registerCliInstallHandlers() {
             env: SPAWN_ENV,
             detached: true,
             stdio: 'ignore',
+            // A visible window is wanted, same as the Windows branch above:
+            // this is the user's own terminal emulator, opened because they
+            // asked for it. `windowsHide` has no meaning on Linux; it is
+            // written so this site reads the same as its Windows twin and so
+            // the census sees a decision rather than an omission.
+            windowsHide: false,
             ...(cwd ? { cwd } : {}),
           });
           child.unref();

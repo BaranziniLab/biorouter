@@ -263,7 +263,7 @@ export default function UserMessage({
   }, [editContent, isEditing]);
 
   return (
-    <div className="w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
+    <div className="br-message-meta-scope w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
       <div className="flex flex-col group">
         {/* BR-71 §5: a message injected from another session is labeled in the
             transcript for as long as it exists — including while it is being
@@ -323,7 +323,7 @@ export default function UserMessage({
             <div className="flex justify-between items-center gap-3 mt-3">
               <div className="text-supporting text-text-muted min-w-0">
                 <span className="font-semibold">Edit in place</span> updates this chat.{' '}
-                <span className="font-semibold">Branch</span> creates a new one.
+                <span className="font-semibold">Diverge</span> creates a new one.
               </div>
               <div className="flex shrink-0 gap-2">
                 <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
@@ -339,10 +339,10 @@ export default function UserMessage({
                 </Button>
                 <Button
                   onClick={() => handleSave('diverge')}
-                  aria-label="Branch with the edited message"
+                  aria-label="Diverge with the edited message"
                   title="Create a new chat from the edited message"
                 >
-                  Branch
+                  Diverge
                 </Button>
               </div>
             </div>

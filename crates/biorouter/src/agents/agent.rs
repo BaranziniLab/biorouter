@@ -6261,12 +6261,21 @@ impl Agent {
             // the *builtin* lookup made a valid `/ext:` request fail exactly
             // like a policy refusal (issue #48).
             let target = resolve_bundled_extension(requested);
+            let active = self.extension_manager.get_extension_configs().await;
+            let exact_custom = super::extension_manager::exact_custom_reference_key(
+                requested,
+                target.as_ref(),
+                &active,
+            );
+            let target = target.filter(|_| exact_custom.is_none());
             // The key the extension is stored under is also its tool prefix, so
             // it is what the model is told to use below.
-            let canonical = target
-                .as_ref()
-                .map(|target| target.key())
-                .unwrap_or_else(|| normalize(requested));
+            let canonical = exact_custom.unwrap_or_else(|| {
+                target
+                    .as_ref()
+                    .map(|target| target.key())
+                    .unwrap_or_else(|| normalize(requested))
+            });
 
             let target_is_enabled = if let Some(target) = target.as_ref() {
                 self.extension_manager

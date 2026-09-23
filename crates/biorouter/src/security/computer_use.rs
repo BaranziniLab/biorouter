@@ -64,6 +64,9 @@ pub struct ComputerUseStatus {
     pub public_model: bool,
     pub handoff_required: bool,
     pub requested: bool,
+    /// The most recent actual Copilot request, independent of routine task cleanup.
+    #[serde(default)]
+    pub activity_id: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -91,6 +94,7 @@ struct State {
     desktop_epoch: u64,
     grant: Option<Grant>,
     requested: bool,
+    activity_id: Option<String>,
     stopped: bool,
 }
 
@@ -284,7 +288,9 @@ impl ComputerUseConsent {
             disclosure,
             state: if active {
                 "active"
-            } else if state.stopped {
+            } else if state.activity_id.is_none() {
+                "idle"
+            } else if state.stopped || !state.requested {
                 "stopped"
             } else {
                 "approval_required"
@@ -294,6 +300,7 @@ impl ComputerUseConsent {
             public_model: scope.public_model,
             handoff_required: handoff,
             requested: state.requested,
+            activity_id: state.activity_id.clone(),
         }
     }
 
@@ -415,6 +422,7 @@ impl ComputerUseConsent {
             );
             ensure!(state.task_binding == state.scope, "The model changed during this request. Start a new request before using Biorouter Copilot.");
             state.requested = true;
+            state.activity_id = state.task.clone();
             (state.scope.clone(), state.task.clone())
         };
         let wait = async {
@@ -627,6 +635,65 @@ pub(crate) mod tests {
     pub(crate) fn test_serial() -> &'static tokio::sync::Mutex<()> {
         static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         &SERIAL
+    }
+
+    #[tokio::test]
+    async fn ordinary_requests_never_report_copilot_activity() {
+        let consent = Arc::new(ComputerUseConsent::default());
+        let provider = model(ProviderTier::Public);
+        for _ in 0..3 {
+            let task = consent.task_guard();
+            consent.bind_task("unused", &provider).await.unwrap();
+            let before = consent.status("unused", &provider).await.unwrap();
+            assert_eq!(before.state, "idle");
+            assert_eq!(before.activity_id, None);
+            drop(task);
+            let after = consent.status("unused", &provider).await.unwrap();
+            assert_eq!(after.state, "idle");
+            assert_eq!(after.activity_id, None);
+            assert!(consent.state.lock().unwrap().stopped);
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_belongs_to_the_request_and_never_to_another_chat() {
+        let _serial = test_serial().lock().await;
+        let consent = Arc::new(ComputerUseConsent::default());
+        let provider = model(ProviderTier::Public);
+        let task = consent.task_guard();
+        let approved = grant(&consent, "used", &provider).await;
+        let activity = approved.activity_id.unwrap();
+        drop(task);
+        let stopped = consent.status("used", &provider).await.unwrap();
+        assert_eq!(stopped.state, "stopped");
+        assert_eq!(stopped.activity_id.as_deref(), Some(activity.as_str()));
+
+        let unused = ComputerUseConsent::default();
+        assert_eq!(
+            unused
+                .status("unused", &provider)
+                .await
+                .unwrap()
+                .activity_id,
+            None
+        );
+        assert!(consent.status("unused", &provider).await.is_err());
+
+        let ordinary = consent.task_guard();
+        consent.bind_task("used", &provider).await.unwrap();
+        drop(ordinary);
+        assert_eq!(
+            consent
+                .status("used", &provider)
+                .await
+                .unwrap()
+                .activity_id
+                .as_deref(),
+            Some(activity.as_str())
+        );
+        let _next_task = consent.task_guard();
+        let next = grant(&consent, "used", &provider).await;
+        assert_ne!(next.activity_id.as_deref(), Some(activity.as_str()));
     }
 
     #[tokio::test]

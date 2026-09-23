@@ -22,6 +22,7 @@ import { Skeleton } from '../ui/skeleton';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { MODAL_SIZE } from '../ModalShell';
 import { toastSuccess, toastError } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 import {
   deleteWorkflow,
   WorkflowManifest,
@@ -93,6 +94,7 @@ export default function WorkflowsView() {
   const [slashCommandWorkflowManifest, setSlashCommandWorkflowManifest] =
     useState<WorkflowManifest | null>(null);
   const [slashCommand, setSlashCommand] = useState<string>('');
+  const [slashCommandError, setSlashCommandError] = useState('');
   const [isSavingSlashCommand, setIsSavingSlashCommand] = useState(false);
   const [scheduleValid, setScheduleIsValid] = useState(true);
 
@@ -366,6 +368,7 @@ export default function WorkflowsView() {
   };
 
   const handleOpenSlashCommandDialog = (workflowManifest: WorkflowManifest) => {
+    setSlashCommandError('');
     setSlashCommandWorkflowManifest(workflowManifest);
     setSlashCommand(workflowManifest.slash_command || '');
     setShowSlashCommandDialog(true);
@@ -383,8 +386,10 @@ export default function WorkflowsView() {
     if (!slashCommandWorkflowManifest || isSavingSlashCommand) return;
 
     setIsSavingSlashCommand(true);
+    setSlashCommandError('');
     try {
       await setWorkflowSlashCommand({
+        throwOnError: true,
         body: {
           id: slashCommandWorkflowManifest.id,
           slash_command: slashCommand || null,
@@ -402,8 +407,9 @@ export default function WorkflowsView() {
       await loadSavedWorkflows();
     } catch (error) {
       console.error('Failed to save slash command:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to save slash command';
-      setError(errorMsg);
+      setSlashCommandError(
+        typeof error === 'string' ? error : errorMessage(error, 'Failed to save slash command')
+      );
     } finally {
       setIsSavingSlashCommand(false);
     }
@@ -413,8 +419,10 @@ export default function WorkflowsView() {
     if (!slashCommandWorkflowManifest || isSavingSlashCommand) return;
 
     setIsSavingSlashCommand(true);
+    setSlashCommandError('');
     try {
       await setWorkflowSlashCommand({
+        throwOnError: true,
         body: {
           id: slashCommandWorkflowManifest.id,
           slash_command: null,
@@ -432,8 +440,9 @@ export default function WorkflowsView() {
       await loadSavedWorkflows();
     } catch (error) {
       console.error('Failed to remove slash command:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to remove slash command';
-      setError(errorMsg);
+      setSlashCommandError(
+        typeof error === 'string' ? error : errorMessage(error, 'Failed to remove slash command')
+      );
     } finally {
       setIsSavingSlashCommand(false);
     }
@@ -918,6 +927,11 @@ export default function WorkflowsView() {
                 )}
               </div>
 
+              {slashCommandError && (
+                <p role="alert" className="text-supporting text-text-default">
+                  {slashCommandError}
+                </p>
+              )}
               <DialogFooter>
                 {slashCommandWorkflowManifest.slash_command && (
                   <Button

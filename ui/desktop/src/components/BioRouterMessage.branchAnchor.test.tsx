@@ -54,7 +54,12 @@ describe('Branch control anchors (issue #167)', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /branch/i }));
+    // #360 renamed the control Branch -> Diverge; this branch changed the
+    // interaction from a click to keyboard activation. Either side alone loses
+    // the other: the click version stops covering keyboard users, and a
+    // /branch/i matcher finds nothing once the control is renamed.
+    screen.getByRole('button', { name: /diverge/i }).focus();
+    await userEvent.keyboard('{Enter}');
 
     await waitFor(() =>
       expect(mockDivergeSession).toHaveBeenCalledWith(

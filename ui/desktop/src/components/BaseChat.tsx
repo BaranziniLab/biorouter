@@ -74,7 +74,7 @@ import { toastError, toastWarning } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { startChatFailureNotice } from '../utils/startChatFailure';
 import { restoreComposerText } from '../utils/composerRestore';
-import { composerDraftKeyForTab } from '../utils/composerDrafts';
+import { composerDraftKeyForTab, existingChatComposerDraftKey } from '../utils/composerDrafts';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -1289,6 +1289,10 @@ function BaseChatContent({
   // same id. With no tab there is nothing that could release a draft, so none
   // is kept.
   const composerDraftKey = terminalKey ? composerDraftKeyForTab(terminalKey) : undefined;
+  const inputDraftKey =
+    terminalKey && sessionId
+      ? existingChatComposerDraftKey(terminalKey, sessionId)
+      : composerDraftKey;
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   const reasoningDraftKey = composerDraftKey ?? anonymousReasoningDraftKey;
   // F3 — the model this chat is about to be created on is the one on screen.
@@ -2324,11 +2328,7 @@ function BaseChatContent({
           onSteer={steer}
           commandHistory={commandHistory}
           initialValue={initialPrompt}
-          // A NEW chat's composer is addressed by its tab, so its unsent message
-          // survives the composer being rebuilt and reaches no other composer.
-          // An existing chat's needs no draft: its composer is not the one a
-          // failed start, a tab switch or a trip to Settings takes the text from.
-          draftKey={!sessionId ? composerDraftKey : undefined}
+          draftKey={inputDraftKey}
           reasoningDraftKey={reasoningDraftKey}
           setView={setView}
           totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
@@ -2611,7 +2611,11 @@ function BaseChatContent({
                         — the same three utilities every page title in the app was
                         writing by hand before there was a token for it. */}
                     {!suppressGreeting && (
-                      <Greeting key={sessionId} className={cn('text-center text-title')} />
+                      <Greeting
+                        key={terminalKey ?? sessionId}
+                        tabId={terminalKey}
+                        className={cn('text-center text-title')}
+                      />
                     )}
                     {renderChatInput()}
                   </div>

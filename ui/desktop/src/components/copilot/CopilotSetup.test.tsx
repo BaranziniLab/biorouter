@@ -4,7 +4,10 @@ import { CopilotSetup } from './CopilotSetup';
 
 const mocks = vi.hoisted(() => ({ setup: vi.fn() }));
 vi.mock('./copilotApi', () => ({ copilotSetup: mocks.setup }));
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  Object.assign(window, { electron: { platform: 'darwin', getConfig: () => ({}) } });
+});
 
 describe('CopilotSetup', () => {
   it('distinguishes a present runtime from unverified OS permissions', async () => {
@@ -37,7 +40,6 @@ describe('CopilotSetup', () => {
   });
   it.each([
     ['probe_pending', 'Runtime found — setup not checked'],
-    ['probe_failed', 'Could not check the native runtime'],
     ['os_permission_required', 'OS permission required'],
   ])('renders %s with an actionable permission result', async (status, label) => {
     mocks.setup.mockResolvedValue({
@@ -157,5 +159,87 @@ describe('CopilotSetup', () => {
     // the panel stayed hidden and the button just silently changed its label.
     fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
     expect(await screen.findByText('Runtime ready')).toBeVisible();
+  });
+});
+
+describe('permission repair controls', () => {
+  it('keeps probe failure separate from permission denial and shows recovery', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'probe_failed',
+      permissions: 'unknown',
+      target: 'darwin-arm64',
+      message: 'native helper timed out',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    expect(await screen.findByText(/this does not mean access was denied/)).toBeVisible();
+    expect(screen.getByText('native helper timed out')).toBeVisible();
+    expect(screen.queryByText(/A required OS permission is missing/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
+  });
+
+  it('opens only local macOS settings on an explicit click and reports failures', async () => {
+    const openSettings = vi.fn().mockRejectedValue(new Error('Settings could not open'));
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        getConfig: () => ({ BIOROUTER_LOCAL_BACKEND: true }),
+        openCopilotPermissionSettings: openSettings,
+      },
+    });
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      permissions: { accessibility: false, screen_recording: false },
+      target: 'darwin-arm64',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    const button = await screen.findByRole('button', { name: 'Open Accessibility settings' });
+    expect(openSettings).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(openSettings).toHaveBeenCalledWith('accessibility');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Settings could not open');
+  });
+
+  it('keeps local settings available when a probe fails without claiming they fix the runtime', async () => {
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        getConfig: () => ({ BIOROUTER_LOCAL_BACKEND: true }),
+        openCopilotPermissionSettings: vi.fn(),
+      },
+    });
+    mocks.setup.mockResolvedValue({
+      status: 'probe_failed',
+      permissions: 'unknown',
+      target: 'darwin-arm64',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    expect(
+      await screen.findByRole('button', { name: 'Open Screen Recording settings' })
+    ).toBeVisible();
+    expect(screen.getByText(/this does not mean access was denied/)).toBeVisible();
+  });
+
+  it('guides external backends without offering local settings', async () => {
+    const openSettings = vi.fn();
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        getConfig: () => ({ BIOROUTER_LOCAL_BACKEND: false }),
+        openCopilotPermissionSettings: openSettings,
+      },
+    });
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      permissions: { accessibility: false, screen_recording: false },
+      target: 'darwin-arm64',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    expect(await screen.findByText(/If it is remote, changing permissions/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
+    expect(openSettings).not.toHaveBeenCalled();
   });
 });

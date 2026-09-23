@@ -441,6 +441,8 @@ Arial is a defensible choice for a tool that must render identically on a lab Wi
 
 #### Canonical type scale
 
+The values below are the Standard baseline. Settings → App → Appearance offers Standard (the default, 1×), Large (1.07×), and Larger (1.15×). Scale typography and absolute line heights together, including code and terminal text. Padding, gaps, positive margins, and shared control/row heights follow the same preference so larger text has room; pane widths, viewport geometry, and window zoom remain independent. Relative em spacing already follows its text and must not scale twice. Sidebar navigation and recent-conversation rows share the same scalable 32px baseline height and 2px row gap; Components children keep their indentation within that rhythm. The sidebar wordmark uses a 24px base height multiplied by the same preference, with its aspect ratio preserved.
+
 | Role | Size / line-height | Weight | Tracking |
 |---|---|---|---|
 | Page title | 24 / 30 | 600 | −0.01em |
@@ -1106,6 +1108,8 @@ It has **zero call sites.** Delete the file. `DR-35`
 
 Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 36px ([D-12·C](#d-12--row-density)), hairline between. Numeric columns right-aligned with `tabular-nums`. No zebra striping, no vertical rules. Sortable headers show a 12px chevron on hover and when active.
 
+**Markdown tables (chat and document previews).** Use a soft gray `#ecece9` header with bold dark `#292927` sentence-case labels (dark mode: `#353533` with `#eeeeeb` text), 13px base type, and 11px × 16px cell padding. Separate body rows with fine horizontal rules, emphasize the first column, and preserve authored numeric alignment. Wide tables scroll inside a keyboard-focusable region; never split a numeric value to squeeze it into a narrow pane. This markdown treatment supersedes the earlier D-21 no-header-fill rule for these surfaces.
+
 ---
 
 ### 4.18 · Chat messages
@@ -1128,6 +1132,12 @@ The chat surface is an instrument readout, not a messaging app.
 
 Assistant prose is the page. Wrapping it in a bubble would halve the effective measure and add visual noise to the app's most-read surface. The user's turn is tinted only so the eye can find the boundary when scrolling.
 
+Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
+
+An empty chat's welcome sentence belongs to its tab. Select and animate it once, preserve it through tab switching, split/move/merge layouts and Settings visits, and start a fresh lifetime in a new tab or renderer. Keep the selected tab's complete frame and close control visible; use subtle neutral tab boundaries and mark the active tab with a bold label and thin bottom accent, without an accent border or surrounding shadow.
+
+Message timestamps and actions sit in a reserved footer with an 8px baseline top gap that follows the size preference. Reveal the footer when its own message is hovered or contains keyboard focus; keep it hidden at rest without shifting the conversation. On touch devices without hover, keep actions reachable. Allow wrapping at narrow widths and larger sizes.
+
 Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on completion.
 
 ---
@@ -1138,22 +1148,11 @@ Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on comp
 > turns a quiet conversation into a stack of boxes, and — because the app's focus treatment is now a
 > surface shift — a persistent 1px rectangle around a row is read by users as a *stuck focus ring*.
 
-**Collapsed.** No border. A 36px row, `--radius-md`, transparent fill, `hover:--background-muted`:
-a 16px status icon, the tool name in mono, a `--text-muted` summary, and the duration in `tabular-nums`.
+**Collapsed.** A transparent, borderless row with muted text and the tool icon alone, without colored status dots. Hover and keyboard focus bring the label to `--text-default` (dark ink in light mode, light ink in dark mode), without a background wash. Running text pulses gently; reduced motion disables the pulse.
 
-**Expanded.** The body appears beneath, separated by a `border-t` hairline. Arguments and results render
-as [code blocks](#51--code-blocks) on `--background-muted`. Still no surrounding outline.
+**Expanded.** One click reveals the inputs, generated code, and results together, separated by fine rules and short labels. Short content is fully visible. Long scripts, logs, and outputs show a few lines with an explicit Show more / Show less control. Arguments remain literal, selectable monospace text. No nested disclosure is required just to inspect an ordinary command and its output.
 
-**States.**
-
-| State | Icon | Colour | Surface |
-|---|---|---|---|
-| running | spinner | `--text-info` | — |
-| ok | check | `--text-success` | — |
-| error | triangle | `--text-danger` | `--background-danger` @ 5% wash |
-
-Failure is signalled by **colour** — the icon, the label, and a faint wash — never by an outline.
-This is the same rule as P3: colour is evidence.
+**Failure.** Keep the failure label and diagnostic message, with no red background. The words Ran, Working on, and Problem with communicate status without badge overlays; preserve any actionable permission or recovery control beneath the diagnostic.
 
 ---
 
@@ -1206,7 +1205,7 @@ via `useResolvedTheme()` + `useThemeFamily()`. Code blocks paint on `--backgroun
 `prose-invert` complaint no longer applies: the prose tokens are remapped to the Parchment tokens outright
 (D-19). `DR-39` closed.
 
-**Canonical.** A code block is a `--radius-lg` panel, `--background-muted` fill, 1px `--border-subtle`, no shadow. A 32px header carries the language in 11px caps `--text-subtle` and a ghost copy button. Body: 13/20 mono, 12px padding, `overflow-x: auto`, `tab-size: 2`.
+**Canonical markdown blocks.** Use a 10px-radius panel with a 1px `--border-subtle` edge and no shadow. A header at least 36px tall carries the language in its authored case and the existing copy/run controls on `--background-muted`. The body uses `--background-code`, the shared mono theme, and 14px × 16px padding. Document code preserves lines and scrolls horizontally; chat code wraps long lines. Unlabelled fences use the same card with a `text` label and Copy control.
 
 The syntax palette is derived from the system, not imported:
 
@@ -1367,7 +1366,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 > |---|---|---|
 > | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* **Amended 2026-09-08: a `[role='tab']` trigger takes no fill** — it activates on focus, so the fill sat permanently on the active tab as a grey box; its underline firming (2px → 3px, label at `--text-default`) is its focus indicator instead. **Amended 2026-09-08 (fourth): a keyboard-scrollable region with no role (`.biorouter-focus-region`) takes a 1px inset `--border-accent` edge** — it was exempted from the fill *and* from the UA ring, leaving no indicator at all. |
 > | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
-> | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
+> | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = a clear notice, with no red wash. A persistent rectangle reads as a stuck focus ring. |
 > | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |
 >
 > The [drift register](#part-7--drift-register) is now the active backlog. The options below are retained as

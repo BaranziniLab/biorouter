@@ -231,7 +231,7 @@ describe('SessionListView row actions', () => {
     ]);
 
     for (const action of visibleActions) {
-      expect(action).toHaveClass('h-8', 'w-8', 'border');
+      expect(action).toHaveClass('h-control-md', 'w-control-md', 'border');
       expect(action).not.toHaveAttribute('title');
     }
 

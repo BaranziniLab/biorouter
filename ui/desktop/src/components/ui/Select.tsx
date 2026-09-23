@@ -59,7 +59,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // the whisper down at the same time so the two never stack.
         control: ({ isFocused, isDisabled }) =>
           [
-            'flex h-8 w-full items-center rounded-element border bg-background-default px-2',
+            'flex h-control-md w-full items-center rounded-element border bg-background-default px-2',
             'text-label text-text-default transition-[color,background-color,border-color,box-shadow]',
             isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
             isFocused ? 'border-border-focus bg-background-focus' : 'border-border-emphasized',
@@ -83,7 +83,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
           // 32px rows at 8px inset — the shared menu-row geometry (§3.8), which
           // is also what makes the option row and the trigger above it agree.
           //
-          // `min-h-8`, NOT `h-8`. A fixed height is only correct while every option
+          // `min-h-control-md`, NOT `h-control-md`. A fixed height is only correct while every option
           // is one line. `formatOptionLabel` call sites (the model picker) render a
           // title plus a wrapped detail line — ~65px of content — and a fixed 32px
           // box does not clip it, because the option is `overflow: visible`: it
@@ -93,7 +93,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
           // the 32px rung for single-line rows and lets a two-line row own its
           // real height. Guarded by Select.optionGeometry.test.ts.
           const base =
-            'flex min-h-8 items-center rounded-element px-2 py-1 text-body cursor-pointer';
+            'flex min-h-control-md items-center rounded-element px-2 py-1 text-body cursor-pointer';
           if (isDisabled) return `${base} opacity-50 cursor-not-allowed pointer-events-none`;
           if (isSelected) {
             // A selected row is emphasised, not inverted. It used to fill with
@@ -121,11 +121,11 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // `unstyled` does NOT strip `minHeight: spacing.controlHeight` (38px) from
         // react-select's own control CSS — that line sits *outside* the `unstyled ? {}`
         // branch in the library's `control` style function, so it is emitted either way.
-        // Emotion injects it unlayered, Tailwind's `h-8` lives in `@layer utilities`, and
+        // Emotion injects it unlayered, Tailwind's `h-control-md` lives in `@layer utilities`, and
         // min-height beats height regardless: the trigger measured 38px against a 32px
         // class, six pixels off the <Input> rung it is class-for-class identical to.
         //
-        // Standing the floor down is the whole fix — the `h-8` above is then the single
+        // Standing the floor down is the whole fix — the `h-control-md` above is then the single
         // source of truth for the rung, exactly as the classNames block already claims.
         //
         // ⚠ jsdom cannot catch a regression here: it has no layout engine, so a test that

@@ -36,18 +36,19 @@
  * why the round trip is pinned by a property test over bodies that end in a
  * space, a newline and nothing at all.
  */
+import { findQuotes, quoteTag, type QuoteReference } from './quotedText';
 import { findRefTags, labelledRefTag, refTag, type RefKind, type RefSpan } from './resourceRefs';
 
 export interface ComposerText {
   /** The prose, with every reference tag removed. What the textarea shows. */
   body: string;
   /** The references, in source order. What the chip rail shows. */
-  refs: RefSpan[];
+  refs: (RefSpan | QuoteReference)[];
 }
 
 /** Split composer text into the prose the user edits and the references. */
 export function splitComposerText(text: string): ComposerText {
-  const refs = findRefTags(text);
+  const refs = [...findRefTags(text), ...findQuotes(text)].sort((a, b) => a.start - b.start);
   if (refs.length === 0) return { body: text, refs };
 
   let body = '';
@@ -70,8 +71,12 @@ export function joinComposerText(body: string, refs: ComposerText['refs']): stri
   return refs.reduce((text, ref) => `${text} ${tagFor(ref)}`, body);
 }
 
-const tagFor = (ref: Pick<RefSpan, 'kind' | 'value' | 'label'>): string =>
-  ref.label ? labelledRefTag(ref.kind, ref.value, ref.label) : refTag(ref.kind, ref.value);
+const tagFor = (ref: ComposerText['refs'][number]): string =>
+  ref.kind === 'quote'
+    ? quoteTag(ref)
+    : ref.label
+      ? labelledRefTag(ref.kind, ref.value, ref.label)
+      : refTag(ref.kind, ref.value);
 
 /**
  * `text` with one more reference attached.

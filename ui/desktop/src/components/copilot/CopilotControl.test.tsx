@@ -35,6 +35,7 @@ const status: CopilotStatus = {
   handoff_required: false,
   requested: true,
   enabled: true,
+  activity_id: 'activity-a',
 };
 
 beforeEach(() => {
@@ -74,14 +75,18 @@ describe('CopilotControl', () => {
     expect(mocks.status.mock.calls.length).toBe(settled);
   });
 
-  it('still retries an ordinary failure, which a mode refusal must not be confused with', async () => {
+  it('silently retries an initial failure without interrupting a chat with no known activity', async () => {
     // The negative control for the test above: if "not applicable" swallowed
     // every failure, a genuinely transient error would silently hide the panel
     // instead of offering Retry.
     mocks.status.mockRejectedValue(new Error('network down'));
-    render(<CopilotControl sessionId="task-a" />);
-    expect(await screen.findByRole('alert')).toHaveTextContent('network down');
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { container } = render(<CopilotControl sessionId="task-a" />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
+    expect(container).toBeEmptyDOMElement();
+    mocks.status.mockResolvedValue(status);
+    await act(async () => vi.advanceTimersByTime(2000));
+    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
   });
 
   it('discloses destination and host before a public grant and retains a working Stop', async () => {
@@ -211,13 +216,96 @@ describe('CopilotControl', () => {
     expect(screen.queryByText(/model-a/)).toBeNull();
   });
 
-  it('does not interrupt a fresh chat with unsolicited consent', async () => {
-    mocks.status.mockResolvedValue({ ...status, requested: false });
-    render(<CopilotControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Show Biorouter Copilot details' }));
-    expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
+  it.each(['idle', 'stopped', 'approval_required', 'busy'])(
+    'hides %s with no evidence of activity in this conversation',
+    async (state) => {
+      mocks.status.mockResolvedValue({
+        ...status,
+        activity_id: undefined,
+        requested: false,
+        state,
+      });
+      const { container } = render(<CopilotControl sessionId="task-a" />);
+      await waitFor(() => expect(mocks.status).toHaveBeenCalled());
+      expect(container).toBeEmptyDOMElement();
+      expect(mocks.decision).not.toHaveBeenCalled();
+    }
+  );
+
+  it('dismisses a stopped banner across polls and remounts, then resurfaces a new request', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const stopped = { ...status, session_id: 'dismiss-chat', requested: false, state: 'stopped' };
+    mocks.status.mockResolvedValue(stopped);
+    const view = render(<CopilotControl sessionId="dismiss-chat" />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Dismiss Biorouter Copilot banner' })
+    );
+    expect(view.container).toBeEmptyDOMElement();
+    mocks.status.mockResolvedValue({ ...stopped, challenge_id: 'ordinary-reply' });
+    await act(async () => vi.advanceTimersByTime(2000));
+    expect(view.container).toBeEmptyDOMElement();
+    view.unmount();
+    const reopened = render(<CopilotControl sessionId="dismiss-chat" />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(3));
+    expect(reopened.container).toBeEmptyDOMElement();
+    mocks.status.mockResolvedValue({
+      ...status,
+      session_id: 'dismiss-chat',
+      activity_id: 'new-request',
+    });
+    await act(async () => vi.advanceTimersByTime(2000));
+    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
     expect(mocks.decision).not.toHaveBeenCalled();
+  });
+
+  it('resurfaces renewed requests from an older backend without activity identifiers', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const legacy = { ...status, session_id: 'legacy-dismiss', activity_id: undefined };
+    mocks.status.mockResolvedValue(legacy);
+    render(<CopilotControl sessionId="legacy-dismiss" />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Dismiss Biorouter Copilot banner' })
+    );
+    expect(screen.getByRole('button', { name: 'Show Biorouter Copilot request' })).toBeVisible();
+    mocks.status.mockResolvedValue({ ...legacy, challenge_id: 'next-legacy-request' });
+    await act(async () => vi.advanceTimersByTime(2000));
+    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
+    expect(mocks.decision).not.toHaveBeenCalled();
+  });
+
+  it('dismisses active details without revoking and retains a visible Stop control', async () => {
+    mocks.status.mockResolvedValue({
+      ...status,
+      session_id: 'active-dismiss',
+      requested: false,
+      state: 'active',
+    });
+    render(<CopilotControl sessionId="active-dismiss" />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Dismiss Biorouter Copilot banner' })
+    );
+    expect(screen.queryByRole('region', { name: 'Biorouter Copilot' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Show active Biorouter Copilot' })).toBeVisible();
+    expect(mocks.decision).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(mocks.decision).toHaveBeenCalledTimes(1));
+    expect(mocks.decision.mock.calls[0][1]).toBe('revoke');
+  });
+
+  it('never carries observed activity into an unused chat when switching sessions', async () => {
+    mocks.status.mockResolvedValue({ ...status, activity_id: undefined, state: 'active' });
+    const view = render(<CopilotControl sessionId="task-a" />);
+    await screen.findByText('Biorouter Copilot active');
+    mocks.status.mockResolvedValue({
+      ...status,
+      session_id: 'unused-chat',
+      activity_id: undefined,
+      requested: false,
+      state: 'stopped',
+    });
+    view.rerender(<CopilotControl sessionId="unused-chat" />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledWith('unused-chat'));
+    expect(view.container).toBeEmptyDOMElement();
   });
 
   it('checks pending OS permissions from the chat without granting idle control', async () => {
