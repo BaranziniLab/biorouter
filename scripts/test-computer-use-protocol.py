@@ -10,7 +10,7 @@ import subprocess
 TOOLS = {"list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag",
          "type_text", "press_key", "set_value", "screen_capture"}
 CONTRACT = Path(__file__).resolve().parents[1] / "crates/biorouter-mcp/tests/fixtures/computer-use-tools.json"
-RETIRED_PROMPT_NAME = re.compile(r"(?:open[ _-]*computer[ _-]*use|computer[ _-]+controller|computer[ _-]+use)(?![a-z])", re.I)
+RETIRED_PROMPT_NAME = re.compile(r"(?:open[ _-]*computer[ _-]*use|computer[ _-]*controller|computer[ _-]*use)(?![a-z])", re.I)
 
 
 def semantic_schema(value):
