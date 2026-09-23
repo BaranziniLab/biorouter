@@ -5,7 +5,10 @@ use axum::middleware;
 use biorouter_server::auth::check_token;
 use http::HeaderValue;
 use tokio_util::sync::CancellationToken;
-use tower_http::compression::CompressionLayer;
+use tower_http::compression::{
+    predicate::{DefaultPredicate, NotForContentType, Predicate},
+    CompressionLayer,
+};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::info;
 
@@ -339,6 +342,14 @@ async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
     capability
 }
 
+fn response_compression() -> CompressionLayer<impl Predicate> {
+    // Keep event streams uncompressed so clients receive each frame promptly.
+    // The default predicate already excludes SSE; Crew uses NDJSON.
+    CompressionLayer::new().compress_when(
+        DefaultPredicate::new().and(NotForContentType::const_new("application/x-ndjson")),
+    )
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
@@ -493,11 +504,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
         None => app,
     };
 
-    // gzip large JSON payloads (config/providers/tools/session bodies), and the
-    // interface bundle when one is served. The default predicate skips small
-    // bodies and `text/event-stream`, so the streaming `/reply` SSE response is
-    // left unbuffered/uncompressed. Outermost, so it covers the interface too.
-    let app = app.layer(CompressionLayer::new());
+    let app = app.layer(response_compression());
 
     // Not `tokio::net::TcpListener::bind`: on Windows that socket is inherited by
     // every MCP extension, shell and coding agent this daemon spawns, and any one
@@ -766,3 +773,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "agent_compression_tests.rs"]
+mod compression_tests;
