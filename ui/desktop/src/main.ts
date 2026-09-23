@@ -96,7 +96,7 @@ import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
-import log from './utils/logger';
+import log, { logStartupFailure } from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
 import {
@@ -6786,16 +6786,10 @@ app.whenReady().then(async () => {
     }
     await appMain();
   } catch (error) {
-    // Keep the event loop running so asynchronous logs flush while the startup
-    // error remains visible and the native dialog stays responsive.
-    log.error('[Main] Fatal error during startup:', error);
-    if (error instanceof Error && error.stack) log.error(error.stack);
-    await dialog.showMessageBox({
-      type: 'error',
-      title: 'Biorouter Error',
-      message: `Failed to create main window: ${error}`,
-      buttons: ['OK'],
-    });
+    // Parentless macOS dialogs run a native modal loop, even with the Promise
+    // API. Complete the fatal log append before displaying the error.
+    logStartupFailure(error);
+    dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
     app.quit();
   }
 });
