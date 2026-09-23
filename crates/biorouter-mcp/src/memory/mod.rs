@@ -1222,13 +1222,16 @@ impl MemoryServer {
         tags: &[&str],
         is_global: bool,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global)?;
+        validated_category(category)?;
 
         // Held until this function returns: an append is one record, and a
         // delete rewriting the same category must not interleave with it. See
         // [`StoreLock`] — without this an append landing inside a delete's
         // read-modify-write is silently discarded (#63 review, finding 6).
         let _lock = self.lock_store(is_global)?;
+        // Resolve under the same lock so a concurrent delete cannot invalidate
+        // the leaf between its existence check and canonicalization.
+        let memory_file_path = self.get_memory_file(category, is_global)?;
 
         // The mark is the SERVER's to set. A caller-supplied copy is dropped
         // first and re-added only when the write really is private, so a model
@@ -3939,6 +3942,53 @@ mod tests {
     }
 
     // --- concurrency (#63 review, finding 6) ------------------------------
+
+    /// The append resolves its category only after it owns the store lock. A
+    /// cooperating delete can therefore repair a rejected category file while
+    /// an append waits, and the append must re-check the replacement rather
+    /// than return the stale pre-lock refusal.
+    #[cfg(unix)]
+    #[test]
+    fn an_append_rechecks_the_category_after_waiting_for_the_store_lock() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, UNTOUCHED).unwrap();
+        let category_file = server.local_memory_dir.join("notes.txt");
+        fs::create_dir_all(&server.local_memory_dir).unwrap();
+        std::os::unix::fs::symlink(&outside, &category_file).unwrap();
+        let lock = server.lock_store(false).unwrap();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let worker_server = server.clone();
+        std::thread::spawn(move || {
+            result_sender
+                .send(worker_server.remember(
+                    CallerCapability::Public,
+                    "notes",
+                    "inside after repair",
+                    &[],
+                    false,
+                ))
+                .unwrap();
+        });
+        assert!(
+            result_receiver
+                .recv_timeout(std::time::Duration::from_millis(250))
+                .is_err(),
+            "append resolved the rejected symlink before waiting for the store lock"
+        );
+        fs::remove_file(&category_file).unwrap();
+        fs::write(&category_file, "inside\n\n").unwrap();
+        drop(lock);
+        assert!(result_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("append did not finish after the lock was released")
+            .is_ok());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), UNTOUCHED);
+        assert!(fs::read_to_string(&category_file)
+            .unwrap()
+            .contains("inside after repair"));
+    }
 
     /// A delete is a read-modify-write over the whole category file, and the
     /// same store is appended to by an agent that may be running at the same
