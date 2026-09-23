@@ -24,6 +24,8 @@ export async function promptNativeSecret(
     program = '/usr/bin/osascript';
     args = [
       '-e',
+      'tell current application to activate',
+      '-e',
       `text returned of (display dialog ${appleQuote(message)} with title ${appleQuote(title)} default answer "" with hidden answer buttons {"Cancel", "Continue"} default button "Continue" cancel button "Cancel")`,
     ];
   } else if (process.platform === 'win32') {
@@ -71,7 +73,11 @@ export async function promptNativeSecret(
       const chunks: Buffer[] = [];
       let size = 0;
       let exceeded = false;
-      const timer = setTimeout(() => child.kill(), 180000);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, 180000);
       child.stdout.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > 4098) {
@@ -100,6 +106,12 @@ export async function promptNativeSecret(
         if (process.platform !== 'win32') answer = answer.replace(/\r?\n$/, '');
         if (exceeded || Buffer.byteLength(answer, 'utf8') > 4096)
           reject(new Error('The secure response exceeds the allowed length.'));
+        else if (timedOut)
+          reject(
+            new Error(
+              'The native secure prompt timed out after three minutes. Reopen the app and complete the password dialog to continue.'
+            )
+          );
         else if (code !== 0 || !answer) resolve(undefined);
         else resolve(answer);
       });

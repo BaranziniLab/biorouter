@@ -6786,13 +6786,16 @@ app.whenReady().then(async () => {
     }
     await appMain();
   } catch (error) {
-    // Log BEFORE the dialog. `showErrorBox` is modal and blocks the main thread
-    // until someone dismisses it, so on a headless or automated launch the only
-    // record of a fatal startup error was a box nobody could see and no log line
-    // at all — the failure looked like a silent hang.
+    // Keep the event loop running so asynchronous logs flush while the startup
+    // error remains visible and the native dialog stays responsive.
     log.error('[Main] Fatal error during startup:', error);
     if (error instanceof Error && error.stack) log.error(error.stack);
-    dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'Biorouter Error',
+      message: `Failed to create main window: ${error}`,
+      buttons: ['OK'],
+    });
     app.quit();
   }
 });
