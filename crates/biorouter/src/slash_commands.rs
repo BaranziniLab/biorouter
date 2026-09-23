@@ -191,8 +191,28 @@ fn update_workflow_binding(
 }
 
 pub fn get_workflow_for_command(command: &str) -> Option<PathBuf> {
+    resolve_in(configured_commands(), command)
+}
+
+/// The resolution itself, free of the config read so it can be tested.
+///
+/// A name the product RETIRED, or one it reserves for a built-in, must not
+/// resolve to a workflow just because a config file still names it.
+/// `validate_workflow_command` refuses to create such a mapping, but that only
+/// governs mappings made THROUGH it: a file hand-edited, carried over from a
+/// version where the name was still free, or written by an agent with a shell,
+/// reaches here without ever passing that gate. Resolution is the last place the
+/// answer can be no.
+///
+/// This restores a filter resolution had before the configured/display split:
+/// it used to look the command up in the FILTERED catalogue, so a reserved name
+/// found nothing. The split correctly gave reads and writes the raw list —
+/// resolution is neither, and it silently inherited the raw one.
+fn resolve_in(commands: Vec<SlashCommandMapping>, command: &str) -> Option<PathBuf> {
     let normalized = command.trim_start_matches('/').to_lowercase();
-    let commands = configured_commands();
+    if is_reserved_workflow_command(&normalized) {
+        return None;
+    }
     commands
         .into_iter()
         .find(|mapping| {
@@ -360,6 +380,50 @@ mod tests {
         assert_eq!(updated.len(), 3);
         assert_eq!(updated[0].command, "compact");
     }
+    #[test]
+    fn resolution_refuses_a_reserved_or_retired_name_a_config_file_still_holds() {
+        // Every entry here is one `validate_workflow_command` would refuse to
+        // create, so each can only arrive by a route that skips it: an edited
+        // file, an upgrade that reserved the name later, or an agent with a
+        // shell writing config.yaml.
+        let table = vec![
+            SlashCommandMapping {
+                command: "help".into(),
+                workflow_path: "/hijack.yaml".into(),
+            },
+            SlashCommandMapping {
+                command: "prompt".into(),
+                workflow_path: "/retired.yaml".into(),
+            },
+            SlashCommandMapping {
+                command: "/Diverge".into(),
+                workflow_path: "/shadow.yaml".into(),
+            },
+            SlashCommandMapping {
+                command: "review-paper".into(),
+                workflow_path: "/review.yaml".into(),
+            },
+        ];
+        for refused in ["help", "/help", "prompt", "diverge", "/Diverge"] {
+            assert_eq!(
+                resolve_in(table.clone(), refused),
+                None,
+                "/{refused} resolved to a workflow"
+            );
+        }
+        // The negative control. Without it this test passes just as well against
+        // a `resolve_in` that returns None for everything.
+        assert_eq!(
+            resolve_in(table.clone(), "review-paper"),
+            Some(PathBuf::from("/review.yaml"))
+        );
+        assert_eq!(
+            resolve_in(table, "/Review-Paper"),
+            Some(PathBuf::from("/review.yaml")),
+            "the case- and slash-insensitive match must survive the filter"
+        );
+    }
+
     #[test]
     fn resource_markers_and_help_alias_are_reserved_but_legacy_names_are_not() {
         for command in [
