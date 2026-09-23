@@ -796,8 +796,8 @@ pub(crate) fn exact_custom_reference_key(
     target: Option<&BundledExtensionTarget>,
     active: &[ExtensionConfig],
 ) -> Option<String> {
-    // The compact CLI alias must not resolve to an unrelated active extension.
-    if requested.eq_ignore_ascii_case(COPILOT_REFERENCE_ALIAS)
+    // Every spelling of the Copilot reference must retain the bundled target.
+    if extension_reference_key(requested) == extension_reference_key(COPILOT_REFERENCE_ALIAS)
         && target.is_some_and(|target| target.key() == "computercontroller")
     {
         return None;
@@ -5562,6 +5562,14 @@ mod tests {
                 COPILOT_REFERENCE_ALIAS,
                 Some(&target),
                 &[custom(COPILOT_REFERENCE_ALIAS)]
+            ),
+            None
+        );
+        assert_eq!(
+            exact_custom_reference_key(
+                "Biorouter Copilot",
+                Some(&target),
+                &[custom("Biorouter Copilot")]
             ),
             None
         );
