@@ -5534,7 +5534,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_active_custom_alias_is_not_redirected_to_a_builtin() {
+    fn copilot_reference_is_reserved_even_when_custom_name_matches() {
         let custom = |name: &str| ExtensionConfig::Frontend {
             name: name.to_string(),
             description: String::new(),
@@ -5551,7 +5551,7 @@ mod tests {
                 Some(&target),
                 std::slice::from_ref(&entry)
             ),
-            Some(entry.key())
+            None
         );
         assert_eq!(
             exact_custom_reference_key("computercontroller", Some(&target), &[entry]),
