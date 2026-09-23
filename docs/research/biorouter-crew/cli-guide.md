@@ -222,7 +222,7 @@ biorouter crew --connection "$CONNECTION_ID" grants revoke "$SESSION_ID"
 
 ## Use a terminal conversation through the shared daemon
 
-**Committed source, pending runtime qualification:** `21ce28a2` implements this shared conversation flow; current HEAD is `a11ea7e9`. Focused adapter/durable-elicitation checks and the prior `74190f6b` full gate pass. The current desktop suite passes 551 files/6,262 tests/19 skips. New checks for the reviewed nonsecret-store guard, a native pair and live model/MCP acceptance remain pending; the original server hang has no proven cause. The fresh three-user human roundtrip used earlier pinned `4a2e190b`, not this adapter. These examples describe the implementation contract, not a qualified release.
+**Published source, pending runtime qualification:** this flow is included in published `5455ebf9`, whose full gate and immutable native build pass. Deterministic shared-CLI tool use and zero-dispatch revocation pass, as does a separate local-model plain-marker turn; natural Crew model behavior remains pending. Native Stop-and-Send takeover/abandon/leave is work in progress with tests pending; do not treat it as available in the verified pair. Current local merged HEAD `3dac3695` is source-reviewed but awaits regenerated API, merged checks and binaries. The [history mapping](evidence/source-only-history-20260922.md) preserves original evidence scopes; these examples are not a full parity claim.
 
 Create a daemon conversation without sending a model prompt, specifying both provider and model after the `session` subcommand:
 

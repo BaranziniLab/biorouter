@@ -1865,3 +1865,42 @@ had previously contended when run in parallel. The subsequent
 clippy reported `clippy::nonminimal_bool` twice for the expression at
 `crates/biorouter/src/extension_install/transaction.rs:956`, and the recipe
 exited 101. No production build or artifact copy follows this failed gate.
+
+### Final clean-head gate and artifacts
+
+After the boolean simplification and source rebase, clean HEAD was
+`5455ebf90f8cd9d6e837d296820f6303a6a7cb66`. `just check-everything` passed,
+including formatting, both clippy passes, the non-inheritable-socket check,
+UI lint/typecheck, OpenAPI freshness, version/brand/naming/cross-drift checks,
+and the 61-test BAAM registry plus 21-test privacy registry checks. The
+previously bounded native suites remained green at 31/31 extension-install and
+16/16 action-required route tests; the desktop suite was independently green at
+551 files, 6,262 passed, and 19 skipped.
+
+The final production build used `CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo
+build --release -p biorouter-cli -p biorouter-server` and completed successfully
+in 19m44s. Immutable artifacts are in
+`/private/tmp/biorouter-crew-artifacts-5455ebf9/` with mode 0555:
+
+- `biorouter`: Mach-O arm64, SHA-256
+  `b329b6ad161e9b6722ef6b08ebef9aab3df4462c25c516a3206f051525fc7bdc`, version
+  `1.91.1`.
+- `biorouterd`: Mach-O arm64, SHA-256
+  `e3bcbf581b4ec06f4a24e7a76a27f2843c36e9ef3e8b100087ab85021d5d5498`, version
+  `biorouter-server 1.91.1`.
+
+### Merged-main validation checkpoint
+
+On merged HEAD `3dac36952ff4c822713bed3add9ba4f20005a64c`,
+`just generate-openapi` completed successfully. The generated diff was limited
+to the expected `SetWorkflowSlashCommandError` type export in
+`ui/desktop/src/api/index.ts`; `openapi.json`, `sdk.gen.ts`, and `types.gen.ts`
+were unchanged. Typecheck passed. The affected merged UI suite passed 6 files
+and 60 tests, and the full desktop suite passed 562 files with 6,366 tests
+passed and 19 skipped. The captured full-suite log is
+`/tmp/desktop-vitest-merged-3dac3695.log`.
+
+The merged `just check-everything` run passed through formatting, clippy,
+socket inheritance, and UI lint/typecheck, then stopped at OpenAPI freshness
+because the expected generated `index.ts` export was still uncommitted. No
+merged native build was started.
