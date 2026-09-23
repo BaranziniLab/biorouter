@@ -537,17 +537,22 @@ prompt: |
      root and phase-owned daemon/process/socket resources created by this run.
      Do not inspect the user's normal home, SSH directory, keyring, or provider
      configuration, or inventory resources owned by another task.
-  2. Resolve the locally installed native binaries without building or starting
-     anything. Run `<biorouter> --version`, `<biorouter> crew --help`,
-     `<biorouterd> --version`, and `<biorouterd> --help`; record exact paths,
-     exit codes, and bounded output. An unavailable binary is NOT OBSERVABLE,
-     not a pass, and must not trigger a build or fallback.
-  3. With no Crew grant or bound connection, make exactly one read-only built-in
-     MCP request through `crew__request` for `messages.history` using a
-     synthetic channel id and limit 1, omitting `connection_id`. Require an
-     explicit denial/refusal before any message content is returned. A success,
-     returned content, a grant attempt, or a retry is a failure. Do not call
-     `crew__connections` to discover real saved connections.
+  2. With no Crew grant or bound connection, make exactly one read-only built-in
+     MCP request through `crew__request` before attempting any shell or HTTP
+     command. Use exactly these synthetic arguments, omitting `connection_id`:
+     `{"method":"messages.history","params":{"channel_id":"00000000-0000-4000-8000-0000000002e5","limit":1}}`.
+     Require an explicit denial/refusal before any message content is returned.
+     A success, returned content, a grant attempt, or a retry is a failure. Do
+     not call `crew__connections` to discover real saved connections. Do not
+     emulate this MCP call with `curl`, an invented localhost endpoint, a
+     daemon, or any other shell command; only the actual `crew__request` tool
+     result is evidence.
+  3. After that single request, resolve the locally installed native binaries
+     without building or starting anything. Run `<biorouter> --version`,
+     `<biorouter> crew --help`, `<biorouterd> --version`, and
+     `<biorouterd> --help`; record exact paths, exit codes, and bounded output.
+     An unavailable binary is NOT OBSERVABLE, not a pass, and must not trigger a
+     build or fallback.
   4. Recheck the isolated snapshots. Require no daemon process, listener, SSH
      file, team, connection, invitation, provider, credential, or live profile
      mutation. Record only synthetic paths and refusal metadata. If an

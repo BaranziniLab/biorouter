@@ -2493,3 +2493,25 @@ The deadline correction passes 19 Crew route tests and one core preflight test (
 Supported handoff preserves all three profiles: Alice daemon PID 48473/instance `fb519332-264e-4a91-bab9-67e78149da0e`, Bob 48846/`4c6b9219-a1a6-49dc-9a97-ddafe79cb8ad`, Carol 49212/`c4ca71d8-8157-4413-a794-08b8da086c54`, with 2/1/1 saved connections respectively, currently disconnected. Manifest: `/private/tmp/crew-deadline-native-handoff-manifest-20260923T190049Z.json`. GUI reopen is beginning; there is no new GUI acceptance result.
 
 On the c9 pair, the non-owner test initially rejected by automatic review was subsequently explicitly approved by the user and executed. Bob’s remove-member request targeting Alice in `qa-acl-20260923` returned HTTP 400 containing `forbidden`/current-owner-required refusal. After normal reconnect, Alice’s independent supported readback confirmed all three active UIDs unchanged. Receipt: `/private/tmp/crew-three-user-20260923T1606Z-luna/bob-nonowner-permission-receipt-approved.json`. This closes that bounded authoritative-denial case; the earlier rejection is historical, not a continuing approval blocker.
+
+### 2026-09-23 faefe7de current checkpoint and remaining qualification
+
+Current pushed source is `faefe7defaac43be4982408fbdbc3578082c7d19`. The current native deadline pair and stable-profile handoff are recorded in `/private/tmp/crew-deadline-native-handoff-manifest-20260923T190049Z.json`; superseded c9/c496/6c artifacts retain their earlier scopes. Alice GUI attach timed out at 19:08 UTC; Bob and Carol were not launched. No post-upgrade GUI pass is claimed.
+
+The latest self-test failed required tool selection despite exit 0. A separate controlled follow-up advertised `crew__request`, which does not establish the original run’s metadata. Test-only workflow clarification passes five isolation tests; fresh model replay is delegated and pending. Three OS hosted test jobs remain active; Linux backend workflow 35907167595 completed its backend build with packaging in progress.
+
+Release qualification still requires final-artifact GUI attach/reopen and affected task/deadline/recovery replay, successful required self-test assertions, completion of hosted CI/packages, the remaining three-owner file/agent/privacy/platform matrix, and independently verified current AWS teardown. The explicitly authorized c9 Bob non-owner refusal with three memberships unchanged is already a bounded pass, not a continuing approval blocker.
+
+### 2026-09-23 latest faefe CI, self-test and execution limits
+
+Linux package workflow 35907167595 fully succeeds; verified manifest: `/private/tmp/crew-linux-faefe7de-ci/verified/VERIFIED-MANIFEST.json`. macOS CI passes. Windows job 107337716983 fails the preexisting memory append/delete canonicalization race with 1,643 MCP tests passed, one failed and three ignored; Ubuntu is still running. An independently reviewed, uncommitted correction validates before the memory lock and resolves the path under that lock. Tests and full gate are pending, so neither the fix nor hosted CI is declared passed.
+
+The clarified actual self-test receipt `/private/tmp/crew-three-user-20260923T1606Z-luna/crew-selftest-clarified-receipt.json` records exit 0 but not acceptance: a delegated child claimed refusal, supported export was blocked by its privacy gate, and no typed request-ID evidence was obtained. The gate was not bypassed. Five isolation tests remain a separate bounded pass.
+
+The disposable AWS instance is explicitly running in us-west-2 with cleanup due at 20:30 UTC. Automatic review blocked exact final Linux runtime transfer/execution pending targeted user approval despite broader authorization; this is not instance unavailability. GUI manual readiness remains pending. Carol’s final native headless owned-task case is delegated and in progress, without an outcome. Named-host scope remains unchanged: Leo chat/files are source-supported but arbitrary execution is unsupported on Landlock ABI 1; Narrows NFS broker deployment is blocked and has no user waiver.
+
+### 2026-09-23 memory validation and Carol deadline-pair task
+
+The narrow memory race correction passes independent review without findings, 44 focused macOS tests (zero failed/ignored), and `CARGO_BUILD_JOBS=2 just check-everything` exit 0. Windows-specific replay remains pending; this does not retroactively turn the failed Windows CI job green. The Crew runtime pair remains the faefe deadline pair until coordinated rebuild.
+
+Carol’s final native owned task on that pair passes bounded read/write/attachment: run `b5a52dbc-0213-4391-88c4-d69020fb32f5`, session `20260923_2`, in the `qa-acl` channel, with blob `e6df5ca2-3663-4a14-8e04-23f12f676666`, 20 bytes, SHA-256 `176d92e0b285a9917f43853c5f3fa708821cdff89272cf8fc43a52743e74cf15`. Projected operation/message IDs and downloaded bytes were verified; tool-envelope IDs were unavailable. No remote.execute or independent remote-UID qualification is claimed. Receipt: `/private/tmp/crew-three-user-20260923T1606Z-luna/carol-owned-task-receipt.json`. This native result does not qualify post-upgrade GUI behavior.
