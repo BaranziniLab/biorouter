@@ -955,6 +955,7 @@ async fn publish_run_result(
     state: &AppState,
     crew: &biorouter::crew::CrewManager,
     session_id: &str,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let session = state
         .session_manager()
@@ -970,6 +971,9 @@ async fn publish_run_result(
         })
         .map(Message::as_concat_text)
         .unwrap_or_else(|| "Task finished without a text result.".into());
+    if cancel.is_cancelled() {
+        anyhow::bail!("Task cancelled by its owner.");
+    }
     crew.publish_run(session_id, &response, "completed").await?;
     Ok(())
 }
@@ -989,6 +993,9 @@ async fn execute_run(
         "progress",
     )
     .await?;
+    if cancel.is_cancelled() {
+        anyhow::bail!("Task cancelled by its owner.");
+    }
     let execution_cancel = cancel.child_token();
     let stream = agent
         .reply(
@@ -1034,7 +1041,7 @@ async fn execute_run(
     if cancel.is_cancelled() {
         anyhow::bail!("Task cancelled by its owner.");
     }
-    publish_run_result(state, &crew, &view.session_id).await
+    publish_run_result(state, &crew, &view.session_id, cancel).await
 }
 
 async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<String>) {
@@ -1093,6 +1100,38 @@ async fn finish_failed_run(ledger: &RunLedger, run_id: &str, error: String, revo
     let _ = persist_run_status(ledger, &mut stored, run_id);
 }
 
+async fn run_with_deadline<F>(
+    execution: F,
+    ledger: &RunLedger,
+    cancel: &CancellationToken,
+    execution_limit: Duration,
+    cleanup_grace: Duration,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = anyhow::Result<()>>,
+{
+    tokio::pin!(execution);
+    match tokio::time::timeout(execution_limit, execution.as_mut()).await {
+        Ok(result) => result,
+        Err(_) => {
+            {
+                let _stored = ledger.state.lock().await;
+                cancel.cancel();
+            }
+            // Keep polling the same future so a written room projection can drain
+            // before final publication and grant revocation reuse the transport.
+            let deadline = "Task reached its 15-minute execution limit.";
+            match tokio::time::timeout(cleanup_grace, execution.as_mut()).await {
+                Ok(Ok(())) => anyhow::bail!("{deadline}"),
+                Ok(Err(error)) => anyhow::bail!("{deadline} Task cleanup returned: {error}"),
+                Err(_) => anyhow::bail!(
+                    "{deadline} Task cleanup did not settle within its grace period; its outcome is unconfirmed. Reconnect and inspect submitted operations before retrying."
+                ),
+            }
+        }
+    }
+}
+
 async fn drive_run(
     ledger: Arc<RunLedger>,
     state: Arc<AppState>,
@@ -1106,20 +1145,15 @@ async fn drive_run(
         turn_guard,
         _permit,
     } = lifetime;
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(900),
+    let outcome = run_with_deadline(
         execute_run(&ledger, &state, &agent, &view, &input, &cancel),
+        &ledger,
+        &cancel,
+        Duration::from_secs(900),
+        Duration::from_secs(55),
     )
     .await;
-    let error = match outcome {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(error.to_string()),
-        Err(_) => {
-            let _stored = ledger.state.lock().await;
-            cancel.cancel();
-            Some("Task reached its 15-minute execution limit.".into())
-        }
-    };
+    let error = outcome.err().map(|error| error.to_string());
     finish_run_outcome(&ledger, &view, error).await;
     if cancel.is_cancelled() {
         let _ = agent.record_turn_stopped(&view.session_id).await;
@@ -1499,9 +1533,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::{
         drive_run_events, finish_cancellation, finish_failed_run, finish_run_outcome,
-        prepare_run_projection, publish_run_finished, reserve_cancellation, transition_run_status,
-        CancelReservation, LedgerState, OwnedRun, RunLedger, RunProjection, RunStatusUpdate,
-        RunView, ToolActivity, MAX_QUEUED_RUN_PROJECTIONS,
+        prepare_run_projection, publish_run_finished, reserve_cancellation, run_with_deadline,
+        transition_run_status, CancelReservation, LedgerState, OwnedRun, RunLedger, RunProjection,
+        RunStatusUpdate, RunView, ToolActivity, MAX_QUEUED_RUN_PROJECTIONS,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -2197,5 +2231,87 @@ mod tests {
             .expect("nonfused EOF driver task panicked")
             .expect_err("cancelled driver must fail");
         assert_eq!(result.to_string(), "Task cancelled by its owner.");
+    }
+
+    #[tokio::test]
+    async fn execution_deadline_cancels_and_drains_active_work_before_reporting_limit() {
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        let cancel = CancellationToken::new();
+        let active_started = Arc::new(Notify::new());
+        let cleanup_finished = Arc::new(Notify::new());
+        let queued_work_started = Arc::new(AtomicUsize::new(0));
+        let active_started_by_execution = active_started.clone();
+        let cleanup_finished_by_execution = cleanup_finished.clone();
+        let queued_work_started_by_execution = queued_work_started.clone();
+        let cancel_by_execution = cancel.clone();
+        let execution = async move {
+            active_started_by_execution.notify_one();
+            cancel_by_execution.cancelled().await;
+            cleanup_finished_by_execution.notify_one();
+            if cancel_by_execution.is_cancelled() {
+                return Ok(());
+            }
+            queued_work_started_by_execution.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        let driver = run_with_deadline(
+            execution,
+            &ledger,
+            &cancel,
+            Duration::from_millis(10),
+            Duration::from_millis(200),
+        );
+        let (_, error) = tokio::join!(active_started.notified(), driver);
+        let error = error.expect_err("execution limit must remain the primary result");
+        assert!(error.to_string().contains("15-minute execution limit"));
+        cleanup_finished.notified().await;
+        assert!(cancel.is_cancelled());
+        assert_eq!(queued_work_started.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn execution_deadline_retains_cleanup_error_after_active_drain() {
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        let cancel = CancellationToken::new();
+        let cancel_by_execution = cancel.clone();
+        let execution = async move {
+            cancel_by_execution.cancelled().await;
+            anyhow::bail!("synthetic projection cleanup failure")
+        };
+        let error = run_with_deadline(
+            execution,
+            &ledger,
+            &cancel,
+            Duration::from_millis(10),
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("cleanup failure must remain visible");
+        assert!(error.to_string().contains("15-minute execution limit"));
+        assert!(error
+            .to_string()
+            .contains("synthetic projection cleanup failure"));
+    }
+
+    #[tokio::test]
+    async fn execution_deadline_reports_unconfirmed_when_cleanup_stays_stuck() {
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        let cancel = CancellationToken::new();
+        let cancel_by_execution = cancel.clone();
+        let execution = async move {
+            cancel_by_execution.cancelled().await;
+            std::future::pending::<anyhow::Result<()>>().await
+        };
+        let error = run_with_deadline(
+            execution,
+            &ledger,
+            &cancel,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("stuck cleanup must be reported as unconfirmed");
+        assert!(error.to_string().contains("outcome is unconfirmed"));
+        assert!(cancel.is_cancelled());
     }
 }
