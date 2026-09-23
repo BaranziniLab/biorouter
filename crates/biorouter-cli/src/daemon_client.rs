@@ -1700,8 +1700,10 @@ mod tests {
             .expect("a partial frame is accepted until EOF");
         assert!(!truncated.at_boundary());
 
-        let mut decoder = EventDecoder::default();
-        decoder.frame_bytes = MAX_SSE_FRAME;
+        let mut decoder = EventDecoder {
+            frame_bytes: MAX_SSE_FRAME,
+            ..EventDecoder::default()
+        };
         let error = decoder
             .push(b'x')
             .expect_err("the byte after the bound must be refused");
