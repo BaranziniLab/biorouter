@@ -2298,3 +2298,43 @@ hash matches the recorded 532 Linux daemon; the CLI includes the later Unicode
 output correction. [Linux provenance and hashes](evidence/linux-dd70051e-20260923.md)
 retain the GLIBC 2.39 limit and distinguish this local container from AWS or
 institutional acceptance.
+
+## Approved final acceptance execution — current checkpoint ae103eb5
+
+The user has explicitly approved the previously blocked native QA app control and transfer of verified binaries plus synthetic data to disposable AWS. The earlier automatic-review rejections and cleanup records above remain accurate for their historical checkpoints; this authorization does not turn those attempts into passes or authorize broader source/visual export. All required hosted CI checks pass on `ae103eb5`; PR #366 remains draft.
+
+The `ae103eb5` working tree now includes an uncommitted observer correction, independently reviewed with no findings. Local provenance is `/private/tmp/crew-observer-artifacts-ibQ0ex/PROVENANCE.md`; observer source SHA-256 is `041ace5802ed32ea4195600488ea39a2b219301e83d780f7307f4d4a7b24524a`. Commands recorded there passed: focused `routes::crew_observation::tests` (15 passed, 746 filtered), strict server Clippy, native CLI/server debug build and `just check-everything`. API regeneration produced no tracked schema diff.
+
+| Native artifact | SHA-256 |
+| --- | --- |
+| CLI | `278db11f673b13ec866d9209a349610e1deda8f7800dc3eec36958b9b615ad3f` |
+| Daemon | `829efc9765a62b89d3eebe0f86baa6d3c8514a58d1f03fe6409869b141992227` |
+
+These tests exercise real receiver admission with deterministic queues: missing-Proven rejection, blocked canary suppression, injected terminal clear-error priority and permit release. They do not establish live broker source-ACL revocation. The real-source-ACL module now compiles; the full observer filter reports 15 passed and one ignored. Its actual live execution remains pending.
+
+The AWS receipt at `/private/tmp/biorouter-crew-luna-20260923T055757Z-9298d2b5/luna-acceptance-report.md` records three ordinary users (UIDs 10001/10002/10003), distinct keys, verified user-local binary installation/help, rootless broker start/stop/restart with stable workspace identity, and cross-owner descriptor/journal/state refusal. This is three users, not three UIs. Initial invalid bootstrap-key attempts remain failed setup attempts; no teams/messages or end-to-end collaboration pass is inferred. The instance is still live; persistent cleanup supervisor 72714 replaces 61914 and has an absolute 2026-09-23 07:45:00 UTC deadline, and teardown verification remains pending.
+
+Packaged QA launch was refused by the intended installed-build development-profile guard. The supported stock-Electron development shell was selected; actual GUI readiness has not passed. Record subsequent actual outcomes and cleanup below without upgrading these setup results.
+
+| Final acceptance area | Current result | Remaining evidence |
+| --- | --- | --- |
+| Actual queued source-ACL revocation | Module compiled; live test ignored, execution pending | Real broker/ACL mutation and queued delivery assertions |
+| Native app control, Save and mixed GUI/CLI | Approved; supported development-shell readiness pending | Exact app/backend identity and actual three-user UI outcomes |
+| Disposable AWS product workflow | Three-user install/rootless lifecycle/state denials pass | Actual collaboration/privacy/transfer workflow and independently verified cleanup |
+
+### Dirty-snapshot Linux refresh and GUI readiness follow-up
+
+The report `/private/tmp/biorouter-crew-linux-ae103eb5/report.md` records an ordinary non-test ARM64 build from the `ae103eb5` base plus uncommitted observer snapshot. Source archive SHA-256 is `5f80aae7b0668067967dbaa7da04f630dd148ac3da4ddd317b5461417eff71bf`; patch SHA-256 is `159437741db88e976e5a8592ffd7dd1c66e4cd4c3457c0f25310bf1a08ffb75c`. The build used source-pinned Rust 1.92.0 rather than image-default 1.98.1, locked dependencies and two jobs, and passed in 7m53s. Mode-0555 ARM64 ELF copies import at most GLIBC 2.39; version/help checks pass. This lane performed no lifecycle or AWS acceptance test.
+
+| Refreshed Linux artifact | SHA-256 |
+| --- | --- |
+| CLI | `2e9086669a5274b5a953c184b23660ab07403d0c01c9ad12e87fba5c697db567` |
+| Daemon | `fe9cbf9db6adeb1cf396930ddf2f7c70846d3b9ebaa8972ebc8a76e02a650809` |
+
+Exact refreshed-pair AWS transfer and UID 10001 lifecycle pass with matching hashes; this is headless lifecycle evidence, not collaboration acceptance. The AWS instance remains live under the 07:45:00 UTC cleanup deadline. GUI follow-up observed a 180-second first-run osascript prompt timeout and detached child reaping; a supported persistent foreground launch with explicit isolated HOME/userdata is pending. No completed GUI readiness is claimed.
+
+### Refreshed-pair AWS lifecycle and supervisor confirmation
+
+The refreshed AWS receipt records matching reviewed Linux CLI/daemon hashes on UID 10001. A fresh profile completed start/status, wrong valid-format proof refusal (403), correct proof stop (200), missing-daemon status, restart with stable profile `09d75327-870f-4dbd-ae79-217ad2233d1c` and new instance `5875bd4a-37b6-46e5-8f28-10c740e2e64b`, final stop and missing-daemon status. The temporary approval file was removed; the superseded owned daemon was stopped by exact PID. This establishes bounded updated-pair headless lifecycle only, not GUI or queued source-ACL acceptance.
+
+Post-live-module strict Clippy including tests, formatting and the socket census across all 17 production targets pass. Actual queued source-ACL execution remains pending. AWS owner confirmed persistent supervisor session 72714 replaced 61914 and targets absolute 2026-09-23 07:45:00 UTC. The instance is still live; current cleanup is pending, distinct from the earlier 13:40 UTC historical cleanup pass.

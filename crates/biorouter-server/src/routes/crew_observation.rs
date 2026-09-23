@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, LazyLock},
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME: usize = 1_048_576;
@@ -49,6 +49,7 @@ fn observation_error_code(error: &anyhow::Error) -> String {
         "policy_changed" => "policy_changed",
         "channel_access_changed" => "channel_access_changed",
         "human_authority_required" => "human_authority_required",
+        "observer_capacity_reached" => "observer_capacity_reached",
         _ => "observation_refused",
     }
     .into()
@@ -68,7 +69,7 @@ struct Observer {
     limit: usize,
     deadline: tokio::time::Instant,
     done: bool,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
 }
 impl Observer {
     async fn authorize(&mut self, cancel: &CancellationToken) -> Result<Value> {
@@ -109,6 +110,45 @@ impl Observer {
         person(&self.headers)?;
         Ok(snapshot)
     }
+    async fn state_frame(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        self.authorize(cancel).await?;
+        let mut runs = super::crew::owned_run_views(&self.connection).await?;
+        let snapshot = self.authorize(cancel).await?;
+        runs.retain(|run| {
+            snapshot["channels"].as_array().is_some_and(|channels| {
+                channels
+                    .iter()
+                    .any(|channel| channel["id"] == run.channel_id)
+            })
+        });
+        person(&self.headers)?;
+        Ok(
+            json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"snapshot":snapshot,"runs":runs}),
+        )
+    }
+
+    async fn admit_frame(&mut self, frame: &Bytes, cancel: &CancellationToken) -> Result<Value> {
+        let frame: Value = serde_json::from_slice(frame)?;
+        if frame["type"] == "state" {
+            return self.state_frame(cancel).await;
+        }
+        self.authorize(cancel).await?;
+        if frame["type"] == "messages" {
+            if let Some(cursor) = frame["cursor"].as_str() {
+                manager()?
+                    .human_request(
+                        &self.connection,
+                        "messages.history",
+                        json!({"channel_id":self.request.channel_id,"after":cursor,"limit":0}),
+                        None,
+                    )
+                    .await?;
+            }
+        }
+        self.authorize(cancel).await?;
+        Ok(frame)
+    }
+
     async fn history(&mut self, cancel: &CancellationToken) -> Result<VecDeque<Value>> {
         let channel = self
             .request
@@ -161,23 +201,11 @@ impl Observer {
                         () = cancel.cancelled() => anyhow::bail!("observation_cancelled"),
                     }
                 }
-                self.authorize(cancel).await?;
-                let mut runs = super::crew::owned_run_views(&self.connection).await?;
-                let snapshot = self.authorize(cancel).await?;
-                runs.retain(|run| {
-                    snapshot["channels"].as_array().is_some_and(|channels| {
-                        channels
-                            .iter()
-                            .any(|channel| channel["id"] == run.channel_id)
-                    })
-                });
-                person(&self.headers)?;
+                let frame = self.state_frame(cancel).await?;
                 self.last_state = Some(tokio::time::Instant::now());
                 self.state_due = false;
                 self.sleep_due = true;
-                return Ok(
-                    json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"snapshot":snapshot,"runs":runs}),
-                );
+                return Ok(frame);
             }
             if !self.pending.is_empty() {
                 self.authorize(cancel).await?;
@@ -291,7 +319,7 @@ pub async fn observe(
         limit: 200,
         deadline: tokio::time::Instant::now() + Duration::from_secs(600),
         done: false,
-        _permit: permit,
+        _permit: Some(permit),
     };
     let stream = observation_stream(observer);
     Ok(Response::builder()
@@ -312,16 +340,113 @@ fn connection_binding(connection: &biorouter::crew::Connection) -> Result<Value>
 struct ObservationReceiver {
     receiver: mpsc::Receiver<Bytes>,
     terminal: Option<oneshot::Receiver<Bytes>>,
+    deferred_terminal: Option<Bytes>,
+    observer: Arc<Mutex<Observer>>,
     cancel: CancellationToken,
+    finished: bool,
 }
 impl ObservationReceiver {
+    fn finish(&mut self) {
+        self.finished = true;
+        self.cancel.cancel();
+        self.receiver.close();
+        while self.receiver.try_recv().is_ok() {}
+        self.terminal = None;
+        self.deferred_terminal = None;
+    }
+
+    async fn next_queued_frame(&mut self) -> Option<Bytes> {
+        loop {
+            tokio::select! {
+                biased;
+                result = async { self.terminal.as_mut().unwrap().await }, if self.terminal.is_some() => {
+                    self.terminal = None;
+                    if let Ok(frame) = result {
+                        if clears_cached_content(&frame) {
+                            return Some(frame);
+                        }
+                        self.deferred_terminal = Some(frame);
+                    }
+                }
+                frame = self.receiver.recv() => {
+                    if frame.is_some() {
+                        return frame;
+                    }
+                    if let Some(frame) = self.deferred_terminal.take() {
+                        return Some(frame);
+                    }
+                    return self.terminal.take()?.await.ok();
+                }
+            }
+        }
+    }
+
     async fn next_frame(&mut self) -> Option<Bytes> {
-        if let Some(frame) = self.receiver.recv().await {
+        if self.finished {
+            return None;
+        }
+        let frame = self.next_queued_frame().await?;
+        if clears_cached_content(&frame) {
+            self.finish();
             return Some(frame);
         }
-        self.terminal.take()?.await.ok()
+        let observer = self.observer.clone();
+        let cancel = self.cancel.clone();
+        // The task retains the observer permit and drains any broker exchange
+        // even if HTTP drops this stream while admission is awaiting a reply.
+        let admitted = tokio::spawn(async move {
+            let mut observer = observer.lock().await;
+            let _admission_permit = if observer._permit.is_none() {
+                match SLOTS.clone().try_acquire_owned() {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        return encode_frame(
+                            &mut observer,
+                            Err(anyhow::anyhow!("observer_capacity_reached")),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let result = observer.admit_frame(&frame, &cancel).await;
+            encode_frame(&mut observer, result)
+        })
+        .await;
+        let frame = match admitted {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.finish();
+                return Some(Bytes::from_static(b"{\"type\":\"error\",\"code\":\"observation_refused\",\"error\":\"Room observation admission failed. Clear cached room content and refresh authorized access.\",\"clear\":true}\n"));
+            }
+        };
+        if let Some(terminal) = &mut self.terminal {
+            match terminal.try_recv() {
+                Ok(terminal_frame) => {
+                    self.terminal = None;
+                    if clears_cached_content(&terminal_frame) {
+                        self.finish();
+                        return Some(terminal_frame);
+                    }
+                    self.deferred_terminal = Some(terminal_frame);
+                }
+                Err(oneshot::error::TryRecvError::Closed) => self.terminal = None,
+                Err(oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
+        if clears_cached_content(&frame) {
+            self.finish();
+        }
+        Some(frame)
     }
 }
+
+fn clears_cached_content(frame: &Bytes) -> bool {
+    serde_json::from_slice::<Value>(frame)
+        .ok()
+        .is_some_and(|frame| frame["clear"] == true)
+}
+
 impl Drop for ObservationReceiver {
     fn drop(&mut self) {
         self.cancel.cancel();
@@ -380,14 +505,14 @@ fn planned_expiry_reconnect(expired: bool, result: &Result<Value>) -> bool {
 }
 
 async fn produce(
-    mut observer: Observer,
+    observer: Arc<Mutex<Observer>>,
     sender: mpsc::Sender<Bytes>,
     terminal: oneshot::Sender<Bytes>,
     cancel: CancellationToken,
 ) {
     let mut terminal = Some(terminal);
     let lifetime_cancel = cancel.clone();
-    let deadline = observer.deadline;
+    let deadline = observer.lock().await.deadline;
     let watchdog = tokio::spawn(async move {
         tokio::select! {
             () = tokio::time::sleep_until(deadline) => lifetime_cancel.cancel(),
@@ -398,6 +523,10 @@ async fn produce(
         // Never cancel a broker future mid-exchange: late JSONL replies must be
         // drained before another caller uses this shared SSH transport. The
         // observer permit stays owned until that bounded operation finishes.
+        let mut observer = observer.lock().await;
+        if observer.done {
+            break;
+        }
         let delivered_cursor = observer.cursor.clone();
         let result = observer.next_frame(&cancel).await;
         let expired = tokio::time::Instant::now() >= observer.deadline;
@@ -412,10 +541,18 @@ async fn produce(
             result
         };
         let frame = encode_frame(&mut observer, result);
+        let done = observer.done;
+        drop(observer);
+        if clears_cached_content(&frame) {
+            if let Some(terminal) = terminal.take() {
+                let _ = terminal.send(frame);
+            }
+            break;
+        }
         if let Err(fallback) = deliver_frame(
             &sender,
             frame,
-            observer.done,
+            done,
             delivered_cursor.as_deref(),
             Duration::from_secs(5),
         )
@@ -426,12 +563,15 @@ async fn produce(
             }
             break;
         }
-        if observer.done {
+        if done {
             break;
         }
     }
     cancel.cancel();
     watchdog.abort();
+    // Idle HTTP bodies must not retain a slot after producer expiry. Taking it
+    // under the same lock waits for an active admission exchange to drain.
+    drop(observer.lock().await._permit.take());
 }
 
 fn observation_stream(
@@ -440,12 +580,21 @@ fn observation_stream(
     let (sender, receiver) = mpsc::channel(1);
     let (terminal_sender, terminal_receiver) = oneshot::channel();
     let cancel = CancellationToken::new();
-    tokio::spawn(produce(observer, sender, terminal_sender, cancel.clone()));
+    let observer = Arc::new(Mutex::new(observer));
+    tokio::spawn(produce(
+        observer.clone(),
+        sender,
+        terminal_sender,
+        cancel.child_token(),
+    ));
     futures::stream::unfold(
         ObservationReceiver {
             receiver,
             terminal: Some(terminal_receiver),
+            deferred_terminal: None,
+            observer,
             cancel,
+            finished: false,
         },
         |mut state| async move { state.next_frame().await.map(|frame| (Ok(frame), state)) },
     )
@@ -460,7 +609,41 @@ pub fn routes() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt;
+
+    fn test_observer() -> Arc<Mutex<Observer>> {
+        Arc::new(Mutex::new(Observer {
+            headers: HeaderMap::new(),
+            connection: "revoked-derived-source".into(),
+            request: ObserveRequest {
+                channel_id: Some("channel".into()),
+                after: Some("cursor".into()),
+                initial: Initial::Latest,
+            },
+            cursor: Some("cursor".into()),
+            pending: VecDeque::new(),
+            binding: json!({}),
+            epoch: None,
+            first: false,
+            state_due: false,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+            done: false,
+            _permit: None,
+        }))
+    }
+
+    fn observation_receiver(receiver: mpsc::Receiver<Bytes>) -> ObservationReceiver {
+        ObservationReceiver {
+            receiver,
+            terminal: None,
+            deferred_terminal: None,
+            observer: test_observer(),
+            cancel: CancellationToken::new(),
+            finished: false,
+        }
+    }
 
     #[test]
     fn observation_error_codes_preserve_policy_and_broker_boundaries() {
@@ -510,7 +693,7 @@ mod tests {
             limit: 200,
             deadline: tokio::time::Instant::now() + Duration::from_secs(600),
             done: false,
-            _permit: permit,
+            _permit: Some(permit),
         };
         let frame = encode_frame(&mut observer, Ok(json!({"payload": "x".repeat(MAX_FRAME)})));
         let value: Value = serde_json::from_slice(&frame).unwrap();
@@ -593,14 +776,17 @@ mod tests {
             limit: 200,
             deadline: tokio::time::Instant::now() - Duration::from_secs(1),
             done: false,
-            _permit: permit,
+            _permit: Some(permit),
         };
-        let mut stream = Box::pin(observation_stream(observer));
-        let frame = stream.next().await.unwrap().unwrap();
+        let observer = Arc::new(Mutex::new(observer));
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (terminal_sender, _terminal_receiver) = oneshot::channel();
+        produce(observer, sender, terminal_sender, CancellationToken::new()).await;
+        let frame = receiver.recv().await.unwrap();
         let frame: Value = serde_json::from_slice(&frame).unwrap();
         assert_eq!(frame["type"], "reconnect");
         assert_eq!(frame["cursor"], "cursor");
-        assert!(stream.next().await.is_none());
+        assert!(receiver.recv().await.is_none());
     }
 
     #[tokio::test]
@@ -649,6 +835,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clear_error_wins_over_a_queued_derived_frame_after_revocation() {
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(Bytes::from_static(
+                br#"{"type":"messages","messages":[{"text":"derived-canary"}],"cursor":"canary"}
+"#,
+            ))
+            .unwrap();
+        drop(sender);
+
+        let (terminal_sender, terminal_receiver) = oneshot::channel();
+        terminal_sender
+            .send(Bytes::from_static(
+                br#"{"type":"error","code":"channel_access_changed","clear":true}
+"#,
+            ))
+            .unwrap();
+        let observer = Arc::new(Mutex::new(Observer {
+            headers: HeaderMap::new(),
+            connection: "revoked-derived-source".into(),
+            request: ObserveRequest {
+                channel_id: Some("channel".into()),
+                after: Some("cursor".into()),
+                initial: Initial::Latest,
+            },
+            cursor: Some("cursor".into()),
+            pending: VecDeque::new(),
+            binding: json!({}),
+            epoch: None,
+            first: false,
+            state_due: false,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+            done: false,
+            _permit: Some(SLOTS.clone().try_acquire_owned().unwrap()),
+        }));
+        let mut receiver = ObservationReceiver {
+            receiver,
+            terminal: Some(terminal_receiver),
+            deferred_terminal: None,
+            observer,
+            cancel: CancellationToken::new(),
+            finished: false,
+        };
+
+        let frame = receiver
+            .next_frame()
+            .await
+            .expect("revocation must produce a terminal clear frame");
+        let value: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["code"], "channel_access_changed");
+        assert_eq!(value["clear"], true);
+        assert!(!frame
+            .windows(b"derived-canary".len())
+            .any(|window| { window == b"derived-canary" }));
+        assert!(receiver.finished);
+        assert!(receiver.next_frame().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_derived_frame_is_reauthorized_before_receiver_admits_it() {
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(Bytes::from_static(
+                br#"{"type":"messages","messages":[{"text":"derived-canary"}],"cursor":"canary"}
+"#,
+            ))
+            .unwrap();
+        drop(sender);
+        let mut receiver = observation_receiver(receiver);
+
+        let frame = receiver
+            .next_frame()
+            .await
+            .expect("queued frame must become an admission error");
+        let value: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["code"], "human_authority_required");
+        assert_eq!(value["clear"], true);
+        assert!(!frame
+            .windows(b"derived-canary".len())
+            .any(|window| { window == b"derived-canary" }));
+        assert!(receiver.next_frame().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_admission_error_closes_a_waiting_second_frame_without_delivery() {
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(Bytes::from_static(
+                br#"{"type":"messages","messages":[{"text":"derived-canary-1"}],"cursor":"canary-1"}
+"#,
+            ))
+            .unwrap();
+        let second_sender = sender.clone();
+        let second_send = tokio::spawn(async move {
+            second_sender
+                .send(Bytes::from_static(
+                    br#"{"type":"messages","messages":[{"text":"derived-canary-2"}],"cursor":"canary-2"}
+"#,
+                ))
+                .await
+        });
+        drop(sender);
+        let mut receiver = observation_receiver(receiver);
+
+        let frame = receiver
+            .next_frame()
+            .await
+            .expect("first queued frame must become an admission error");
+        let value: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(value["code"], "human_authority_required");
+        assert_eq!(value["clear"], true);
+        assert!(receiver.next_frame().await.is_none());
+        if let Ok(()) = second_send.await.unwrap() {
+            assert!(receiver.receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn queued_data_is_drained_before_one_terminal_fallback_then_eof() {
         let (sender, receiver) = mpsc::channel(1);
         sender.try_send(Bytes::from_static(b"data\n")).unwrap();
@@ -660,15 +969,38 @@ mod tests {
         let mut receiver = ObservationReceiver {
             receiver,
             terminal: Some(terminal_receiver),
+            deferred_terminal: None,
+            observer: Arc::new(Mutex::new(Observer {
+                headers: HeaderMap::new(),
+                connection: "connection".into(),
+                request: ObserveRequest {
+                    channel_id: None,
+                    after: None,
+                    initial: Initial::Latest,
+                },
+                cursor: None,
+                pending: VecDeque::new(),
+                binding: json!({}),
+                epoch: None,
+                first: false,
+                state_due: false,
+                sleep_due: false,
+                last_state: None,
+                limit: 200,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+                done: false,
+                _permit: None,
+            })),
             cancel: CancellationToken::new(),
+            finished: false,
         };
 
         assert_eq!(
-            receiver.next_frame().await,
+            receiver.next_queued_frame().await,
             Some(Bytes::from_static(b"data\n"))
         );
         assert_eq!(
-            receiver.next_frame().await,
+            receiver.next_queued_frame().await,
             Some(Bytes::from_static(b"reconnect\n"))
         );
         assert_eq!(receiver.next_frame().await, None);
@@ -694,7 +1026,7 @@ mod tests {
     async fn dropping_the_receiver_releases_the_producer_permit() {
         let slots = Arc::new(Semaphore::new(1));
         let permit = slots.clone().acquire_owned().await.unwrap();
-        let observer = Observer {
+        let observer = Arc::new(Mutex::new(Observer {
             headers: HeaderMap::new(),
             connection: "connection".into(),
             request: ObserveRequest {
@@ -713,8 +1045,8 @@ mod tests {
             limit: 200,
             deadline: tokio::time::Instant::now() - Duration::from_secs(1),
             done: false,
-            _permit: permit,
-        };
+            _permit: Some(permit),
+        }));
         let (sender, receiver) = mpsc::channel(1);
         let (terminal_sender, _terminal_receiver) = oneshot::channel();
         drop(receiver);
@@ -769,3 +1101,7 @@ mod tests {
         assert!(body["error"].as_str().unwrap().contains("human"));
     }
 }
+
+#[cfg(test)]
+#[path = "crew_observation_live_acceptance.rs"]
+mod live_acceptance;
