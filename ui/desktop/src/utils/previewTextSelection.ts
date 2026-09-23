@@ -10,7 +10,26 @@ export const PREVIEW_SELECTION_INSTALL = `(() => {
   });
 })()`;
 
-// The frame can report source data only. Attaching it always requires a host UI action.
+/**
+ * What this authenticates, and what it cannot.
+ *
+ * It authenticates the SENDER — the message must come from a live
+ * `biorouter-artifact-preview` frame under `root`. It does NOT authenticate the
+ * CLAIM: `data.text` is the frame's word for "what the user selected", and the
+ * frame is an opaque-origin sandbox (`allow-scripts allow-downloads`, no
+ * `allow-same-origin`), so the host cannot read its selection to check. Script
+ * inside an artifact — whose content can include data the agent fetched from
+ * somewhere else — can therefore report a selection the user never made, or one
+ * whose text differs from what is on screen.
+ *
+ * ⚠ What makes that safe is NOT this function. It is that attaching requires a
+ * host UI action AND that `QuotedTextChip` renders the quotation's full text, so
+ * the person sees exactly what they are about to send before they send it. That
+ * display is load-bearing, not decoration: it is pinned by
+ * `ChatInput.references.test.tsx` asserting the chip's `textContent` contains
+ * the quoted text. Shrinking the chip to a label would turn an unverified claim
+ * into an invisible one.
+ */
 export function previewSelectionFromMessage(
   root: HTMLElement,
   event: MessageEvent
