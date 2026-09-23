@@ -1103,5 +1103,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "crew_observation_live_acceptance.rs"]
+#[path = "crew_observation_live_acceptance_tests.rs"]
 mod live_acceptance;

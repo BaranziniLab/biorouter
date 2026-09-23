@@ -128,12 +128,22 @@ async fn real_source_acl_revocation_clears_enqueued_and_waiting_observer_frames(
     );
     let cursor = required("BIOROUTER_LIVE_CURSOR");
     let channel = required("BIOROUTER_LIVE_DEST_CHANNEL");
+    let source_channel = required("BIOROUTER_LIVE_SOURCE_CHANNEL");
+    let bob_principal = required("BIOROUTER_LIVE_BOB_PRINCIPAL");
     let connection_id = required("BIOROUTER_LIVE_BOB_CONNECTION");
     let crew = manager().expect("Bob manager initializes");
     let connection = crew
         .connection(&connection_id)
         .await
         .expect("Bob connection exists");
+    crew.connect(&connection_id)
+        .await
+        .expect("Bob connects through the real SSH bridge");
+    let before_snapshot = crew
+        .human_request(&connection_id, "workspace.snapshot", json!({}), None)
+        .await
+        .expect("Bob can read the pre-revocation snapshot");
+    let before_epoch = before_snapshot["workspace"]["policy_epoch"].clone();
 
     let mut positive = observer_for(&connection, channel.clone(), cursor.clone(), None);
     assert_eq!(
@@ -206,6 +216,28 @@ async fn real_source_acl_revocation_clears_enqueued_and_waiting_observer_frames(
         receiver.receiver.try_recv().is_err(),
         "queued waiting frame must be drained"
     );
+
+    let after_snapshot = crew
+        .human_request(&connection_id, "workspace.snapshot", json!({}), None)
+        .await
+        .expect("Bob can read the post-revocation snapshot");
+    let after_epoch = after_snapshot["workspace"]["policy_epoch"].clone();
+    assert!(!before_epoch.is_null() && !after_epoch.is_null());
+    if terminal_value["code"] == "policy_changed" {
+        assert_ne!(before_epoch, after_epoch);
+    }
+    let channels = after_snapshot["channels"]
+        .as_array()
+        .expect("snapshot contains channels");
+    assert!(!channels.iter().any(|entry| entry["id"] == source_channel));
+    assert!(channels.iter().any(|entry| {
+        entry["id"] == channel
+            && entry["members"].as_array().is_some_and(|members| {
+                members
+                    .iter()
+                    .any(|member| member.as_str() == Some(bob_principal.as_str()))
+            })
+    }));
 
     crew.human_request(
         &connection_id,
