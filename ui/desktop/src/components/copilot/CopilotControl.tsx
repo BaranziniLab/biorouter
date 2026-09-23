@@ -174,6 +174,18 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   // one, and certainly not an error one. This sits ABOVE the `!status` branch
   // because `status` stays undefined when the very first read is refused.
   if (notApplicable) return null;
+  // ⚠ Silent ON PURPOSE, and it reads like a dropped error until you follow the
+  // states. `refresh` never clears `status` on failure, so `!status` means only
+  // one thing: no read has EVER succeeded. In that state nothing is known about
+  // whether this chat uses Copilot at all, and the previous code put an error
+  // alert above the composer of every chat on the machine — which is the noise
+  // #359 removed. The case that matters is still covered: once a read has
+  // succeeded, `status` is retained, so a LATER failure keeps this panel
+  // rendering and surfaces `loadError` inside it.
+  //
+  // Do not "restore" the error here by testing `observedActivity.current`: that
+  // ref is set only by a successful read, so `!status && observedActivity` is
+  // unreachable and the restoration would be dead code that looks like a fix.
   if (!status) return null;
   // Older backends mark every completed reply stopped. Only an observed request
   // or the new session-owned activity identifier proves this chat used Copilot.
