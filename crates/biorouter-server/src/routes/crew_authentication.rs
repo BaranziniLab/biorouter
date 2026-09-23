@@ -124,7 +124,7 @@ impl Drop for AttachedTerminal {
 
 async fn serve(mut socket: WebSocket, headers: HeaderMap, id: String, controller: String) {
     let Ok(mut output) = authentication::attach(&id, &controller).await else {
-        let _ = socket.send(Message::Text(json!({"type":"error","error":"Authentication attach refused; close and start again"}).to_string().into())).await;
+        let _ = socket.send(Message::Text(json!({"type":"error","code":authentication::ATTACH_FAILURE_CODE,"error":authentication::ATTACH_FAILURE_MESSAGE}).to_string().into())).await;
         return;
     };
     let _owned_terminal = AttachedTerminal {
@@ -143,7 +143,7 @@ async fn serve(mut socket: WebSocket, headers: HeaderMap, id: String, controller
                     }
                     Ok(false) => (),
                     Err(_) => {
-                        let _ = socket.send(Message::Text(json!({"type":"error","error":"SSH was not handed off to a verified broker connection; reconnect to inspect policy and identity"}).to_string().into())).await;
+                        let _ = socket.send(Message::Text(json!({"type":"error","code":authentication::HANDOFF_FAILURE_CODE,"error":authentication::HANDOFF_FAILURE_MESSAGE}).to_string().into())).await;
                         break;
                     }
                 }

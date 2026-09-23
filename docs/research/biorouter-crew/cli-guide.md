@@ -39,6 +39,24 @@ biorouter crew credentials unlock
 
 The default secret prompts hide input. `--approval-key-stdin` explicitly reads exactly the first stdin line as the approval secret. For `credentials init` or `credentials unlock`, the second line supplies the distinct vault passphrase. For `enroll accept --token-stdin`, the enrollment token is the next line after approval. With `send --input -` or `connections save -`, the remaining stdin content is the message or JSON descriptor. Supply such input through a trusted secret-input pipe; do not put secrets in command arguments, shell history, environment variables or connection JSON. Enrollment also supports an explicit `--token-fd FD`. Native `auth` still requires an interactive terminal, so use its normal hidden approval prompt.
 
+## Install the remote executable before connecting
+
+Every connecting ordinary Unix account on the Linux SSH host needs its own executable at **`~/.local/bin/biorouter-crew`**. The daemon invokes that exact path for `bridge --stdio`; an executable only in `/usr/local/bin` or `/usr/bin`, or available only through `PATH`, does not satisfy this prerequisite. The account hosting the broker needs it too.
+
+Obtain and verify a `biorouter-crew` artifact qualified for the target Linux architecture and runtime. In each connecting account's own SSH session, install the verified file without administrator privileges:
+
+```sh
+# Run on the remote Linux host as each connecting ordinary user.
+VERIFIED_BINARY='/replace/with/path/to/verified/linux/biorouter-crew'
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$VERIFIED_BINARY" "$HOME/.local/bin/biorouter-crew"
+"$HOME/.local/bin/biorouter-crew" --version
+```
+
+Only the initial workspace owner starts the shared broker; colleagues run bridges under their own accounts and do not start another broker for that workspace. After `biorouter crew connections prepare`, the owner uses the returned public device key with the remote `biorouter-crew start --state-dir PATH --bootstrap-key HEX` command, then verifies `status --state-dir PATH`. See the [rootless setup checklist](protocol-contract.md#rootless-setup-checklist) for the complete commands and trusted connection details. The local `biorouter crew --connection CONNECTION_ID workspace bootstrap` command performs signed `auth.bootstrap` after authentication; it does not install or launch the remote broker.
+
+Use qualified local persistent storage and an institution-approved SSH route. Check [Linux artifact portability](linux-portability.md) and [institutional SSH requirements](institutional-ssh-compatibility.md) before deployment; version output alone does not qualify kernel, filesystem, confinement or institution policy. Do not infer compatibility with an older cluster runtime from the current ARM64 test artifact's GLIBC 2.39 requirement.
+
 ## Save a verified connection, then authenticate
 
 Prepare a device identity first. `connections prepare` and `enroll prepare` are aliases for the same operation:
@@ -201,6 +219,35 @@ biorouter crew --connection "$CONNECTION_ID" grants revoke "$SESSION_ID"
 ```
 
 `grants grant` also accepts repeated `--context-channel`. The daemon validates the conversation's actual provider and origin; a session ID alone does not authorize access. `context` returns the authorized context manifest. Revocation invalidates the grant; it is not proof that every already-started remote process has terminated.
+
+## Use a terminal conversation through the shared daemon
+
+**Source-only, pending validation:** the explicit shared-daemon conversation adapter is applied in uncommitted source. Durable elicitation answer/history receipts are implemented and independently reviewed; focused checks pass, including strengthened durability checks and clean typecheck, while final-gate/build/runtime acceptance remains pending. Fixture authentication/connect now passes after correcting the broker install location; three-user bootstrap and a human roundtrip pass on pinned `4a2e190b`, awaiting the new pair. The commands below describe that source contract, not a qualified release.
+
+Create a daemon conversation without sending a model prompt, specifying both provider and model after the `session` subcommand:
+
+```sh
+biorouter session --shared-daemon --no-start --create-only \
+  --provider "$PROVIDER_NAME" --model "$MODEL_NAME"
+
+# Copy the exact daemon session ID returned above.
+SESSION_ID='replace-with-returned-daemon-session-id'
+biorouter crew --connection "$CONNECTION_ID" --expected-mode private \
+  grants grant "$SESSION_ID" "$CHANNEL_ID"
+
+# Interactive continuation of that exact daemon conversation:
+biorouter session --shared-daemon --no-start --resume --session-id "$SESSION_ID"
+
+# Alternatively, send one prompt to the same daemon conversation:
+biorouter run --shared-daemon --no-start --resume --session-id "$SESSION_ID" \
+  --text 'Summarize the Crew context that I have authorized for this conversation.'
+```
+
+Use the same BioRouter profile throughout, choose an allowed configured provider/model, and finish any active turn before granting access. Creation alone does not grant Crew access. Resume requires the exact session ID; it does not search local sessions. `--no-start` requires an existing daemon. Human approval uses the hidden prompt, or explicit `--approval-key-stdin`; keep that secret out of model prompts and arguments.
+
+The shared adapter uses daemon agent, reply and session services before constructing any local Agent or project bridge. Without `--shared-daemon`, ordinary `run` and `session` remain standalone local conversations; a daemon-issued Crew grant does not supply their process-local manager with the daemon's live SSH connection. Unsupported local-only flags are refused in shared mode. The stream authenticates daemon identity before proof, uses bounded parsing and never automatically resubmits a turn after a transport error.
+
+Ordinary elicitation questions are answered directly through the Proven-only daemon route for that exact session; a desktop redirect is not required. Unsupported approval types receive an explicit refusal. Durable answer/history persistence is implemented and independently reviewed, but the approval/stream/cancellation acceptance matrix remains pending. An unknown question returns a typed no-write refusal; an answer recorded after its waiter ended reports `recorded_not_delivered`, and a persistence failure is distinct. The CLI treats only typed `unknown` as a no-op and never automatically resubmits an answer.
 
 ## Privacy, retries and recovery
 

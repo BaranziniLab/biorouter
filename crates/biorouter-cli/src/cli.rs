@@ -89,9 +89,38 @@ jsonl' -> '20250325_200615')."
     pub path: Option<PathBuf>,
 }
 
+#[derive(Args, Debug, Clone, Default)]
+pub struct SharedDaemonOptions {
+    #[arg(
+        long,
+        help = "Use the profile's shared daemon; does not grant Crew access"
+    )]
+    pub shared_daemon: bool,
+    #[arg(
+        long,
+        requires = "shared_daemon",
+        help = "Read the shared daemon approval secret from stdin"
+    )]
+    pub approval_key_stdin: bool,
+    #[arg(
+        long,
+        requires = "shared_daemon",
+        help = "Require an already running shared daemon"
+    )]
+    pub no_start: bool,
+    #[arg(
+        long,
+        requires = "shared_daemon",
+        help = "Create a daemon conversation without sending a model prompt"
+    )]
+    pub create_only: bool,
+}
+
 /// Session behavior options shared between Session and Run commands
 #[derive(Args, Debug, Clone, Default)]
 pub struct SessionOptions {
+    #[command(flatten)]
+    pub shared: SharedDaemonOptions,
     #[arg(
         long,
         help = "Enable debug output mode with full content and no truncation",
@@ -2063,6 +2092,130 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
     Ok(())
 }
 
+fn reject_shared_fields(fields: &[(&str, bool)]) -> Result<()> {
+    let unsupported: Vec<_> = fields
+        .iter()
+        .filter_map(|(name, present)| present.then_some(*name))
+        .collect();
+    anyhow::ensure!(
+        unsupported.is_empty(),
+        "--shared-daemon does not support: {}",
+        unsupported.join(", ")
+    );
+    Ok(())
+}
+
+fn shared_conversation_options(
+    identifier: &Option<Identifier>,
+    resume: bool,
+    session: &SessionOptions,
+    extensions: &ExtensionOptions,
+    model: &ModelOptions,
+) -> Result<crate::commands::shared_conversation::SharedConversationOptions> {
+    reject_shared_fields(&[
+        (
+            "--name",
+            identifier.as_ref().is_some_and(|id| id.name.is_some()),
+        ),
+        (
+            "--path",
+            identifier.as_ref().is_some_and(|id| id.path.is_some()),
+        ),
+        ("--debug", session.debug),
+        (
+            "--max-tool-repetitions",
+            session.max_tool_repetitions.is_some(),
+        ),
+        ("--max-turns", session.max_turns.is_some()),
+        ("--with-extension", !extensions.extensions.is_empty()),
+        (
+            "--with-streamable-http-extension",
+            !extensions.streamable_http_extensions.is_empty(),
+        ),
+        ("--with-builtin", !extensions.builtins.is_empty()),
+    ])?;
+    let session_id = identifier.as_ref().and_then(|id| id.session_id.clone());
+    anyhow::ensure!(
+        !resume || session_id.is_some(),
+        "--shared-daemon --resume requires an exact --session-id; local session lookup is not used"
+    );
+    anyhow::ensure!(
+        session_id.is_none() || resume,
+        "--session-id requires --resume"
+    );
+    anyhow::ensure!(
+        !session.shared.create_only || session_id.is_none(),
+        "--create-only creates a new conversation and cannot be used with --resume/--session-id"
+    );
+    if session_id.is_none() {
+        anyhow::ensure!(
+            model
+                .provider
+                .as_ref()
+                .is_some_and(|v| !v.trim().is_empty())
+                && model.model.as_ref().is_some_and(|v| !v.trim().is_empty()),
+            "A new --shared-daemon conversation requires both --provider and --model"
+        );
+    }
+    Ok(
+        crate::commands::shared_conversation::SharedConversationOptions {
+            session_id,
+            working_dir: std::env::current_dir()?,
+            provider: model.provider.clone(),
+            model: model.model.clone(),
+            prompt: None,
+            interactive: false,
+            create_only: session.shared.create_only,
+            history: false,
+            approval_key_stdin: session.shared.approval_key_stdin,
+            no_start: session.shared.no_start,
+            quiet: false,
+            output_format: "text".into(),
+        },
+    )
+}
+
+async fn handle_shared_run(
+    input: &InputOptions,
+    identifier: &Option<Identifier>,
+    behavior: &RunBehavior,
+    session: &SessionOptions,
+    extensions: &ExtensionOptions,
+    output: &OutputOptions,
+    model: &ModelOptions,
+) -> Result<()> {
+    reject_shared_fields(&[
+        ("--workflow", input.workflow.is_some()),
+        ("--system", input.system.is_some()),
+        ("--params", !input.params.is_empty()),
+        ("--sub-workflow", !input.additional_sub_workflows.is_empty()),
+        ("--explain", input.explain),
+        ("--render-workflow", input.render_workflow),
+        ("--no-session", behavior.no_session),
+        ("--scheduled-job-id", behavior.scheduled_job_id.is_some()),
+    ])?;
+    let mut options =
+        shared_conversation_options(identifier, behavior.resume, session, extensions, model)?;
+    let has_input = input.instructions.is_some() || input.input_text.is_some();
+    anyhow::ensure!(
+        !options.create_only || (!has_input && !behavior.interactive),
+        "--create-only cannot be combined with --text, --instructions, or --interactive"
+    );
+    anyhow::ensure!(!(options.approval_key_stdin && input.instructions.as_deref() == Some("-")), "--approval-key-stdin and --instructions - cannot share stdin; provide --text or an instruction file");
+    anyhow::ensure!(
+        has_input || options.create_only || behavior.interactive,
+        "--shared-daemon run requires --text, --instructions, --interactive, or --create-only"
+    );
+    if has_input {
+        options.prompt =
+            parse_run_input(input, output.quiet)?.and_then(|(config, _)| config.contents);
+    }
+    options.interactive = behavior.interactive;
+    options.quiet = output.quiet;
+    options.output_format = output.output_format.clone();
+    crate::commands::shared_conversation::run(options).await
+}
+
 /// `biorouter session` — both of its forms, dispatched in one place.
 ///
 /// ⚠ **Extracted from `cli()` rather than inlined, and the reason is mechanical.**
@@ -2081,6 +2234,19 @@ async fn handle_session_command(
     extension_opts: ExtensionOptions,
     model_opts: ModelOptions,
 ) -> Result<()> {
+    if session_opts.shared.shared_daemon {
+        anyhow::ensure!(command.is_none(), "--shared-daemon on session does not support local session subcommands; use an exact --resume --session-id for a daemon conversation");
+        let mut options = shared_conversation_options(
+            &identifier,
+            resume,
+            &session_opts,
+            &extension_opts,
+            &model_opts,
+        )?;
+        options.interactive = !options.create_only;
+        options.history = history;
+        return crate::commands::shared_conversation::run(options).await;
+    }
     match command {
         Some(cmd) => handle_session_subcommand(cmd).await,
         None => {
@@ -2315,6 +2481,18 @@ async fn handle_run_command(
     output_opts: OutputOptions,
     model_opts: ModelOptions,
 ) -> Result<()> {
+    if session_opts.shared.shared_daemon {
+        return handle_shared_run(
+            &input_opts,
+            &identifier,
+            &run_behavior,
+            &session_opts,
+            &extension_opts,
+            &output_opts,
+            &model_opts,
+        )
+        .await;
+    }
     let parsed = parse_run_input(&input_opts, output_opts.quiet)?;
 
     let Some((input_config, workflow)) = parsed else {
@@ -2734,7 +2912,19 @@ async fn handle_default_session() -> Result<()> {
     session.interactive(None).await
 }
 
+fn is_shared_conversation(command: &Option<Command>) -> bool {
+    match command {
+        Some(Command::Run { session_opts, .. } | Command::Session { session_opts, .. }) => {
+            session_opts.shared.shared_daemon
+        }
+        _ => false,
+    }
+}
+
 fn needs_tool_bridge(command: &Option<Command>) -> bool {
+    if is_shared_conversation(command) {
+        return false;
+    }
     matches!(
         command,
         None | Some(
@@ -2758,8 +2948,10 @@ fn needs_tool_bridge(command: &Option<Command>) -> bool {
 pub async fn cli() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if let Err(e) = crate::project_tracker::update_project_tracker(None, None) {
-        warn!("Warning: Failed to update project tracker: {}", e);
+    if !is_shared_conversation(&cli.command) {
+        if let Err(e) = crate::project_tracker::update_project_tracker(None, None) {
+            warn!("Warning: Failed to update project tracker: {}", e);
+        }
     }
 
     let command_name = get_command_name(&cli.command);
@@ -2886,6 +3078,159 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn shared_daemon_options_parse_on_session_and_run_without_starting_tool_bridge() {
+        let session = Cli::try_parse_from([
+            "biorouter",
+            "session",
+            "--shared-daemon",
+            "--approval-key-stdin",
+            "--no-start",
+            "--create-only",
+            "--provider",
+            "synthetic-provider",
+            "--model",
+            "synthetic-model",
+        ])
+        .expect("shared session options parse");
+        assert!(!needs_tool_bridge(&session.command));
+        let Some(Command::Session { session_opts, .. }) = session.command else {
+            panic!("session command expected");
+        };
+        assert!(session_opts.shared.shared_daemon);
+        assert!(session_opts.shared.approval_key_stdin);
+        assert!(session_opts.shared.no_start);
+        assert!(session_opts.shared.create_only);
+
+        let run = Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--shared-daemon",
+            "--text",
+            "synthetic prompt",
+            "--provider",
+            "synthetic-provider",
+            "--model",
+            "synthetic-model",
+        ])
+        .expect("shared run options parse");
+        assert!(!needs_tool_bridge(&run.command));
+        assert!(matches!(run.command, Some(Command::Run { .. })));
+    }
+
+    #[test]
+    fn shared_daemon_dependent_flags_are_rejected_without_the_shared_switch() {
+        for flag in ["--approval-key-stdin", "--no-start", "--create-only"] {
+            let error = Cli::try_parse_from(["biorouter", "run", flag])
+                .err()
+                .expect("dependent shared flag must require --shared-daemon");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
+    fn shared_conversation_resolution_requires_exact_resume_ids_and_new_provider_model() {
+        let shared = SessionOptions {
+            shared: SharedDaemonOptions {
+                shared_daemon: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let extensions = ExtensionOptions::default();
+
+        let resumed = shared_conversation_options(
+            &Some(Identifier {
+                session_id: Some("session-123".into()),
+                name: None,
+                path: None,
+            }),
+            true,
+            &shared,
+            &extensions,
+            &ModelOptions::default(),
+        )
+        .expect("exact session IDs resume without local lookup");
+        assert_eq!(resumed.session_id.as_deref(), Some("session-123"));
+        assert!(!resumed.create_only);
+
+        let new = shared_conversation_options(
+            &None,
+            false,
+            &shared,
+            &extensions,
+            &ModelOptions {
+                provider: Some("synthetic-provider".into()),
+                model: Some("synthetic-model".into()),
+            },
+        )
+        .expect("new shared conversations accept explicit provider and model");
+        assert_eq!(new.provider.as_deref(), Some("synthetic-provider"));
+        assert_eq!(new.model.as_deref(), Some("synthetic-model"));
+
+        let error = shared_conversation_options(
+            &Some(Identifier {
+                session_id: Some("session-123".into()),
+                name: None,
+                path: None,
+            }),
+            false,
+            &shared,
+            &extensions,
+            &ModelOptions::default(),
+        )
+        .err()
+        .expect("an exact session ID without --resume must be refused");
+        assert!(error.to_string().contains("requires --resume"));
+
+        let error = shared_conversation_options(
+            &None,
+            false,
+            &shared,
+            &extensions,
+            &ModelOptions::default(),
+        )
+        .err()
+        .expect("new shared conversations must name provider and model");
+        assert!(error
+            .to_string()
+            .contains("requires both --provider and --model"));
+    }
+
+    #[tokio::test]
+    async fn shared_run_rejects_before_reading_an_instruction_file_or_building_a_provider() {
+        let input = InputOptions {
+            instructions: Some("/path/that/must/not/be/read".into()),
+            ..Default::default()
+        };
+        let behavior = RunBehavior::default();
+        let session = SessionOptions {
+            shared: SharedDaemonOptions {
+                shared_daemon: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = handle_shared_run(
+            &input,
+            &None,
+            &behavior,
+            &session,
+            &ExtensionOptions::default(),
+            &OutputOptions::default(),
+            &ModelOptions::default(),
+        )
+        .await
+        .expect_err("provider/model refusal must precede instruction-file reading");
+        assert!(error
+            .to_string()
+            .contains("requires both --provider and --model"));
+        assert!(!error.to_string().contains("No such file"));
+    }
 
     #[test]
     fn every_standalone_agent_entry_point_starts_the_tool_bridge() {

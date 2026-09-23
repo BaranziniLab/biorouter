@@ -349,6 +349,10 @@ pub struct CallableToolCountResponse {
 pub struct StartAgentRequest {
     working_dir: String,
     #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
     workflow: Option<Workflow>,
     #[serde(default)]
     workflow_id: Option<String>,
@@ -408,7 +412,7 @@ enum NewChatBind {
 ///
 /// A new chat has no capability of its own yet, so a private default reads as a
 /// raise from Public — the reading `update_agent_provider` gives any first bind.
-/// What differs is who chose the model: `/agent/start` names no provider, it binds
+/// For starts without an explicit pair, the operator chose the model through
 /// `BIOROUTER_PROVIDER` + `BIOROUTER_MODEL`, and SD-1 says the tier the operator's
 /// `biorouter configure` choice implies holds for every session in that daemon. So
 /// the proof is asked for only where it can be given:
@@ -620,13 +624,32 @@ impl RestoreStanding {
     }
 }
 
-async fn bind_new_session_provider(
-    state: &AppState,
-    session: &Session,
+async fn prepare_new_session_provider(
     headers: &HeaderMap,
-) -> Result<(), ErrorResponse> {
-    let Some((provider_name, model_config)) = configured_new_session_provider()? else {
-        return Ok(());
+    selected_provider: Option<String>,
+    selected_model: Option<String>,
+) -> Result<Option<Arc<dyn biorouter::providers::base::Provider>>, ErrorResponse> {
+    let explicit = selected_provider.is_some() || selected_model.is_some();
+    let selection = match (selected_provider, selected_model) {
+        (None, None) => configured_new_session_provider()?,
+        (Some(provider), Some(model))
+            if !provider.trim().is_empty() && !model.trim().is_empty() =>
+        {
+            let model_config = ModelConfig::new(&model).map_err(|error| ErrorResponse {
+                message: format!("The selected model cannot be used for a new chat: {error}"),
+                status: StatusCode::BAD_REQUEST,
+            })?;
+            Some((provider, model_config))
+        }
+        _ => {
+            return Err(ErrorResponse {
+                message: "Specify a nonempty provider and model together".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            })
+        }
+    };
+    let Some((provider_name, model_config)) = selection else {
+        return Ok(None);
     };
     let provider = create(&provider_name, model_config)
         .await
@@ -638,13 +661,27 @@ async fn bind_new_session_provider(
     // The launch state is read here rather than in the gate for the same reason:
     // one sample per request, threaded, so the decision cannot be made against two
     // different answers.
-    match new_chat_bind_decision(
-        biorouter::privacy::privacy_tiers_enabled(),
-        provider.tier(),
-        user_action_proof(headers),
-        biorouter_server::launch::expected_a_user_action_key(),
-        biorouter_server::launch::capability_config_moved_since_launch(),
-    ) {
+    // An explicit selection is not the operator's launch-pinned default, so
+    // SD-12's keyless default exemption cannot authorize a private tier raise.
+    let verdict = if explicit {
+        if biorouter::privacy::privacy_tiers_enabled()
+            && raise_needs_user_action(ProviderTier::Public, provider.tier())
+            && !matches!(user_action_proof(headers), UserActionProof::Proven)
+        {
+            NewChatBind::NeedsUserProof
+        } else {
+            NewChatBind::Allowed
+        }
+    } else {
+        new_chat_bind_decision(
+            biorouter::privacy::privacy_tiers_enabled(),
+            provider.tier(),
+            user_action_proof(headers),
+            biorouter_server::launch::expected_a_user_action_key(),
+            biorouter_server::launch::capability_config_moved_since_launch(),
+        )
+    };
+    match verdict {
         NewChatBind::Allowed => {}
         NewChatBind::NeedsUserProof => {
             return Err(ErrorResponse {
@@ -683,6 +720,17 @@ async fn bind_new_session_provider(
             });
         }
     }
+    Ok(Some(provider))
+}
+
+async fn bind_new_session_provider(
+    state: &AppState,
+    session: &Session,
+    provider: Option<Arc<dyn biorouter::providers::base::Provider>>,
+) -> Result<(), ErrorResponse> {
+    let Some(provider) = provider else {
+        return Ok(());
+    };
     let agent = state
         .get_agent(session.id.clone())
         .await
@@ -947,11 +995,15 @@ async fn start_agent(
 ) -> Result<Json<Session>, ErrorResponse> {
     let StartAgentRequest {
         working_dir,
+        provider,
+        model,
         workflow,
         workflow_id,
         workflow_deeplink,
         extension_overrides,
     } = payload;
+
+    let prepared_provider = prepare_new_session_provider(&headers, provider, model).await?;
 
     let original_workflow = if let Some(deeplink) = workflow_deeplink {
         match workflow_deeplink::decode(&deeplink) {
@@ -1002,7 +1054,7 @@ async fn start_agent(
             }
         })?;
 
-    if let Err(error) = bind_new_session_provider(&state, &session, &headers).await {
+    if let Err(error) = bind_new_session_provider(&state, &session, prepared_provider).await {
         discard_failed_new_session(&state, &session.id).await;
         return Err(error);
     }
@@ -3478,6 +3530,8 @@ mod new_session_provider_binding_tests {
                 HeaderMap::new(),
                 Json(StartAgentRequest {
                     working_dir,
+                    provider: None,
+                    model: None,
                     workflow: None,
                     workflow_id: None,
                     workflow_deeplink: None,
@@ -3531,6 +3585,83 @@ mod new_session_provider_binding_tests {
         assert_first_turn_provider("claude_code", "claude-sonnet-4-6", "CLAUDE_CODE_COMMAND").await;
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn an_explicit_provider_model_pair_bypasses_an_invalid_configured_default() {
+        let result = with_config_overrides(
+            provider_overrides(
+                "provider-does-not-exist",
+                "invalid-default",
+                Some("CODEX_COMMAND"),
+            ),
+            prepare_new_session_provider(
+                &HeaderMap::new(),
+                Some("codex".into()),
+                Some("gpt-5.5".into()),
+            ),
+        )
+        .await
+        .expect("the explicit pair must be selected before reading the invalid default");
+        assert_eq!(
+            result.expect("explicit provider is present").get_name(),
+            "codex"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn an_incomplete_explicit_provider_model_pair_is_refused_without_creating_a_row() {
+        let error = with_config_overrides(
+            provider_overrides("codex", "gpt-5.5", Some("CODEX_COMMAND")),
+            prepare_new_session_provider(&HeaderMap::new(), Some("codex".into()), None),
+        )
+        .await
+        .err()
+        .expect("provider without model must be rejected");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("provider and model together"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn an_explicit_private_pair_still_requires_user_proof() {
+        let mut overrides = provider_overrides(
+            "provider-does-not-exist",
+            "invalid-default",
+            Some("CODEX_COMMAND"),
+        );
+        overrides.insert("VERSA_AZURE_API_KEY".into(), "synthetic-api-key".into());
+        overrides.insert(
+            "VERSA_AZURE_ENDPOINT".into(),
+            biorouter::providers::versa_azure::VERSA_AZURE_ENDPOINT.into(),
+        );
+        overrides.insert(
+            "VERSA_AZURE_DEPLOYMENT_NAME".into(),
+            biorouter::providers::versa_azure::deployment_for_model(
+                biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL,
+            )
+            .expect("the synthetic private model has a deployment")
+            .into(),
+        );
+        overrides.insert(
+            "VERSA_AZURE_API_VERSION".into(),
+            biorouter::providers::versa_azure::VERSA_AZURE_API_VERSION.into(),
+        );
+        let error = with_config_overrides(
+            overrides,
+            prepare_new_session_provider(
+                &HeaderMap::new(),
+                Some("versa_azure".into()),
+                Some(biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL.into()),
+            ),
+        )
+        .await
+        .err()
+        .expect("an explicit private pair without proof must refuse");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(!error.message.is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn a_failed_default_provider_bind_leaves_no_visible_broken_chat() {
@@ -3543,6 +3674,8 @@ mod new_session_provider_binding_tests {
                 HeaderMap::new(),
                 Json(StartAgentRequest {
                     working_dir: working_dir.to_string(),
+                    provider: None,
+                    model: None,
                     workflow: None,
                     workflow_id: None,
                     workflow_deeplink: None,
@@ -3599,6 +3732,8 @@ mod new_session_provider_binding_tests {
         );
         let request = || StartAgentRequest {
             working_dir: working_dir.to_string(),
+            provider: None,
+            model: None,
             workflow: None,
             workflow_id: None,
             workflow_deeplink: None,

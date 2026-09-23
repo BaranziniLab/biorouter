@@ -2678,8 +2678,8 @@ function BaseChatContent({
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
                               // Finding 5.1 (the PR author's own follow-up).
-                              // `ElicitationRequest` posts its answer through
-                              // `/reply` — the same write the composer makes —
+                              // `ElicitationRequest` resolves a waiting tool
+                              // through the daemon's human-action endpoint,
                               // and it lives INSIDE the transcript, so removing
                               // the composer never reached it.
                               // `BioRouterMessage` renders the form only when it

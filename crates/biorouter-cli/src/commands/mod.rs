@@ -15,6 +15,7 @@ pub mod serve;
 pub mod session;
 pub mod session_grouping;
 pub mod session_watch;
+pub mod shared_conversation;
 pub mod skill;
 pub mod term;
 pub mod usage;

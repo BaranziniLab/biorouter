@@ -183,6 +183,104 @@ channel could not be admitted and the retained channel had a stale cursor,
 slow-reader expiry, fairness under sustained backlog, and ACL-revocation
 transport recovery remain unexecuted rather than inferred from this attempt.
 
+## Pinned 9a restart diagnosis
+
+The owned Alice daemon was stopped and restarted with the pinned 9a pair (CLI
+`9bbedb34c349e3b637c8b8e01e6e4e50807ffa86bf1bcfaa1562fc3c64195c5f`, daemon
+`50eefaaebad298679d9ad525a98a911941ea8ff62c462033a389fcd3351b005f`). Vault
+unlock succeeded. Immediate history then refused with the typed state
+`Crew connection is disconnected; authenticate and connect in Crew`. A fresh
+supported connect failed with `Crew SSH read failed; reconnect. Submitted
+operation outcome may be unknown; inspect history before retrying` (HTTP 400).
+The test stopped at this first actionable failure and did not retry a possibly
+unknown operation. The earlier direct bridge probe is separate evidence; this
+is a reproducible higher-level connect failure after the pinned daemon restart.
+
+The original host-trust refusal is classified as fixture setup: the daemon
+process had not inherited the owned profile SSH environment, even though the
+profile and verified source known-hosts records matched. After restarting the
+owned daemon with that profile environment (without changing host keys), native
+authentication succeeded with exit 0 and `authenticated: true`.
+
+With the authenticated 9a session, immediate small history succeeded in 0.036
+seconds. The following adaptive history request correctly returned
+`response_too_large` / `Request a smaller history window` in 0.065 seconds, and
+the next small history request succeeded in 0.031 seconds. This is a bounded
+current-artifact history recovery sequence; it does not qualify slow-reader
+backpressure or fairness.
+
+## Pinned 9a transfer checks
+
+One fresh synthetic upload capability registered with HTTP 200. The transfer
+completed with HTTP 200 and the receipt SHA-256 matched the local synthetic
+file (`de436eaab40d2aa3ac514b47098f6fbf8d6b7bb5dd8e7bd615160763243d5cf9`). A
+same-request replay was refused with HTTP 400 and did not create a second
+receipt; the completed receipt remained the only outcome for that request ID.
+
+After registering another capability, changing the selected source before
+start returned HTTP 400 `The selected source changed; select the original file
+again`. A missing path returned HTTP 400 `No such file or directory (os error
+2)`; creating that path afterward did not turn the refused selection into an
+approved capability. These checks used fresh request IDs and human proof.
+
+## Pinned 9a download-capability checks
+
+The completed synthetic upload supplied a blob for the download contract. A
+download selection registered with `approval_pending: true` returned HTTP 200;
+confirmation of the unchanged destination returned HTTP 200, and transfer
+start completed HTTP 200. The destination sentinel was replaced by the blob,
+with resulting SHA-256
+`de436eaab40d2aa3ac514b47098f6fbf8d6b7bb5dd8e7bd615160763243d5cf9`.
+
+Changing an existing destination after registration but before confirmation
+returned HTTP 400 `Destination changed since selection; select it again to
+approve publication`, and the replacement sentinel remained. Registering an
+initially absent destination succeeded as a pending selection, but creating the
+path before confirmation produced the same HTTP 400 refusal and preserved its
+sentinel. Missing and wrong proof on confirmation both returned HTTP 403 with
+the verified-human-action refusal.
+
+A fresh registration using the completed download’s original request ID,
+directory/name, overwrite choice, and blob returned a replay capability.
+Confirmation and start both returned HTTP 200, the original receipt ID was
+returned, and the destination hash was unchanged. This is the receipt-bound
+download replay; it is distinct from reusing a consumed capability.
+
+After confirming an unchanged existing destination, the destination was
+replaced before publication. Transfer start returned HTTP 200 with a receipt,
+but the receipt settled as `needs_file_selection` with
+`Transfer stopped. Reselect the original local file or destination to resume.
+Inspect any unconfirmed publication before retrying.` The replacement sentinel
+and its SHA-256 remained unchanged, while no download bytes were written. This
+is the post-confirm mutation refusal represented as a durable needs-selection
+outcome rather than a second local overwrite.
+
+A fresh 32 MiB synthetic download was started and paused at offset 262,144;
+the persisted receipt was `needs_file_selection`. After daemon restart, vault
+unlock and native PTY authentication, a new destination selection bound to the
+same receipt resumed successfully. The final receipt reached `completed` at
+offset 33,554,432; the downloaded file was 33,554,432 bytes and its SHA-256
+matched the receipt (`56a388beba6bfe73739e2d0e635a4617e8e649bb69bea6109b8417af259fd7be`).
+
+Receipt-bound cleanup was then exercised against the owned post-confirm
+needs-selection receipt. Cleanup registration and deletion returned HTTP 200;
+the receipt disappeared from the transfer list, while its destination hash and
+an unrelated sentinel file remained unchanged.
+
+A separate paused 32 MiB download reached `downloading` before pause, with
+receipt offset 1,572,864 and an actual hidden partial file of the same size.
+Receipt-bound cleanup returned HTTP 200, removed the receipt and that partial
+file, and left the unrelated sentinel unchanged. The final transfer list no
+longer contained the receipt.
+
+## Pinned 4a observer-lane setup outcome
+
+The owned Alice daemon was restarted with the pinned 4a CLI/daemon pair, but
+the first supported status/auth call stopped before credential handling with
+`Daemon identity could not be verified; refusing replacement: Operation not
+permitted (os error 1)`. The observer slow-reader, backlog fairness, and
+revocation-buffer checks were not run against 4a; no identity guard was bypassed.
+
 ## Broken-pipe recovery diagnosis
 
 The owned Alice profile was checked after the observer attempt. Read-only status
@@ -214,3 +312,26 @@ This shows the SSH bridge and broker can answer successive direct frames while
 the higher-level daemon history request still returns broken pipe. It narrows
 the unresolved problem to the daemon request/response path or its bridge
 session lifecycle; it does not qualify observer backpressure or recovery.
+
+## 9a connect versus direct bridge comparison
+
+Using the same saved target and configuration, one fresh strict SSH bridge
+`hello` received a valid result in 0.071 seconds while saved connection status
+remained `disconnected` with no stored last error. The intentionally terminated
+probe exited 255 during cleanup. Aggregate read-only process-state counts in
+the synthetic container were 7 Alice running-state entries, 4 Bob, 4 Carol,
+and 58 Alice zombie entries; no process was modified. The bridge therefore
+answered and the failure is not a simple listener absence. The zombie count is
+fixture-health context only and is not asserted as causal.
+
+## 9a native auth follow-up
+
+After the pinned daemon restart, the supported native `crew auth` flow was
+attempted with the owned profile’s explicit approval input and its profile SSH
+configuration. The flow stopped before daemon verification because strict host
+key checking reported `No ED25519 host key is known for [127.0.0.1]:56928` and
+`Host key verification failed`; the CLI returned the sanitized category
+`SSH authentication ended before the daemon verified and retained the broker
+connection`. A prior attempt without the profile environment had the same
+pre-verification class. No host key was added or replaced, and no further
+connect/history mutation was attempted.

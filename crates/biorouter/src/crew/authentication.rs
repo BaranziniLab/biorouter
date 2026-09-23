@@ -15,6 +15,19 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+pub const ATTACH_FAILURE_CODE: &str = "authentication_attach_failed";
+pub const HANDOFF_FAILURE_CODE: &str = "authentication_handoff_failed";
+pub const ATTACH_FAILURE_MESSAGE: &str = "SSH authentication terminal could not be attached. Close any existing authentication session, verify the daemon's SSH configuration, and try again.";
+pub const HANDOFF_FAILURE_MESSAGE: &str = "SSH authentication could not be handed off to a verified Crew broker. Verify ~/.local/bin/biorouter-crew is installed on the target host and check the saved broker socket/workspace identity, then reconnect.";
+
+pub fn terminal_failure_message(code: &str) -> Option<&'static str> {
+    match code {
+        ATTACH_FAILURE_CODE => Some(ATTACH_FAILURE_MESSAGE),
+        HANDOFF_FAILURE_CODE => Some(HANDOFF_FAILURE_MESSAGE),
+        _ => None,
+    }
+}
+
 static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<AuthSession>>>> =
     LazyLock::new(Default::default);
 static INSTANCE: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
@@ -399,6 +412,10 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
     let result = handoff_locked(id, controller).await;
     if result.is_err() {
         let _ = manager.disconnect_locked(&connection).await;
+        let mut registry = manager.registry.lock().await;
+        if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
+            entry.last_error = Some(HANDOFF_FAILURE_MESSAGE.into());
+        }
     }
     result
 }
@@ -619,6 +636,20 @@ mod tests {
         assert!(dimensions(80, 4).is_err());
         assert!(dimensions(501, 24).is_err());
         assert!(dimensions(80, 201).is_err());
+    }
+
+    #[test]
+    fn terminal_failure_guidance_is_allowlisted_and_never_echoes_unknown_codes() {
+        assert_eq!(
+            terminal_failure_message(ATTACH_FAILURE_CODE),
+            Some(ATTACH_FAILURE_MESSAGE)
+        );
+        assert_eq!(
+            terminal_failure_message(HANDOFF_FAILURE_CODE),
+            Some(HANDOFF_FAILURE_MESSAGE)
+        );
+        let malicious = "authentication_handoff_failed: secret=synthetic\ntrace";
+        assert_eq!(terminal_failure_message(malicious), None);
     }
 
     #[test]

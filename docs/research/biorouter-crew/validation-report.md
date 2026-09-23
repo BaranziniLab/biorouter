@@ -1549,3 +1549,275 @@ for this validation were commit `67a32a075100af8f348e4c86b208b21848d21450`
 with transport handoff hash
 `058e966781cc6675fe341a0dba974f2707df5f5ce7a5d1aa6d5255020dd2db02` and test
 hash `109a359b545e912dcd1b2af239c175019a3c006130d12ba91e219f54302c5e31`.
+
+## Current full gate and native artifact handoff (2026-09-22)
+
+After the transport change was committed as product source `9a3957d6`, the
+current documentation/evidence source was `d3498ecdf55a43976d6ef123faae0a5872a428de`.
+The current full repository gate completed successfully with the shared
+bounded target:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  just check-everything
+```
+
+The gate passed Rust formatting and clippy, including **17 production
+targets** with zero ordinary warnings and the non-inheritable-socket check;
+UI typecheck/lint/theme/contrast/token checks; OpenAPI generation and schema
+comparison; version, brand, Copilot naming, vendored-source, and cross-drift
+checks; registry (**61 passed**) and privacy-registry (**21 passed**) checks.
+The command was run in execution session `63648`; no persistent log file was
+created by the gate.
+
+Using the successful native build outputs from the same current source, the
+CLI and daemon were built with:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo build --bin biorouter --bin biorouterd
+```
+
+The build completed successfully in execution session `65100` (`Finished
+dev profile` after 2m18s). The immutable handoff directory is
+`/private/tmp/biorouter-crew-artifacts-9a3957d6/`:
+
+* `biorouter` is arm64 Mach-O, version **1.91.1**, SHA256
+  `9bbedb34c349e3b637c8b8e01e6e4e50807ffa86bf1bcfaa1562fc3c64195c5f`.
+* `biorouterd` is arm64 Mach-O, version **1.91.1**, SHA256
+  `50eefaaebad298679d9ad525a98a911941ea8ff62c462033a389fcd3351b005f`.
+
+Both files have mode `0555`. This is a native macOS artifact handoff; it
+does not claim Linux, Windows, GUI, or hosted runtime acceptance.
+
+## Full desktop Vitest validation (2026-09-22)
+
+The full desktop suite ran once against product source commit `9a3957d6` and
+documentation/evidence source commit `d3498ecdf55a43976d6ef123faae0a5872a428de`:
+
+```text
+npm run test:run -- --maxWorkers=2 --reporter=dot
+```
+
+Result: **550 test files passed, 6,260 tests passed, 19 skipped, 0 failed**
+(6,279 total) in **160.46s wall time** (`real 160.46`, `user 289.09`,
+`sys 47.99`). The complete captured output is preserved at
+`/private/tmp/crew-ui-vitest-d3498ecd.log`. This is a local desktop Vitest
+run; it does not claim native GUI, daemon, Linux, Windows, or hosted-runtime
+acceptance.
+
+## Transport diagnostic classification follow-up (2026-09-22)
+
+Astra's transport handoff added stable sanitized `ssh_*` failure categories
+and captures only the child exit status observed before cleanup. The focused
+Unix-local suite uses synthetic shell peers and temporary markers only; it
+does not use real SSH, credentials, profiles, or network endpoints.
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib crew::transport::tests -- --nocapture
+```
+
+Result: **12 passed, 0 failed, 0 ignored, 4,218 filtered out** in **0.27s**.
+The natural-exit case proves `ssh_write_io_broken_pipe` with
+`child_before_cleanup=exit_23`; EOF and incomplete-frame cases assert stable
+categories without scheduler-dependent exit timing. Diagnostics also verify
+that wire/request sentinel values are absent from errors.
+
+The broader Crew library subset passed with:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter --lib 'crew::' -- --nocapture
+```
+
+Result: **51 passed, 0 failed, 0 ignored, 4,179 filtered out** in **20.90s**.
+Strict Clippy passed with `-D warnings`:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo clippy -p biorouter --lib --tests -- -D warnings
+```
+
+`cargo fmt --all -- --check` and `git diff --check` passed. These results
+were committed with the transport diagnostic tests as `4a2e190b`.
+
+## Final current-source gate and native artifact handoff (2026-09-22)
+
+The final current-source gate completed successfully before the native build:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  just check-everything
+```
+
+It passed Rust formatting and clippy, including **17 production targets** with
+zero ordinary warnings and the non-inheritable-socket check; UI typecheck,
+lint, themes, contrast (**404 assertions**), and tokens; OpenAPI generation
+and schema comparison; version, brand, Copilot naming, vendored-source, and
+cross-drift checks; registry (**61 passed**) and privacy registry (**21
+passed**). No gate failures were reported.
+
+The final native pair then built successfully from the same source:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo build --bin biorouter --bin biorouterd
+```
+
+The build finished in **2m02s**. Immutable artifacts are available at
+`/private/tmp/biorouter-crew-artifacts-4a2e190b/`:
+
+* `biorouter`: arm64 Mach-O, version **1.91.1**, mode `0555`, SHA256
+  `0c1659478c1de91794170e311770abb6e20663b3a358cab68326f76ef4a6429e`.
+* `biorouterd`: arm64 Mach-O, version **1.91.1**, mode `0555`, SHA256
+  `41ccbf13d4cc6088c340204a32394234f8f0ff7bec45601f9f19fa236ade6203`.
+
+The source revision is `4a2e190b2480d08fd04799d60081c316ff791973`.
+This is a native macOS artifact handoff and does not claim Linux, Windows,
+GUI, or hosted runtime acceptance.
+
+## Exact-commit Linux ARM64 validation and UID 1101 lifecycle (2026-09-22)
+
+An immutable archive was created from exact commit
+`4a2e190b2480d08fd04799d60081c316ff791973`; its SHA-256 is
+`f71d8df325bbacb658dd20b18855a0c022564595b5335d57fb0842b38b3fecc5` and the
+exact committed `Cargo.lock` SHA-256 is
+`60da88634d074791ee19ad2bd1c9000054166d8e391c4c027151982d4976d03e`. The
+archive was mounted read-only into pinned ARM64 Linux image
+`rust@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082`.
+The locked build used `CARGO_BUILD_JOBS=2` and `CARGO_INCREMENTAL=0` and
+completed successfully. The resulting ELF artifacts were:
+
+```text
+biorouter  SHA-256 c83fb5597f133a3d29dd98802c26738dd325fa83d0f528a153037fb1bc39f5a6
+biorouterd SHA-256 c8c487d569ebe975bbf0825c04c654ee164337789fd2a5623b7f452401943734
+```
+
+Both are native ARM64 ELF PIE binaries; `readelf --version-info` reports
+`GLIBC_2.39` as the highest imported GLIBC symbol for each. The CLI and daemon
+reported version `1.91.1`, and `biorouter crew --help` exited successfully.
+
+Focused tests from the same archive passed sequentially: the transfer unit
+filter selected **11 passed, 0 failed, 734 filtered**; the route proof filter
+selected **3 passed, 0 failed, 742 filtered**; and
+`--test crew_transfer_filesystem` selected **8 passed, 0 failed**. The exact
+archive contains eight filesystem tests; earlier documentation claiming nine
+does not match this source snapshot.
+
+A fresh disposable ARM64 container ran the built pair as UID 1101 with a new
+tmpfs profile root and freshly generated synthetic approval and encrypted-vault
+secrets. The lifecycle container used the top-level daemon path after a later
+Cargo test invocation had replaced it with test-feature variant SHA-256
+`3d4ed8b07e0c64896aec59a99643cb0bd9418efb69c3f4ebba42f10abfa26c8d`; it did
+not use the verified build daemon SHA-256 above. Therefore this lifecycle is
+an unqualified daemon smoke and does not qualify the verified build pair.
+Daemon start/status passed with profile ID
+`89d43292-04eb-45e0-833a-7a80e9ebe3e4` and instance ID
+`2e49cdfa-f3f3-4911-9fc1-f70ebe6bd7ae`; the encrypted vault initialized and
+locked successfully. A valid-format incorrect approval proof returned HTTP
+403. Stop succeeded, restart preserved the profile ID and changed the instance
+ID to `2214cf7f-03ea-4896-bacc-935e00552ee1`, and the final stop succeeded.
+Final daemon status returned the expected missing-daemon refusal. The container
+and its tmpfs profile were removed on exit; no existing fixture, profile,
+workspace, AWS resource, or native CUA surface was accessed.
+
+The verified daemon build artifact was recovered from the immutable build
+target's dependency output at
+`/private/tmp/crew-linux-final-37-f-target/debug/deps/biorouterd-57bde4174d3ee770`,
+SHA-256 `c8c487d569ebe975bbf0825c04c654ee164337789fd2a5623b7f452401943734`.
+It has the original build BuildID and was preserved alongside the verified CLI
+in `/private/tmp/crew-linux-verified-4a2e190b.zlzUET/`, both mode `0555`. The
+top-level `debug/biorouterd` and `debug/deps/biorouterd-bd8214378db64a94`
+are test-feature variants and were excluded from verified artifact claims.
+
+### Verified-pair UID 1101 lifecycle rerun
+
+The lifecycle was repeated in a new disposable ARM64 container as UID 1101
+with the preserved mode-0555 pair above mounted read-only. SHA-256 checks were
+run immediately before both daemon launches and matched the verified CLI and
+daemon hashes. Fresh synthetic approval and encrypted-vault secrets were used.
+Start/status passed with profile ID `670bf2be-29ee-4ee2-b5cf-7883713d8baa`
+and instance ID `28087f97-6fb2-4bff-9652-3052ed3d1146`; vault initialization
+and locking passed; a valid-format wrong proof returned HTTP 403. After stop,
+restart preserved the profile ID and changed the instance ID to
+`1d416749-0b9e-4067-bf5d-2c4212151996`; the final stop passed and final status
+returned the expected missing-daemon refusal. The disposable container and
+tmpfs profile were removed on exit. This is verified-pair headless Linux
+lifecycle evidence only; it does not establish GUI or cross-platform parity.
+
+### Fresh three-user SSH fixture bootstrap
+
+Using the pinned native 4a pair (CLI SHA-256
+`0c1659478c1de91794170e311770abb6e20663b3a358cab68326f76ef4a6429e`; daemon
+SHA-256 `41ccbf13d4cc6088c340204a32394234f8f0ff7bec45601f9f19fa236ade6203`)
+and the verified Linux broker SHA-256
+`4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`, a fresh
+Ubuntu 24.04 ARM64 SSH fixture was prepared with three distinct Unix accounts
+and three distinct native profiles. Strict host-key checking and the broker's
+supported per-user `~/.local/bin/biorouter-crew` path were used.
+
+All three fresh devices authenticated and connected to the same private
+workspace; Bob and Carol enrollment succeeded. A team, `public-safe` General
+channel, and restricted Private channel were created, with all three
+principals invited and accepted. An Alice message and Bob reply were both
+observed by Carol through channel history. This evidence covers fixture
+enrollment, channel membership, and human-message roundtrip only. It does not
+claim new shared-conversation behavior, GUI/native acceptance, AWS export, or
+real-model validation.
+
+### Shared daemon conversation and durable elicitation checkpoint
+
+GPT-5.6 Luna authored and executed these checks on the conversation refactor
+after `4a2e190b`. GPT-6 Astra authored the production changes and independently
+reviewed the adapter, persistence order and safe SSH diagnostics. The following
+are separate, overlapping test scopes, not an aggregate test count:
+
+| Command | Observed result |
+| --- | --- |
+| `cargo test -p biorouter-cli daemon_client::tests:: -- --nocapture` | 16 passed, 0 failed; before the later SSH diagnostic display change. |
+| `cargo test -p biorouter-cli 'cli_tests::shared' -- --nocapture` | 4 passed, 0 failed. |
+| `cargo test -p biorouter-cli commands::shared_conversation::tests -- --nocapture` | 5 passed, 0 failed. |
+| `cargo test -p biorouter-server --bin biorouterd new_session_provider_binding_tests -- --nocapture` | 11 passed, 0 failed. |
+| `cargo test -p biorouter-server --bin biorouterd elicitation_tests -- --nocapture` | Final strengthened suite: 4 passed, 0 failed. |
+| `npm run test:run -- src/components/ElicitationRequest.test.tsx` | 2 passed, 0 failed. |
+| `npm run test:run -- src/hooks/chatStreamStore.userAction.test.tsx` | 6 passed, 0 failed. |
+| `npm run typecheck` | Passed after the response-object narrowing correction. |
+
+The elicitation suite verifies the persisted answer ID/body and agent-only
+visibility, `Message` then `MessagesPersisted` event order, no extra rows from
+foreign-session or replay attempts, a persisted user-only cancellation receipt
+with no answer, and HTTP 500 `persistence_failed` without answer delivery or
+success events when persistence is refused.
+
+The new core diagnostic test
+`terminal_failure_guidance_is_allowlisted_and_never_echoes_unknown_codes`
+selected one test and passed. Its encompassing command was stopped while Cargo
+traversed unrelated zero-match integration binaries; a successful command exit
+is not claimed. The first elicitation filter also selected zero tests and was
+corrected before reporting the selected suite above.
+
+`just generate-openapi` regenerated the schema and frontend bindings, including
+the 500 response. The first UI typecheck correctly failed TS2339 on accessing an
+unknown response's `status`; Astra added object narrowing, and Luna's repeat
+passed. `cargo fmt --all` ran immediately before the final elicitation test,
+and `git diff --check` passed after the source files were released.
+
+This checkpoint does not establish the final full gate, a production binary
+build, ordinary CLI model/MCP behavior, current mixed GUI/CLI acceptance or AWS
+product testing. The fresh three-user fixture above still uses the earlier
+pinned native pair and awaits the new production artifacts.

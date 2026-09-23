@@ -1047,6 +1047,13 @@ export type EditMessageResponse = {
 
 export type EditType = 'diverge' | 'edit';
 
+export type ElicitationResponseRequest = {
+    cancelled?: boolean;
+    data?: unknown;
+    id: string;
+    session_id: string;
+};
+
 export type EmbeddedResource = {
     _meta?: {
         [key: string]: unknown;
@@ -3892,6 +3899,8 @@ export type SourceProvenance = {
 
 export type StartAgentRequest = {
     extension_overrides?: Array<ExtensionConfig> | null;
+    model?: string | null;
+    provider?: string | null;
     workflow?: Workflow | null;
     workflow_deeplink?: string | null;
     workflow_id?: string | null;
@@ -4453,6 +4462,43 @@ export type WorkflowToYamlResponse = {
 export type WritePageBody = {
     commit_message: string;
     content: string;
+};
+
+export type RespondToElicitationData = {
+    body: ElicitationResponseRequest;
+    path?: never;
+    query?: never;
+    url: '/action-required/elicitation';
+};
+
+export type RespondToElicitationErrors = {
+    /**
+     * Invalid response shape
+     */
+    400: unknown;
+    /**
+     * Verified human authority required
+     */
+    403: unknown;
+    /**
+     * No matching live ordinary elicitation, or answer recorded after waiter ended
+     */
+    409: unknown;
+    /**
+     * Response exceeds size bound
+     */
+    413: unknown;
+    /**
+     * Persistence failed or completion outcome is unknown
+     */
+    500: unknown;
+};
+
+export type RespondToElicitationResponses = {
+    /**
+     * Delivered to the live ordinary elicitation
+     */
+    200: unknown;
 };
 
 export type SubmitSecretsData = {

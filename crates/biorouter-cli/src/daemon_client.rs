@@ -12,6 +12,46 @@ pub struct CrewClient {
     proof: Zeroizing<String>,
 }
 
+#[derive(Debug)]
+pub struct DaemonRefusal {
+    pub status: u16,
+    pub kind: Option<String>,
+    message: String,
+}
+
+impl std::fmt::Display for DaemonRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Daemon returned {}: {}",
+            self.status, self.message
+        )
+    }
+}
+
+impl std::error::Error for DaemonRefusal {}
+
+#[cfg(unix)]
+fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonRefusal {
+    let message = value
+        .and_then(|value| value.get("error").or_else(|| value.get("message")))
+        .and_then(Value::as_str)
+        .unwrap_or(fallback);
+    DaemonRefusal {
+        status,
+        kind: value
+            .and_then(|value| value.get("status").or_else(|| value.get("code")))
+            .and_then(Value::as_str)
+            .map(|kind| kind.chars().take(128).collect()),
+        message: message
+            .chars()
+            .take(1024)
+            .collect::<String>()
+            .escape_debug()
+            .to_string(),
+    }
+}
+
 impl CrewClient {
     pub async fn connect(no_start: bool) -> Result<Self> {
         Self::connect_with_input(no_start, false).await
@@ -57,6 +97,121 @@ impl CrewClient {
             body,
         )
         .await
+    }
+
+    pub async fn request_text(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<String> {
+        #[cfg(not(unix))]
+        {
+            let _ = (method, path, body);
+            bail!("Shared daemon IPC is unavailable on this platform");
+        }
+        #[cfg(unix)]
+        {
+            let (response, _connection) = self
+                .authenticated_response(method, path, body, "application/json, text/plain")
+                .await?;
+            let content_type = response_media_type(&response)?;
+            let bytes = bounded_response(response, 16 * 1024 * 1024).await?;
+            if bytes.is_empty() {
+                return Ok(String::new());
+            }
+            let text = String::from_utf8(bytes.to_vec()).context("Daemon response is not UTF-8")?;
+            match content_type.as_str() {
+                "application/json" => {
+                    serde_json::from_str::<Value>(&text).context("Invalid daemon JSON response")?;
+                }
+                "text/plain" => (),
+                _ => bail!("Daemon returned an unsupported response content type"),
+            }
+            Ok(text)
+        }
+    }
+
+    pub async fn event_stream(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<DaemonEventStream> {
+        #[cfg(not(unix))]
+        {
+            let _ = (method, path, body);
+            bail!("Shared daemon event streaming is unavailable on this platform");
+        }
+        #[cfg(unix)]
+        {
+            let (response, connection) = self
+                .authenticated_response(method, path, body, "text/event-stream")
+                .await?;
+            ensure!(
+                response_media_type(&response)? == "text/event-stream",
+                "Daemon returned an invalid event stream content type"
+            );
+            Ok(DaemonEventStream {
+                body: response.into_body(),
+                connection,
+                chunk: bytes::Bytes::new(),
+                decoder: EventDecoder::default(),
+                ended: false,
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    async fn authenticated_response(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        accept: &str,
+    ) -> Result<(hyper::Response<hyper::body::Incoming>, ObserverConnection)> {
+        use http_body_util::Full;
+        ensure!(
+            path.starts_with('/') && !path.starts_with("//") && !path.contains(['\r', '\n']),
+            "Invalid daemon request path"
+        );
+        let (mut sender, connection) = verified_observer_connection(&self.descriptor).await?;
+        let bytes = body
+            .map(|body| serde_json::to_vec(&body))
+            .transpose()?
+            .unwrap_or_default();
+        ensure!(
+            bytes.len() <= 16 * 1024 * 1024,
+            "Daemon request exceeds 16 MiB"
+        );
+        let request = hyper::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("Host", "localhost")
+            .header("Content-Type", "application/json")
+            .header("Accept", accept)
+            .header("X-Secret-Key", &self.descriptor.api_secret)
+            .header("X-Daemon-Instance", &self.descriptor.instance_id)
+            .header("X-User-Action", self.proof.as_str())
+            .body(Full::new(bytes::Bytes::from(bytes)))?;
+        let response = tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
+            .await
+            .context("Daemon response timed out; inspect session state before retrying")??;
+        if !response.status().is_success() {
+            let status = response.status();
+            let bytes = bounded_response(response, 16 * 1024)
+                .await
+                .with_context(|| format!("Daemon returned {status}; refusal body unavailable"))?;
+            let value = serde_json::from_slice::<Value>(&bytes).ok();
+            return Err(daemon_refusal(
+                status.as_u16(),
+                value.as_ref(),
+                std::str::from_utf8(&bytes)
+                    .unwrap_or("Request refused; check the daemon and approval secret"),
+            )
+            .into());
+        }
+        Ok((response, connection))
     }
 
     pub async fn observe<F>(
@@ -170,7 +325,12 @@ impl CrewClient {
                         Some(Ok(Message::Text(text))) => {
                             let value: Value = serde_json::from_str(&text)?;
                             if value["type"] == "exit" { exit_code = value["exit_code"].as_i64(); authenticated = value["authenticated"].as_bool() == Some(true); break; }
-                            if value["type"] == "error" { bail!("SSH authentication ended; inspect the daemon's connection status"); }
+                            if value["type"] == "error" {
+                                let message = value.get("code").and_then(Value::as_str)
+                                    .and_then(biorouter::crew::authentication::terminal_failure_message)
+                                    .unwrap_or("SSH authentication ended; inspect the daemon's connection status");
+                                bail!("{message}");
+                            }
                         },
                         Some(Ok(Message::Ping(data))) => socket.send(Message::Pong(data)).await?,
                         Some(Ok(Message::Close(_))) | None => break,
@@ -202,6 +362,165 @@ impl CrewClient {
             Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":true}))
         }
     }
+}
+
+// Match the daemon turn replay hard ceiling, with room for SSE field framing.
+// This is a client refusal bound, not a claim that every server event is capped.
+#[cfg(unix)]
+const MAX_SSE_FRAME: usize = 32 * 1024 * 1024 + 64 * 1024;
+
+pub struct DaemonEventStream {
+    #[cfg(unix)]
+    body: hyper::body::Incoming,
+    #[cfg(unix)]
+    connection: ObserverConnection,
+    #[cfg(unix)]
+    chunk: bytes::Bytes,
+    #[cfg(unix)]
+    decoder: EventDecoder,
+    #[cfg(unix)]
+    ended: bool,
+}
+impl DaemonEventStream {
+    pub async fn next_event(&mut self) -> Result<Option<Value>> {
+        #[cfg(not(unix))]
+        bail!("Shared daemon event streaming is unavailable on this platform");
+        #[cfg(unix)]
+        {
+            if self.ended {
+                return Ok(None);
+            }
+            let result = self.read_event().await;
+            if !matches!(result, Ok(Some(_))) {
+                self.ended = true;
+                self.connection.0.abort();
+            }
+            result
+        }
+    }
+    #[cfg(unix)]
+    async fn read_event(&mut self) -> Result<Option<Value>> {
+        use bytes::Buf;
+        use http_body_util::BodyExt;
+        loop {
+            while self.chunk.has_remaining() {
+                let byte = self.chunk.get_u8();
+                if let Some(value) = self.decoder.push(byte)? {
+                    return Ok(Some(value));
+                }
+            }
+            let frame = tokio::time::timeout(Duration::from_secs(180), self.body.frame())
+                .await
+                .context("Daemon event stream stalled; inspect session state before retrying")?;
+            let Some(frame) = frame else {
+                ensure!(
+                    self.decoder.at_boundary(),
+                    "Daemon event stream ended with a truncated frame"
+                );
+                return Ok(None);
+            };
+            if let Ok(bytes) = frame
+                .context("Daemon event stream interrupted; no request was resubmitted")?
+                .into_data()
+            {
+                ensure!(
+                    bytes.len() <= MAX_SSE_FRAME,
+                    "Daemon stream transport chunk exceeds 32 MiB plus framing allowance"
+                );
+                self.chunk = bytes;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct EventDecoder {
+    line: Vec<u8>,
+    data: String,
+    has_data: bool,
+    frame_bytes: usize,
+}
+#[cfg(unix)]
+impl EventDecoder {
+    fn at_boundary(&self) -> bool {
+        self.frame_bytes == 0
+    }
+    fn push(&mut self, byte: u8) -> Result<Option<Value>> {
+        self.frame_bytes += 1;
+        ensure!(
+            self.frame_bytes <= MAX_SSE_FRAME,
+            "Daemon SSE frame exceeds 32 MiB plus framing allowance"
+        );
+        if byte != b'\n' {
+            self.line.push(byte);
+            return Ok(None);
+        }
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
+        let line =
+            std::str::from_utf8(&self.line).context("Daemon SSE frame contains invalid UTF-8")?;
+        if line.is_empty() {
+            self.frame_bytes = 0;
+            let value = if self.has_data {
+                Some(
+                    serde_json::from_str(&self.data)
+                        .context("Daemon SSE data is not valid JSON")?,
+                )
+            } else {
+                None
+            };
+            self.data.clear();
+            self.has_data = false;
+            self.line.clear();
+            return Ok(value);
+        }
+        if let Some(data) = line
+            .strip_prefix("data:")
+            .or_else(|| (line == "data").then_some(""))
+        {
+            if self.has_data {
+                self.data.push('\n');
+            }
+            self.data.push_str(data.strip_prefix(' ').unwrap_or(data));
+            self.has_data = true;
+        }
+        self.line.clear();
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn response_media_type(response: &hyper::Response<hyper::body::Incoming>) -> Result<String> {
+    Ok(response
+        .headers()
+        .get("content-type")
+        .map(|value| value.to_str())
+        .transpose()
+        .context("Invalid daemon content type")?
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase())
+}
+
+#[cfg(unix)]
+async fn bounded_response(
+    response: hyper::Response<hyper::body::Incoming>,
+    limit: usize,
+) -> Result<bytes::Bytes> {
+    use http_body_util::{BodyExt, Limited};
+    tokio::time::timeout(
+        Duration::from_secs(180),
+        Limited::new(response.into_body(), limit).collect(),
+    )
+    .await
+    .context("Daemon response body timed out; inspect session state before retrying")?
+    .map(|body| body.to_bytes())
+    .map_err(|_| anyhow::anyhow!("Daemon response body was interrupted or exceeded its size limit"))
 }
 
 #[cfg(unix)]
@@ -635,11 +954,12 @@ async fn request(
             serde_json::from_slice(&bytes).context("Daemon returned a non-JSON response")?
         };
         if !status.is_success() {
-            let message = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Request refused; check the shared daemon and approval secret");
-            bail!("Crew daemon returned {status}: {}", message.escape_debug());
+            return Err(daemon_refusal(
+                status.as_u16(),
+                Some(&value),
+                "Request refused; check the shared daemon and approval secret",
+            )
+            .into());
         }
         Ok(value)
     }
@@ -877,11 +1197,14 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
-    use super::{open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop};
+    use super::{
+        open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop, CrewClient,
+        DaemonRefusal, EventDecoder, MAX_SSE_FRAME,
+    };
     use biorouter::crew::observation::ObserveEvent;
-    use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
+    use biorouter::daemon_runtime::{self, Descriptor, Endpoint, Identity};
     use bytes::Bytes;
     use http_body_util::{Full, StreamBody};
     use hyper::server::conn::http1 as server_http1;
@@ -892,6 +1215,7 @@ mod tests {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn runtime_dir() -> PathBuf {
@@ -906,7 +1230,8 @@ mod tests {
     fn expected_descriptor(directory: &Path) -> Descriptor {
         Descriptor {
             version: daemon_runtime::VERSION,
-            profile_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            profile_id: daemon_runtime::profile_identity()
+                .expect("synthetic test profile identity"),
             instance_id: "22222222-2222-4222-8222-222222222222".to_owned(),
             pid: std::process::id(),
             endpoint: Endpoint::Unix {
@@ -915,6 +1240,64 @@ mod tests {
             api_secret: "daemon-secret-for-owner-lock-tests-123".to_owned(),
             user_action_installed: true,
         }
+    }
+
+    async fn daemon_http_fixture(
+        body: Bytes,
+        content_type: &'static str,
+        identity: Identity,
+        response_status: hyper::StatusCode,
+    ) -> (Descriptor, Arc<Mutex<Vec<Option<String>>>>) {
+        let directory = runtime_dir();
+        let socket_path = directory.join("daemon.sock");
+        let _ = fs::remove_file(&socket_path);
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("fixture socket binds");
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .expect("fixture socket is private");
+        let mut descriptor = expected_descriptor(&directory);
+        descriptor.endpoint = Endpoint::Unix { path: socket_path };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor)
+            .expect("fixture descriptor writes");
+        let proofs = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&proofs);
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("fixture accepts connection");
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let captured = Arc::clone(&captured);
+                let body = body.clone();
+                let identity = identity.clone();
+                async move {
+                    captured.lock().expect("fixture capture lock").push(
+                        request
+                            .headers()
+                            .get("X-User-Action")
+                            .and_then(|v| v.to_str().ok().map(str::to_owned)),
+                    );
+                    if request.uri().path() == "/daemon/identity" {
+                        Ok::<_, std::convert::Infallible>(
+                            Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(
+                                    serde_json::to_vec(&identity).expect("identity serializes"),
+                                )))
+                                .expect("identity response builds"),
+                        )
+                    } else {
+                        Ok::<_, std::convert::Infallible>(
+                            Response::builder()
+                                .status(response_status)
+                                .header("content-type", content_type)
+                                .body(Full::new(body))
+                                .expect("fixture response builds"),
+                        )
+                    }
+                }
+            });
+            let _ = server_http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        });
+        (descriptor, proofs)
     }
 
     fn create_owner_lock(directory: &Path) {
@@ -1105,7 +1488,7 @@ mod tests {
     async fn observer_parser_handles_split_frames_and_stops_on_reconnect() {
         let body = observer_body(vec![
             br#"{"type":"state""#.to_vec(),
-            br#","snapshot":{},"runs":[]}
+            br#","connection_id":"synthetic-connection","connection_mode":"private","snapshot":{},"runs":[]}
 {"type":"reconnect","cursor":"cursor-2"}
 "#
             .to_vec(),
@@ -1143,5 +1526,185 @@ mod tests {
             .await
             .expect_err("oversized observer frame must fail closed");
         assert!(error.to_string().contains("exceeds 1 MiB"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn identity_mismatch_refuses_before_sending_human_proof() {
+        let expected = expected_descriptor(&runtime_dir());
+        let mut mismatched = expected.identity();
+        mismatched.instance_id = "33333333-3333-4333-8333-333333333333".into();
+        let (descriptor, proofs) = daemon_http_fixture(
+            Bytes::from_static(b"must not reach handler"),
+            "text/plain",
+            mismatched,
+            hyper::StatusCode::OK,
+        )
+        .await;
+        let client = CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        };
+        let error = client
+            .request_text(
+                "POST",
+                "/crew/conversations",
+                Some(serde_json::json!({"prompt":"x"})),
+            )
+            .await
+            .expect_err("mismatched daemon identity must refuse");
+        assert!(error.to_string().contains("identity changed"));
+        assert_eq!(
+            proofs.lock().expect("fixture capture lock").as_slice(),
+            &[None],
+            "the identity probe carries no human proof and the authenticated request is never sent"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn request_text_returns_plain_text_and_empty_successes() {
+        for body in [Bytes::from_static(b"daemon reply"), Bytes::new()] {
+            let descriptor = expected_descriptor(&runtime_dir());
+            let (descriptor, proofs) = daemon_http_fixture(
+                body.clone(),
+                "text/plain",
+                descriptor.identity(),
+                hyper::StatusCode::OK,
+            )
+            .await;
+            let client = CrewClient {
+                descriptor,
+                proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+            };
+            let response = client
+                .request_text("GET", "/crew/conversations/session-1", None)
+                .await
+                .expect("plain-text response succeeds");
+            assert_eq!(response.as_bytes(), body.as_ref());
+            assert_eq!(
+                proofs.lock().expect("fixture capture lock").as_slice(),
+                &[
+                    None,
+                    Some("synthetic-human-proof-01234567890123456789".into())
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn request_text_refuses_a_body_over_the_response_bound() {
+        let body = Bytes::from(vec![b'x'; 16 * 1024 * 1024 + 1]);
+        let expected = expected_descriptor(&runtime_dir());
+        let (descriptor, _) = daemon_http_fixture(
+            body,
+            "text/plain",
+            expected.identity(),
+            hyper::StatusCode::OK,
+        )
+        .await;
+        let client = CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        };
+        let error = client
+            .request_text("GET", "/crew/conversations/session-1", None)
+            .await
+            .expect_err("oversized response must be refused");
+        assert!(error.to_string().contains("exceeded its size limit"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn typed_daemon_http_refusals_preserve_status_and_kind() {
+        let expected = expected_descriptor(&runtime_dir());
+        let (descriptor, _) = daemon_http_fixture(
+            Bytes::from_static(br#"{"status":"unknown","error":"expired"}"#),
+            "application/json",
+            expected.identity(),
+            hyper::StatusCode::CONFLICT,
+        )
+        .await;
+        let client = CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        };
+        let error = client
+            .request("POST", "/action-required/elicitation", None)
+            .await
+            .expect_err("typed daemon refusal must be returned");
+        let refusal = error
+            .downcast_ref::<DaemonRefusal>()
+            .expect("HTTP refusal must retain its typed error");
+        assert_eq!(refusal.status, 409);
+        assert_eq!(refusal.kind.as_deref(), Some("unknown"));
+    }
+
+    fn decode_sse(input: &[u8]) -> anyhow::Result<(Vec<serde_json::Value>, EventDecoder)> {
+        let mut decoder = EventDecoder::default();
+        let mut events = Vec::new();
+        for byte in input {
+            if let Some(value) = decoder.push(*byte)? {
+                events.push(value);
+            }
+        }
+        Ok((events, decoder))
+    }
+
+    #[test]
+    fn sse_decoder_accepts_lf_crlf_and_multidata_frames() {
+        let (events, decoder) =
+            decode_sse(b": keep-alive\r\n\r\ndata: {\"kind\":\ndata: \"joined\"}\r\n\r\n")
+                .expect("valid SSE frames decode");
+        assert!(decoder.at_boundary());
+        assert_eq!(events, vec![serde_json::json!({"kind": "joined"})]);
+    }
+
+    #[test]
+    fn sse_decoder_emits_each_event_and_ignores_non_data_fields() {
+        let (events, decoder) =
+            decode_sse(b"event: delta\nid: first\ndata: {\"n\":1}\n\n\ndata: {\"n\":2}\n\n")
+                .expect("valid events decode");
+        assert!(decoder.at_boundary());
+        assert_eq!(
+            events,
+            vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})]
+        );
+    }
+
+    #[test]
+    fn sse_decoder_rejects_invalid_utf8_and_json() {
+        let utf8 = decode_sse(b"data: \xff\n\n")
+            .map(|_| ())
+            .expect_err("invalid UTF-8 must fail closed");
+        assert!(utf8.to_string().contains("invalid UTF-8"));
+
+        let json = decode_sse(b"data: {not-json}\n\n")
+            .map(|_| ())
+            .expect_err("invalid JSON must fail closed");
+        assert!(json.to_string().contains("not valid JSON"));
+    }
+
+    #[test]
+    fn sse_decoder_rejects_empty_data_frames() {
+        let error = decode_sse(b"data\n\n")
+            .map(|_| ())
+            .expect_err("empty SSE data must fail closed");
+        assert!(error.to_string().contains("not valid JSON"));
+    }
+
+    #[test]
+    fn sse_decoder_detects_truncated_and_oversized_frames() {
+        let (_, truncated) = decode_sse(b"data: {\"unfinished\": true}\n")
+            .expect("a partial frame is accepted until EOF");
+        assert!(!truncated.at_boundary());
+
+        let mut decoder = EventDecoder::default();
+        decoder.frame_bytes = MAX_SSE_FRAME;
+        let error = decoder
+            .push(b'x')
+            .expect_err("the byte after the bound must be refused");
+        assert!(error.to_string().contains("exceeds 32 MiB"));
     }
 }

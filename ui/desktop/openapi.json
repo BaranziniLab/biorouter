@@ -13,6 +13,69 @@
     "version": "1.91.1"
   },
   "paths": {
+    "/action-required/elicitation": {
+      "post": {
+        "tags": [
+          "super::routes::action_required"
+        ],
+        "operationId": "respond_to_elicitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElicitationResponseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Delivered to the live ordinary elicitation",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid response shape",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Verified human authority required",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "No matching live ordinary elicitation, or answer recorded after waiter ended",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds size bound"
+          },
+          "500": {
+            "description": "Persistence failed or completion outcome is unknown",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/action-required/secrets": {
       "post": {
         "tags": [
@@ -9006,6 +9069,28 @@
           "edit"
         ]
       },
+      "ElicitationResponseRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "id"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "data": {
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "EmbeddedResource": {
         "type": "object",
         "required": [
@@ -14537,6 +14622,14 @@
             "items": {
               "$ref": "#/components/schemas/ExtensionConfig"
             },
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
             "nullable": true
           },
           "workflow": {
