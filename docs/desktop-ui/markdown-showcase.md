@@ -1,5 +1,14 @@
 # A clear view of the results
 
+> **What this is.** A synthetic Markdown fixture — headings, tables, quotes,
+> code, math, Unicode and nested lists in one document — for inspecting the
+> shared typography recipe in a chat response and in a document preview side by
+> side. It is a test input, not a guide; the body below is deliberately example
+> content.
+> **Status:** Current.
+> **Audience:** Anyone changing markdown rendering, the preview panel, or the
+> app-wide text-size preference.
+
 Use this synthetic template to preview the same markdown in a chat and in a document. Replace the example findings with your own; retain the structure as needed.
 
 ## Findings at a glance
@@ -62,3 +71,10 @@ $$
 ---
 
 A final paragraph provides context and a next step without repeating every detail above.
+
+## Related documentation
+
+- [Artifact display surfaces](artifact-display-surfaces.md) — the panel the
+  document half of this comparison renders in.
+- [Quote selected text into a conversation](quoted-text-actions.md) — another
+  behaviour exercised against previews of this fixture.

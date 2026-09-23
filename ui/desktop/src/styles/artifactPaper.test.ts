@@ -163,14 +163,31 @@ describe('artifact panel paper', () => {
     );
   });
 
-  it('keeps the shared markdown table header readable at AA contrast', () => {
+  // ⚠ This assertion used to READ THE COLOURS OUT OF THE RULE, with
+  // `/color: (#[0-9a-f]{6})/`, and compute their ratio. That only works while
+  // the colours are literals — so the test passed, and would have gone RED the
+  // moment someone did the right thing and used a token. A contrast test that
+  // requires hardcoded colour is a test that enforces the bug.
+  //
+  // The rule states tokens now. Contrast is owned by the checker that resolves
+  // them per family: `check-contrast.mjs` asserts `--text-default` on
+  // `--background-medium` at 4.5:1 in all six scopes (three families x light and
+  // dark). What is left for this file is the part that checker cannot see —
+  // whether this rule uses those tokens at all.
+  it('paints the shared markdown table header from tokens, never literals', () => {
     const header = ruleBody('.biorouter-markdown.prose thead th');
     const band = ruleBody('.biorouter-markdown.prose thead');
-    const ink = /color: (#[0-9a-f]{6})/.exec(header ?? '')?.[1];
-    const ground = /background: (#[0-9a-f]{6})/.exec(band ?? '')?.[1];
-    expect(ink).toBeDefined();
-    expect(ground).toBeDefined();
-    expect(contrast(ink!, ground!)).toBeGreaterThanOrEqual(4.5);
+    expect(band, 'thead rule').not.toBeNull();
+    expect(header, 'thead th rule').not.toBeNull();
+    expect(band).toContain('background: var(--background-medium);');
+    expect(header).toContain('color: var(--text-default);');
+    // The point of the exercise: no hex may come back, in either rule.
+    expect(band).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    expect(header).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    // And no `.dark` override may reintroduce one — the tokens already flip, so
+    // a dark-mode rule here is a literal waiting to be written.
+    expect(ruleBody('.dark .biorouter-markdown.prose thead')).toBeNull();
+    expect(ruleBody('.dark .biorouter-markdown.prose thead th')).toBeNull();
     expect(
       ruleBody(
         '.biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code))'

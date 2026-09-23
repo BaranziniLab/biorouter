@@ -4159,26 +4159,28 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   vertical-align: top;
 }
 
+/* Tokens, not literals. These four were hex, and three of the four matched no
+   token in any theme file — dark `--background-medium` is #2c2c29, not #353533,
+   and Parchment dark's `--text-default` is the warm #f4f0e6, not #eeeeeb. So a
+   table header was a cool grey among warm ink in Parchment dark, and would stay
+   on Parchment's values under Alma Mater and Roche Limit. `npm run themes`
+   generates the token blocks and `check-contrast.mjs` discovers families from
+   this stylesheet; a literal is invisible to both.
+   The pairing is already guaranteed: check-contrast asserts `--text-default` on
+   `--background-medium` at 4.5:1 in all six scopes. (`--text-subtle` on that
+   ground is the one that is sub-AA — do not reach for it here.) */
 .biorouter-markdown.prose thead {
-  background: #ecece9;
+  background: var(--background-medium);
 }
 
 .biorouter-markdown.prose thead th {
-  color: #292927;
+  color: var(--text-default);
   font-weight: 600;
   font-size: 13px;
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
   text-align: left;
-}
-
-.dark .biorouter-markdown.prose thead {
-  background: #353533;
-}
-
-.dark .biorouter-markdown.prose thead th {
-  color: #eeeeeb;
 }
 
 .biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code)) {

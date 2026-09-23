@@ -1668,15 +1668,36 @@ function ToolResultView({ result, onOpenArtifact, workingDir }: ToolResultViewPr
   );
 }
 
+/**
+ * Logs get a TAIL preview and a ceiling, and both were lost in the tool-call
+ * restyle rather than decided against.
+ *
+ * The previous implementation held a ref that set `scrollTop = scrollHeight` on
+ * every append and capped the box at `max-h-[20rem]`. Piping logs through the
+ * shared preview dropped both: the preview shows the FIRST six lines, so a tool
+ * running for a minute displayed its first second forever, and "Show more" then
+ * expanded to the whole log with no max-height — an unbounded block in the
+ * middle of the transcript, exactly where a long build or test run puts
+ * thousands of lines.
+ */
 function ToolLogsView({ logs, working }: { logs: string[]; working: boolean }) {
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  // `logs.length` rather than `logs`: the array identity changes on every
+  // render, the length changes only when a line actually arrives.
+  React.useEffect(() => {
+    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [logs.length]);
+
   return (
     <ToolSection label={working ? 'Live logs' : 'Logs'}>
       <div className={TOOL_INTERIOR_CLASS}>
-        <ToolContentPreview text={logs.join('\n')}>
+        <ToolContentPreview text={logs.join('\n')} tail>
           {(text) => (
-            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
-              {text}
-            </pre>
+            <div ref={boxRef} className="max-h-80 overflow-y-auto" data-testid="tool-logs-box">
+              <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
+                {text}
+              </pre>
+            </div>
           )}
         </ToolContentPreview>
       </div>
