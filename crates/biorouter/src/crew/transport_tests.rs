@@ -16,6 +16,7 @@ fn spawn_peer(script: &str, marker: Option<&Path>) -> Transport {
     if let Some(marker) = marker {
         command.arg(marker);
     }
+    crate::subprocess::prepare_agent_child_command(&mut command);
     let mut child = command.spawn().expect("spawn local transport peer");
     let stdin = child.stdin.take().expect("peer stdin");
     let stdout = BufReader::new(child.stdout.take().expect("peer stdout"));

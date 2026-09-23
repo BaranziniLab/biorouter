@@ -2193,3 +2193,55 @@ The two requested exact audits passed under Hermit with
 
 - `cargo test -p biorouter --lib privacy::system_auth::tests::no_caller_raises_a_prompt_without_a_bound_on_it -- --exact --nocapture`: 1 passed, 0 failed, 4,250 filtered.
 - `cargo test -p biorouter --lib utils::tests::the_untrusted_label_sanitizer_is_defined_exactly_once -- --exact --nocapture`: 1 passed, 0 failed, 4,250 filtered.
+
+### Published 7ab40c81 native and hosted verification
+
+The ordinary non-test native build and focused SSH/Unicode runtime smoke
+passed; [artifact hashes and exact scope](evidence/cli-7ab40c81-20260923.md)
+include JSON round-trip and terminal safety checks for U+E0041. The daemon is
+byte-identical to the prior 532c3b7d artifact; this does not replace the remaining
+graphical, AWS or cross-platform acceptance gates.
+
+Hosted Rust run `35815167642` passed macOS. Windows's core library target
+reported 4,136 passed, three failed and one ignored: the three native SSH
+fixtures still supplied a configuration path outside the admitted grammar.
+The actual rejected path was not captured, so a verbatim-prefix explanation is
+unproven. The follow-up test construction prefers the runner's temporary root,
+preserves unsafe-path rejection and includes an escaped diagnostic for the
+fixture path. No production SSH path grammar is widened.
+
+Ubuntu progressed to its integration stage, which found three fixture issues:
+the FIFO test assumed `/private/tmp`, the separately included Unix transport
+test helper lacked child-command preparation visible to the source census,
+and the Crew transfer integration binary omitted the required test sandbox.
+The fixes use the portable temporary directory, prepare that synthetic child,
+and declare the existing sandbox. The source censuses and production behavior
+are unchanged. Hosted Vitest and the frontend/static/API/browser/Electron
+checks passed on 7ab40c81. Frontend run `35815167669`, Vitest job
+`107035042911`, reports 563 files passed, 6,370 tests passed and 19 skipped
+(6,389 total). All seven Frontend jobs succeeded. The subsequent fixture
+corrections require their own focused and hosted verification.
+
+### Focused test-only fixture portability lane (Luna)
+
+After the 7ab40c81 source integration, the four released integration fixtures and
+core regression filters passed under Hermit with `CARGO_BUILD_JOBS=2`
+and `CARGO_INCREMENTAL=0`:
+
+- `cargo test -p biorouter --test daemon_runtime_contract -- --nocapture`: 7 passed, 0 failed, 0 ignored.
+- `cargo test -p biorouter-mcp --test no_console_window_census -- --nocapture`: 20 passed, 0 failed, 0 ignored.
+- `cargo test -p biorouter-server --test every_test_binary_is_sandboxed -- --nocapture`: 5 passed, 0 failed, 0 ignored.
+- `cargo test -p biorouter-server --test crew_transfer_authority -- --nocapture`: 10 passed, 0 failed, 0 ignored.
+- `cargo test -p biorouter --lib crew::transport::tests -- --nocapture`: 12 passed, 0 failed, 4,239 filtered.
+- `cargo test -p biorouter --lib crew::ssh_policy -- --nocapture`: 10 passed, 0 failed, 4,241 filtered.
+
+The six commands selected 64 tests in total, all passing. These are test-only
+fixture portability and source-guard changes; production behavior was not edited.
+Windows-native confirmation remains a separate hosted requirement.
+
+The post-fix `source bin/activate-hermit && CARGO_BUILD_JOBS=2
+CARGO_INCREMENTAL=0 just check-everything` gate also passed. It completed Rust
+formatting and clippy, non-inheritable socket checks, UI lint/typecheck/theme/
+contrast/token checks, OpenAPI freshness, version/brand/naming/vendored-source/
+cross-drift checks, and registry/privacy-registry checks (61/61 and 21/21 Node
+assertions respectively). No generated API diff remained.

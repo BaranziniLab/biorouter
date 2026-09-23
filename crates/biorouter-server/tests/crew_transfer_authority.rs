@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use biorouter_server::crew::local_files::{
     self, open_directory, select, selection_identity, Direction, ProtectedDirectory, TargetApproval,
 };

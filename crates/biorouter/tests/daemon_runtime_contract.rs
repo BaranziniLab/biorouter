@@ -82,7 +82,7 @@ fn read_private_rejects_symlink_nonregular_public_and_hardlinked_records() {
 
 #[test]
 fn read_private_refuses_a_fifo_without_blocking() {
-    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let fifo = root.path().join("record.fifo");
     let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);

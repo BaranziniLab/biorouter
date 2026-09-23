@@ -283,18 +283,52 @@ fn jump_authority(value: &str) -> Result<(Option<String>, String, Option<u16>)> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
+    #[cfg(windows)]
     fn shell_config_path(path: &std::path::Path) -> String {
-        let path = path.display().to_string();
-        #[cfg(windows)]
-        {
-            path.replace('\\', "/")
+        let raw = path.display().to_string();
+        let verbatim_drive = raw.strip_prefix("\\\\?\\").is_some_and(|path| {
+            path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && path.as_bytes().get(1) == Some(&b':')
+                && path.as_bytes().get(2) == Some(&b'\\')
+        });
+        if raw.starts_with("\\\\") && !verbatim_drive {
+            return raw;
         }
-        #[cfg(not(windows))]
-        {
-            path
+        let mut path = raw.replace('\\', "/");
+        if let Some(stripped) = path.strip_prefix("//?/").filter(|path| {
+            path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && path.as_bytes().get(1) == Some(&b':')
+                && path.as_bytes().get(2) == Some(&b'/')
+        }) {
+            path = stripped.to_string();
         }
+        path
+    }
+
+    #[cfg(not(windows))]
+    fn shell_config_path(path: &std::path::Path) -> String {
+        path.display().to_string()
+    }
+
+    fn fixture_tempdir() -> tempfile::TempDir {
+        let base = std::env::var_os("RUNNER_TEMP")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        tempfile::tempdir_in(base).unwrap()
+    }
+
+    fn config_argument(path: &Path) -> String {
+        let path = shell_config_path(path);
+        assert!(
+            shell_atom(&path),
+            "fixture SSH config path is not admitted: {path:?}"
+        );
+        path
     }
 
     fn policy_config(root: &std::path::Path, weak_gate: bool, cycle: bool) -> PathBuf {
@@ -432,13 +466,31 @@ mod tests {
         assert!(!shell_atom("/tmp/profile with space"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn shell_config_path_normalizes_verbatim_drive_fixture() {
+        let normalized = shell_config_path(std::path::Path::new(
+            r"\\?\C:\Users\runner\profile-ssh_config",
+        ));
+        assert_eq!(normalized, "C:/Users/runner/profile-ssh_config");
+        assert!(shell_atom(&normalized));
+        let unc = shell_config_path(std::path::Path::new(r"\\server\share\profile-ssh_config"));
+        assert_eq!(unc, r"\\server\share\profile-ssh_config");
+        assert!(!shell_atom(&unc));
+        let verbatim_unc = shell_config_path(std::path::Path::new(
+            r"\\?\UNC\server\share\profile-ssh_config",
+        ));
+        assert_eq!(verbatim_unc, r"\\?\UNC\server\share\profile-ssh_config");
+        assert!(!shell_atom(&verbatim_unc));
+    }
+
     #[tokio::test]
     async fn native_preflight_accepts_safe_two_hop_config() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_tempdir();
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), false, false);
         preflight(
-            &["-F".into(), shell_config_path(&config), "target".into()],
+            &["-F".into(), config_argument(&config), "target".into()],
             "target",
         )
         .await
@@ -447,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_preflight_accepts_direct_route_without_optional_fork_field() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_tempdir();
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), false, false);
         let mut text = fs::read_to_string(&config).unwrap();
@@ -455,7 +507,7 @@ mod tests {
         text = text.replace("  ForkAfterAuthentication no\n", "");
         fs::write(&config, text).unwrap();
         preflight(
-            &["-F".into(), shell_config_path(&config), "target".into()],
+            &["-F".into(), config_argument(&config), "target".into()],
             "target",
         )
         .await
@@ -464,11 +516,11 @@ mod tests {
 
     #[tokio::test]
     async fn native_preflight_rejects_weak_implicit_jump_before_connecting() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_tempdir();
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), true, false);
         let err = preflight(
-            &["-F".into(), shell_config_path(&config), "target".into()],
+            &["-F".into(), config_argument(&config), "target".into()],
             "target",
         )
         .await
@@ -479,11 +531,11 @@ mod tests {
 
     #[tokio::test]
     async fn native_preflight_rejects_jump_cycle() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_tempdir();
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), false, true);
         let err = preflight(
-            &["-F".into(), shell_config_path(&config), "target".into()],
+            &["-F".into(), config_argument(&config), "target".into()],
             "target",
         )
         .await
