@@ -46,10 +46,47 @@ pub enum Mode {
     Private,
     Public,
 }
+pub fn is_canonical_institution_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderAffiliation {
+    Local,
+    Institutions {
+        institution_ids: Vec<String>,
+    },
+    #[default]
+    Unstated,
+}
+
+impl ProviderAffiliation {
+    pub fn allows_institution(&self, institution_id: &str) -> bool {
+        is_canonical_institution_id(institution_id)
+            && match self {
+                Self::Local => true,
+                Self::Institutions { institution_ids } => {
+                    institution_ids.len() == 1 && institution_ids[0] == institution_id
+                }
+                Self::Unstated => false,
+            }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
     pub host_uid: u32,
+    #[serde(default)]
+    pub institution_id: Option<String>,
     pub mode: Mode,
     pub policy_epoch: u64,
 }
@@ -120,6 +157,14 @@ pub struct Run {
     pub channel_id: String,
     pub source_channels: BTreeSet<String>,
     pub provider_policy_id: String,
+    #[serde(default)]
+    pub protected_context: bool,
+    #[serde(default)]
+    pub provider_affiliation: ProviderAffiliation,
+    #[serde(default)]
+    pub workspace_institution_id: Option<String>,
+    #[serde(default)]
+    pub connection_institution_id: Option<String>,
     pub public_provider: bool,
     pub personal_mode: Mode,
     pub policy_epoch: u64,

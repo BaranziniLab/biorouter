@@ -2557,3 +2557,90 @@ The attempted invalid-fresh-profile negative did not invoke the approval path: t
 ### Development-input pre-commit gate output
 
 `source bin/activate-hermit && CARGO_BUILD_JOBS=2 just check-everything` emitted successful output for formatting, Clippy/baseline, socket checks, UI lint/typecheck/themes/contrast/tokens, OpenAPI, version/brand/Copilot/vendored/cross-drift, BAAM 61/61 and privacy 21/21, ending with `All style checks passed`. No separate shell-completion exit status was captured, so this is not a recorded exit-0 claim. `git diff --check` is clean and no generated files changed. Fresh three-user GUI workflow is still in progress; only the automated-launch subset is qualified.
+
+### 83741e47 / a3ec1924 fresh GUI checkpoint
+
+Published product source `83741e47` contains the dev-stdin/badge change. Test-only `a3ec1924a78f2ce8ac928dd85c8b00ca1a68341b` waits for the channel-bound observer in the panel test; no disabled-button cause was confirmed. Unit tests now pass; 19 hosted checks pass, four remain pending and none fail. Full pre-push gate exit 0 is recorded in `/private/tmp/crew-check-everything-final-20260923T1435Z.receipt`, with a mode-0600 log, superseding the earlier output-only qualification.
+
+Carol’s same-profile valid-format wrong stdin proof was rejected at 21:17:14 with `The daemon did not accept human-authorized access`, without a native prompt. Exact failed Electron PID 92059 was closed, daemon 13289 remained live, and correct stdin reopen reached renderer readiness. The earlier fresh-profile attempt did not invoke approval and remains unqualified.
+
+All three normal GUI connections/enrollment/team/general now pass on the new AWS fixture. Carol’s first SSH join failed without membership commit; strict SSH probe/reconnect followed by same-token join succeeded. Native Bob CLI corroborated three GUI post IDs/actors and all three members in `/private/tmp/crew-three-user-20260923T2057Z-luna/cli-corroboration-and-task-output-receipt.md`. Workspace `8d4ff64a-570e-4d26-920c-ad80a6e562d6`, team `327b6746-2b92-4ac1-a9f7-48ffea98ea6c`, general channel `dba8374b-c952-4d1a-9e34-cdae1b4eab30`. Cloud cleanup is due 22:26 UTC and remains pending.
+
+Alice GUI uploaded a 2,049-byte binary, SHA-256 `69b72247fc7496ce53cdee36871e8f78a03d84a4109bebbbfded2b321760c3c3`. Bob sees its attachment but native Save has no qualifying file/new receipt; no source defect is demonstrated and diagnosis continues. Real private qwen3:8b owned tasks started for all three users. Bob/Carol helper outputs were observed under UID 10002/10003, mode 0664 beneath mode-0700 directories. Bob’s model terminated with a reasoning-only error after execute/job_status; Carol used the wrong relative output path after successful execution, with attachment pending; Alice remains ongoing. No full task pass is claimed. Bob’s earlier CLI setup post included the three-row/sum-22 oracle, so later prompt context is not a blind calculation test and the setup post is not an agent result.
+
+### Versa recovery and pending send correction
+
+The user reported send briefly showing login/join and Enter not sending. CrewView source now avoids destructive refresh and adds Enter-send, Shift-Enter newline, IME guard and single-flight handling. Independent review found an idempotency-generation issue that was corrected. Focused tests, build and live acceptance remain pending; no runtime fix pass is claimed.
+
+The user explicitly selected existing private Versa GPT-5.5 for continuing QA. Bob’s actual GUI recovery on `versa_azure` / `gpt-5.5-2026-04-24` read exact existing `totals.json` and attached 48 bytes, SHA-256 `99397551d815765e561fd0789153f670921cf38095ea178620cd6bba81ccedcc`, blob `c2e6681e-30c1-4b69-bcf5-dc933e783daf`. No execution was rerun; this is a read/attachment recovery pass.
+
+Independent evidence resolves Bob’s original Qwen job `95e9f8…` as exit 0 with actual 3 rows/UID10002/sum22, and Carol’s `0a2b5c…` as exit 0 with actual 3 rows/UID10003/sum28. Their later model/read failures remain distinct. Alice’s totals file is independently present: 47 bytes, UID10001, sum10, SHA-256 `d010a4169d0d6ec615803d1a01b8329e0d9637f4d2bdac10954afed348ee4d39`; terminal job status remains pending. Bob’s prior oracle-bearing setup message still prevents a blind-context claim.
+
+At this checkpoint a3 CI has 21 successful checks and two pending (macOS/Ubuntu); Windows and GNU pass. AWS cleanup deadline remains 22:26:11 UTC, with cleanup pending.
+
+### Send subset pass and required institution-binding work
+
+Local unpushed commit `4339916c` contains the send correction, with 33 Crew tests and typecheck passing. Installed renderer SHA-256 `4bc4cf8e2f89413c86bb768e3c08e2a1109fd1a51663bbc8009752950f9233d8` is built from a3 plus that correction. Alice’s actual Enter post `SEND_FIX_ENTER_2208` was received by Carol without the login/join flicker; Shift-Enter newline also passes.
+
+Alice’s Versa recovery read and attached existing 47-byte totals, SHA-256 `d010a4169d0d6ec615803d1a01b8329e0d9637f4d2bdac10954afed348ee4d39`, blob `932031ff-76ac-42cb-890b-103c5899d2f7`. New run/session IDs were not exposed and are not inferred.
+
+Institution binding is required unfinished work: new private SSH connections require a canonical institution ID; the shared host’s explicit initial institution label is immutable across public/private toggles. Local providers may serve any institution; institutional providers may serve only the same institution. Unlabelled legacy hosts remain human-collaboration-only until labelled. Grants bind expected connection/workspace epochs, and session institution taint must remain enforced through every provider-change path without bypass. Broker source is implemented and independently reviewed without findings; tests are in progress. Core taint/provider-change enforcement is in progress, and UI source is implemented but not built or schema-qualified. No institution acceptance pass is claimed.
+
+The AWS client egress address changed. The security group was updated to the exact current /32 and the previous /32 revoked; strict SSH and broker PID 4158 checks pass. This was fixture network recovery, not a product defect. Cleanup remains due at 22:26:11 UTC and is pending.
+
+### Broker institution-policy regression lane (2026-09-23)
+
+The broker test fixtures now send the required `expected_workspace_policy_epoch`,
+`workspace_institution_id`, `connection_institution_id`, and resolved
+`provider_affiliation` fields for ordinary runs. The ordinary fixture workspace
+is explicitly labelled `ucsf`; a separate unlabelled fixture remains for the
+fail-closed legacy case. Cursor-contract run fixtures received the same wire
+migration.
+
+Focused command:
+
+```text
+source bin/activate-hermit && \
+  CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target \
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 \
+  cargo test -p biorouter-crew --test broker_contract -- --nocapture
+```
+
+Result: **26 passed, 0 failed, 0 ignored** in 25.78s. Added cases prove Local
+and matching UCSF affiliation admission, foreign and Unstated private refusal,
+public refusal in a private workspace, unlabelled-private refusal even for
+Local, required-field rejection, and forged workspace/connection metadata
+refusal before run creation. Existing retained-restricted-context, policy epoch,
+revoked-worker, and membership tests remain in the same run.
+
+The migrated cursor target reports **4 passed, 0 failed, 0 ignored**. The
+consolidated command
+`cargo test -p biorouter-crew --tests -- --nocapture` reports **4 adversarial,
+26 broker, and 4 cursor tests passed**; the journal-fault target contains zero
+tests. Strict clippy passed for all Crew test targets with
+`cargo clippy -p biorouter-crew --tests -- -D warnings`. No Qwen or live model
+calls were used, and no full workspace/UI gate is claimed from this lane.
+
+### Final recorded UI recovery, cleanup and institution limits
+
+Local send-fix commit `4339916c` remains unpushed. Latest focused UI tests including institution cases pass 37/37; current typecheck awaits generated schema, distinct from the earlier passing send-only checkpoint. All required hosted `a3ec1924` checks are green: 23 successful checks with only the optional nightly skipped. These hosted checks do not cover the new institution source.
+
+All three actual GUI recoveries used private Versa `gpt-5.5-2026-04-24` to read and attach **preexisting** totals, not rerun computation: Alice blob `932031ff-76ac-42cb-890b-103c5899d2f7`, 47 bytes, SHA-256 `d010a4169d0d6ec615803d1a01b8329e0d9637f4d2bdac10954afed348ee4d39`; Bob `c2e6681e-30c1-4b69-bcf5-dc933e783daf`, 48 bytes, `99397551d815765e561fd0789153f670921cf38095ea178620cd6bba81ccedcc`; Carol `c68ee309-9396-421f-a5e6-7efa1e6d228b`, 48 bytes, `d9f5d3d743b417f97929d584b58c417b05fdc98de3d71018966e0edead80e7b4`. The latest native Save attempt remains inconclusive; earlier named-file passes retain their separate scopes.
+
+Institution source now includes authoritative `protected_channel_ids`, preflight/worker protected-state race closure, and required institution-owner recording even with privacy toggled off. Source review closed the derivation finding: all Crew-scoped copy/diverge/edit-diverge operations are refused before child creation, including revoked or expired persisted scopes. The supported alternative is a fresh conversation with an explicit Crew context grant. Ordinary derivation retains the owner union. Runtime tests, generated schema and current typecheck remain pending; overall institution acceptance is not complete.
+
+Final fixture `i-01760badd54b86b41` cleanup is independently verified: instance terminated, volume/security group/cloud keys absent, temporary local private keys absent and supervisor exited. No new fixture exists. This closes that fixture’s cleanup gate, not the remaining product/runtime acceptance.
+
+### Institution source-check checkpoint
+
+Current institution source passes UI typecheck, 37 focused UI tests, isolated renderer build, server/CLI cargo check and generated-schema validation. The final Rust matrix and runtime acceptance remain pending; these source changes are not claimed published. CLI guide syntax was checked against current command definitions: private connection descriptors require `institution_id` even when mode is omitted/default-private; the host bootstraps then confirms the immutable shared label through `privacy set-workspace private --institution ucsf`. Expected connection/workspace policy-epoch flags apply only to task starts and grants.
+
+### Institution focused validation and pending final gate
+
+Focused checks pass: core 62; required-session 6; broker 36 comprising adversarial 4, broker 28 and cursor 4; UI 37 and typecheck. The journal filter selected zero tests and is not evidence. Independent Astra review closed institution flows and the broker typed-consent refactor. The full gate passed strict/baseline Clippy, socket and UI checks, then stopped only at the expected unstaged generated-API comparison. Reviewed generated files are now staged and the final full gate is rerunning; no final gate pass, new native build or live institution acceptance is claimed. Institution source remains unpublished pending the root commit.
+
+A fourth isolated profile uses normal Settings for a dummy Versa provider and refusing CONNECT proxy. A harmless control produced seven CONNECT attempts; the counter was reset to zero before the future foreign-institution negative. No institution-denial outcome is claimed. A fresh four-account/two-workspace AWS plan exists but no cloud fixture launched. Its cleanup includes the fourth key; the offline leftover-key negative passes. Prior live AWS fixture cleanup remains independently verified.
+
+### Institution final local gate
+
+After the broker consent-parser refactor and staging the reviewed generated API contract, `source bin/activate-hermit && CARGO_BUILD_JOBS=2 just check-everything` completed with exit 0 at 23:12:36 UTC on 2026-09-23. The local receipt and complete log are named `crew-check-everything-institution-20260923T1650Z.receipt` and `.log`. Formatting, strict and baseline Clippy, socket inheritance, UI checks, fresh schema generation, version/brand/computer-use checks, registry and privacy registry all passed. Focused counts remain 62 core, 6 session, 36 broker and 37 UI tests. The preceding schema failures compared the intentional generated changes against an unstaged index; the final run regenerated them against the staged canonical files without drift. Native builds, hosted checks for the institution revision and live institution acceptance are still pending.

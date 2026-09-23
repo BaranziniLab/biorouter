@@ -47,6 +47,12 @@ pub struct CrewOptions {
     /// Require this privacy mode for send, task start, grants, and file upload/download/resume.
     #[arg(long, global = true, value_enum)]
     pub expected_mode: Option<PrivacyMode>,
+    /// Require this verified connection policy epoch when starting tasks or granting access.
+    #[arg(long, global = true)]
+    pub expected_policy_epoch: Option<u64>,
+    /// Require this verified workspace policy epoch when starting tasks or granting access.
+    #[arg(long, global = true)]
+    pub expected_workspace_policy_epoch: Option<u64>,
     /// Require an already-running shared daemon.
     #[arg(long, global = true)]
     pub no_start: bool,
@@ -436,9 +442,15 @@ pub enum PrivacyCommand {
     SetPersonal {
         #[arg(value_enum)]
         mode: PrivacyMode,
+        /// Canonical institution ID for this SSH cluster, required for a new Private label.
+        #[arg(long = "institution")]
+        institution_id: Option<String>,
     },
     SetWorkspace {
         #[arg(value_enum)]
         mode: PrivacyMode,
+        /// Confirm the immutable workspace institution as its authorized host.
+        #[arg(long = "institution")]
+        institution_id: Option<String>,
     },
 }

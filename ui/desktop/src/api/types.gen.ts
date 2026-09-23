@@ -1246,6 +1246,8 @@ export type GrantSessionRequest = {
     channel_id: string;
     context_channels?: Array<string>;
     expected_mode?: 'public' | 'private' | null;
+    expected_policy_epoch?: number | null;
+    expected_workspace_policy_epoch?: number | null;
 };
 
 export type Graph = {
@@ -2462,7 +2464,9 @@ export type ModelUsageRow = {
 
 export type ObserveEvent = {
     connection_id: string;
+    connection_institution_id?: string | null;
     connection_mode: 'public' | 'private';
+    connection_policy_epoch: number;
     runs: Array<unknown>;
     snapshot: unknown;
     type: 'state';
@@ -3915,6 +3919,8 @@ export type StartRunRequest = {
     channel_id: string;
     context_channels?: Array<string>;
     expected_mode?: 'public' | 'private' | null;
+    expected_policy_epoch?: number | null;
+    expected_workspace_policy_epoch?: number | null;
     model: string;
     posting_grant?: boolean;
     prompt: string;

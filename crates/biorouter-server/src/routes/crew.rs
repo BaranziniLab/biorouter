@@ -344,6 +344,10 @@ pub struct StartRunRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(inline)]
     pub expected_mode: Option<biorouter::crew::ClusterMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_policy_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace_policy_epoch: Option<u64>,
     #[serde(default)]
     pub request_id: Option<String>,
     pub channel_id: String,
@@ -400,6 +404,15 @@ fn run_request_identity(
         serde_json::to_vec(&hash_body).map_err(anyhow::Error::from)?,
     ));
     Ok((request_key, payload_hash))
+}
+
+fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
+    biorouter::crew::RunPolicy {
+        expected_mode: body.expected_mode,
+        expected_policy_epoch: body.expected_policy_epoch,
+        expected_workspace_policy_epoch: body.expected_workspace_policy_epoch,
+        ..Default::default()
+    }
 }
 
 #[utoipa::path(post, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), request_body = StartRunRequest, responses((status = 200, body = Value)), tag = "Crew")]
@@ -466,11 +479,10 @@ pub async fn start_run(
     manager()?
         .preflight_run(
             &id,
+            &body.channel_id,
+            &body.context_channels,
             provider.as_ref(),
-            &biorouter::crew::RunPolicy {
-                origin_restricted: false,
-                expected_mode: body.expected_mode,
-            },
+            &run_policy(&body),
         )
         .await?;
     state
@@ -547,7 +559,9 @@ async fn configure_run_agent(
     agent: &biorouter::agents::Agent,
     provider: Arc<dyn biorouter::providers::base::Provider>,
     session_id: &str,
+    admission: &biorouter::crew::RunAdmission,
 ) -> anyhow::Result<()> {
+    record_admission_affiliation(state, session_id, admission).await?;
     if provider.tier().is_private() {
         state
             .session_manager()
@@ -575,6 +589,23 @@ async fn configure_run_agent(
     Ok(())
 }
 
+async fn record_admission_affiliation(
+    state: &AppState,
+    session_id: &str,
+    admission: &biorouter::crew::RunAdmission,
+) -> anyhow::Result<()> {
+    for institution in &admission.institution_ids {
+        state
+            .session_manager()
+            .record_required_session_affiliation(
+                session_id,
+                biorouter::privacy::affiliation::InstitutionId::new(institution),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 async fn launch_run(
     state: Arc<AppState>,
     id: String,
@@ -588,6 +619,7 @@ async fn launch_run(
     let agent = state.agent_manager.new_scoped_agent();
     agent.ensure_crew_compatible()?;
     let crew = manager()?;
+    let policy = run_policy(&body);
     let admission = match crew
         .begin_run_with_policy(
             &session_id,
@@ -595,10 +627,7 @@ async fn launch_run(
             &body.channel_id,
             body.context_channels,
             provider.as_ref(),
-            biorouter::crew::RunPolicy {
-                origin_restricted: false,
-                expected_mode: body.expected_mode,
-            },
+            policy,
         )
         .await
     {
@@ -618,7 +647,8 @@ async fn launch_run(
         error: None,
     };
     record_starting_run(&ledger, &request_key, &view, &cancel).await?;
-    if let Err(error) = configure_run_agent(&state, &agent, provider, &session_id).await {
+    if let Err(error) = configure_run_agent(&state, &agent, provider, &session_id, &admission).await
+    {
         let revoked = crew
             .cancel_run_if_current(&session_id, &view.run_id)
             .await
@@ -1405,6 +1435,10 @@ pub struct GrantSessionRequest {
     #[serde(default)]
     #[schema(inline)]
     pub expected_mode: Option<biorouter::crew::ClusterMode>,
+    #[serde(default)]
+    pub expected_policy_epoch: Option<u64>,
+    #[serde(default)]
+    pub expected_workspace_policy_epoch: Option<u64>,
     pub channel_id: String,
     #[serde(default)]
     pub context_channels: Vec<String>,
@@ -1446,6 +1480,13 @@ pub async fn grant_session(
     let provider = agent.provider_for_crew_grant(&origin).await?;
     let origin_restricted =
         origin.privacy_tier == biorouter::privacy::SessionClassification::Private;
+    let origin_institution_ids = state
+        .session_manager()
+        .session_affiliations(&session_id)
+        .await?
+        .into_iter()
+        .map(|id| id.as_str().to_owned())
+        .collect();
     let admission = manager()?
         .begin_run_with_policy(
             &session_id,
@@ -1456,9 +1497,18 @@ pub async fn grant_session(
             biorouter::crew::RunPolicy {
                 origin_restricted,
                 expected_mode: body.expected_mode,
+                expected_policy_epoch: body.expected_policy_epoch,
+                expected_workspace_policy_epoch: body.expected_workspace_policy_epoch,
+                origin_institution_ids,
             },
         )
         .await?;
+    if let Err(error) = record_admission_affiliation(&state, &session_id, &admission).await {
+        let _ = manager()?
+            .cancel_run_if_current(&session_id, &admission.run_id)
+            .await;
+        return Err(error.into());
+    }
     if provider.tier().is_private() {
         state
             .session_manager()

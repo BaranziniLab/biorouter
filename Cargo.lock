@@ -1009,6 +1009,7 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "base64 0.21.7",
+ "biorouter-crew",
  "biorouter-mcp",
  "blake3",
  "block2",

@@ -24,6 +24,8 @@ pub enum ObserveEvent {
         connection_id: String,
         #[schema(inline)]
         connection_mode: super::ClusterMode,
+        connection_policy_epoch: u64,
+        connection_institution_id: Option<String>,
         snapshot: Value,
         runs: Vec<Value>,
     },

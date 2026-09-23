@@ -65,6 +65,7 @@ const connection = {
   cluster_connection_id: 'cluster-1',
   mode: 'private' as const,
   policy_epoch: 1,
+  institution_id: 'ucsf',
   status: 'connected' as const,
   remote_execution: false,
 };
@@ -80,7 +81,13 @@ const channel = {
   classification: 'restricted' as const,
 };
 const snapshot = {
-  workspace: { id: 'workspace-1', host_uid: 1000, mode: 'private' as const, policy_epoch: 1 },
+    workspace: {
+      id: 'workspace-1',
+      host_uid: 1000,
+      mode: 'private' as const,
+      policy_epoch: 1,
+      institution_id: 'ucsf',
+    },
   actor,
   principals: [actor],
   teams: [
@@ -107,12 +114,15 @@ function renderCrew(entry = '/crew') {
 
 function observerState(
   nextSnapshot: { workspace: { mode: 'private' | 'public' } } = snapshot,
-  connectionMode: 'private' | 'public' = nextSnapshot.workspace.mode
+  connectionMode: 'private' | 'public' = nextSnapshot.workspace.mode,
+  connectionPolicyEpoch = 1
 ) {
   return {
     type: 'state' as const,
     connection_id: connection.id,
     connection_mode: connectionMode,
+    connection_policy_epoch: connectionPolicyEpoch,
+    connection_institution_id: connection.institution_id,
     snapshot: nextSnapshot,
     runs: [],
     cursor: null,
@@ -200,6 +210,82 @@ describe('CrewView action and uncertain-start regressions', () => {
     await screen.findByText('fixture');
     expect(screen.getByText(/^(Checking connection|Updates unavailable)$/)).toBeInTheDocument();
     expect(screen.queryByText('Connected · identity verified')).toBeNull();
+  });
+
+  it('requires an institution for private connection saves and preserves it across mode edits', async () => {
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    await waitFor(() =>
+      expect(mocks.observeCrew.mock.calls.some(([, observedChannel]) => observedChannel === channel.id)).toBe(true)
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const institution = await screen.findByPlaceholderText('For example, ucsf or sdsc');
+    expect(institution).toBeRequired();
+    fireEvent.change(institution, { target: { value: '' } });
+    fireEvent.change(screen.getAllByLabelText('Connection privacy')[1], {
+      target: { value: 'public' },
+    });
+    expect(institution).not.toBeRequired();
+    fireEvent.change(screen.getAllByLabelText('Connection privacy')[1], {
+      target: { value: 'private' },
+    });
+    expect(institution).toBeRequired();
+    expect(institution).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    expect(institution).toBeInvalid();
+    expect(
+      mocks.crewHttp.mock.calls.some(
+        ([path, method]) => path === '/connections/conn-1' && method === 'PATCH'
+      )
+    ).toBe(false);
+  });
+
+  it('offers host institution confirmation before the workspace label is set', async () => {
+    const workspace = snapshot.workspace as unknown as { institution_id: string | null };
+    const originalInstitution = workspace.institution_id;
+    workspace.institution_id = null;
+    renderCrew();
+    try {
+      expect(await screen.findByText('Not specified')).toBeInTheDocument();
+      const confirm = screen.getByRole('button', { name: 'Confirm workspace institution: ucsf' });
+      expect(confirm).toBeEnabled();
+      fireEvent.click(confirm);
+      await waitFor(() =>
+        expect(
+          mocks.crewRequest.mock.calls.some(
+            ([, method, params]) =>
+              method === 'policy.set' &&
+              params.institution_id === 'ucsf' &&
+              params.mode === 'private'
+          )
+        ).toBe(true)
+      );
+    } finally {
+      workspace.institution_id = originalInstitution;
+    }
+  });
+
+  it('clears a draft when the observed connection policy epoch changes', async () => {
+    let connectionPolicyEpoch = 1;
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive(observerState(snapshot, 'private', connectionPolicyEpoch));
+        return 'terminal';
+      }
+    );
+    renderCrew();
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'clear after policy change' } });
+    connectionPolicyEpoch = 2;
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
+    expect(screen.getByText(/privacy or selected channel access changed/)).toBeInTheDocument();
   });
 
   it('sends on Enter, while preserving Shift+Enter and IME composition', async () => {
@@ -611,6 +697,8 @@ describe('CrewView action and uncertain-start regressions', () => {
             path === '/connections/conn-1/sessions/agent-1/grant' &&
             method === 'POST' &&
             params.expected_mode === 'public'
+            && params.expected_policy_epoch === 1
+            && params.expected_workspace_policy_epoch === 1
         )
       ).toBe(true)
     );
@@ -648,6 +736,8 @@ describe('CrewView action and uncertain-start regressions', () => {
             path === '/connections/conn-1/runs' &&
             method === 'POST' &&
             params.expected_mode === 'public'
+            && params.expected_policy_epoch === 1
+            && params.expected_workspace_policy_epoch === 1
         )
       ).toBe(true)
     );

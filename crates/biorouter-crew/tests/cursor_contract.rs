@@ -50,7 +50,55 @@ fn request(id: &str, method: &str, params: Value) -> Request {
         credential: None,
     }
 }
+fn run_contract_params(broker: &Broker, mut params: Value) -> Value {
+    if let Some(fields) = params.as_object_mut() {
+        fields
+            .entry("expected_workspace_policy_epoch")
+            .or_insert_with(|| json!(broker.workspace().policy_epoch));
+        fields
+            .entry("workspace_institution_id")
+            .or_insert_with(|| json!(broker.workspace().institution_id));
+        let private = fields.get("personal_mode").and_then(Value::as_str) == Some("private");
+        fields
+            .entry("connection_institution_id")
+            .or_insert_with(|| {
+                if private {
+                    json!(broker.workspace().institution_id)
+                } else {
+                    Value::Null
+                }
+            });
+        fields.entry("provider_affiliation").or_insert_with(|| {
+            if private {
+                json!({"kind":"local"})
+            } else {
+                json!({"kind":"unstated"})
+            }
+        });
+        fields
+            .entry("expected_protected_context")
+            .or_insert_with(|| json!(private));
+    }
+    params
+}
 fn signed_as(
+    broker: &mut Broker,
+    connection: &mut Connection,
+    caller_uid: u32,
+    key: &SigningKey,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> biorouter_crew::Response {
+    let params = if method == "run.create" {
+        run_contract_params(broker, params)
+    } else {
+        params
+    };
+    signed_as_raw(broker, connection, caller_uid, key, id, method, params)
+}
+
+fn signed_as_raw(
     broker: &mut Broker,
     connection: &mut Connection,
     caller_uid: u32,
@@ -88,7 +136,7 @@ fn signed_as(
     });
     broker.handle(caller_uid, connection, req)
 }
-fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
+fn bootstrap_unlabelled(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
     let mut broker = Broker::open(root, &public).unwrap();
@@ -123,6 +171,28 @@ fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
     let mut req = request("bootstrap", "auth.bootstrap", params);
     req.auth = Some(auth);
     assert!(broker.handle(uid(), &mut connection, req).error.is_none());
+    (broker, connection, key)
+}
+
+fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
+    let (mut broker, mut connection, key) = bootstrap_unlabelled(root);
+    let labelled = signed(
+        &mut broker,
+        &mut connection,
+        &key,
+        "label-workspace",
+        "policy.set",
+        json!({
+            "mode": "private",
+            "institution_id": "ucsf",
+            "idempotency_key": "label-workspace"
+        }),
+    );
+    assert!(
+        labelled.error.is_none(),
+        "workspace institution fixture failed: {:?}",
+        labelled.error
+    );
     (broker, connection, key)
 }
 fn enroll_user(
@@ -196,6 +266,22 @@ fn enroll_user(
     (guest_connection, principal)
 }
 fn signed(
+    broker: &mut Broker,
+    connection: &mut Connection,
+    key: &SigningKey,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> biorouter_crew::Response {
+    let params = if method == "run.create" {
+        run_contract_params(broker, params)
+    } else {
+        params
+    };
+    signed_raw(broker, connection, key, id, method, params)
+}
+
+fn signed_raw(
     broker: &mut Broker,
     connection: &mut Connection,
     key: &SigningKey,
@@ -998,8 +1084,24 @@ fn read_watermarks_are_opaque_monotonic_and_acl_safe_after_restart() {
             "snapshot after ACL loss failed: {:?}",
             after_acl_loss.error
         );
-        let position = &after_acl_loss.result.unwrap()["read_positions"][&channel_a];
+        let after_acl_loss = after_acl_loss.result.unwrap();
+        let position = &after_acl_loss["read_positions"][&channel_a];
         assert_eq!(position, &second_sequence);
+        let protected = after_acl_loss["protected_channel_ids"]
+            .as_array()
+            .expect("snapshot protected channel ids");
+        assert!(
+            protected
+                .iter()
+                .any(|id| id.as_str() == Some(channel_a.as_str())),
+            "retained restricted projection must keep its channel protected"
+        );
+        assert!(
+            protected
+                .iter()
+                .all(|id| id.as_str() != Some(channel_b.as_str())),
+            "snapshot must not disclose the revoked source channel"
+        );
 
         drop(guest_connection);
         drop(host_connection);
@@ -1024,6 +1126,15 @@ fn read_watermarks_are_opaque_monotonic_and_acl_safe_after_restart() {
         let snapshot = snapshot.result.unwrap();
         let position = &snapshot["read_positions"][&channel_a];
         assert_eq!(position, &second_sequence);
+        let protected = snapshot["protected_channel_ids"]
+            .as_array()
+            .expect("restart snapshot protected channel ids");
+        assert!(protected
+            .iter()
+            .any(|id| id.as_str() == Some(channel_a.as_str())));
+        assert!(protected
+            .iter()
+            .all(|id| id.as_str() != Some(channel_b.as_str())));
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains(&hidden_sequence));

@@ -1,6 +1,10 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
 mod credentials;
+mod institution;
+#[cfg(test)]
+#[path = "institution_tests.rs"]
+mod institution_tests;
 pub mod observation;
 pub use credentials::CredentialStatus;
 mod ssh_policy;
@@ -15,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
@@ -49,6 +53,8 @@ pub struct SaveConnection {
     pub cluster_connection_id: Option<String>,
     #[serde(default)]
     pub mode: ClusterMode,
+    #[serde(default)]
+    pub institution_id: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Connection {
@@ -70,6 +76,8 @@ pub struct Connection {
     pub remote_execution: bool,
     pub cluster_connection_id: String,
     pub mode: ClusterMode,
+    #[serde(default)]
+    pub institution_id: Option<String>,
     pub policy_epoch: u64,
     pub status: String,
     pub last_error: Option<String>,
@@ -94,6 +102,10 @@ struct Scope {
     public_provider: bool,
     #[serde(default)]
     origin_restricted: bool,
+    #[serde(default)]
+    institution_ids: BTreeSet<String>,
+    #[serde(default)]
+    institution_policy: bool,
     expired: bool,
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -115,11 +127,15 @@ pub struct PreparedDevice {
 pub struct RunAdmission {
     pub run_id: String,
     pub context: String,
+    pub institution_ids: BTreeSet<String>,
 }
 #[derive(Default)]
 pub struct RunPolicy {
     pub origin_restricted: bool,
     pub expected_mode: Option<ClusterMode>,
+    pub expected_policy_epoch: Option<u64>,
+    pub expected_workspace_policy_epoch: Option<u64>,
+    pub origin_institution_ids: BTreeSet<String>,
 }
 pub struct RunMetadata {
     pub run_id: String,
@@ -180,6 +196,7 @@ pub(crate) async fn install_test_scope(
         remote_execution: false,
         cluster_connection_id: format!("cluster-{session_id}"),
         mode: ClusterMode::Public,
+        institution_id: None,
         policy_epoch: 1,
         status: "connected".into(),
         last_error: None,
@@ -197,6 +214,8 @@ pub(crate) async fn install_test_scope(
             provider_binding: provider.map_or_else(|| "test-context".into(), provider_binding),
             public_provider: true,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: false,
             expired: false,
         },
     );
@@ -623,12 +642,20 @@ impl CrewManager {
         } else {
             input.mode
         };
+        let institution_id = institution::merge(
+            r.connections
+                .iter()
+                .filter(|c| c.cluster_connection_id == cluster)
+                .filter_map(|c| c.institution_id.as_deref())
+                .chain(input.institution_id.as_deref()),
+        )?;
         for c in r
             .connections
             .iter_mut()
             .filter(|c| c.cluster_connection_id == cluster)
         {
             c.mode = mode;
+            c.institution_id = institution_id.clone();
             c.policy_epoch = epoch;
         }
         Ok(Connection {
@@ -647,6 +674,7 @@ impl CrewManager {
             remote_execution: input.remote_execution,
             cluster_connection_id: cluster,
             mode,
+            institution_id,
             policy_epoch: epoch,
             status: "disconnected".into(),
             last_error: None,
@@ -654,10 +682,26 @@ impl CrewManager {
             public_key,
         })
     }
-    async fn save_inner(&self, id: Option<&str>, input: SaveConnection) -> Result<Connection> {
+    async fn save_inner(&self, id: Option<&str>, mut input: SaveConnection) -> Result<Connection> {
         Self::validate_connection(&input)?;
         let mut registry = self.registry.lock().await;
         let mut r = registry.clone();
+        input.institution_id = input
+            .institution_id
+            .as_deref()
+            .map(institution::normalize)
+            .transpose()?;
+        if input.institution_id.is_none() {
+            input.institution_id = r
+                .connections
+                .iter()
+                .find(|connection| Some(connection.id.as_str()) == id)
+                .and_then(|connection| connection.institution_id.clone());
+        }
+        ensure!(
+            input.mode != ClusterMode::Private || input.institution_id.is_some(),
+            "Choose this private SSH connection's institution before saving"
+        );
         let preparation_hash = hex(&Sha256::digest(serde_json::to_vec(&input)?));
         let prepared = if let Some(preparation_id) = &input.preparation_id {
             ensure!(
@@ -848,7 +892,19 @@ impl CrewManager {
         } else {
             ClusterMode::Public
         };
-        let changed = groups.len() > 1 || c.node_id.as_deref() != Some(node_id.as_str());
+        let institution_id = institution::merge(
+            registry
+                .connections
+                .iter()
+                .filter(|entry| groups.contains(&entry.cluster_connection_id))
+                .filter_map(|entry| entry.institution_id.as_deref()),
+        )?;
+        let changed = groups.len() > 1
+            || c.node_id.as_deref() != Some(node_id.as_str())
+            || registry.connections.iter().any(|entry| {
+                groups.contains(&entry.cluster_connection_id)
+                    && entry.institution_id != institution_id
+            });
         let epoch = registry
             .connections
             .iter()
@@ -864,6 +920,7 @@ impl CrewManager {
         {
             entry.cluster_connection_id = canonical.clone();
             entry.mode = mode;
+            entry.institution_id = institution_id.clone();
             entry.policy_epoch = epoch;
             if entry.id == id {
                 entry.node_id = Some(node_id.clone());
@@ -986,6 +1043,27 @@ impl CrewManager {
                 expected.as_ref().is_none_or(|mode| mode == &json!(c.mode)),
                 "Crew connection privacy changed; refresh the verified workspace before granting agent access"
             );
+            let expected_epoch = params
+                .as_object_mut()
+                .unwrap()
+                .remove("expected_policy_epoch");
+            ensure!(
+                expected_epoch
+                    .as_ref()
+                    .is_none_or(|epoch| epoch.as_u64() == Some(c.policy_epoch)),
+                "Crew connection policy changed; refresh before granting agent access"
+            );
+        }
+        if method == "policy.set" {
+            if let Some(value) = params
+                .get("institution_id")
+                .filter(|value| !value.is_null())
+            {
+                params["institution_id"] =
+                    json!(institution::normalize(value.as_str().ok_or_else(
+                        || anyhow::anyhow!("Invalid Crew institution ID")
+                    )?)?);
+            }
         }
         if matches!(method, "message.post" | "blob.begin") {
             let mode = json!(c.mode);
@@ -1043,6 +1121,7 @@ impl CrewManager {
         ensure!(
             fresh.policy_epoch == c.policy_epoch
                 && fresh.mode == c.mode
+                && fresh.institution_id == c.institution_id
                 && fresh.workspace_id == c.workspace_id
                 && fresh.workspace_public_key == c.workspace_public_key,
             "Crew connection policy changed while this action was queued; review and retry"
@@ -1065,7 +1144,9 @@ impl CrewManager {
             .ok_or_else(|| anyhow::anyhow!("Missing authentication challenge"))?;
         let fresh = self.connection(id).await?;
         ensure!(
-            fresh.policy_epoch == c.policy_epoch && fresh.mode == c.mode,
+            fresh.policy_epoch == c.policy_epoch
+                && fresh.mode == c.mode
+                && fresh.institution_id == c.institution_id,
             "Crew connection policy changed during authentication; review and retry"
         );
         let bytes = serde_json::to_vec(&json!([
@@ -1135,15 +1216,21 @@ impl CrewManager {
             })
     }
     pub async fn check_dispatch(&self, session: &str, cap: &CallCapability) -> Result<()> {
-        self.check_tier(session, cap.tier()).await
+        self.check_tier(session, cap.tier(), cap.affiliation())
+            .await
     }
-    async fn check_tier(&self, session: &str, tier: ProviderTier) -> Result<()> {
+    async fn check_tier(
+        &self,
+        session: &str,
+        tier: ProviderTier,
+        affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    ) -> Result<()> {
         let r = self.registry.lock().await;
         let Some(s) = r.scopes.get(session) else {
             return Ok(());
         };
         ensure!(
-            !s.expired,
+            !s.expired && s.institution_policy,
             "Crew run was revoked; request a fresh human grant"
         );
         let c = r
@@ -1160,6 +1247,7 @@ impl CrewManager {
                 || (c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted),
             "Private Crew context cannot be sent to a public model"
         );
+        institution::check_provider(tier, affiliation, &s.institution_ids)?;
         Ok(())
     }
     pub async fn check_provider_binding(
@@ -1188,6 +1276,11 @@ impl CrewManager {
                     && !scope.origin_restricted),
             "Private Crew context cannot be bound to a public model"
         );
+        institution::check_provider(
+            provider.tier(),
+            provider.affiliation(),
+            &scope.institution_ids,
+        )?;
         Ok(())
     }
     pub async fn check_provider_dispatch(
@@ -1196,7 +1289,8 @@ impl CrewManager {
         provider: &dyn Provider,
     ) -> Result<()> {
         self.check_provider_binding(session, provider).await?;
-        self.check_tier(session, provider.tier()).await?;
+        self.check_tier(session, provider.tier(), provider.affiliation())
+            .await?;
         if self.is_scoped(session).await {
             self.worker_request(session, "context.manifest", json!({}))
                 .await?;
@@ -1206,9 +1300,24 @@ impl CrewManager {
     pub async fn preflight_run(
         &self,
         id: &str,
+        channel: &str,
+        sources: &[String],
         provider: &dyn Provider,
         policy: &RunPolicy,
     ) -> Result<Connection> {
+        Ok(self
+            .checked_run_admission(id, channel, sources, provider, policy)
+            .await?
+            .connection)
+    }
+    async fn checked_run_admission(
+        &self,
+        id: &str,
+        channel: &str,
+        sources: &[String],
+        provider: &dyn Provider,
+        policy: &RunPolicy,
+    ) -> Result<institution::Admission> {
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
         ensure!(
@@ -1216,6 +1325,12 @@ impl CrewManager {
                 .expected_mode
                 .is_none_or(|mode| mode == connection.mode),
             "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+        );
+        ensure!(
+            policy
+                .expected_policy_epoch
+                .is_none_or(|epoch| epoch == connection.policy_epoch),
+            "Crew connection policy changed; refresh before granting agent access"
         );
         let public = provider.tier() == ProviderTier::Public;
         ensure!(
@@ -1226,7 +1341,11 @@ impl CrewManager {
             !public || !policy.origin_restricted,
             "Private-origin local conversation cannot be admitted to a public Crew worker"
         );
-        Ok(connection)
+        let snapshot = self
+            .human_request(id, "workspace.snapshot", json!({}), None)
+            .await?;
+        let protected = institution::protected_sources(&snapshot, channel, sources)?;
+        institution::admission(connection, provider, policy, &snapshot, protected)
     }
     pub async fn begin_run(
         &self,
@@ -1253,13 +1372,14 @@ impl CrewManager {
         channel: &str,
         mut sources: Vec<String>,
         provider: &dyn Provider,
-        policy: RunPolicy,
+        mut policy: RunPolicy,
     ) -> Result<RunAdmission> {
-        let mut origin_restricted = policy.origin_restricted;
-        let c = self.preflight_run(id, provider, &policy).await?;
         let public = provider.tier() == ProviderTier::Public;
         if let Some(previous) = self.registry.lock().await.scopes.get(session).cloned() {
-            origin_restricted |= previous.origin_restricted;
+            policy.origin_restricted |= previous.origin_restricted;
+            policy
+                .origin_institution_ids
+                .extend(previous.institution_ids);
             ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
             ensure!(
                 !public || previous.public_provider,
@@ -1271,14 +1391,29 @@ impl CrewManager {
                 }
             }
         }
+        let origin_restricted = policy.origin_restricted;
+        let admission = self
+            .checked_run_admission(id, channel, &sources, provider, &policy)
+            .await?;
+        let c = admission.connection;
+        let institution_ids = admission.institution_ids;
         ensure!(
             !public || !origin_restricted,
             "Private-origin local conversation cannot be admitted to a public Crew worker"
         );
+        institution::check_origin(
+            &institution_ids,
+            admission.workspace_institution_id.as_deref(),
+        )?;
+        institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)?;
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
-        let result=self.signed_request(id,"run.create",json!({"expected_mode":c.mode,"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
+        let result=self.signed_request(id,"run.create",json!({"expected_mode":c.mode,"expected_policy_epoch":c.policy_epoch,"expected_workspace_policy_epoch":admission.workspace_policy_epoch,"expected_protected_context":admission.protected_context,"workspace_institution_id":admission.workspace_institution_id,"connection_institution_id":c.institution_id,"provider_affiliation":institution::provider_affiliation(provider),"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
+        ensure!(
+            result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
+            "Crew broker returned a different protected-context policy; refresh before granting agent access"
+        );
         let run_id = result["run"]["id"]
             .as_str()
             .or_else(|| result["run"]["run_id"].as_str())
@@ -1301,6 +1436,8 @@ impl CrewManager {
                     provider_binding: provider_binding(provider),
                     public_provider: public,
                     origin_restricted,
+                    institution_ids: institution_ids.clone(),
+                    institution_policy: true,
                     expired: false,
                 },
             );
@@ -1315,6 +1452,7 @@ impl CrewManager {
             .await?;
         Ok(RunAdmission {
             run_id,
+            institution_ids,
             context: serde_json::to_string(&json!({
                 "connection_id": id,
                 "destination_channel_id": channel,
@@ -1346,6 +1484,7 @@ impl CrewManager {
             RunPolicy {
                 origin_restricted,
                 expected_mode: None,
+                ..RunPolicy::default()
             },
         )
         .await
@@ -1438,9 +1577,11 @@ impl CrewManager {
         ensure!(
             scope == expected_scope
                 && !scope.expired
+                && scope.institution_policy
                 && scope.epoch == connection.policy_epoch
                 && connection.policy_epoch == expected_connection.policy_epoch
                 && connection.mode == expected_connection.mode
+                && connection.institution_id == expected_connection.institution_id
                 && connection.workspace_id == expected_connection.workspace_id
                 && connection.workspace_public_key == expected_connection.workspace_public_key
                 && (!scope.public_provider
@@ -1606,6 +1747,7 @@ mod tests {
             remote_execution: false,
             cluster_connection_id: "mode-guard-cluster".into(),
             mode: ClusterMode::Public,
+            institution_id: None,
             policy_epoch: 1,
             status: "connected".into(),
             last_error: None,
@@ -1676,6 +1818,7 @@ mod tests {
             remote_execution: false,
             cluster_connection_id: "run-mode-policy-cluster".into(),
             mode: ClusterMode::Public,
+            institution_id: None,
             policy_epoch: 1,
             status: "connected".into(),
             last_error: None,
@@ -1736,6 +1879,7 @@ mod tests {
                 RunPolicy {
                     origin_restricted: false,
                     expected_mode: Some(ClusterMode::Private),
+                    ..RunPolicy::default()
                 },
             )
             .await
@@ -1773,6 +1917,7 @@ mod tests {
                 RunPolicy {
                     origin_restricted: true,
                     expected_mode: Some(ClusterMode::Public),
+                    ..RunPolicy::default()
                 },
             )
             .await
@@ -1859,6 +2004,7 @@ mod tests {
             remote_execution: false,
             cluster_connection_id: "cluster-authorized".into(),
             mode: ClusterMode::Public,
+            institution_id: None,
             policy_epoch: 7,
             status: "connected".into(),
             last_error: None,
@@ -1881,6 +2027,8 @@ mod tests {
             provider_binding: "public-test-provider".into(),
             public_provider: true,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
             expired: false,
         };
         let manager = CrewManager::new(root.clone())?;
@@ -1975,7 +2123,9 @@ while IFS= read -r line; do
   if printf '%s\n' "$line" | grep -q 'auth.challenge'; then
     printf '{{"id":"%s","result":{{"workspace_id":"{workspace_id}","nonce":"nonce"}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q 'run.create'; then
-    printf '{{"id":"%s","result":{{"run":{{"id":"run-admitted"}},"credential":"run-credential"}}}}\n' "$id"
+    printf '{{"id":"%s","result":{{"run":{{"id":"run-admitted","protected_context":false}},"credential":"run-credential"}}}}\n' "$id"
+  elif printf '%s\n' "$line" | grep -q 'workspace.snapshot'; then
+    printf '{{"id":"%s","result":{{"workspace":{{"mode":"public","institution_id":null,"policy_epoch":1}},"channels":[{{"id":"destination-channel"}},{{"id":"source-a"}},{{"id":"source-b"}}],"protected_channel_ids":[]}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q 'messages.history'; then
     printf '{{"id":"%s","result":{{"messages":[{{"channel_id":"destination-channel","id":"destination-message","text":"destination-only"}}]}}}}\n' "$id"
   else
@@ -2016,6 +2166,7 @@ done
             remote_execution: false,
             cluster_connection_id: "admission-cluster".into(),
             mode: ClusterMode::Public,
+            institution_id: None,
             policy_epoch: 1,
             status: "connected".into(),
             last_error: None,
@@ -2111,6 +2262,7 @@ done
             remote_execution: false,
             cluster_connection_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
             mode,
+            institution_id: None,
             policy_epoch,
             status: "connected".into(),
             last_error: None,
@@ -2126,6 +2278,8 @@ done
             provider_binding: "worker-race-provider".into(),
             public_provider,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
             expired: false,
         };
         (connection, scope)
@@ -2391,6 +2545,7 @@ done
             remote_execution: false,
             cluster_connection_id: cluster_id.clone(),
             mode: ClusterMode::Private,
+            institution_id: None,
             policy_epoch: 7,
             status: "disconnected".into(),
             last_error: None,
@@ -2406,6 +2561,8 @@ done
             provider_binding: "private".into(),
             public_provider: false,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
             expired: false,
         };
         let registry = Registry {
@@ -2438,6 +2595,7 @@ done
             remote_execution: false,
             cluster_connection_id: Some(cluster_id),
             mode: ClusterMode::Public,
+            institution_id: None,
         };
         assert!(manager
             .save_inner(Some(&connection_id), input)
@@ -2479,6 +2637,7 @@ done
             remote_execution: false,
             cluster_connection_id: "66666666-6666-4666-8666-666666666666".into(),
             mode: ClusterMode::Public,
+            institution_id: None,
             policy_epoch: 4,
             status: "connected".into(),
             last_error: None,
@@ -2494,6 +2653,8 @@ done
             provider_binding: "public".into(),
             public_provider: true,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
             expired: false,
         };
         let registry = Registry {
@@ -2647,6 +2808,7 @@ done
             remote_execution: false,
             cluster_connection_id: "99999999-9999-4999-8999-999999999999".into(),
             mode: ClusterMode::Private,
+            institution_id: None,
             policy_epoch: 1,
             status: "connected".into(),
             last_error: None,
@@ -2662,6 +2824,8 @@ done
             provider_binding: "private".into(),
             public_provider: false,
             origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
             expired: false,
         };
         let registry = Registry {
@@ -2824,6 +2988,7 @@ done
             remote_execution: true,
             cluster_connection_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(),
             mode: ClusterMode::Private,
+            institution_id: None,
             policy_epoch: 1,
             status: "connected".into(),
             last_error: None,
@@ -2843,6 +3008,8 @@ done
                     provider_binding: "private".into(),
                     public_provider: false,
                     origin_restricted: false,
+                    institution_ids: BTreeSet::new(),
+                    institution_policy: true,
                     expired: false,
                 },
             )]),
@@ -2896,5 +3063,45 @@ done
 
         manager.disconnect(&connection_id).await.unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn institution_provider_and_origin_matrix_rejects_cross_boundary_inputs() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let mut ucsf = BTreeSet::new();
+        ucsf.insert("ucsf".to_owned());
+        let mut stanford = BTreeSet::new();
+        stanford.insert("stanford".to_owned());
+        let empty = BTreeSet::new();
+
+        assert!(institution::check_provider(ProviderTier::Public, None, &empty).is_ok());
+        assert!(institution::check_provider(ProviderTier::Public, None, &ucsf).is_err());
+        assert!(institution::check_provider(
+            ProviderTier::Private,
+            Some(ModelAffiliation::Local),
+            &ucsf
+        )
+        .is_ok());
+        assert!(institution::check_provider(
+            ProviderTier::Private,
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf"))),
+            &ucsf,
+        )
+        .is_ok());
+        assert!(institution::check_provider(
+            ProviderTier::Private,
+            Some(ModelAffiliation::institution(InstitutionId::new(
+                "stanford"
+            ))),
+            &ucsf,
+        )
+        .is_err());
+        assert!(institution::check_provider(ProviderTier::Private, None, &ucsf).is_err());
+
+        assert!(institution::check_origin(&empty, None).is_ok());
+        assert!(institution::check_origin(&ucsf, Some("ucsf")).is_ok());
+        assert!(institution::check_origin(&ucsf, Some("stanford")).is_err());
+        assert!(institution::check_origin(&stanford, None).is_err());
     }
 }

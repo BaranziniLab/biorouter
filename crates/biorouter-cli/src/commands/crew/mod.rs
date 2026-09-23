@@ -35,6 +35,8 @@ async fn execute(options: CrewOptions) -> Result<()> {
     let CrewOptions {
         connection,
         expected_mode,
+        expected_policy_epoch,
+        expected_workspace_policy_epoch,
         no_start,
         approval_key_stdin,
         output_format,
@@ -71,6 +73,8 @@ async fn execute(options: CrewOptions) -> Result<()> {
         client,
         selected: connection,
         expected_mode,
+        expected_policy_epoch,
+        expected_workspace_policy_epoch,
         request_id,
         format: output_format,
     };
@@ -183,6 +187,8 @@ struct Api {
     client: CrewClient,
     selected: Option<String>,
     expected_mode: Option<PrivacyMode>,
+    expected_policy_epoch: Option<u64>,
+    expected_workspace_policy_epoch: Option<u64>,
     request_id: String,
     format: OutputFormat,
 }
@@ -190,6 +196,17 @@ struct Api {
 impl Api {
     fn with_expected_mode(&self, body: Value) -> Value {
         add_expected_mode(body, self.expected_mode)
+    }
+
+    fn with_run_policy(&self, body: Value) -> Value {
+        let mut body = self.with_expected_mode(body);
+        if let Some(epoch) = self.expected_policy_epoch {
+            body["expected_policy_epoch"] = json!(epoch);
+        }
+        if let Some(epoch) = self.expected_workspace_policy_epoch {
+            body["expected_workspace_policy_epoch"] = json!(epoch);
+        }
+        body
     }
 
     async fn connections(&self) -> Result<Value> {
@@ -540,7 +557,7 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<()> {
                 allow_posting,
                 "Starting a Crew task requires --allow-posting for its destination channel"
             );
-            api.connection_action("runs", api.with_expected_mode(json!({"request_id":api.request_id,"channel_id":channel,"prompt":text_input(prompt)?,"provider":provider,"model":model,"context_channels":context_channels,"posting_grant":allow_posting}))).await?
+            api.connection_action("runs", api.with_run_policy(json!({"request_id":api.request_id,"channel_id":channel,"prompt":text_input(prompt)?,"provider":provider,"model":model,"context_channels":context_channels,"posting_grant":allow_posting}))).await?
         }
         TaskCommand::List => {
             api.client
@@ -620,7 +637,7 @@ async fn grants(api: &Api, command: GrantCommand) -> Result<Value> {
         } => {
             api.connection_action(
                 &format!("sessions/{}/grant", component(&session)?),
-                api.with_expected_mode(
+                api.with_run_policy(
                     json!({"channel_id":channel,"context_channels":context_channels}),
                 ),
             )
@@ -642,10 +659,13 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Value> {
             let connection = api.connection().await?;
             let snapshot = api.snapshot().await?;
             Ok(
-                json!({"connection_id":connection["id"],"personal_mode":connection["mode"],"connection_policy_epoch":connection["policy_epoch"],"workspace":snapshot["workspace"],"channels":snapshot["channels"]}),
+                json!({"connection_id":connection["id"],"personal_mode":connection["mode"],"institution_id":connection["institution_id"],"connection_policy_epoch":connection["policy_epoch"],"workspace":snapshot["workspace"],"channels":snapshot["channels"]}),
             )
         }
-        PrivacyCommand::SetPersonal { mode } => {
+        PrivacyCommand::SetPersonal {
+            mode,
+            institution_id,
+        } => {
             let connection = api.connection().await?;
             let mut input = serde_json::Map::new();
             for key in [
@@ -661,19 +681,29 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Value> {
                 "remote_root",
                 "remote_execution",
                 "cluster_connection_id",
+                "institution_id",
             ] {
                 if let Some(value) = connection.get(key) {
                     input.insert(key.into(), value.clone());
                 }
             }
             input.insert("mode".into(), json!(mode.as_str()));
+            if let Some(institution_id) = institution_id {
+                input.insert("institution_id".into(), json!(institution_id));
+            }
             api.client
                 .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
                 .await
         }
-        PrivacyCommand::SetWorkspace { mode } => {
-            api.broker("policy.set", json!({"mode":mode.as_str()}), true)
-                .await
+        PrivacyCommand::SetWorkspace {
+            mode,
+            institution_id,
+        } => {
+            let mut policy = json!({"mode":mode.as_str()});
+            if let Some(institution_id) = institution_id {
+                policy["institution_id"] = json!(institution_id);
+            }
+            api.broker("policy.set", policy, true).await
         }
     }
 }

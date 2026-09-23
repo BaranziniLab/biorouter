@@ -37,6 +37,27 @@ function reconnectFrame(cursor = 'cursor-2'): string {
   return JSON.stringify({ type: 'reconnect', cursor });
 }
 
+function stateFrame(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    type: 'state',
+    connection_id: 'connection-1',
+    connection_mode: 'private',
+    connection_policy_epoch: 2,
+    connection_institution_id: null,
+    snapshot: {
+      actor: { id: 'actor-1', uid: 1, username: 'alice' },
+      workspace: { id: 'workspace-1', host_uid: 1, mode: 'private', policy_epoch: 3 },
+      principals: [],
+      invitations: [],
+      runs: [],
+      channels: [],
+      teams: [],
+    },
+    runs: [],
+    ...overrides,
+  });
+}
+
 describe('observeCrew NDJSON framing', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -136,6 +157,37 @@ describe('observeCrew NDJSON framing', () => {
       observeCrew('connection-1', 'channel-1', null, new AbortController().signal, receive)
     ).rejects.toThrow('incomplete frame');
     expect(receive).not.toHaveBeenCalled();
+  });
+
+  it('accepts a null institution but rejects missing, blank, newline, and overlong ids', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        responseFromChunks([encoder.encode(`${stateFrame()}\n${reconnectFrame()}\n`)])
+      )
+    );
+    await expect(
+      observeCrew('connection-1', 'channel-1', null, new AbortController().signal, vi.fn())
+    ).resolves.toBe('reconnect');
+
+    for (const connection_institution_id of [
+      undefined,
+      '',
+      'ucsf\n',
+      'a'.repeat(65),
+    ]) {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            responseFromChunks([encoder.encode(`${stateFrame({ connection_institution_id })}\n`)])
+          )
+      );
+      await expect(
+        observeCrew('connection-1', 'channel-1', null, new AbortController().signal, vi.fn())
+      ).rejects.toThrow('invalid Crew observation');
+    }
   });
 
   it('cancels the reader when the caller aborts an in-flight observation', async () => {

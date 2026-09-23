@@ -1855,6 +1855,24 @@ impl SessionManager {
             .await
     }
 
+    /// Persist mandatory provenance for Crew and derived conversations, independently
+    /// of the optional extension privacy toggle.
+    pub async fn record_required_session_affiliation(
+        &self,
+        session_id: &str,
+        institution: crate::privacy::affiliation::InstitutionId,
+    ) -> Result<()> {
+        let updated = self
+            .storage
+            .record_affiliation(session_id, institution.as_str())
+            .await?;
+        anyhow::ensure!(
+            updated == 1,
+            "Session unavailable while recording institution provenance"
+        );
+        Ok(())
+    }
+
     /// The institutions whose extensions this chat has touched.
     ///
     /// ⚠ **`Err` is not "no institutions".** An unreadable or unparseable value
@@ -3512,7 +3530,6 @@ impl SessionStorage {
     /// concurrent recorder cannot lose an institution between a read and a
     /// write.
     async fn record_session_affiliation(&self, session_id: &str, institution: &str) -> Result<()> {
-        let pool = self.pool().await?;
         // DR-15 / AR-7: with the master opt-out off nothing is recorded, for the
         // reason the tier ratchet stops — this column is monotone and
         // re-enabling never revisits a row, so a ratchet that kept firing would
@@ -3520,13 +3537,19 @@ impl SessionStorage {
         if !crate::privacy::privacy_tiers_enabled() {
             return Ok(());
         }
+        self.record_affiliation(session_id, institution).await?;
+        Ok(())
+    }
+
+    async fn record_affiliation(&self, session_id: &str, institution: &str) -> Result<u64> {
+        let pool = self.pool().await?;
         // The `ORDER BY` is cosmetic and nothing may come to depend on it:
         // SQLite does not formally guarantee that an aggregate consumes an
         // ordered subquery in that order. It is here so the stored JSON is
         // stable for a human reading the row; every reader
         // (`SessionStorage::session_affiliations`) collects into a `BTreeSet`,
         // so the set is the value and the sequence is not.
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE sessions
                SET session_affiliations = (
@@ -3545,7 +3568,7 @@ impl SessionStorage {
         .bind(institution)
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     /// See [`SessionManager::session_affiliations`].
@@ -8167,9 +8190,19 @@ impl SessionStorage {
         new_name: String,
         reason: &str,
     ) -> Result<Session> {
+        anyhow::ensure!(
+            !crate::crew::manager()?.is_scoped_session(&source.id).await,
+            "Crew conversations cannot be copied or diverged; start a new conversation and grant the desired Crew context."
+        );
+        let institutions = self.session_affiliations(&source.id).await?;
         let new_session = self
             .create_session(source.working_dir.clone(), new_name, source.session_type)
             .await?;
+        for institution in institutions {
+            session_manager
+                .record_required_session_affiliation(&new_session.id, institution)
+                .await?;
+        }
         let mut update = session_manager
             .update(&new_session.id)
             .extension_data(source.extension_data.clone())
@@ -9197,6 +9230,10 @@ mod blob_tests {
         assert_eq!(conv.messages()[0].as_concat_text(), "kept inline");
     }
 }
+
+#[cfg(test)]
+#[path = "session_manager_required_affiliation_tests.rs"]
+mod required_affiliation_tests;
 
 #[cfg(test)]
 mod tests {

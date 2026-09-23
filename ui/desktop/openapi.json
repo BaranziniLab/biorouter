@@ -9673,6 +9673,18 @@
               }
             ],
             "nullable": true
+          },
+          "expected_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "expected_workspace_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -11998,6 +12010,7 @@
             "required": [
               "connection_id",
               "connection_mode",
+              "connection_policy_epoch",
               "snapshot",
               "runs",
               "type"
@@ -12006,12 +12019,21 @@
               "connection_id": {
                 "type": "string"
               },
+              "connection_institution_id": {
+                "type": "string",
+                "nullable": true
+              },
               "connection_mode": {
                 "type": "string",
                 "enum": [
                   "public",
                   "private"
                 ]
+              },
+              "connection_policy_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
               },
               "runs": {
                 "type": "array",
@@ -14697,6 +14719,18 @@
               }
             ],
             "nullable": true
+          },
+          "expected_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "expected_workspace_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
           },
           "model": {
             "type": "string"

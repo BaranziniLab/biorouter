@@ -433,6 +433,7 @@ async fn stale_failed_transport_cannot_retire_a_newer_replacement() {
         remote_execution: false,
         cluster_connection_id: "stale-transport-cluster".into(),
         mode: ClusterMode::Public,
+        institution_id: None,
         policy_epoch: 1,
         status: "connected".into(),
         last_error: None,

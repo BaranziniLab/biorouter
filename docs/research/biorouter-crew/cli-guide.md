@@ -79,6 +79,7 @@ Build `crew-connection.json` from verified workspace information supplied by its
 | `workspace_id` | The operator's verified workspace UUID. |
 | `workspace_public_key` | The broker's verified 32-byte public key encoded as 64 hexadecimal characters. This is different from your prepared device public key. |
 | `mode` | `private` or `public`; omission defaults to `private`. |
+| `institution_id` | Required for private saves, optional for public. Canonical 1–64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit (for example `ucsf`). Omitting `mode` still requires this field because the default is private. |
 
 Optional fields are `port` (number), `identity_file` (absolute local path), `proxy_jump` (SSH jump route), `remote_root` (remote work directory), `remote_execution` (boolean, default `false`) and `cluster_connection_id` (existing cluster connection ID). Unknown fields are rejected. `connections show` includes read-only state, so its entire output is not a valid save/update descriptor. For updates, omit `preparation_id` and supply the complete editable descriptor.
 
@@ -109,6 +110,8 @@ Only the initial operator whose device key matches the broker bootstrap key uses
 ```sh
 # Initial operator only, after authentication:
 biorouter crew --connection "$CONNECTION_ID" workspace bootstrap
+# Host confirms the immutable shared institution before any agent task/grant:
+biorouter crew --connection "$CONNECTION_ID" privacy set-workspace private --institution ucsf
 
 # Operator: substitute the colleague's actual numeric UID and public key.
 biorouter crew --connection "$CONNECTION_ID" enroll invite --uid 12345 --public-key 'REPLACE_WITH_DEVICE_PUBLIC_KEY_HEX'
@@ -204,6 +207,16 @@ biorouter crew --connection "$CONNECTION_ID" tasks watch "$RUN_ID"
 biorouter crew --connection "$CONNECTION_ID" tasks cancel "$RUN_ID"
 ```
 
+Before tasks or grants, use `privacy show` to inspect `connection_policy_epoch` and `workspace.policy_epoch`. Optional `--expected-policy-epoch` and `--expected-workspace-policy-epoch` bind the observed epochs only for task starts and grants, for example:
+
+```sh
+biorouter crew --connection "$CONNECTION_ID" --expected-policy-epoch CONNECTION_EPOCH \
+  --expected-workspace-policy-epoch WORKSPACE_EPOCH tasks start "$CHANNEL_ID" \
+  --input ./task-prompt.txt --provider "$PROVIDER_NAME" --model "$MODEL_NAME" --allow-posting
+```
+
+Replace the epoch placeholders with the observed integers. Do not reuse stale values after policy changes. These flags do not apply to sends, transfers or cleanup.
+
 Task starts currently require explicit `--allow-posting` for the destination channel. Repeat `--context-channel CHANNEL_ID` to request additional source channels; membership and privacy policy still apply. `tasks watch` follows task status, while channel history contains published activity. Ctrl-C detaches a watcher; cancellation requires `tasks cancel`.
 
 Agents receive task-specific grants and cannot use another user's identity to start or control that user's tasks. Remote file access requires an admitted `remote_root`; remote execution additionally requires `remote_execution: true` in the connection descriptor and an allowed private provider. Agent file paths are relative to that remote work directory. Public-provider grants do not enable these remote file/execution capabilities.
@@ -212,7 +225,8 @@ For an existing conversation, open it in the shared daemon and let its current t
 
 ```sh
 SESSION_ID='replace-with-conversation-session-id'
-biorouter crew --connection "$CONNECTION_ID" grants grant "$SESSION_ID" "$CHANNEL_ID"
+biorouter crew --connection "$CONNECTION_ID" --expected-policy-epoch CONNECTION_EPOCH \
+  --expected-workspace-policy-epoch WORKSPACE_EPOCH grants grant "$SESSION_ID" "$CHANNEL_ID"
 biorouter crew --connection "$CONNECTION_ID" grants list
 biorouter crew --connection "$CONNECTION_ID" context "$SESSION_ID"
 biorouter crew --connection "$CONNECTION_ID" grants revoke "$SESSION_ID"
@@ -282,4 +296,12 @@ Implementation references: [CLI arguments](../../../crates/biorouter-cli/src/com
 
 ### Synthetic development QA input (bounded launch qualification)
 
-The Electron development shell has a new `--dev-approval-key-stdin` path for explicitly authorized synthetic QA input. It requires an unpackaged app, validated development profile, test driver and shared daemon. Input is bounded, single-use, read through EOF and strictly validated; failures are sanitized. Three automatic no-prompt launches, 46 focused tests, typecheck and the isolated UI build pass; the full gate also emitted all success outputs, while full workflow qualification remains pending. This is separate from native CLI `--approval-key-stdin` and does not automate production human proof or SSH/MFA. Keep synthetic values out of arguments, environment, logs and model context.
+The Electron development shell has a new `--dev-approval-key-stdin` path for explicitly authorized synthetic QA input. It requires an unpackaged app, validated development profile, test driver and shared daemon. Input is bounded, single-use, read through EOF and strictly validated; failures are sanitized. Three automatic no-prompt launches, 46 focused tests, typecheck and the isolated UI build pass; the full gate has a recorded exit 0. Same-profile wrong-proof refusal and correct reopen pass; fresh-profile refusal and full workflow qualification remain pending. This is separate from native CLI `--approval-key-stdin` and does not automate production human proof or SSH/MFA. Keep synthetic values out of arguments, environment, logs and model context.
+
+The current acceptance fixture uses the user-selected existing private `versa_azure` provider with model `gpt-5.5-2026-04-24`. This is a fixture choice, not a new default or a relaxation of Crew provider policy. Earlier Qwen results retain their original scope.
+
+### Institution binding (required work in progress)
+
+New private SSH connection saves require a canonical institution ID in current source. A shared host receives an explicit initial label that cannot change through a privacy toggle; unlabelled legacy hosts allow human collaboration only until labelled. Local providers may serve any institution; institutional providers must match the host’s institution. Grants and retained session data must preserve that binding through connection/workspace epochs and provider changes. The host confirms its immutable shared label with `privacy set-workspace private --institution ucsf` after `workspace bootstrap` and before tasks/grants. Public/private toggles do not erase that label. Source checks pass as recorded below; final Rust/runtime qualification remains incomplete.
+
+Crew-scoped copy, diverge and edit-diverge are refused before a child is created, including scopes retained after revocation or expiry. Start a fresh conversation and explicitly grant Crew context. Ordinary conversation derivation retains the union of institution owners. This source-reviewed restriction is intentional; institution runtime validation remains pending.

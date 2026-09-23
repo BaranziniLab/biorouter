@@ -123,7 +123,7 @@ impl Observer {
         });
         person(&self.headers)?;
         Ok(
-            json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"snapshot":snapshot,"runs":runs}),
+            json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"connection_policy_epoch":self.binding["policy_epoch"],"connection_institution_id":self.binding["institution_id"],"snapshot":snapshot,"runs":runs}),
         )
     }
 
@@ -712,6 +712,8 @@ mod tests {
             let event = ObserveEvent::State {
                 connection_id: "connection-123".into(),
                 connection_mode: mode,
+                connection_policy_epoch: 1,
+                connection_institution_id: Some("ucsf".into()),
                 snapshot: json!({}),
                 runs: vec![],
             };

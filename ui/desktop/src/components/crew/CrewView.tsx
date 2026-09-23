@@ -46,6 +46,7 @@ const emptyConnection = {
   remote_root: '',
   remote_execution: false,
   mode: 'private' as 'private' | 'public',
+  institution_id: '',
 };
 
 interface PendingRunAttempt {
@@ -79,6 +80,8 @@ export default function CrewView() {
   const [observedPrivacy, setObservedPrivacy] = useState<{
     connectionId: string;
     mode: 'private' | 'public';
+    institutionId: string | null;
+    policyEpoch: number;
   } | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [teamId, setTeamId] = useState('');
@@ -124,7 +127,12 @@ export default function CrewView() {
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
     savedConnection && observedPrivacy?.connectionId === connectionId
-      ? { ...savedConnection, mode: observedPrivacy.mode }
+      ? {
+          ...savedConnection,
+          mode: observedPrivacy.mode,
+          institution_id: observedPrivacy.institutionId,
+          policy_epoch: observedPrivacy.policyEpoch,
+        }
       : savedConnection;
   const connectionStatus =
     snapshot && observedPrivacy?.connectionId === connectionId
@@ -150,7 +158,12 @@ export default function CrewView() {
     [connectionId]
   );
 
-  const verifiedScope = useRef<{ connection: string; epoch: number; mode?: string } | null>(null);
+  const verifiedScope = useRef<{
+    connection: string;
+    epoch: number;
+    connectionEpoch: number;
+    mode: string;
+  } | null>(null);
   const selectedSources = useRef(contextChannels);
   useEffect(() => {
     selectedSources.current = contextChannels;
@@ -314,6 +327,7 @@ export default function CrewView() {
                 previousScope?.connection === connectionId &&
                 (previousScope.epoch !== frame.snapshot.workspace.policy_epoch ||
                   previousScope.mode !== frame.connection_mode ||
+                  previousScope.connectionEpoch !== frame.connection_policy_epoch ||
                   selectedSources.current.some(
                     (id) => !frame.snapshot.channels.some((item) => item.id === id)
                   ))
@@ -326,12 +340,25 @@ export default function CrewView() {
               verifiedScope.current = {
                 connection: connectionId,
                 epoch: frame.snapshot.workspace.policy_epoch,
+                connectionEpoch: frame.connection_policy_epoch,
                 mode: frame.connection_mode,
               };
-              setObservedPrivacy({ connectionId, mode: frame.connection_mode });
+              setObservedPrivacy({
+                connectionId,
+                mode: frame.connection_mode,
+                institutionId: frame.connection_institution_id ?? null,
+                policyEpoch: frame.connection_policy_epoch,
+              });
               setConnections((items) =>
                 items.map((item) =>
-                  item.id === connectionId ? { ...item, mode: frame.connection_mode } : item
+                  item.id === connectionId
+                    ? {
+                        ...item,
+                        mode: frame.connection_mode,
+                        institution_id: frame.connection_institution_id ?? null,
+                        policy_epoch: frame.connection_policy_epoch,
+                      }
+                    : item
                 )
               );
               setSnapshot(frame.snapshot);
@@ -523,6 +550,8 @@ export default function CrewView() {
     }
     const payload = {
       expected_mode: observedPrivacy.mode,
+      expected_policy_epoch: observedPrivacy.policyEpoch,
+      expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
       channel_id: channelId,
       prompt: body,
       provider,
@@ -693,6 +722,7 @@ export default function CrewView() {
                       remote_root: connection.remote_root || '',
                       remote_execution: connection.remote_execution,
                       mode: connection.mode,
+                      institution_id: connection.institution_id ?? '',
                     });
                     setPanel('connection');
                   }}
@@ -722,6 +752,7 @@ export default function CrewView() {
                         remote_root: connection.remote_root,
                         remote_execution: connection.remote_execution,
                         mode: e.target.value,
+                        institution_id: connection.institution_id ?? null,
                       });
                       await loadConnections();
                       await refresh();
@@ -732,6 +763,11 @@ export default function CrewView() {
                   <option value="public">Public · source restrictions apply</option>
                 </select>
               </label>
+              <p className="crew-small">
+                Connection institution:{' '}
+                <strong>{connection.institution_id || 'Not specified'}</strong>. Local models may
+                work across institutions. Institutional models must match the private workspace.
+              </p>
               {snapshot && snapshot.actor.uid === snapshot.workspace.host_uid && (
                 <label className="crew-label">
                   Shared workspace policy
@@ -741,7 +777,14 @@ export default function CrewView() {
                     disabled={busy}
                     onChange={(event) =>
                       void act(async () => {
-                        await request('policy.set', { mode: event.target.value }, true);
+                        await request(
+                          'policy.set',
+                          {
+                            mode: event.target.value,
+                            institution_id: snapshot.workspace.institution_id ?? null,
+                          },
+                          true
+                        );
                         await refresh();
                       })
                     }
@@ -754,6 +797,45 @@ export default function CrewView() {
                     restrictions; active agents need fresh grants after a change.
                   </span>
                 </label>
+              )}
+              {snapshot && (
+                <div className="crew-small">
+                  <p>
+                    Workspace institution:{' '}
+                    <strong>{snapshot.workspace.institution_id || 'Not specified'}</strong>.
+                  </p>
+                  {!snapshot.workspace.institution_id &&
+                    snapshot.actor.uid === snapshot.workspace.host_uid && (
+                      <>
+                        <p>
+                          Confirm the institution before granting agent access to private data. This
+                          label stays with the workspace and cannot be changed later.
+                        </p>
+                        <button
+                          disabled={busy || !connection.institution_id}
+                          onClick={() =>
+                            void act(async () => {
+                              await request(
+                                'policy.set',
+                                {
+                                  mode: snapshot.workspace.mode,
+                                  institution_id: connection.institution_id,
+                                },
+                                true
+                              );
+                              await refresh();
+                            })
+                          }
+                        >
+                          Confirm workspace institution
+                          {connection.institution_id ? `: ${connection.institution_id}` : ''}
+                        </button>
+                        {!connection.institution_id && (
+                          <p>Edit this connection to specify its institution first.</p>
+                        )}
+                      </>
+                    )}
+                </div>
               )}
               <p>
                 Effective:{' '}
@@ -1417,6 +1499,7 @@ export default function CrewView() {
                         identity_file: connectionForm.identity_file || undefined,
                         proxy_jump: connectionForm.proxy_jump || undefined,
                         remote_root: connectionForm.remote_root || undefined,
+                        institution_id: connectionForm.institution_id.trim() || null,
                       }
                     );
                     await loadConnections();
@@ -1563,9 +1646,39 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                   />
                   Allow my agent to execute tasks in this remote work folder
                 </label>
+                <label className="crew-label">
+                  Connection privacy
+                  <select
+                    value={connectionForm.mode}
+                    onChange={(event) =>
+                      setConnectionForm({
+                        ...connectionForm,
+                        mode: event.target.value as 'private' | 'public',
+                      })
+                    }
+                  >
+                    <option value="private">Private</option>
+                    <option value="public">Public</option>
+                  </select>
+                </label>
+                <label className="crew-label">
+                  Institution ID
+                  <input
+                    required={connectionForm.mode === 'private'}
+                    value={connectionForm.institution_id}
+                    maxLength={64}
+                    pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                    placeholder="For example, ucsf or sdsc"
+                    onChange={(event) =>
+                      setConnectionForm({ ...connectionForm, institution_id: event.target.value })
+                    }
+                  />
+                </label>
                 <p className="crew-small">
-                  New connections are Private. SSH host keys and the workspace identity must be
-                  independently verified.
+                  Use the workspace institution's exact ID. Private connections require it; the
+                  workspace host confirms the shared label. Public models cannot access private
+                  data, and institutional models must match this institution. SSH host keys and the
+                  workspace identity must be independently verified.
                 </p>
                 <CrewHostTrust />
                 <button className="crew-button primary" disabled={busy}>
@@ -1659,6 +1772,8 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                         'POST',
                         {
                           expected_mode: observedPrivacy.mode,
+                          expected_policy_epoch: observedPrivacy.policyEpoch,
+                          expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
                           channel_id: channelId,
                           context_channels: [channelId, ...contextChannels],
                         }
@@ -1955,6 +2070,11 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                             {availableProviders.map((item) => (
                               <option key={item.name} value={item.name}>
                                 {item.name} · {item.resolved_tier || 'policy checked by server'}
+                                {item.affiliation?.kind === 'local'
+                                  ? ' · Local'
+                                  : item.affiliation?.kind === 'institutions'
+                                    ? ` · ${item.affiliation.institutions?.map((institution) => institution.display_name || institution.id).join(', ')}`
+                                    : ''}
                               </option>
                             ))}
                           </select>
@@ -2014,8 +2134,9 @@ chmod 700 "$HOME/.local/share/biorouter-crew/workspace"
                         ))}
                     </fieldset>
                     <p className="crew-small">
-                      Private connections block public models. Restricted sources keep their
-                      permissions when summarized.
+                      Private connections block public models. Local models may work across
+                      institutions; institutional models must match the workspace institution.
+                      Restricted sources keep their permissions when summarized.
                     </p>
                   </>
                 )}

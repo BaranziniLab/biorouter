@@ -50,7 +50,56 @@ fn request(id: &str, method: &str, params: Value) -> Request {
         credential: None,
     }
 }
+fn run_contract_params(broker: &Broker, mut params: Value) -> Value {
+    if let Some(fields) = params.as_object_mut() {
+        fields
+            .entry("expected_workspace_policy_epoch")
+            .or_insert_with(|| json!(broker.workspace().policy_epoch));
+        fields
+            .entry("workspace_institution_id")
+            .or_insert_with(|| json!(broker.workspace().institution_id));
+        let private = fields.get("personal_mode").and_then(Value::as_str) == Some("private");
+        fields
+            .entry("connection_institution_id")
+            .or_insert_with(|| {
+                if private {
+                    json!(broker.workspace().institution_id)
+                } else {
+                    Value::Null
+                }
+            });
+        fields.entry("provider_affiliation").or_insert_with(|| {
+            if private {
+                json!({"kind":"local"})
+            } else {
+                json!({"kind":"unstated"})
+            }
+        });
+        fields
+            .entry("expected_protected_context")
+            .or_insert_with(|| json!(private));
+    }
+    params
+}
+
 fn signed_as(
+    broker: &mut Broker,
+    connection: &mut Connection,
+    caller_uid: u32,
+    key: &SigningKey,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> biorouter_crew::Response {
+    let params = if method == "run.create" {
+        run_contract_params(broker, params)
+    } else {
+        params
+    };
+    signed_as_raw(broker, connection, caller_uid, key, id, method, params)
+}
+
+fn signed_as_raw(
     broker: &mut Broker,
     connection: &mut Connection,
     caller_uid: u32,
@@ -88,7 +137,7 @@ fn signed_as(
     });
     broker.handle(caller_uid, connection, req)
 }
-fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
+fn bootstrap_unlabelled(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
     let mut broker = Broker::open(root, &public).unwrap();
@@ -123,6 +172,28 @@ fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
     let mut req = request("bootstrap", "auth.bootstrap", params);
     req.auth = Some(auth);
     assert!(broker.handle(uid(), &mut connection, req).error.is_none());
+    (broker, connection, key)
+}
+
+fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
+    let (mut broker, mut connection, key) = bootstrap_unlabelled(root);
+    let labelled = signed(
+        &mut broker,
+        &mut connection,
+        &key,
+        "label-workspace",
+        "policy.set",
+        json!({
+            "mode": "private",
+            "institution_id": "ucsf",
+            "idempotency_key": "label-workspace"
+        }),
+    );
+    assert!(
+        labelled.error.is_none(),
+        "workspace institution fixture failed: {:?}",
+        labelled.error
+    );
     (broker, connection, key)
 }
 fn enroll_user(
@@ -203,6 +274,22 @@ fn signed(
     method: &str,
     params: Value,
 ) -> biorouter_crew::Response {
+    let params = if method == "run.create" {
+        run_contract_params(broker, params)
+    } else {
+        params
+    };
+    signed_raw(broker, connection, key, id, method, params)
+}
+
+fn signed_raw(
+    broker: &mut Broker,
+    connection: &mut Connection,
+    key: &SigningKey,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> biorouter_crew::Response {
     let device_id = digest(&key.verifying_key().to_bytes());
     let challenge = broker.handle(
         uid(),
@@ -236,6 +323,34 @@ fn with_cleanup<T>(root: &PathBuf, f: impl FnOnce() -> T) -> T {
     let result = f();
     let _ = fs::remove_dir_all(root);
     result
+}
+
+fn run_with_affiliation(
+    broker: &mut Broker,
+    connection: &mut Connection,
+    key: &SigningKey,
+    id: &str,
+    channel: &str,
+    affiliation: Value,
+    personal_mode: &str,
+) -> biorouter_crew::Response {
+    signed(
+        broker,
+        connection,
+        key,
+        id,
+        "run.create",
+        json!({
+            "channel_id": channel,
+            "source_channels": [channel],
+            "provider_policy_id": "resolved-provider-fixture",
+            "provider_affiliation": affiliation,
+            "personal_mode": personal_mode,
+            "public_provider": personal_mode == "public",
+            "expires_in": 60,
+            "idempotency_key": id,
+        }),
+    )
 }
 
 #[test]
@@ -1165,7 +1280,12 @@ fn restricted_message_invalidates_existing_public_run() {
                 credential: Some(credential),
             },
         );
-        assert_eq!(worker.error.unwrap().code, "privacy_denied");
+        let worker_error = worker.error.unwrap();
+        assert_eq!(worker_error.code, "grant_expired");
+        assert!(worker_error
+            .message
+            .contains("selected context became protected"));
+        assert!(worker.result.is_none());
         let fresh = signed(
             &mut broker,
             &mut connection,
@@ -1259,7 +1379,198 @@ fn delayed_public_worker_response_rechecks_newly_restricted_channel() {
                 credential: Some(credential),
             },
         );
-        assert_eq!(delayed.error.unwrap().code, "privacy_denied");
+        let error = delayed
+            .error
+            .expect("protected transition must refuse the stale grant");
+        assert_eq!(error.code, "grant_expired");
+        assert!(delayed.result.is_none());
+    });
+}
+
+#[test]
+fn local_public_preflight_rejects_protection_transition_before_grant() {
+    let root = temp_root("local-public-preflight-transition");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        assert!(signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "policy",
+            "policy.set",
+            json!({"mode":"public","idempotency_key":"policy"}),
+        )
+        .error
+        .is_none());
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"local-public-preflight","idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap().to_owned();
+        let snapshot = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "preflight",
+            "workspace.snapshot",
+            json!({}),
+        );
+        assert!(
+            snapshot.error.is_none(),
+            "preflight failed: {:?}",
+            snapshot.error
+        );
+        let policy_epoch = broker.workspace().policy_epoch;
+        let run = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "initial-local-run",
+            "run.create",
+            json!({
+                "channel_id":channel,
+                "source_channels":[channel],
+                "provider_policy_id":"local-provider",
+                "provider_affiliation":{"kind":"local"},
+                "workspace_institution_id":"ucsf",
+                "connection_institution_id":"ucsf",
+                "expected_workspace_policy_epoch":policy_epoch,
+                "expected_protected_context":false,
+                "personal_mode":"public",
+                "public_provider":false,
+                "expires_in":60,
+                "idempotency_key":"initial-local-run"
+            }),
+        );
+        assert!(
+            run.error.is_none(),
+            "initial local run failed: {:?}",
+            run.error
+        );
+        let restricted = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "restricted-human",
+            "message.post",
+            json!({"channel_id":channel,"body":"restricted human update","personal_mode":"private","idempotency_key":"restricted-human"}),
+        );
+        assert!(
+            restricted.error.is_none(),
+            "restricted post failed: {:?}",
+            restricted.error
+        );
+        let policy_epoch = broker.workspace().policy_epoch;
+        let stale = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "stale-local-run",
+            "run.create",
+            json!({
+                "channel_id":channel,
+                "source_channels":[channel],
+                "provider_policy_id":"local-provider",
+                "provider_affiliation":{"kind":"local"},
+                "workspace_institution_id":"ucsf",
+                "connection_institution_id":"ucsf",
+                "expected_workspace_policy_epoch":policy_epoch,
+                "expected_protected_context":false,
+                "personal_mode":"public",
+                "public_provider":false,
+                "expires_in":60,
+                "idempotency_key":"stale-local-run"
+            }),
+        );
+        assert_eq!(stale.error.unwrap().code, "stale_policy");
+        assert!(stale.result.is_none());
+    });
+}
+
+#[test]
+fn local_public_grant_is_rechecked_after_source_taint() {
+    let root = temp_root("local-public-grant-taint");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        assert!(signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "policy",
+            "policy.set",
+            json!({"mode":"public","idempotency_key":"policy"}),
+        )
+        .error
+        .is_none());
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"local-public-taint","idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap().to_owned();
+        let policy_epoch = broker.workspace().policy_epoch;
+        let run = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "local-run",
+            "run.create",
+            json!({
+                "channel_id":channel,
+                "source_channels":[channel],
+                "provider_policy_id":"local-provider",
+                "provider_affiliation":{"kind":"local"},
+                "workspace_institution_id":"ucsf",
+                "connection_institution_id":"ucsf",
+                "expected_workspace_policy_epoch":policy_epoch,
+                "expected_protected_context":false,
+                "personal_mode":"public",
+                "public_provider":false,
+                "expires_in":60,
+                "idempotency_key":"local-run"
+            }),
+        )
+        .result
+        .unwrap();
+        let credential = run["credential"].as_str().unwrap().to_owned();
+        let restricted = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "restricted-source",
+            "message.post",
+            json!({"channel_id":channel,"body":"source taint","personal_mode":"private","idempotency_key":"restricted-source"}),
+        );
+        assert!(
+            restricted.error.is_none(),
+            "restricted post failed: {:?}",
+            restricted.error
+        );
+        let worker = broker.handle(
+            uid(),
+            &mut connection,
+            Request {
+                version: 1,
+                id: "tainted-worker".into(),
+                method: "context.manifest".into(),
+                params: json!({}),
+                auth: None,
+                credential: Some(credential),
+            },
+        );
+        assert_eq!(worker.error.unwrap().code, "grant_expired");
+        assert!(worker.result.is_none());
     });
 }
 
@@ -1749,4 +2060,244 @@ fn wrong_writer_node_refuses_before_torn_tail_repair() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(after_entries, before_entries);
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn resolved_provider_affiliation_controls_private_run_admission() {
+    let root = temp_root("provider-affiliation");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"affiliation", "idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap();
+
+        let local = run_with_affiliation(
+            &mut broker,
+            &mut connection,
+            &key,
+            "local",
+            channel,
+            json!({"kind":"local"}),
+            "private",
+        );
+        assert!(
+            local.error.is_none(),
+            "local private run: {:?}",
+            local.error
+        );
+
+        let ucsf = run_with_affiliation(
+            &mut broker,
+            &mut connection,
+            &key,
+            "ucsf",
+            channel,
+            json!({"kind":"institutions","institution_ids":["ucsf"]}),
+            "private",
+        );
+        assert!(ucsf.error.is_none(), "UCSF private run: {:?}", ucsf.error);
+
+        for (id, affiliation) in [
+            (
+                "foreign",
+                json!({"kind":"institutions","institution_ids":["stanford"]}),
+            ),
+            ("unstated", json!({"kind":"unstated"})),
+        ] {
+            let response = run_with_affiliation(
+                &mut broker,
+                &mut connection,
+                &key,
+                id,
+                channel,
+                affiliation,
+                "private",
+            );
+            assert_eq!(response.error.unwrap().code, "privacy_denied", "{id}");
+            assert!(
+                response.result.is_none(),
+                "denied {id} run produced a result"
+            );
+        }
+
+        let public = run_with_affiliation(
+            &mut broker,
+            &mut connection,
+            &key,
+            "public",
+            channel,
+            json!({"kind":"institutions","institution_ids":["ucsf"]}),
+            "public",
+        );
+        assert_eq!(public.error.unwrap().code, "privacy_denied");
+        assert!(public.result.is_none());
+    });
+}
+
+#[test]
+fn protected_unlabelled_workspace_denies_even_local_provider_affiliation() {
+    let root = temp_root("unlabelled-private");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap_unlabelled(&root);
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"unlabelled", "idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap();
+        for (id, affiliation) in [
+            ("local", json!({"kind":"local"})),
+            ("unstated", json!({"kind":"unstated"})),
+        ] {
+            let response = run_with_affiliation(
+                &mut broker,
+                &mut connection,
+                &key,
+                id,
+                channel,
+                affiliation,
+                "private",
+            );
+            assert_eq!(response.error.unwrap().code, "privacy_denied", "{id}");
+            assert!(
+                response.result.is_none(),
+                "{id} bypassed unlabelled protection"
+            );
+        }
+    });
+}
+
+#[test]
+fn run_create_requires_all_institution_and_epoch_fields() {
+    let root = temp_root("run-contract-fields");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"required-fields", "idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap();
+        let base = json!({
+            "channel_id": channel,
+            "source_channels": [channel],
+            "provider_policy_id": "resolved-provider-fixture",
+            "provider_affiliation": {"kind":"local"},
+            "workspace_institution_id": "ucsf",
+            "connection_institution_id": "ucsf",
+            "expected_workspace_policy_epoch": broker.workspace().policy_epoch,
+            "expected_protected_context": true,
+            "personal_mode": "private",
+            "public_provider": false,
+            "expires_in": 60,
+        });
+        for (index, missing) in [
+            "provider_affiliation",
+            "workspace_institution_id",
+            "connection_institution_id",
+            "expected_workspace_policy_epoch",
+            "expected_protected_context",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut params = base.clone();
+            params.as_object_mut().unwrap().remove(missing);
+            params["idempotency_key"] = json!(format!("missing-{index}"));
+            let response = signed_raw(
+                &mut broker,
+                &mut connection,
+                &key,
+                &format!("missing-{index}"),
+                "run.create",
+                params,
+            );
+            assert_eq!(response.error.unwrap().code, "invalid_params", "{missing}");
+            assert!(response.result.is_none());
+        }
+    });
+}
+
+#[test]
+fn forged_institution_metadata_is_refused_before_run_creation() {
+    let root = temp_root("forged-institution");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        let team = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "team",
+            "team.create",
+            json!({"name":"forged", "idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap();
+        let epoch = broker.workspace().policy_epoch;
+        let mismatched_connection = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "foreign-connection",
+            "run.create",
+            json!({
+                "channel_id": channel,
+                "source_channels": [channel],
+                "provider_policy_id": "resolved-provider-fixture",
+                "provider_affiliation": {"kind":"institutions","institution_ids":["stanford"]},
+                "workspace_institution_id": "ucsf",
+                "connection_institution_id": "stanford",
+                "expected_workspace_policy_epoch": epoch,
+                "personal_mode": "private",
+                "public_provider": false,
+                "expires_in": 60,
+                "idempotency_key": "foreign-connection",
+            }),
+        );
+        assert_eq!(mismatched_connection.error.unwrap().code, "privacy_denied");
+        assert!(mismatched_connection.result.is_none());
+
+        let epoch = broker.workspace().policy_epoch;
+        let forged_workspace = signed(
+            &mut broker,
+            &mut connection,
+            &key,
+            "forged-workspace",
+            "run.create",
+            json!({
+                "channel_id": channel,
+                "source_channels": [channel],
+                "provider_policy_id": "resolved-provider-fixture",
+                "provider_affiliation": {"kind":"institutions","institution_ids":["ucsf"]},
+                "workspace_institution_id": "stanford",
+                "connection_institution_id": "stanford",
+                "expected_workspace_policy_epoch": epoch,
+                "personal_mode": "private",
+                "public_provider": false,
+                "expires_in": 60,
+                "idempotency_key": "forged-workspace",
+            }),
+        );
+        assert_eq!(forged_workspace.error.unwrap().code, "stale_policy");
+        assert!(forged_workspace.result.is_none());
+    });
 }

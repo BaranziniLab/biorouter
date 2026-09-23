@@ -526,20 +526,28 @@ prompt: |
 
   This phase is selected explicitly with `test_phases=crew` (and is included by
   `test_phases=all`). It is a headless Crew contract check. Use
-  only an isolated synthetic profile rooted under `{{ workspace_dir }}`. Never
-  read an approval secret, private key, SSH key, keyring entry, saved
-  credential, or real profile. Never request or manufacture human proof, start
-  a daemon, open an SSH connection, select or mutate a provider, create a team,
-  create a connection, send an invitation, or write to a live workspace.
+  only phase-owned state rooted under `{{ workspace_dir }}` for model-driven
+  tool actions. The test harness may initialize the already-authorized Versa
+  GPT-5.5 provider from the dedicated synthetic Alice provider host, without
+  copying or exporting its API key, approval secret, private key, SSH key,
+  keyring entry, saved credential, or profile files into this phase. Keep that
+  provider host and all secret-bearing files outside model tools and audit logs.
+  Never request or manufacture human proof, start a daemon, open an SSH
+  connection, select or mutate a provider, create a team, create a connection,
+  send an invitation, or write to a live workspace.
 
-  1. Set `BIOROUTER_PATH_ROOT` below `{{ workspace_dir }}` and set
-     `BIOROUTER_DISABLE_KEYRING=1`. Snapshot only phase-owned files below that
-     root and phase-owned daemon/process/socket resources created by this run.
-     Do not inspect the user's normal home, SSH directory, keyring, or provider
-     configuration, or inventory resources owned by another task.
+  1. For every model-driven child CLI command, set
+     `BIOROUTER_PATH_ROOT` to a fresh root below `{{ workspace_dir }}` and set
+     `BIOROUTER_DISABLE_KEYRING=1`; do not let child commands inherit the
+     provider host's profile or secret-bearing environment. Snapshot only
+     phase-owned files below that root and phase-owned process/socket resources
+     created by this run. Do not inspect the user's normal home, SSH directory,
+     keyring, provider configuration, or resources owned by another task.
   2. With no Crew grant or bound connection, make exactly one read-only built-in
-     MCP request through `crew__request` before attempting any shell or HTTP
-     command. Use exactly these synthetic arguments, omitting `connection_id`:
+     MCP request through `crew__request` from a new standalone, ungranted test
+     conversation before attempting any shell or HTTP command. Use exactly these
+     synthetic arguments, omitting `connection_id` and any `--shared-daemon`
+     or saved-connection discovery:
      `{"method":"messages.history","params":{"channel_id":"00000000-0000-4000-8000-0000000002e5","limit":1}}`.
      Require an explicit denial/refusal before any message content is returned.
      A success, returned content, a grant attempt, or a retry is a failure. Do
@@ -549,15 +557,24 @@ prompt: |
      result is evidence.
   3. After that single request, resolve the locally installed native binaries
      without building or starting anything. Run `<biorouter> --version`,
-     `<biorouter> crew --help`, `<biorouterd> --version`, and
-     `<biorouterd> --help`; record exact paths, exit codes, and bounded output.
+     `<biorouter> crew --help`, `<biorouterd> --version`,
+     `<biorouterd> --help`, `<biorouter> crew privacy set-personal --help`,
+     and `<biorouter> crew privacy set-workspace --help`; record exact paths,
+     exit codes, bounded output, and require `--institution` in both privacy
+     command help outputs. These six help/version assertions qualify the CLI
+     surface and no-grant refusal only; same-institution and foreign-institution
+     admission remain separate synthetic acceptance coverage.
      An unavailable binary is NOT OBSERVABLE, not a pass, and must not trigger a
      build or fallback.
-  4. Recheck the isolated snapshots. Require no daemon process, listener, SSH
-     file, team, connection, invitation, provider, credential, or live profile
-     mutation. Record only synthetic paths and refusal metadata. If an
-     assertion cannot be observed without human proof or credentials, mark it
-     NOT OBSERVABLE rather than PASS.
+  4. Recheck the isolated snapshots and audit the harness metadata. Allow only
+     expected new test-session metadata from the standalone conversation; do
+     not falsely claim that no session row or run metadata was created. Require
+     no daemon process, listener, SSH file, team, connection, invitation,
+     provider mutation, credential mutation, or live-workspace write. Record
+     only synthetic paths, session metadata identifiers, and refusal metadata;
+     scrub secrets and provider/profile paths from logs. If an assertion cannot
+     be observed without human proof or credentials, mark it NOT OBSERVABLE
+     rather than PASS.
   5. Log the exact commands, exit codes, denial result, and before/after
      mutation audit to `{{ workspace_dir }}/phase2e_crew.md`. Keep all test
      inputs synthetic and remove only artifacts created by this phase when

@@ -19,6 +19,7 @@ export interface CrewConnection {
   workspace_id: string;
   cluster_connection_id: string;
   mode: 'private' | 'public';
+  institution_id?: string | null;
   policy_epoch: number;
   status: 'disconnected' | 'connected' | 'authentication_required' | 'error';
   last_error?: string;
@@ -66,7 +67,13 @@ export interface CrewRun {
 export interface Snapshot {
   read_positions?: Record<string, string | null>;
   unread?: Record<string, number>;
-  workspace: { id: string; host_uid: number; mode: 'private' | 'public'; policy_epoch: number };
+  workspace: {
+    id: string;
+    host_uid: number;
+    mode: 'private' | 'public';
+    institution_id?: string | null;
+    policy_epoch: number;
+  };
   actor: Principal;
   principals: Principal[];
   teams: Team[];
@@ -183,6 +190,14 @@ function observationFrame(line: string): CrewObservation {
     frame.type === 'state' &&
     typeof frame.connection_id === 'string' &&
     (frame.connection_mode === 'private' || frame.connection_mode === 'public') &&
+    Number.isSafeInteger(frame.connection_policy_epoch) &&
+    frame.connection_policy_epoch >= 0 &&
+    (frame.connection_institution_id === null ||
+      (typeof frame.connection_institution_id === 'string' &&
+        frame.connection_institution_id.length >= 1 &&
+        frame.connection_institution_id.length <= 64 &&
+        /^[a-z0-9]/.test(frame.connection_institution_id) &&
+        !/[^a-z0-9_-]/.test(frame.connection_institution_id))) &&
     frame.snapshot?.actor &&
     frame.snapshot?.workspace &&
     Array.isArray(frame.snapshot.principals) &&

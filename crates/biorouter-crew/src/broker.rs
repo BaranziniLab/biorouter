@@ -175,6 +175,15 @@ struct Cached {
     digest: String,
     result: Value,
 }
+struct RunPolicyConsent {
+    public_provider: bool,
+    personal_mode: Mode,
+    expected_protected_context: bool,
+    workspace_institution_id: Option<String>,
+    connection_institution_id: Option<String>,
+    provider_affiliation: ProviderAffiliation,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     workspace: Workspace,
@@ -502,6 +511,7 @@ fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Re
                     id: id(),
                     host_uid: unsafe { libc::geteuid() },
                     mode: Mode::Private,
+                    institution_id: None,
                     policy_epoch: 1,
                 },
                 bootstrap_key: bootstrap_key.into(),
@@ -898,7 +908,7 @@ impl Broker {
         ]))?;
         let signature = hex::encode(key.sign(&payload).to_bytes());
         Ok(
-            json!({"protocol":1,"workspace_id":self.state.workspace.id,"host_uid":self.state.workspace.host_uid,"mode":self.state.workspace.mode,"policy_epoch":self.state.workspace.policy_epoch,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"capabilities":["human_chat","signed_devices","resumable_blobs","scoped_runs"],"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
+            json!({"protocol":1,"workspace_id":self.state.workspace.id,"host_uid":self.state.workspace.host_uid,"mode":self.state.workspace.mode,"institution_id":self.state.workspace.institution_id,"policy_epoch":self.state.workspace.policy_epoch,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"capabilities":["human_chat","signed_devices","resumable_blobs","scoped_runs"],"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
         )
     }
     fn challenge(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
@@ -1018,6 +1028,94 @@ impl Broker {
         self.commit(state, &principal.id, &req.method)?;
         Ok(json!({"principal":principal,"device_id":device_id,"workspace":self.state.workspace}))
     }
+    fn protected_channel_ids(s: &State) -> BTreeSet<&str> {
+        s.channels
+            .values()
+            .filter(|channel| channel.classification == Classification::Restricted)
+            .map(|channel| channel.id.as_str())
+            .chain(
+                s.messages
+                    .iter()
+                    .filter(|message| message.restricted)
+                    .map(|message| message.channel_id.as_str()),
+            )
+            .chain(
+                s.blobs
+                    .values()
+                    .filter(|blob| blob.restricted)
+                    .map(|blob| blob.channel_id.as_str()),
+            )
+            .chain(
+                s.references
+                    .values()
+                    .filter(|reference| reference.restricted)
+                    .map(|reference| reference.channel_id.as_str()),
+            )
+            .collect()
+    }
+    fn is_protected_context(
+        s: &State,
+        sources: &BTreeSet<String>,
+        personal_mode: &Mode,
+        remote_root: Option<&str>,
+    ) -> bool {
+        let protected_channels = Self::protected_channel_ids(s);
+        s.workspace.mode == Mode::Private
+            || *personal_mode == Mode::Private
+            || remote_root.is_some()
+            || sources
+                .iter()
+                .any(|channel| protected_channels.contains(channel.as_str()))
+    }
+    fn enforce_institution_policy(
+        s: &State,
+        sources: &BTreeSet<String>,
+        personal_mode: &Mode,
+        remote_root: Option<&str>,
+        affiliation: &ProviderAffiliation,
+        connection_institution_id: Option<&str>,
+    ) -> Result<()> {
+        if let Some(institution) = &s.workspace.institution_id {
+            ensure!(
+                is_canonical_institution_id(institution),
+                "privacy_denied: workspace institution is invalid"
+            );
+        }
+        if let Some(institution) = connection_institution_id {
+            ensure!(
+                is_canonical_institution_id(institution),
+                "privacy_denied: connection institution is invalid"
+            );
+            if let Some(workspace_institution) = &s.workspace.institution_id {
+                ensure!(
+                    institution == workspace_institution,
+                    "privacy_denied: connection and workspace institutions differ"
+                );
+            }
+        }
+        if let ProviderAffiliation::Institutions { institution_ids } = affiliation {
+            ensure!(
+                !institution_ids.is_empty()
+                    && institution_ids.len() <= 32
+                    && institution_ids
+                        .iter()
+                        .all(|id| is_canonical_institution_id(id)),
+                "invalid_params: invalid provider institution affiliation"
+            );
+        }
+        if Self::is_protected_context(s, sources, personal_mode, remote_root) {
+            let institution = s.workspace.institution_id.as_deref().ok_or_else(|| anyhow!("privacy_denied: workspace institution must be labelled before granting agent access"))?;
+            ensure!(
+                *personal_mode != Mode::Private || connection_institution_id == Some(institution),
+                "privacy_denied: Private connection requires the workspace institution label"
+            );
+            ensure!(
+                affiliation.allows_institution(institution),
+                "privacy_denied: provider affiliation does not match the workspace institution"
+            );
+        }
+        Ok(())
+    }
     fn validate_run(&self, run: &Run, uid: u32) -> Result<()> {
         let p = self
             .state
@@ -1033,6 +1131,15 @@ impl Broker {
                 && run.policy_epoch == self.state.workspace.policy_epoch,
             "grant_expired: run revoked, expired or policy changed"
         );
+        ensure!(
+            run.protected_context || !Self::is_protected_context(
+                &self.state,
+                &run.source_channels,
+                &run.personal_mode,
+                run.remote_root.as_deref(),
+            ),
+            "grant_expired: selected context became protected; refresh and obtain a fresh human grant"
+        );
         if run.public_provider {
             ensure!(
                 self.state.workspace.mode == Mode::Public && run.personal_mode == Mode::Public,
@@ -1046,6 +1153,18 @@ impl Broker {
             }
         }
         self.channel(&self.state, &run.owner_id, &run.channel_id, true)?;
+        ensure!(
+            run.workspace_institution_id == self.state.workspace.institution_id,
+            "grant_expired: workspace institution changed"
+        );
+        Self::enforce_institution_policy(
+            &self.state,
+            &run.source_channels,
+            &run.personal_mode,
+            run.remote_root.as_deref(),
+            &run.provider_affiliation,
+            run.connection_institution_id.as_deref(),
+        )?;
         if let Some(root) = &run.remote_root {
             self.protect_authority_root(root, p.uid)?;
         }
@@ -1188,6 +1307,10 @@ impl Broker {
     }
     fn read_workspace_snapshot(&self, actor: &Actor, _req: &Request) -> Result<Value> {
         let s = &self.state;
+        let protected_channel_ids: Vec<&str> = Self::protected_channel_ids(s)
+            .into_iter()
+            .filter(|channel| self.channel(s, &actor.id, channel, false).is_ok())
+            .collect();
         let mut positions = BTreeMap::new();
         let mut unread = BTreeMap::new();
         for channel in s
@@ -1216,7 +1339,7 @@ impl Broker {
             unread.insert(channel.id.clone(), count);
         }
         Ok(
-            json!({"workspace":s.workspace,"actor":s.principals.get(&actor.id),"principals":s.principals.values().filter(|p|p.active).collect::<Vec<_>>(),"teams":s.teams.values().filter(|t|t.members.contains(&actor.id)).collect::<Vec<_>>(),"channels":s.channels.values().filter(|c|c.members.contains(&actor.id)).collect::<Vec<_>>(),"invitations":s.invitations.values().filter(|i|i.principal_id==actor.id || i.inviter_id==actor.id).collect::<Vec<_>>(),"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()}),
+            json!({"workspace":s.workspace,"protected_channel_ids":protected_channel_ids,"actor":s.principals.get(&actor.id),"principals":s.principals.values().filter(|p|p.active).collect::<Vec<_>>(),"teams":s.teams.values().filter(|t|t.members.contains(&actor.id)).collect::<Vec<_>>(),"channels":s.channels.values().filter(|c|c.members.contains(&actor.id)).collect::<Vec<_>>(),"invitations":s.invitations.values().filter(|i|i.principal_id==actor.id || i.inviter_id==actor.id).collect::<Vec<_>>(),"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()}),
         )
     }
     fn read_messages_history(&self, actor: &Actor, req: &Request) -> Result<Value> {
@@ -1514,8 +1637,26 @@ impl Broker {
         let p = &req.params;
         let who = &actor.id;
         self.manager(s, who)?;
+        ensure!(
+            actor.run.is_none(),
+            "forbidden: human host policy decision required"
+        );
+        if let Some(value) = p.get("institution_id") {
+            let requested: Option<String> =
+                serde_json::from_value(value.clone()).map_err(|_| {
+                    anyhow!("invalid_params: institution_id must be a canonical string or null")
+                })?;
+            if let Some(institution) = &requested {
+                ensure!(is_canonical_institution_id(institution), "invalid_params: institution_id must be 1..64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit");
+            }
+            ensure!(s.workspace.institution_id.is_none() || s.workspace.institution_id == requested, "privacy_denied: workspace institution cannot be cleared or changed; use a new workspace");
+            s.workspace.institution_id = requested;
+        }
         s.workspace.mode = mode(p, "mode")?;
         s.workspace.policy_epoch += 1;
+        for run in s.runs.values_mut() {
+            run.revoked = true;
+        }
         Ok(json!(s.workspace))
     }
     fn mutate_team_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
@@ -1836,6 +1977,51 @@ impl Broker {
         }
         Ok(json!(message))
     }
+    fn run_policy_consent(s: &State, p: &Value) -> Result<RunPolicyConsent> {
+        let public = p
+            .get("public_provider")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| anyhow!("invalid_params: public_provider required"))?;
+        let personal = mode(p, "personal_mode")?;
+        let expected_protected_context = p
+            .get("expected_protected_context")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!("invalid_params: expected_protected_context boolean required")
+            })?;
+        ensure!(
+            number(p, "expected_workspace_policy_epoch")? == s.workspace.policy_epoch,
+            "stale_policy: workspace policy changed; refresh and authorize again"
+        );
+        let institution_field = |name: &str| -> Result<Option<String>> {
+            serde_json::from_value(
+                p.get(name)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("invalid_params: missing {name}"))?,
+            )
+            .map_err(|_| anyhow!("invalid_params: {name} must be a canonical string or null"))
+        };
+        let workspace_institution_id = institution_field("workspace_institution_id")?;
+        let connection_institution_id = institution_field("connection_institution_id")?;
+        ensure!(
+            workspace_institution_id == s.workspace.institution_id,
+            "stale_policy: workspace institution changed; refresh and authorize again"
+        );
+        let provider_affiliation: ProviderAffiliation = serde_json::from_value(
+            p.get("provider_affiliation")
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid_params: provider_affiliation required"))?,
+        )
+        .map_err(|_| anyhow!("invalid_params: invalid provider_affiliation"))?;
+        Ok(RunPolicyConsent {
+            public_provider: public,
+            personal_mode: personal,
+            expected_protected_context,
+            workspace_institution_id,
+            connection_institution_id,
+            provider_affiliation,
+        })
+    }
     fn mutate_run_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
@@ -1847,20 +2033,16 @@ impl Broker {
             sources.len() <= 20,
             "quota_exceeded: too many context channels"
         );
-        let public = p
-            .get("public_provider")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| anyhow!("invalid_params: public_provider required"))?;
-        let personal = mode(p, "personal_mode")?;
-        if public {
+        let consent = Self::run_policy_consent(s, p)?;
+        if consent.public_provider {
             ensure!(
-                personal == Mode::Public && s.workspace.mode == Mode::Public,
+                consent.personal_mode == Mode::Public && s.workspace.mode == Mode::Public,
                 "privacy_denied: Private workspace or connection"
             );
         }
         for source in &sources {
             let c = self.channel(s, who, source, false)?;
-            if public {
+            if consent.public_provider {
                 ensure!(
                     c.classification == Classification::PublicSafe
                         && !s
@@ -1886,7 +2068,7 @@ impl Broker {
             .unwrap_or(false);
         if let Some(root) = &remote_root {
             ensure!(
-                !public && Path::new(root).is_absolute() && root != "/",
+                !consent.public_provider && Path::new(root).is_absolute() && root != "/",
                 "privacy_denied: remote root must be explicitly scoped and private-provider only"
             );
             self.protect_authority_root(
@@ -1901,7 +2083,25 @@ impl Broker {
             !remote_execution || remote_root.is_some(),
             "invalid_params: execution requires remote root"
         );
+        let protected_context =
+            Self::is_protected_context(s, &sources, &consent.personal_mode, remote_root.as_deref());
+        ensure!(
+            consent.expected_protected_context == protected_context,
+            "stale_policy: selected context protection changed; refresh and authorize again"
+        );
+        Self::enforce_institution_policy(
+            s,
+            &sources,
+            &consent.personal_mode,
+            remote_root.as_deref(),
+            &consent.provider_affiliation,
+            consent.connection_institution_id.as_deref(),
+        )?;
         let run = Run {
+            protected_context,
+            provider_affiliation: consent.provider_affiliation,
+            workspace_institution_id: consent.workspace_institution_id,
+            connection_institution_id: consent.connection_institution_id,
             remote_root,
             remote_execution,
             id: id(),
@@ -1909,8 +2109,8 @@ impl Broker {
             channel_id: channel.into(),
             source_channels: sources,
             provider_policy_id: text(p, "provider_policy_id")?.into(),
-            public_provider: public,
-            personal_mode: personal,
+            public_provider: consent.public_provider,
+            personal_mode: consent.personal_mode,
             policy_epoch: s.workspace.policy_epoch,
             expires_at: now() + expires,
             revoked: false,
