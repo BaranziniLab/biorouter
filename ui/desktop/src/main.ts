@@ -6840,8 +6840,7 @@ app.on('will-quit', async () => {
   }
   windowPowerSaveBlockers.clear();
 
-  // Unregister all shortcuts when quitting
-  globalShortcut.unregisterAll();
+  if (app.isReady()) globalShortcut.unregisterAll();
 
   try {
     await fs.access(biorouterTempDir); // Check if directory exists to avoid error on fs.rm if it doesn't
