@@ -222,7 +222,7 @@ biorouter crew --connection "$CONNECTION_ID" grants revoke "$SESSION_ID"
 
 ## Use a terminal conversation through the shared daemon
 
-**Source-only, pending validation:** the explicit shared-daemon conversation adapter is applied in uncommitted source. Durable elicitation answer/history receipts are implemented and independently reviewed; focused checks pass, including strengthened durability checks and clean typecheck, while final-gate/build/runtime acceptance remains pending. Fixture authentication/connect now passes after correcting the broker install location; three-user bootstrap and a human roundtrip pass on pinned `4a2e190b`, awaiting the new pair. The commands below describe that source contract, not a qualified release.
+**Committed source, pending runtime qualification:** `21ce28a2` implements this shared conversation flow; current HEAD is `a11ea7e9`. Focused adapter/durable-elicitation checks and the prior `74190f6b` full gate pass. The current desktop suite passes 551 files/6,262 tests/19 skips. New checks for the reviewed nonsecret-store guard, a native pair and live model/MCP acceptance remain pending; the original server hang has no proven cause. The fresh three-user human roundtrip used earlier pinned `4a2e190b`, not this adapter. These examples describe the implementation contract, not a qualified release.
 
 Create a daemon conversation without sending a model prompt, specifying both provider and model after the `session` subcommand:
 

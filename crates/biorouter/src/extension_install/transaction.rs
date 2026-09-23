@@ -953,9 +953,9 @@ impl ResolvedValues {
     /// credential store counts as met — an install that re-asks for a passcode
     /// the machine already holds trains the user to paste ones they need not.
     fn is_unmet(&self, var: &BrxtEnvVar) -> bool {
-        !self.envs.contains_key(&var.key)
-            && !(var.secret && self.env_keys.iter().any(|k| k == &var.key))
-            && !var.has_stored_secret()
+        !(self.envs.contains_key(&var.key)
+            || (var.secret && self.env_keys.iter().any(|k| k == &var.key))
+            || var.has_stored_secret())
     }
 }
 

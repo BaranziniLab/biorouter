@@ -1,5 +1,7 @@
 # Crew UI acceptance evidence
 
+Publication scope: all screenshots named in this report are retained only in the local visual-evidence backup and are excluded from the published PR. The backup ref must never be published. Historical observation scopes below are unchanged; screenshot filenames identify local evidence, not published attachments.
+
 This report records native Electron UI observations from the three-profile Crew fixture, grouped by the artifact used. Historical failures and later subset passes are retained separately; unfinished gates remain open.
 
 The latest client refresh uses source `aac5f4ac` and daemon SHA-256 `1ce50cb31f63dca70c7bb25c571facd1672fe9271801ddbf5e82f5785483e407`, with broker `7311f126…`. All three clients reconnect with verified identities. The latest clean processing run issued the correct helper argv but failed while opening its Python script inside the approved work directory; a narrow seccomp fix is under validation. Personal MCP and selected-channel retrieval remain incomplete. Earlier human/file/PAM and model observations below retain their own artifact provenance. The separate API CSV positive and matched backend traces are in [the provider report](local-provider-boundary-report.md).

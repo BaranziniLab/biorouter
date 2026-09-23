@@ -1821,3 +1821,47 @@ This checkpoint does not establish the final full gate, a production binary
 build, ordinary CLI model/MCP behavior, current mixed GUI/CLI acceptance or AWS
 product testing. The fresh three-user fixture above still uses the earlier
 pinned native pair and awaits the new production artifacts.
+
+### Clean-head gate and focused UI follow-up
+
+On clean HEAD `74190f6b6e6002b62104aa4cf549564149e5ed99`,
+`just check-everything` passed. The bounded core regressions also passed:
+`cargo test -p biorouter --lib action_required_manager` selected 7 tests,
+and `cargo test -p biorouter --lib pending_user_action` selected 30 tests;
+all passed with zero failures.
+
+The first full desktop run (`npm run test:run -- --maxWorkers=2`) selected
+551 files and 6,281 tests: 550 files passed and 1 failed; 6,261 tests passed,
+19 were skipped, and one failed in
+`src/components/crew/CrewView.regression.test.tsx:283`. The reconnect test
+observed the transient empty snapshot from `refresh()` before the replacement
+observer frame had run, then clicked the disabled reconnect button. The test
+now waits for the replacement observer call and preserves the same empty-draft
+assertion. The bounded rerun
+`npm run test:run -- --maxWorkers=2 src/components/crew/CrewView.regression.test.tsx`
+passed 9/9; its captured pre-fix log is `/tmp/crewview-regression-luna.log`.
+
+The requested server route filter was attempted both in parallel and with
+`--test-threads=1`. The parallel run stalled with five tests over 60 seconds;
+the serial retry completed the elicitation cases and eight route cases before
+stalling at `secrets_tests::an_empty_required_field_leaves_the_dialog_open`.
+Both processes were stopped; no full route-filter pass is claimed.
+
+No production build or immutable artifact copy was performed after this gate.
+
+After correcting the reconnect test to capture the pre-refresh observer count
+and await an enabled reconnect control, the bounded focused file passed 9/9.
+A subsequent full desktop run with `npm run test:run -- --maxWorkers=2` passed
+551 files and 6,262 tests, with 19 skipped and zero failures. The captured log
+is `/tmp/desktop-vitest-luna-final.log`.
+
+### Final-head bounded native checks
+
+At clean source HEAD `a11ea7e9`, the focused extension-install suite passed 31
+tests and the serialized server action-required route filter passed all 16
+tests, including the four elicitation tests and the secret-dialog cases that
+had previously contended when run in parallel. The subsequent
+`just check-everything` run stopped in clippy before the later checks: Rust
+clippy reported `clippy::nonminimal_bool` twice for the expression at
+`crates/biorouter/src/extension_install/transaction.rs:956`, and the recipe
+exited 101. No production build or artifact copy follows this failed gate.
