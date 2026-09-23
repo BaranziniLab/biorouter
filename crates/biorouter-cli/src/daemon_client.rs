@@ -281,7 +281,7 @@ impl CrewClient {
         }
     }
 
-    pub async fn authenticate(&self, connection_id: &str) -> Result<Value> {
+    pub async fn authenticate_ssh(&self, connection_id: &str) -> Result<Value> {
         #[cfg(not(unix))]
         {
             let _ = connection_id;

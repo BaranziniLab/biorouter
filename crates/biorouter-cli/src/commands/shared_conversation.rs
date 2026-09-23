@@ -856,8 +856,7 @@ fn erase_values(values: &mut Map<String, Value>) {
     values.clear();
 }
 fn terminal_control(ch: char) -> bool {
-    ch.is_control()
-        || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
 fn safe_text(value: &str) -> String {
     value
@@ -871,18 +870,23 @@ fn safe_text(value: &str) -> String {
         })
         .collect()
 }
-fn emit_json(value: &Value) -> Result<()> {
-    let encoded = serde_json::to_string(value)?;
-    let escaped: String = encoded
-        .chars()
-        .flat_map(|ch| {
-            if terminal_control(ch) {
-                format!("\\u{:04x}", ch as u32).chars().collect::<Vec<_>>()
-            } else {
-                vec![ch]
+fn json_terminal_safe(encoded: &str) -> String {
+    let mut escaped = String::with_capacity(encoded.len());
+    for ch in encoded.chars() {
+        if terminal_control(ch) {
+            use std::fmt::Write;
+            let mut units = [0; 2];
+            for unit in ch.encode_utf16(&mut units) {
+                let _ = write!(escaped, "\\u{unit:04x}");
             }
-        })
-        .collect();
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+fn emit_json(value: &Value) -> Result<()> {
+    let escaped = json_terminal_safe(&serde_json::to_string(value)?);
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{escaped}")?;
     stdout.flush()?;
@@ -974,8 +978,8 @@ async fn terminal_input(
 #[cfg(test)]
 mod tests {
     use super::{
-        safe_text, sensitive_schema, validate_id, validate_options, validate_prompt, Format,
-        SharedConversationOptions,
+        json_terminal_safe, safe_text, sensitive_schema, terminal_control, validate_id,
+        validate_options, validate_prompt, Format, SharedConversationOptions,
     };
     use std::path::PathBuf;
 
@@ -1403,6 +1407,27 @@ mod tests {
         assert!(validate_prompt("ordinary prompt").is_ok());
         assert!(validate_prompt(" \t\n").is_err());
         assert!(validate_prompt(&"x".repeat(32_769)).is_err());
+    }
+
+    #[test]
+    fn json_terminal_safe_round_trips_invisible_non_bmp_tags_and_unicode() {
+        let value = serde_json::json!({
+            "text": "emoji🙂 café\u{202e}bidi\u{200b}zero\u{feff}bom\u{e0041}tag\n",
+            "plain": "東京"
+        });
+        let encoded = serde_json::to_string(&value).unwrap();
+        let safe = json_terminal_safe(&encoded);
+        let reparsed: serde_json::Value = serde_json::from_str(&safe).unwrap();
+        assert_eq!(reparsed, value);
+        assert!(safe.contains("emoji🙂 café"));
+        assert!(safe.contains("東京"));
+        assert!(safe.chars().all(|ch| !terminal_control(ch)));
+        for ch in ['\u{202e}', '\u{200b}', '\u{feff}', '\u{e0041}'] {
+            assert!(
+                !safe.contains(ch),
+                "raw invisible character {ch:?} survived"
+            );
+        }
     }
 
     #[test]

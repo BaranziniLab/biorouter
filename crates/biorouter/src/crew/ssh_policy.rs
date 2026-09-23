@@ -285,6 +285,18 @@ mod tests {
     use super::*;
     use std::{fs, path::PathBuf};
 
+    fn shell_config_path(path: &std::path::Path) -> String {
+        let path = path.display().to_string();
+        #[cfg(windows)]
+        {
+            path.replace('\\', "/")
+        }
+        #[cfg(not(windows))]
+        {
+            path
+        }
+    }
+
     fn policy_config(root: &std::path::Path, weak_gate: bool, cycle: bool) -> PathBuf {
         let config = root.join("ssh_config");
         let gate_jump = if cycle { "gate-b" } else { "none" };
@@ -294,7 +306,7 @@ mod tests {
             &config,
             format!(
                 "Host target\n  HostName 127.0.0.1\n  Port 2224\n  ProxyJump gate-a,gate-b\nHost gate-a\n  HostName 127.0.0.1\n  Port 2222\n  ForwardAgent {1}\n  ProxyJump {2}\nHost gate-b\n  HostName 127.0.0.1\n  Port 2223\n  ProxyJump {3}\nHost *\n  User test\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile {0}/known_hosts\n  ForwardAgent no\n  ForwardX11 no\n  PermitLocalCommand no\n  ClearAllForwardings yes\n  NoHostAuthenticationForLocalhost no\n  Tunnel no\n  ForkAfterAuthentication no\n  GSSAPIDelegateCredentials no\n  ControlMaster no\n  ControlPersist no\n  ControlPath none\n",
-                root.display(), gate_a_forward, gate_jump, gate_b_jump
+                shell_config_path(root), gate_a_forward, gate_jump, gate_b_jump
             ),
         )
         .unwrap();
@@ -414,13 +426,19 @@ mod tests {
         assert!(error.to_string().contains("ForkAfterAuthentication no"));
     }
 
+    #[test]
+    fn shell_atom_rejects_raw_backslashes_and_spaces() {
+        assert!(!shell_atom(r"C:\Users\runner\profile"));
+        assert!(!shell_atom("/tmp/profile with space"));
+    }
+
     #[tokio::test]
     async fn native_preflight_accepts_safe_two_hop_config() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), false, false);
         preflight(
-            &["-F".into(), config.display().to_string(), "target".into()],
+            &["-F".into(), shell_config_path(&config), "target".into()],
             "target",
         )
         .await
@@ -437,7 +455,7 @@ mod tests {
         text = text.replace("  ForkAfterAuthentication no\n", "");
         fs::write(&config, text).unwrap();
         preflight(
-            &["-F".into(), config.display().to_string(), "target".into()],
+            &["-F".into(), shell_config_path(&config), "target".into()],
             "target",
         )
         .await
@@ -450,7 +468,7 @@ mod tests {
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), true, false);
         let err = preflight(
-            &["-F".into(), config.display().to_string(), "target".into()],
+            &["-F".into(), shell_config_path(&config), "target".into()],
             "target",
         )
         .await
@@ -465,7 +483,7 @@ mod tests {
         fs::write(root.path().join("known_hosts"), "").unwrap();
         let config = policy_config(root.path(), false, true);
         let err = preflight(
-            &["-F".into(), config.display().to_string(), "target".into()],
+            &["-F".into(), shell_config_path(&config), "target".into()],
             "target",
         )
         .await

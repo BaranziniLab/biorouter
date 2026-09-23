@@ -1,6 +1,7 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import http, { type Server } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -33,7 +34,7 @@ async function unixFixture(): Promise<Fixture> {
   // macOS limits Unix-domain socket paths to a small fixed-size buffer. Keep
   // the synthetic root short enough that the private daemon socket remains
   // usable while still isolating each fixture.
-  const root = fs.mkdtempSync('/private/tmp/br-runtime-');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'br-runtime-'));
   const config = path.join(root, 'config');
   const daemonDir = path.join(root, 'state', 'daemon');
   fs.mkdirSync(config, { recursive: true, mode: 0o700 });
@@ -42,7 +43,11 @@ async function unixFixture(): Promise<Fixture> {
   fs.chmodSync(daemonDir, 0o700);
   fs.writeFileSync(
     path.join(config, 'daemon-profile.json'),
-    JSON.stringify({ version: 1, profile_id: PROFILE_ID, config_dir: config }),
+    JSON.stringify({
+      version: 1,
+      profile_id: PROFILE_ID,
+      config_dir: fs.realpathSync(config),
+    }),
     { mode: 0o600 }
   );
 

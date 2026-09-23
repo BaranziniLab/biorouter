@@ -14,8 +14,7 @@ pub fn stream_format(format: OutputFormat) -> OutputFormat {
 }
 
 fn terminal_control(ch: char) -> bool {
-    ch.is_control()
-        || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
 
 pub fn safe_text(value: &str) -> String {
@@ -48,7 +47,10 @@ fn json_terminal_safe(value: String) -> String {
     for ch in value.chars() {
         if terminal_control(ch) && ch != '\n' && ch != '\r' && ch != '\t' {
             use std::fmt::Write;
-            let _ = write!(out, "\\u{:04x}", ch as u32);
+            let mut units = [0; 2];
+            for unit in ch.encode_utf16(&mut units) {
+                let _ = write!(out, "\\u{unit:04x}");
+            }
         } else {
             out.push(ch);
         }
@@ -165,6 +167,41 @@ mod tests {
         let safe = json_terminal_safe(encoded);
         assert!(safe.contains("\\u202e"));
         assert!(!safe.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn terminal_controls_escape_without_losing_emoji_or_non_ascii_text() {
+        let input = "safe🙂 café\u{202e}bidi\u{200b}zero\u{feff}bom\u{e0041}tag\n\x1b";
+        let escaped = safe_text(input);
+        assert!(escaped.contains("safe🙂 café"));
+        assert!(escaped.contains("\\u{202e}"));
+        assert!(escaped.contains("\\u{200b}"));
+        assert!(escaped.contains("\\u{feff}"));
+        assert!(escaped.contains("\\u{e0041}"));
+        assert!(escaped.contains("\\n"));
+        assert!(escaped.contains("\\u{1b}"));
+        assert!(escaped.chars().all(|ch| !terminal_control(ch)));
+    }
+
+    #[test]
+    fn json_terminal_safe_round_trips_invisible_non_bmp_tags() {
+        let value = json!({
+            "text": "emoji🙂 café\u{202e}bidi\u{200b}zero\u{feff}bom\u{e0041}tag\n",
+            "plain": "東京"
+        });
+        let encoded = serde_json::to_string(&value).unwrap();
+        let safe = json_terminal_safe(encoded);
+        let reparsed: serde_json::Value = serde_json::from_str(&safe).unwrap();
+        assert_eq!(reparsed, value);
+        assert!(safe.contains("emoji🙂 café"));
+        assert!(safe.contains("東京"));
+        assert!(safe.chars().all(|ch| !terminal_control(ch)));
+        for ch in ['\u{202e}', '\u{200b}', '\u{feff}', '\u{e0041}'] {
+            assert!(
+                !safe.contains(ch),
+                "raw invisible character {ch:?} survived"
+            );
+        }
     }
 
     #[test]

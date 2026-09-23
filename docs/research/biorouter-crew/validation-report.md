@@ -2024,3 +2024,172 @@ count is claimed for that attempt. It used two Cargo jobs and disabled
 incremental compilation. The Windows-specific method requires confirmation by
 the next native Windows hosted build; a Unix test cannot establish that target's
 compilation or execution.
+
+### macOS arm64 debug app package (Luna)
+
+Built locally without launching the app or modifying installed Applications:
+
+```text
+source bin/activate-hermit && CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 just copy-binary debug
+source bin/activate-hermit && GOMAXPROCS=2 python3 scripts/computer-use-runtime.py build darwin-arm64
+source bin/activate-hermit && cd ui/desktop && GOMAXPROCS=2 node scripts/prepare-platform-binaries.js
+source bin/activate-hermit && cd ui/desktop && GOMAXPROCS=2 npm run package
+```
+
+All four commands completed successfully. The reviewable app is
+`ui/desktop/out/Biorouter-darwin-arm64/Biorouter.app` (1.0G). The embedded
+`Resources/bin/biorouter` and `biorouterd` are Mach-O arm64 and match the
+signed debug binaries copied from `target/debug`:
+
+- `biorouter`: SHA-256 `d5cf729d5e5db26cd604cb59ef02ac8c7a50bbee3e09c29413998c4d9a6c02a8`
+- `biorouterd`: SHA-256 `d79ade3fd2d2f757651ff6e6970c6cd416433eecd15865142c381a66f5468ef7`
+
+The pre-package immutable 532c pair remains preserved at
+`/private/tmp/biorouter-crew-artifacts-532c3b7d/`; `just copy-binary debug`
+signed the working debug binaries before packaging, so the embedded hashes
+match the signed working targets rather than the pre-sign immutable hashes.
+The pinned Computer Use runtime manifest is present at
+`Contents/Resources/computer-use/manifest.json` (SHA-256
+`827bc16024c1ad840a6ebddc10b566bd90637fcd6cb3d6b879f1b756323248f9f`).
+
+Electron Forge packaging completed for arm64. `codesign --verify --deep
+--strict` currently fails with `invalid Info.plist (plist or signature have
+been modified)`, so the packaged app is unsigned/invalid for distribution;
+no signing identity or notarization was applied by `npm run package`.
+
+### Disposable signed development app fixtures (Luna)
+
+The packaged app was copied without changing the original into
+`/private/tmp/biorouter-crew-dev-apps-c857cc1b-1/`:
+
+- `BioRouter-Crew-QA-Alice.app` — bundle id `dev.biorouter.crew.qa.alice`, display/name `BioRouter Crew QA Alice`.
+- `BioRouter-Crew-QA-Bob.app` — bundle id `dev.biorouter.crew.qa.bob`, display/name `BioRouter Crew QA Bob`.
+- `BioRouter-Crew-QA-Carol.app` — bundle id `dev.biorouter.crew.qa.carol`, display/name `BioRouter Crew QA Carol`.
+
+Each copy was ad-hoc signed recursively with `codesign --force --deep
+--sign - --timestamp=none` and passed
+`codesign --verify --deep --strict`: valid on disk and satisfies its
+Designated Requirement. `TeamIdentifier` is unset, as expected for ad-hoc
+signing; no distribution certificate, notarization, LS registration, or user
+Application copy was used.
+
+The embedded binaries are identical across all three copies and match the
+signed package source: `biorouter` SHA-256
+`d5cf729d5e5db26cd604cb59ef02ac8c7a50bbee3e09c29413998c4d9a6c02a8`, and
+`biorouterd` SHA-256
+`d79ade3fd2d2f757651ff6e6970c6cd416433eecd15865142c381a66f5468ef7`. These
+hashes differ from the pre-sign immutable 532c pair only because
+`just copy-binary debug` applied the stable local signing identity before
+packaging; the code payload is unchanged. The original packaged app and
+immutable pair remain preserved.
+
+### Empirical 532c payload provenance check
+
+To distinguish signing metadata from code payload, I copied the immutable 532c
+CLI/daemon and the packaged signed CLI/daemon into
+`/private/tmp/biorouter-crew-dev-apps-c857cc1b-compare/` and removed signatures
+from those copies only. Whole-file hashes still differed because Mach-O load
+commands and `__LINKEDIT` signature metadata differ. I then parsed each copy's
+Mach-O section table with `otool -l`, concatenated every initialized non-
+`__LINKEDIT` section (excluding zero-fill `__thread_bss`, `__common`, and
+`__bss`), and compared both bytes and SHA-256:
+
+- CLI: 216,006,659 initialized payload bytes; both copies
+  `068bf8b2407a957dcddd655e8a621cbd6517323f4143a15318d356d5c5398ce8`;
+  byte-for-byte identical.
+- Daemon: 222,773,451 initialized payload bytes; both copies
+  `52514af3bde67862eed1f11f336be155a3045643b9c9d5db9e0e7c0095b037df`;
+  byte-for-byte identical.
+
+Thus the initialized code/data sections match the immutable 532c pair. This
+comparison excludes load commands and `__LINKEDIT`; it is not a whole-file
+identity check or packaged runtime acceptance. The three prepared fixtures
+remain at `/private/tmp/biorouter-crew-dev-apps-c857cc1b-1/` with bundle IDs
+`dev.biorouter.crew.qa.alice`, `.bob`, and `.carol`; each passed strict ad-hoc
+signature verification.
+
+### daemonRuntime fixture portability refresh (Luna)
+
+The focused regression fixture now creates its synthetic root below
+`os.tmpdir()` via `path.join(os.tmpdir(), 'br-runtime-')`, rather than assuming
+the macOS-only `/private/tmp` path. Its profile stores the canonicalized
+configuration directory from `fs.realpathSync(config)` so macOS `/var`
+symlink normalization matches the daemon identity check.
+
+Bounded validation passed:
+
+```text
+npm --prefix ui/desktop exec -- vitest run src/daemonRuntime.regression.test.ts --maxWorkers=2 --reporter=verbose
+1 file passed; 7 tests passed
+
+npm --prefix ui/desktop run typecheck
+passed
+
+npm --prefix ui/desktop run lint:check
+passed (typecheck, ESLint, themes, contrast, and token checks)
+```
+
+The focused Vitest command required elevated execution because the local
+sandbox denied Unix-domain socket binding; no app process or production source
+was changed.
+
+### PR #366 hosted Rust test triage (run 35812337881)
+
+The finalized workspace library and binary test jobs exposed deterministic
+source/fixture guard failures after the earlier Windows `FakeChild` portability
+compile fix.
+
+Ubuntu job `107026656579` reported `4243 passed; 2 failed; 2 ignored`:
+
+- `privacy::system_auth::tests::no_caller_raises_a_prompt_without_a_bound_on_it`
+  at `crates/biorouter/src/privacy/system_auth.rs:774`; the lexical scan matched
+  `.authenticate(` in `crates/biorouter-cli/src/commands/crew/mod.rs`. Source
+  review identified a call to Crew's SSH terminal controller, not the OS
+  authentication prompter. Renaming it `authenticate_ssh` disambiguates the
+  operation without changing its body, proof checks or the audit.
+- `utils::tests::the_untrusted_label_sanitizer_is_defined_exactly_once` at
+  `crates/biorouter/src/utils.rs:294`; the drop set was also present in
+  `crates/biorouter-cli/src/commands/crew/output.rs` and
+  `crates/biorouter-cli/src/commands/shared_conversation.rs`.
+
+Windows job `107026656565` reported `4133 passed; 5 failed; 1 ignored`.
+It repeated both failures above and added three `crew::ssh_policy` failures:
+`native_preflight_accepts_safe_two_hop_config` (line 427),
+`native_preflight_rejects_weak_implicit_jump_before_connecting` (line 459),
+and `native_preflight_rejects_jump_cycle` (line 474). Each rejected the
+Windows profile path as shell-sensitive before the test's expected assertion.
+The test-only `FakeChild::as_raw_handle` change compiled successfully; these
+failures occurred later during the workspace test run.
+
+macOS job `107026656510` independently reproduced the same two guard failures:
+`4253 passed; 2 failed; 2 ignored`. No additional macOS-specific failure was
+reported.
+
+### Final focused regression lane after hosted-failure fixes (Luna)
+
+Using the established Hermit environment with `CARGO_BUILD_JOBS=2
+CARGO_INCREMENTAL=0`, the bounded focused suites passed:
+
+- `cargo test -p biorouter --lib crew::ssh_policy -- --nocapture`: 10 passed, 0 failed, 4,241 filtered.
+- `cargo test -p biorouter --lib crew::authentication -- --nocapture`: 6 passed, 0 failed, 4,245 filtered.
+- `cargo test -p biorouter-cli --lib commands::crew::output -- --nocapture`: 5 passed, 0 failed, 527 filtered.
+- `cargo test -p biorouter-cli --lib commands::shared_conversation::tests -- --nocapture --test-threads=1`: 12 passed, 0 failed, 520 filtered.
+- `cargo test -p biorouter-cli --lib daemon_client::tests -- --nocapture --test-threads=1`: 16 passed, 0 failed, 516 filtered.
+
+The shared-conversation test module was missing imports for its own private
+`json_terminal_safe` and `terminal_control` helpers; adding those test-module
+imports fixed the only compile error. No production behavior changed.
+
+The final `source bin/activate-hermit && CARGO_BUILD_JOBS=2
+CARGO_INCREMENTAL=0 just check-everything` passed all formatting, clippy,
+non-inheritable-socket, UI lint/typecheck/theme/contrast/token, OpenAPI
+freshness, version/brand/naming, vendored-source, cross-drift, registry, and
+privacy-registry checks.
+
+### Exact source-audit tests (Luna)
+
+The two requested exact audits passed under Hermit with
+`CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0`:
+
+- `cargo test -p biorouter --lib privacy::system_auth::tests::no_caller_raises_a_prompt_without_a_bound_on_it -- --exact --nocapture`: 1 passed, 0 failed, 4,250 filtered.
+- `cargo test -p biorouter --lib utils::tests::the_untrusted_label_sanitizer_is_defined_exactly_once -- --exact --nocapture`: 1 passed, 0 failed, 4,250 filtered.

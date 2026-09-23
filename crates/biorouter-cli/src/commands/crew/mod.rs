@@ -84,7 +84,7 @@ async fn execute_connected(api: Api, command: CrewCommand) -> Result<()> {
         CrewCommand::Connections(command) => connections(&api, command).await?,
         CrewCommand::Auth => {
             let id = api.connection_id().await?;
-            api.client.authenticate(&id).await?
+            api.client.authenticate_ssh(&id).await?
         }
         CrewCommand::Connect => api.connection_action("connect", json!({})).await?,
         CrewCommand::Disconnect => api.connection_action("disconnect", json!({})).await?,
