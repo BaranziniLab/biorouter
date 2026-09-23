@@ -211,7 +211,14 @@ describe('CrewView action and uncertain-start regressions', () => {
       if (path === '/connections/conn-1/runs' && method === 'GET') return { runs: [] };
       return {};
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    await waitFor(() =>
+      expect(
+        mocks.observeCrew.mock.calls.some(([, observedChannel]) => observedChannel === channel.id)
+      ).toBe(true)
+    );
+    const askButton = await screen.findByRole('button', { name: 'Ask my agent' });
+    await waitFor(() => expect(askButton).toBeEnabled());
+    fireEvent.click(askButton);
     fireEvent.change(await screen.findByLabelText('Task'), { target: { value: 'run it' } });
     fireEvent.change(screen.getByLabelText('Configured provider'), {
       target: { value: 'fixture-provider' },
