@@ -356,4 +356,17 @@ describe('approval secret validator boundaries', () => {
     expect(() => validateDaemonApprovalSecret('!'.repeat(32))).not.toThrow();
     expect(() => validateDaemonApprovalSecret('~'.repeat(4096))).not.toThrow();
   });
+
+  it.each([
+    ['missing', undefined],
+    ['too short', '!'.repeat(31)],
+    ['too long', '!'.repeat(4097)],
+    ['trailing LF', `${'!'.repeat(32)}\n`],
+    ['trailing CR', `${'!'.repeat(32)}\r`],
+    ['trailing CRLF', `${'!'.repeat(32)}\r\n`],
+    ['line separator', `${'!'.repeat(32)}\u2028`],
+    ['paragraph separator', `${'!'.repeat(32)}\u2029`],
+  ])('rejects %s', (_label, value) => {
+    expect(() => validateDaemonApprovalSecret(value)).toThrow();
+  });
 });

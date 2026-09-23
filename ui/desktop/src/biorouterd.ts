@@ -301,7 +301,7 @@ interface BiorouterProcessEnv {
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
 export function validateDaemonApprovalSecret(secret: string | undefined): asserts secret is string {
-  if (!secret || !/^[!-~]{32,4096}$/.test(secret))
+  if (!secret || secret.length < 32 || secret.length > 4096 || /[^!-~]/.test(secret))
     throw new Error(
       'Approval secret must contain 32–4096 printable ASCII characters without spaces or other whitespace.'
     );

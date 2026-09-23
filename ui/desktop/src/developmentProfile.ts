@@ -61,3 +61,5 @@ if (requestedRoot) {
     { mode: 0o600 }
   );
 }
+
+export const developmentProfileRoot = requestedRoot ? path.resolve(requestedRoot) : undefined;

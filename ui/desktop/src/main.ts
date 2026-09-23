@@ -1,4 +1,5 @@
-import './developmentProfile';
+import { developmentProfileRoot } from './developmentProfile';
+import { createDevelopmentApprovalReader } from './developmentApprovalInput';
 import { createCrewDaemonTerminal } from './crewDaemonTerminal';
 import { promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
@@ -1354,7 +1355,10 @@ interface ChatWindowOptions {
   resumeSessionTitle?: string;
 }
 
+let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
+
 const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
+  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
   const secret = await promptNativeSecret(
     'Set approval secret for shared BioRouter daemon',
     'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
@@ -1438,6 +1442,7 @@ const createChat = async (
             throw new Error(
               'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
             );
+          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
           const key = await promptNativeSecret(
             'Connect to existing BioRouter daemon',
             `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
@@ -1463,6 +1468,7 @@ const createChat = async (
             throw new Error(
               'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
             );
+          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
           const key = await promptNativeSecret(
             'Connect to existing BioRouter daemon',
             `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
@@ -6051,7 +6057,20 @@ function installDefaultSessionOnlyHooks(): void {
 }
 
 async function appMain() {
-  // FIRST, and synchronously, before this function's first `await`.
+  readDevelopmentApprovalSecret = createDevelopmentApprovalReader({
+    args: process.argv,
+    isPackaged: app.isPackaged,
+    developmentProfileRoot,
+    testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),
+    sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,
+    input: process.stdin,
+    inputIsPipe: () => {
+      const stat = fsSync.fstatSync(0);
+      return stat.isFIFO() || stat.isSocket();
+    },
+    validate: validateDaemonApprovalSecret,
+  });
+  // Install synchronously before this function's first `await`.
   //
   // A permission handler or a CSP header installed after a window exists has
   // already missed that window's first document load, and window creation does

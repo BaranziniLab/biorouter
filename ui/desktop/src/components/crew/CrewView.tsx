@@ -125,6 +125,14 @@ export default function CrewView() {
     savedConnection && observedPrivacy?.connectionId === connectionId
       ? { ...savedConnection, mode: observedPrivacy.mode }
       : savedConnection;
+  const connectionStatus =
+    snapshot && observedPrivacy?.connectionId === connectionId
+      ? 'Connected · identity verified'
+      : connection?.status === 'connected'
+        ? refreshError
+          ? 'Updates unavailable'
+          : 'Checking connection'
+        : connection?.status.replace(/_/g, ' ');
   const channel = snapshot?.channels.find((item) => item.id === channelId);
   const team = snapshot?.teams.find((item) => item.id === teamId);
   const owner = channel?.owner_id === snapshot?.actor.id;
@@ -649,9 +657,7 @@ export default function CrewView() {
           {connection && (
             <div className="crew-connection">
               <strong>{connection.ssh_target}</strong>
-              <span className="crew-status">
-                {snapshot ? 'Connected · identity verified' : connection.status.replace(/_/g, ' ')}
-              </span>
+              <span className="crew-status">{connectionStatus}</span>
               <div className="crew-inline">
                 <button onClick={connect} disabled={busy || authentication}>
                   Reconnect

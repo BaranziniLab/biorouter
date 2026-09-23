@@ -175,6 +175,33 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
   });
 
+  it('does not label a cached connected connection as verified without a current snapshot', async () => {
+    mocks.observeCrew.mockImplementation(async () => 'terminal');
+    renderCrew();
+    await screen.findByText('fixture');
+    expect(screen.getByText('Checking connection')).toBeInTheDocument();
+    expect(screen.queryByText('Connected · identity verified')).toBeNull();
+  });
+
+  it('requires the snapshot connection identity to match before showing verified status', async () => {
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive({ ...observerState(), connection_id: 'different-connection' });
+        return 'terminal';
+      }
+    );
+    renderCrew();
+    await screen.findByText('fixture');
+    expect(screen.getByText(/^(Checking connection|Updates unavailable)$/)).toBeInTheDocument();
+    expect(screen.queryByText('Connected · identity verified')).toBeNull();
+  });
+
   it('retains a start action error after a successful manual refresh', async () => {
     renderCrew();
     await screen.findByText('Welcome to #general');
