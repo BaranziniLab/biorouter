@@ -192,6 +192,12 @@ pub(super) fn extension_reference_search_terms(name: &str) -> String {
 /// keep the compact marker when the real extractor proves it round-trips, and
 /// emit the canonical `<biorouter-ref …>` tag when it does not.
 pub(super) fn extension_marker(name: &str) -> String {
+    if name == "computercontroller" {
+        return reference_marker(
+            RefKind::Extension,
+            biorouter::agents::extension_manager::COPILOT_REFERENCE_ALIAS,
+        );
+    }
     reference_marker(RefKind::Extension, name)
 }
 
@@ -789,7 +795,7 @@ mod tests {
         );
     }
     #[test]
-    fn completions_use_current_labels_and_preserve_canonical_markers() {
+    fn completions_use_current_labels_and_resolvable_markers() {
         let pairs = reference_pairs_from_names(
             "/copilot",
             Vec::<String>::new(),
@@ -797,7 +803,15 @@ mod tests {
         );
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].display, "/ext:Biorouter Copilot");
-        assert_eq!(pairs[0].replacement, "/ext:computercontroller ");
+        assert_eq!(pairs[0].replacement, "/ext:BiorouterCopilot ");
+        let reference = extracted_refs(RefKind::Extension, &pairs[0].replacement);
+        assert_eq!(reference, ["BiorouterCopilot"]);
+        assert_eq!(
+            biorouter::agents::extension_manager::resolve_bundled_extension(&reference[0])
+                .unwrap()
+                .key(),
+            "computercontroller"
+        );
         assert!(SLASH_COMMANDS.contains(&"/effort"));
         let aliases = reference_pairs_from_names(
             "/ext:autovisualizer",

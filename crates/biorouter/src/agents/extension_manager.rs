@@ -733,6 +733,8 @@ fn extension_reference_key(name: &str) -> String {
         .collect()
 }
 
+pub const COPILOT_REFERENCE_ALIAS: &str = "BiorouterCopilot";
+
 /// Resolve a `/ext:<name>` target to the bundled extension it names, **by id and
 /// owning registry** rather than by display name.
 ///
@@ -794,6 +796,12 @@ pub(crate) fn exact_custom_reference_key(
     target: Option<&BundledExtensionTarget>,
     active: &[ExtensionConfig],
 ) -> Option<String> {
+    // The compact CLI alias must not resolve to an unrelated active extension.
+    if requested.eq_ignore_ascii_case(COPILOT_REFERENCE_ALIAS)
+        && target.is_some_and(|target| target.key() == "computercontroller")
+    {
+        return None;
+    }
     active
         .iter()
         .find(|config| {
@@ -5549,6 +5557,14 @@ mod tests {
             exact_custom_reference_key("computercontroller", Some(&target), &[entry]),
             None
         );
+        assert_eq!(
+            exact_custom_reference_key(
+                COPILOT_REFERENCE_ALIAS,
+                Some(&target),
+                &[custom(COPILOT_REFERENCE_ALIAS)]
+            ),
+            None
+        );
         let target = resolve_bundled_extension("developer").unwrap();
         assert_eq!(
             exact_custom_reference_key("developer", Some(&target), &[custom("developer")]),
@@ -5571,6 +5587,17 @@ mod tests {
             assert_eq!(target.key(), id);
             assert_eq!(target.display_name(), label);
         }
+    }
+
+    #[test]
+    fn copilot_slash_alias_keeps_the_builtin_registry_identity() {
+        let target = resolve_bundled_extension(COPILOT_REFERENCE_ALIAS).unwrap();
+        assert_eq!(target.key(), "computercontroller");
+        assert_eq!(target.display_name(), "Biorouter Copilot");
+        assert!(matches!(
+            target.into_config(String::new()),
+            ExtensionConfig::Builtin { name, .. } if name == "computercontroller"
+        ));
     }
 
     // ---- issue #48: `/ext:` resolution by id + owning registry ----

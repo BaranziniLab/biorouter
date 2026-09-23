@@ -128,7 +128,7 @@ instructions: |
   - Test extension interactions
   - Verify isolation between extensions
   - In a disposable chat, browse `/` and `/ext:` and confirm current capability labels including Biorouter Copilot. Select a session-only extension and verify its exact reference identity.
-  - Submit `/extend computer controller` and verify actionable `/ext:` guidance without model execution or a permission grant.
+  - Submit `/extend Biorouter Copilot` and verify guidance names `/ext:BiorouterCopilot` without model execution or a permission grant.
   - Verify `/effort` and a harmless configured workflow in the desktop, TUI, and classic CLI. A missing workflow must report its problem instead of falling through to the model.
   - In a new desktop chat, verify `/diverge` is not suggested; typing it must preserve the draft and explain that an existing conversation is required.
 

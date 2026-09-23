@@ -39,8 +39,7 @@
 #   * historical records and migration prose. docs/history/, docs/releases/notes/
 #     and the integration plan describe what the product USED to be called; a
 #     release note is a record of what that version said, not a live product
-#     string. This check therefore polices CODE -- the strings a person reads out
-#     of the running app and CLI -- and leaves prose to review.
+#     string. This check polices code and agent-facing prompts, not historical prose.
 #   * Rust test modules, `crates/*/tests/*.rs` and `*.test.ts(x)` files. One test
 #     deliberately feeds "Computer Controller" as an impersonation attempt
 #     (external_servers_cannot_impersonate_the_computer_use_approval_namespace);
@@ -59,11 +58,12 @@ cd "$(dirname "$0")/.."
 
 status=0
 
-# Sources a person's words can reach. third_party/ is upstream, src/web/ is a
-# built bundle, and *.test.* files carry deliberate adversarial input.
+# Sources a person's or agent's words can reach. third_party/ is upstream,
+# src/web/ is a built bundle, and *.test.* files carry adversarial input.
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 sources=$(git ls-files 'crates/*.rs' 'ui/desktop/src/*.ts' 'ui/desktop/src/*.tsx' \
+  crates/biorouter/src/prompts crates/biorouter/src/agents/builtin_skills biorouter-self-test.yaml \
   | grep -v '^third_party/' \
   | grep -v '^ui/desktop/src/web/' \
   | grep -vE '^crates/[^/]+/tests/' \
@@ -214,6 +214,17 @@ offenders=$(printf '%s\n' "$sources" | xargs grep -n 'BioRouter Copilot' 2>/dev/
 if [ -n "$offenders" ]; then
   echo "Biorouter Copilot naming: the product name is 'Biorouter Copilot', lower-case r:" >&2
   printf '%s\n' "$offenders" | strip_prefix >&2
+  status=1
+fi
+
+# Agent-facing prose must not teach the former name or expose the compatibility
+# identifier. The self-test YAML keeps that identifier in config, so its prose
+# is covered by the phrase checks above rather than this stricter rule.
+prompt_sources=$(git ls-files crates/biorouter/src/prompts crates/biorouter/src/agents/builtin_skills)
+offenders=$(printf '%s\n' "$prompt_sources" | xargs grep -niE 'computer[[:space:]-]*controller|open[[:space:]]+computer[[:space:]]+use' 2>/dev/null || true)
+if [ -n "$offenders" ]; then
+  echo "Biorouter Copilot naming: agent-facing prompts must name the capability only as Biorouter Copilot:" >&2
+  printf '%s\n' "$offenders" >&2
   status=1
 fi
 

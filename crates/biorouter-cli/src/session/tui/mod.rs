@@ -2415,16 +2415,16 @@ mod tests {
         for command in biorouter::agents::execute_commands::list_commands() {
             assert!(backend_slash_command(&format!("/{} value", command.name)));
         }
-        assert!(backend_slash_command("/extend computer controller"));
+        assert!(backend_slash_command("/extend Biorouter Copilot"));
         assert!(backend_slash_command("/knowledge"));
         assert!(!backend_slash_command("/not-a-command"));
     }
 
     #[test]
-    fn computer_use_popup_shows_current_label_with_stable_wire_identity() {
+    fn copilot_popup_shows_current_label_with_stable_wire_identity() {
         let item = extension_completion_item("computercontroller", "Use this extension", true);
         assert_eq!(item.label, "Biorouter Copilot");
-        assert_eq!(item.insert, "/ext:computercontroller ");
+        assert_eq!(item.insert, "/ext:BiorouterCopilot ");
         assert!(item.filter.contains("biorouter copilot"));
         let american = extension_completion_item("autovisualiser", "Use this extension", true);
         assert!(american.filter.contains("autovisualizer"));
