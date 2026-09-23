@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, LazyLock},
     time::Duration,
 };
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME: usize = 1_048_576;
@@ -311,7 +311,16 @@ fn connection_binding(connection: &biorouter::crew::Connection) -> Result<Value>
 
 struct ObservationReceiver {
     receiver: mpsc::Receiver<Bytes>,
+    terminal: Option<oneshot::Receiver<Bytes>>,
     cancel: CancellationToken,
+}
+impl ObservationReceiver {
+    async fn next_frame(&mut self) -> Option<Bytes> {
+        if let Some(frame) = self.receiver.recv().await {
+            return Some(frame);
+        }
+        self.terminal.take()?.await.ok()
+    }
 }
 impl Drop for ObservationReceiver {
     fn drop(&mut self) {
@@ -337,7 +346,46 @@ fn encode_frame(observer: &mut Observer, result: Result<Value>) -> Bytes {
     Bytes::from(encoded)
 }
 
-async fn produce(mut observer: Observer, sender: mpsc::Sender<Bytes>, cancel: CancellationToken) {
+async fn deliver_frame(
+    sender: &mpsc::Sender<Bytes>,
+    frame: Bytes,
+    terminal: bool,
+    delivered_cursor: Option<&str>,
+    timeout: Duration,
+) -> std::result::Result<(), Option<Bytes>> {
+    match sender.send_timeout(frame, timeout).await {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::SendTimeoutError::Closed(_)) => Err(None),
+        Err(mpsc::error::SendTimeoutError::Timeout(frame)) => {
+            if terminal {
+                Err(Some(frame))
+            } else {
+                let mut fallback = serde_json::to_vec(&json!({
+                    "type":"reconnect", "cursor":delivered_cursor,
+                }))
+                .unwrap();
+                fallback.push(b'\n');
+                Err(Some(Bytes::from(fallback)))
+            }
+        }
+    }
+}
+
+fn planned_expiry_reconnect(expired: bool, result: &Result<Value>) -> bool {
+    expired
+        && match result {
+            Ok(_) => true,
+            Err(error) => error.to_string() == "observation_cancelled",
+        }
+}
+
+async fn produce(
+    mut observer: Observer,
+    sender: mpsc::Sender<Bytes>,
+    terminal: oneshot::Sender<Bytes>,
+    cancel: CancellationToken,
+) {
+    let mut terminal = Some(terminal);
     let lifetime_cancel = cancel.clone();
     let deadline = observer.deadline;
     let watchdog = tokio::spawn(async move {
@@ -356,18 +404,26 @@ async fn produce(mut observer: Observer, sender: mpsc::Sender<Bytes>, cancel: Ca
         if cancel.is_cancelled() && !expired {
             break;
         }
-        let result = if expired {
-            observer.cursor = delivered_cursor;
+        let result = if planned_expiry_reconnect(expired, &result) {
+            observer.cursor = delivered_cursor.clone();
             observer.done = true;
             Ok(json!({"type":"reconnect","cursor":observer.cursor}))
         } else {
             result
         };
         let frame = encode_frame(&mut observer, result);
-        if !matches!(
-            tokio::time::timeout(Duration::from_secs(5), sender.send(frame)).await,
-            Ok(Ok(()))
-        ) {
+        if let Err(fallback) = deliver_frame(
+            &sender,
+            frame,
+            observer.done,
+            delivered_cursor.as_deref(),
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            if let (Some(sender), Some(frame)) = (terminal.take(), fallback) {
+                let _ = sender.send(frame);
+            }
             break;
         }
         if observer.done {
@@ -382,11 +438,16 @@ fn observation_stream(
     observer: Observer,
 ) -> impl futures::Stream<Item = Result<Bytes, Infallible>> {
     let (sender, receiver) = mpsc::channel(1);
+    let (terminal_sender, terminal_receiver) = oneshot::channel();
     let cancel = CancellationToken::new();
-    tokio::spawn(produce(observer, sender, cancel.clone()));
+    tokio::spawn(produce(observer, sender, terminal_sender, cancel.clone()));
     futures::stream::unfold(
-        ObservationReceiver { receiver, cancel },
-        |mut state| async move { state.receiver.recv().await.map(|frame| (Ok(frame), state)) },
+        ObservationReceiver {
+            receiver,
+            terminal: Some(terminal_receiver),
+            cancel,
+        },
+        |mut state| async move { state.next_frame().await.map(|frame| (Ok(frame), state)) },
     )
 }
 
@@ -540,6 +601,155 @@ mod tests {
         assert_eq!(frame["type"], "reconnect");
         assert_eq!(frame["cursor"], "cursor");
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_regular_frame_falls_back_to_the_last_delivered_cursor() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender.try_send(Bytes::from_static(b"accepted\n")).unwrap();
+
+        let fallback = deliver_frame(
+            &sender,
+            Bytes::from_static(b"attempted\n"),
+            false,
+            Some("accepted-cursor"),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect_err("a full queue must use the reconnect fallback");
+        let fallback = fallback.expect("an open receiver gets a reconnect fallback");
+        let value: Value = serde_json::from_slice(&fallback).unwrap();
+        assert_eq!(value["type"], "reconnect");
+        assert_eq!(value["cursor"], "accepted-cursor");
+        assert_eq!(
+            receiver.recv().await.unwrap(),
+            Bytes::from_static(b"accepted\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_terminal_frame_preserves_the_exact_clear_error() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender.try_send(Bytes::from_static(b"accepted\n")).unwrap();
+        let terminal = Bytes::from_static(
+            br#"{"type":"error","code":"channel_access_changed","clear":true}
+"#,
+        );
+
+        let fallback = deliver_frame(
+            &sender,
+            terminal.clone(),
+            true,
+            Some("accepted-cursor"),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect_err("a full queue must preserve terminal bytes");
+        assert_eq!(fallback, Some(terminal));
+    }
+
+    #[tokio::test]
+    async fn queued_data_is_drained_before_one_terminal_fallback_then_eof() {
+        let (sender, receiver) = mpsc::channel(1);
+        sender.try_send(Bytes::from_static(b"data\n")).unwrap();
+        drop(sender);
+        let (terminal_sender, terminal_receiver) = oneshot::channel();
+        terminal_sender
+            .send(Bytes::from_static(b"reconnect\n"))
+            .unwrap();
+        let mut receiver = ObservationReceiver {
+            receiver,
+            terminal: Some(terminal_receiver),
+            cancel: CancellationToken::new(),
+        };
+
+        assert_eq!(
+            receiver.next_frame().await,
+            Some(Bytes::from_static(b"data\n"))
+        );
+        assert_eq!(
+            receiver.next_frame().await,
+            Some(Bytes::from_static(b"reconnect\n"))
+        );
+        assert_eq!(receiver.next_frame().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_closed_receiver_does_not_create_a_reconnect_fallback() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+
+        let result = deliver_frame(
+            &sender,
+            Bytes::from_static(b"terminal\n"),
+            false,
+            Some("cursor"),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(result, Err(None));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_receiver_releases_the_producer_permit() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = slots.clone().acquire_owned().await.unwrap();
+        let observer = Observer {
+            headers: HeaderMap::new(),
+            connection: "connection".into(),
+            request: ObserveRequest {
+                channel_id: None,
+                after: None,
+                initial: Initial::Latest,
+            },
+            cursor: Some("cursor".into()),
+            pending: VecDeque::new(),
+            binding: json!({}),
+            epoch: None,
+            first: true,
+            state_due: false,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() - Duration::from_secs(1),
+            done: false,
+            _permit: permit,
+        };
+        let (sender, receiver) = mpsc::channel(1);
+        let (terminal_sender, _terminal_receiver) = oneshot::channel();
+        drop(receiver);
+        produce(observer, sender, terminal_sender, CancellationToken::new()).await;
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[test]
+    fn expiry_reconnect_accepts_only_planned_cancellation_or_success() {
+        assert!(planned_expiry_reconnect(
+            true,
+            &Ok(json!({"type": "state"}))
+        ));
+        assert!(planned_expiry_reconnect(
+            true,
+            &Err(anyhow::anyhow!("observation_cancelled"))
+        ));
+        assert!(!planned_expiry_reconnect(
+            true,
+            &Err(anyhow::anyhow!("policy_changed"))
+        ));
+        assert!(!planned_expiry_reconnect(
+            true,
+            &Err(anyhow::anyhow!(
+                "Crew broker refused request: {{\"code\":\"channel_access_changed\"}}"
+            ))
+        ));
+        assert!(!planned_expiry_reconnect(
+            true,
+            &Err(anyhow::anyhow!("other cancellation"))
+        ));
+        assert!(!planned_expiry_reconnect(
+            false,
+            &Err(anyhow::anyhow!("observation_cancelled"))
+        ));
     }
 
     #[tokio::test]

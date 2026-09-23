@@ -53,6 +53,14 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
 }
 
 impl CrewClient {
+    #[cfg(all(test, unix))]
+    pub(crate) fn for_test(descriptor: Descriptor, proof: &str) -> Self {
+        Self {
+            descriptor,
+            proof: Zeroizing::new(proof.to_owned()),
+        }
+    }
+
     pub async fn connect(no_start: bool) -> Result<Self> {
         Self::connect_with_input(no_start, false).await
     }

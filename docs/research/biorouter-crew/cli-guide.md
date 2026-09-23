@@ -222,7 +222,7 @@ biorouter crew --connection "$CONNECTION_ID" grants revoke "$SESSION_ID"
 
 ## Use a terminal conversation through the shared daemon
 
-**Published source, pending runtime qualification:** this flow is included in published `5455ebf9`, whose full gate and immutable native build pass. Deterministic shared-CLI tool use and zero-dispatch revocation pass, as does a separate local-model plain-marker turn; natural Crew model behavior remains pending. Native Stop-and-Send takeover/abandon/leave is work in progress with tests pending; do not treat it as available in the verified pair. Current local merged HEAD `3dac3695` is source-reviewed but awaits regenerated API, merged checks and binaries. The [history mapping](evidence/source-only-history-20260922.md) preserves original evidence scopes; these examples are not a full parity claim.
+**Bounded runtime qualification:** published `5455ebf9` passes the full repository gate, native/Linux builds, deterministic Crew tool use, zero-dispatch revocation and an installed Qwen3:8b history/context/post workflow. The subsequent merge passes typecheck and the full desktop suite; its regenerated API export is committed in `8be945c2`. Native continuation recovery below is a later, independently reviewed source change awaiting its own tests and build, and is unavailable in the verified `5455ebf9` pair. The [history mapping](evidence/source-only-history-20260922.md) preserves original evidence scopes; these examples are not a full parity claim.
 
 Create a daemon conversation without sending a model prompt, specifying both provider and model after the `session` subcommand:
 
@@ -248,6 +248,16 @@ Use the same BioRouter profile throughout, choose an allowed configured provider
 The shared adapter uses daemon agent, reply and session services before constructing any local Agent or project bridge. Without `--shared-daemon`, ordinary `run` and `session` remain standalone local conversations; a daemon-issued Crew grant does not supply their process-local manager with the daemon's live SSH connection. Unsupported local-only flags are refused in shared mode. The stream authenticates daemon identity before proof, uses bounded parsing and never automatically resubmits a turn after a transport error.
 
 Ordinary elicitation questions are answered directly through the Proven-only daemon route for that exact session; a desktop redirect is not required. Unsupported approval types receive an explicit refusal. Durable answer/history persistence is implemented and independently reviewed, but the approval/stream/cancellation acceptance matrix remains pending. An unknown question returns a typed no-write refusal; an answer recorded after its waiter ended reports `recorded_not_delivered`, and a persistence failure is distinct. The CLI treats only typed `unknown` as a no-op and never automatically resubmits an answer.
+
+If the exact session has a pending Stop-and-Send continuation, interactive resume
+offers `takeover`, `abandon`, or `leave`. Takeover revokes the previous client's
+continuation claim; abandonment discards the claim. Neither recovers another
+client's unsent draft. Noninteractive commands leave pending claims unchanged.
+A settling or changed generation requires another explicit inspection. The next
+deliberately submitted turn uses the acquired lease; leaving before submission
+releases only that known unused lease. An uncertain submission is never
+automatically replayed or abandoned. These choices use the daemon's existing
+human-approval and exact-generation checks.
 
 ## Privacy, retries and recovery
 

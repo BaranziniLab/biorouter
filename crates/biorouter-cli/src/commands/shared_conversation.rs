@@ -52,6 +52,8 @@ struct Conversation {
     quiet: bool,
     answered: HashSet<String>,
     renderer: TextRenderer,
+    continuation_owner_id: String,
+    continuation_lease: Option<Zeroizing<String>>,
 }
 enum TurnEnd {
     Finished,
@@ -76,9 +78,17 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         quiet: options.quiet,
         answered: HashSet::new(),
         renderer: TextRenderer::default(),
+        continuation_owner_id: uuid::Uuid::new_v4().to_string(),
+        continuation_lease: None,
     };
     conversation.event(&json!({"type":"Session","session_id":conversation.session_id}))?;
     let result = conversation.execute(&options).await;
+    let cleanup = conversation.release_unused_continuation().await;
+    let result = match (result, cleanup) {
+        (Err(error), Err(cleanup)) => Err(error.context(cleanup.to_string())),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), cleanup) => cleanup,
+    };
     conversation.renderer.finish()?;
     if let Err(error) = &result {
         if format != Format::Text {
@@ -171,7 +181,8 @@ impl Conversation {
                 "POST",
                 "/agent/resume",
                 Some(json!({
-                    "session_id":self.session_id,"load_model_and_extensions":initialize
+                    "session_id":self.session_id,"load_model_and_extensions":initialize,
+                    "continuation_owner_id":self.continuation_owner_id
                 })),
             )
             .await?;
@@ -179,7 +190,6 @@ impl Conversation {
             state["session"]["id"].as_str() == Some(&self.session_id),
             "Daemon returned a different session"
         );
-        ensure!(state["pending_continuation"].is_null(), "This session has a pending Stop-and-Send continuation; resolve it in the desktop before using this terminal adapter");
         ensure!(state["initializing"].as_bool() == Some(false), "The session is still initializing; resume the exact session after initialization finishes");
         ensure!(
             state["initialization_error"].is_null(),
@@ -198,8 +208,95 @@ impl Conversation {
         Ok(state)
     }
 
+    async fn resolve_pending_continuation(&mut self, state: Value) -> Result<Value> {
+        let pending = &state["pending_continuation"];
+        if pending.is_null() {
+            return Ok(state);
+        }
+        let retired = pending["superseded_turn_id"]
+            .as_str()
+            .context("Pending continuation omitted its exact retired turn ID")?
+            .to_owned();
+        validate_id(&retired)?;
+        ensure!(self.interactive,
+            "Session {} has a pending continuation for retired turn {}. Input was not submitted. Resume this exact session interactively without input to choose takeover or abandonment",
+            safe_text(&self.session_id), safe_text(&retired));
+        ensure!(pending["ownership"].as_str() != Some("settling"),
+            "Continuation for retired turn {} is still settling. Input was not submitted; retry this exact session interactively after settlement", safe_text(&retired));
+        self.notice(&format!("Session {} has a pending Stop-and-Send continuation for retired turn {}. Taking over revokes its previous client's continuation claim. Abandoning discards that pending claim; neither action recovers another client's unsent draft.", safe_text(&self.session_id), safe_text(&retired)))?;
+        let action = loop {
+            let answer = terminal_input(
+                "Take over / abandon / leave unchanged [takeover/abandon/leave]: ",
+                false,
+                32,
+            )
+            .await?;
+            match answer.as_deref().map(|value| value.trim()) {
+                Some("takeover") => break "take_over",
+                Some("abandon") => break "abandon",
+                None | Some("leave") => {
+                    bail!("Pending continuation left unchanged; input was not submitted")
+                }
+                _ => self.notice("Enter takeover, abandon, or leave.")?,
+            }
+        };
+        let response = self.client.request("POST", "/agent/continuation/recover", Some(json!({
+            "session_id":self.session_id,"superseded_turn_id":retired,
+            "continuation_owner_id":self.continuation_owner_id,"action":action
+        }))).await.map_err(|_| anyhow::anyhow!("Continuation recovery was not confirmed for retired turn {}. Input was not submitted; resume this exact session interactively to inspect its current state. No automatic retry was attempted", safe_text(&retired)))?;
+        ensure!(
+            response["superseded_turn_id"].as_str() == Some(retired.as_str()),
+            "Continuation recovery returned a different generation; input was not submitted"
+        );
+        if action == "take_over" {
+            ensure!(
+                response["resolution"].as_str() == Some("taken_over"),
+                "Continuation takeover was not confirmed; input was not submitted"
+            );
+            let lease = response["continuation_lease"]
+                .as_str()
+                .filter(|lease| !lease.is_empty())
+                .context("Continuation takeover omitted its lease; input was not submitted")?;
+            self.continuation_lease = Some(Zeroizing::new(lease.to_owned()));
+        } else {
+            ensure!(
+                response["resolution"].as_str() == Some("abandoned"),
+                "Continuation abandonment was not confirmed; input was not submitted"
+            );
+        }
+        let state = self.resume(false).await?;
+        self.verify_continuation(&state)?;
+        Ok(state)
+    }
+
+    fn verify_continuation(&self, state: &Value) -> Result<()> {
+        let pending = &state["pending_continuation"];
+        match &self.continuation_lease {
+            Some(lease) => ensure!(pending["ownership"].as_str() == Some("owned")
+                && pending["continuation_lease"].as_str() == Some(lease.as_str()),
+                "Continuation ownership changed. Input was not submitted; resume this exact session interactively to inspect its pending continuation"),
+            None => ensure!(pending.is_null(),
+                "A pending continuation appeared. Input was not submitted; resume this exact session interactively without input to choose recovery"),
+        }
+        Ok(())
+    }
+
+    async fn release_unused_continuation(&mut self) -> Result<()> {
+        let Some(lease) = self.continuation_lease.as_ref() else {
+            return Ok(());
+        };
+        let response = self.client.request("POST", "/agent/continuation/abandon", Some(json!({
+            "session_id":self.session_id,"continuation_lease":lease.as_str()
+        }))).await.map_err(|_| anyhow::anyhow!("Unused owned continuation cleanup was not confirmed. Resume this exact session interactively to inspect recovery; no foreign continuation was abandoned"))?;
+        ensure!(matches!(response["resolution"].as_str(), Some("abandoned" | "already_abandoned" | "already_consumed")),
+            "Unused continuation cleanup was not confirmed; resume this exact session interactively to inspect recovery");
+        self.continuation_lease = None;
+        Ok(())
+    }
+
     async fn execute(&mut self, options: &SharedConversationOptions) -> Result<()> {
-        let mut state = self.resume(true).await?;
+        let state = self.resume(true).await?;
+        let mut state = self.resolve_pending_continuation(state).await?;
         let active = state["active_turn"]["turn_id"].as_str().map(str::to_owned);
         ensure!(active.is_none() || options.prompt.is_none(), "A turn is already running. Your prompt was not submitted; reattach to this exact session without input, then submit after it finishes");
         ensure!(
@@ -279,12 +376,17 @@ impl Conversation {
             state["active_turn"].is_null(),
             "Another turn is running; the new input was not submitted. Reattach without input"
         );
+        self.verify_continuation(&state)?;
         let turn_id = uuid::Uuid::new_v4().to_string();
         self.event(
             &json!({"type":"TurnSubmitted","session_id":self.session_id,"turn_id":turn_id}),
         )?;
+        // Once admission starts, even a transport failure may mean the lease was consumed.
+        // Never automatically abandon that uncertain successor's continuation claim.
+        let lease = self.continuation_lease.take();
         let stream = self.client.event_stream("POST", "/reply", Some(json!({
-            "session_id":self.session_id,"turn_id":turn_id,"user_message":message
+            "session_id":self.session_id,"turn_id":turn_id,"user_message":message,
+            "continuation_lease":lease.as_ref().map(|value| value.as_str())
         }))).await.with_context(|| format!("Turn admission outcome is unknown for {turn_id}; inspect the session before submitting any new input"))?;
         self.read_turn(stream, turn_id).await
     }
@@ -355,7 +457,7 @@ impl Conversation {
                 "PrivacyProviderPinned" | "ModelChange" => self.notice(&frame.to_string())?,
                 "Ping" | "TurnStarted" | "TurnState" | "Notification" | "ToolCallPending"
                 | "ToolCallsRetracted" | "SteerWaiting" | "MessagesPersisted" => {}
-                kind => bail!("Unsupported daemon event {}; reattach in the desktop", safe_text(kind)),
+                kind => bail!("Unsupported daemon event {}; use a compatible client to resume this exact session without new input", safe_text(kind)),
             }
         }
     }
@@ -371,9 +473,18 @@ impl Conversation {
                 MessageContent::ActionRequired(action) => {
                     self.renderer.finish()?;
                     let outcome = self.interact(action.data).await?;
-                    if !matches!(outcome, Interaction::Continue) { return Ok(outcome); }
+                    if !matches!(outcome, Interaction::Continue) {
+                        return Ok(outcome);
+                    }
                 }
-                MessageContent::FrontendToolRequest(request) => bail!("Frontend tool request {} requires the desktop; this terminal did not execute it", safe_text(&request.id)),
+                MessageContent::FrontendToolRequest(request) => {
+                    let name = request
+                        .tool_call
+                        .as_ref()
+                        .map(|call| call.name.as_ref())
+                        .unwrap_or("unknown");
+                    bail!("Client-executed tool {} (request {}) is unsupported in this terminal; resume with a client providing that tool, or stop the exact turn. No tool was executed", safe_text(name), safe_text(&request.id));
+                }
                 _ => {}
             }
         }
@@ -882,6 +993,352 @@ mod tests {
             no_start: true,
             quiet: false,
             output_format: "text".into(),
+        }
+    }
+
+    #[cfg(unix)]
+    mod continuation_tests {
+        use super::super::{Conversation, Format, TextRenderer};
+        use crate::daemon_client::CrewClient;
+        use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use hyper::server::conn::http1 as server_http1;
+        use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
+        use hyper_util::rt::TokioIo;
+        use serde_json::{json, Value};
+        use serial_test::serial;
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex};
+        use zeroize::Zeroizing;
+
+        fn conversation(client: CrewClient, interactive: bool) -> Conversation {
+            Conversation {
+                client,
+                session_id: "synthetic-session".into(),
+                format: Format::Json,
+                interactive,
+                quiet: true,
+                answered: Default::default(),
+                renderer: TextRenderer::default(),
+                continuation_owner_id: "owner-a".into(),
+                continuation_lease: None,
+            }
+        }
+
+        fn descriptor(socket_path: PathBuf) -> Descriptor {
+            Descriptor {
+                version: daemon_runtime::VERSION,
+                profile_id: daemon_runtime::profile_identity()
+                    .expect("synthetic test profile identity"),
+                instance_id: "22222222-2222-4222-8222-222222222222".into(),
+                pid: std::process::id(),
+                endpoint: Endpoint::Unix { path: socket_path },
+                api_secret: "synthetic-daemon-secret-0123456789012345".into(),
+                user_action_installed: true,
+            }
+        }
+
+        fn pending(ownership: &str, lease: Option<&str>) -> Value {
+            let mut value = json!({
+                "session": {"id": "synthetic-session"},
+                "initializing": false,
+                "initialization_error": null,
+                "extension_results": [],
+                "active_turn": null,
+                "pending_continuation": {
+                    "ownership": ownership,
+                    "superseded_turn_id": "retired-turn"
+                }
+            });
+            if let Some(lease) = lease {
+                value["pending_continuation"]["continuation_lease"] = json!(lease);
+            }
+            value
+        }
+
+        struct FakeDaemon {
+            _directory: tempfile::TempDir,
+            accept_task: Option<tokio::task::JoinHandle<()>>,
+            requests: Arc<Mutex<Vec<(String, String, Value)>>>,
+            descriptor: Descriptor,
+        }
+
+        impl FakeDaemon {
+            async fn start(status: StatusCode, abandon_body: Value) -> Self {
+                Self::start_with_resume(status, abandon_body, json!({})).await
+            }
+
+            async fn start_with_resume(
+                status: StatusCode,
+                abandon_body: Value,
+                resume_body: Value,
+            ) -> Self {
+                let directory = tempfile::tempdir().expect("synthetic daemon directory");
+                let runtime_directory = daemon_runtime::runtime_directory();
+                daemon_runtime::private_directory(&runtime_directory)
+                    .expect("synthetic daemon runtime directory");
+                assert!(
+                    daemon_runtime::read_descriptor().is_err(),
+                    "fresh child must not have a live daemon descriptor"
+                );
+                let socket_path = runtime_directory.join("daemon.sock");
+                let listener =
+                    tokio::net::UnixListener::bind(&socket_path).expect("synthetic daemon socket");
+                std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                    .expect("synthetic daemon socket permissions");
+                let requests = Arc::new(Mutex::new(Vec::new()));
+                let synthetic_descriptor = descriptor(socket_path.clone());
+                let captured = Arc::clone(&requests);
+                let identity = synthetic_descriptor.identity();
+                let accept_task = tokio::spawn(async move {
+                    loop {
+                        let Ok((stream, _)) = listener.accept().await else {
+                            break;
+                        };
+                        let captured = Arc::clone(&captured);
+                        let abandon_body = abandon_body.clone();
+                        let resume_body = resume_body.clone();
+                        let identity = identity.clone();
+                        tokio::spawn(async move {
+                            let service = service_fn(move |request: Request<Incoming>| {
+                                let captured = Arc::clone(&captured);
+                                let abandon_body = abandon_body.clone();
+                                let resume_body = resume_body.clone();
+                                let identity = identity.clone();
+                                async move {
+                                    let path = request.uri().path().to_owned();
+                                    let method = request.method().to_string();
+                                    let body =
+                                        http_body_util::BodyExt::collect(request.into_body())
+                                            .await
+                                            .map(|body| {
+                                                serde_json::from_slice(&body.to_bytes())
+                                                    .unwrap_or(Value::Null)
+                                            })
+                                            .unwrap_or(Value::Null);
+                                    captured.lock().unwrap().push((method, path.clone(), body));
+                                    let (response_status, response_body) =
+                                        if path == "/daemon/identity" {
+                                            (StatusCode::OK, json!(identity))
+                                        } else if path == "/agent/resume" {
+                                            (StatusCode::OK, resume_body.clone())
+                                        } else {
+                                            (status, abandon_body.clone())
+                                        };
+                                    Ok::<_, std::convert::Infallible>(
+                                        Response::builder()
+                                            .status(response_status)
+                                            .header("content-type", "application/json")
+                                            .body(Full::new(Bytes::from(
+                                                serde_json::to_vec(&response_body).unwrap(),
+                                            )))
+                                            .unwrap(),
+                                    )
+                                }
+                            });
+                            let _ = server_http1::Builder::new()
+                                .serve_connection(TokioIo::new(stream), service)
+                                .await;
+                        });
+                    }
+                });
+                let mut descriptor_file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(daemon_runtime::descriptor_path())
+                    .expect("synthetic daemon descriptor must be new");
+                serde_json::to_writer(&mut descriptor_file, &synthetic_descriptor)
+                    .expect("synthetic daemon descriptor serializes");
+                descriptor_file
+                    .sync_all()
+                    .expect("synthetic daemon descriptor syncs");
+                Self {
+                    _directory: directory,
+                    accept_task: Some(accept_task),
+                    requests,
+                    descriptor: synthetic_descriptor,
+                }
+            }
+
+            fn client(&self) -> CrewClient {
+                CrewClient::for_test(self.descriptor.clone(), "synthetic-proof")
+            }
+
+            fn requests(&self) -> Vec<(String, String, Value)> {
+                self.requests.lock().unwrap().clone()
+            }
+        }
+
+        impl Drop for FakeDaemon {
+            fn drop(&mut self) {
+                if let Some(task) = self.accept_task.take() {
+                    task.abort();
+                }
+            }
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn noninteractive_pending_continuation_performs_no_mutation() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let mut conversation = conversation(daemon.client(), false);
+            let error = conversation
+                .resolve_pending_continuation(pending("owned", Some("lease-a")))
+                .await
+                .expect_err("noninteractive pending state must refuse input");
+            assert!(error.to_string().contains("Input was not submitted"));
+            assert!(conversation.continuation_lease.is_none());
+            assert!(
+                daemon.requests().is_empty(),
+                "refusal must not mutate the daemon"
+            );
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn settling_pending_continuation_performs_no_recovery() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let mut conversation = conversation(daemon.client(), true);
+            let error = conversation
+                .resolve_pending_continuation(pending("settling", None))
+                .await
+                .expect_err("settling state must wait for a later explicit recovery");
+            assert!(error.to_string().contains("still settling"));
+            assert!(daemon.requests().is_empty());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn changed_pending_ownership_rejects_the_old_lease() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let mut conversation = conversation(daemon.client(), false);
+            conversation.continuation_lease = Some(Zeroizing::new("lease-a".into()));
+            let error = conversation
+                .verify_continuation(&pending("foreign", None))
+                .expect_err("a foreign pending state cannot use the old lease");
+            assert!(error.to_string().contains("ownership changed"));
+            assert_eq!(
+                conversation
+                    .continuation_lease
+                    .as_ref()
+                    .map(|lease| lease.as_str()),
+                Some("lease-a")
+            );
+            assert!(daemon.requests().is_empty());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn known_unused_owned_lease_is_abandoned_once() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon =
+                FakeDaemon::start(StatusCode::OK, json!({"resolution": "abandoned"})).await;
+            let mut conversation = conversation(daemon.client(), false);
+            conversation.continuation_lease = Some(Zeroizing::new("lease-a".into()));
+            conversation
+                .release_unused_continuation()
+                .await
+                .unwrap_or_else(|error| panic!("known unused lease cleanup: {error:#}"));
+            assert!(conversation.continuation_lease.is_none());
+            let requests = daemon.requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1].1, "/agent/continuation/abandon");
+            assert_eq!(requests[1].2["session_id"], "synthetic-session");
+            assert_eq!(requests[1].2["continuation_lease"], "lease-a");
+            conversation
+                .release_unused_continuation()
+                .await
+                .expect("a consumed cleanup is a no-op");
+            assert_eq!(daemon.requests().len(), 2, "cleanup must happen once");
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn failed_unused_lease_cleanup_preserves_lease_without_disclosure() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "lease-a"}),
+            )
+            .await;
+            let mut conversation = conversation(daemon.client(), false);
+            conversation.continuation_lease = Some(Zeroizing::new("lease-a".into()));
+            let error = conversation
+                .release_unused_continuation()
+                .await
+                .expect_err("cleanup failure must remain visible");
+            assert!(error.to_string().contains("cleanup was not confirmed"));
+            assert!(!error.to_string().contains("lease-a"));
+            assert_eq!(
+                conversation
+                    .continuation_lease
+                    .as_ref()
+                    .map(|lease| lease.as_str()),
+                Some("lease-a")
+            );
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn uncertain_reply_admission_consumes_lease_without_auto_cleanup_or_retry() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start_with_resume(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error": "synthetic admission unavailable"}),
+                pending("owned", Some("lease-a")),
+            )
+            .await;
+            let mut conversation = conversation(daemon.client(), true);
+            conversation.continuation_lease = Some(Zeroizing::new("lease-a".into()));
+            let error = match conversation
+                .submit(biorouter::conversation::message::Message::user().with_text("successor"))
+                .await
+            {
+                Ok(_) => panic!("the synthetic admission must be uncertain"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("outcome is unknown"),
+                "unexpected uncertain admission error: {error:#}"
+            );
+            assert!(conversation.continuation_lease.is_none());
+            conversation
+                .release_unused_continuation()
+                .await
+                .expect("uncertain admission must not trigger cleanup");
+
+            let requests = daemon.requests();
+            let paths: Vec<&str> = requests.iter().map(|(_, path, _)| path.as_str()).collect();
+            assert_eq!(
+                paths,
+                vec![
+                    "/daemon/identity",
+                    "/agent/resume",
+                    "/daemon/identity",
+                    "/reply"
+                ]
+            );
+            assert_eq!(requests[3].2["continuation_lease"], "lease-a");
+            assert!(!paths.contains(&"/agent/continuation/abandon"));
         }
     }
 

@@ -1904,3 +1904,48 @@ The merged `just check-everything` run passed through formatting, clippy,
 socket inheritance, and UI lint/typecheck, then stopped at OpenAPI freshness
 because the expected generated `index.ts` export was still uncommitted. No
 merged native build was started.
+
+### Observer backpressure regression checkpoint
+
+After the merged observer transport patch and expiry sentinel fix, the focused
+server module command
+`cargo test -p biorouter-server --lib routes::crew_observation::tests` selected
+12 tests and passed all 12, with 746 filtered and zero failures. This includes
+regular-frame queue timeout fallback to the last accepted cursor, exact
+terminal clear-error preservation, queued-data then one-terminal ordering,
+closed-receiver no-fallback behavior, producer permit release, and expiry
+cancellation classification. No native build was run for this checkpoint.
+
+### Native continuation recovery focused tests (Luna)
+
+The corrected child-process fixture was validated from the Crew worktree with
+Hermit and the shared bounded target:
+
+```text
+source bin/activate-hermit && CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p biorouter-cli --lib commands::shared_conversation::tests -- --nocapture --test-threads=1
+```
+
+Result: 11 selected tests passed, 0 failed, and 518 were filtered. The six
+continuation cases run in fresh child processes under a parent-owned temporary
+`BIOROUTER_PATH_ROOT`; each child binds its exact private daemon runtime socket
+and creates its descriptor with `create_new`, so no existing runtime endpoint is
+unlinked or replaced. The cases cover noninteractive refusal without mutation,
+settling refusal, changed ownership, confirmed one-time cleanup, failed cleanup
+with lease preservation, and uncertain admission consuming the lease without
+automatic cleanup or retry.
+
+The related daemon-client regression selection used:
+
+```text
+source bin/activate-hermit && CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p biorouter-cli --lib daemon_client::tests -- --nocapture --test-threads=1
+```
+
+Result: 16 selected tests passed, 0 failed, and 513 were filtered. `git diff
+--check` passed. The only daemon-client source change is the Unix test-only
+`CrewClient::for_test` constructor; production descriptor, socket, peer-UID,
+and identity checks remain unchanged.
+
+Earlier attempts are excluded from evidence: an initial 11-test run was 9/11
+because the temporary fixture had not published the required runtime descriptor;
+a later 10/11 run used an unauthorized descriptor-discovery bypass and is
+invalid. Neither result contributes to the counts above.
