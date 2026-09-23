@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +193,10 @@ def main():
         try:
             result = observe(args.patched, args.baseline)
         except Exception as error:
-            result = {"error": f"{type(error).__name__}: {error}"}
+            result = {
+                "error": f"{type(error).__name__}: {error}",
+                "traceback": traceback.format_exc(),
+            }
         args.report.write_text(json.dumps(result, indent=2), encoding="utf-8")
         return 1 if "error" in result else 0
     if os.name != "nt":
