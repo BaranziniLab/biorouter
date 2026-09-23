@@ -1949,3 +1949,24 @@ Earlier attempts are excluded from evidence: an initial 11-test run was 9/11
 because the temporary fixture had not published the required runtime descriptor;
 a later 10/11 run used an unauthorized descriptor-discovery bypass and is
 invalid. Neither result contributes to the counts above.
+
+### Final native gate and debug artifacts (Luna)
+
+On committed HEAD `532c3b7d954928b3ace92495d7a3e159efae6b9c`, the final native
+`just check-everything` passed. It covered Rust formatting, both clippy passes,
+non-inheritable socket checks, UI lint/typecheck/theme/contrast/token checks,
+OpenAPI freshness, version/brand/Biorouter Copilot naming, vendored source and
+cross-drift checks, and the 61-test registry plus 21-test privacy registry
+checks.
+
+The ordinary non-test debug build used
+`CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo build -p biorouter-cli -p
+biorouter-server` and passed in 2m59s. Immutable 0555 artifacts are in
+`/private/tmp/biorouter-crew-artifacts-532c3b7d/`:
+
+- `biorouter`: Mach-O 64-bit arm64, SHA-256
+  `edc9a59ba6afbc37df6b19d09070b3c931f4bd2a6de91f5f3c7965bd165efdef`,
+  version `1.91.1`.
+- `biorouterd`: Mach-O 64-bit arm64, SHA-256
+  `4a1082ec9e1e0cc0b464c8cd608156a21cd24544c27cd87a2d42e7f84b16185c`,
+  version `biorouter-server 1.91.1`.

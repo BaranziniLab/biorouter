@@ -9,11 +9,11 @@ missing; `fail` = the observed workflow failed; `partial` = only part of the
 required evidence exists; `pass` = the stated behavior was observed on the
 recorded revision. A later change requires the affected checks to be repeated.
 
-Published `5455ebf9` retains its full-gate, native-pair and Linux production build/UID lifecycle passes. Merged checkpoint `3dac3695` incorporates `origin/main` (`06c9639a`); API export and docs are committed in `8be945c2`. The merged desktop suite passes 562 files/6,366 tests/19 skips, plus typecheck and 60 affected tests. Later native continuation recovery and observer corrections are uncommitted; no new full-gate, paired-artifact or live replay pass is claimed.
+Published `5455ebf9` retains its full-gate, native-pair and Linux production build/UID lifecycle passes. Merged checkpoint `3dac3695` incorporates `origin/main` (`06c9639a`); API export and docs are committed in `8be945c2`. The merged desktop suite passes 562 files/6,366 tests/19 skips, plus typecheck and 60 affected tests. Current source `532c3b7d954928b3ace92495d7a3e159efae6b9c` commits native continuation recovery and observer corrections; valid fresh-process CLI 11 and daemon-client 16 tests pass, alongside observer 12; the full `just check-everything` gate and ordinary non-test native debug build (2m59s) now pass. The immutable mode-0555 arm64 1.91.1 pair is in `/private/tmp/biorouter-crew-artifacts-532c3b7d/`; Linux 532, PTY continuation and observer live replay are running/pending.
 
 On immutable `5455ebf9`, deterministic shared-CLI create-only/grant/tool/stream/revocation passes with zero provider dispatch after revocation. Actual Ollama `qwen3:8b` natural Crew discovery/history/context and projection receipt also pass: an initial missing-body request was correctly refused and the model corrected it once. Bob and Carol independently observed the same receipt after supported fresh TTY authentication. The separate `qwen3:1.7b` plain-marker result remains a narrower pass. [Shared-daemon evidence](evidence/shared-daemon-acceptance-20260922.md) and [Linux evidence](evidence/linux-5455ebf9-20260922.md) retain exact artifacts/results; neither upgrades G10/G11 to complete.
 
-A larger `5455ebf9` observer test exposed a real defect: 60 × 50 KiB messages and a six-second reader pause yielded 12 messages then EOF. This is distinct from the resolved shell-control fixture stall; a smaller probe does not qualify backpressure. The independently reviewed uncommitted correction drains queued data then provides a last-accepted-cursor reconnect fallback, preserves authoritative privacy errors and handles normal-expiry internal cancellation. Twelve focused server observer regressions pass; rebuilt-pair/full-gate/live 60-message replay remains pending. Native pending-continuation takeover/abandon/leave is independently reviewed uncommitted source using Proven/exact-generation APIs without lease exposure or automatic resubmission; valid fresh-process regressions remain pending. The failed 9/11 fixture and discarded unauthorized bypass are excluded from acceptance.
+A larger `5455ebf9` observer test exposed a real defect: 60 × 50 KiB messages and a six-second reader pause yielded 12 messages then EOF. This is distinct from the resolved shell-control fixture stall; a smaller probe does not qualify backpressure. The independently reviewed correction committed in `532c3b7d` drains queued data then provides a last-accepted-cursor reconnect fallback, preserves authoritative privacy errors and handles normal-expiry internal cancellation. Twelve focused server observer regressions pass; native pair/full gate pass on `532c3b7d`; live 60-message replay remains pending. Native pending-continuation takeover/abandon/leave is independently reviewed and committed in `532c3b7d`, using Proven/exact-generation APIs without lease exposure or automatic resubmission; valid fresh-process CLI 11 and daemon-client 16 regressions pass. The full gate and native pair pass on `532c3b7d`; PTY/runtime replay and Linux validation remain pending. The failed 9/11 fixture and discarded unauthorized bypass are excluded from acceptance.
 
 Earlier transfer, lifecycle, MFA/helper/context/privacy evidence retains its original scope in [validation](validation-report.md) and [CLI evidence](evidence/crew-cli-observer-context-20260922.md). Historical broken-pipe/server-hang causation remains unproven. Source equivalence does not requalify binaries.
 
@@ -23,8 +23,10 @@ All 26 visual files and the original-history backup remain local only and are ex
 
 | Artifact / evidence role | Source | SHA-256 / qualification |
 |---|---|---|
-| Current validated native CLI | `5455ebf9` | `b329b6ad161e9b6722ef6b08ebef9aab3df4462c25c516a3206f051525fc7bdc`; arm64 Mach-O 1.91.1, mode 0555; full gate/release build, bounded deterministic tool/revocation and natural `qwen3:8b` Crew receipt acceptance pass, with independent Bob/Carol visibility; broader cases and later-fix replay remain pending. |
-| Current validated native daemon | `5455ebf9` | `e3bcbf581b4ec06f4a24e7a76a27f2843c36e9ef3e8b100087ab85021d5d5498`; arm64 Mach-O 1.91.1, mode 0555; merged `3dac3695` not covered. |
+| Current validated native CLI | `532c3b7d` | `edc9a59ba6afbc37df6b19d09070b3c931f4bd2a6de91f5f3c7965bd165efdef`; non-test debug arm64 Mach-O 1.91.1, mode 0555; full gate/build pass, PTY/live replay pending. |
+| Current validated native daemon | `532c3b7d` | `4a1082ec9e1e0cc0b464c8cd608156a21cd24544c27cd87a2d42e7f84b16185c`; non-test debug arm64 Mach-O 1.91.1, mode 0555; Linux qualification pending. |
+| Prior validated native CLI | `5455ebf9` | `b329b6ad161e9b6722ef6b08ebef9aab3df4462c25c516a3206f051525fc7bdc`; arm64 Mach-O 1.91.1, mode 0555; full gate/release build, bounded deterministic tool/revocation and natural `qwen3:8b` Crew receipt acceptance pass, with independent Bob/Carol visibility; broader cases and later-fix replay remain pending. |
+| Prior validated native daemon | `5455ebf9` | `e3bcbf581b4ec06f4a24e7a76a27f2843c36e9ef3e8b100087ab85021d5d5498`; arm64 Mach-O 1.91.1, mode 0555; merged `3dac3695` not covered. |
 | Current validated Linux ARM64 CLI | `5455ebf9` | `63d21cdd67b8297e8455f51aa3412d27cf982a7a5903a08897dd4eb61d0f5050`; non-test debug build, GLIBC 2.39, mode 0555; UID 1101 lifecycle pass. |
 | Current validated Linux ARM64 daemon | `5455ebf9` | `f3107571d2379c9e5fafcb8b2533bdb4d62b92144b10269d834a511e646e4c96`; non-test debug build, GLIBC 2.39, mode 0555; same-profile/new-instance and wrong-proof refusal pass. |
 | Historical macOS daemon (retained clients/owned daemons now closed) | `aac5f4ac` | `1ce50cb31f63dca70c7bb25c571facd1672fe9271801ddbf5e82f5785483e407`; version `1.91.1`, help, three-client reconnect and four API boundary cases recorded. |
@@ -79,7 +81,7 @@ labels below include both expanded qualification and these explicit capability
 limits; they should not be read as either core completion or wholesale absence
 of the requested implementation.
 
-Current validated native files are pinned in `/private/tmp/biorouter-crew-artifacts-5455ebf9/`; historical files remain in `/private/tmp/biorouter-crew-artifacts-4a2e190b/`; the preceding handoff was `/private/tmp/biorouter-crew-artifacts-9a3957d6/`; [validation](validation-report.md#current-full-gate-and-native-artifact-handoff-2026-09-22) records exact commands and scope. The `906bf68b` UI/Linux evidence remains prior. Historical product `9a3957d6`/docs `d3498ecd` passes the full desktop suite: 550 files, 6,260 passed, 19 skipped, zero failed (6,279 total), 160.06 seconds Vitest/160.46 seconds wall; log `/private/tmp/crew-ui-vitest-d3498ecd.log`.
+Current validated native files are pinned in `/private/tmp/biorouter-crew-artifacts-532c3b7d/`; prior `5455ebf9` files remain in `/private/tmp/biorouter-crew-artifacts-5455ebf9/`; historical files remain in `/private/tmp/biorouter-crew-artifacts-4a2e190b/`; the preceding handoff was `/private/tmp/biorouter-crew-artifacts-9a3957d6/`; [validation](validation-report.md#current-full-gate-and-native-artifact-handoff-2026-09-22) records exact commands and scope. The `906bf68b` UI/Linux evidence remains prior. Historical product `9a3957d6`/docs `d3498ecd` passes the full desktop suite: 550 files, 6,260 passed, 19 skipped, zero failed (6,279 total), 160.06 seconds Vitest/160.46 seconds wall; log `/private/tmp/crew-ui-vitest-d3498ecd.log`.
 
 Fresh `9a3957d6` connection refusal was resolved as fixture setup: the restarted owned Alice daemon lacked its intended profile SSH environment; host keys matched. Restarting only that daemon with the correct environment produced native auth exit 0/`authenticated:true`, small history in 0.036 seconds, expected oversized-history `response_too_large` in 0.065 seconds and subsequent small history in 0.031 seconds. This is fixture recovery, not a product fix or an explanation of the historical broken pipe. Live upload/source-change checks retain their separate scope. Manager-backed download pending-confirm/replay now has bounded passes as recorded below; post-confirm replacement, download restart/resume and actual-partial cleanup also pass in bounded live checks; observer slow-reader/fairness and the broader fault matrix remain open. Safe diagnostics are reviewed and committed in `4a2e190b`, with 12 transport and 51 core Crew tests plus strict Clippy/formatting passing; the full local gate/native build now pass on `4a2e190b`; Linux verified production-pair UID 1101 lifecycle validation also passes; the earlier test-feature daemon smoke is excluded. The separate direct probe remains separate-path evidence because it omitted daemon multiplexing/profile arguments.
 
@@ -187,6 +189,8 @@ server-side denial and absence-of-effect assertion.
 
 ## Current environment and known blockers
 
+Root verified cleanup of the task-owned Electron clients before current runs; no Crew-fixture Electron process was present at 02:37 UTC. This scopes the current CLI-only runs and does not retroactively upgrade historical evidence.
+
 - The earlier AWS smoke is bounded transport/UID/storage feasibility, not the
   production Crew acceptance test. Its fixture was independently cleaned up.
 - The AWS three-account fixture was prepared, but automatic approval
@@ -194,12 +198,14 @@ server-side denial and absence-of-effect assertion.
   approval was absent. No product source or binary was exported by another
   route. Source-export approval remains absent. This fixture was cleaned up at
   13:40 UTC; a later approved AWS product run requires a fresh fixture.
-- The local Docker Linux fixture is reachable at `127.0.0.1:56928` with pinned
-  host keys and users `alice=1101`, `bob=1102`, `carol=1103`. Fixture setup
-  provisions accounts; product installation/runtime use ordinary account rights.
-  Runtime is cached `rust:latest`, Debian 13.6 (trixie), GLIBC
-  `2.41-12+deb13u3`, LinuxKit `6.12.76` aarch64. Current broker `4f11d858…`
-  imports at most GLIBC 2.39; pinned x86_64 `eefaece1…` is a separate artifact.
+- The current local Docker fixture runs Ubuntu 24.04.5 LTS (`ubuntu:24.04`)
+  on LinuxKit `6.12.76` aarch64 with real accounts `alice=1101`, `bob=1102`,
+  `carol=1103`. Broker SHA-256
+  `4f11d8586b093a6616f0d8231930112369e990165e1adfce88b6a2bdb031351a`
+  is installed in every account's `~/.local/bin/biorouter-crew` and at the
+  fixture's `/usr/local/bin/biorouter-crew`. Connecting clients use the
+  per-account path. Older Debian/runtime/port observations are historical
+  evidence, not the current fixture configuration; no current port is asserted.
 - Current daemon/CLI and new Linux broker provenance are listed above. Hosted
   green is established on pushed `3145dfc5` (22 successes/one skip); newer local commits remain outside hosted evidence.
   Cursor/draft and SSH-preflight focused evidence is bounded as recorded above;
