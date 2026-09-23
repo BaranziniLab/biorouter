@@ -184,6 +184,7 @@ impl CrewClient {
             "Invalid daemon request path"
         );
         let (mut sender, connection) = verified_observer_connection(&self.descriptor).await?;
+        let has_json_body = body.is_some();
         let bytes = body
             .map(|body| serde_json::to_vec(&body))
             .transpose()?
@@ -192,16 +193,18 @@ impl CrewClient {
             bytes.len() <= 16 * 1024 * 1024,
             "Daemon request exceeds 16 MiB"
         );
-        let request = hyper::Request::builder()
+        let mut request = hyper::Request::builder()
             .method(method)
             .uri(path)
             .header("Host", "localhost")
-            .header("Content-Type", "application/json")
             .header("Accept", accept)
             .header("X-Secret-Key", &self.descriptor.api_secret)
             .header("X-Daemon-Instance", &self.descriptor.instance_id)
-            .header("X-User-Action", self.proof.as_str())
-            .body(Full::new(bytes::Bytes::from(bytes)))?;
+            .header("X-User-Action", self.proof.as_str());
+        if has_json_body {
+            request = request.header("Content-Type", "application/json");
+        }
+        let request = request.body(Full::new(bytes::Bytes::from(bytes)))?;
         let response = tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
             .await
             .context("Daemon response timed out; inspect session state before retrying")??;
@@ -933,9 +936,11 @@ async fn request(
             .method(method)
             .uri(path)
             .header("Host", "localhost")
-            .header("Content-Type", "application/json")
             .header("X-Secret-Key", &descriptor.api_secret)
             .header("X-Daemon-Instance", &descriptor.instance_id);
+        if body.is_some() {
+            builder = builder.header("Content-Type", "application/json");
+        }
         if let Some(proof) = proof {
             builder = builder.header("X-User-Action", proof);
         }
@@ -949,13 +954,7 @@ async fn request(
         )
         .await??;
         let status = response.status();
-        let bytes = tokio::time::timeout(
-            Duration::from_secs(180),
-            Limited::new(response.into_body(), 16 * 1024 * 1024).collect(),
-        )
-        .await?
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?
-        .to_bytes();
+        let bytes = bounded_response(response, 16 * 1024 * 1024).await?;
         let value: Value = if bytes.is_empty() {
             json!({})
         } else {
@@ -1214,10 +1213,11 @@ mod tests {
     use biorouter::crew::observation::ObserveEvent;
     use biorouter::daemon_runtime::{self, Descriptor, Endpoint, Identity};
     use bytes::Bytes;
-    use http_body_util::{Full, StreamBody};
+    use http_body_util::{BodyExt, Full, StreamBody};
     use hyper::server::conn::http1 as server_http1;
     use hyper::{body::Frame, client::conn::http1, service::service_fn, Request, Response};
     use hyper_util::rt::TokioIo;
+    use serde_json::Value;
     use serial_test::serial;
     use std::fs::{self, File};
     use std::os::fd::AsRawFd;
@@ -1306,6 +1306,73 @@ mod tests {
                 .await;
         });
         (descriptor, proofs)
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturedRequest {
+        method: String,
+        content_type: Option<String>,
+        body: Bytes,
+    }
+
+    async fn request_header_fixture() -> (Descriptor, Arc<Mutex<Vec<CapturedRequest>>>) {
+        let directory = runtime_dir();
+        let socket_path = directory.join("daemon.sock");
+        let _ = fs::remove_file(&socket_path);
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("fixture socket binds");
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .expect("fixture socket is private");
+        let mut descriptor = expected_descriptor(&directory);
+        descriptor.endpoint = Endpoint::Unix { path: socket_path };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor)
+            .expect("fixture descriptor writes");
+        let identity = descriptor.identity();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let requests = Arc::clone(&captured);
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("fixture accepts connection");
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let requests = Arc::clone(&requests);
+                let identity = identity.clone();
+                async move {
+                    if request.uri().path() == "/daemon/identity" {
+                        return Ok::<_, std::convert::Infallible>(
+                            Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(
+                                    serde_json::to_vec(&identity).expect("identity serializes"),
+                                )))
+                                .expect("identity response builds"),
+                        );
+                    }
+                    let (parts, body) = request.into_parts();
+                    let body = body.collect().await.expect("request body reads").to_bytes();
+                    requests
+                        .lock()
+                        .expect("request capture lock")
+                        .push(CapturedRequest {
+                            method: parts.method.to_string(),
+                            content_type: parts
+                                .headers
+                                .get("content-type")
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_owned),
+                            body,
+                        });
+                    Ok::<_, std::convert::Infallible>(
+                        Response::builder()
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from_static(br#"{}"#)))
+                            .expect("fixture response builds"),
+                    )
+                }
+            });
+            server_http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .expect("fixture serves request");
+        });
+        (descriptor, captured)
     }
 
     fn create_owner_lock(directory: &Path) {
@@ -1597,6 +1664,39 @@ mod tests {
                     Some("synthetic-human-proof-01234567890123456789".into())
                 ]
             );
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn authenticated_requests_only_mark_json_when_a_body_is_present() {
+        for (body, expected_wire_body, expected_content_type) in [
+            (None, Bytes::new(), None),
+            (
+                Some(serde_json::json!({"file_capability":"capability-1"})),
+                Bytes::from_static(br#"{"file_capability":"capability-1"}"#),
+                Some("application/json"),
+            ),
+            (
+                Some(Value::Null),
+                Bytes::from_static(b"null"),
+                Some("application/json"),
+            ),
+        ] {
+            let (descriptor, captured) = request_header_fixture().await;
+            let client = CrewClient {
+                descriptor,
+                proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+            };
+            client
+                .request("DELETE", "/crew/transfers/transfer-1", body)
+                .await
+                .expect("synthetic cleanup request succeeds");
+            let requests = captured.lock().expect("request capture lock");
+            let request = requests.first().expect("authenticated request captured");
+            assert_eq!(request.method, "DELETE");
+            assert_eq!(request.content_type.as_deref(), expected_content_type);
+            assert_eq!(request.body, expected_wire_body);
         }
     }
 

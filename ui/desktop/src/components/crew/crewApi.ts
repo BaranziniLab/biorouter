@@ -99,12 +99,14 @@ export class CrewHttpError extends Error {
   }
 }
 
-async function crewHeaders(method: string): Promise<Headers> {
+async function crewHeaders(hasJsonBody: boolean): Promise<Headers> {
   const headers = new Headers(client.getConfig().headers as HeadersInit);
   headers.set('X-Secret-Key', await window.electron.getSecretKey());
   Object.entries(await userActionHeaders()).forEach(([key, value]) => headers.set(key, value));
-  if (method !== 'GET') {
+  if (hasJsonBody) {
     headers.set('Content-Type', 'application/json');
+  } else {
+    headers.delete('Content-Type');
   }
   return headers;
 }
@@ -116,7 +118,7 @@ export async function crewHttp<T>(
   signal?: AbortSignal
 ): Promise<T> {
   const config = client.getConfig();
-  const headers = await crewHeaders(method);
+  const headers = await crewHeaders(body !== undefined);
   const response = await fetch(`${config.baseUrl ?? ''}/crew${path}`, {
     method,
     headers,
@@ -236,7 +238,7 @@ export async function observeCrew(
     `${client.getConfig().baseUrl ?? ''}/crew/connections/${encodeURIComponent(connectionId)}/observe`,
     {
       method: 'POST',
-      headers: await crewHeaders('POST'),
+      headers: await crewHeaders(true),
       signal,
       body: JSON.stringify(request),
     }
