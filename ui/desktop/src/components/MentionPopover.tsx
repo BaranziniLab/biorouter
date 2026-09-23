@@ -135,7 +135,8 @@ export const getMentionInsertText = (item: DisplayItem) => {
       : refTag(reference.kind, reference.value);
   }
 
-  const clientInsert = item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
+  const clientInsert =
+    item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
   if (clientInsert) return clientInsert;
 
   return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;
