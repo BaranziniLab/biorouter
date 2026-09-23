@@ -22,6 +22,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const MAX_CONCURRENT_RUNS: usize = 4;
+const MAX_QUEUED_RUN_PROJECTIONS: usize = 256;
+const RUN_PROJECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(50);
 static RUN_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_RUNS)));
 static LEDGERS: LazyLock<Mutex<HashMap<PathBuf, Arc<RunLedger>>>> = LazyLock::new(Mutex::default);
@@ -379,6 +381,27 @@ struct RunLifetime {
     _permit: OwnedSemaphorePermit,
 }
 
+fn run_request_identity(
+    connection_id: &str,
+    body: &StartRunRequest,
+) -> Result<(String, String), CrewRouteError> {
+    let request_id = body
+        .request_id
+        .clone()
+        .unwrap_or_else(|| hex::encode(rand::random::<[u8; 16]>()));
+    require_valid(
+        !request_id.is_empty() && request_id.len() <= 128,
+        "request_id must contain 1–128 bytes",
+    )?;
+    let request_key = format!("{connection_id}:{request_id}");
+    let mut hash_body = body.clone();
+    hash_body.request_id = None;
+    let payload_hash = hex::encode(Sha256::digest(
+        serde_json::to_vec(&hash_body).map_err(anyhow::Error::from)?,
+    ));
+    Ok((request_key, payload_hash))
+}
+
 #[utoipa::path(post, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), request_body = StartRunRequest, responses((status = 200, body = Value)), tag = "Crew")]
 pub async fn start_run(
     State(state): State<Arc<AppState>>,
@@ -401,20 +424,7 @@ pub async fn start_run(
     )?;
     let ledger = run_ledger().await?;
     let _start_guard = ledger.start.lock().await;
-    let request_id = body
-        .request_id
-        .clone()
-        .unwrap_or_else(|| hex::encode(rand::random::<[u8; 16]>()));
-    require_valid(
-        !request_id.is_empty() && request_id.len() <= 128,
-        "request_id must contain 1–128 bytes",
-    )?;
-    let request_key = format!("{id}:{request_id}");
-    let mut hash_body = body.clone();
-    hash_body.request_id = None;
-    let payload_hash = hex::encode(Sha256::digest(
-        serde_json::to_vec(&hash_body).map_err(anyhow::Error::from)?,
-    ));
+    let (request_key, payload_hash) = run_request_identity(&id, &body)?;
     {
         let stored = ledger.state.lock().await;
         if let Some(receipt) = stored.requests.get(&request_key) {
@@ -453,7 +463,16 @@ pub async fn start_run(
     )
     .await?;
     require_valid(!provider.uses_tool_bridge(), "This provider controls external tools that Crew cannot isolate. Choose a provider using BioRouter's scoped tools.")?;
-    manager()?.connection(&id).await?;
+    manager()?
+        .preflight_run(
+            &id,
+            provider.as_ref(),
+            &biorouter::crew::RunPolicy {
+                origin_restricted: false,
+                expected_mode: body.expected_mode,
+            },
+        )
+        .await?;
     state
         .agent_manager
         .new_scoped_agent()
@@ -751,52 +770,185 @@ impl ToolActivity {
     }
 }
 
-async fn project_run_event(
-    crew: &biorouter::crew::CrewManager,
-    ledger: &RunLedger,
-    view: &RunView,
+enum RunProjection {
+    Progress(String),
+    WaitingForApproval,
+    ToolPending(String),
+}
+
+fn prepare_run_projection(
     event: AgentEvent,
     tool_activity: &mut ToolActivity,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<RunProjection>> {
     match event {
         AgentEvent::TurnAborted { message, .. } => anyhow::bail!("{message}"),
         AgentEvent::Message(message) => {
-            for activity in tool_activity.messages(&message) {
-                crew.publish_run(&view.session_id, &activity, "progress")
-                    .await?;
-            }
+            let mut projections: Vec<_> = tool_activity
+                .messages(&message)
+                .into_iter()
+                .map(RunProjection::Progress)
+                .collect();
             if message
                 .content
                 .iter()
                 .any(|part| matches!(part, MessageContent::ActionRequired(_)))
             {
-                anyhow::ensure!(
-                    set_run_status(ledger, &view.run_id, "waiting_for_approval", None).await,
-                    "Task is no longer active or its status could not be saved."
-                );
-                crew.publish_run(
-                    &view.session_id,
-                    "Waiting for its owner's approval in the task conversation.",
-                    "progress",
-                )
-                .await?;
+                projections.push(RunProjection::WaitingForApproval);
             }
+            Ok(projections)
         }
         AgentEvent::ToolCallPending(call) => {
+            Ok(vec![RunProjection::ToolPending(call.name.to_string())])
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+async fn project_run_event(
+    crew: &biorouter::crew::CrewManager,
+    ledger: &RunLedger,
+    view: &RunView,
+    event: RunProjection,
+) -> anyhow::Result<()> {
+    match event {
+        RunProjection::Progress(activity) => {
+            crew.publish_run(&view.session_id, &activity, "progress")
+                .await?;
+        }
+        RunProjection::WaitingForApproval => {
             anyhow::ensure!(
-                set_run_status(ledger, &view.run_id, "running", None).await,
+                set_run_status(ledger, &view.run_id, "waiting_for_approval", None).await,
                 "Task is no longer active or its status could not be saved."
             );
             crew.publish_run(
                 &view.session_id,
-                &format!("Using {}", call.name),
+                "Waiting for its owner's approval in the task conversation.",
                 "progress",
             )
             .await?;
         }
-        _ => {}
+        RunProjection::ToolPending(name) => {
+            anyhow::ensure!(
+                set_run_status(ledger, &view.run_id, "running", None).await,
+                "Task is no longer active or its status could not be saved."
+            );
+            crew.publish_run(&view.session_id, &format!("Using {name}"), "progress")
+                .await?;
+        }
     }
     Ok(())
+}
+
+async fn drive_run_events<F, P>(
+    mut stream: futures::stream::BoxStream<'_, anyhow::Result<AgentEvent>>,
+    session_id: &str,
+    cancel: &CancellationToken,
+    project: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(tokio::sync::mpsc::Receiver<RunProjection>) -> P,
+    P: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let (sender, receiver) = tokio::sync::mpsc::channel(MAX_QUEUED_RUN_PROJECTIONS);
+    let projection = project(receiver);
+    tokio::pin!(projection);
+    let mut tool_activity = ToolActivity::default();
+    let mut projection_finished = false;
+    // Sibling tool futures live inside the reply stream and can hold the same
+    // transport needed by projection. Keep polling both; never await queue space.
+    let result = async {
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => anyhow::bail!("Task cancelled by its owner."),
+                result = &mut projection => {
+                    projection_finished = true;
+                    result?;
+                    anyhow::bail!("Room activity projection ended before the task completed.");
+                }
+                event = stream.next() => {
+                    let Some(event) = event else {
+                        stream = Box::pin(futures::stream::empty());
+                        break;
+                    };
+                    let event = event?;
+                    biorouter::session_events::publish(
+                        session_id,
+                        biorouter::session_events::SessionBusEvent::Agent(event.clone()),
+                    );
+                    for event in prepare_run_projection(event, &mut tool_activity)? {
+                        sender.try_send(event).map_err(|error| match error {
+                            tokio::sync::mpsc::error::TrySendError::Full(_) => anyhow::anyhow!(
+                                "Room activity queue reached its limit; task stopped. Inspect submitted operations before retrying."
+                            ),
+                            tokio::sync::mpsc::error::TrySendError::Closed(_) => anyhow::anyhow!(
+                                "Room activity projection stopped; inspect submitted operations before retrying."
+                            ),
+                        })?;
+                    }
+                }
+            }
+        }
+        drop(sender);
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("Task cancelled by its owner."),
+            result = &mut projection => {
+                projection_finished = true;
+                result
+            },
+        }
+    }
+    .await;
+    if let Err(error) = result {
+        cancel.cancel();
+        if !projection_finished {
+            if let Err(drain_error) =
+                drain_cancelled_projection(stream, session_id, projection.as_mut()).await
+            {
+                anyhow::bail!("{error} Room activity drain failed: {drain_error}");
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn drain_cancelled_projection<P>(
+    mut stream: futures::stream::BoxStream<'_, anyhow::Result<AgentEvent>>,
+    session_id: &str,
+    mut projection: std::pin::Pin<&mut P>,
+) -> anyhow::Result<()>
+where
+    P: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut stream_finished = false;
+    // A written projection must consume its reply before transport reuse. The
+    // cancelled agent is still polled so sibling tool guards can be released.
+    let drain = async {
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut projection => return result,
+                event = stream.next(), if !stream_finished => match event {
+                    Some(Ok(event)) => biorouter::session_events::publish(
+                        session_id,
+                        biorouter::session_events::SessionBusEvent::Agent(event),
+                    ),
+                    Some(Err(_)) => {},
+                    None => {
+                        stream_finished = true;
+                        stream = Box::pin(futures::stream::empty());
+                    },
+                },
+            }
+        }
+    };
+    tokio::time::timeout(RUN_PROJECTION_DRAIN_TIMEOUT, drain)
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "Room activity drain timed out; its outcome is unconfirmed. Reconnect and inspect submitted operations before retrying."
+        ))?
 }
 
 async fn publish_run_result(
@@ -837,7 +989,8 @@ async fn execute_run(
         "progress",
     )
     .await?;
-    let mut stream = agent
+    let execution_cancel = cancel.child_token();
+    let stream = agent
         .reply(
             Message::user().with_text(format!(
                 "{}\n\n<crew_context>\n{}\n</crew_context>",
@@ -852,21 +1005,32 @@ async fn execute_run(
                 retry_config: None,
                 reasoning_effort: None,
             },
-            Some(cancel.clone()),
+            Some(execution_cancel.clone()),
         )
         .await?;
-    let mut tool_activity = ToolActivity::default();
-    while let Some(event) = stream.next().await {
-        if cancel.is_cancelled() {
-            anyhow::bail!("Task cancelled by its owner.");
-        }
-        let event = event?;
-        biorouter::session_events::publish(
-            &view.session_id,
-            biorouter::session_events::SessionBusEvent::Agent(event.clone()),
-        );
-        project_run_event(&crew, ledger, view, event, &mut tool_activity).await?;
-    }
+    let projection_crew = &crew;
+    let projection_cancel = execution_cancel.clone();
+    drive_run_events(
+        stream,
+        &view.session_id,
+        &execution_cancel,
+        |mut receiver| async move {
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = projection_cancel.cancelled() => break,
+                    event = receiver.recv() => event,
+                };
+                let Some(event) = event else { break };
+                if projection_cancel.is_cancelled() {
+                    break;
+                }
+                project_run_event(projection_crew, ledger, view, event).await?;
+            }
+            Ok(())
+        },
+    )
+    .await?;
     if cancel.is_cancelled() {
         anyhow::bail!("Task cancelled by its owner.");
     }
@@ -1334,12 +1498,16 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        finish_cancellation, finish_failed_run, finish_run_outcome, publish_run_finished,
-        reserve_cancellation, transition_run_status, CancelReservation, LedgerState, OwnedRun,
-        RunLedger, RunStatusUpdate, RunView, ToolActivity,
+        drive_run_events, finish_cancellation, finish_failed_run, finish_run_outcome,
+        prepare_run_projection, publish_run_finished, reserve_cancellation, transition_run_status,
+        CancelReservation, LedgerState, OwnedRun, RunLedger, RunProjection, RunStatusUpdate,
+        RunView, ToolActivity, MAX_QUEUED_RUN_PROJECTIONS,
     };
+    use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
+    use biorouter::providers::base::PendingToolCall;
     use biorouter::session_events::SessionBusEvent;
+    use futures::{stream, StreamExt};
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content, ErrorCode, ErrorData};
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -1348,7 +1516,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, Notify, Semaphore};
     use tokio_util::sync::CancellationToken;
 
     static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(1);
@@ -1784,5 +1952,250 @@ mod tests {
             final_reason(&ledger, &view).await,
             "cancellation_unconfirmed"
         );
+    }
+
+    fn pending_event(name: &str) -> anyhow::Result<AgentEvent> {
+        Ok(AgentEvent::ToolCallPending(PendingToolCall {
+            id: format!("{name}-id"),
+            name: name.into(),
+            partial_args: None,
+        }))
+    }
+
+    #[tokio::test]
+    async fn run_event_driver_polls_siblings_while_projection_waits_and_drains_in_order() {
+        let release_projection = Arc::new(Notify::new());
+        let projection_permit = Arc::new(Semaphore::new(0));
+        let stream_release = release_projection.clone();
+        let stream_permit = projection_permit.clone();
+        let stream = stream::unfold(true, move |first| {
+            let release_projection = stream_release.clone();
+            let projection_permit = stream_permit.clone();
+            async move {
+                if first {
+                    Some((pending_event("first"), false))
+                } else {
+                    release_projection.notified().await;
+                    projection_permit.add_permits(1);
+                    None
+                }
+            }
+        })
+        .boxed();
+        let cancel = CancellationToken::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_projection = seen.clone();
+        let driver = drive_run_events(stream, "crew-driver-test", &cancel, move |mut receiver| {
+            let release_projection = release_projection.clone();
+            let projection_permit = projection_permit.clone();
+            async move {
+                while let Some(projection) = receiver.recv().await {
+                    match projection {
+                        RunProjection::ToolPending(name) => {
+                            seen_by_projection.lock().await.push(name);
+                            release_projection.notify_one();
+                            projection_permit.acquire().await?.forget();
+                        }
+                        _ => panic!("unexpected projection"),
+                    }
+                }
+                Ok(())
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .expect("concurrent projection driver stalled")
+            .expect("projection driver failed");
+        assert_eq!(*seen.lock().await, vec!["first"]);
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn old_serial_event_driver_stalls_on_the_same_projection_transport_race() {
+        let release_projection = Arc::new(Notify::new());
+        let projection_permit = Arc::new(Semaphore::new(0));
+        let stream_release = release_projection.clone();
+        let stream_permit = projection_permit.clone();
+        let mut stream = stream::unfold(true, move |first| {
+            let release_projection = stream_release.clone();
+            let projection_permit = stream_permit.clone();
+            async move {
+                if first {
+                    Some((pending_event("first"), false))
+                } else {
+                    release_projection.notified().await;
+                    projection_permit.add_permits(1);
+                    None
+                }
+            }
+        })
+        .boxed();
+        let serial = async {
+            while let Some(event) = stream.next().await {
+                let projection = prepare_run_projection(event?, &mut ToolActivity::default())?
+                    .pop()
+                    .expect("pending call projection");
+                release_projection.notify_one();
+                projection_permit.acquire().await?.forget();
+                drop(projection);
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+        assert!(tokio::time::timeout(Duration::from_millis(50), serial)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn run_event_driver_rejects_projection_refusal_and_queue_overflow() {
+        let refusal_cancel = CancellationToken::new();
+        let refusal_stream = stream::iter([pending_event("refused")]).boxed();
+        let refusal = drive_run_events(
+            refusal_stream,
+            "crew-refusal-test",
+            &refusal_cancel,
+            |mut receiver| async move {
+                receiver.recv().await;
+                anyhow::bail!("synthetic projection refusal")
+            },
+        )
+        .await;
+        assert!(refusal
+            .expect_err("projection refusal must fail the run")
+            .to_string()
+            .contains("synthetic projection refusal"));
+        assert!(refusal_cancel.is_cancelled());
+
+        let overflow_cancel = CancellationToken::new();
+        let overflow_stream = stream::iter(
+            (0..=MAX_QUEUED_RUN_PROJECTIONS + 1)
+                .map(|index| pending_event(&format!("tool-{index}"))),
+        )
+        .boxed();
+        let overflow = drive_run_events(
+            overflow_stream,
+            "crew-overflow-test",
+            &overflow_cancel,
+            |mut receiver| {
+                let cancel = overflow_cancel.clone();
+                async move {
+                    let _ = receiver.recv().await;
+                    cancel.cancelled().await;
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        assert!(overflow
+            .expect_err("full projection queue must fail the run")
+            .to_string()
+            .contains("Room activity queue reached its limit"));
+        assert!(overflow_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn run_event_driver_cancellation_drains_active_projection_and_drops_queued_work() {
+        let cancel = CancellationToken::new();
+        let projection_started = Arc::new(Notify::new());
+        let projection_permit = Arc::new(Semaphore::new(0));
+        let stream = stream::iter([pending_event("active"), pending_event("queued")])
+            .chain(stream::pending())
+            .boxed();
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let executed_by_projection = executed.clone();
+        let projection_started_by_projection = projection_started.clone();
+        let projection_permit_by_projection = projection_permit.clone();
+        let cancel_for_projection = cancel.clone();
+        let driver_cancel = cancel.clone();
+        let driver = tokio::spawn(async move {
+            drive_run_events(
+                stream,
+                "crew-cancel-driver-test",
+                &driver_cancel,
+                move |mut receiver| async move {
+                    while let Some(projection) = receiver.recv().await {
+                        if cancel_for_projection.is_cancelled() {
+                            break;
+                        }
+                        let RunProjection::ToolPending(name) = projection else {
+                            continue;
+                        };
+                        executed_by_projection.lock().await.push(name);
+                        projection_started_by_projection.notify_one();
+                        projection_permit_by_projection.acquire().await?.forget();
+                    }
+                    Ok(())
+                },
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), projection_started.notified())
+            .await
+            .expect("active projection did not start");
+        cancel.cancel();
+        projection_permit.add_permits(1);
+        let result = tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .expect("cancellation drain stalled")
+            .expect("cancellation driver task panicked")
+            .expect_err("cancelled driver must fail");
+        assert_eq!(result.to_string(), "Task cancelled by its owner.");
+        assert!(cancel.is_cancelled());
+        assert_eq!(*executed.lock().await, vec!["active"]);
+    }
+
+    #[tokio::test]
+    async fn cancellation_drain_does_not_repoll_a_nonfused_stream_after_eof() {
+        let cancel = CancellationToken::new();
+        let projection_started = Arc::new(Notify::new());
+        let projection_permit = Arc::new(Semaphore::new(0));
+        let mut emitted = false;
+        let mut ended = false;
+        let stream = stream::poll_fn(move |_cx| {
+            assert!(!ended, "the reply stream was polled after EOF");
+            if emitted {
+                ended = true;
+                std::task::Poll::Ready(None)
+            } else {
+                emitted = true;
+                std::task::Poll::Ready(Some(pending_event("active")))
+            }
+        })
+        .boxed();
+        let projection_started_by_projection = projection_started.clone();
+        let projection_permit_by_projection = projection_permit.clone();
+        let cancel_for_projection = cancel.clone();
+        let driver_cancel = cancel.clone();
+        let driver = tokio::spawn(async move {
+            drive_run_events(
+                stream,
+                "crew-nonfused-eof-test",
+                &driver_cancel,
+                move |mut receiver| async move {
+                    while let Some(projection) = receiver.recv().await {
+                        if cancel_for_projection.is_cancelled() {
+                            break;
+                        }
+                        if matches!(projection, RunProjection::ToolPending(_)) {
+                            projection_started_by_projection.notify_one();
+                            projection_permit_by_projection.acquire().await?.forget();
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), projection_started.notified())
+            .await
+            .expect("active projection did not start");
+        cancel.cancel();
+        projection_permit.add_permits(1);
+        let result = tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .expect("nonfused EOF cancellation drain stalled")
+            .expect("nonfused EOF driver task panicked")
+            .expect_err("cancelled driver must fail");
+        assert_eq!(result.to_string(), "Task cancelled by its owner.");
     }
 }

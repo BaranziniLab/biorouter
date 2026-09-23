@@ -1203,6 +1203,31 @@ impl CrewManager {
         }
         Ok(())
     }
+    pub async fn preflight_run(
+        &self,
+        id: &str,
+        provider: &dyn Provider,
+        policy: &RunPolicy,
+    ) -> Result<Connection> {
+        ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
+        let connection = self.connection(id).await?;
+        ensure!(
+            policy
+                .expected_mode
+                .is_none_or(|mode| mode == connection.mode),
+            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+        );
+        let public = provider.tier() == ProviderTier::Public;
+        ensure!(
+            !public || connection.mode == ClusterMode::Public,
+            "Private cluster blocks public models"
+        );
+        ensure!(
+            !public || !policy.origin_restricted,
+            "Private-origin local conversation cannot be admitted to a public Crew worker"
+        );
+        Ok(connection)
+    }
     pub async fn begin_run(
         &self,
         session: &str,
@@ -1231,17 +1256,8 @@ impl CrewManager {
         policy: RunPolicy,
     ) -> Result<RunAdmission> {
         let mut origin_restricted = policy.origin_restricted;
-        ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
-        let c = self.connection(id).await?;
-        ensure!(
-            policy.expected_mode.is_none_or(|mode| mode == c.mode),
-            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
-        );
+        let c = self.preflight_run(id, provider, &policy).await?;
         let public = provider.tier() == ProviderTier::Public;
-        ensure!(
-            !public || c.mode == ClusterMode::Public,
-            "Private cluster blocks public models"
-        );
         if let Some(previous) = self.registry.lock().await.scopes.get(session).cloned() {
             origin_restricted |= previous.origin_restricted;
             ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
@@ -1672,6 +1688,43 @@ mod tests {
                 .into_owned(),
         )
         .unwrap();
+
+        let private_connection_id = "run-mode-policy-private-connection";
+        let mut private_connection = manager.registry.lock().await.connections[0].clone();
+        private_connection.id = private_connection_id.into();
+        private_connection.mode = ClusterMode::Private;
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(private_connection);
+        let private_public = match manager
+            .begin_run_with_policy(
+                "run-mode-policy-private-cluster",
+                private_connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy::default(),
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "a public provider must be refused by a private cluster before manager reservation"
+            ),
+        };
+        assert_eq!(
+            private_public.to_string(),
+            "Private cluster blocks public models"
+        );
+        assert!(!manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .contains_key("run-mode-policy-private-cluster"));
 
         let mismatch = manager
             .begin_run_with_policy(
