@@ -115,6 +115,7 @@ export default function CrewView() {
   }, [historyBefore]);
   const dialogRef = useRef<HTMLElement>(null);
   const pendingMessage = useRef<{ fingerprint: string; key: string } | null>(null);
+  const sendingMessage = useRef(false);
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
   const [unknownRunDestination, setUnknownRunDestination] = useState(
     unfinishedRunAttempt?.unknownDestination ?? ''
@@ -575,42 +576,55 @@ export default function CrewView() {
     }
   };
 
-  const send = () =>
-    act(async () => {
-      if (!snapshot || observedPrivacy?.connectionId !== connectionId)
-        throw new Error('Refresh the workspace to verify connection privacy before sending.');
-      const payload = {
-        personal_mode: observedPrivacy.mode,
-        channel_id: channelId,
-        body,
-        attachments: attachments.map((item) => item.id),
-        references: references.map((item) => item.id),
-      };
-      const fingerprint = JSON.stringify({ connectionId, ...payload });
-      if (pendingMessage.current?.fingerprint !== fingerprint)
-        pendingMessage.current = { fingerprint, key: crypto.randomUUID() };
-      await request(
-        'message.post',
-        { ...payload, idempotency_key: pendingMessage.current.key },
-        true
-      );
-      try {
-        await clearPublishedTransfers(
-          connectionId,
-          attachments.map((item) => item.id)
-        );
-      } catch {
-        setError(
-          'Message posted. Local transfer metadata could not be cleared; forget the completed record in saved transfers.'
-        );
-      }
-      pendingMessage.current = null;
-      setHistoryBefore(null);
-      setReferences([]);
-      setBody('');
-      setAttachments([]);
-      await refresh();
-    });
+  const send = async () => {
+    if (
+      busy ||
+      sendingMessage.current ||
+      channel?.archived ||
+      (!body.trim() && attachments.length === 0 && references.length === 0)
+    )
+      return;
+    sendingMessage.current = true;
+    try {
+      await act(async () => {
+        if (!snapshot || observedPrivacy?.connectionId !== connectionId)
+          throw new Error('Refresh the workspace to verify connection privacy before sending.');
+        const current = generation.current;
+        const payload = {
+          personal_mode: observedPrivacy.mode,
+          channel_id: channelId,
+          body,
+          attachments: attachments.map((item) => item.id),
+          references: references.map((item) => item.id),
+        };
+        const fingerprint = JSON.stringify({ connectionId, ...payload });
+        if (pendingMessage.current?.fingerprint !== fingerprint)
+          pendingMessage.current = { fingerprint, key: crypto.randomUUID() };
+        const attempt = pendingMessage.current;
+        await request('message.post', { ...payload, idempotency_key: attempt.key }, true);
+        try {
+          await clearPublishedTransfers(connectionId, payload.attachments);
+        } catch {
+          if (current === generation.current)
+            setError(
+              'Message posted. Local transfer metadata could not be cleared; forget the completed record in saved transfers.'
+            );
+        }
+        if (current !== generation.current) return;
+        if (pendingMessage.current === attempt) pendingMessage.current = null;
+        if (historyPage.current !== null) {
+          historyPage.current = null;
+          setHistoryBefore(null);
+          setObservationRevision((revision) => revision + 1);
+        }
+        setReferences((items) => items.filter((item) => !payload.references.includes(item.id)));
+        setBody('');
+        setAttachments((items) => items.filter((item) => !payload.attachments.includes(item.id)));
+      });
+    } finally {
+      sendingMessage.current = false;
+    }
+  };
 
   return (
     <div className="crew-view" data-testid="crew-view">
@@ -1219,10 +1233,15 @@ export default function CrewView() {
                   placeholder={`Message your teammates in #${channel.name}…`}
                   disabled={busy || channel.archived}
                   onKeyDown={(e) => {
-                    if (!busy && e.key === 'Enter' && (e.metaKey || e.ctrlKey) && body.trim()) {
-                      e.preventDefault();
-                      void send();
-                    }
+                    if (
+                      e.key !== 'Enter' ||
+                      e.shiftKey ||
+                      e.nativeEvent.isComposing ||
+                      e.nativeEvent.keyCode === 229
+                    )
+                      return;
+                    e.preventDefault();
+                    if (!e.repeat) void send();
                   }}
                 />
                 <CrewUpload

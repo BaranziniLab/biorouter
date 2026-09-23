@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import CrewView from './CrewView';
@@ -200,6 +200,152 @@ describe('CrewView action and uncertain-start regressions', () => {
     await screen.findByText('fixture');
     expect(screen.getByText(/^(Checking connection|Updates unavailable)$/)).toBeInTheDocument();
     expect(screen.queryByText('Connected · identity verified')).toBeNull();
+  });
+
+  it('sends on Enter, while preserving Shift+Enter and IME composition', async () => {
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'line one' } });
+    const shiftEnter = createEvent.keyDown(composer, {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      shiftKey: true,
+    });
+    fireEvent(composer, shiftEnter);
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(mocks.crewRequest).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'message.post',
+      expect.anything(),
+      expect.anything()
+    );
+    expect(composer).toHaveValue('line one');
+
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13, isComposing: true });
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 229 });
+    expect(mocks.crewRequest).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'message.post',
+      expect.anything(),
+      expect.anything()
+    );
+
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    await waitFor(() =>
+      expect(
+        mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')
+      ).toBe(true)
+    );
+    expect(composer).toHaveValue('');
+  });
+
+  it('keeps sending single-flight and does not refresh the verified workspace', async () => {
+    let resolvePost!: () => void;
+    const post = new Promise<void>((resolve) => {
+      resolvePost = resolve;
+    });
+    mocks.crewRequest.mockImplementation(async (_id: string, method: string) => {
+      if (method === 'message.post') return post;
+      return {};
+    });
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'send once' } });
+    const observedCalls = mocks.observeCrew.mock.calls.length;
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    await waitFor(() =>
+      expect(mocks.crewRequest.mock.calls.filter(([, method]) => method === 'message.post')).toHaveLength(1)
+    );
+    resolvePost();
+    await waitFor(() => expect(composer).toHaveValue(''));
+    expect(mocks.observeCrew.mock.calls.length).toBe(observedCalls);
+    expect(screen.getByText('Connected · identity verified')).toBeInTheDocument();
+  });
+
+  it('retains the idempotency key when observation fails during an in-flight send', async () => {
+    let releasePost!: () => void;
+    let failObserver: (() => void) | undefined;
+    let attempts = 0;
+    const requestIds: string[] = [];
+    const post = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive(observerState());
+        failObserver = () =>
+          receive({ type: 'error', error: 'temporary observation failure', code: 'temporary' });
+        return 'terminal';
+      }
+    );
+    mocks.crewRequest.mockImplementation(
+      async (_id: string, method: string, params?: { idempotency_key?: string }) => {
+        if (method !== 'message.post') return {};
+        attempts += 1;
+        requestIds.push(params?.idempotency_key ?? '');
+        if (attempts === 1) return post;
+        return {};
+      }
+    );
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'survive observation loss' } });
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    await waitFor(() => expect(attempts).toBe(1));
+    await act(async () => {
+      failObserver?.();
+    });
+    expect(await screen.findByText(/temporary observation failure/)).toBeInTheDocument();
+    releasePost();
+    await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
+
+    installObservation();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Retry Crew updates' })).toBeEnabled()
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
+    const recoveredComposer = await screen.findByLabelText('Message #general');
+    expect(recoveredComposer).toHaveValue('survive observation loss');
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(attempts).toBe(2));
+    expect(requestIds[0]).not.toBe('');
+    expect(requestIds[1]).toBe(requestIds[0]);
+  });
+
+  it('retains the draft and idempotency key for a failed send retry', async () => {
+    let attempts = 0;
+    const requestIds: string[] = [];
+    mocks.crewRequest.mockImplementation(
+      async (_id: string, method: string, params?: { idempotency_key?: string }) => {
+        if (method !== 'message.post') return {};
+        attempts += 1;
+        requestIds.push(params?.idempotency_key ?? '');
+        if (attempts === 1) throw new Error('send failed');
+        return {};
+      }
+    );
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    const composer = await screen.findByLabelText('Message #general');
+    fireEvent.change(composer, { target: { value: 'retry this' } });
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    expect(await screen.findAllByText('send failed')).not.toHaveLength(0);
+    expect(composer).toHaveValue('retry this');
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(attempts).toBe(2));
+    expect(requestIds[1]).toBe(requestIds[0]);
+    await waitFor(() => expect(composer).toHaveValue(''));
   });
 
   it('retains a start action error after a successful manual refresh', async () => {
