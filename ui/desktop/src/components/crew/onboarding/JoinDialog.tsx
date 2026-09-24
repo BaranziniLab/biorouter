@@ -1,20 +1,28 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
+import CustomRadio from '../../ui/CustomRadio';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import {
   previewInvitation,
+  refusalConnectionId,
   saveFromInvitation,
+  savedConnectionIds,
   type CrewInvitationAdvanced,
   type CrewInvitationOverrides,
   type CrewInvitationPreview,
 } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
 import type { CrewConnection } from '../crewApi';
-import { PersonName, personFromProjection, sanitizeDisplayText } from '../identity';
+import {
+  connectionNames,
+  PersonName,
+  personFromProjection,
+  sanitizeDisplayText,
+} from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import type { SaveConnectionInput } from '../state/types';
 import { connectionUpdateBody } from '../state/useCrewConnections';
@@ -32,7 +40,8 @@ type PreviewState =
   | { kind: 'ready'; preview: CrewInvitationPreview }
   | { kind: 'invalid' }
   | { kind: 'stale' }
-  | { kind: 'failed'; message: string };
+  /** `connectionId`: the saved connection a 409 conflict concerns, to offer opening it. */
+  | { kind: 'failed'; message: string; connectionId: string | null };
 
 /** How long typing pauses before the pasted text is sent to the daemon for a preview. */
 export const INVITATION_PREVIEW_DELAY_MS = 250;
@@ -113,7 +122,8 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   // The person's own edits win over what the invitation prefills.
   const [username, setUsername] = useState('');
   const [usernameEdited, setUsernameEdited] = useState(false);
-  const [mode, setMode] = useState<Mode>('private');
+  // Null while the invitation states no privacy and the person hasn't chosen: nothing is assumed.
+  const [mode, setMode] = useState<Mode | null>('private');
   const [institution, setInstitution] = useState('');
   const [privacyEdited, setPrivacyEdited] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -136,6 +146,8 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   const [phase, setPhase] = useState<'idle' | 'saving' | 'connecting'>('idle');
   const [pendingConnect, setPendingConnect] = useState<string | null>(null);
+  /** The saved connection a refused save concerns (`connection_id` of a 409), to offer opening. */
+  const [saveConflictId, setSaveConflictId] = useState<string | null>(null);
   const [validateHidden, setValidateHidden] = useState(false);
   const locked = phase !== 'idle';
 
@@ -151,6 +163,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
     const controller = new AbortController();
     setPreviewState({ kind: 'checking' });
+    setSaveConflictId(null);
     const timer = setTimeout(() => {
       previewInvitation(invitation, {}, controller.signal).then(
         (result) => {
@@ -170,6 +183,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             setPreviewState({
               kind: 'failed',
               message: failure instanceof Error ? failure.message : joinCopy.invalid,
+              connectionId: refusalConnectionId(failure),
             });
           }
         }
@@ -181,15 +195,23 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     };
   }, [invitation, manual]);
 
-  // Prefill from the invitation until the person changes a value.
+  // Prefill from the invitation until the person changes a value. The privacy is what the
+  // invitation itself STATES (`workspace_mode`), never the daemon's planned default (`mode`,
+  // Private for a paste that states nothing): an unstated privacy stays unchosen.
   useEffect(() => {
     if (!preview) return;
     if (!usernameEdited) setUsername(preview.invitee_username ?? '');
     if (!privacyEdited) {
-      setMode(preview.mode ?? 'private');
-      setInstitution(preview.institution_id ?? '');
+      setMode(preview.workspace_mode);
+      setInstitution(preview.workspace_institution_id ?? '');
     }
   }, [preview, usernameEdited, privacyEdited]);
+
+  // An invitation that names no server needs the login from Advanced: open it, once per paste.
+  const serverMissing = Boolean(preview?.missing.includes('server'));
+  useEffect(() => {
+    if (serverMissing) setAdvancedOpen(true);
+  }, [serverMissing]);
 
   // A submit with an invalid field inside a closed section opens it first, then reports.
   useEffect(() => {
@@ -221,9 +243,18 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const defaultPort = preview?.ssh_port ?? 22;
   const portValue = port.trim() ? Number(port) : null;
   // A Private connection needs an institution. When the invitation has none, show the field
-  // rather than letting the save dead-end.
+  // rather than letting the save dead-end. An unchosen privacy shows the choice at once.
   const needsInstitution = mode === 'private' && !institution.trim();
-  const privacyShown = privacyOpen || (needsInstitution && (Boolean(preview) || manual));
+  const privacyShown =
+    privacyOpen || mode === null || (needsInstitution && (Boolean(preview) || manual));
+
+  // A connection this computer already has for the workspace: offer it instead of saving again.
+  const existingId = !manual ? (preview?.existing_connection_id ?? null) : null;
+  // A paste this computer pins differently (409 `crew_invitation_conflict` at preview).
+  const previewConflictId =
+    !manual && previewState.kind === 'failed' ? previewState.connectionId : null;
+  const savedNames = connectionNames(crew.connections);
+  const openLabel = (id: string) => joinCopy.openExisting(savedNames.get(id) || workspaceLabel);
 
   const submitLabel =
     phase === 'connecting'
@@ -261,20 +292,37 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
    * folder. What the person chose instead (an SSH alias from their own config, a connection name,
    * a work folder) is applied through the ordinary full-body update every daemon accepts, so the
    * join never depends on the invitation route knowing a field its contract does not name. If
-   * that update fails, the connection this dialog just saved is removed again: a retry starts
-   * clean instead of leaving a connection that would sign in as someone the person did not choose.
+   * that update fails, a connection this submit created (`createdHere`) is removed again: a retry
+   * starts clean instead of leaving a connection that would sign in as someone the person did not
+   * choose. A connection that was already on this computer is never removed, and never updated.
    */
-  const applyLocalSettings = async (connection: CrewConnection, settings: LocalSettings) => {
+  const applyLocalSettings = async (
+    connection: CrewConnection,
+    settings: LocalSettings,
+    createdHere: boolean
+  ) => {
     try {
       return await crew.updateConnection(connection.id, {
         ...connectionUpdateBody(connection),
         ...settings,
       });
     } catch (failure) {
-      // The update's failure is the one to show; a leftover connection stays removable.
-      await crew.removeConnection(connection.id).catch(() => undefined);
+      // Only a connection this submit created is removed: removing one that was already here
+      // would take a joined workspace and its device key with it. The update's failure is the one
+      // to show; a leftover connection stays removable.
+      if (createdHere) await crew.removeConnection(connection.id).catch(() => undefined);
       throw failure;
     }
+  };
+
+  /** Open a connection this computer already has, instead of saving the invitation again. */
+  const openConnection = async (id: string) => {
+    if (locked) return;
+    if (!crew.connections.some((item) => item.id === id))
+      await crew.refresh().catch(() => undefined);
+    if (!mounted.current) return;
+    crew.selectConnection(id);
+    onClose();
   };
 
   // The manual fields live inside Advanced, which unmounts its fields while closed.
@@ -300,8 +348,15 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       return;
     }
     if (!manual && !preview) return;
+    // Never save a privacy the person did not choose.
+    if (mode === null) return;
     const institutionId = institution.trim() || null;
     setPhase('saving');
+    setSaveConflictId(null);
+    /** False once the save returned a connection that was already on this computer. */
+    let isNew = true;
+    /** True only when this submit certainly created the connection: the one it may remove. */
+    let createdHere = false;
     const saved = await crew.act('dialog:join', 'connection.save', async () => {
       if (manual) {
         const input: SaveConnectionInput = {
@@ -326,10 +381,31 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       if (username.trim()) overrides.username = username.trim();
       const extra = advanced();
       if (extra) overrides.advanced = extra;
-      let connection = await saveFromInvitation(invitation, overrides);
+      // What was saved before this submit. Saving an invitation for a workspace this computer
+      // already has returns THAT connection, so only an id missing from this list was created
+      // here. When the list can't be read, nothing counts as created: a leftover connection is
+      // removable, a removed joined one is not.
+      const before = await savedConnectionIds().then(
+        (ids) => new Set([...ids, ...crew.connections.map((item) => item.id)]),
+        () => null
+      );
+      let connection: CrewConnection;
+      try {
+        connection = await saveFromInvitation(invitation, overrides);
+      } catch (failure) {
+        if (mounted.current)
+          setSaveConflictId(refusalConnectionId(failure, preview?.existing_connection_id));
+        throw failure;
+      }
+      const preexisting =
+        connection.id === preview?.existing_connection_id || Boolean(before?.has(connection.id));
+      isNew = !preexisting;
+      createdHere = before !== null && isNew;
+      // A connection that was already here is opened as it is: its settings are changed in
+      // Connection settings, never by re-pasting an invitation (an update disconnects it).
       const settings = localSettings();
-      if (settingsDiffer(connection, settings))
-        connection = await applyLocalSettings(connection, settings);
+      if (isNew && settingsDiffer(connection, settings))
+        connection = await applyLocalSettings(connection, settings, createdHere);
       // Reload the list before selecting, so the controller knows the connection it connects.
       await crew.refresh();
       crew.selectConnection(connection.id);
@@ -340,14 +416,16 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       setPhase('idle');
       return;
     }
-    updateJoinContext(saved.id, {
-      workspaceName: preview?.workspace_name ?? null,
-      hostUsername: preview?.host_username ?? null,
-      hostDisplayName: preview?.host_display_name ?? null,
-      username: username.trim() || null,
-      joining: true,
-      suggestName: true,
-    });
+    // A connection that was already here keeps what it remembers about its own join.
+    if (isNew)
+      updateJoinContext(saved.id, {
+        workspaceName: preview?.workspace_name ?? null,
+        hostUsername: preview?.host_username ?? null,
+        hostDisplayName: preview?.host_display_name ?? null,
+        username: username.trim() || null,
+        joining: true,
+        suggestName: true,
+      });
     setPhase('connecting');
     setPendingConnect(saved.id);
   };
@@ -358,7 +436,11 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         display_name: preview.host_display_name,
       })
     : null;
+  // Copy the full hex; show the short form the host reads out (computed here, else the daemon's).
   const fingerprint = preview?.workspace_key_fingerprint ?? null;
+  const fingerprintShort =
+    groupWorkspaceFingerprint(fingerprint) || sanitizeDisplayText(preview?.fingerprint) || null;
+  const statedMode = preview?.workspace_mode ?? null;
   const invitationHelper =
     previewState.kind === 'invalid'
       ? joinCopy.invalid
@@ -383,13 +465,21 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           <Button type="button" variant="ghost" disabled={locked} onClick={onClose}>
             {joinCopy.cancel}
           </Button>
-          <Button
-            type="submit"
-            form={formId}
-            disabled={locked || (!manual && !preview) || previewState.kind === 'checking'}
-          >
-            {submitLabel}
-          </Button>
+          {existingId ? (
+            <Button type="button" disabled={locked} onClick={() => void openConnection(existingId)}>
+              {openLabel(existingId)}
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              form={formId}
+              disabled={
+                locked || (!manual && !preview) || previewState.kind === 'checking' || mode === null
+              }
+            >
+              {submitLabel}
+            </Button>
+          )}
         </>
       }
     >
@@ -423,9 +513,29 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           </Field>
         ) : null}
 
+        {previewConflictId ? (
+          <div className="crew-onboard-actions">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={locked}
+              onClick={() => void openConnection(previewConflictId)}
+            >
+              {openLabel(previewConflictId)}
+            </Button>
+          </div>
+        ) : null}
+
         {previewState.kind === 'stale' ? (
           <Note tone="warning" role="status">
             {joinCopy.staleDaemon}
+          </Note>
+        ) : null}
+
+        {existingId ? (
+          <Note tone="info" role="status" testId="crew-join-existing">
+            {joinCopy.existing(workspaceLabel)}
           </Note>
         ) : null}
 
@@ -449,17 +559,22 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                 ) : null}
               </div>
             ) : null}
-            {preview.mode ? (
-              <div data-testid="crew-join-workspace-privacy">
-                <PrivacyLabel mode={preview.mode} institutionId={preview.institution_id} />
-              </div>
-            ) : null}
-            {fingerprint ? (
+            {/* What the invitation states, never the privacy saving would default to. */}
+            <div data-testid="crew-join-workspace-privacy">
+              {statedMode ? (
+                <PrivacyLabel mode={statedMode} institutionId={preview.workspace_institution_id} />
+              ) : (
+                <span className="text-supporting text-text-muted">
+                  {joinCopy.privacy}: {joinCopy.privacyUnstated}
+                </span>
+              )}
+            </div>
+            {fingerprint || fingerprintShort ? (
               <div className="crew-onboard-field">
                 <span className="text-supporting text-text-muted">{joinCopy.fingerprint}</span>
                 <CopyField
-                  value={fingerprint}
-                  display={groupWorkspaceFingerprint(fingerprint) ?? fingerprint}
+                  value={fingerprint ?? fingerprintShort ?? ''}
+                  display={fingerprintShort ?? fingerprint ?? ''}
                   label={joinCopy.fingerprintLabel}
                 />
               </div>
@@ -467,7 +582,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
         ) : null}
 
-        {preview ? (
+        {preview && !existingId ? (
           <Field label={server ? joinCopy.username(server) : joinCopy.usernameFallback}>
             {(props) => (
               <Input
@@ -486,17 +601,23 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           </Field>
         ) : null}
 
-        {preview || manual ? (
+        {(preview && !existingId) || manual ? (
           <div className="crew-onboard-stack">
             <div
               className="crew-onboard-row text-body text-text-default"
               data-testid="crew-join-as"
             >
-              <span>{joinCopy.privacyLine}</span>
-              <PrivacyLabel
-                mode={mode}
-                institutionId={mode === 'private' ? institution.trim() : null}
-              />
+              {mode === null ? (
+                <span>{joinCopy.privacyChoose}</span>
+              ) : (
+                <>
+                  <span>{joinCopy.privacyLine}</span>
+                  <PrivacyLabel
+                    mode={mode}
+                    institutionId={mode === 'private' ? institution.trim() : null}
+                  />
+                </>
+              )}
               {!privacyShown ? (
                 <Button
                   type="button"
@@ -515,7 +636,17 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               mode={mode}
               institution={institution.trim()}
             />
-            {privacyShown ? (
+            {privacyShown && mode === null ? (
+              <UnchosenPrivacy
+                disabled={locked}
+                onMode={(next) => {
+                  // Keep the choice in view once made, so it can still be changed.
+                  setPrivacyOpen(true);
+                  setPrivacyEdited(true);
+                  setMode(next);
+                }}
+              />
+            ) : privacyShown && mode !== null ? (
               <PrivacyFields
                 mode={mode}
                 institution={institution}
@@ -541,13 +672,16 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           <div className="crew-onboard-form">
             <Field
               label={joinCopy.serverLogin}
-              helper={joinCopy.serverLoginHelper(
-                `${username.trim() || 'you'}@${server || 'server'}`
-              )}
+              helper={
+                serverMissing && !manual
+                  ? joinCopy.serverMissing
+                  : joinCopy.serverLoginHelper(`${username.trim() || 'you'}@${server || 'server'}`)
+              }
             >
               {(props) => (
                 <Input
                   {...props}
+                  required={serverMissing && !manual}
                   disabled={locked || manual}
                   pattern={SSH_LOGIN_PATTERN}
                   value={sshAlias}
@@ -647,13 +781,69 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
         </Disclosure>
 
-        <JoinErrorSlot />
+        <JoinErrorSlot
+          action={
+            saveConflictId ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={locked}
+                onClick={() => void openConnection(saveConflictId)}
+              >
+                {openLabel(saveConflictId)}
+              </Button>
+            ) : undefined
+          }
+        />
       </form>
     </ModalShell>
   );
 }
 
-/** "{workspace} is Private for ucsf. Your connection will be Public." — only when they differ. */
+/**
+ * Private / Public with neither chosen, for an invitation that doesn't state the workspace's
+ * privacy. Choosing one hands over to `PrivacyFields`; nothing is assumed before that.
+ */
+function UnchosenPrivacy({
+  disabled,
+  onMode,
+}: {
+  disabled: boolean;
+  onMode: (mode: Mode) => void;
+}) {
+  const name = useId();
+  return (
+    <fieldset className="crew-onboard-radios" data-testid="crew-join-privacy-unchosen">
+      <legend className="text-label text-text-default">{joinCopy.privacy}</legend>
+      <CustomRadio
+        id={`${name}-private`}
+        name={name}
+        value="private"
+        checked={false}
+        disabled={disabled}
+        onChange={() => onMode('private')}
+        label={joinCopy.private}
+        secondaryLabel={joinCopy.privateHint}
+      />
+      <CustomRadio
+        id={`${name}-public`}
+        name={name}
+        value="public"
+        checked={false}
+        disabled={disabled}
+        onChange={() => onMode('public')}
+        label={joinCopy.public}
+        secondaryLabel={joinCopy.publicHint}
+      />
+    </fieldset>
+  );
+}
+
+/**
+ * "{workspace} is Private for ucsf. Your connection will be Public." — only when they differ, and
+ * only against the privacy the invitation STATES.
+ */
 function MismatchLine({
   workspace,
   workspaceLabel,
@@ -662,12 +852,12 @@ function MismatchLine({
 }: {
   workspace: CrewInvitationPreview | null;
   workspaceLabel: string;
-  mode: Mode;
+  mode: Mode | null;
   institution: string;
 }) {
-  const workspaceMode = workspace?.mode ?? null;
-  if (!workspace || workspaceMode === null) return null;
-  const workspaceInstitution = workspace.institution_id ?? '';
+  const workspaceMode = workspace?.workspace_mode ?? null;
+  if (!workspace || workspaceMode === null || mode === null) return null;
+  const workspaceInstitution = workspace.workspace_institution_id ?? '';
   const differs =
     workspaceMode !== mode || (mode === 'private' && workspaceInstitution !== institution);
   if (!differs) return null;
@@ -767,13 +957,16 @@ function ManualDetails({
   );
 }
 
-/** The dialog's own error slot: an error from saving renders here, once, while the dialog is open. */
-function JoinErrorSlot() {
+/**
+ * The dialog's own error slot: an error from saving renders here, once, while the dialog is open.
+ * `action` offers the saved connection a refusal concerns.
+ */
+function JoinErrorSlot({ action }: { action?: ReactNode }) {
   const { error } = useCrew();
   const here = useCrewErrorSlot('dialog:join');
   if (!here || !error) return null;
   return (
-    <Note tone="danger" role="alert">
+    <Note tone="danger" role="alert" action={action}>
       {error.message}
     </Note>
   );

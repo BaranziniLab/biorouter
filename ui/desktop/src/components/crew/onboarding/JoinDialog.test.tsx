@@ -2,6 +2,8 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
+import type { CrewInvitationPreview } from '../api/join';
+import { INSTITUTION_ID_PATTERN } from '../identity';
 import { joinCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
 import {
@@ -15,6 +17,7 @@ import { fakeConnection, makeCrew, renderWithCrew, WORKSPACE_KEY } from './testC
 const mocks = vi.hoisted(() => ({
   previewInvitation: vi.fn(),
   saveFromInvitation: vi.fn(),
+  savedConnectionIds: vi.fn(),
 }));
 
 vi.mock('../api/join', async () => {
@@ -23,20 +26,25 @@ vi.mock('../api/join', async () => {
     ...actual,
     previewInvitation: mocks.previewInvitation,
     saveFromInvitation: mocks.saveFromInvitation,
+    savedConnectionIds: mocks.savedConnectionIds,
   };
 });
 
 const LINE = 'brcrew1:eyJ2IjoxLCJ3b3Jrc3BhY2VfaWQiOiIuLi4ifQ';
 const MESSAGE = `Join lab on Crew.\nIn Biorouter, open Crew, choose Join a workspace, and paste this whole message.\n${LINE}`;
 
-const PREVIEW = {
+/** What `previewInvitation` returns for an invitation that states its privacy. */
+const PREVIEW: CrewInvitationPreview = {
   workspace_id: 'workspace-1',
   workspace_name: 'lab',
   workspace_public_key: WORKSPACE_KEY,
   workspace_key_fingerprint: '3f2a9c1e77b0d4e1' + '0'.repeat(48),
+  fingerprint: '3F2A 9C1E 77B0 D4E1',
   host_username: 'alice',
   host_display_name: 'Alice Chen',
-  mode: 'private' as const,
+  workspace_mode: 'private',
+  workspace_institution_id: 'ucsf',
+  mode: 'private',
   institution_id: 'ucsf',
   ssh_host: 'hpc.ucsf.edu',
   ssh_port: 22,
@@ -44,6 +52,8 @@ const PREVIEW = {
   invitee_username: 'bob',
   socket_path: '/tmp/crew-1000-abc/broker.sock',
   owner_uid: 1000,
+  existing_connection_id: null,
+  missing: [],
 };
 
 function renderDialog(overrides = {}) {
@@ -66,6 +76,8 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub);
   mocks.previewInvitation.mockReset();
   mocks.saveFromInvitation.mockReset();
+  // Nothing saved before the submit, unless a test says otherwise.
+  mocks.savedConnectionIds.mockReset().mockResolvedValue([]);
   resetJoinContextForTests();
 });
 
@@ -122,7 +134,7 @@ describe('JoinDialog', () => {
     const institution = screen.getByPlaceholderText('For example, ucsf or sdsc');
     expect(institution).toHaveValue('ucsf');
     expect(institution).toBeRequired();
-    expect(institution).toHaveAttribute('pattern', '[a-z0-9][a-z0-9_-]{0,63}');
+    expect(institution).toHaveAttribute('pattern', INSTITUTION_ID_PATTERN);
 
     fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
     expect(screen.getByTestId('crew-join-mismatch')).toHaveTextContent(
@@ -136,7 +148,12 @@ describe('JoinDialog', () => {
   });
 
   it('asks for the institution up front when the invitation names none', async () => {
-    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, institution_id: null });
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      workspace_institution_id: null,
+      institution_id: null,
+      missing: ['institution'],
+    });
     renderDialog();
     await paste();
     expect(await screen.findByPlaceholderText('For example, ucsf or sdsc')).toBeRequired();
@@ -327,6 +344,198 @@ describe('JoinDialog', () => {
       expect(serverLoginInvalid(value)).toBe(!valid);
     }
     expect(serverLoginInvalid('')).toBe(false);
+  });
+
+  it('never removes a connection that was already on this computer when its update fails', async () => {
+    // The preview was read before the connection existed (another window saved it since), so the
+    // dialog still offers Join; the daemon then answers the existing connection.
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const existing = fakeConnection({ id: 'conn-old', status: 'connected' });
+    mocks.savedConnectionIds.mockResolvedValue(['conn-old']);
+    mocks.saveFromInvitation.mockResolvedValue(existing);
+    const updateConnection = vi
+      .fn()
+      .mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    const removeConnection = vi.fn().mockResolvedValue(undefined);
+    const view = renderDialog({ updateConnection, removeConnection });
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.change(screen.getByLabelText(joinCopy.serverLogin), { target: { value: 'hpc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+
+    const crew = view.crew();
+    // Opened as it is: no update (which would disconnect it) and certainly no removal.
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-old'));
+    expect(updateConnection).not.toHaveBeenCalled();
+    expect(removeConnection).not.toHaveBeenCalled();
+    // What it remembers about its own join is left alone.
+    expect(readJoinContext('conn-old')).not.toMatchObject({ joining: true });
+  });
+
+  it('removes nothing when it cannot tell whether the save created the connection', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    mocks.savedConnectionIds.mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    mocks.saveFromInvitation.mockResolvedValue(fakeConnection({ id: 'conn-maybe' }));
+    const updateConnection = vi
+      .fn()
+      .mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    const removeConnection = vi.fn().mockResolvedValue(undefined);
+    const view = renderDialog({ updateConnection, removeConnection });
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.change(screen.getByLabelText(joinCopy.serverLogin), { target: { value: 'hpc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+
+    await waitFor(() => expect(updateConnection).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Join lab' })).toBeEnabled());
+    expect(removeConnection).not.toHaveBeenCalled();
+    expect(view.crew().selectConnection).not.toHaveBeenCalled();
+  });
+
+  it('offers the connection this computer already has instead of saving the invitation again', async () => {
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, existing_connection_id: 'conn-old' });
+    const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
+    const view = renderDialog({ connections: [existing] });
+    await paste();
+
+    expect(await screen.findByTestId('crew-join-existing')).toHaveTextContent(
+      joinCopy.existing('lab')
+    );
+    expect(screen.queryByRole('button', { name: 'Join lab' })).toBeNull();
+    expect(screen.queryByTestId('crew-join-as')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.openExisting('UCSF lab') }));
+
+    const crew = view.crew();
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-old'));
+    expect(crew.closeDialog).toHaveBeenCalled();
+    expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+    expect(crew.removeConnection).not.toHaveBeenCalled();
+  });
+
+  it('offers to open the connection a refused paste concerns', async () => {
+    mocks.previewInvitation.mockRejectedValue(
+      Object.assign(
+        new CrewHttpError('Doesn’t match “UCSF lab”.', 409, 'crew_invitation_conflict'),
+        {
+          body: { code: 'crew_invitation_conflict', connection_id: 'conn-old' },
+        }
+      )
+    );
+    const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
+    const view = renderDialog({ connections: [existing] });
+    await paste();
+
+    expect(await screen.findByText('Doesn’t match “UCSF lab”.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.openExisting('UCSF lab') }));
+    await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-old'));
+  });
+
+  it('offers to open the connection a refused save names', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    mocks.saveFromInvitation.mockRejectedValue(
+      Object.assign(new CrewHttpError('Already saved.', 409, 'crew_connection_exists'), {
+        body: { code: 'crew_connection_exists', connection_id: 'conn-old' },
+      })
+    );
+    const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
+    const view = renderDialog({
+      connections: [existing],
+      error: { message: 'Already saved.', source: 'dialog:join' },
+      errorSlotFor: (source: string) => source === 'dialog:join',
+    });
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: 'Join lab' }));
+
+    const open = await screen.findByRole('button', { name: joinCopy.openExisting('UCSF lab') });
+    expect(screen.getByRole('alert')).toContainElement(open);
+    fireEvent.click(open);
+    await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-old'));
+  });
+
+  it('never presents a defaulted Private as the workspace’s privacy, and saves only a choice', async () => {
+    // An older status paste states no privacy; the daemon still plans a Private save.
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      workspace_mode: null,
+      workspace_institution_id: null,
+      mode: 'private',
+      institution_id: null,
+      missing: ['institution'],
+    });
+    mocks.saveFromInvitation.mockResolvedValue(fakeConnection({ id: 'conn-new' }));
+    renderDialog();
+    await paste();
+
+    const stated = await screen.findByTestId('crew-join-workspace-privacy');
+    expect(stated).toHaveTextContent(joinCopy.privacyUnstated);
+    expect(stated).not.toHaveTextContent('Private');
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent(joinCopy.privacyChoose);
+    expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
+    // The choice is open and nothing is chosen for the person.
+    const radios = within(screen.getByTestId('crew-join-privacy-unchosen')).getAllByRole('radio');
+    expect(radios).toHaveLength(2);
+    for (const radio of radios) expect(radio).not.toBeChecked();
+    const join = screen.getByRole('button', { name: 'Join lab' });
+    expect(join).toBeDisabled();
+    fireEvent.submit(join.closest('form') ?? document.body);
+    expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('You’ll join as');
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('Public');
+    expect(screen.getByRole('radio', { name: /^Public/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    await waitFor(() =>
+      expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
+        mode: 'public',
+        institution_id: null,
+        username: 'bob',
+      })
+    );
+  });
+
+  it('reads the privacy the invitation states, not the privacy saving would default to', async () => {
+    // Contradictory on purpose: only `workspace_mode` is the workspace's word.
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      workspace_mode: 'public',
+      workspace_institution_id: null,
+      mode: 'private',
+      institution_id: 'ucsf',
+    });
+    mocks.saveFromInvitation.mockResolvedValue(fakeConnection({ id: 'conn-new' }));
+    renderDialog();
+    await paste();
+
+    const stated = await screen.findByTestId('crew-join-workspace-privacy');
+    expect(stated).toHaveTextContent('Public');
+    expect(stated).not.toHaveTextContent('Private');
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('Public');
+    expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    await waitFor(() =>
+      expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
+        mode: 'public',
+        institution_id: null,
+        username: 'bob',
+      })
+    );
+  });
+
+  it('asks for the server login up front when the invitation names no server', async () => {
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      ssh_host: null,
+      missing: ['server'],
+    });
+    renderDialog();
+    await paste();
+    const login = await screen.findByLabelText(joinCopy.serverLogin);
+    expect(login).toBeRequired();
+    expect(screen.getByText(joinCopy.serverMissing)).toBeInTheDocument();
   });
 
   it('shows a save failure in the dialog, once', async () => {

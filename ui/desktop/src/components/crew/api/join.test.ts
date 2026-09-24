@@ -8,11 +8,16 @@ import {
 } from './errors';
 import {
   claimJoin,
+  CREW_CONNECTION_EXISTS,
+  CREW_INVITATION_CONFLICT,
+  CREW_NOT_CONNECTED,
   getInvitation,
   groupDeviceCode,
   joinStatus,
   previewInvitation,
+  refusalConnectionId,
   saveFromInvitation,
+  savedConnectionIds,
 } from './join';
 
 const mocks = vi.hoisted(() => ({ crewHttp: vi.fn() }));
@@ -25,17 +30,31 @@ vi.mock('../crewApi', async () => {
 const LINE = 'brcrew1:eyJ2IjoxLCJ3b3Jrc3BhY2VfaWQiOiIuLi4ifQ';
 const MESSAGE = `Join lab on Crew.\nIn Biorouter, open Crew, choose Join a workspace, and paste this whole message.\n${LINE}`;
 
+// The daemon's InvitationSummary: the core preview flattened, plus the invitation's own route.
 const summary = {
+  source: 'invitation',
   workspace_id: 'workspace-1',
   workspace_name: 'lab',
+  workspace_label: 'lab',
   workspace_public_key: 'a'.repeat(64),
   workspace_key_fingerprint: '3f2a9c1e77b0d4e1',
+  fingerprint: '3F2A 9C1E 77B0 D4E1',
   socket_path: '/tmp/crew-1000-abc/broker.sock',
   owner_uid: 1000,
   host_username: 'alice',
   host_display_name: 'Alice Chen',
+  workspace_mode: 'private',
+  workspace_institution_id: 'ucsf',
+  server: 'hpc.ucsf.edu',
+  username: 'bob',
+  ssh_target: 'bob@hpc.ucsf.edu',
+  port: 22,
   mode: 'private',
   institution_id: 'ucsf',
+  mode_differs: false,
+  name: 'lab',
+  existing_connection_id: null,
+  missing: [],
   ssh_host: 'hpc.ucsf.edu',
   ssh_port: 22,
   proxy_jump: null,
@@ -87,8 +106,11 @@ describe('previewInvitation', () => {
       workspace_name: 'lab',
       workspace_public_key: 'a'.repeat(64),
       workspace_key_fingerprint: '3f2a9c1e77b0d4e1',
+      fingerprint: '3F2A 9C1E 77B0 D4E1',
       host_username: 'alice',
       host_display_name: 'Alice Chen',
+      workspace_mode: 'private',
+      workspace_institution_id: 'ucsf',
       mode: 'private',
       institution_id: 'ucsf',
       ssh_host: 'hpc.ucsf.edu',
@@ -97,6 +119,8 @@ describe('previewInvitation', () => {
       invitee_username: 'bob',
       socket_path: '/tmp/crew-1000-abc/broker.sock',
       owner_uid: 1000,
+      existing_connection_id: null,
+      missing: [],
     };
     mocks.crewHttp.mockResolvedValueOnce(summary);
     await expect(previewInvitation(LINE)).resolves.toEqual(expected);
@@ -120,8 +144,11 @@ describe('previewInvitation', () => {
       workspace_name: null,
       workspace_public_key: 'a'.repeat(64),
       workspace_key_fingerprint: '3f2a9c1e77b0d4e1',
+      fingerprint: null,
       host_username: null,
       host_display_name: null,
+      workspace_mode: null,
+      workspace_institution_id: null,
       mode: null,
       institution_id: null,
       ssh_host: null,
@@ -130,6 +157,56 @@ describe('previewInvitation', () => {
       invitee_username: null,
       socket_path: null,
       owner_uid: null,
+      existing_connection_id: null,
+      missing: [],
+    });
+  });
+
+  it('keeps what the invitation states apart from the privacy saving would default to', async () => {
+    // A legacy status paste states no privacy; the daemon plans a Private save anyway.
+    mocks.crewHttp.mockResolvedValue({
+      ...summary,
+      source: 'legacy_status',
+      workspace_mode: null,
+      workspace_institution_id: null,
+      mode: 'private',
+      institution_id: null,
+    });
+    const preview = await previewInvitation(LINE);
+    expect(preview.workspace_mode).toBeNull();
+    expect(preview.workspace_institution_id).toBeNull();
+    expect(preview.mode).toBe('private');
+
+    mocks.crewHttp.mockResolvedValue({
+      ...summary,
+      workspace_mode: 'public',
+      workspace_institution_id: null,
+      mode: 'private',
+      institution_id: 'ucsf',
+    });
+    await expect(previewInvitation(LINE)).resolves.toMatchObject({
+      workspace_mode: 'public',
+      workspace_institution_id: null,
+      mode: 'private',
+      institution_id: 'ucsf',
+    });
+  });
+
+  it('reads the connection this computer already has and what saving still needs', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      ...summary,
+      existing_connection_id: 'conn-7',
+      missing: ['server', 'institution', 'server', 'robot', 3],
+    });
+    await expect(previewInvitation(LINE)).resolves.toMatchObject({
+      existing_connection_id: 'conn-7',
+      missing: ['server', 'institution'],
+    });
+
+    mocks.crewHttp.mockResolvedValue({ ...summary, existing_connection_id: '', missing: 'all' });
+    await expect(previewInvitation(LINE)).resolves.toMatchObject({
+      existing_connection_id: null,
+      missing: [],
     });
   });
 
@@ -178,6 +255,53 @@ describe('saveFromInvitation', () => {
   it('refuses an answer that is not a saved connection', async () => {
     mocks.crewHttp.mockResolvedValue({ saved: true });
     expect((await failureOf(saveFromInvitation(MESSAGE))).code).toBe(CREW_UNEXPECTED_RESPONSE);
+  });
+});
+
+describe('refusalConnectionId', () => {
+  it('names the connection a duplicate or conflicting join concerns', () => {
+    const exists = Object.assign(new CrewHttpError('Already saved.', 409, CREW_CONNECTION_EXISTS), {
+      body: { code: CREW_CONNECTION_EXISTS, connection_id: 'conn-7' },
+    });
+    expect(refusalConnectionId(exists)).toBe('conn-7');
+    const conflict = Object.assign(
+      new CrewHttpError('Different key.', 409, CREW_INVITATION_CONFLICT),
+      { connection_id: 'conn-8' }
+    );
+    expect(refusalConnectionId(conflict, 'conn-1')).toBe('conn-8');
+  });
+
+  it('falls back to the preview’s connection when the error carries no id', () => {
+    const exists = new CrewHttpError('Already saved.', 409, CREW_CONNECTION_EXISTS);
+    expect(refusalConnectionId(exists, 'conn-7')).toBe('conn-7');
+    expect(refusalConnectionId(exists)).toBeNull();
+  });
+
+  it('names nothing for any other failure', () => {
+    const other = Object.assign(new CrewHttpError('No.', 409, CREW_NOT_CONNECTED), {
+      body: { connection_id: 'conn-7' },
+    });
+    expect(refusalConnectionId(other, 'conn-7')).toBeNull();
+    expect(refusalConnectionId(new Error('boom'), 'conn-7')).toBeNull();
+  });
+});
+
+describe('savedConnectionIds', () => {
+  beforeEach(() => {
+    mocks.crewHttp.mockReset();
+  });
+
+  it('lists the ids the daemon has saved', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      connections: [{ id: 'conn-1' }, { id: '' }, { name: 'no id' }, 'junk', { id: 'conn-2' }],
+    });
+    await expect(savedConnectionIds()).resolves.toEqual(['conn-1', 'conn-2']);
+    expect(mocks.crewHttp).toHaveBeenCalledWith('/connections', 'GET', undefined, undefined);
+  });
+
+  it('refuses a list it cannot read rather than answering "none"', async () => {
+    mocks.crewHttp.mockResolvedValue({ connections: 'many' });
+    expect((await failureOf(savedConnectionIds())).code).toBe(CREW_UNEXPECTED_RESPONSE);
   });
 });
 
@@ -312,19 +436,36 @@ describe('claimJoin', () => {
     mocks.crewHttp.mockReset();
   });
 
-  it('posts with no body and returns who this computer joined as', async () => {
+  it('posts with no body and returns who invited this computer, as JoinClaimed says', async () => {
     mocks.crewHttp.mockResolvedValue({
       joined: true,
-      principal: { username: 'bob', display_name: 'bob' },
-      device_id: 'device-1',
+      status: 'joined',
+      inviter: { username: 'alice', display_name: 'Alice Chen' },
+      workspace_name: 'lab',
+      add_device: true,
     });
 
     await expect(claimJoin('conn-1')).resolves.toEqual({
       joined: true,
-      principal: { username: 'bob', display_name: 'bob' },
+      inviter: { username: 'alice', display_name: 'Alice Chen' },
+      workspace_name: 'lab',
+      add_device: true,
     });
     expect(mocks.crewHttp).toHaveBeenCalledWith('/connections/conn-1/join', 'POST');
     expect(mocks.crewHttp.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('leaves out an inviter or workspace it cannot read', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      joined: true,
+      status: 'joined',
+      inviter: { display_name: 'Alice Chen' },
+      workspace_name: 9,
+      add_device: 'yes',
+      // Never sent by the daemon; not read either.
+      principal: { username: 'mallory' },
+    });
+    await expect(claimJoin('conn-1')).resolves.toEqual({ joined: true });
   });
 
   it('accepts a status-shaped success', async () => {

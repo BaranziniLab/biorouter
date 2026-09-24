@@ -1,5 +1,5 @@
 import { crewHttp, type CrewConnection, type CrewPersonName } from '../crewApi';
-import { outdatedDaemonResponse, unexpectedCrewResponse } from './errors';
+import { crewErrorCode, outdatedDaemonResponse, unexpectedCrewResponse } from './errors';
 import { isRecord, nullableNumber, nullableText, optionalText } from './parse';
 
 // Joining a workspace by invitation and device code (S3a). Only the daemon parses an invitation and
@@ -25,20 +25,45 @@ export interface CrewInvitationOverrides {
   advanced?: CrewInvitationAdvanced;
 }
 
+/** Join (S3a, 409): this computer already has the workspace, saved with other settings. */
+export const CREW_CONNECTION_EXISTS = 'crew_connection_exists';
+/** Join (S3a, 409): this computer pins a different identity for the same workspace. */
+export const CREW_INVITATION_CONFLICT = 'crew_invitation_conflict';
+/** Join status and claim (409): the connection is not connected; connect it, then ask again. */
+export const CREW_NOT_CONNECTED = 'crew_not_connected';
+
+/** What saving an invitation still needs, which neither the invitation nor the person gave. */
+export type CrewInvitationMissing = 'username' | 'server' | 'institution';
+
+const INVITATION_MISSING: readonly string[] = ['username', 'server', 'institution'];
+
 /**
  * What an invitation says, as the daemon parsed it, before anything is saved. The labels are display
  * metadata and defaults: the workspace is trusted only after the server proves the pinned key. A
  * field an invitation (or an older `biorouter-crew status` paste) lacks is null.
+ *
+ * Two kinds of field sit side by side. `workspace_mode` and `workspace_institution_id` are what the
+ * invitation itself states, and are null when it states nothing. `mode` and `institution_id` are
+ * what saving would use with the choices sent so far; the daemon fills them in (Private by
+ * default), so they must never be shown as something the workspace said.
  */
 export interface CrewInvitationPreview {
   workspace_id: string;
   workspace_name: string | null;
   workspace_public_key: string | null;
-  /** The fingerprint to compare with the host's. */
+  /** The fingerprint to compare with the host's (SHA-256 of the key, lowercase hex). */
   workspace_key_fingerprint: string | null;
+  /** The daemon's short form of the fingerprint for comparing by eye: `3F2A 9C1E 77B0 D4E1`. */
+  fingerprint: string | null;
   host_username: string | null;
   host_display_name: string | null;
+  /** The workspace's privacy as the invitation states it; null when it doesn't say. */
+  workspace_mode: 'private' | 'public' | null;
+  /** The workspace's institution as the invitation states it; null when it doesn't say. */
+  workspace_institution_id: string | null;
+  /** The privacy saving would use: a default, not the workspace's word. */
   mode: 'private' | 'public' | null;
+  /** The institution saving would use: a default, not the workspace's word. */
   institution_id: string | null;
   ssh_host: string | null;
   ssh_port: number | null;
@@ -53,6 +78,13 @@ export interface CrewInvitationPreview {
    */
   socket_path: string | null;
   owner_uid: number | null;
+  /**
+   * A connection on this computer that already pins this workspace. Saving again returns it (and
+   * changes nothing) when the settings match, and is refused otherwise: offer to open it instead.
+   */
+  existing_connection_id: string | null;
+  /** What saving still needs; empty when it can save. */
+  missing: CrewInvitationMissing[];
 }
 
 /** The message a host sends a joiner, and the `brcrew1:` line inside it. */
@@ -97,10 +129,14 @@ export interface CrewJoinStatus {
   add_device?: boolean;
 }
 
+/** What `POST …/join` answers once this computer is a member (the daemon's `JoinClaimed`). */
 export interface CrewJoinClaim {
   joined: true;
-  /** Who the workspace admitted this computer as. */
-  principal?: CrewPersonName;
+  /** Who invited this computer, as the workspace named them. Display only. */
+  inviter?: CrewPersonName;
+  workspace_name?: string | null;
+  /** This computer was added to an existing member's account. */
+  add_device?: boolean;
 }
 
 /**
@@ -146,6 +182,22 @@ function orNull<T>(value: T | null | undefined): T | null {
   return value ?? null;
 }
 
+function modeFrom(value: unknown): 'private' | 'public' | null {
+  return value === 'private' || value === 'public' ? value : null;
+}
+
+function missingFrom(value: unknown): CrewInvitationMissing[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.filter(
+        (item): item is CrewInvitationMissing =>
+          typeof item === 'string' && INVITATION_MISSING.includes(item)
+      )
+    ),
+  ];
+}
+
 function previewFrom(value: unknown): CrewInvitationPreview | null {
   // Accept the summary bare or inside a `preview` envelope.
   const body = isRecord(value) && isRecord(value.preview) ? value.preview : value;
@@ -159,9 +211,12 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
     workspace_name: orNull(nullableText(body.workspace_name)),
     workspace_public_key: orNull(nullableText(body.workspace_public_key)),
     workspace_key_fingerprint: orNull(nullableText(body.workspace_key_fingerprint)),
+    fingerprint: orNull(nullableText(body.fingerprint)),
     host_username: orNull(nullableText(body.host_username)),
     host_display_name: orNull(nullableText(body.host_display_name)),
-    mode: body.mode === 'private' || body.mode === 'public' ? body.mode : null,
+    workspace_mode: modeFrom(body.workspace_mode),
+    workspace_institution_id: orNull(nullableText(body.workspace_institution_id)),
+    mode: modeFrom(body.mode),
     institution_id: orNull(nullableText(body.institution_id)),
     ssh_host: orNull(nullableText(body.ssh_host)),
     ssh_port: typeof port === 'number' && Number.isSafeInteger(port) && port > 0 ? port : null,
@@ -172,6 +227,8 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
       typeof ownerUid === 'number' && Number.isSafeInteger(ownerUid) && ownerUid >= 0
         ? ownerUid
         : null,
+    existing_connection_id: optionalText(body.existing_connection_id) ?? null,
+    missing: missingFrom(body.missing),
   };
 }
 
@@ -217,6 +274,43 @@ export async function saveFromInvitation(
   if (!optionalText(connection.id) || typeof connection.name !== 'string')
     throw unexpectedCrewResponse('a saved connection');
   return connection as unknown as CrewConnection;
+}
+
+/**
+ * The saved connection a join refusal concerns: the `connection_id` a 409
+ * `crew_connection_exists` or `crew_invitation_conflict` carries, so the person can open it.
+ *
+ * The id is read from the refusal's JSON body, wherever the error exposes it (`body`, or as a
+ * field of its own); when it exposes neither, `fallback` (the preview's `existing_connection_id`)
+ * is used. Any other failure concerns no saved connection and answers null.
+ */
+export function refusalConnectionId(error: unknown, fallback?: string | null): string | null {
+  const code = crewErrorCode(error);
+  if (code !== CREW_CONNECTION_EXISTS && code !== CREW_INVITATION_CONFLICT) return null;
+  const carrier = error as unknown as Record<string, unknown>;
+  const body = isRecord(carrier.body) ? carrier.body : {};
+  return (
+    optionalText(body.connection_id) ??
+    optionalText(carrier.connection_id) ??
+    optionalText(carrier.connectionId) ??
+    optionalText(fallback) ??
+    null
+  );
+}
+
+/**
+ * The ids of the connections this computer has saved right now, straight from the daemon. A join
+ * reads them before it saves, so it can tell a connection it created from one that already
+ * existed. Throws when the daemon's answer can't be read: a caller must not guess "none".
+ */
+export async function savedConnectionIds(signal?: AbortSignal): Promise<string[]> {
+  const result = await crewHttp<unknown>('/connections', 'GET', undefined, signal);
+  if (!isRecord(result) || !Array.isArray(result.connections))
+    throw unexpectedCrewResponse('a connection list');
+  return result.connections.flatMap((row) => {
+    const id = isRecord(row) ? optionalText(row.id) : undefined;
+    return id ? [id] : [];
+  });
 }
 
 /**
@@ -291,7 +385,10 @@ export async function claimJoin(connectionId: string): Promise<CrewJoinClaim> {
   if (result.joined === false || (result.status !== undefined && result.status !== 'joined'))
     throw unexpectedCrewResponse('a join answer');
   const claim: CrewJoinClaim = { joined: true };
-  const principal = personFrom(result.principal);
-  if (principal) claim.principal = principal;
+  const inviter = personFrom(result.inviter);
+  if (inviter) claim.inviter = inviter;
+  const workspaceName = nullableText(result.workspace_name);
+  if (workspaceName !== undefined) claim.workspace_name = workspaceName;
+  if (typeof result.add_device === 'boolean') claim.add_device = result.add_device;
   return claim;
 }

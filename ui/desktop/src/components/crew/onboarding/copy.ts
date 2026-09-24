@@ -29,8 +29,12 @@ export const joinCopy = {
   username: (server: string) => `Your username on ${server}`,
   usernameFallback: 'Your username on the server',
   privacyLine: 'You’ll join as',
+  /** The join line while the invitation states no privacy and the person hasn't chosen one. */
+  privacyChoose: 'Choose how you’ll join: Private or Public.',
   change: 'Change',
   privacy: 'Privacy',
+  /** The summary's privacy when the invitation doesn't state the workspace's. */
+  privacyUnstated: 'The invitation doesn’t say',
   private: 'Private',
   privateHint: 'Only private and institution-approved models',
   public: 'Public',
@@ -69,15 +73,24 @@ export const joinCopy = {
   workspaceKeyHelper: '64 characters, 0–9 and a–f.',
   staleDaemon:
     'This feature needs a newer Biorouter background service. Quit and reopen Biorouter, or enter the workspace details manually under Advanced.',
+  /** The invitation names a workspace this computer already has a connection for. */
+  existing: (workspace: string) => `You already have ${workspace} on this computer.`,
+  openExisting: (connection: string) => `Open ${connection}`,
+  /** A legacy paste names no server: the login has to come from Advanced. */
+  serverMissing: 'This invitation doesn’t name its server. Type your server login here.',
 } as const;
 
 export const joinStateCopy = {
   checking: 'Checking your invitation…',
   invited: (person: string, workspace: string) => `${person} invited you to ${workspace}.`,
+  /** The invitation adds this computer to the person's existing account. */
+  invitedDevice: (person: string, workspace: string) =>
+    `${person} invited this computer to your account in ${workspace}.`,
   sendCode: (first: string) => `Send ${first} this code:`,
   codeLabel: 'device code',
   waiting: (first: string) => `Waiting for ${first} to let you in…`,
   approved: (workspace: string) => `Joining ${workspace}…`,
+  approvedDevice: (workspace: string) => `Adding this computer to ${workspace}…`,
   mismatchCode: (first: string) =>
     `The code ${first} entered doesn’t match this computer. Send it again:`,
   notInvitedTitle: (workspace: string) => `You’re not in ${workspace} yet`,
@@ -97,6 +110,12 @@ export const joinStateCopy = {
   pollFailed: 'Crew couldn’t check your invitation. It tries again by itself.',
   claimFailed: 'Joining didn’t finish.',
   retry: 'Try again',
+  /** The join route answered `crew_not_connected`: Crew is reconnecting once by itself. */
+  reconnecting: (workspace: string) => `Reconnecting to ${workspace}…`,
+  /** That reconnect didn't help: the person reconnects (and signs in, if the server asks). */
+  notConnected: (workspace: string) =>
+    `Crew isn’t connected to ${workspace}, so it can’t check your invitation.`,
+  reconnect: 'Reconnect',
   hostPendingTitle: (workspace: string) => `Finish creating ${workspace}`,
   hostPendingBody: 'Crew is running on the server. Create the workspace to become its first admin.',
   hostPendingAction: 'Finish creating…',
