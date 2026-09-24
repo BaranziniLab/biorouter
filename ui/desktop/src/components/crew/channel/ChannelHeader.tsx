@@ -52,14 +52,16 @@ function ClassificationBadge({
   onTriggerFocus(event: FocusEvent<HTMLElement>): void;
 }) {
   const label = restricted ? channelCopy.restricted : channelCopy.publicSafe;
-  const hint = restricted ? channelCopy.restrictedHint : channelCopy.publicSafeHint;
+  // "Restricted" is about which models may read the channel, never about who may join it (Q2-65).
+  const hint = restricted ? channelHeaderCopy.restrictedHint : channelCopy.publicSafeHint;
+  const nameSuffix = restricted ? channelHeaderCopy.restrictedNameSuffix : `: ${hint}`;
   return (
     <Tooltip>
       <TooltipTrigger asChild onFocus={onTriggerFocus}>
         <Badge tone="neutral" asChild>
           <button type="button" className="no-drag biorouter-focus-surface" onClick={onOpen}>
             {label}
-            <span className="sr-only">: {hint}</span>
+            <span className="sr-only">{nameSuffix}</span>
           </button>
         </Badge>
       </TooltipTrigger>
@@ -131,6 +133,33 @@ function useRefreshFeedback(crew: CrewController) {
 }
 
 /**
+ * What the channel menu's copy items announce: "Copied", or "Couldn't copy", read once through
+ * the header's own quiet region (the item itself shows it too, while the menu stays open).
+ */
+function useCopyAnnouncement() {
+  const [text, setText] = useState({ words: '', count: 0 });
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    []
+  );
+  const announce = useCallback((copied: boolean) => {
+    setText((previous) => ({
+      words: copied ? channelHeaderCopy.copied : channelHeaderCopy.copyFailed,
+      count: previous.count + 1,
+    }));
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(
+      () => setText((previous) => ({ ...previous, words: '' })),
+      REFRESHED_NOTICE_MS
+    );
+  }, []);
+  return { text, announce };
+}
+
+/**
  * The page title names the channel and the workspace while a channel is open (WCAG 2.4.2), and
  * the title the app had is put back when the channel closes.
  */
@@ -168,6 +197,7 @@ export function ChannelHeader({
   const { crew, channel, dir, workspace } = useChannelPresentation();
   const tabFocusOnly = useTooltipOnTabFocusOnly();
   const { refresh, upToDate } = useRefreshFeedback(crew);
+  const copyNotice = useCopyAnnouncement();
   useChannelPageTitle(channel ? channelSlug(channel) : null, workspace);
   if (!channel) return null;
 
@@ -187,7 +217,7 @@ export function ChannelHeader({
       )}
     >
       <h1 className="flex min-w-0 items-center text-label">
-        <ChannelMenu canRename={canRename} onRefresh={refresh} />
+        <ChannelMenu canRename={canRename} onRefresh={refresh} onCopied={copyNotice.announce} />
       </h1>
       {titleId && (
         <span id={titleId} hidden>
@@ -208,6 +238,9 @@ export function ChannelHeader({
       <span role="status" className="crew-channel-refreshed text-supporting text-text-muted">
         {upToDate ? channelHeaderCopy.upToDate : ''}
       </span>
+      <span role="status" className="sr-only" data-crew-copy-notice="">
+        {copyNotice.text.words && <span key={copyNotice.text.count}>{copyNotice.text.words}</span>}
+      </span>
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <AgentAccessChip
           chats={chats}
@@ -216,6 +249,7 @@ export function ChannelHeader({
         />
         <MemberStack
           memberIds={channel.members}
+          ownerId={channel.owner_id}
           dir={dir}
           onOpen={() => crew.openPane({ mode: 'details', tab: 'members' })}
         />

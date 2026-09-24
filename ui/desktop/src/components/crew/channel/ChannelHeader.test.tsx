@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChannelHeader, REFRESHED_NOTICE_MS } from './ChannelHeader';
 import { channelCopy } from './copy';
 import { channelHeaderCopy } from './headerCopy';
+import { buildPeopleDirectory } from '../identity';
+import { currentMembers } from './MemberStack';
 import {
+  alice,
+  bob,
+  carol,
   currentCrew,
   general,
   installDaemon,
@@ -69,7 +74,7 @@ describe('ChannelHeader', () => {
     renderCrew(Header({}));
     await channelShown();
     expect(screen.getByText(channelCopy.restricted)).toBeInTheDocument();
-    expect(screen.getByText(`: ${channelCopy.restrictedHint}`)).toHaveClass('sr-only');
+    expect(screen.getByText(channelHeaderCopy.restrictedNameSuffix)).toHaveClass('sr-only');
     expect(screen.queryByText(channelCopy.archived)).toBeNull();
     // The padlock means privacy tier only; classification never draws one.
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
@@ -78,15 +83,21 @@ describe('ChannelHeader', () => {
   it('lets a keyboard reach the classification and read its explanation (T-65)', async () => {
     renderCrew(Header({}));
     const trigger = await channelShown();
+    // It says which models may read the channel, and that it limits nobody's membership (Q2-65).
     const badge = screen.getByRole('button', {
-      name: `${channelCopy.restricted}: ${channelCopy.restrictedHint}`,
+      name: 'Restricted: only private models can read it. It doesn’t limit who’s in the channel.',
     });
+    expect(`${channelCopy.restricted}${channelHeaderCopy.restrictedNameSuffix}`).toBe(
+      'Restricted: only private models can read it. It doesn’t limit who’s in the channel.'
+    );
     expect(badge).toHaveClass('no-drag', 'biorouter-focus-surface');
     // The next Tab stop after the channel menu, and its explanation opens on that focus.
     act(() => trigger.focus());
     await userEvent.setup().tab();
     expect(badge).toHaveFocus();
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(channelCopy.restrictedHint);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Only private models can read it. It doesn’t limit who’s in the channel.'
+    );
     // Pressing it opens where the classification is described in full.
     fireEvent.click(badge);
     expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'about' });
@@ -103,6 +114,37 @@ describe('ChannelHeader', () => {
     act(() => currentCrew().selectChannel(general.id));
     await channelShown();
     expect(screen.getByText(channelCopy.archived)).toBeInTheDocument();
+  });
+
+  it('counts only the people in the channel now, owner first, then you, then by name (Q2-54)', async () => {
+    const dave = {
+      id: '6f1c2a3b-0000-4000-8000-00000000da7e',
+      uid: 1003,
+      username: 'dave',
+      nickname: 'Dave Kim',
+    };
+    const gone = {
+      id: '6f1c2a3b-0000-4000-8000-00000000901e',
+      username: 'erin',
+      display_name: 'Erin Park',
+    };
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [alice, bob, carol, dave],
+      former_principals: [gone],
+      channels: [{ ...general, members: [gone.id, dave.id, bob.id, carol.id, alice.id] }, methods],
+    });
+    installObserver({ snapshot });
+    renderCrew(Header({}));
+    await channelShown();
+    // Erin left: "4 members" is Alice, Bob, Carol and Dave, never a former member.
+    expect(screen.getByRole('button', { name: '4 members' })).toHaveTextContent('4');
+    const dir = buildPeopleDirectory(snapshot as never, null);
+    expect(
+      currentMembers(snapshot.channels[0].members as string[], dir, alice.id).map(
+        ({ person }) => person?.username
+      )
+    ).toEqual(['alice', 'bob', 'carol', 'dave']);
   });
 
   it('counts the channel’s members, not the team’s people, and opens the Members tab', async () => {

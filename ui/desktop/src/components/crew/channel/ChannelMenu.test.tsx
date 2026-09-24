@@ -37,7 +37,7 @@ const EVERYONE = [
   menu.details,
   menu.members,
   menu.files,
-  menu.access,
+  channelHeaderCopy.agentAccess,
   menu.markRead,
   menu.refresh,
   menu.copyName,
@@ -79,7 +79,7 @@ describe('ChannelMenu items per role', () => {
       menu.details,
       menu.members,
       menu.files,
-      menu.access,
+      channelHeaderCopy.agentAccess,
       menu.addPeople,
       menu.markRead,
       menu.refresh,
@@ -193,7 +193,7 @@ describe('ChannelMenu actions', () => {
     [menu.details, 'about'],
     [menu.members, 'members'],
     [menu.files, 'files'],
-    [menu.access, 'access'],
+    [channelHeaderCopy.agentAccess, 'access'],
   ] as const)('%s opens the details pane on its tab', async (item, tab) => {
     const user = userEvent.setup();
     renderCrew(() => <Layout />);
@@ -233,14 +233,51 @@ describe('ChannelMenu actions', () => {
     });
   });
 
-  it('copies the channel name and ID without a toast', async () => {
+  it('names the Access tab item as every other place does (Q2-66)', async () => {
+    const user = userEvent.setup();
+    renderCrew(() => <Layout />);
+    await openMenu(user);
+    expect(screen.getByRole('menuitem', { name: 'Agent access…' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Chats and agents with access/ })).toBeNull();
+  });
+
+  it('copies the channel name and ID without a toast, answering “Copied” in the menu (Q2-34)', async () => {
     const user = userEvent.setup();
     renderCrew(() => <Layout />);
     await choose(user, menu.copyName);
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe('#general'));
+    // The menu stays open, the item itself says so, and the header announces it once.
+    const item = screen.getByRole('menuitem', { name: channelHeaderCopy.copied });
+    expect(item).toHaveAttribute('data-crew-copy-state', 'copied');
+    const notice = document.querySelector('[data-crew-copy-notice]');
+    expect(notice).toHaveTextContent(channelHeaderCopy.copied);
+    // …then it closes by itself, 600ms later.
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+
     await choose(user, menu.copyId);
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
-    // The header's one status region (Refresh channel's answer) stays empty.
-    for (const status of screen.queryAllByRole('status')) expect(status).toBeEmptyDOMElement();
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+    // Refresh channel's answer stays empty: a copy is not a refresh.
+    expect(document.querySelector('.crew-channel-refreshed')).toBeEmptyDOMElement();
+    expect(document.querySelector('.Toastify__toast')).toBeNull();
+  });
+
+  it('says so in the menu when the clipboard refuses, and stays open', async () => {
+    const user = userEvent.setup();
+    renderCrew(() => <Layout />);
+    const writeText = vi
+      .spyOn(navigator.clipboard, 'writeText')
+      .mockRejectedValueOnce(new Error('denied'));
+    await choose(user, menu.copyName);
+    expect(await screen.findByRole('menuitem', { name: 'Couldn’t copy' })).toHaveAttribute(
+      'data-crew-copy-state',
+      'failed'
+    );
+    expect(document.querySelector('[data-crew-copy-notice]')).toHaveTextContent(
+      channelHeaderCopy.copyFailed
+    );
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    writeText.mockRestore();
   });
 });

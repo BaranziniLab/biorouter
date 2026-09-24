@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ChevronDown, Hash } from '../../icons/app-icons';
 import {
   DropdownMenu,
@@ -11,6 +11,7 @@ import {
 import { cn } from '../../../utils';
 import { channelName, channelSlug } from '../identity';
 import type { DetailsTab, DialogIntent } from '../state/types';
+import { useMenuCopy } from '../timeline/TimelineCopy';
 import { channelCopy } from './copy';
 import { channelHeaderCopy } from './headerCopy';
 import { copyText, useChannelPresentation } from './presentation';
@@ -27,6 +28,11 @@ export interface ChannelMenuProps {
    * verified again; absent, the item refreshes and says nothing.
    */
   onRefresh?: () => void;
+  /**
+   * A copy item copied (or the clipboard refused): the header announces it. The item itself
+   * reads "Copied" and the menu closes 600ms later (Q2-34).
+   */
+  onCopied?: (copied: boolean) => void;
   /** Layout only, on the trigger. */
   className?: string;
 }
@@ -44,11 +50,24 @@ export interface ChannelMenuProps {
  * Owner items are hidden from everyone else; React gates nothing — the broker refuses anything the
  * person may not do, and the refusal renders in the connection bar.
  */
-export function ChannelMenu({ canRename = false, onRefresh, className }: ChannelMenuProps) {
+export function ChannelMenu({
+  canRename = false,
+  onRefresh,
+  onCopied,
+  className,
+}: ChannelMenuProps) {
   const { crew, channel, isOwner } = useChannelPresentation();
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const handedOff = useRef(false);
+  const copied = useRef(onCopied);
+  copied.current = onCopied;
+  const copy = useCallback(async (text: string) => {
+    const landed = await copyText(text);
+    copied.current?.(landed);
+    return landed;
+  }, []);
+  const menuCopy = useMenuCopy<'name' | 'id'>(copy, setOpen);
   if (!channel) return null;
 
   const slug = channelSlug(channel);
@@ -68,7 +87,7 @@ export function ChannelMenu({ canRename = false, onRefresh, className }: Channel
   const openDialog = (intent: DialogIntent) => handOff(() => crew.openDialog(intent));
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={menuCopy.onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           ref={trigger}
@@ -108,7 +127,7 @@ export function ChannelMenu({ canRename = false, onRefresh, className }: Channel
             {channelCopy.menu.files}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={openDetails('access')}>
-            {channelCopy.menu.access}
+            {channelHeaderCopy.agentAccess}
           </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
@@ -141,11 +160,17 @@ export function ChannelMenu({ canRename = false, onRefresh, className }: Channel
           >
             {channelCopy.menu.refresh}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void copyText(channelName(channel))}>
-            {channelCopy.menu.copyName}
+          <DropdownMenuItem
+            data-crew-copy-state={menuCopy.state('name')}
+            onSelect={menuCopy.select('name', channelName(channel))}
+          >
+            {menuCopy.label('name', channelCopy.menu.copyName)}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void copyText(channel.id)}>
-            {channelCopy.menu.copyId}
+          <DropdownMenuItem
+            data-crew-copy-state={menuCopy.state('id')}
+            onSelect={menuCopy.select('id', channel.id)}
+          >
+            {menuCopy.label('id', channelCopy.menu.copyId)}
           </DropdownMenuItem>
         </DropdownMenuGroup>
         {ownerTools && (
