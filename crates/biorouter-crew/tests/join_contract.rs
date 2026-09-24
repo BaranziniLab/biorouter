@@ -580,7 +580,16 @@ mod join {
         assert_eq!(status["expired"], false);
         assert!(status["expires_at"].as_u64().unwrap() >= now() + 86_000);
         assert!(status.get("last_refusal").is_none());
-        let keys: Vec<&String> = status.as_object().unwrap().keys().collect();
+        // Membership, not order: the broker keeps insertion order (serde_json's
+        // `preserve_order`, which the journal checksum needs), so sort before comparing.
+        // Equality over the whole sorted list still fails on a missing or an extra key.
+        let mut keys: Vec<&str> = status
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             [
@@ -1172,7 +1181,14 @@ mod join {
         ok(approve(&mut ws, "bob", &bob.code()));
         let joins = host_joins(&mut ws);
         assert_eq!(joins.len(), 1);
-        let keys: Vec<&String> = joins[0].as_object().unwrap().keys().collect();
+        // Sorted for the same reason as the invited status: exact membership, any order.
+        let mut keys: Vec<&str> = joins[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             [
