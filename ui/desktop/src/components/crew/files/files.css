@@ -1,0 +1,325 @@
+/* Crew — files: attachment cards, server paths, transfer rows, upload chips,
+   the Files tab and the drop zone (`crew/files/`).
+
+   Bound by the stylesheet contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and data/aria
+   hooks, tokens only, no pixel font sizes, and no keyframes of its own. The
+   spinner is the app's one spinner, the progress bar is `ui/progress`; this
+   file places them, and never re-skins a primitive. */
+
+/* ── Menus opened from a file row ─────────────────────────────────────────── */
+
+/* A help line inside a menu item ("Remove from list") wraps instead of
+   stretching the menu across the window. */
+.crew-menu {
+  max-width: 20rem;
+}
+
+.crew-menu-help {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: normal;
+}
+
+/* ── Chips (composer) ─────────────────────────────────────────────────────── */
+
+.crew-chip {
+  min-width: 0;
+}
+
+.crew-chip-icon {
+  flex-shrink: 0;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+/* The 16px remove / pause / resume control inside a 24px chip. Focus is the
+   app's focused-control fill (D-15), not a ring. */
+.crew-chip-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  margin-right: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.crew-chip-action:hover {
+  background-color: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.crew-progress-ring {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  /* The fill starts at twelve o'clock. */
+  transform: rotate(-90deg);
+}
+
+.crew-progress-ring-track,
+.crew-progress-ring-fill {
+  fill: none;
+  stroke-width: 2;
+}
+
+.crew-progress-ring-track {
+  stroke: var(--background-strong);
+}
+
+.crew-progress-ring-fill {
+  stroke: var(--background-accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--dur-med-min) var(--ease-out);
+}
+
+/* ── Attachment card and server path (timeline and Files tab) ─────────────── */
+
+.crew-attachment,
+.crew-server-path {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 28rem;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+}
+
+.crew-attachment-row,
+.crew-server-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  min-width: 0;
+  padding-inline: 12px 4px;
+}
+
+.crew-server-path-row {
+  padding-inline-end: 12px;
+}
+
+.crew-attachment-icon {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+}
+
+.crew-attachment-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  font-weight: 500;
+  line-height: var(--text-secondary--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-attachment-meta,
+.crew-server-path-note {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.crew-server-path-note {
+  margin-left: auto;
+  border-radius: var(--radius-inner);
+  cursor: help;
+}
+
+.crew-attachment-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* The download's thin bar along the card's bottom edge. The selector is two
+   classes deep so it outranks the primitive's own 8px track wherever the two
+   stylesheets land in the cascade. */
+.crew-attachment .crew-attachment-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 0;
+}
+
+.crew-attachment-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 350px;
+  margin: 0 12px 12px;
+  object-fit: contain;
+  border-radius: var(--radius-inner);
+}
+
+.crew-server-path-field {
+  margin: 0 12px 12px;
+}
+
+/* ── Transfer rows (Files tab) ────────────────────────────────────────────── */
+
+.crew-files-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.crew-files-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-files-heading {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  font-weight: 500;
+  line-height: var(--text-supporting--line-height);
+}
+
+.crew-file-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew-file-list-cards {
+  gap: 8px;
+}
+
+.crew-file-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 4px;
+}
+
+.crew-file-row + .crew-file-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-file-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-md);
+  min-width: 0;
+}
+
+.crew-file-row-icon {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+}
+
+.crew-file-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-file-row-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.crew-file-row .crew-file-row-progress {
+  height: 4px;
+}
+
+.crew-file-row-error {
+  margin: 0;
+  padding-inline: 12px;
+  color: var(--text-danger);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
+}
+
+.crew-file-row .crew-file-row-error,
+.crew-files-tab > .crew-file-row-error {
+  padding-inline: 0;
+}
+
+.crew-files-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/* ── Drop zone ────────────────────────────────────────────────────────────── */
+
+/* The zone is a box its content fills; the overlay covers it while files are
+   dragged over, saying where they will go. It appears and goes with the drag
+   and never animates. */
+.crew-drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.crew-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--border-accent);
+  border-radius: var(--radius-container);
+  background-color: var(--background-default);
+  color: var(--text-accent);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--text-label--line-height);
+  pointer-events: none;
+}
