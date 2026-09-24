@@ -24,12 +24,23 @@ export interface PersonNameProps extends PersonLabelOptions {
  * and Chromium then joins a name computed from contents with spaces — a
  * checkbox labelled by the row read "Bob Lee ( @bob )". An inline zero-size run
  * reads "Bob Lee (@bob)" there, and as `textContent` and a copied selection.
+ *
+ * `line-height: 0` is as load-bearing as the zero size. The line-height tokens
+ * are fixed pixels (`--text-label--line-height: 20px`), not multiples, so a
+ * zero-size run would still inherit the parent's full 20px line box, sitting on
+ * the baseline: its half-leading reaches ~10px BELOW the baseline, past the
+ * text's own descent. Measured in Chrome with the app's Inter, that grew an Add
+ * People row from 28px to 33px and put the name 3px above the avatar's centre;
+ * with `line-height: 0` the row is 28px again, the offset −0.5px exactly as a
+ * header's, and the checkbox's name still "Bob Lee (@bob)". jsdom has no layout,
+ * so the test can only pin the declaration.
+ *
  * An inline style, because a newly written utility class can fail to generate
  * (CLAUDE.md, "Desktop shell geometry").
  */
 function HiddenParen({ paren }: { paren: '(' | ')' }) {
   return (
-    <span data-person-part="paren" style={{ fontSize: 0 }}>
+    <span data-person-part="paren" style={{ fontSize: 0, lineHeight: 0 }}>
       {paren}
     </span>
   );
@@ -60,6 +71,13 @@ function HiddenParen({ paren }: { paren: '(' | ')' }) {
  *   tree, drawn at zero size (see `HiddenParen`), so a checkbox or row named
  *   by its contents, a screen reader and a copied selection all read the
  *   canonical form.
+ * - An agent at an authority point names its owner in full BEFORE "'s agent"
+ *   (spec rule 5): its text is "Alice Chen (@alice)'s agent", as
+ *   `agentLabel(…, 'authority')` gives, drawn "Alice Chen @alice's agent" with
+ *   the same muted handle and zero-size parentheses. That is the one place an
+ *   authority point is not drawn as a header, whose agent is "Alice Chen's
+ *   agent @alice": the header's order would make the text read "Alice Chen's
+ *   agent (@alice)", which is not the authority form.
  */
 export function PersonName({
   person,
@@ -132,7 +150,7 @@ export function PersonName({
     <span className={context === 'header' ? 'text-label' : undefined} data-person-part="name">
       {lead}
       {placement === 'paren' && <> ({handle(false)})</>}
-      {layout.agentOf && identityCopy.agentSuffix}
+      {layout.agentOf && !drawnParen && identityCopy.agentSuffix}
     </span>
   );
 
@@ -143,17 +161,18 @@ export function PersonName({
       data-person-state={layout.former ? 'former' : 'active'}
     >
       {nameGroup}
-      {placement === 'secondary' &&
-        (drawnParen ? (
-          <>
-            {' '}
-            <HiddenParen paren="(" />
-            {handle(true)}
-            <HiddenParen paren=")" />
-          </>
-        ) : (
-          <> {handle(true)}</>
-        ))}
+      {drawnParen ? (
+        <>
+          {' '}
+          <HiddenParen paren="(" />
+          {handle(true)}
+          <HiddenParen paren=")" />
+          {/* Spec rule 5: the owner's handle comes before "'s agent" here. */}
+          {layout.agentOf && identityCopy.agentSuffix}
+        </>
+      ) : (
+        placement === 'secondary' && <> {handle(true)}</>
+      )}
       {placement === 'tooltip' && (
         <span className="sr-only">
           {' ('}

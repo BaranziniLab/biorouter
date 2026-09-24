@@ -173,6 +173,20 @@ describe('PersonName, authority', () => {
     for (const paren of parens) expect((paren as HTMLElement).style.fontSize).toBe('0px');
   });
 
+  /**
+   * A zero-size run still takes its parent's line-height, and the line-height
+   * tokens are fixed pixels: a 20px line box on a zero-size run reaches ~10px
+   * below the baseline, which grew an Add People row from 28px to 33px and
+   * lifted the name 3px off the avatar's centre (measured in Chrome with the
+   * app's Inter). jsdom has no layout, so the declaration is what can be pinned.
+   */
+  it('gives each zero-size parenthesis no line box, so the row keeps the header’s height', () => {
+    const { container } = render(<PersonName person={ID.bob} dir={dir} context="authority" />);
+    const parens = Array.from(container.querySelectorAll('[data-person-part="paren"]'));
+    expect(parens).toHaveLength(2);
+    for (const paren of parens) expect((paren as HTMLElement).style.lineHeight).toBe('0');
+  });
+
   it('keeps "Name (@username)" as its text, and as the name of a control it labels', () => {
     const { container } = render(
       <label>
@@ -217,16 +231,50 @@ describe('PersonName, authority', () => {
     }
   });
 
-  it('names the viewer’s agent in full at an authority point', () => {
+  /**
+   * Spec rule 5: at an authority point an agent is "{Display name
+   * (@username)}'s agent" — the owner's handle before "'s agent", not after it
+   * as a header draws. Drawn without visible parentheses, like every authority
+   * point.
+   */
+  it('names the viewer’s agent in full at an authority point, handle before "\'s agent"', () => {
     const { container } = render(
       <PersonName person={ID.alice} dir={dir} context="authority" agent you />
     );
-    expect(drawnText(root(container))).toBe("Alice Chen's agent @alice");
-    expect(root(container)).toHaveTextContent(/^Alice Chen's agent \(@alice\)$/);
-    expect(screen.getByText('@alice')).toHaveClass('text-text-muted');
-    expect(agentLabel(ID.alice, 'authority', dir, { you: true })).toBe(
-      "Alice Chen (@alice)'s agent"
-    );
+    expect(drawnText(root(container))).toBe("Alice Chen @alice's agent");
+    expect(root(container).textContent).toBe("Alice Chen (@alice)'s agent");
+    expect(root(container).textContent).toBe(agentLabel(ID.alice, 'authority', dir, { you: true }));
+    expect(screen.getByText('@alice')).toHaveClass('text-supporting', 'text-text-muted');
+  });
+
+  /**
+   * The text — what a row-named control, a screen reader and a copy read — is
+   * exactly `personLabel(…, 'authority')`, for every person and option, agents
+   * included. `personLabel` wraps a right-to-left name in Unicode isolates
+   * where the tree uses `<bdi>`; that is the only difference allowed.
+   */
+  it('reads exactly as personLabel does, for every person and option', () => {
+    const withoutIsolates = (text: string) => text.replace(/[\u2068\u2069]/g, '');
+    for (const id of [
+      ID.alice,
+      ID.bob,
+      ID.carol,
+      ID.spark,
+      ID.sampark,
+      ID.sara,
+      ID.dan,
+      ID.ghost,
+    ]) {
+      for (const options of [{}, { agent: true }, { you: true }, { agent: true, you: true }]) {
+        const { container, unmount } = render(
+          <PersonName person={id} dir={dir} context="authority" {...options} />
+        );
+        expect(root(container).textContent).toBe(
+          withoutIsolates(personLabel(id, 'authority', dir, options))
+        );
+        unmount();
+      }
+    }
   });
 
   it('spells the handle out beside a colliding name, and after a former member’s name', () => {
@@ -248,10 +296,12 @@ describe('PersonName, authority', () => {
   /**
    * One person, one form, in every list: the Members tab and the pickers
    * (authority) draw exactly what the People tab and a message head (header)
-   * draw — the same parts, the same muted handle — for every person and
-   * option. Only the header's own type size on the name differs.
+   * draw — the same parts, the same muted handle — for every person, the viewer
+   * included. Only the header's own type size on the name differs. An agent is
+   * the exception spec rule 5 makes (see the test above), except where the
+   * names are equal and no handle follows the name.
    */
-  it('draws what the header draws, for every person and option', () => {
+  it('draws what the header draws, for every person', () => {
     const shape = (container: HTMLElement) =>
       Array.from(container.querySelectorAll('[data-person-part]'))
         .filter((part) => part.getAttribute('data-person-part') !== 'paren')
@@ -261,7 +311,7 @@ describe('PersonName, authority', () => {
           part.getAttribute('data-person-part') === 'username' ? part.className : '',
         ]);
     for (const id of [ID.alice, ID.bob, ID.carol, ID.spark, ID.sara, ID.dan]) {
-      for (const options of [{}, { agent: true }, { you: true }]) {
+      for (const options of [{}, { you: true }]) {
         const authority = render(
           <PersonName person={id} dir={dir} context="authority" {...options} />
         );
