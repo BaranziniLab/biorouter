@@ -840,6 +840,13 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 - **UI-INTEGRATE wiring:** `<AgentsSection onShowTask/>` → CrewSidebar `agentsSection` (timeline scrolls to/highlights the task); `<AccessTab/>` → DetailsPane `tabs.access`; `<ChatAccessPane/>` → DetailsPane `chatAccess`; `<ChatConnectNote/>` → composer note slot; `<WorkspaceAgentAccess/>` → WorkspaceSettingsDialog `agentAccess`; `useAgentAccessCount()` → header chip opening `{mode:'details', tab:'access'}`. Migrated CrewView tests must wait for the note to leave "Checking this chat’s access…".
 
 
+**UI-CHANNEL outcome (2026-09-23, `931e951f`, `15b196ab`, `827ef806`, `cffa32c7`, `150679e8`).** Built and tested; not mounted until UI-INTEGRATE.
+
+- **Layout contract:** DetailsPane renders the `.crew-pane` grid item; place `<DetailsPane tabs={{files, access}} chatAccess={…} agent={<AgentTaskPane onShowTask={(run) => setHighlightRunId(run.run_id)} />} />` directly in `.crew-stage`. `onShowTask` shares the state behind Timeline's `highlightRunId` and `AgentsSection.onShowTask`; DetailsPane has no separate prop for it.
+- **ChannelHeader:** `agentAccess={{chats, tasks?}}`, `canRename` (default false), `titleId` (hidden "#name" span for aria-labelledby; the `<h1>`'s name is "general channel menu"). Chip name = visible words + "can post here" (WCAG 2.5.3), replacing the copy deck's single string.
+- **ConnectionBar:** an observation error on a daemon-disconnected connection shows no Retry; a connect failure in the bar offers Try again, and unreachable reads "Can't reach {host}.".
+- **AgentTaskPane:** Start also disabled while re-verifying, on an archived channel, and with no models; the Start node always stays mounted (C11). Newest task picked by `pane/newestTask.ts` from loaded messages, because observation `runs` are `HashMap`-ordered with no timestamp (open daemon follow-up: `started_at` on `RunView` or sorted runs in `owned_run_views`).
+
 **UI-PRIM outcome (2026-09-23, `1c068364`, `49c7eec3`, `7181a809`).** Consumers of the primitives and `crew/crew-app.css` should build on these:
 
 - **Avatar:** props add `name`, `username`, `src`, `label`; `fallback` (chosen avatar text, clamped to 2 characters) wins over derived initials; `avatarInitials(name, username)` is exported (first letters of the first two words). `ring` paints `--biorouter-avatar-ring` (default canvas); a member stack sets it to its band colour (`var(--sidebar)`).
