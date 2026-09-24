@@ -19,6 +19,11 @@ export const crewStatusCopy = {
   connecting: 'Connecting…',
   /** A verified workspace is being verified again after its live updates ended (re-observation). */
   updating: 'Updating…',
+  /**
+   * The connection dropped while it was in use (an idle SSH bridge closed) and Crew is connecting
+   * it again by itself. Ranked above "Offline" and "Updates unavailable" (live QA round 2, Q2-01).
+   */
+  reconnecting: 'Reconnecting…',
   signInNeeded: 'Sign-in needed',
   cantVerify: 'Can’t verify server',
   notSetUp: 'Not set up on this server',
@@ -64,6 +69,14 @@ export const crewObservationCopy = {
   accessChanged: (workspace: string) => `Your access to ${workspace} changed.`,
   /** `unauthorized` / `unknown_device`: the workspace does not know this computer (yet). */
   unknownComputer: (workspace: string) => `${workspace} doesn’t recognize this computer yet.`,
+  /**
+   * `unauthorized` / `unknown_device` on a connection verified in this app session: the computer
+   * was known and no longer is, so "yet" and Retry would invite waiting (Q2-18).
+   */
+  removedHere: (workspace: string) =>
+    `${workspace} doesn’t recognize this computer any more. If you didn’t expect that, ask the host.`,
+  /** `principal_revoked`: the person was removed from the workspace (Q2-18). */
+  noLongerMember: (workspace: string) => `You’re no longer a member of ${workspace}.`,
   /** `human_authority_required`. */
   notConfirmed: (workspace: string) =>
     `Live updates for ${workspace} stopped because Crew couldn’t confirm the request came from you.`,

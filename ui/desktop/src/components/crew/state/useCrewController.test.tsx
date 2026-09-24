@@ -4,12 +4,21 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from './copy';
+import { rememberLastChannel, stashedDraft } from './draftStash';
+import {
+  AUTOMATIC_RECONNECT_INTERVAL_MS,
+  mayReconnectAutomatically,
+  noteAutomaticReconnect,
+  noteDisconnectedByPerson,
+  clearDisconnectedByPerson,
+} from './useCrewConnections';
+import { teamForView } from './useCrewObservation';
 import {
   CrewControllerProvider,
   useCrewErrorSlot,
   useCrewSurfaceReset,
 } from './CrewControllerContext';
-import { useCrewController } from './useCrewController';
+import { channelForTeam, useCrewController } from './useCrewController';
 import type {
   CrewController,
   CrewControllerOptions,
@@ -854,6 +863,325 @@ describe('keeping one live observer', () => {
     act(() => again.receive(stateFrame));
     await waitFor(() => expect(crew.status).toBe('connected'));
     expect(crew.reverifying).toBe(false);
+  });
+});
+
+describe('when a dropped connection may be connected again by itself (Q2-01, SECURITY-SENSITIVE)', () => {
+  const now = 1_000_000;
+  const input = {
+    connectionId: 'conn-1',
+    status: 'disconnected',
+    lastFailure: undefined,
+    now,
+  };
+
+  it('only when the daemon now calls it disconnected', () => {
+    expect(mayReconnectAutomatically(input)).toBe(true);
+    expect(mayReconnectAutomatically({ ...input, status: 'connected' })).toBe(false);
+    expect(mayReconnectAutomatically({ ...input, status: undefined })).toBe(false);
+    expect(mayReconnectAutomatically({ ...input, status: 'authentication_required' })).toBe(false);
+    expect(mayReconnectAutomatically({ ...input, connectionId: '' })).toBe(false);
+  });
+
+  it('never after the person pressed Disconnect, until they connect it themselves', () => {
+    noteDisconnectedByPerson('conn-1');
+    expect(mayReconnectAutomatically(input)).toBe(false);
+    expect(mayReconnectAutomatically({ ...input, connectionId: 'conn-2' })).toBe(true);
+    clearDisconnectedByPerson('conn-1');
+    expect(mayReconnectAutomatically(input)).toBe(true);
+  });
+
+  it.each([
+    'host_key_unknown',
+    'host_key_changed',
+    'workspace_identity_mismatch',
+    'auth_required',
+  ] as const)('never after a connect that failed with %s: that needs the person', (kind) => {
+    expect(mayReconnectAutomatically({ ...input, lastFailure: kind })).toBe(false);
+  });
+
+  it.each(['unreachable', 'ssh_failed', 'bridge_missing', 'unknown'] as const)(
+    'still after a connect that failed with %s',
+    (kind) => {
+      expect(mayReconnectAutomatically({ ...input, lastFailure: kind })).toBe(true);
+    }
+  );
+
+  it('at most once a minute per connection', () => {
+    noteAutomaticReconnect('conn-1', now);
+    expect(mayReconnectAutomatically({ ...input, now: now + 1 })).toBe(false);
+    expect(
+      mayReconnectAutomatically({ ...input, now: now + AUTOMATIC_RECONNECT_INTERVAL_MS - 1 })
+    ).toBe(false);
+    expect(mayReconnectAutomatically({ ...input, connectionId: 'conn-2', now: now + 1 })).toBe(
+      true
+    );
+    expect(
+      mayReconnectAutomatically({ ...input, now: now + AUTOMATIC_RECONNECT_INTERVAL_MS })
+    ).toBe(true);
+  });
+});
+
+describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10, Q2-21)', () => {
+  const methods = {
+    ...channel,
+    id: 'channel-3',
+    name: 'methods',
+    classification: 'public_safe' as const,
+  };
+  const imaging = {
+    id: 'team-2',
+    name: 'Imaging',
+    created_by: actor.id,
+    members: [actor.id],
+    general_channel_id: 'channel-2',
+  };
+  const imagingGeneral = { ...channel, id: 'channel-2', team_id: 'team-2', name: 'imaging' };
+  const workspace = {
+    ...snapshot,
+    teams: [...snapshot.teams, imaging],
+    channels: [channel, methods, imagingGeneral],
+  };
+  let view: typeof workspace;
+  let mode: 'private' | 'public';
+
+  beforeEach(() => {
+    view = workspace;
+    mode = 'private';
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive({
+          ...stateFrame,
+          connection_mode: mode,
+          snapshot: { ...view, workspace: { ...view.workspace, mode } },
+        });
+        if (channelId)
+          receive({
+            type: 'messages',
+            channel_id: channelId,
+            messages: [],
+            cursor: null,
+            reset: true,
+          });
+        return 'terminal';
+      }
+    );
+  });
+
+  async function opened(channelId: string) {
+    await waitFor(() => expect(crew.channelId).toBe(channelId));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    await waitFor(() => expect(crew.messagesLoaded).toBe(true));
+  }
+
+  it('picks the team of a channel in another team, so the team does not undo it (Q2-10)', async () => {
+    renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(imagingGeneral.id));
+    await opened(imagingGeneral.id);
+    expect(crew.teamId).toBe(imaging.id);
+    expect(crew.team?.name).toBe('Imaging');
+    // Frames that follow keep it there.
+    await act(async () => {
+      await crew.refresh();
+    });
+    await opened(imagingGeneral.id);
+    expect(crew.teamId).toBe(imaging.id);
+  });
+
+  it('reopens on the channel the person last chose, across teams (Q2-21)', async () => {
+    const first = renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(imagingGeneral.id));
+    await opened(imagingGeneral.id);
+    first.unmount();
+
+    renderController();
+    await opened(imagingGeneral.id);
+    expect(crew.teamId).toBe(imaging.id);
+  });
+
+  it('remembers the channel a team selection opens', async () => {
+    const first = renderController();
+    await opened(channel.id);
+    act(() => crew.selectTeam(imaging.id));
+    await opened(imagingGeneral.id);
+    first.unmount();
+
+    renderController();
+    await opened(imagingGeneral.id);
+  });
+
+  it('falls back to the first open channel when the remembered one is gone or archived', async () => {
+    rememberLastChannel(connection.id, 'channel-gone');
+    const first = renderController();
+    await opened(channel.id);
+    first.unmount();
+
+    rememberLastChannel(connection.id, methods.id);
+    view = { ...workspace, channels: [channel, { ...methods, archived: true }, imagingGeneral] };
+    renderController();
+    await opened(channel.id);
+  });
+
+  it('keeps the body through #general → #methods → #general', async () => {
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('for #general'));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    expect(crew.draft.body).toBe('');
+    act(() => crew.setBody('for #methods'));
+
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #general'));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+  });
+
+  it('keeps the body when Crew is left and opened again', async () => {
+    const first = renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('written before leaving'));
+    first.unmount();
+
+    renderController();
+    await opened(channel.id);
+    await waitFor(() => expect(crew.draft.body).toBe('written before leaving'));
+    // Handed back once: it is no longer kept aside.
+    expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+  });
+
+  it('drops the body when the workspace became public while it was put aside', async () => {
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('sensitive words'));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    expect(stashedDraft(connection.id, channel.id)?.body).toBe('sensitive words');
+
+    // The next verified view is Public: nothing written under Private may come back.
+    mode = 'public';
+    await act(async () => {
+      await crew.refresh();
+    });
+    await opened(methods.id);
+    expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    expect(crew.draft.body).toBe('');
+  });
+
+  it('drops the body kept across leaving Crew when the privacy it was written under moved', async () => {
+    const first = renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('sensitive words'));
+    first.unmount();
+
+    mode = 'public';
+    renderController();
+    await opened(channel.id);
+    expect(crew.draft.body).toBe('');
+    expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+  });
+
+  it('forgets the body of a channel the person can no longer see', async () => {
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('for #general'));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+
+    // Removed from #general: the next verified view no longer offers it.
+    view = { ...workspace, channels: [methods, imagingGeneral] };
+    await act(async () => {
+      await crew.refresh();
+    });
+    await opened(methods.id);
+    expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+
+    // Added back later: a fresh start, not the old draft.
+    view = workspace;
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    expect(crew.draft.body).toBe('');
+  });
+
+  it('never hands back an attachment, a reference or a context channel: the body only', async () => {
+    renderController();
+    await opened(channel.id);
+    act(() => {
+      crew.setBody('see the file');
+      crew.addAttachment({ id: 'blob-1', name: 'counts.csv' });
+      crew.addReference({ id: 'ref-1', label: '/data/run-1' });
+      crew.setContextChannels([methods.id]);
+    });
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    await waitFor(() => expect(crew.draft.body).toBe('see the file'));
+    expect(crew.draft.attachments).toEqual([]);
+    expect(crew.draft.references).toEqual([]);
+    expect(crew.contextChannels).toEqual([]);
+  });
+
+  it('never overwrites a newer draft the person typed before the channel verified again', async () => {
+    const first = renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('older'));
+    first.unmount();
+
+    const sessions = controllableObserver();
+    renderController();
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0]!.receive({ ...stateFrame, snapshot: view }));
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1]!.channelId).toBe(channel.id);
+    // The person types before #general's own view arrives: theirs wins, the older is dropped.
+    act(() => crew.setBody('newer'));
+    act(() => sessions[1]!.receive({ ...stateFrame, snapshot: view }));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    expect(crew.draft.body).toBe('newer');
+    expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+  });
+});
+
+describe('the team and channel a verified view picks (pure)', () => {
+  const view = {
+    teams: [{ id: 'team-1' }, { id: 'team-2' }],
+    channels: [
+      { id: 'general', team_id: 'team-1', archived: false },
+      { id: 'methods', team_id: 'team-1', archived: false },
+      { id: 'old', team_id: 'team-1', archived: true },
+      { id: 'imaging', team_id: 'team-2', archived: false },
+    ],
+  } as unknown as Parameters<typeof teamForView>[0];
+
+  it('teamForView: the selected channel’s team, then the team shown, then the last channel’s', () => {
+    expect(teamForView(view, 'team-1', 'imaging', null)).toBe('team-2');
+    expect(teamForView(view, 'team-2', '', 'general')).toBe('team-2');
+    expect(teamForView(view, '', '', 'imaging')).toBe('team-2');
+    expect(teamForView(view, '', '', 'old')).toBe('team-1');
+    expect(teamForView(view, '', '', 'missing')).toBe('team-1');
+    expect(teamForView({ ...view, teams: [] }, '', '', 'imaging')).toBe('');
+  });
+
+  it('channelForTeam: the current channel, then the remembered one, then the first open one', () => {
+    expect(channelForTeam(view, 'team-1', 'methods', 'general')).toBe('methods');
+    expect(channelForTeam(view, 'team-1', '', 'methods')).toBe('methods');
+    expect(channelForTeam(view, 'team-1', '', 'old')).toBe('general');
+    expect(channelForTeam(view, 'team-1', '', 'imaging')).toBe('general');
+    expect(channelForTeam(view, 'team-2', 'general', null)).toBe('imaging');
   });
 });
 

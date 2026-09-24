@@ -31,17 +31,26 @@ import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
 import type { CrewDraftState } from './crewSend';
 import {
+  forgetConnectionDrafts,
+  forgetStashedDraft,
+  rememberedLastChannel,
+  stashDraft,
+  takeStashedDraft,
+} from './draftStash';
+import {
   DRAFT_CLEARING_OBSERVATION_CODES,
   draftScope,
   draftScopeChanged,
   failureCode,
   isRecoverableObservationCode,
+  mayBeConnectionLoss,
   observationFailureCode,
   observationFailureOutcome,
   observationFrameText,
   type DraftScope,
   type ObservationNames,
 } from './observationFailure';
+import { connectionVerifiedThisSession, noteConnectionVerified } from './useCrewConnections';
 import type {
   CrewFrameLabels,
   CrewJoinStatus,
@@ -113,6 +122,29 @@ export function isLocalHistoryFailure(failure: unknown): boolean {
   return failure.status >= 500;
 }
 
+/**
+ * The team to show for a verified view: the selected channel's team (a selection across teams is
+ * never undone, Q2-10); else the team already shown while the view still has it; else, when
+ * nothing is chosen yet, the team of the channel the person last chose (Q2-21) when the view
+ * offers it open; else the view's first team.
+ */
+export function teamForView(
+  snapshot: Pick<Snapshot, 'teams' | 'channels'>,
+  current: string,
+  channelId: string,
+  remembered: string | null
+): string {
+  const hasTeam = (id: string) => snapshot.teams.some((item) => item.id === id);
+  const selected = channelId ? snapshot.channels.find((item) => item.id === channelId) : undefined;
+  if (selected && hasTeam(selected.team_id)) return selected.team_id;
+  if (current && hasTeam(current)) return current;
+  const last = remembered
+    ? snapshot.channels.find((item) => item.id === remembered && !item.archived)
+    : undefined;
+  if (last && hasTeam(last.team_id)) return last.team_id;
+  return snapshot.teams[0]?.id ?? '';
+}
+
 function sameList(a: readonly string[] | null, b: readonly string[] | null): boolean {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
@@ -167,6 +199,20 @@ const OWN_FAILURES: readonly string[] = [
   crewObservationCopy.repeatedlyEnded,
 ];
 
+/**
+ * The code a channel-lost error is reported with (`source: 'observer'`), so a deliberate channel
+ * or team selection can dismiss it and a connection problem screen never shows it (Q2-19).
+ */
+export const CHANNEL_LOST_ERROR_CODE = 'channel_lost';
+
+/** How an observation ended that may have been a dropped connection. */
+export interface ObservationEnd {
+  /** The end's code (the broker's, when it named one). */
+  code?: string;
+  /** The plain sentence the connection bar shows if it was not a dropped connection after all. */
+  text: string;
+}
+
 /** The workspace's display name and the selected channel's `#name`, for the plain sentences. */
 function observationNames(
   view: Pick<Snapshot, 'workspace' | 'channels'> | null,
@@ -196,7 +242,7 @@ export interface CrewObservationContext {
    * sentences call a workspace that has not told its own name.
    */
   connections: readonly CrewConnection[];
-  loadConnections(signal?: AbortSignal, current?: number): Promise<void>;
+  loadConnections(signal?: AbortSignal, current?: number): Promise<unknown>;
   setConnections: Dispatch<SetStateAction<CrewConnection[]>>;
   draft: CrewDraftState;
   reportError(message: string, source?: ErrorSource, code?: string): void;
@@ -207,6 +253,20 @@ export interface CrewObservationContext {
   /** A verified `state` frame arrived for this connection: its last connect failure is stale. */
   onVerifiedFrame(connectionId: string): void;
   keepLastVerifiedView: boolean;
+  /**
+   * The selected connection's join status: `joined` counts, like a verified view, as this app
+   * session having known the computer (Q2-18).
+   */
+  joinStatus?: CrewJoinStatus | null;
+  /**
+   * The observation ended in a way a dropped connection explains — the daemon called the
+   * connection connected, and the end is not the workspace's answer about access or identity
+   * (`mayBeConnectionLoss`). The protected view is already cleared, the draft kept, and nothing
+   * is reported yet: the controller reloads the saved record and either connects again by itself
+   * or reports `end` with `observationFailure` (live QA round 2, Q2-01). Absent: every end is
+   * reported at once, as before.
+   */
+  onConnectionLost?(connectionId: string, end: ObservationEnd): void;
 }
 
 export interface CrewObservation {
@@ -242,6 +302,12 @@ export interface CrewObservation {
   restartObservation(): void;
   clearProtectedState(): void;
   observationFailure(message: string, code?: string): void;
+  /**
+   * Keep the composer's body as the selected channel's unsent draft (`draftStash`), written
+   * under its last verified view, before a selection clears it. Attachments, references and
+   * context channels are never kept.
+   */
+  stashDraft(): void;
 }
 
 /**
@@ -279,6 +345,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     resetSurfaces,
     onVerifiedFrame,
     keepLastVerifiedView,
+    joinStatus = null,
+    onConnectionLost,
   } = context;
   const {
     body,
@@ -333,6 +401,24 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     connectionsRef.current = connections;
   }, [connections]);
+  // What the draft stash reads outside a render: the selection and its unsent body.
+  const selection = useRef({ connectionId, channelId, body });
+  useEffect(() => {
+    selection.current = { connectionId, channelId, body };
+  }, [connectionId, channelId, body]);
+  const joinStatusRef = useRef(joinStatus);
+  useEffect(() => {
+    joinStatusRef.current = joinStatus;
+  }, [joinStatus]);
+  const onConnectionLostRef = useRef(onConnectionLost);
+  useEffect(() => {
+    onConnectionLostRef.current = onConnectionLost;
+  }, [onConnectionLost]);
+  /** This app session knew the connection's computer: a verified view, or a `joined` answer. */
+  const verifiedHere = useCallback(
+    (id: string) => connectionVerifiedThisSession(id) || joinStatusRef.current === 'joined',
+    []
+  );
   const refreshErrorRef = useRef(refreshError);
   useEffect(() => {
     refreshErrorRef.current = refreshError;
@@ -344,6 +430,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   }, []);
 
   const verifiedScope = useRef<DraftScope | null>(null);
+  const stashCurrentDraft = useCallback(() => {
+    const current = selection.current;
+    stashDraft(current.connectionId, current.channelId, current.body, verifiedScope.current);
+  }, []);
   const clearProtectedState = useCallback(
     (reason: SurfaceResetReason = 'protected-cleared') => {
       setSnapshot(null);
@@ -373,6 +463,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     load: AbortController | undefined;
     token: number;
   }>({ budget: { attempts: [], all: [] }, timer: undefined, load: undefined, token: 0 });
+  /**
+   * The connection whose verified view is being observed again by itself: it was connected when
+   * the recovery began, so an end on the way back that finds it disconnected is a dropped
+   * connection too, not a restart's offline connection.
+   */
+  const recoveringFrom = useRef<string | null>(null);
   const cancelRecovery = useCallback(() => {
     const pending = recovery.current;
     if (pending.timer !== undefined) clearTimeout(pending.timer);
@@ -413,7 +509,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         draftHasContent: draftHasContent.current,
         deferRecoverableToReverification: true,
       });
-      if (outcome.clearDraft) clearDraft();
+      if (outcome.clearDraft) {
+        clearDraft();
+        // Access or privacy changed: no draft kept for this workspace may come back either.
+        forgetConnectionDrafts(selection.current.connectionId);
+      }
+      recoveringFrom.current = null;
       setReverifying(false);
       setRefreshErrorCode(code ?? null);
       setRefreshError(outcome.text);
@@ -453,6 +554,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   );
   const stopObserving = useCallback(() => {
     cancelRecovery();
+    recoveringFrom.current = null;
     observer.current?.abort();
     generation.current += 1;
     clearProtectedState();
@@ -465,14 +567,23 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       cancelRecovery();
       observer.current?.abort();
       generation.current += 1;
+      // Leaving Crew keeps the unsent draft for when the person comes back (Q2-07).
+      stashCurrentDraft();
     },
-    [cancelRecovery, generation]
+    [cancelRecovery, generation, stashCurrentDraft]
   );
 
-  // A different connection: drop everything verified for the old one, and its draft.
+  // A different connection: drop everything verified for the old one, and put its draft aside.
+  const previousConnection = useRef(connectionId);
   useEffect(() => {
+    const previous = previousConnection.current;
+    previousConnection.current = connectionId;
+    // The state still holds the old connection's channel and body in this commit.
+    if (previous && previous !== connectionId)
+      stashDraft(previous, channelId, body, verifiedScope.current);
     generation.current += 1;
     cancelRecovery();
+    recoveringFrom.current = null;
     recovery.current.budget = { attempts: [], all: [] };
     lastFrame.current = null;
     setSnapshot(null);
@@ -499,8 +610,15 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setJoinStatus(null);
     resetSurfaces('connection-changed');
   }, [connectionId]); // eslint-disable-line react-hooks/exhaustive-deps -- runs per connection only; every callee is stable
-  // A different channel: leave any history page and drop the draft written for the old one.
+  // A different channel: leave any history page, and put the old channel's draft aside. A
+  // selection has already put it aside and cleared it; this catches a channel that moved under
+  // the person (their team's snapshot changed), whose body is still the old channel's here.
+  const previousChannel = useRef({ connectionId, channelId });
   useEffect(() => {
+    const previous = previousChannel.current;
+    previousChannel.current = { connectionId, channelId };
+    if (previous.connectionId === connectionId && previous.channelId !== channelId)
+      stashDraft(connectionId, previous.channelId, body, verifiedScope.current);
     historyPage.current = null;
     setHistoryBefore(null);
     setHistoryPageSize(null);
@@ -557,6 +675,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      */
     const loseChannel = (named: string | null) => {
       const hadContent = draftHasContent.current;
+      // No draft kept for a channel the person can no longer see may ever come back into it.
+      forgetStashedDraft(connectionId, channelId);
       historyPage.current = null;
       pendingMessage.current = null;
       setMessages([]);
@@ -575,19 +695,47 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         : crewObservationCopy.channelAccessLost;
       reportError(
         hadContent ? `${lostText} ${crewObservationCopy.draftDiscarded}` : lostText,
-        'observer'
+        'observer',
+        CHANNEL_LOST_ERROR_CODE
       );
     };
 
     /**
      * The observation ended, by a terminal frame or a failure. A recoverable end on a connection
      * the daemon calls connected is observed again by itself — the draft kept, no error shown —
-     * until the attempts run out; anything else, and running out, is shown in plain words.
+     * until the attempts run out. An end a dropped connection explains, on a connection believed
+     * connected, goes to the controller, which reloads the record and may connect it again by
+     * itself (Q2-01). Anything else, and running out, is shown in plain words.
      */
-    const ended = (code: string | undefined, text: string) => {
+    const ended = (code: string | undefined, text: string, ownFailure = false) => {
       generation.current += 1;
       const status = connectionsRef.current.find((item) => item.id === connectionId)?.status;
-      if (isRecoverableObservationCode(code) && status === 'connected') {
+      const recoverable = isRecoverableObservationCode(code);
+      const lost = onConnectionLostRef.current;
+      // Only a connection this app session had working is taken for dropped: a restart's first
+      // list, or a computer still waiting to be let in, is shown as it is.
+      const believedConnected =
+        verifiedHere(connectionId) &&
+        (status === 'connected' || recoveringFrom.current === connectionId);
+      if (
+        lost &&
+        believedConnected &&
+        !ownFailure &&
+        mayBeConnectionLoss(code) &&
+        !(recoverable && status === 'connected')
+      ) {
+        // Nothing verified stays on screen, as through a refresh; the draft stays, unsendable
+        // until the next verified view checks it. No error yet: the controller decides.
+        cancelRecovery();
+        recoveringFrom.current = null;
+        clearProtectedState('refresh');
+        setRefreshError('');
+        setRefreshErrorCode(null);
+        setReverifying(true);
+        lost(connectionId, { code, text });
+        return;
+      }
+      if (recoverable && status === 'connected') {
         if (code === 'channel_access_changed' && channelId) {
           // The daemon checked the selected channel against a fresh snapshot and it was gone:
           // observing it again would only end the same way. Close it and observe the workspace.
@@ -599,6 +747,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         }
         const delay = takeRecoveryDelay(recovery.current.budget, Date.now());
         if (delay !== null) {
+          recoveringFrom.current = connectionId;
           // `clear: true`: nothing verified stays on screen. The pane survives, as through a
           // refresh; the draft stays, and cannot be sent until the next view verifies it.
           clearProtectedState('refresh');
@@ -638,16 +787,36 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               ) {
                 const hadContent = draftHasContent.current;
                 clearDraft();
+                forgetConnectionDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
               verifiedScope.current = draftScope(frame, channelId, selectedSources.current);
               const revoked =
                 Boolean(channelId) &&
                 !frame.snapshot.channels.some((item) => item.id === channelId);
+              // SECURITY-SENSITIVE (human review): a kept draft never outlives its channel —
+              // one this view no longer offers is forgotten — and comes back only into its own
+              // channel, only into an empty composer, and only when nothing it was written under
+              // moved since (`draftScopeChanged` against the kept scope). The body only.
+              const readable = new Set(frame.snapshot.channels.map((item) => item.id));
+              forgetConnectionDrafts(connectionId, (id) => readable.has(id));
+              const kept =
+                channelId && !revoked ? takeStashedDraft(connectionId, channelId) : undefined;
+              if (
+                kept &&
+                !draftHasContent.current &&
+                kept.scope.connectionId === frame.connection_id &&
+                !draftScopeChanged(kept.scope, frame, channelId, [])
+              ) {
+                setBody(kept.body);
+                draftHasContent.current = true;
+              }
               // Named from the last view that still had it: this one no longer does.
               const revokedName = revoked ? namesFor(connectionId, channelId).channel : null;
               lastFrame.current = { connectionId, snapshot: frame.snapshot };
               recovery.current.budget.attempts = [];
+              recoveringFrom.current = null;
+              noteConnectionVerified(connectionId);
               setReverifying(false);
               setObservedPrivacy({
                 connectionId,
@@ -678,9 +847,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               setRefreshErrorCode(null);
               onVerifiedFrame(connectionId);
               setTeamId((old) =>
-                frame.snapshot.teams.some((item) => item.id === old)
-                  ? old
-                  : (frame.snapshot.teams[0]?.id ?? '')
+                teamForView(frame.snapshot, old, channelId, rememberedLastChannel(connectionId))
               );
               if (revoked) {
                 controller.abort();
@@ -719,7 +886,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             } else if (frame.type === 'error') {
               // The daemon's own sentence is never shown: it is the same jargon for every end.
               const code = typeof frame.code === 'string' ? frame.code : undefined;
-              ended(code, observationFrameText(code, namesFor(connectionId, channelId)));
+              ended(
+                code,
+                observationFrameText(code, namesFor(connectionId, channelId), {
+                  verifiedHere: verifiedHere(connectionId),
+                })
+              );
             }
           }
         );
@@ -730,11 +902,17 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     })().catch((failure: unknown) => {
       if (!active()) return;
       const code = observationFailureCode(failure);
+      // A sentence this observer wrote itself (frames for another workspace, an observer that
+      // keeps ending) is its own finding about the stream, never a dropped connection.
+      const own = failure instanceof Error && OWN_FAILURES.includes(failure.message);
       ended(
         code,
-        failure instanceof Error && OWN_FAILURES.includes(failure.message)
-          ? failure.message
-          : observationFrameText(code, namesFor(connectionId, channelId))
+        own
+          ? (failure as Error).message
+          : observationFrameText(code, namesFor(connectionId, channelId), {
+              verifiedHere: verifiedHere(connectionId),
+            }),
+        own
       );
     });
     return () => {
@@ -752,6 +930,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     scheduleReobservation,
     clearProtectedState,
     namesFor,
+    verifiedHere,
     clearDraft,
     generation,
     selectedSources,
@@ -900,5 +1079,6 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     restartObservation,
     clearProtectedState: clearProtectedView,
     observationFailure,
+    stashDraft: stashCurrentDraft,
   };
 }

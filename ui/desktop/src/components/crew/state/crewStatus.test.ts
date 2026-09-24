@@ -76,6 +76,34 @@ describe('deriveConnectionStatus, row by row', () => {
     expect(status({ reverifying: true, connection: disconnected })).toBe('offline');
   });
 
+  it('reads "Reconnecting…" while Crew connects a dropped connection again by itself (Q2-01)', () => {
+    expect(CONNECTION_STATUS.reconnecting).toMatchObject({
+      tone: 'neutral',
+      word: crewStatusCopy.reconnecting,
+      spinner: true,
+    });
+    expect(crewStatusCopy.reconnecting).toBe('Reconnecting…');
+    // Whatever the saved record says meanwhile, and while its connect is in flight.
+    expect(status({ reconnecting: true })).toBe('reconnecting');
+    expect(status({ reconnecting: true, connection: disconnected })).toBe('reconnecting');
+    expect(status({ reconnecting: true, inFlight: true })).toBe('reconnecting');
+    expect(status({ reconnecting: true, reverifying: true })).toBe('reconnecting');
+    // A verified view or a trust failure still wins.
+    expect(status({ reconnecting: true, verified: true })).toBe('connected');
+    expect(status({ reconnecting: true, lastConnectFailure: failure('host_key_changed') })).toBe(
+      'cant-verify'
+    );
+  });
+
+  it('never reads "Updates unavailable" while offline or reconnecting: Reconnecting… > Offline > Updates unavailable (Q2-17)', () => {
+    expect(status({ reconnecting: true, observationError: true })).toBe('reconnecting');
+    expect(status({ reconnecting: true, connection: disconnected, observationError: true })).toBe(
+      'reconnecting'
+    );
+    expect(status({ connection: disconnected, observationError: true })).toBe('offline');
+    expect(status({ observationError: true })).toBe('updates-unavailable');
+  });
+
   it('reads "Sign-in needed" after a connect that failed with crew_ssh_auth_required', () => {
     expect(status({ connection: disconnected, lastConnectFailure: failure('auth_required') })).toBe(
       'sign-in-needed'
@@ -254,6 +282,17 @@ describe('deriveCrewScreen, row by row', () => {
     expect(
       screen({ connection: { status: 'authentication_required' }, observationError: true })
     ).toBe('sign-in');
+  });
+
+  it('is connecting, never updates-paused or offline, while a dropped connection reconnects (Q2-01)', () => {
+    expect(screen({ reconnecting: true })).toBe('connecting');
+    expect(screen({ reconnecting: true, connection: disconnected })).toBe('connecting');
+    expect(screen({ reconnecting: true, observationError: true })).toBe('connecting');
+    // A trust failure keeps its own screen, and a verified view is drawn as ever.
+    expect(screen({ reconnecting: true, lastConnectFailure: failure('host_key_unknown') })).toBe(
+      'trust'
+    );
+    expect(screen({ reconnecting: true, view: workspace, channelId: 'channel-1' })).toBe('channel');
   });
 
   it('is checking, never welcome or join, while an enrolled connection waits for its first snapshot', () => {

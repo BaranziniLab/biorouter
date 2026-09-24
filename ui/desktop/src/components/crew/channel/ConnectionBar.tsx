@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
@@ -6,6 +6,8 @@ import { cn } from '../../../utils';
 import { parseRefusal, refusalText } from '../dialogs/refusals';
 import { connectionServer } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
+import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
 import { useNewDeviceNotice } from './useNewDeviceNotice';
@@ -39,6 +41,32 @@ export function actionErrorText(message: string): string {
   return sentence ? sentence.charAt(0).toUpperCase() + sentence.slice(1) : words;
 }
 
+/**
+ * Where focus goes when a bar button leaves with its note (Q2-20): the channel heading, the
+ * composer, then the Crew sidebar's first control.
+ */
+export const BAR_FOCUS_FALLBACKS: readonly string[] = [
+  ...DIALOG_FOCUS_FALLBACKS,
+  'nav[aria-label="Crew"] button',
+];
+
+/**
+ * Run a bar button's action and keep keyboard focus off `<body>`: Retry, Dismiss and Try again
+ * each remove their own note, so the button that had focus is gone. Checked once the click has
+ * rendered and again when the action settles; focus that the person (or a surface) put somewhere
+ * else is left alone.
+ */
+function keepingFocus(event: MouseEvent<HTMLElement>, action: () => Promise<unknown> | void): void {
+  const origin = event.currentTarget;
+  const settle = () => restoreFocusSoon(origin, BAR_FOCUS_FALLBACKS);
+  const result = action();
+  settle();
+  if (result) void Promise.resolve(result).finally(settle);
+}
+
+/** The screens that draw a verified workspace, where a closed channel's note belongs. */
+const WORKSPACE_SCREENS: readonly string[] = ['channel', 'no-channel', 'no-team'];
+
 export interface ConnectionBarProps {
   /** Layout only. */
   className?: string;
@@ -52,9 +80,12 @@ export interface ConnectionBarProps {
  *    connection the daemon calls connected. Before a person is let in (not joined yet, or the join
  *    screen) the join card says what is happening, and on an offline connection the screen offers
  *    Connect; a note there would repeat it with a Retry that can only fail the same way (T-06,
- *    T-09). The error stays in the controller, where the join probe reads its code.
+ *    T-09). The error stays in the controller, where the join probe reads its code. Retry reads
+ *    the saved connection first and connects at once when the daemon has since called it
+ *    disconnected (Q2-01); a person removed from the workspace gets no Retry at all (Q2-18).
  * 2. an observer or global action error — or a connect failure whose own surface is not on
- *    screen — with Dismiss (Try again for a connect failure);
+ *    screen — with Dismiss (Try again for a connect failure). A closed channel's note shows only
+ *    over a workspace view (Q2-19);
  * 3. the one highest-priority need: the vault is locked (Unlock), the server can't be reached
  *    (Try again), or a reconnect has taken over a second (a spinner, no action);
  * 4. the new-device notice, until it is reviewed.
@@ -62,6 +93,8 @@ export interface ConnectionBarProps {
  * Each message renders here exactly once: an action error reaches this bar only when the
  * controller's resolver says its own surface is not mounted, and a connect failure that is shown as
  * an error is not repeated as a need. Security state never animates here; notes appear in place.
+ * Retry, Dismiss and Try again take their note away with them, so each puts keyboard focus back
+ * on the channel, the composer or the sidebar rather than leave it on `<body>` (Q2-20).
  */
 export function ConnectionBar({ className }: ConnectionBarProps) {
   const crew = useCrew();
@@ -94,6 +127,13 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
   const showObservationError =
     Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected');
+  // A closed channel's note describes the workspace view it was closed in: on a connection
+  // problem screen, or while reconnecting, it is stale and not shown (Q2-19). The selection that
+  // moves on dismisses it.
+  const staleChannelLoss =
+    actionError?.source === 'observer' &&
+    actionError.code === CHANNEL_LOST_ERROR_CODE &&
+    (!WORKSPACE_SCREENS.includes(crew.screen) || crew.reconnecting === true);
 
   const tryAgain = (
     <Button
@@ -101,7 +141,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
       variant="secondary"
       size="sm"
       disabled={connecting}
-      onClick={() => void crew.connect({ userInitiated: true })}
+      onClick={(event) => keepingFocus(event, () => crew.connect({ userInitiated: true }))}
     >
       {connectionBarCopy.tryAgain}
     </Button>
@@ -139,15 +179,19 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           role="alert"
           icon={AlertTriangle}
           action={
-            // Retrying can only help a connection the daemon calls connected. With no saved
-            // connection at all, the screen under the bar has its own Try again.
-            connection?.status === 'connected' ? (
+            // Retrying can only help a connection the daemon calls connected, and never a person
+            // removed from the workspace (Q2-18). With no saved connection at all, the screen
+            // under the bar has its own Try again. Retry reads the saved connection first and,
+            // when the daemon has since called it disconnected, connects at once (Q2-01).
+            connection?.status === 'connected' && crew.refreshErrorRetryable !== false ? (
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
                 aria-label={connectionBarCopy.retryName}
-                onClick={() => void crew.refresh()}
+                onClick={(event) =>
+                  keepingFocus(event, () => (crew.retryUpdates ?? crew.refresh)())
+                }
               >
                 {connectionBarCopy.retry}
               </Button>
@@ -158,7 +202,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
-      {actionError && (
+      {actionError && !staleChannelLoss && (
         <Note
           tone="danger"
           role="alert"
@@ -171,7 +215,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
               size="xs"
               aria-label={connectionBarCopy.dismiss}
               className="size-5"
-              onClick={crew.dismissError}
+              onClick={(event) => keepingFocus(event, crew.dismissError)}
             >
               <X aria-hidden="true" />
             </Button>

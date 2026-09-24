@@ -12,6 +12,7 @@ export type ConnectionStatusKey =
   | 'not-joined'
   | 'updates-unavailable'
   | 'updating'
+  | 'reconnecting'
   | 'checking'
   | 'sign-in-needed'
   | 'not-set-up'
@@ -47,6 +48,7 @@ export const CONNECTION_STATUS: Readonly<
     spinner: false,
   },
   updating: { tone: 'neutral', word: crewStatusCopy.updating, spinner: false },
+  reconnecting: { tone: 'neutral', word: crewStatusCopy.reconnecting, spinner: true },
   checking: { tone: 'neutral', word: crewStatusCopy.checking, spinner: false },
   'sign-in-needed': { tone: 'warning', word: crewStatusCopy.signInNeeded, spinner: false },
   'not-set-up': { tone: 'danger', word: crewStatusCopy.notSetUp, spinner: false },
@@ -72,6 +74,11 @@ export interface ConnectionStatusInput {
    * neutral "Updating…", never "Updates unavailable". Absent: false.
    */
   reverifying?: boolean;
+  /**
+   * The connection dropped while in use and Crew is reloading it and connecting it again by
+   * itself (Q2-01): "Reconnecting…", above "Offline" and "Updates unavailable". Absent: false.
+   */
+  reconnecting?: boolean;
 }
 
 /**
@@ -80,6 +87,9 @@ export interface ConnectionStatusInput {
  * and unverified, and would otherwise read "Checking connection" forever. The daemon writes only
  * `connected` and `disconnected`, so sign-in and setup problems come from the typed code of the
  * most recent connect, not from the saved status.
+ *
+ * "Updates unavailable" is said only for a connection the daemon calls connected, and never while
+ * a reconnect runs: the precedence is Reconnecting… > Offline > Updates unavailable (Q2-17).
  */
 export function deriveConnectionStatus(input: ConnectionStatusInput): ConnectionStatusKey | null {
   const { connection, lastConnectFailure, inFlight, verified, observationError, notJoined } = input;
@@ -87,8 +97,9 @@ export function deriveConnectionStatus(input: ConnectionStatusInput): Connection
   if (!connection) return null;
   const failure = lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'cant-verify';
+  if (verified) return inFlight ? 'connecting' : 'connected';
+  if (input.reconnecting === true) return 'reconnecting';
   if (inFlight) return 'connecting';
-  if (verified) return 'connected';
   if (notJoined) return 'not-joined';
   if (connection.status === 'connected') {
     if (observationError) return 'updates-unavailable';
@@ -144,6 +155,11 @@ export interface CrewScreenInput {
   channelId: string;
   observationError: boolean;
   notJoined: boolean;
+  /**
+   * Crew is connecting a dropped connection again by itself (Q2-01): the connecting screen, never
+   * the "updates stopped" one. Absent: false.
+   */
+  reconnecting?: boolean;
 }
 
 /** Exactly one main-area screen for the controller's state. Pure and table-tested. */
@@ -165,7 +181,7 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
       ? 'channel'
       : 'no-channel';
   }
-  if (input.inFlight) return 'connecting';
+  if (input.inFlight || input.reconnecting === true) return 'connecting';
   if (failure === 'auth_required' && !input.signInOpen) return 'sign-in';
   if (isNotSetUpFailure(failure)) return 'not-set-up';
   if (input.notJoined) return 'join';

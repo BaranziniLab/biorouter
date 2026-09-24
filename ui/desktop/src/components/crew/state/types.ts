@@ -260,8 +260,17 @@ export interface CrewController {
    * and as an error from the `connect` source. Never throws.
    */
   connect(opts?: { userInitiated?: boolean }): Promise<void>;
-  /** POST disconnect, stop observing and clear the protected view. Never throws. */
+  /**
+   * POST disconnect, stop observing and clear the protected view. Never throws. Remembered for
+   * this app session: the connection is not connected again by itself until the person connects.
+   */
   disconnect(): Promise<void>;
+  /**
+   * The selected connection dropped while in use and Crew is reloading it and connecting it again
+   * by itself (live QA round 2, Q2-01): status "Reconnecting…", the connecting screen. Absent:
+   * false.
+   */
+  reconnecting?: boolean;
   lastConnectFailure: LastConnectFailure | null;
   /** Classify and record a failure a layout observed (for example sign-in ending with a code). */
   reportConnectFailure(failure: unknown): void;
@@ -309,12 +318,24 @@ export interface CrewController {
    */
   refreshErrorCode?: string | null;
   /**
+   * Whether observing again could help the error on show. False when the person was removed from
+   * the workspace, or a computer this app session saw verified is no longer known to it (Q2-18):
+   * the connection bar then offers no Retry. Absent: true.
+   */
+  refreshErrorRetryable?: boolean;
+  /**
    * A verified view ended for a recoverable reason (a policy epoch moved, a stale cursor…) and is
    * being observed again by itself: nothing is verified, nothing is wrong yet. Status "Updating…".
    */
   reverifying?: boolean;
   /** Unchanged order: connections before observe. */
   refresh(): Promise<void>;
+  /**
+   * The connection bar's Retry: read the saved connections first, then connect at once, as the
+   * person, when the daemon no longer calls the connection connected; otherwise `refresh()`.
+   * Absent: the bar falls back to `refresh()`.
+   */
+  retryUpdates?(): Promise<void>;
   loadOlder(): void;
   jumpToLatest(): void;
 
@@ -323,7 +344,16 @@ export interface CrewController {
   channelId: string;
   team: Team | null;
   channel: Channel | null;
+  /**
+   * Show `id`'s team: its remembered or first open channel. Puts the composer's body aside for the
+   * channel it was written in (memory only, restored on that channel's next verified view when
+   * nothing it was written under moved) and remembers the channel chosen.
+   */
   selectTeam(id: string): void;
+  /**
+   * Show channel `id`, and its team when that differs (a channel in another team is not undone).
+   * Puts the body aside and remembers the channel, as `selectTeam` does.
+   */
   selectChannel(id: string): void;
 
   // Actions, errors, pending

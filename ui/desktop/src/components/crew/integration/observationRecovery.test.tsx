@@ -193,6 +193,54 @@ describe('a member’s view when someone else’s invitation is accepted (P0-1)'
   });
 });
 
+describe('a connection that drops while it is being observed again (Q2-01)', () => {
+  it('connects again by itself when the reload on the way back finds it disconnected', async () => {
+    let saved: 'connected' | 'disconnected' = 'connected';
+    daemon.state.http = (path, method) => {
+      if (path === '/connections' && method === 'GET')
+        return { connections: [{ ...connection, status: saved }] };
+      if (path === `/connections/${connection.id}/connect` && method === 'POST') {
+        saved = 'connected';
+        return {};
+      }
+      return undefined;
+    };
+    renderCrew();
+    const composer = await channelReady();
+    fireEvent.change(composer, { target: { value: 'written before the drop' } });
+    watcher = watchTheBar();
+
+    // Someone accepted an invitation (a recoverable end), and the bridge closed meanwhile: the
+    // reload before observing again says disconnected, and observing again is refused.
+    const answer = mocked.observeCrew.getMockImplementation()!;
+    mocked.observeCrew.mockImplementation(
+      async (
+        connectionId: string,
+        channelId: string | undefined,
+        after: string | null,
+        signal: AbortSignal,
+        deliver: (frame: unknown) => void
+      ) => {
+        if (saved === 'connected') return answer(connectionId, channelId, after, signal, deliver);
+        if (signal.aborted) return 'terminal';
+        deliver(ended('observation_refused'));
+        return 'terminal';
+      }
+    );
+    saved = 'disconnected';
+    act(() => daemon.emit(ended('policy_changed')));
+
+    expect(await channelReady()).toHaveValue('written before the drop');
+    expect(
+      mocked.crewHttp.mock.calls.filter(
+        ([path, method]) => path === `/connections/${connection.id}/connect` && method === 'POST'
+      )
+    ).toHaveLength(1);
+    expect(currentCrew().status).toBe('connected');
+    expect(watcher.seen).toEqual({ alert: false, daemonWords: false });
+  });
+});
+
 describe('before a person is let in (T-06, T-14)', () => {
   it.each(['observation_refused', 'unauthorized'])(
     'finds a join started from the terminal by the refusal’s code (%s), and shows no observation note',

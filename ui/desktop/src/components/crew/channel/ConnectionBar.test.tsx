@@ -1,18 +1,21 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import { crewObservationCopy } from '../state/copy';
+import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { ConnectionBar, actionErrorText } from './ConnectionBar';
 import { connectionBarCopy } from './copy';
 import {
   alice,
   connection,
   currentCrew,
+  general,
   installDaemon,
   installObserver,
   makeSnapshot,
+  methods,
   renderCrew,
 } from './crewTestHarness';
 import { seenDevicesKey } from './useNewDeviceNotice';
@@ -43,6 +46,10 @@ function Layout() {
   const [paneMounted, setPaneMounted] = useState(true);
   return (
     <>
+      {/* The sidebar's first control: where focus goes when a bar button leaves with its note. */}
+      <nav aria-label="Crew">
+        <button type="button">lab</button>
+      </nav>
       <ConnectionBar />
       <button onClick={() => setPaneMounted(false)}>Close agent pane</button>
       {paneMounted && <AgentSlot />}
@@ -133,15 +140,15 @@ describe('ConnectionBar', () => {
   });
 
   it('shows no observation note, and no Retry, to a person not let in yet (T-06)', async () => {
-    renderCrew(Layout);
-    await verified();
+    // Never verified in this app session: the workspace does not know this computer *yet*.
     observationFailure(DAEMON_SENTENCE, 'unauthorized');
-    await act(async () => {
-      await currentCrew().refresh();
-    });
+    renderCrew(Layout);
     await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('unauthorized'));
     // Until the join probe answers, the bar may say the workspace does not know this computer…
-    expect(screen.getByRole('alert')).toHaveTextContent(crewObservationCopy.unknownComputer('lab'));
+    // (by its saved name: nothing verified has told the workspace's own)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      crewObservationCopy.unknownComputer('Fixture')
+    );
     // …and once it does, the join card speaks, and the bar says nothing.
     act(() => currentCrew().setJoinStatus('invited'));
     expect(currentCrew().status).toBe('not-joined');
@@ -149,6 +156,179 @@ describe('ConnectionBar', () => {
     expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
     // The error stays in the controller, where the probe reads its code.
     expect(currentCrew().refreshError).not.toBeNull();
+  });
+
+  it.each([
+    ['unauthorized', crewObservationCopy.removedHere('lab')],
+    ['unknown_device', crewObservationCopy.removedHere('lab')],
+    ['principal_revoked', crewObservationCopy.noLongerMember('lab')],
+  ])(
+    'tells a person removed from the workspace so, with no Retry to wait on (Q2-18, %s)',
+    async (code, words) => {
+      renderCrew(Layout);
+      await verified();
+      observationFailure(DAEMON_SENTENCE, code);
+      await act(async () => {
+        await currentCrew().refresh();
+      });
+      await waitFor(() => expect(currentCrew().refreshErrorCode).toBe(code));
+      expect(screen.getByRole('alert')).toHaveTextContent(words);
+      expect(bar()).not.toHaveTextContent(/yet/);
+      expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+      expect(currentCrew().refreshErrorRetryable).toBe(false);
+      // It is the workspace's answer, not a dropped connection: nothing connects by itself.
+      expect(
+        mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/connect')
+      ).toHaveLength(0);
+    }
+  );
+
+  it('connects at once from Retry when the daemon has since called the connection disconnected (Q2-01)', async () => {
+    renderCrew(Layout);
+    await verified();
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const retry = await screen.findByRole('button', { name: connectionBarCopy.retryName });
+
+    // Meanwhile the daemon noticed its SSH bridge had closed.
+    let status = 'disconnected';
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [{ ...connection, status }] };
+      if (path === '/connections/conn-1/connect' && method === 'POST') {
+        status = 'connected';
+        return {};
+      }
+      return {};
+    });
+    installObserver();
+    const start = mocks.crewHttp.mock.calls.length;
+    fireEvent.click(retry);
+
+    await verified();
+    const paths = mocks.crewHttp.mock.calls.slice(start).map(([path]) => path as string);
+    expect(paths.filter((path) => path === '/connections/conn-1/connect')).toHaveLength(1);
+    // Read first, then connect in the same press: never "Offline" as a second step.
+    expect(paths.indexOf('/connections')).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf('/connections')).toBeLessThan(
+      paths.indexOf('/connections/conn-1/connect')
+    );
+    await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+  });
+
+  it('shows a closed channel’s note only over a workspace view, not while reconnecting (Q2-19)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const lost = crewObservationCopy.channelAccessLostNamed('#bob-probe');
+    act(() => currentCrew().reportError(lost, 'observer', CHANNEL_LOST_ERROR_CODE));
+    expect(await within(bar()).findByText(lost)).toBeInTheDocument();
+
+    // The connection drops and is being connected again: the note is stale there. (The
+    // refresh reads the list; the reconnect's own reading of it never answers.)
+    let reads = 0;
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections')
+        return reads++ === 0 ? { connections: [connection] } : new Promise(() => undefined);
+      return {};
+    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connection: string,
+        _channel: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive({ type: 'error', code: 'observation_refused', error: DAEMON_SENTENCE });
+        return 'terminal';
+      }
+    );
+    act(() => {
+      void currentCrew().refresh();
+    });
+    await waitFor(() => expect(currentCrew().status).toBe('reconnecting'));
+    expect(within(bar()).queryByText(lost)).toBeNull();
+    // Still the controller's error: only the screen decides whether it is shown.
+    expect(currentCrew().error?.message).toBe(lost);
+  });
+
+  it('dismisses a closed channel’s note when the person picks another channel (Q2-19)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const lost = crewObservationCopy.channelAccessLostNamed('#bob-probe');
+    act(() => currentCrew().reportError(lost, 'observer', CHANNEL_LOST_ERROR_CODE));
+    expect(await within(bar()).findByText(lost)).toBeInTheDocument();
+    act(() => currentCrew().selectChannel(methods.id));
+    expect(within(bar()).queryByText(lost)).toBeNull();
+    expect(currentCrew().error).toBeNull();
+
+    // Any other error stays through a selection.
+    act(() => currentCrew().reportError('mark read failed', 'global'));
+    act(() => currentCrew().selectChannel(general.id));
+    expect(within(bar()).getByText('mark read failed')).toBeInTheDocument();
+  });
+
+  describe('keeps keyboard focus when a button leaves with its note (Q2-20)', () => {
+    const sidebarFirst = () => screen.getByRole('button', { name: 'lab' });
+
+    it('after Retry', async () => {
+      renderCrew(Layout);
+      await verified();
+      observationFailure();
+      await act(async () => {
+        await currentCrew().refresh();
+      });
+      const retry = await screen.findByRole('button', { name: connectionBarCopy.retryName });
+      installObserver();
+      retry.focus();
+      fireEvent.click(retry);
+      await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('after Dismiss', async () => {
+      renderCrew(Layout);
+      await verified();
+      act(() => currentCrew().reportError('mark read failed', 'global'));
+      const dismiss = screen.getByRole('button', { name: connectionBarCopy.dismiss });
+      dismiss.focus();
+      fireEvent.click(dismiss);
+      expect(screen.queryByText('mark read failed')).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('after Try again', async () => {
+      renderCrew(Layout);
+      await verified();
+      let fail = true;
+      mocks.crewHttp.mockImplementation(async (path: string) => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === '/connections/conn-1/connect' && fail)
+          throw new CrewHttpError('ssh failed for a reason', 502, 'crew_ssh_failed');
+        return {};
+      });
+      await act(async () => {
+        await currentCrew().connect({ userInitiated: true });
+      });
+      const tryAgain = await screen.findByRole('button', { name: connectionBarCopy.tryAgain });
+      fail = false;
+      tryAgain.focus();
+      fireEvent.click(tryAgain);
+      await waitFor(() => expect(screen.queryByText('ssh failed for a reason')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('leaves focus the person put somewhere else alone', async () => {
+      renderCrew(Layout);
+      await verified();
+      act(() => currentCrew().reportError('mark read failed', 'global'));
+      const elsewhere = screen.getByRole('button', { name: 'Close agent pane' });
+      fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.dismiss }));
+      elsewhere.focus();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(document.activeElement).toBe(elsewhere);
+    });
   });
 
   it('shows a refusal without its code prefix once the dialog that caused it has closed (T-08)', async () => {

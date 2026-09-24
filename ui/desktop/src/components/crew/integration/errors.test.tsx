@@ -127,7 +127,10 @@ describe('every error renders exactly once (ui-redesign-spec, “Where errors re
     await screen.findByRole('dialog');
 
     act(() => daemon.emit({ type: 'error', error: 'observation broke', code: 'temporary' }));
+    // Nothing verified is left while the saved connection is read again (Q2-01)…
+    expect(screen.queryByRole('textbox', { name: 'Message #general' })).toBeNull();
 
+    // …and it still calls the connection connected, so the end is said once, in the bar.
     const stopped = crewObservationCopy.updatesStopped('lab');
     await waitFor(() => expect(screen.getAllByText(stopped)).toHaveLength(1));
     expect(within(region('bar')).getByText(stopped)).toBeInTheDocument();

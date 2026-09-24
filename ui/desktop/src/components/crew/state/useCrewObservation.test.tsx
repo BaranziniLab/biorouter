@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from './copy';
 import {
+  ANSWERED_OBSERVATION_CODES,
   draftScope,
   draftScopeChanged,
+  isFinalObservationEnd,
+  mayBeConnectionLoss,
   observationFailureOutcome,
   observationFrameText,
   type ScopeFrame,
@@ -548,6 +551,112 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
   });
 });
 
+describe('an end a dropped connection explains (live QA round 2, Q2-01)', () => {
+  const ended = (code: string) => ({
+    type: 'error',
+    clear: true,
+    code,
+    error: 'Room observation ended. Clear cached room content and refresh authorized access.',
+  });
+
+  /** The next `GET /connections` waits for the test to answer it. */
+  function holdTheReload() {
+    let answer!: (connections: unknown[]) => void;
+    const reload = new Promise<{ connections: unknown[] }>((resolve) => {
+      answer = (connections) => resolve({ connections });
+    });
+    mocks.crewHttp.mockImplementation(async (path: string) =>
+      path === '/connections' ? reload : {}
+    );
+    return answer;
+  }
+
+  it('clears the view, keeps the draft and reports nothing until the saved record is read again', async () => {
+    const first = await observeChannel();
+    send(first, messagesFrame('a', { reset: true, remaining: 0 }));
+    act(() => crew.setBody('keep this'));
+    const answer = holdTheReload();
+
+    send(first, ended('observation_refused'));
+    expect(crew.snapshot).toBeNull();
+    expect(crew.lastVerified).toBeNull();
+    expect(crew.messages).toEqual([]);
+    expect(crew.refreshError).toBeNull();
+    expect(crew.error).toBeNull();
+    expect(crew.reconnecting).toBe(true);
+    expect(crew.status).toBe('reconnecting');
+    expect(crew.screen).toBe('connecting');
+    expect(crew.draft.body).toBe('keep this');
+
+    // Still connected: not a dropped bridge after all. The old words, and the draft kept.
+    await act(async () => {
+      answer([connection]);
+    });
+    await waitFor(() =>
+      expect(crew.refreshError).toBe(
+        `${crewObservationCopy.updatesStopped('Fixture')} ${crewObservationCopy.draftRetained}`
+      )
+    );
+    expect(crew.refreshErrorCode).toBe('observation_refused');
+    expect(crew.reconnecting).toBe(false);
+    expect(crew.status).toBe('updates-unavailable');
+    expect(crew.draft.body).toBe('keep this');
+    expect(
+      mocks.crewHttp.mock.calls.filter(([path]) => path === `/connections/${connection.id}/connect`)
+    ).toHaveLength(0);
+  });
+
+  it.each(['forbidden', 'principal_revoked', 'unauthorized', 'human_authority_required'])(
+    'shows the workspace’s answer (%s) at once, never taken for a dropped connection',
+    async (code) => {
+      const first = await observeChannel();
+      act(() => crew.setBody('draft'));
+      send(first, ended(code));
+      expect(crew.reconnecting).toBe(false);
+      expect(crew.refreshError).not.toBeNull();
+      expect(crew.refreshErrorCode).toBe(code);
+      expect(mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections')).toHaveLength(1);
+    }
+  );
+
+  it('shows its own finding at once: frames for another workspace are no dropped connection', async () => {
+    await observeChannel();
+    // The stream's own parser throws for a frame of another connection, ending the observation.
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive({ ...stateFrame(), connection_id: 'conn-other' });
+        return 'terminal';
+      }
+    );
+    await act(async () => {
+      await crew.refresh();
+    });
+    await waitFor(() => expect(crew.refreshError).toBe(crewObservationCopy.wrongConnection));
+    expect(crew.reconnecting).toBe(false);
+    // The refresh read the list once; nothing read it again to decide about a reconnect.
+    expect(mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections')).toHaveLength(2);
+  });
+
+  it('shows the end at once for a computer this session never saw verified', async () => {
+    render(
+      <MemoryRouter initialEntries={['/crew']}>
+        <Harness />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    send(sessions[0]!, ended('observation_refused'));
+    expect(crew.reconnecting).toBe(false);
+    expect(crew.refreshErrorCode).toBe('observation_refused');
+    expect(crew.refreshError).toBe(crewObservationCopy.updatesStopped('Fixture'));
+  });
+});
+
 describe('the recovery budget', () => {
   it('waits 0.3, 1 and 3 s, then stops until a verified frame or the window passes', () => {
     const budget = { attempts: [] as number[], all: [] as number[] };
@@ -692,6 +801,47 @@ describe('what the connection bar is told', () => {
     expect(observationFrameText('unauthorized', names)).toBe(
       crewObservationCopy.unknownComputer('lab')
     );
+  });
+
+  it('tells a computer this session knew that it is no longer known, and a removed person so (Q2-18)', () => {
+    const known = { verifiedHere: true };
+    for (const code of ['unauthorized', 'unknown_device']) {
+      expect(observationFrameText(code, names, known)).toBe(crewObservationCopy.removedHere('lab'));
+      expect(observationFrameText(code, names)).toBe(crewObservationCopy.unknownComputer('lab'));
+    }
+    expect(crewObservationCopy.removedHere('lab')).toBe(
+      'lab doesn’t recognize this computer any more. If you didn’t expect that, ask the host.'
+    );
+    expect(observationFrameText('principal_revoked', names)).toBe(
+      'You’re no longer a member of lab.'
+    );
+    expect(observationFrameText('principal_revoked', names, known)).toBe(
+      crewObservationCopy.noLongerMember('lab')
+    );
+    // Retrying can help neither; it still can for a computer never seen verified here.
+    expect(isFinalObservationEnd('principal_revoked', false)).toBe(true);
+    expect(isFinalObservationEnd('unauthorized', true)).toBe(true);
+    expect(isFinalObservationEnd('unknown_device', true)).toBe(true);
+    expect(isFinalObservationEnd('unauthorized', false)).toBe(false);
+    expect(isFinalObservationEnd('observation_refused', true)).toBe(false);
+    expect(isFinalObservationEnd(null, true)).toBe(false);
+  });
+
+  it('takes only an end that is not the workspace’s answer for a possibly dropped connection (Q2-01)', () => {
+    for (const code of [undefined, null, 'observation_refused', 'temporary', 'policy_changed'])
+      expect(mayBeConnectionLoss(code)).toBe(true);
+    for (const code of ANSWERED_OBSERVATION_CODES) expect(mayBeConnectionLoss(code)).toBe(false);
+    // Access, privacy and identity answers are all among them: none is ever retried by a connect.
+    for (const code of [
+      'access_denied',
+      'principal_revoked',
+      'forbidden',
+      'privacy_denied',
+      'human_authority_required',
+      'unauthorized',
+      'unknown_device',
+    ])
+      expect(ANSWERED_OBSERVATION_CODES).toContain(code);
   });
 
   it('mentions the draft only when the composer held something', () => {

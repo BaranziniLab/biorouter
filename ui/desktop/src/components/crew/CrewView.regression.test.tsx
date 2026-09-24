@@ -369,6 +369,41 @@ describe('CrewView action and uncertain-start regressions', () => {
     expect(screen.getByText(/privacy or selected channel access changed/)).toBeInTheDocument();
   });
 
+  it('keeps a draft across leaving Crew, unless the connection policy epoch moved meanwhile (Q2-07)', async () => {
+    let connectionPolicyEpoch = 1;
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive(observerState(snapshot, 'private', connectionPolicyEpoch));
+        return 'terminal';
+      }
+    );
+    const first = renderCrew();
+    fireEvent.change(await screen.findByLabelText('Message #general'), {
+      target: { value: 'kept while away' },
+    });
+    first.unmount();
+    const second = renderCrew();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Message #general')).toHaveValue('kept while away')
+    );
+
+    second.unmount();
+    // Away again, and this computer's connection privacy binding moved meanwhile.
+    connectionPolicyEpoch = 2;
+    renderCrew();
+    const composer = await screen.findByLabelText('Message #general');
+    await waitFor(() => expect(mocks.observeCrew).toHaveBeenCalled());
+    expect(composer).toHaveValue('');
+    // Dropped silently: nothing was in the composer to clear.
+    expect(screen.queryByText(/privacy or selected channel access changed/)).toBeNull();
+  });
+
   it('sends on Enter, while preserving Shift+Enter and IME composition', async () => {
     renderCrew();
     await screen.findByText('Connected · identity verified');

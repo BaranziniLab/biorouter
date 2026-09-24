@@ -38,6 +38,48 @@ export function isRecoverableObservationCode(code: string | null | undefined): b
 /** The broker's codes for a computer the workspace does not know (`unauthorized: unknown device`). */
 export const UNKNOWN_DEVICE_CODES: readonly string[] = ['unauthorized', 'unknown_device'];
 
+/**
+ * Ends that are the workspace's answer about who is asking or what they may see — access,
+ * privacy, this computer's identity, the person's confirmation — or a limit the broker applies.
+ * The link to the workspace evidently works when one of these arrives, so such an end is shown as
+ * it is, at once, and is never taken for a dropped connection (live QA round 2, Q2-01).
+ */
+export const ANSWERED_OBSERVATION_CODES: readonly string[] = [
+  'access_denied',
+  'principal_revoked',
+  'forbidden',
+  'privacy_denied',
+  'human_authority_required',
+  'unauthorized',
+  'unknown_device',
+  'observer_capacity_reached',
+  'response_too_large',
+];
+
+/**
+ * Whether an observation end may mean the connection itself dropped: the daemon's generic
+ * `observation_refused` (what an SSH bridge the broker closed after 300 s idle looks like), a
+ * failure without a code, or any code that is not an answer (`ANSWERED_OBSERVATION_CODES`). The
+ * caller still reloads the saved connection and reconnects only when the daemon now calls it
+ * disconnected.
+ */
+export function mayBeConnectionLoss(code: string | null | undefined): boolean {
+  return !(typeof code === 'string' && ANSWERED_OBSERVATION_CODES.includes(code));
+}
+
+/**
+ * Ends after which retrying the same observation cannot help: the person was removed from the
+ * workspace, or a computer this app session saw verified is no longer known to it (Q2-18). The
+ * connection bar offers no Retry for them.
+ */
+export function isFinalObservationEnd(
+  code: string | null | undefined,
+  verifiedHere: boolean
+): boolean {
+  if (code === 'principal_revoked') return true;
+  return verifiedHere && typeof code === 'string' && UNKNOWN_DEVICE_CODES.includes(code);
+}
+
 export interface ObservationFailureOutcome {
   /** Clear the draft, its attachments, references and context channels. */
   clearDraft: boolean;
@@ -86,22 +128,33 @@ export interface ObservationNames {
  * Plain words for a terminal observation frame, by its code. The daemon writes one fixed sentence
  * for every observer error ("Room observation ended. Clear cached room content…"), so the frame's
  * own text is never shown.
+ *
+ * `verifiedHere`: this app session saw the connection verified (or its join answered `joined`).
+ * An unknown computer is then one the workspace stopped knowing — no "yet" (Q2-18). A connection
+ * never verified here keeps "doesn't recognize this computer yet", which the join probe follows.
  */
-export function observationFrameText(code: string | undefined, names: ObservationNames): string {
+export function observationFrameText(
+  code: string | undefined,
+  names: ObservationNames,
+  options: { verifiedHere?: boolean } = {}
+): string {
   const { workspace, channel } = names;
   switch (code) {
     case 'channel_access_changed':
       return channel
         ? crewObservationCopy.channelAccessChanged(channel)
         : crewObservationCopy.channelAccessLost;
+    case 'principal_revoked':
+      return crewObservationCopy.noLongerMember(workspace);
     case 'access_denied':
     case 'forbidden':
     case 'privacy_denied':
-    case 'principal_revoked':
       return crewObservationCopy.accessChanged(workspace);
     case 'unauthorized':
     case 'unknown_device':
-      return crewObservationCopy.unknownComputer(workspace);
+      return options.verifiedHere
+        ? crewObservationCopy.removedHere(workspace)
+        : crewObservationCopy.unknownComputer(workspace);
     case 'human_authority_required':
       return crewObservationCopy.notConfirmed(workspace);
     case 'observer_capacity_reached':

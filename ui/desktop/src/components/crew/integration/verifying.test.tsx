@@ -135,8 +135,11 @@ describe('re-verification never blanks the page (ui-redesign-spec, “Main-area 
     await waitFor(() => expect(currentCrew().lastVerified).toBeNull());
     expect(screen.queryByText('Counts are in.')).toBeNull();
     expect(screen.queryByRole('button', { name: menuName })).toBeNull();
-    // In plain words; the daemon's own sentence is never shown.
-    expect(screen.getByText(crewObservationCopy.updatesStopped('lab'))).toBeInTheDocument();
+    // In plain words; the daemon's own sentence is never shown. An end without the workspace's
+    // answer is said only once the saved connection was read again and is still connected
+    // (Q2-01): nothing stale is drawn meanwhile.
+    expect(await screen.findByText(crewObservationCopy.updatesStopped('lab'))).toBeInTheDocument();
+    expect(currentCrew().lastVerified).toBeNull();
     expect(screen.queryByText(/observation broke/)).toBeNull();
     // Still never the first-run screen: the workspace is known, only its view is withheld.
     expect(screen.queryByText(welcomeCopy.title)).toBeNull();

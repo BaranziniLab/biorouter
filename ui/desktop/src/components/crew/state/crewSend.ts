@@ -10,6 +10,7 @@ import {
 import type { Channel, Snapshot } from '../crewApi';
 import { clearPublishedTransfers } from '../crewTransfers';
 import { crewActionCopy } from './copy';
+import { forgetStashedDraft } from './draftStash';
 import type {
   ActionKey,
   ActOptions,
@@ -195,6 +196,8 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
           if (current === generation.current)
             reportError(crewActionCopy.sendTransferRecordKept, 'composer');
         }
+        // Sent: no earlier draft kept for this channel may come back over the conversation.
+        forgetStashedDraft(connectionId, channelId);
         if (current !== generation.current) return;
         if (pendingMessage.current === attempt) pendingMessage.current = null;
         if (historyPage.current !== null) {

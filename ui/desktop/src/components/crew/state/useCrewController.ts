@@ -1,19 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { crewHttp, crewRequest, type Snapshot } from '../crewApi';
+import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
 import { createSend, useCrewDraft } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
-import { failureMessage } from './observationFailure';
+import { rememberedLastChannel, rememberLastChannel } from './draftStash';
+import { failureMessage, isFinalObservationEnd } from './observationFailure';
 import {
+  clearDisconnectedByPerson,
+  connectionVerifiedThisSession,
   createConnectionLifecycle,
+  mayReconnectAutomatically,
+  noteAutomaticReconnect,
   useCrewConnectFailures,
   useCrewConnections,
 } from './useCrewConnections';
-import { useCrewObservation } from './useCrewObservation';
+import {
+  CHANNEL_LOST_ERROR_CODE,
+  useCrewObservation,
+  type ObservationEnd,
+} from './useCrewObservation';
 import type { CrewController, CrewControllerOptions, CrewJoinStatus } from './types';
 
 export type * from './types';
@@ -28,14 +37,21 @@ export function isWorkspaceHost(snapshot: Snapshot | null): boolean {
 }
 
 /**
- * The channel to show for `teamId`: `current` while the team still has it, else the team's first
- * channel that is not archived, else none.
+ * The channel to show for `teamId`: `current` while the team still has it, else `preferred` (the
+ * channel the person last chose, Q2-21) while the team has it open, else the team's first channel
+ * that is not archived, else none.
  */
-function channelForTeam(snapshot: Snapshot, teamId: string, current: string): string {
+export function channelForTeam(
+  snapshot: Pick<Snapshot, 'channels'>,
+  teamId: string,
+  current: string,
+  preferred: string | null = null
+): string {
   const channels = snapshot.channels.filter((item) => item.team_id === teamId);
-  return channels.some((item) => item.id === current)
-    ? current
-    : (channels.find((item) => !item.archived)?.id ?? '');
+  if (channels.some((item) => item.id === current)) return current;
+  if (preferred && channels.some((item) => item.id === preferred && !item.archived))
+    return preferred;
+  return channels.find((item) => !item.archived)?.id ?? '';
 }
 
 /** A join status other than `joined` (or a broker without joins) means not a member yet. */
@@ -81,6 +97,21 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const { resetSurfaces, openSignIn, closeSignIn } = surfaces;
   const [joinStatus, setJoinStatus] = useState<CrewJoinStatus | null>(null);
   const connectFailures = useCrewConnectFailures();
+  // The connection Crew is connecting again by itself after it dropped while in use (Q2-01).
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const lossHandler = useRef<(id: string, end: ObservationEnd) => void>(() => undefined);
+  const onConnectionLost = useCallback(
+    (id: string, end: ObservationEnd) => lossHandler.current(id, end),
+    []
+  );
+  const { clear: clearConnectFailure } = connectFailures;
+  const onVerifiedFrame = useCallback(
+    (id: string) => {
+      clearConnectFailure(id);
+      setReconnecting((current) => (current === id ? null : current));
+    },
+    [clearConnectFailure]
+  );
 
   useEffect(() => {
     void loadConnections().catch((failure: unknown) => {
@@ -105,8 +136,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     closeSignIn,
     setJoinStatus,
     resetSurfaces,
-    onVerifiedFrame: connectFailures.clear,
+    onVerifiedFrame,
     keepLastVerifiedView,
+    joinStatus,
+    onConnectionLost,
   });
   const {
     snapshot,
@@ -132,12 +165,24 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     refresh,
     stopObserving,
     restartObservation,
+    observationFailure,
+    stashDraft,
   } = observation;
 
   useEffect(() => {
     if (!snapshot) return;
-    setChannelId((old) => channelForTeam(snapshot, teamId, old));
-  }, [teamId, snapshot]);
+    setChannelId((old) =>
+      channelForTeam(snapshot, teamId, old, rememberedLastChannel(connectionId))
+    );
+  }, [teamId, snapshot]); // eslint-disable-line react-hooks/exhaustive-deps -- the remembered channel is read when the team or view changes, as before
+
+  // A reconnect belongs to the connection it started on, and ends with any error on show.
+  useEffect(() => {
+    setReconnecting(null);
+  }, [connectionId]);
+  useEffect(() => {
+    if (refreshError) setReconnecting(null);
+  }, [refreshError]);
 
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
@@ -197,7 +242,17 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setConnectionId(id);
     if (id === connectionId) restartObservation();
   };
+  //
+  // A deliberate selection also puts the unsent body aside for the channel it was written in
+  // (Q2-07), remembers the chosen channel for next time (Q2-21), and dismisses a "channel was
+  // closed" note that no longer describes what is on screen (Q2-19).
+  const leaveChannel = () => {
+    stashDraft();
+    if (actions.error?.source === 'observer' && actions.error.code === CHANNEL_LOST_ERROR_CODE)
+      dismissError();
+  };
   const selectTeam = (id: string) => {
+    leaveChannel();
     generation.current += 1;
     draft.setReferences([]);
     setMessages([]);
@@ -206,23 +261,45 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft.setAttachments([]);
     draft.setContextChannels([]);
     setTeamId(id);
-    const next = snapshot ? channelForTeam(snapshot, id, channelId) : channelId;
+    const next = snapshot
+      ? channelForTeam(snapshot, id, channelId, rememberedLastChannel(connectionId))
+      : channelId;
+    if (next) rememberLastChannel(connectionId, next);
     if (next !== channelId) setChannelId(next);
     else restartObservation();
   };
   const selectChannel = (id: string) => {
     if (id === channelId) return;
+    leaveChannel();
     generation.current += 1;
     draft.setReferences([]);
     setMessages([]);
     setMessagesLoaded(false);
     draft.setAttachments([]);
     draft.setBody('');
+    // The channel's own team, so a channel in another team is not undone by the team effect
+    // above (Q2-10): a chat's grant opens its channel wherever it is.
+    const view =
+      snapshot ?? (lastVerified?.connectionId === connectionId ? lastVerified.snapshot : null);
+    const target = view?.channels.find((item) => item.id === id);
+    if (target && target.team_id !== teamId) setTeamId(target.team_id);
+    rememberLastChannel(connectionId, id);
     setChannelId(id);
     draft.setContextChannels([]);
   };
 
-  const { connect, disconnect } = createConnectionLifecycle({
+  // Moves on every connection change, unmount and Disconnect: a loss handled before it is over.
+  const lossToken = useRef(0);
+  useEffect(() => {
+    lossToken.current += 1;
+  }, [connectionId]);
+  useEffect(
+    () => () => {
+      lossToken.current += 1;
+    },
+    []
+  );
+  const lifecycle = createConnectionLifecycle({
     connectionId,
     failures: connectFailures,
     autoOpenSignIn,
@@ -232,8 +309,107 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     stopObserving,
     act,
   });
+  const connect = async (opts?: { userInitiated?: boolean }) => {
+    if (opts?.userInitiated) {
+      // The person's own connect replaces any reconnect on the way.
+      lossToken.current += 1;
+      setReconnecting(null);
+    }
+    await lifecycle.connect(opts);
+  };
+  const disconnect = async () => {
+    // A Disconnect ends any reconnect on the way: it neither connects nor reports anything.
+    lossToken.current += 1;
+    setReconnecting(null);
+    await lifecycle.disconnect();
+  };
+
+  // What the loss handler reads after its awaits: the latest render's selection, failure and
+  // connect, never the ones of the render that saw the loss.
+  const latest = useRef({ connectionId, failure: connectFailures.failure, lifecycle });
+  useEffect(() => {
+    latest.current = { connectionId, failure: connectFailures.failure, lifecycle };
+  });
+
+  /**
+   * The observation ended in a way a dropped connection explains (live QA round 2, Q2-01): the
+   * broker closes an SSH bridge after 300 s with no request, and the daemon notices only at the
+   * next one. Read the saved record again; if the daemon now calls it disconnected and
+   * `mayReconnectAutomatically` allows it, connect it again by itself — once, not as the person
+   * (Sign in never opens by itself), through the same `POST …/connect` the Connect button sends.
+   * On success the new view is verified as ever and the draft comes back unless its scope moved;
+   * a failure is classified and drives the sign-in, unreachable or offline screen. Anything else,
+   * a reload that still says connected included, is reported as the observation's end, as before.
+   */
+  const handleConnectionLost = (lostId: string, end: ObservationEnd) => {
+    const token = ++lossToken.current;
+    // The observer's generation at the loss: anything that observes again meanwhile (a selection,
+    // a refresh) or stops observing moves it, and then this loss is no longer the news.
+    const observed = generation.current;
+    const current = () => token === lossToken.current && latest.current.connectionId === lostId;
+    setReconnecting(lostId);
+    void (async () => {
+      let record: CrewConnection | undefined;
+      try {
+        const list = await loadConnections();
+        record = list?.find((item) => item.id === lostId);
+      } catch {
+        record = undefined;
+      }
+      if (!current()) return;
+      if (generation.current !== observed) {
+        setReconnecting((id) => (id === lostId ? null : id));
+        return;
+      }
+      const failure = latest.current.failure;
+      const now = Date.now();
+      if (
+        !mayReconnectAutomatically({
+          connectionId: lostId,
+          status: record?.status,
+          lastFailure: failure?.connectionId === lostId ? failure.kind : undefined,
+          now,
+        })
+      ) {
+        setReconnecting(null);
+        observationFailure(end.text, end.code);
+        return;
+      }
+      noteAutomaticReconnect(lostId, now);
+      const accepted = await latest.current.lifecycle.connect();
+      // Accepted: "Reconnecting…" lasts until the new view verifies (`onVerifiedFrame`), or
+      // until that observation ends too — and one attempt per minute is all it gets.
+      if (!accepted && token === lossToken.current)
+        setReconnecting((id) => (id === lostId ? null : id));
+    })();
+  };
+  useEffect(() => {
+    lossHandler.current = handleConnectionLost;
+  });
+
+  /**
+   * The connection bar's Retry (Q2-01): read the saved record first, and when the daemon no
+   * longer calls it connected, connect at once, as the person — rather than reveal "Offline" and
+   * leave Connect as a second step. Otherwise observe again.
+   */
+  const retryUpdates = async () => {
+    const target = connectionId;
+    let record: CrewConnection | undefined;
+    try {
+      record = (await loadConnections())?.find((item) => item.id === target);
+    } catch {
+      // The refresh below reads the list again and reports why it could not.
+    }
+    if (record && record.status !== 'connected') {
+      await connect({ userInitiated: true });
+      return;
+    }
+    await refresh();
+  };
+
   const onSignedIn = () => {
     closeSignIn();
+    clearDisconnectedByPerson(connectionId);
     connectFailures.clear(connectionId);
     void act('global', 'sign-in', async () => {
       await loadConnections();
@@ -301,7 +477,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   });
 
   const notJoined = isNotJoined(joinStatus);
+  const isReconnecting = reconnecting !== null && reconnecting === connectionId;
   const inFlight = isPending('connect') || isPending('sign-in') || surfaces.signIn.open;
+  const verifiedHere = connectionVerifiedThisSession(connectionId) || joinStatus === 'joined';
   const view = verified
     ? snapshot
     : lastVerified?.connectionId === connectionId
@@ -320,6 +498,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     prepareHostingDevice,
     connect,
     disconnect,
+    reconnecting: isReconnecting,
     lastConnectFailure: connectFailure,
     reportConnectFailure: (failure: unknown) => {
       connectFailures.record(connectionId, failure);
@@ -339,8 +518,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     capabilities,
     refreshError: refreshError || null,
     refreshErrorCode,
+    refreshErrorRetryable: !isFinalObservationEnd(refreshErrorCode, verifiedHere),
     reverifying,
     refresh,
+    retryUpdates,
     loadOlder: () => {
       historyPage.current = messages[0]?.sequence ?? null;
       setHistoryBefore(historyPage.current);
@@ -413,6 +594,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       observationError: Boolean(refreshError),
       notJoined,
       reverifying,
+      reconnecting: isReconnecting,
     }),
     screen: deriveCrewScreen({
       connectionsState,
@@ -425,6 +607,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       channelId,
       observationError: Boolean(refreshError),
       notJoined,
+      reconnecting: isReconnecting,
     }),
     effectivePrivacy:
       verified && snapshot && observedPrivacy
