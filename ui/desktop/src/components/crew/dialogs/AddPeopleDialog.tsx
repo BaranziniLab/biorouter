@@ -6,6 +6,7 @@ import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
 import { channelName, PersonName, teamName, type CrewPerson } from '../identity';
+import { focusIsLost } from '../state/focusReturn';
 import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
 import { addPeopleCopy as copy, dialogErrorCopy } from './copy';
@@ -83,6 +84,7 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
   // The people this dialog added, kept out of the list until the next state frame shows them in.
   const [added, setAdded] = React.useState<ReadonlySet<string>>(() => new Set());
   const [summary, setSummary] = React.useState<Summary | null>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
   const directAdd = directAddSupported(crew.capabilities);
   const channel =
     target === 'channel' ? (snapshot?.channels.find((item) => item.id === targetId) ?? null) : null;
@@ -164,6 +166,15 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
       parts.push(copy.couldNotAdd(usernameList(people), reason));
     return { text: parts.join(' '), failed: reasons.size > 0 };
   };
+
+  // After a run, the Add that had focus is disabled (no one left ticked) or gone: carry on from the
+  // search, or from Done where no one is left (its `autoFocus`), never from nowhere.
+  React.useEffect(() => {
+    if (!summary) return;
+    const active = document.activeElement;
+    if (focusIsLost() || (active instanceof HTMLButtonElement && active.disabled))
+      searchRef.current?.focus();
+  }, [summary]);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -297,7 +308,9 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
       : null;
 
   const footer = message ? (
-    <Button key="done" type="button" onClick={onClose}>
+    // Takes the focus when it replaces the form the last run emptied; on open, the dialog's own
+    // first control does.
+    <Button key="done" type="button" autoFocus={summary !== null} onClick={onClose}>
       {copy.done}
     </Button>
   ) : (
@@ -361,6 +374,7 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
                 labelledBy={labelId}
                 dir={dir}
                 disabled={sending}
+                searchRef={searchRef}
               />
             </div>
             {!directAdd && pending.length > 0 ? (

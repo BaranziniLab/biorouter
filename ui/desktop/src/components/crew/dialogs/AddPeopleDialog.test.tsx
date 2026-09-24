@@ -185,10 +185,12 @@ describe('AddPeopleDialog and its checklist', () => {
     ).toBeInTheDocument();
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    // No one is left to add: one Done, no disabled Add.
+    // No one is left to add: one Done, no disabled Add, and it takes the focus the Add had.
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    const done = within(dialog).getByRole('button', { name: 'Done' });
+    await waitFor(() => expect(done).toHaveFocus());
+    fireEvent.click(done);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -505,13 +507,15 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
     expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
   });
 
-  it('still adds one person, as ever, when only one is ticked', async () => {
+  it('still adds one person, as ever, when only one is ticked, and carries on from the search', async () => {
     const { crew } = renderDirect(
       { target: 'channel', targetId: 'channel-methods' },
       { snapshot: four(), answer: { already_member: false } }
     );
     await tick(/Dan Wu/);
-    expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled();
+    const submit = screen.getByRole('button', { name: 'Add' });
+    expect(submit).toBeEnabled();
+    submit.focus();
     await add('Add');
     await waitFor(() =>
       expect(requestsFor(crew, 'channel.add_member')).toEqual([
@@ -519,6 +523,11 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
       ])
     );
     expect(await screen.findByText('Added @dan to #methods.')).toBeInTheDocument();
+    // The Add that had focus is disabled now that no one is ticked: focus moves to the search.
+    expect(submit).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveFocus()
+    );
   });
 });
 

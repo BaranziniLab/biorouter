@@ -167,6 +167,8 @@ export interface PersonChecklistProps {
   labelledBy?: string;
   dir?: PeopleDirectory | null;
   disabled?: boolean;
+  /** The search box, for a caller that puts focus back there. */
+  searchRef?: React.Ref<HTMLInputElement>;
 }
 
 /**
@@ -188,6 +190,7 @@ export function PersonChecklist({
   labelledBy,
   dir,
   disabled,
+  searchRef,
 }: PersonChecklistProps) {
   const [query, setQuery] = React.useState('');
   const listId = React.useId();
@@ -213,6 +216,7 @@ export function PersonChecklist({
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <Input
+        ref={searchRef}
         type="search"
         placeholder={addPeopleCopy.search}
         aria-label={addPeopleCopy.search}
