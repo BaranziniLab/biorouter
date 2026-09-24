@@ -8,11 +8,6 @@ import { isRecord, nullableNumber, nullableText, optionalText } from './parse';
 
 /** Connection settings a joiner may change before saving. Everything else comes from the invitation. */
 export interface CrewInvitationAdvanced {
-  /**
-   * An SSH alias from the joiner's own SSH config, used instead of `{username}@{ssh_host}`. The
-   * workspace pins stay exactly as the invitation says; only how SSH reaches the server changes.
-   */
-  ssh_target?: string;
   name?: string;
   port?: number;
   identity_file?: string;
@@ -53,7 +48,8 @@ export interface CrewInvitationPreview {
   /**
    * The broker socket and the host's numeric UID the invitation pins. Machine fields: never shown.
    * The Host flow saves them with its prepared identity (`POST /crew/connections`), because a host
-   * pastes `biorouter-crew`'s own output, which cannot name the SSH host.
+   * pastes `biorouter-crew`'s own output, which cannot name the SSH host. Not every daemon's
+   * preview carries them: null means ask the person, never refuse the paste.
    */
   socket_path: string | null;
   owner_uid: number | null;

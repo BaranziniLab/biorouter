@@ -4,7 +4,12 @@ import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import { joinCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
-import { JoinDialog, WORKSPACE_KEY_PATTERN } from './JoinDialog';
+import {
+  JoinDialog,
+  serverLoginInvalid,
+  SSH_LOGIN_PATTERN,
+  WORKSPACE_KEY_PATTERN,
+} from './JoinDialog';
 import { fakeConnection, makeCrew, renderWithCrew, WORKSPACE_KEY } from './testCrew';
 
 const mocks = vi.hoisted(() => ({
@@ -199,11 +204,120 @@ describe('JoinDialog', () => {
       joining: true,
     });
     expect(crew.connect).not.toHaveBeenCalled();
+    // No server login override: the saved connection is used as the invitation route wrote it.
+    expect(crew.updateConnection).not.toHaveBeenCalled();
 
     // The controller has selected the saved connection and lists it: now connect, as the person.
     view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
     await waitFor(() => expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true }));
     await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
+  });
+
+  it('applies a server login override with the ordinary update, never through the invitation route', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const updated = { ...saved, ssh_target: 'hpc' };
+    const updateConnection = vi.fn().mockResolvedValue(updated);
+    const view = renderDialog({ updateConnection });
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    const login = screen.getByLabelText(joinCopy.serverLogin);
+    expect(login).toHaveAttribute('pattern', SSH_LOGIN_PATTERN);
+    fireEvent.change(login, { target: { value: 'hpc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+
+    // The invitation route gets only what its contract names; the override is not in `advanced`.
+    await waitFor(() =>
+      expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
+        mode: 'private',
+        institution_id: 'ucsf',
+        username: 'bob',
+      })
+    );
+    const crew = view.crew();
+    // The full body, pins unchanged, with only the server login replaced.
+    await waitFor(() =>
+      expect(updateConnection).toHaveBeenCalledWith('conn-new', {
+        name: saved.name,
+        ssh_target: 'hpc',
+        port: saved.port,
+        identity_file: saved.identity_file,
+        proxy_jump: saved.proxy_jump,
+        socket_path: saved.socket_path,
+        owner_uid: saved.owner_uid,
+        workspace_id: saved.workspace_id,
+        workspace_public_key: saved.workspace_public_key,
+        cluster_connection_id: saved.cluster_connection_id,
+        remote_root: saved.remote_root,
+        remote_execution: saved.remote_execution,
+        mode: 'private',
+        institution_id: 'ucsf',
+      })
+    );
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-new'));
+    expect(crew.removeConnection).not.toHaveBeenCalled();
+  });
+
+  it('removes the just-saved connection when the server login cannot be applied', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const updateConnection = vi
+      .fn()
+      .mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    const removeConnection = vi.fn().mockResolvedValue(undefined);
+    const view = renderDialog({ updateConnection, removeConnection });
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.change(screen.getByLabelText(joinCopy.serverLogin), { target: { value: 'hpc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+
+    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('conn-new'));
+    const crew = view.crew();
+    // Nothing is selected or connected as someone the person did not choose; Join can be retried.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Join lab' })).toBeEnabled());
+    expect(crew.selectConnection).not.toHaveBeenCalled();
+    expect(crew.connect).not.toHaveBeenCalled();
+    expect(readJoinContext('conn-new')).not.toMatchObject({ joining: true });
+  });
+
+  it('refuses a server login the daemon would refuse, before anything is saved', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.change(screen.getByLabelText(joinCopy.serverLogin), {
+      target: { value: '-oProxyCommand=sh' },
+    });
+    // Close Advanced: the submit opens it again and reports the field.
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    expect(screen.queryByLabelText(joinCopy.serverLogin)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    const login = await screen.findByLabelText(joinCopy.serverLogin);
+    expect(login).toHaveValue('-oProxyCommand=sh');
+    expect((login as HTMLInputElement).validity.patternMismatch).toBe(true);
+    expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
+  });
+
+  it('matches the daemon’s SSH target rule in both the attribute and the check', () => {
+    const attribute = new RegExp(`^(?:${SSH_LOGIN_PATTERN})$`, 'v');
+    for (const [value, valid] of [
+      ['hpc', true],
+      ['bob@hpc.ucsf.edu', true],
+      ['hpc-login:22', true],
+      ['-oProxyCommand=sh', false],
+      ['a b', false],
+      ['a;b', false],
+      ['$(id)', false],
+    ] as const) {
+      expect(attribute.test(value)).toBe(valid);
+      expect(serverLoginInvalid(value)).toBe(!valid);
+    }
+    expect(serverLoginInvalid('')).toBe(false);
   });
 
   it('shows a save failure in the dialog, once', async () => {

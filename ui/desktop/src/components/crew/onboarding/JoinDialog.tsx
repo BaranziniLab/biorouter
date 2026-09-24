@@ -13,9 +13,11 @@ import {
   type CrewInvitationPreview,
 } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
+import type { CrewConnection } from '../crewApi';
 import { PersonName, personFromProjection, sanitizeDisplayText } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import type { SaveConnectionInput } from '../state/types';
+import { connectionUpdateBody } from '../state/useCrewConnections';
 import { joinCopy } from './copy';
 import { Field, PrivacyFields, SwitchRow, useMounted, useOpenGeneration } from './fields';
 import { updateJoinContext } from './joinContext';
@@ -37,6 +39,20 @@ export const INVITATION_PREVIEW_DELAY_MS = 250;
 
 /** The manual workspace key: 64 hex characters (fixes L8). */
 export const WORKSPACE_KEY_PATTERN = '[a-fA-F0-9]{64}';
+
+/**
+ * A server login override: what the daemon accepts as an SSH target (`safe_atom` in
+ * `crew/mod.rs`) — letters, digits and `_ . / : @ % -`, not starting with a dash. Written for the
+ * `pattern` attribute, which browsers compile with the `v` flag.
+ */
+export const SSH_LOGIN_PATTERN = String.raw`[A-Za-z0-9_.\/:@%][A-Za-z0-9_.\/:@%\-]*`;
+const SSH_LOGIN = /^[A-Za-z0-9_./:@%][A-Za-z0-9_./:@%-]*$/;
+
+/** Whether a server login override holds a value the daemon would refuse. Empty is fine. */
+export function serverLoginInvalid(value: string): boolean {
+  const login = value.trim();
+  return Boolean(login) && !SSH_LOGIN.test(login);
+}
 
 /** Whether an Advanced port or work folder holds a value its field would refuse. */
 export function advancedInvalid(port: string, remoteRoot: string): boolean {
@@ -207,7 +223,6 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   const advanced = (): CrewInvitationAdvanced | undefined => {
     const value: CrewInvitationAdvanced = {};
-    if (sshAlias.trim()) value.ssh_target = sshAlias.trim();
     if (portValue !== null && portValue !== defaultPort) value.port = portValue;
     if (identityFile.trim()) value.identity_file = identityFile.trim();
     if (proxyJump.trim()) value.proxy_jump = proxyJump.trim();
@@ -217,6 +232,26 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       value.remote_execution = remoteExecution;
     }
     return Object.keys(value).length ? value : undefined;
+  };
+
+  /**
+   * The invitation route saves `{username}@{server}`. A server login override (an alias from the
+   * person's SSH config) replaces it through the ordinary full-body update every daemon accepts,
+   * so the join never depends on the invitation route knowing the override. If that update fails,
+   * the connection this dialog just saved is removed again: a retry starts clean instead of
+   * leaving a connection that would sign in as someone the person did not choose.
+   */
+  const applyServerLogin = async (connection: CrewConnection, login: string) => {
+    try {
+      return await crew.updateConnection(connection.id, {
+        ...connectionUpdateBody(connection),
+        ssh_target: login,
+      });
+    } catch (failure) {
+      // The update's failure is the one to show; a leftover connection stays removable.
+      await crew.removeConnection(connection.id).catch(() => undefined);
+      throw failure;
+    }
   };
 
   // The manual fields live inside Advanced, which unmounts its fields while closed.
@@ -231,7 +266,12 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (locked) return;
-    if (!advancedOpen && (manualIncomplete() || advancedInvalid(port, remoteRoot))) {
+    if (
+      !advancedOpen &&
+      (manualIncomplete() ||
+        advancedInvalid(port, remoteRoot) ||
+        (!manual && serverLoginInvalid(sshAlias)))
+    ) {
       setAdvancedOpen(true);
       setValidateHidden(true);
       return;
@@ -263,7 +303,10 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       if (username.trim()) overrides.username = username.trim();
       const extra = advanced();
       if (extra) overrides.advanced = extra;
-      const connection = await saveFromInvitation(invitation, overrides);
+      let connection = await saveFromInvitation(invitation, overrides);
+      const login = sshAlias.trim();
+      if (login && connection.ssh_target !== login)
+        connection = await applyServerLogin(connection, login);
       // Reload the list before selecting, so the controller knows the connection it connects.
       await crew.refresh();
       crew.selectConnection(connection.id);
@@ -483,6 +526,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                 <Input
                   {...props}
                   disabled={locked || manual}
+                  pattern={SSH_LOGIN_PATTERN}
                   value={sshAlias}
                   spellCheck={false}
                   onChange={(event) => setSshAlias(event.target.value)}
