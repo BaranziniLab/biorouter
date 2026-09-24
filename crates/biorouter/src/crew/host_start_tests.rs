@@ -37,7 +37,8 @@ fn the_command_matches_the_host_dialogs_template() {
     let start = source
         .find("export function hostStartCommands(")
         .expect("hostStartCommands");
-    let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+    let from = source.get(start..).unwrap();
+    let body = from.get(..from.find("\n}\n").unwrap()).unwrap();
     let template = |line: &'static str| -> &'static str {
         assert!(body.contains(line), "{line} is not in hostStartCommands");
         line
@@ -88,9 +89,9 @@ fn nothing_outside_the_grammar_reaches_the_command() {
     }
     for key in [
         "",
-        &KEY[..63],
+        KEY.get(..63).unwrap(),
         &KEY.to_ascii_uppercase(),
-        &format!("{}; id", &KEY[..60]),
+        &format!("{}; id", KEY.get(..60).unwrap()),
         &format!("{KEY}0"),
     ] {
         assert!(host_start_command("lab", key).is_err(), "{key:?}");
@@ -99,11 +100,9 @@ fn nothing_outside_the_grammar_reaches_the_command() {
 
 #[test]
 fn the_output_is_read_as_a_paste_is() {
-    let start = format!(
-        "{{\"workspace_id\":\"w\",\"started_pid\":42,\"invitation\":\"brcrew1:AbC-12_x\"}}\n{{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}}\n"
-    );
+    let start = "{\"workspace_id\":\"w\",\"started_pid\":42,\"invitation\":\"brcrew1:AbC-12_x\"}\n{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}\n";
     assert_eq!(
-        read_start_output(&start, Some(0)),
+        read_start_output(start, Some(0)),
         StartOutput::Found {
             text: "brcrew1:AbC-12_x".into()
         }
@@ -240,9 +239,7 @@ fn write_fake_ssh(root: &Path, mode: &str) {
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let behaviour = match mode {
-        "start" => format!(
-            "printf '%s\\n' '{{\"workspace_id\":\"w\",\"started_pid\":42,\"invitation\":\"brcrew1:TOKEN\"}}'\nprintf '%s\\n' 'note on stderr' >&2\nprintf '%s\\n' '{{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}}'\nexit 0"
-        ),
+        "start" => "printf '%s\\n' '{\"workspace_id\":\"w\",\"started_pid\":42,\"invitation\":\"brcrew1:TOKEN\"}'\nprintf '%s\\n' 'note on stderr' >&2\nprintf '%s\\n' '{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}'\nexit 0".to_owned(),
         "auth" => "printf '%s\\n' 'crew_alice@lab-server: Permission denied (publickey,keyboard-interactive).' >&2\nexit 255".to_owned(),
         "hang" => "sleep 30".to_owned(),
         other => panic!("{other}"),

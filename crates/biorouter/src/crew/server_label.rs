@@ -61,7 +61,7 @@ fn directive(line: &str) -> Option<(String, Vec<String>)> {
         return None;
     }
     let (keyword, rest) = match line.find(|c: char| c.is_whitespace() || c == '=') {
-        Some(at) => (&line[..at], &line[at..]),
+        Some(at) => line.split_at(at),
         None => (line, ""),
     };
     let rest = rest.trim_start().strip_prefix('=').unwrap_or(rest).trim();
@@ -225,8 +225,10 @@ fn collect(
 
 type Fingerprint = Vec<(PathBuf, u64, Option<SystemTime>)>;
 
-static CACHE: LazyLock<Mutex<HashMap<(String, Option<u16>), (String, Fingerprint, Instant)>>> =
-    LazyLock::new(Default::default);
+/// A label, what it was resolved from, and when, per saved login and port.
+type LabelCache = HashMap<(String, Option<u16>), (String, Fingerprint, Instant)>;
+
+static CACHE: LazyLock<Mutex<LabelCache>> = LazyLock::new(Default::default);
 
 /// `ssh -G <name>`'s host name and port, under the profile's `-F` like the bridge.
 async fn endpoint_of(name: &str) -> Option<(String, u16)> {

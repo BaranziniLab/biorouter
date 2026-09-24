@@ -175,18 +175,21 @@ pub fn host_start_command(slug: &str, bootstrap_key: &str) -> Result<String> {
 /// The value inside `"invitation": "…"` when it is a `brcrew1:` line.
 fn quoted_invitation(output: &str) -> Option<String> {
     let mut rest = output;
-    while let Some(at) = rest.find("\"invitation\"") {
-        rest = &rest[at + "\"invitation\"".len()..];
-        let value = rest.trim_start().strip_prefix(':')?.trim_start();
-        if let Some(value) = value.strip_prefix('"') {
-            let end = value.find('"')?;
-            let token: String = value[..end]
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            if token.starts_with("brcrew1:") {
-                return Some(token);
-            }
+    while let Some((_, after)) = rest.split_once("\"invitation\"") {
+        rest = after;
+        let Some(value) = after.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let Some((inside, _)) = value
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|quoted| quoted.split_once('"'))
+        else {
+            continue;
+        };
+        let token: String = inside.chars().filter(|c| !c.is_whitespace()).collect();
+        if token.starts_with("brcrew1:") {
+            return Some(token);
         }
     }
     None
@@ -281,16 +284,19 @@ fn shown(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// A run's state, its exit code, and what it came to (one of `result` and `error`, once done).
+type RunState = (
+    HostStartState,
+    Option<i32>,
+    Option<StartOutput>,
+    Option<HostStartError>,
+);
+
 struct Job {
     preparation_id: String,
     command: String,
     output: Mutex<Vec<u8>>,
-    state: Mutex<(
-        HostStartState,
-        Option<i32>,
-        Option<StartOutput>,
-        Option<HostStartError>,
-    )>,
+    state: Mutex<RunState>,
     finished_at: Mutex<Option<Instant>>,
     cancel: tokio_util::sync::CancellationToken,
 }
@@ -373,79 +379,178 @@ pub fn cancel_host_start(job_id: &str) -> bool {
     }
 }
 
-async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin, job: Arc<Job>) {
+/// Starts run one at a time, so two clicks can never both start a run for one host setup.
+static STARTING: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+/// The login and route, refused unless each is in the form a saved connection allows.
+fn check_route(request: &HostStartRequest) -> Result<()> {
+    if !safe_atom(&request.ssh_target) {
+        return Err(refused(
+            400,
+            "crew_request_invalid",
+            "Type the server login as an SSH alias or user@host.",
+        ));
+    }
+    if let Some(jump) = &request.proxy_jump {
+        if !jump.split(',').all(safe_atom) {
+            return Err(refused(
+                400,
+                "crew_request_invalid",
+                "The jump host isn't in a form SSH accepts.",
+            ));
+        }
+    }
+    if let Some(identity) = &request.identity_file {
+        if !std::path::Path::new(identity).is_absolute() || identity.contains('\n') {
+            return Err(refused(
+                400,
+                "crew_request_invalid",
+                "The key file must be an absolute path.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Why a finished `ssh` counts as failed, if it does: stopped, too slow, or `ssh` itself
+/// (exit 255) could not run the commands.
+fn failure(
+    cancelled: bool,
+    timed_out: bool,
+    exit_code: Option<i32>,
+    stderr: &str,
+) -> Option<HostStartError> {
+    if cancelled {
+        return Some(HostStartError {
+            code: "crew_host_start_cancelled".into(),
+            message:
+                "Stopped. Crew may have started on the server; run the commands yourself to check."
+                    .into(),
+        });
+    }
+    if timed_out {
+        return Some(HostStartError {
+            code: "crew_host_start_timed_out".into(),
+            message: "Starting Crew took too long, so it was stopped. Run the commands yourself to see what the server says.".into(),
+        });
+    }
+    // ssh's own failure: it never ran the commands, or lost the server.
+    (exit_code == Some(255)).then(|| {
+        let kind = transport::classify_exit(exit_code, stderr);
+        HostStartError {
+            code: kind.api_code().into(),
+            message: ssh_sentence(kind),
+        }
+    })
+}
+
+/// Copy `reader` into the run's output and, when given, a second buffer of its own.
+async fn capture(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    job: Arc<Job>,
+    also: Option<Arc<Mutex<Vec<u8>>>>,
+) {
     let mut buffer = [0u8; 4096];
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => return,
             Ok(read) => {
-                let mut output = job
-                    .output
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let room = MAX_OUTPUT.saturating_sub(output.len());
-                output.extend_from_slice(&buffer[..read.min(room)]);
+                for sink in std::iter::once(&job.output).chain(also.as_deref()) {
+                    let mut sink = sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let room = MAX_OUTPUT.saturating_sub(sink.len());
+                    sink.extend_from_slice(&buffer[..read.min(room)]);
+                }
             }
         }
     }
 }
 
+/// Watch a started `ssh` to its end (or the limit, or a cancel), then record what it came to.
+fn watch(job: Arc<Job>, mut child: tokio::process::Child) {
+    let stdout = child
+        .stdout
+        .take()
+        .map(|out| tokio::spawn(capture(out, Arc::clone(&job), None)));
+    let stderr_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stderr = child.stderr.take().map(|err| {
+        tokio::spawn(capture(
+            err,
+            Arc::clone(&job),
+            Some(Arc::clone(&stderr_buffer)),
+        ))
+    });
+    tokio::spawn(async move {
+        let waited = tokio::select! {
+            status = tokio::time::timeout(RUN_LIMIT, child.wait()) => status.ok(),
+            () = job.cancel.cancelled() => None,
+        };
+        let cancelled = job.cancel.is_cancelled();
+        let timed_out = waited.is_none();
+        if timed_out {
+            let _ = child.kill().await;
+        }
+        for task in [stdout, stderr].into_iter().flatten() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+        }
+        let exit_code = waited
+            .and_then(|status| status.ok())
+            .and_then(|status| status.code());
+        let stderr = shown(
+            &stderr_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        match failure(cancelled, timed_out, exit_code, &stderr) {
+            Some(error) => job.finish(HostStartState::Failed, exit_code, None, Some(error)),
+            None => {
+                let output = shown(
+                    &job.output
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                let result = read_start_output(&output, exit_code);
+                job.finish(HostStartState::Finished, exit_code, Some(result), None);
+            }
+        }
+    });
+}
+
 impl CrewManager {
+    /// The hosting key of `preparation_id`, when it is this computer's pending host setup and
+    /// no saved connection has used it yet.
+    async fn host_setup_key(&self, preparation_id: &str) -> Result<String> {
+        let registry = self.registry.lock().await;
+        if registry.completed_preparations.contains_key(preparation_id) {
+            return Err(refused(
+                409,
+                "crew_host_setup_used",
+                "This host setup already has a saved connection. Open it from Crew.",
+            ));
+        }
+        registry
+            .pending_device
+            .as_ref()
+            .filter(|prepared| prepared.preparation_id == preparation_id)
+            .map(|prepared| prepared.public_key.clone())
+            .ok_or_else(|| {
+                refused(
+                    409,
+                    "crew_host_setup_unknown",
+                    "This computer has no host setup with that ID. Start hosting again.",
+                )
+            })
+    }
+
     /// Start the host setup's commands on the server (see the module documentation). Answers
     /// the run already under way for the same setup rather than starting a second.
     pub async fn start_host(&self, request: HostStartRequest) -> Result<HostStartStatus> {
-        if !safe_atom(&request.ssh_target) {
-            return Err(refused(
-                400,
-                "crew_request_invalid",
-                "Type the server login as an SSH alias or user@host.",
-            ));
-        }
-        if let Some(jump) = &request.proxy_jump {
-            if !jump.split(',').all(safe_atom) {
-                return Err(refused(
-                    400,
-                    "crew_request_invalid",
-                    "The jump host isn't in a form SSH accepts.",
-                ));
-            }
-        }
-        if let Some(identity) = &request.identity_file {
-            if !(std::path::Path::new(identity).is_absolute() && !identity.contains('\n')) {
-                return Err(refused(
-                    400,
-                    "crew_request_invalid",
-                    "The key file must be an absolute path.",
-                ));
-            }
-        }
-        let bootstrap_key = {
-            let registry = self.registry.lock().await;
-            if registry
-                .completed_preparations
-                .contains_key(&request.preparation_id)
-            {
-                return Err(refused(
-                    409,
-                    "crew_host_setup_used",
-                    "This host setup already has a saved connection. Open it from Crew.",
-                ));
-            }
-            registry
-                .pending_device
-                .as_ref()
-                .filter(|prepared| prepared.preparation_id == request.preparation_id)
-                .map(|prepared| prepared.public_key.clone())
-                .ok_or_else(|| {
-                    refused(
-                        409,
-                        "crew_host_setup_unknown",
-                        "This computer has no host setup with that ID. Start hosting again.",
-                    )
-                })?
-        };
+        check_route(&request)?;
+        let bootstrap_key = self.host_setup_key(&request.preparation_id).await?;
         let command = host_start_command(&request.workspace_name, &bootstrap_key)
             .map_err(|error| refused(400, "crew_request_invalid", error.to_string()))?;
+        let _starting = STARTING.lock().await;
         {
             let jobs = jobs();
             if let Some((id, job)) = jobs
@@ -455,7 +560,11 @@ impl CrewManager {
                 return Ok(job.status(id));
             }
             if jobs.values().filter(|job| job.running()).count() >= MAX_RUNNING {
-                return Err(refused(409, "crew_host_start_busy", "Crew is already being started on a server from this computer. Wait for it to finish."));
+                return Err(refused(
+                    409,
+                    "crew_host_start_busy",
+                    "Crew is already being started on a server from this computer. Wait for it to finish.",
+                ));
             }
         }
         let mut args = transport::login_args(
@@ -478,7 +587,7 @@ impl CrewManager {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         crate::subprocess::prepare_agent_child_command(&mut ssh);
-        let mut child = ssh.spawn().context("Couldn't run ssh")?;
+        let child = ssh.spawn().context("Couldn't run ssh")?;
         let job_id = uuid::Uuid::new_v4().to_string();
         let job = Arc::new(Job {
             preparation_id: request.preparation_id,
@@ -489,89 +598,7 @@ impl CrewManager {
             cancel: tokio_util::sync::CancellationToken::new(),
         });
         jobs().insert(job_id.clone(), Arc::clone(&job));
-        let stdout = child
-            .stdout
-            .take()
-            .map(|out| tokio::spawn(drain(out, Arc::clone(&job))));
-        let stderr_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let stderr = child.stderr.take().map(|err| {
-            let job = Arc::clone(&job);
-            let kept = Arc::clone(&stderr_buffer);
-            tokio::spawn(async move {
-                let mut reader = err;
-                let mut buffer = [0u8; 4096];
-                loop {
-                    match reader.read(&mut buffer).await {
-                        Ok(0) | Err(_) => return,
-                        Ok(read) => {
-                            for sink in [&job.output, &*kept] {
-                                let mut sink = sink
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                let room = MAX_OUTPUT.saturating_sub(sink.len());
-                                sink.extend_from_slice(&buffer[..read.min(room)]);
-                            }
-                        }
-                    }
-                }
-            })
-        });
-        let runner = Arc::clone(&job);
-        tokio::spawn(async move {
-            let job = runner;
-            let waited = tokio::select! {
-                status = tokio::time::timeout(RUN_LIMIT, child.wait()) => status.ok(),
-                () = job.cancel.cancelled() => None,
-            };
-            let cancelled = job.cancel.is_cancelled();
-            if waited.is_none() {
-                let _ = child.kill().await;
-            }
-            for task in [stdout, stderr].into_iter().flatten() {
-                let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
-            }
-            let timed_out = waited.is_none();
-            let exit_code = waited
-                .and_then(|status| status.ok())
-                .and_then(|status| status.code());
-            let stderr = shown(
-                &stderr_buffer
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-            let failure = if cancelled {
-                Some(HostStartError {
-                    code: "crew_host_start_cancelled".into(),
-                    message: "Stopped. Crew may have started on the server; run the commands yourself to check.".into(),
-                })
-            } else if timed_out {
-                Some(HostStartError {
-                    code: "crew_host_start_timed_out".into(),
-                    message: "Starting Crew took too long, so it was stopped. Run the commands yourself to see what the server says.".into(),
-                })
-            } else if exit_code == Some(255) {
-                // ssh's own failure: it never ran the commands, or lost the server.
-                let kind = transport::classify_exit(exit_code, &stderr);
-                Some(HostStartError {
-                    code: kind.api_code().into(),
-                    message: ssh_sentence(kind),
-                })
-            } else {
-                None
-            };
-            match failure {
-                Some(error) => job.finish(HostStartState::Failed, exit_code, None, Some(error)),
-                None => {
-                    let output = shown(
-                        &job.output
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    );
-                    let result = read_start_output(&output, exit_code);
-                    job.finish(HostStartState::Finished, exit_code, Some(result), None);
-                }
-            }
-        });
+        watch(Arc::clone(&job), child);
         Ok(job.status(&job_id))
     }
 }
