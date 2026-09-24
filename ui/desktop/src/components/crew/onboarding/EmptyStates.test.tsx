@@ -1,6 +1,9 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Channel } from '../crewApi';
+import { buildPeopleDirectory } from '../identity';
 import type { CrewController } from '../state/types';
+import { ChannelIntro } from '../timeline/ChannelIntro';
 import { checklistCopy, emptyCopy, INSTALL_COMMANDS, notSetUpCopy, welcomeCopy } from './copy';
 import {
   ConnectingCard,
@@ -389,6 +392,66 @@ describe('SetupChecklist', () => {
       <SetupChecklist compact />,
       crewWith({ snapshot: hostSnapshot(), isHost: false })
     );
+    expect(screen.queryByTestId('crew-setup-invite-nudge')).toBeNull();
+  });
+
+  it('is inside the channel the host opens, not only on the empty workspace (T-22)', () => {
+    const snapshot = hostSnapshot();
+    const channel: Channel = {
+      id: 'c-general',
+      team_id: 'team-1',
+      name: 'general',
+      created_by: 'p-alice',
+      owner_id: 'p-alice',
+      members: ['p-alice'],
+      archived: false,
+      classification: 'public_safe',
+    };
+    const intro = (crew: CrewController) =>
+      renderWithCrew(
+        <ChannelIntro
+          channel={channel}
+          viewerId="p-alice"
+          dir={buildPeopleDirectory(snapshot)}
+          readOnly={!crew.snapshot}
+        />,
+        crew
+      );
+
+    const host = crewWith({ snapshot, isHost: true });
+    const view = intro(host);
+    fireEvent.click(screen.getByRole('button', { name: checklistCopy.invitePeopleTo('lab') }));
+    expect(host.openDialog).toHaveBeenCalledWith({ kind: 'invite-people' });
+    view.unmount();
+
+    // While Crew re-verifies, the line stays but acts on nothing, like the rest of the timeline.
+    const reverifying = intro(
+      crewWith({
+        snapshot: null,
+        isHost: true,
+        lastVerified: {
+          connectionId: 'conn-1',
+          snapshot,
+          observedPrivacy: {
+            connectionId: 'conn-1',
+            mode: 'private',
+            institutionId: null,
+            policyEpoch: 1,
+          },
+          runs: [],
+          labels: null,
+          teamId: 'team-1',
+          channelId: channel.id,
+          messages: [],
+        },
+      })
+    );
+    expect(
+      screen.getByRole('button', { name: checklistCopy.invitePeopleTo('lab') })
+    ).toBeDisabled();
+    reverifying.unmount();
+
+    intro(crewWith({ snapshot, isHost: false }));
     expect(screen.queryByTestId('crew-setup-invite-nudge')).toBeNull();
   });
 

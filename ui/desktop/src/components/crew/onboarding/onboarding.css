@@ -307,13 +307,15 @@
 }
 
 /* The compact invite line a channel keeps while the host is still alone in
-   the workspace (SetupChecklist compact, T-22). */
+   the workspace (SetupChecklist compact, T-22). It closes the channel intro,
+   set 8px apart from the lines above it the way the intro's Add people is. */
 .crew-onboard-nudge {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
   min-width: 0;
+  margin-top: 8px;
 }
 
 .crew-onboard-nudge-text {

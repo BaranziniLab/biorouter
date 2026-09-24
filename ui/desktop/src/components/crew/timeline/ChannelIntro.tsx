@@ -2,6 +2,7 @@ import { Button } from '../../ui/button';
 import { Hash } from '../../icons/app-icons';
 import type { Channel } from '../crewApi';
 import { PersonName, channelSlug, isolate, type PeopleDirectory } from '../identity';
+import { SetupChecklist } from '../onboarding/SetupChecklist';
 import { useCrew } from '../state/CrewControllerContext';
 import { timelineCopy } from './copy';
 
@@ -15,6 +16,11 @@ import { timelineCopy } from './copy';
  * added you to are listed, so a `#methods` named in a post and missing from the
  * sidebar is not broken — and the owner is who to ask. (Crew lists no channel
  * to a non-member, so nothing here can name the ones you are not in.)
+ *
+ * While the host is still alone in the workspace, the setup checklist's one line — "No one else
+ * has joined {workspace} yet." with **Invite people to {workspace}…** — follows (T-22): opening a
+ * channel used to take the only in-channel path to an invitation away. It renders nothing for
+ * anyone else, and goes once someone joins or asks to.
  *
  * `pending` keeps its place while the live tail is still streaming in and the
  * start is not yet known to be loaded: laid out but invisible, hidden from
@@ -74,6 +80,8 @@ export function ChannelIntro({
           {timelineCopy.introAddPeople}
         </Button>
       )}
+      {/* The host alone in the workspace keeps "Invite people to {workspace}…" here (T-22). */}
+      <SetupChecklist compact />
     </div>
   );
 }
