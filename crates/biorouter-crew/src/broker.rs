@@ -1662,33 +1662,7 @@ impl Broker {
             .into_iter()
             .filter(|channel| self.channel(s, &actor.id, channel, false).is_ok())
             .collect();
-        let mut positions = BTreeMap::new();
-        let mut unread = BTreeMap::new();
-        for channel in s
-            .channels
-            .values()
-            .filter(|c| c.members.contains(&actor.id))
-        {
-            let sequence = *s
-                .read_positions
-                .get(&format!("{}:{}", actor.id, channel.id))
-                .unwrap_or(&0);
-            positions.insert(
-                channel.id.clone(),
-                self.read_position_wire(s, actor, &channel.id, sequence),
-            );
-            let count = s
-                .messages
-                .iter()
-                .filter(|m| {
-                    m.channel_id == channel.id
-                        && m.sequence > sequence
-                        && m.actor_id != actor.id
-                        && self.visible(s, actor, m)
-                })
-                .count();
-            unread.insert(channel.id.clone(), count);
-        }
+        let (positions, unread) = self.read_state(s, actor);
         let host = self.manager(s, &actor.id).is_ok();
         let now = now();
         let index = PeopleIndex::new(s);
@@ -1731,23 +1705,7 @@ impl Broker {
             })
             .collect();
         let former_principals = Self::former_principals(s, &index, &teams, &channels, &invitations);
-        let actor_wire = s.principals.get(&actor.id).map(|principal| {
-            let mut wire = index.principal_wire(principal);
-            wire["devices"] = Value::Array(
-                s.devices
-                    .iter()
-                    .filter(|(_, device)| device.principal_id == actor.id)
-                    .map(|(device_id, device)| {
-                        json!({
-                            "fingerprint": crate::invitation::grouped_fingerprint(device_id),
-                            "added_at": device.added_at,
-                            "added_via": device.added_via,
-                        })
-                    })
-                    .collect(),
-            );
-            wire
-        });
+        let actor_wire = Self::actor_wire(s, &index, &actor.id);
         let teams_wire = Self::teams_wire(&teams);
         let channels_wire = Self::channels_wire(&channels);
         let invitations_wire: Vec<Value> = invitations
@@ -1769,6 +1727,64 @@ impl Broker {
             }
         }
         Ok(snapshot)
+    }
+    /// Per visible channel, the actor's read watermark (as an opaque message token) and the
+    /// number of unread messages from others.
+    fn read_state(
+        &self,
+        s: &State,
+        actor: &Actor,
+    ) -> (BTreeMap<String, Value>, BTreeMap<String, usize>) {
+        let mut positions = BTreeMap::new();
+        let mut unread = BTreeMap::new();
+        for channel in s
+            .channels
+            .values()
+            .filter(|c| c.members.contains(&actor.id))
+        {
+            let sequence = *s
+                .read_positions
+                .get(&format!("{}:{}", actor.id, channel.id))
+                .unwrap_or(&0);
+            positions.insert(
+                channel.id.clone(),
+                self.read_position_wire(s, actor, &channel.id, sequence),
+            );
+            let count = s
+                .messages
+                .iter()
+                .filter(|m| {
+                    m.channel_id == channel.id
+                        && m.sequence > sequence
+                        && m.actor_id != actor.id
+                        && self.visible(s, actor, m)
+                })
+                .count();
+            unread.insert(channel.id.clone(), count);
+        }
+        (positions, unread)
+    }
+    /// The actor's own principal with its display name and its devices
+    /// (`{fingerprint, added_at, added_via}`; the fingerprint is the grouped first 16 hex digits
+    /// of the device ID). Nobody else's devices are ever projected.
+    fn actor_wire(s: &State, index: &PeopleIndex, actor_id: &str) -> Option<Value> {
+        s.principals.get(actor_id).map(|principal| {
+            let mut wire = index.principal_wire(principal);
+            wire["devices"] = Value::Array(
+                s.devices
+                    .iter()
+                    .filter(|(_, device)| device.principal_id == actor_id)
+                    .map(|(device_id, device)| {
+                        json!({
+                            "fingerprint": crate::invitation::grouped_fingerprint(device_id),
+                            "added_at": device.added_at,
+                            "added_via": device.added_via,
+                        })
+                    })
+                    .collect(),
+            );
+            wire
+        })
     }
     /// Inactive principals referenced by the actor's visible objects: the members, creator,
     /// owner and pending owner of visible teams and channels, and the invitee and inviter of
