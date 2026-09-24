@@ -18,19 +18,30 @@ import { useCallback, useRef } from 'react';
  * - Focus is only ever RESCUED: when something else deliberately took focus after the dialog closed
  *   (a pane that focuses its heading, a composer), it is left there.
  * - When the opener is gone too, focus lands on the first fallback that exists: the channel's
- *   heading button, then the composer.
+ *   heading button, then the composer, then the workspace switcher.
  */
 
-/** Where focus goes when a dialog's opener is gone: the channel heading, then the composer. */
+const CHANNEL_HEADING = '.crew-app h1 button';
+const COMPOSER = '.crew-app textarea[aria-label^="Message"]';
+const WORKSPACE_SWITCHER = '.crew-sidebar-switcher';
+
+/**
+ * Where focus goes when a dialog's opener is gone: the channel heading, then the composer, then the
+ * workspace switcher. The switcher is last, for a Crew area showing a status screen instead of a
+ * channel (loading, checking, offline: `layout/MainScreen.tsx` draws neither heading nor composer),
+ * where focus would otherwise stay on `<body>` (QA Q2-27).
+ */
 export const DIALOG_FOCUS_FALLBACKS: readonly string[] = [
-  '.crew-app h1 button',
-  '.crew-app textarea[aria-label^="Message"]',
+  CHANNEL_HEADING,
+  COMPOSER,
+  WORKSPACE_SWITCHER,
 ];
 
 /** Where focus goes when Sign in's opener is gone: the workspace switcher first. */
 export const SIGN_IN_FOCUS_FALLBACKS: readonly string[] = [
-  '.crew-sidebar-switcher',
-  ...DIALOG_FOCUS_FALLBACKS,
+  WORKSPACE_SWITCHER,
+  CHANNEL_HEADING,
+  COMPOSER,
 ];
 
 /**

@@ -148,6 +148,22 @@ describe('restoreFocus', () => {
     expect(byId('composer')).toHaveFocus();
   });
 
+  it('falls back to the workspace switcher last, when no channel is showing', () => {
+    mount(`
+      <div class="crew-app">
+        <button class="crew-sidebar-switcher" id="switcher">lab</button>
+      </div>
+    `);
+    const gone = document.createElement('button');
+    expect(DIALOG_FOCUS_FALLBACKS[DIALOG_FOCUS_FALLBACKS.length - 1]).toBe(
+      '.crew-sidebar-switcher'
+    );
+    expect(restoreFocus(gone, DIALOG_FOCUS_FALLBACKS)).toBe(true);
+    expect(byId('switcher')).toHaveFocus();
+    // Sign in's list is the same three, the switcher first.
+    expect([...SIGN_IN_FOCUS_FALLBACKS].sort()).toEqual([...DIALOG_FOCUS_FALLBACKS].sort());
+  });
+
   it('sends Sign in’s focus to the workspace switcher first', () => {
     mount(`
       <div class="crew-app">
