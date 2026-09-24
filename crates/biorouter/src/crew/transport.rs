@@ -629,7 +629,7 @@ fn sanitize_stderr(raw: &str) -> String {
                 }
             }
             '\t' => out.push(' '),
-            c if c.is_control() || is_bidi_control(c) => {}
+            c if c.is_control() || crate::utils::is_invisible_formatting(c) => {}
             c => out.push(c),
         }
     }
@@ -667,13 +667,6 @@ fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
         // Any other two-character escape: the second character went with it.
         _ => {}
     }
-}
-
-fn is_bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
