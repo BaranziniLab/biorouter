@@ -917,11 +917,55 @@ describe('AgentTaskPane', () => {
 
       // Quoted, a name is taken whole, and a warning names it whole.
       fireEvent.change(task, {
-        target: { value: 'Compute OD ratios from "Plate Reader.csv" and `OD600 run 2.xlsx`' },
+        target: { value: 'Compute OD ratios from "Plate Reader.csv" and "OD600 run 2.xlsx"' },
       });
       expect(await screen.findByTestId('crew-agent-file-warning')).toHaveTextContent(
         warning(['OD600 run 2.xlsx'])
       );
+    });
+
+    it('names only the unshared file of a command or a quoted list, never the whole of it', async () => {
+      const user = userEvent.setup();
+      installFiles({ 'blob-1': 'counts.csv', 'blob-2': 'rep1.csv', 'blob-3': 'rep2.csv' });
+      installObserver({
+        messages: [{ ...message('1'), attachments: ['blob-1', 'blob-2', 'blob-3'] }],
+      });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+
+      fireEvent.change(task, { target: { value: 'Run `python merge.py counts.csv plate.csv`' } });
+      expect(await screen.findByTestId('crew-agent-file-warning')).toHaveTextContent(
+        warning(['plate.csv'])
+      );
+      expect(fileWarning()).not.toHaveTextContent('merge.py');
+
+      fireEvent.change(task, {
+        target: { value: 'Compare the replicates in "rep1.csv, rep2.csv, rep3.csv"' },
+      });
+      await waitFor(() => expect(fileWarning()).toHaveTextContent(warning(['rep3.csv'])));
+      expect(warning(['rep3.csv'])).toBe(
+        'No file named rep3.csv is shared in #general. Your agent will say what it used instead.'
+      );
+    });
+
+    it('stays quiet on an older page, whose later messages are not loaded', async () => {
+      const user = userEvent.setup();
+      // The live tail shares counts.csv; the page before it (answered by `messages.history`) is
+      // empty, and short of a full page, so it reads as the channel's start.
+      installFiles({ 'blob-1': 'counts.csv' });
+      installObserver({ messages: [{ ...message('5'), attachments: ['blob-1'] }] });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+      act(() => currentCrew().loadOlder());
+      await waitFor(() => expect(currentCrew().historyBefore).not.toBeNull());
+      await waitFor(() => expect(currentCrew().messagesLoaded).toBe(true));
+      expect(currentCrew().messages).toHaveLength(0);
+      fireEvent.change(task, { target: { value: 'Average counts.csv' } });
+      await act(async () => undefined);
+      // counts.csv is shared, in a message this page does not hold.
+      expect(fileWarning()).toBeNull();
     });
 
     it('stays quiet while the loaded messages may not be the whole channel', async () => {
@@ -1008,17 +1052,61 @@ describe('AgentTaskPane', () => {
         'counts.csv',
       ]);
 
-      // Quoted or backticked, a name is taken whole and by its file name; a quoted URL is not one.
+      // In double quotes, a name is taken whole and by its file name; a quoted URL is not one.
       expect(
         mentionedFileNames(
-          'Use "Plate Reader.csv", “Layout v2.xlsx”, `/data/OD600 run 2.xlsx` and "https://x.org/a b.csv"; "not a file" plate.csv'
+          'Use "Plate Reader.csv", “Layout v2.xlsx”, "/data/OD600 run 2.xlsx", "(v2) plate.csv" and "https://x.org/a b.csv"; "not a file" plate.csv'
         )
-      ).toEqual(['Plate Reader.csv', 'Layout v2.xlsx', 'OD600 run 2.xlsx', 'plate.csv']);
+      ).toEqual([
+        'Plate Reader.csv',
+        'Layout v2.xlsx',
+        'OD600 run 2.xlsx',
+        '(v2) plate.csv',
+        'plate.csv',
+      ]);
       expect(unsharedFileNames(['Plate Reader.csv'], ['plate reader.CSV'])).toEqual([]);
       expect(unsharedFileNames(['Plate Reader.csv'], ['Reader.csv'])).toEqual([]);
       expect(unsharedFileNames(['Plate Reader.csv'], ['Plate Reader.tsv'])).toEqual([
         'Plate Reader.csv',
       ]);
+    });
+
+    it('never names a command, a list or a phrase in quotes as if it were one file', () => {
+      // Backticks hold code, where a space separates arguments: each file is its own name.
+      expect(mentionedFileNames('Run `python merge.py counts.csv plate.csv`')).toEqual([
+        'counts.csv',
+        'plate.csv',
+      ]);
+      expect(unsharedFileNames(['counts.csv', 'plate.csv'], ['counts.csv'])).toEqual(['plate.csv']);
+      expect(mentionedFileNames('Run `Rscript qc.R counts.csv`')).toEqual(['counts.csv']);
+      expect(mentionedFileNames('Run `cat counts.csv` on `OD600 run 2.xlsx`')).toEqual([
+        'counts.csv',
+        '2.xlsx',
+      ]);
+      // A name a command quotes is still one name.
+      expect(mentionedFileNames('Run `python run.py "Plate Reader.csv"`')).toEqual([
+        'Plate Reader.csv',
+      ]);
+
+      // Double quotes around a list are not one file named after the whole list…
+      expect(
+        mentionedFileNames('Compare the replicates in "rep1.csv, rep2.csv, rep3.csv"')
+      ).toEqual(['rep1.csv', 'rep2.csv', 'rep3.csv']);
+      expect(
+        unsharedFileNames(['rep1.csv', 'rep2.csv', 'rep3.csv'], ['rep1.csv', 'rep2.csv'])
+      ).toEqual(['rep3.csv']);
+      expect(mentionedFileNames('"counts.csv and plate.csv", "a.tsv or b.tsv"')).toEqual([
+        'counts.csv',
+        'plate.csv',
+        'a.tsv',
+        'b.tsv',
+      ]);
+      // …and neither is a command, a flag, a label or a script beside a file.
+      expect(
+        mentionedFileNames(
+          '"python merge.py Plate Reader.csv", "head -n 5 run.csv", "Input: layout.xlsx", "sort < qc.json", "x=1; y.txt"'
+        )
+      ).toEqual(['Reader.csv', 'run.csv', 'layout.xlsx', 'qc.json', 'y.txt']);
     });
   });
 

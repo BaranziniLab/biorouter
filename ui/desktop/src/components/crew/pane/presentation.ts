@@ -90,13 +90,26 @@ export const MENU_COPY_CLOSE_MS = 600;
 /**
  * A file named in a task (Q2-15): a word ending in one of the extensions a lab shares as data.
  * `(?!-|\.\w)` keeps `counts.csv.gz` and `counts.csv-old` from reading as `counts.csv`. A word
- * cannot hold a space, so outside quotes `Plate Reader.csv` reads as `Reader.csv`; see
- * `fileNameKey` for why that can never make the warning false.
+ * cannot hold a space, so `Plate Reader.csv` reads as `Reader.csv` unless it is double-quoted on
+ * its own (`quotedFileName`); see `fileNameKey` for why that can never make the warning false.
  */
 const FILE_NAME = /\b[\w.-]+\.(?:csv|tsv|xlsx?|json|txt|h5ad|parquet)\b(?!-|\.\w)/gi;
 
-/** Text in straight double quotes, curly double quotes or backticks, on one line. */
-const QUOTED = /"([^"\n]+)"|“([^”\n]+)”|`([^`\n]+)`/g;
+/**
+ * Text in straight or curly double quotes, on one line. Not backticks: they hold code, where a
+ * space separates arguments (`python merge.py counts.csv plate.csv` names two files), and a name
+ * with a space inside code is double-quoted in turn (`` `python run.py "Plate Reader.csv"` ``).
+ */
+const QUOTED = /"([^"\n]+)"|“([^”\n]+)”/g;
+
+/**
+ * What says a quoted span is more than one name: a list (`,` `;` `&`, the word `and` or `or`), a
+ * command's punctuation (`|` `<` `>` `=` `$` `*` `?`), a label (`Input: …`) or a flag (`-n`).
+ */
+const NOT_ONE_NAME = /[,;:&|<>=$*?]|(?:^|\s)(?:and|or)(?=\s|$)|(?:^|\s)[-–—]/i;
+
+/** A word that ends in an extension, as another file or a script does (`qc.R`, `merge.py`). */
+const DOTTED_WORD = /\.[a-z]\w*$/i;
 
 /** The last segment of a path, as a shared file is named. */
 export function fileBaseName(path: string): string {
@@ -121,10 +134,28 @@ function fileNameKey(name: string): string | null {
 }
 
 /**
+ * A double-quoted span read as one file name, spaces and all, by its last path segment — or null
+ * when that segment holds anything but one name, which is then read word by word as unquoted text
+ * is. It must end in the one file name `FILE_NAME` finds in it, and hold no other word ending in an
+ * extension and nothing `NOT_ONE_NAME` matches. So `"rep1.csv, rep2.csv"` is two names and
+ * `"python merge.py Plate Reader.csv"` is `Reader.csv`, while `"OD600 run 2.xlsx"` stays whole.
+ * Words before the name (`"my counts.csv"`) cannot be told from a name's own (`"Plate Reader.csv"`),
+ * but "No file named my counts.csv is shared" is still true: see `fileNameKey`.
+ */
+function quotedFileName(inner: string): string | null {
+  const name = fileBaseName(inner).trim();
+  if (fileNameKey(name) === null || NOT_ONE_NAME.test(name)) return null;
+  if ([...name.matchAll(FILE_NAME)].length !== 1) return null;
+  const words = name.split(/\s+/);
+  return words.slice(0, -1).some((word) => DOTTED_WORD.test(word)) ? null : name;
+}
+
+/**
  * The file names a task mentions, first mention first, each once whatever its case.
  *
- * - A name in quotes or backticks (`"Plate Reader.csv"`, `` `OD600 run 2.xlsx` ``) is taken whole,
- *   spaces and all, and named by its last path segment; unquoted, a name ends at a space.
+ * - A name alone in double quotes (`"Plate Reader.csv"`, `“OD600 run 2.xlsx”`) is taken whole,
+ *   spaces and all (`quotedFileName`). Anywhere else — backticked code, a quoted list or command —
+ *   a name ends at a space.
  * - A name inside a URL (`https://…/table.csv`) is where the agent is sent, not a file it expects
  *   to find shared, so it is not one of them.
  */
@@ -132,9 +163,9 @@ export function mentionedFileNames(text: string): string[] {
   const found: Array<{ at: number; name: string }> = [];
   const quoted: Array<[number, number]> = [];
   for (const match of text.matchAll(QUOTED)) {
-    const inner = (match[1] ?? match[2] ?? match[3] ?? '').trim();
-    const name = fileBaseName(inner).trim();
-    if (fileNameKey(name) === null) continue;
+    const inner = (match[1] ?? match[2] ?? '').trim();
+    const name = quotedFileName(inner);
+    if (name === null) continue;
     const at = match.index ?? 0;
     quoted.push([at, at + match[0].length]);
     if (!inner.includes('://')) found.push({ at, name });
