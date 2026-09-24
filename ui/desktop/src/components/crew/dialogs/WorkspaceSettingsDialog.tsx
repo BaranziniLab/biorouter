@@ -27,7 +27,7 @@ import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/
 import { copyText } from './clipboard';
 import { CrewConfirmation } from './confirmations';
 import { workspaceSettingsCopy as copy } from './copy';
-import { DialogErrorNote } from './fields';
+import { DialogErrorNote, useDismissOwnError } from './fields';
 import { MakePrivateDialog } from './MakePrivateDialog';
 import { uniqueNamesSupported, useDialogView, type DialogView } from './workspace';
 
@@ -67,9 +67,10 @@ export function WorkspaceSettingsDialog({
   );
   const [confirm, setConfirm] = React.useState<ConfirmIntent | null>(null);
   const [makingPrivate, setMakingPrivate] = React.useState(false);
+  const dismissOwnError = useDismissOwnError(SOURCE, 'dialog:confirm');
 
   const ask = (intent: ConfirmIntent) => {
-    crew.dismissError();
+    dismissOwnError();
     setConfirm(intent);
   };
 
@@ -321,6 +322,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
   const key = `mutate:enrollment.cancel:${join.username}`;
   const pending = crew.isPending(key);
   const mismatched = (join.mismatched_attempts ?? 0) > 0;
+  const dismissOwnError = useDismissOwnError(SOURCE);
 
   const cancel = () =>
     void crew
@@ -362,7 +364,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
               size="sm"
               aria-label={copy.cancelInvitationLabel(join.username)}
               onClick={() => {
-                crew.dismissError();
+                dismissOwnError();
                 setConfirming(true);
               }}
             >

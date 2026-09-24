@@ -9,7 +9,7 @@ import type { ErrorSource } from '../state/types';
 import { letInCopy as copy, workspaceSettingsCopy } from './copy';
 import { DeviceCodeInput } from './DeviceCodeInput';
 import { deviceCodeProblem } from './deviceCode';
-import { DialogErrorNote, Field, helpId } from './fields';
+import { DialogErrorNote, Field, helpId, useDismissOwnError } from './fields';
 import { firstName } from './people';
 import { approveRefusalText } from './refusals';
 import { useDialogView } from './workspace';
@@ -49,6 +49,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const member = dir.people.find((item) => item.username === username && !item.isFormer) ?? null;
   const first = firstName(member ?? person);
   const approving = crew.isPending(APPROVE_KEY);
+  const dismissOwnError = useDismissOwnError(SOURCE);
   const problem = code ? deviceCodeProblem(code) : null;
   const showProblem = attempted && problem !== null;
   const mismatched = (join?.mismatched_attempts ?? 0) > 0;
@@ -170,7 +171,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             onInvalid={() => setAttempted(true)}
             onChange={(next) => {
               setCode(next);
-              if (crew.error) crew.dismissError();
+              dismissOwnError();
             }}
           />
         </Field>

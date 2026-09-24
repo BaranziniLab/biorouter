@@ -174,3 +174,14 @@ export function useCustomValidity<T extends HTMLInputElement | HTMLTextAreaEleme
   }, [problem]);
   return ref;
 }
+
+/**
+ * Clear the controller's error only when it is one of `sources` — a dialog starting over clears
+ * its own refusal, never an error some other surface (the connection bar) is showing.
+ */
+export function useDismissOwnError(...sources: ErrorSource[]): () => void {
+  const { error, dismissError } = useCrew();
+  return () => {
+    if (error && sources.includes(error.source)) dismissError();
+  };
+}

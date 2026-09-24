@@ -219,6 +219,16 @@ describe('ConnectionSettingsDialog', () => {
     expect(screen.queryByRole('textbox', { name: 'Workspace ID' })).toBeNull();
   });
 
+  it('leaves an error another surface is showing alone when it opens a confirmation', async () => {
+    const { crew } = renderSettings();
+    act(() => crew.current().reportError('Crew updates stopped.', 'global'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: connectionSettingsCopy.remove('lab') })
+    );
+    await screen.findByRole('dialog', { name: confirmCopy.removeConnection.title('lab') });
+    expect(crew.current().error).toEqual({ message: 'Crew updates stopped.', source: 'global' });
+  });
+
   it('confirms before removing the saved connection', async () => {
     const { crew } = renderSettings();
     fireEvent.click(

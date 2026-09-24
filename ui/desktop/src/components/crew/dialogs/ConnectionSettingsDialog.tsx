@@ -11,7 +11,7 @@ import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ErrorSource, SaveConnectionInput } from '../state/types';
 import { MakeConnectionPublicDialog, CrewConfirmation } from './confirmations';
 import { connectionSettingsCopy as copy } from './copy';
-import { DialogErrorNote, Field, helpId, RadioRows } from './fields';
+import { DialogErrorNote, Field, helpId, RadioRows, useDismissOwnError } from './fields';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from './fingerprint';
 import { ABSOLUTE_PATH_PATTERN, INSTITUTION_FIELD_PATTERN } from './nameRules';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
@@ -164,6 +164,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   const [removing, setRemoving] = React.useState(false);
   const saving = crew.isPending(SAVE_KEY);
   const fingerprint = useWorkspaceKeyFingerprint(saved.workspace_public_key);
+  const dismissOwnError = useDismissOwnError(SOURCE, CONFIRM_SOURCE);
 
   const update = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -205,7 +206,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     const body = connectionSettingsBody(saved, form);
     // Exposing a Private connection asks for the workspace's name first, from every path.
     if (saved.mode === 'private' && body.mode === 'public') {
-      crew.dismissError();
+      dismissOwnError();
       setConfirmBody(body);
       return;
     }
@@ -233,7 +234,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             className="mr-auto text-text-danger"
             disabled={saving}
             onClick={() => {
-              crew.dismissError();
+              dismissOwnError();
               setRemoving(true);
             }}
           >
@@ -398,7 +399,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
           phrase={phrase}
           busy={saving}
           onCancel={() => {
-            crew.dismissError();
+            dismissOwnError();
             setConfirmBody(null);
           }}
           onConfirm={() => void save(confirmBody, CONFIRM_SOURCE)}
