@@ -97,15 +97,30 @@ const SENTENCE_CODES = new Set([
 const MENTION = /@([A-Za-z0-9._-]*[A-Za-z0-9_-])/;
 
 /**
+ * The `quota_exceeded` texts that mean "this workspace is full, and no further change can be made
+ * to it" (`refusalCopy.storageFull`). A request can meet three of them, all in `broker.rs`:
+ * - the audit journal limit in `commit`: `retained audit journal exceeds 1 GiB; …`;
+ * - the state-size limit in `commit`: `workspace logical state exceeds 16 MiB; …`;
+ * - the operation quota in `apply_mutation`: `workspace operation quota requires maintenance`
+ *   (the table of remembered request IDs is full).
+ *
+ * A fourth, `journal exceeds supported replay size of 1 GiB`, is raised by `open_inner` and so only
+ * stops the broker starting; no request is ever refused with it, but it means the same and is
+ * matched in case a startup failure is ever forwarded.
+ */
+const STORAGE_FULL_TEXT =
+  /^(?:(?:retained audit )?journal exceeds|workspace logical state exceeds|workspace operation quota requires maintenance)\b/i;
+
+/**
  * Broker texts written for a program, and the copy deck's words for them. Each is matched on the
  * code and on the text's own form, because a code can also carry a person-written sentence that
  * says something more specific (`identity_conflict` for an invited account, `identity_mismatch`
  * for a renamed one, the waiting-list `quota_exceeded`), and that sentence is kept.
  *
- * `quota_exceeded` is matched on its words, not its form: the journal and state-size limits
- * (`broker.rs`) mean "this workspace is full", while the join quota (`broker/join.rs`) means "too
- * many people are waiting", so one sentence for every `quota_exceeded` would be wrong for one of
- * them. `device_conflict` has only a technical text, so every one is reworded.
+ * `quota_exceeded` is matched on its words, not its form (`STORAGE_FULL_TEXT`). The join quota
+ * (`broker/join.rs`) means "too many people are waiting", and its person-written sentence is kept,
+ * so one sentence for every `quota_exceeded` would be wrong for it. `device_conflict` has only a
+ * technical text, so every one is reworded.
  */
 const REWORDED: readonly {
   code: string;
@@ -125,7 +140,7 @@ const REWORDED: readonly {
   },
   {
     code: 'quota_exceeded',
-    matches: (sentence) => /^(?:journal|workspace logical state) exceeds\b/i.test(sentence),
+    matches: (sentence) => STORAGE_FULL_TEXT.test(sentence),
     words: () => refusalCopy.storageFull,
   },
   {

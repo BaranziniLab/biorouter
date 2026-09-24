@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { inviteCopy, letInCopy, nameRuleCopy, refusalCopy } from './copy';
 import {
@@ -90,13 +92,24 @@ const SENTENCES: [code: string, broker: string, shown: string][] = [
     '100 people are already waiting to join. Cancel an invitation or wait for one to expire.',
   ],
   [
-    'quota_exceeded (journal)',
+    // `open_inner` only: the broker says this when it starts, never in answer to a request.
+    'quota_exceeded (journal, at startup)',
     'quota_exceeded: journal exceeds supported replay size of 1 GiB',
+    refusalCopy.storageFull,
+  ],
+  [
+    'quota_exceeded (journal)',
+    'quota_exceeded: retained audit journal exceeds 1 GiB; preserve the complete store and use a new workspace; in-place audit deletion is not supported',
     refusalCopy.storageFull,
   ],
   [
     'quota_exceeded (state)',
     'quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported',
+    refusalCopy.storageFull,
+  ],
+  [
+    'quota_exceeded (operations)',
+    'quota_exceeded: workspace operation quota requires maintenance',
     refusalCopy.storageFull,
   ],
   [
@@ -221,6 +234,32 @@ describe('refusalText', () => {
     expect(refusalText('not_invited: internal lookup failed')).toBe(
       'not_invited: internal lookup failed'
     );
+  });
+});
+
+describe('storage-full fixtures', () => {
+  /**
+   * A reworded text that the broker never writes makes a check that can never fire, and a table
+   * row for it passes all the same. The storage-full rows are therefore read back against the
+   * broker's source, where each must appear exactly as written.
+   */
+  const broker = readFileSync(
+    resolve(__dirname, '../../../../../../crates/biorouter-crew/src/broker.rs'),
+    'utf8'
+  );
+  const storageFull = SENTENCES.filter(([, , shown]) => shown === refusalCopy.storageFull);
+
+  it('covers the journal, state-size and operation quotas', () => {
+    expect(storageFull.map(([label]) => label)).toEqual([
+      'quota_exceeded (journal, at startup)',
+      'quota_exceeded (journal)',
+      'quota_exceeded (state)',
+      'quota_exceeded (operations)',
+    ]);
+  });
+
+  it.each(storageFull)('%s is the broker’s literal text', (_label, text) => {
+    expect(broker).toContain(`"${text}"`);
   });
 });
 

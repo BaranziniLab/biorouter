@@ -105,6 +105,13 @@ const DEVICE_CONFLICT: &str =
 const IDENTITY_MISMATCH: &str = "This server account no longer matches the member it joined as. Remove the old member first, then invite them again.";
 const STORAGE_FULL: &str = "This workspace has grown past the size Crew supports and cannot take more changes. Ask the host about starting a new workspace.";
 const TOO_MANY_ATTEMPTS: &str = "Too many attempts at once. Wait a minute, then try again.";
+/// How the `quota_exceeded` texts that [`STORAGE_FULL`] rewords begin, in lowercase.
+const STORAGE_FULL_PREFIXES: [&str; 4] = [
+    "retained audit journal exceeds",
+    "journal exceeds",
+    "workspace logical state exceeds",
+    "workspace operation quota requires maintenance",
+];
 const IDENTITY_CONFLICT_UNNAMED: &str =
     "Another active member already has this username. Remove the old member first.";
 
@@ -206,12 +213,12 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
         }
         ("device_conflict", _) => DEVICE_CONFLICT.to_owned(),
         ("identity_mismatch", _) if !reads_as_sentence(sentence) => IDENTITY_MISMATCH.to_owned(),
-        // The journal and state-size limits mean "this workspace is full"; the join quota's
-        // own sentence means "too many people are waiting" and is kept.
-        ("quota_exceeded", _)
-            if lower.starts_with("journal exceeds")
-                || lower.starts_with("workspace logical state exceeds") =>
-        {
+        // `broker.rs`'s limits that mean "this workspace is full": the audit journal and
+        // state-size limits in `commit` and the operation quota in `apply_mutation`, which are
+        // what a request meets, plus the journal limit in `open_inner`, which only stops the
+        // broker starting. The join quota's own sentence means "too many people are waiting" and
+        // is kept. The desktop matches the same texts (`STORAGE_FULL_TEXT` in `refusals.ts`).
+        ("quota_exceeded", _) if STORAGE_FULL_PREFIXES.iter().any(|p| lower.starts_with(p)) => {
             STORAGE_FULL.to_owned()
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
@@ -2853,6 +2860,7 @@ mod tests {
             "quota_exceeded: 100 people are already waiting to join. Cancel an invitation or wait for one to expire.",
             "100 people are already waiting to join. Cancel an invitation or wait for one to expire.",
         ),
+        // `open_inner` only: the broker says this when it starts, never in answer to a request.
         (
             "quota_exceeded",
             "quota_exceeded: journal exceeds supported replay size of 1 GiB",
@@ -2860,7 +2868,17 @@ mod tests {
         ),
         (
             "quota_exceeded",
+            "quota_exceeded: retained audit journal exceeds 1 GiB; preserve the complete store and use a new workspace; in-place audit deletion is not supported",
+            STORAGE_FULL,
+        ),
+        (
+            "quota_exceeded",
             "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
+            STORAGE_FULL,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: workspace operation quota requires maintenance",
             STORAGE_FULL,
         ),
         (
@@ -2929,6 +2947,28 @@ mod tests {
     fn each_broker_code_prints_the_desktops_sentence_and_its_flag() {
         for (code, broker, shown) in BROKER_REFUSALS {
             assert_eq!(broker_refusal_text(code, broker), *shown, "{broker}");
+        }
+    }
+
+    /// A reworded text that the broker never writes makes a check that can never fire, and a
+    /// fixture row for it passes all the same. The storage-full rows are therefore read back
+    /// against the broker's source, where each must appear exactly as written.
+    #[test]
+    fn each_storage_full_fixture_is_the_brokers_literal_text() {
+        const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
+        let storage_full: Vec<&str> = BROKER_REFUSALS
+            .iter()
+            .filter(|(_, _, shown)| *shown == STORAGE_FULL)
+            .map(|(_, broker, _)| *broker)
+            .collect();
+        // The journal limit at startup and in `commit`, the state-size limit and the operation
+        // quota.
+        assert_eq!(storage_full.len(), 4, "{storage_full:#?}");
+        for text in storage_full {
+            assert!(
+                BROKER.contains(&format!("\"{text}\"")),
+                "{text} is not a literal in broker.rs"
+            );
         }
     }
 

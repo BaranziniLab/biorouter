@@ -387,7 +387,13 @@ export const refusalCopy = {
   /** `identity_mismatch: enrollment principal changed; …` and `UID account name changed; …`. */
   identityMismatch:
     'This server account no longer matches the member it joined as. Remove the old member first, then invite them again.',
-  /** `quota_exceeded: journal exceeds …` and `quota_exceeded: workspace logical state exceeds …`. */
+  /**
+   * `quota_exceeded: retained audit journal exceeds …`, `quota_exceeded: workspace logical state
+   * exceeds …` and `quota_exceeded: workspace operation quota requires maintenance`, plus the
+   * startup-only `quota_exceeded: journal exceeds …` (`STORAGE_FULL_TEXT` in `refusals.ts`). The
+   * CLI prints this sentence byte for byte (`STORAGE_FULL` in `commands/crew/output.rs`, pinned by
+   * a test that reads this file).
+   */
   storageFull:
     'This workspace has grown past the size Crew supports and cannot take more changes. Ask the host about starting a new workspace.',
   /** `rate_limited: too many live challenges`. */
