@@ -1903,7 +1903,7 @@ impl CrewManager {
         let state = pending.state();
         let code = match state {
             JoinState::Invited | JoinState::Approved | JoinState::CodeMismatch => {
-                Some(self.device_code(&c)?)
+                Some(self.device_code_of(&c)?)
             }
             _ => None,
         };
@@ -1920,10 +1920,17 @@ impl CrewManager {
         })
     }
 
-    /// This computer's device code for the connection's workspace, formatted for display:
+    /// This computer's device code for the connection's workspace (`7QK2-M9XA-3JTP-WZ4D`),
+    /// computed here and never asked of the workspace. Needs no connection.
+    pub async fn device_code(&self, id: &str) -> Result<String> {
+        let c = self.connection(id).await?;
+        self.device_code_of(&c)
+    }
+
     /// `device_code(workspace_id, W, K)` over the pinned workspace key `W` and the public key
-    /// `K` of the saved signing key, which must be the key the connection saved.
-    fn device_code(&self, c: &Connection) -> Result<String> {
+    /// `K` of the saved signing key, which must be the key the connection saved, formatted for
+    /// display.
+    fn device_code_of(&self, c: &Connection) -> Result<String> {
         let secret: [u8; 32] = unhex(&self.read_credential(&format!("device:{}", c.id))?)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
@@ -3140,6 +3147,7 @@ done
             &workspace_key(),
             &public,
         ));
+        assert_eq!(manager.device_code(&connection.id).await.unwrap(), local);
         let cases = status_cases();
         let count = cases.len();
         for (pending, probe, expected) in cases {
