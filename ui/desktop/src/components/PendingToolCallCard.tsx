@@ -21,7 +21,11 @@ import type { PendingToolCallView } from '../hooks/chatStreamStore';
 export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = ({ pending }) => {
   const toolSummary = toolIdentifierToTitleCase(pending.name.split('__').pop() ?? pending.name);
   return (
-    <div className="br-tool-pending mt-3 text-text-muted" data-testid="pending-tool-call" data-tool-id={pending.id}>
+    <div
+      className="br-tool-pending mt-3 text-text-muted"
+      data-testid="pending-tool-call"
+      data-tool-id={pending.id}
+    >
       <div className="flex h-6 items-center">
         <span className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden font-sans text-sm leading-6">
           <ToolIconWithStatus

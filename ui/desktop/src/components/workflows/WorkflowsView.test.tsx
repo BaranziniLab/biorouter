@@ -106,25 +106,42 @@ describe('WorkflowsView loading transition', () => {
     expect(mocks.refreshConfig).toHaveBeenCalledOnce();
   });
 
-  it.each(['Save', 'Remove'])('keeps slash-command errors in the dialog when %s fails', async (action) => {
-    mocks.listSavedWorkflows.mockResolvedValue([{
-      id: 'workflow-1', file_path: '/tmp/workflow.yaml', last_modified: '2026-07-11',
-      slash_command: 'cohort-review',
-      workflow: { title: 'Cohort Review', description: 'Review cohort results' },
-    }]);
-    mocks.setWorkflowSlashCommand.mockRejectedValue('/effort is reserved. Choose a different name.');
-    render(<MemoryRouter><WorkflowsView /></MemoryRouter>);
-    fireEvent.click(await screen.findByTitle('Edit slash command'));
-    fireEvent.change(screen.getByPlaceholderText('command-name'), { target: { value: 'effort' } });
-    fireEvent.click(screen.getByRole('button', { name: action }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('/effort is reserved');
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('command-name')).toHaveValue('effort');
-    expect(screen.queryByText('Couldn’t load workflows')).not.toBeInTheDocument();
-    expect(mocks.setWorkflowSlashCommand).toHaveBeenCalledWith(expect.objectContaining({ throwOnError: true }));
-    expect(mocks.refreshConfig).not.toHaveBeenCalled();
-    expect(mocks.toastSuccess).not.toHaveBeenCalled();
-  });
+  it.each(['Save', 'Remove'])(
+    'keeps slash-command errors in the dialog when %s fails',
+    async (action) => {
+      mocks.listSavedWorkflows.mockResolvedValue([
+        {
+          id: 'workflow-1',
+          file_path: '/tmp/workflow.yaml',
+          last_modified: '2026-07-11',
+          slash_command: 'cohort-review',
+          workflow: { title: 'Cohort Review', description: 'Review cohort results' },
+        },
+      ]);
+      mocks.setWorkflowSlashCommand.mockRejectedValue(
+        '/effort is reserved. Choose a different name.'
+      );
+      render(
+        <MemoryRouter>
+          <WorkflowsView />
+        </MemoryRouter>
+      );
+      fireEvent.click(await screen.findByTitle('Edit slash command'));
+      fireEvent.change(screen.getByPlaceholderText('command-name'), {
+        target: { value: 'effort' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: action }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('/effort is reserved');
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('command-name')).toHaveValue('effort');
+      expect(screen.queryByText('Couldn’t load workflows')).not.toBeInTheDocument();
+      expect(mocks.setWorkflowSlashCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ throwOnError: true })
+      );
+      expect(mocks.refreshConfig).not.toHaveBeenCalled();
+      expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    }
+  );
 
   it('presents an accessible empty state with create and import actions', async () => {
     mocks.listSavedWorkflows.mockResolvedValueOnce([]);

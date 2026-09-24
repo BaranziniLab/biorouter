@@ -39,8 +39,16 @@ export default function UsageSection() {
         const headers = await userActionHeaders();
         const [summaryRes, dayRes, modelRes] = await Promise.all([
           getUsageSummary<true>({ headers, throwOnError: true }),
-          getUsageReport<true>({ headers, query: { from, to: now, group: 'day' }, throwOnError: true }),
-          getUsageReport<true>({ headers, query: { from, to: now, group: 'model' }, throwOnError: true }),
+          getUsageReport<true>({
+            headers,
+            query: { from, to: now, group: 'day' },
+            throwOnError: true,
+          }),
+          getUsageReport<true>({
+            headers,
+            query: { from, to: now, group: 'model' },
+            throwOnError: true,
+          }),
         ]);
         if (cancelled) return;
         setSummary(summaryRes.data);

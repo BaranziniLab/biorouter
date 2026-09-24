@@ -62,11 +62,14 @@ export function cacheHomeActivity(activity: ActivityWindow): void {
 export async function refreshHomeActivity(): Promise<ActivityWindow> {
   if (inFlightActivity) return inFlightActivity;
 
-  inFlightActivity = userActionHeaders().then((headers) => getSessionActivity<true>({
-    headers,
-    query: { days: HOME_ACTIVITY_DAYS },
-    throwOnError: true,
-  }))
+  inFlightActivity = userActionHeaders()
+    .then((headers) =>
+      getSessionActivity<true>({
+        headers,
+        query: { days: HOME_ACTIVITY_DAYS },
+        throwOnError: true,
+      })
+    )
     .then((response) => {
       cacheHomeActivity(response.data);
       return response.data;

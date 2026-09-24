@@ -30,7 +30,9 @@ export function createDevelopmentApprovalReader(
       'Approval stdin requires an unpackaged app, a validated development profile, ENABLE_PLAYWRIGHT, and shared daemon mode.'
     );
   if (!options.inputIsPipe())
-    throw new Error('Development approval input must be an inherited pipe, not a terminal or file.');
+    throw new Error(
+      'Development approval input must be an inherited pipe, not a terminal or file.'
+    );
 
   let consumed = false;
   return async () => {
@@ -78,11 +80,14 @@ export function createDevelopmentApprovalReader(
           options.validate(secret);
           finish(undefined, secret);
         } catch {
-          finish(new Error('Development approval input is invalid; supply one valid approval secret.'));
+          finish(
+            new Error('Development approval input is invalid; supply one valid approval secret.')
+          );
         }
       };
       const onError = () => finish(new Error('Development approval input could not be read.'));
-      const onClose = () => finish(new Error('Development approval input closed before completion.'));
+      const onClose = () =>
+        finish(new Error('Development approval input closed before completion.'));
       const timer = setTimeout(
         () => finish(new Error('Development approval input timed out after 30 seconds.')),
         30000

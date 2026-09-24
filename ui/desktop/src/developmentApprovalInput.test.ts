@@ -40,9 +40,9 @@ describe('development approval stdin', () => {
   });
 
   it('rejects a terminal input and duplicate flags', () => {
-    expect(() =>
-      createDevelopmentApprovalReader(options({ inputIsPipe: () => false }))
-    ).toThrow(/inherited pipe/);
+    expect(() => createDevelopmentApprovalReader(options({ inputIsPipe: () => false }))).toThrow(
+      /inherited pipe/
+    );
     expect(() =>
       createDevelopmentApprovalReader(
         options({ args: [DEVELOPMENT_APPROVAL_STDIN_FLAG, DEVELOPMENT_APPROVAL_STDIN_FLAG] })
@@ -128,7 +128,9 @@ describe('development approval stdin', () => {
       );
       stream.push(Buffer.from('a'.repeat(32)));
       await vi.advanceTimersByTimeAsync(30_000);
-      await expect(rejection).resolves.toMatchObject({ message: expect.stringMatching(/timed out/) });
+      await expect(rejection).resolves.toMatchObject({
+        message: expect.stringMatching(/timed out/),
+      });
     } finally {
       vi.useRealTimers();
     }

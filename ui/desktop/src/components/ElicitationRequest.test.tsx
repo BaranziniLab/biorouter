@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import ElicitationRequest from './ElicitationRequest';
 
 vi.mock('./ui/JsonSchemaForm', () => ({
-  default: ({ onSubmit, submitLabel }: { onSubmit: (data: Record<string, unknown>) => void; submitLabel?: string }) => (
+  default: ({
+    onSubmit,
+    submitLabel,
+  }: {
+    onSubmit: (data: Record<string, unknown>) => void;
+    submitLabel?: string;
+  }) => (
     <button type="button" onClick={() => onSubmit({ cohort: 'synthetic' })}>
       {submitLabel ?? 'Submit'}
     </button>
