@@ -1,11 +1,45 @@
-//! Human-only daemon PTYs. HTTP adapters must prove human authority on every operation.
-use super::{manager, AuthenticationPlan};
+//! SSH authentication handoff and workspace admission.
+//!
+//! **SSH authentication handoff.** Human-only daemon PTYs: a person types their password or
+//! verification code into an OpenSSH master this daemon owns, and [`handoff`] adopts that master
+//! only after the exact owned process and a verified Crew broker behind it are confirmed. HTTP
+//! adapters must prove human authority on every operation. A failed handoff is a
+//! [`HandoffFailed`] (`crew_handoff_failed`), whose words are for a person; the older diagnostic
+//! text stays reachable through [`HandoffFailed::log_message`].
+//!
+//! **Workspace admission (S3a).** Joining a workspace by a host's invitation and a device code,
+//! as `docs/research/biorouter-crew/naming-design.md` ("Joining a workspace (S3a)", "The
+//! invitation", "The device code") specifies. The `impl CrewManager` blocks below add:
+//!
+//! - [`CrewManager::connection_from_invitation`]: parse a pasted `brcrew1:` invitation (or the
+//!   legacy `biorouter-crew status` JSON) and either preview it or save a connection pinned
+//!   exactly as it says, through the ordinary save path.
+//! - [`CrewManager::invitation_for`]: build the invitation a host sends, from the host's own
+//!   verified connection, the workspace's own word about its name and privacy, and `ssh -G`
+//!   (never a local alias, never the connection's local name).
+//! - [`CrewManager::join_status`]: ask the workspace, unsigned and before authentication, as
+//!   `hello` is asked, whether this account is invited, and show the device code **computed
+//!   here** from the saved device key and the pinned workspace key.
+//! - [`CrewManager::join`]: send `auth.join`, signed with the saved device key, only when the
+//!   workspace says the host approved, and only through `CrewManager::signed_join_request`.
+//!
+//! Nothing the broker returns can change the code this computer shows: a process in the bridge
+//! path can relay, drop or fake every answer here, which can only mislead this screen. To have
+//! its own key bound it would need a key whose 80-bit code equals the one shown here.
+use super::{
+    hex, institution, manager, safe_atom, transport, unhex, AuthenticationPlan, ClusterMode,
+    Connection, CrewManager, SaveConnection,
+};
 use anyhow::{ensure, Context, Result};
+use biorouter_crew::invitation::{self as crew_invitation, ParsedInvitation, WorkspaceInvitation};
+use ed25519_dalek::SigningKey;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    fmt,
     io::{Read, Write},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,15 +50,73 @@ use std::{
 use tokio::sync::mpsc;
 
 pub const ATTACH_FAILURE_CODE: &str = "authentication_attach_failed";
+/// The code older adapters send for a failed handoff. Kept so an older renderer or CLI still
+/// maps it; new adapters answer [`HANDOFF_FAILED_CODE`].
 pub const HANDOFF_FAILURE_CODE: &str = "authentication_handoff_failed";
 pub const ATTACH_FAILURE_MESSAGE: &str = "SSH authentication terminal could not be attached. Close any existing authentication session, verify the daemon's SSH configuration, and try again.";
+/// The diagnostic text of a failed handoff, for logs and for [`HANDOFF_FAILURE_CODE`].
 pub const HANDOFF_FAILURE_MESSAGE: &str = "SSH authentication could not be handed off to a verified Crew broker. Verify ~/.local/bin/biorouter-crew is installed on the target host and check the saved broker socket/workspace identity, then reconnect.";
+/// The typed code of a failed handoff ([`HandoffFailed`]).
+pub const HANDOFF_FAILED_CODE: &str = "crew_handoff_failed";
+/// What a person reads when sign-in worked but Crew did not start behind it.
+pub const HANDOFF_FAILED_MESSAGE: &str =
+    "Signed in, but Crew couldn't start on the server. Crew may not be set up for your account there.";
 
 pub fn terminal_failure_message(code: &str) -> Option<&'static str> {
     match code {
         ATTACH_FAILURE_CODE => Some(ATTACH_FAILURE_MESSAGE),
         HANDOFF_FAILURE_CODE => Some(HANDOFF_FAILURE_MESSAGE),
+        HANDOFF_FAILED_CODE => Some(HANDOFF_FAILED_MESSAGE),
         _ => None,
+    }
+}
+
+/// Sign-in succeeded, but adopting the signed-in master or starting Crew behind it failed.
+///
+/// [`fmt::Display`] is [`HANDOFF_FAILED_MESSAGE`], written for a person; the cause and the older
+/// diagnostic text stay out of it and are reachable through [`Self::log_message`] and
+/// [`Self::cause`]. A route answers [`Self::api_code`].
+#[derive(Debug)]
+pub struct HandoffFailed {
+    cause: anyhow::Error,
+}
+
+impl HandoffFailed {
+    fn wrap(cause: anyhow::Error) -> anyhow::Error {
+        anyhow::Error::new(Self { cause })
+    }
+    /// Always [`HANDOFF_FAILED_CODE`].
+    pub fn api_code(&self) -> &'static str {
+        HANDOFF_FAILED_CODE
+    }
+    /// Why the handoff failed, unchanged, e.g. an [`super::SshFailure`] or a
+    /// [`super::WorkspaceIdentityError`] from the connect that followed sign-in.
+    pub fn cause(&self) -> &anyhow::Error {
+        &self.cause
+    }
+    /// Whether the broker behind the signed-in master is not the workspace this connection
+    /// pinned. A route may prefer `crew_workspace_identity_mismatch` for this cause: it is a
+    /// trust problem, not a missing installation.
+    pub fn workspace_identity_mismatch(&self) -> bool {
+        self.cause
+            .downcast_ref::<super::WorkspaceIdentityError>()
+            .is_some()
+    }
+    /// The diagnostic text for logs: [`HANDOFF_FAILURE_MESSAGE`] and the cause.
+    pub fn log_message(&self) -> String {
+        format!("{HANDOFF_FAILURE_MESSAGE} Cause: {:#}", self.cause)
+    }
+}
+
+impl fmt::Display for HandoffFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(HANDOFF_FAILED_MESSAGE)
+    }
+}
+
+impl std::error::Error for HandoffFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
     }
 }
 
@@ -403,21 +495,32 @@ pub fn shutdown() {
 }
 
 /// Complete native authentication only after the exact owned master and broker are verified.
+///
+/// A failure after the session is found is a [`HandoffFailed`]: the connection is disconnected
+/// and its `last_error` carries [`HANDOFF_FAILED_MESSAGE`], while the diagnostic text and cause
+/// go to the log.
 pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
     let connection = session(id, controller)?.info.connection_id.clone();
     let manager = manager()?;
     let _lifecycle = manager.connection_guard(&connection).await?;
     // A replaced or cancelled session must not clean up a later connection.
     session(id, controller)?;
-    let result = handoff_locked(id, controller).await;
-    if result.is_err() {
-        let _ = manager.disconnect_locked(&connection).await;
-        let mut registry = manager.registry.lock().await;
-        if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
-            entry.last_error = Some(HANDOFF_FAILURE_MESSAGE.into());
+    match handoff_locked(id, controller).await {
+        Ok(adopted) => Ok(adopted),
+        Err(cause) => {
+            let _ = manager.disconnect_locked(&connection).await;
+            let mut registry = manager.registry.lock().await;
+            if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
+                entry.last_error = Some(HANDOFF_FAILED_MESSAGE.into());
+            }
+            drop(registry);
+            let failure = HandoffFailed::wrap(cause);
+            if let Some(typed) = failure.downcast_ref::<HandoffFailed>() {
+                tracing::warn!(connection = %connection, "{}", typed.log_message());
+            }
+            Err(failure)
         }
     }
-    result
 }
 async fn handoff_locked(id: &str, controller: &str) -> Result<bool> {
     validate(id, controller).await?;
@@ -520,6 +623,1356 @@ pub async fn cancel_and_disconnect(id: &str, controller: &str) -> Result<()> {
     session(id, controller)?;
     cancel(id, controller)?;
     manager.disconnect_locked(&connection).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// Workspace admission (S3a)
+// ---------------------------------------------------------------------------------------------
+
+/// The `hello` capability of a broker that answers `enrollment.pending` and `auth.join`.
+pub const JOIN_BY_NAME_CAPABILITY: &str = "join_by_name_v1";
+/// How the transport reports a broker's refusal: this prefix, then the error envelope as JSON.
+const BROKER_REFUSAL_PREFIX: &str = "Crew broker refused request: ";
+/// The longest join ID accepted from a broker (it is 128 random bits; this is generous).
+const MAX_JOIN_ID_BYTES: usize = 128;
+/// The longest connection name the save path accepts.
+const MAX_CONNECTION_NAME_BYTES: usize = 120;
+/// How long `ssh -G` may take to describe the host's SSH settings.
+const SSH_RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most output `ssh -G` may print before it is refused.
+const SSH_RESOLVE_LIMIT: u64 = 1_048_576;
+/// At most this many jump hosts are described in an invitation.
+const MAX_JUMP_HOPS: usize = 16;
+
+/// Invitation saves run one at a time, so a double-submitted paste finds the connection the
+/// first one saved instead of minting a second device key (and so a second device code).
+static INVITATION_SAVES: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+/// What the person chose on the Join screen, beside the pasted invitation. Everything is
+/// optional: an absent value takes the invitation's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationOverrides {
+    /// The joiner's account name on the server. Default: the invitation's invited username.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// How this computer treats the workspace. Default: the workspace's own mode, else Private.
+    #[serde(default)]
+    pub mode: Option<ClusterMode>,
+    /// Default: the invitation's institution.
+    #[serde(default)]
+    pub institution_id: Option<String>,
+    #[serde(default)]
+    pub advanced: InvitationAdvanced,
+}
+
+/// The Join screen's Advanced settings. None of them can change the pinned workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationAdvanced {
+    /// A server login from the person's own SSH settings (`hpc`, `bob@hpc.ucsf.edu`), used
+    /// instead of `{username}@{server}`. With one, the invitation's port and jump host are not
+    /// applied: the person's SSH settings for that login decide them.
+    #[serde(default)]
+    pub ssh_target: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    /// A jump route. An empty string means none, even when the invitation suggests one.
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
+    /// This computer's name for the connection. Default: the workspace's name.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub remote_root: Option<String>,
+    #[serde(default)]
+    pub remote_execution: bool,
+    /// A prepared hosting identity (`POST /crew/devices/prepare`), when a host saves their own
+    /// workspace from what `biorouter-crew start` printed.
+    #[serde(default)]
+    pub preparation_id: Option<String>,
+}
+
+/// Where a previewed invitation came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationSourceKind {
+    /// A `brcrew1:` line, alone or inside the host's message.
+    Invitation,
+    /// The JSON `biorouter-crew status` prints.
+    LegacyStatus,
+}
+
+/// Something saving still needs, which the invitation did not say and the person has not given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationMissing {
+    /// The joiner's username on the server.
+    Username,
+    /// The server's address (a legacy status JSON, or `start` output, names none).
+    Server,
+    /// An institution, which a Private connection requires.
+    Institution,
+}
+
+/// A parsed invitation and what saving it would do. Labels are not authority: nothing here is
+/// trusted until `hello` verifies against the pinned workspace key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct InvitationPreview {
+    pub source: InvitationSourceKind,
+    /// The pinned workspace: shown under Advanced only.
+    pub workspace_id: String,
+    pub socket_path: String,
+    pub owner_uid: u32,
+    /// SHA-256 of the workspace key, lowercase hex.
+    pub workspace_key_fingerprint: String,
+    /// The short form a person compares by eye (`3F2A 9C1E 77B0 D4E1`).
+    pub fingerprint: String,
+    pub workspace_name: Option<String>,
+    /// How to name the workspace: its name, else "{host}'s workspace", else "a workspace".
+    pub workspace_label: String,
+    pub host_username: Option<String>,
+    pub host_display_name: Option<String>,
+    /// The workspace's own privacy mode, as the invitation states it.
+    pub workspace_mode: Option<ClusterMode>,
+    pub workspace_institution_id: Option<String>,
+    /// The server named by the invitation.
+    pub server: Option<String>,
+    pub invitee_username: Option<String>,
+    /// What saving would use: the username, the SSH login and route, and the privacy.
+    pub username: Option<String>,
+    pub ssh_target: Option<String>,
+    pub port: Option<u16>,
+    pub proxy_jump: Option<String>,
+    pub mode: ClusterMode,
+    pub institution_id: Option<String>,
+    /// The chosen mode differs from the workspace's own.
+    pub mode_differs: bool,
+    /// The connection name saving would use.
+    pub name: String,
+    /// A connection on this computer that already pins this workspace.
+    pub existing_connection_id: Option<String>,
+    /// What saving still needs; empty when it can save.
+    pub missing: Vec<InvitationMissing>,
+}
+
+/// The result of [`CrewManager::connection_from_invitation`].
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum InvitationOutcome {
+    /// `preview: true`: nothing was saved.
+    Preview(Box<InvitationPreview>),
+    /// The saved connection (or the one already on this computer for the same workspace and
+    /// settings).
+    Saved(Box<Connection>),
+}
+
+/// Why an invitation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InvitationRefusal {
+    /// The pasted text is not a usable invitation; the invitation codec's own code.
+    Unreadable(&'static str),
+    /// A value the person typed or chose can't be used.
+    InvalidChoice,
+    /// Saving needs something neither the invitation nor the person gave.
+    Missing(InvitationMissing),
+    /// This computer already pins a different identity for the same workspace ID. Never
+    /// re-pinned from a paste.
+    IdentityConflict,
+    /// This computer already has the workspace, with different settings.
+    AlreadySaved,
+}
+
+/// A refused invitation. [`fmt::Display`] is a plain sentence that never echoes the pasted text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationRefused {
+    reason: InvitationRefusal,
+    message: String,
+    connection_id: Option<String>,
+}
+
+impl InvitationRefused {
+    fn new(reason: InvitationRefusal, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+            connection_id: None,
+        }
+    }
+    fn choice(message: impl Into<String>) -> Self {
+        Self::new(InvitationRefusal::InvalidChoice, message)
+    }
+    /// `crew_invitation_invalid` for anything wrong with the paste or the choices,
+    /// `crew_invitation_conflict` for a different pinned identity, `crew_connection_exists` for
+    /// the same workspace saved with other settings.
+    pub fn api_code(&self) -> &'static str {
+        match self.reason {
+            InvitationRefusal::Unreadable(_)
+            | InvitationRefusal::InvalidChoice
+            | InvitationRefusal::Missing(_) => "crew_invitation_invalid",
+            InvitationRefusal::IdentityConflict => "crew_invitation_conflict",
+            InvitationRefusal::AlreadySaved => "crew_connection_exists",
+        }
+    }
+    pub fn reason(&self) -> InvitationRefusal {
+        self.reason
+    }
+    /// The saved connection a conflict or duplicate concerns.
+    pub fn connection_id(&self) -> Option<&str> {
+        self.connection_id.as_deref()
+    }
+}
+
+impl fmt::Display for InvitationRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for InvitationRefused {}
+
+/// The invitation a host sends: the whole message, and its `brcrew1:` line alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct InvitationText {
+    pub message: String,
+    pub line: String,
+}
+
+/// Where this computer stands in joining a workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinState {
+    /// Invited; the host has not approved this computer's code yet.
+    Invited,
+    /// The host approved a code; [`CrewManager::join`] can claim.
+    Approved,
+    /// The host approved a code, and this computer's claim was refused under it.
+    CodeMismatch,
+    /// This account has no invitation and is not a member.
+    NotInvited,
+    Expired,
+    /// This computer's key is a member's device.
+    Joined,
+    /// The workspace does not support joining by invitation (`join_by_name_v1` absent).
+    Unsupported,
+}
+
+/// A person named in a join status. Labels only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct JoinPerson {
+    pub username: String,
+    /// The username when they set no display name of their own.
+    pub display_name: String,
+}
+
+/// The join status the Join screen shows.
+///
+/// `code` is computed on this computer from its saved device key and the pinned workspace key.
+/// It is never read from the workspace's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct JoinStatus {
+    pub status: JoinState,
+    /// This computer's device code (`7QK2-M9XA-3JTP-WZ4D`), while invited, approved or refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inviter: Option<JoinPerson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    /// When the invitation expires (seconds since the Unix epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// The invitation adds this computer to an existing member.
+    pub add_device: bool,
+}
+
+impl JoinStatus {
+    fn bare(status: JoinState, workspace_name: Option<String>) -> Self {
+        Self {
+            status,
+            code: None,
+            inviter: None,
+            workspace_name,
+            expires_at: None,
+            add_device: false,
+        }
+    }
+}
+
+/// Why [`CrewManager::join`] did not join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JoinRefusal {
+    Unsupported,
+    /// The host has not approved this computer's code yet.
+    NotApproved,
+    CodeMismatch,
+    NotInvited,
+    Expired,
+    /// The host replaced the invitation.
+    Replaced,
+    /// The server account changed since the host invited it.
+    AccountChanged,
+    /// This computer's key is already a device of the workspace.
+    DeviceConflict,
+    /// Another active member has this username.
+    IdentityConflict,
+    /// Any other refusal from the workspace.
+    Refused,
+}
+
+impl JoinRefusal {
+    fn from_broker_code(code: &str) -> Self {
+        match code {
+            "code_mismatch" => Self::CodeMismatch,
+            "not_invited" => Self::NotInvited,
+            "join_expired" => Self::Expired,
+            "join_changed" => Self::Replaced,
+            "account_changed" => Self::AccountChanged,
+            "device_conflict" => Self::DeviceConflict,
+            "identity_conflict" => Self::IdentityConflict,
+            "unsupported" => Self::Unsupported,
+            _ => Self::Refused,
+        }
+    }
+    fn from_state(state: JoinState) -> Option<Self> {
+        match state {
+            JoinState::Invited => Some(Self::NotApproved),
+            JoinState::CodeMismatch => Some(Self::CodeMismatch),
+            JoinState::NotInvited => Some(Self::NotInvited),
+            JoinState::Expired => Some(Self::Expired),
+            JoinState::Unsupported => Some(Self::Unsupported),
+            JoinState::Approved | JoinState::Joined => None,
+        }
+    }
+    pub fn api_code(self) -> &'static str {
+        match self {
+            Self::Unsupported => "crew_join_unsupported",
+            Self::NotApproved => "crew_join_not_approved",
+            Self::CodeMismatch => "crew_join_code_mismatch",
+            Self::NotInvited => "crew_join_not_invited",
+            Self::Expired => "crew_join_expired",
+            Self::Replaced => "crew_join_replaced",
+            Self::AccountChanged => "crew_join_account_changed",
+            Self::DeviceConflict => "crew_join_device_conflict",
+            Self::IdentityConflict => "crew_join_identity_conflict",
+            Self::Refused => "crew_join_refused",
+        }
+    }
+    fn message(self) -> &'static str {
+        match self {
+            Self::Unsupported => "This workspace's server doesn't support joining by invitation yet. Ask your host for an invitation token instead.",
+            Self::NotApproved => "Your host hasn't let this computer in yet. Send them the code shown on your screen.",
+            Self::CodeMismatch => "The code your host entered doesn't match this computer. Send them the code shown on your screen again.",
+            Self::NotInvited => "You're not invited to this workspace yet. Ask your host to invite you.",
+            Self::Expired => "This invitation expired. Ask your host to invite you again.",
+            Self::Replaced => "Your host sent a new invitation. Check your join status and try again.",
+            Self::AccountChanged => "Your account on the server changed since your host invited it. Ask your host to invite you again.",
+            Self::DeviceConflict => "This computer's key is already in this workspace.",
+            Self::IdentityConflict => "Another member of this workspace already has your username. Ask your host to remove the old account first.",
+            Self::Refused => "The workspace didn't let this computer join.",
+        }
+    }
+}
+
+/// A join the workspace (or this computer, before asking it) refused. [`fmt::Display`] is a
+/// plain sentence chosen here; the workspace's own words, which are unauthenticated, are kept
+/// apart in [`Self::broker_message`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinRefused {
+    refusal: JoinRefusal,
+    broker_message: Option<String>,
+}
+
+impl JoinRefused {
+    fn error(refusal: JoinRefusal) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            refusal,
+            broker_message: None,
+        })
+    }
+    pub fn refusal(&self) -> JoinRefusal {
+        self.refusal
+    }
+    pub fn api_code(&self) -> &'static str {
+        self.refusal.api_code()
+    }
+    /// The workspace's refusal text, for logs only.
+    pub fn broker_message(&self) -> Option<&str> {
+        self.broker_message.as_deref()
+    }
+}
+
+impl fmt::Display for JoinRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.refusal.message())
+    }
+}
+
+impl std::error::Error for JoinRefused {}
+
+/// The workspace's refusal as the transport reports it: the envelope's `code` and `message`.
+/// `None` for anything else (an SSH failure, a local check).
+fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
+    let text = error.to_string();
+    let envelope: Value = serde_json::from_str(text.strip_prefix(BROKER_REFUSAL_PREFIX)?).ok()?;
+    Some((
+        envelope.get("code")?.as_str()?.to_owned(),
+        envelope.get("message")?.as_str()?.to_owned(),
+    ))
+}
+
+fn cluster_mode(mode: &biorouter_crew::Mode) -> ClusterMode {
+    match mode {
+        biorouter_crew::Mode::Private => ClusterMode::Private,
+        biorouter_crew::Mode::Public => ClusterMode::Public,
+    }
+}
+
+fn crew_mode(mode: ClusterMode) -> biorouter_crew::Mode {
+    match mode {
+        ClusterMode::Private => biorouter_crew::Mode::Private,
+        ClusterMode::Public => biorouter_crew::Mode::Public,
+    }
+}
+
+/// `value` cut to at most `limit` bytes on a character boundary.
+fn truncate_bytes(value: &str, limit: usize) -> String {
+    let mut out = String::new();
+    for c in value.chars() {
+        if out.len() + c.len_utf8() > limit {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A typed person's username: one leading `@` stripped, then the account-name rules.
+fn typed_username(typed: &str, server: Option<&str>) -> Result<String, InvitationRefused> {
+    let name = typed.strip_prefix('@').unwrap_or(typed);
+    if biorouter_crew::valid_username(name) {
+        Ok(name.to_owned())
+    } else {
+        Err(InvitationRefused::choice(format!(
+            "Type your username on {}, with no spaces, slashes or colons.",
+            server.unwrap_or("the server")
+        )))
+    }
+}
+
+fn same_workspace_id(saved: &str, invited: &str) -> bool {
+    match (uuid::Uuid::parse_str(saved), uuid::Uuid::parse_str(invited)) {
+        (Ok(saved), Ok(invited)) => saved == invited,
+        _ => false,
+    }
+}
+
+/// The saved connection that already pins this invitation's workspace, if any. A saved
+/// connection with the same workspace ID but another key, socket or host is a conflict: a paste
+/// never re-pins a workspace.
+fn saved_match(
+    connections: &[Connection],
+    invitation: &WorkspaceInvitation,
+) -> Result<Option<Connection>, InvitationRefused> {
+    let mut found = None;
+    for saved in connections
+        .iter()
+        .filter(|saved| same_workspace_id(&saved.workspace_id, &invitation.workspace_id))
+    {
+        if !saved
+            .workspace_public_key
+            .eq_ignore_ascii_case(&invitation.workspace_public_key)
+            || saved.socket_path != invitation.socket_path
+            || saved.owner_uid != invitation.owner_uid
+        {
+            let mut refused = InvitationRefused::new(
+                InvitationRefusal::IdentityConflict,
+                format!(
+                    "This invitation doesn't match \u{201c}{}\u{201d}, which this computer already has for the same workspace. Ask your host to send it again, and compare the fingerprint.",
+                    super::plain_label(&saved.name)
+                ),
+            );
+            refused.connection_id = Some(saved.id.clone());
+            return Err(refused);
+        }
+        if found.is_none() {
+            found = Some(saved.clone());
+        }
+    }
+    Ok(found)
+}
+
+/// Whether an existing connection already has what saving `input` would give it. The name, the
+/// remote folder and agent execution are this computer's own choices and are not compared.
+fn same_settings(existing: &Connection, input: &SaveConnection) -> bool {
+    existing.ssh_target == input.ssh_target
+        && existing.port == input.port
+        && existing.identity_file == input.identity_file
+        && existing.proxy_jump == input.proxy_jump
+        && existing.mode == input.mode
+        && existing.institution_id == input.institution_id
+}
+
+/// A parsed invitation, resolved against the person's choices and this computer's connections.
+struct InvitationPlan {
+    preview: InvitationPreview,
+    save: SaveConnection,
+    existing: Option<Connection>,
+}
+
+/// The SSH login and route saving would use.
+struct PlannedRoute {
+    username: Option<String>,
+    ssh_target: Option<String>,
+    port: Option<u16>,
+    proxy_jump: Option<String>,
+}
+
+fn planned_route(
+    invitation: &WorkspaceInvitation,
+    overrides: &InvitationOverrides,
+) -> Result<PlannedRoute, InvitationRefused> {
+    let server = invitation.ssh_host.as_deref();
+    let advanced = &overrides.advanced;
+    let username = match overrides.username.as_deref().map(str::trim) {
+        Some(typed) if !typed.is_empty() => Some(typed_username(typed, server)?),
+        _ => invitation.invitee_username.clone(),
+    };
+    let alias = advanced
+        .ssh_target
+        .as_deref()
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty());
+    if alias.is_some_and(|alias| !safe_atom(alias)) {
+        return Err(InvitationRefused::choice(
+            "Type a server login from your SSH settings, like hpc or bob@hpc.ucsf.edu.",
+        ));
+    }
+    let ssh_target = match (alias, &username, server) {
+        (Some(alias), _, _) => Some(alias.to_owned()),
+        (None, Some(user), Some(host)) => {
+            let target = format!("{user}@{host}");
+            if !safe_atom(&target) {
+                return Err(InvitationRefused::choice(format!(
+                    "@{user} can't be used as an SSH login. Set a server login under Advanced instead."
+                )));
+            }
+            Some(target)
+        }
+        _ => None,
+    };
+    if advanced.port == Some(0) {
+        return Err(InvitationRefused::choice(
+            "Choose a port between 1 and 65535.",
+        ));
+    }
+    let jump = match advanced.proxy_jump.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(route) => {
+            if !route.split(',').all(safe_atom) {
+                return Err(InvitationRefused::choice(
+                    "Type jump hosts as host names separated by commas, like gateway.ucsf.edu.",
+                ));
+            }
+            Some(route.to_owned())
+        }
+        // The invitation's hints describe its own server; a login from the person's SSH
+        // settings brings its own port and route.
+        None if alias.is_none() => invitation.proxy_jump.clone(),
+        None => None,
+    };
+    let port = match (advanced.port, alias) {
+        (Some(port), _) => Some(port),
+        (None, None) => invitation.ssh_port,
+        (None, Some(_)) => None,
+    };
+    Ok(PlannedRoute {
+        username,
+        ssh_target,
+        port,
+        proxy_jump: jump,
+    })
+}
+
+/// The connection name saving would use: the person's, else the workspace's, qualified by the
+/// server when another saved connection already has that name.
+fn planned_name(
+    invitation: &WorkspaceInvitation,
+    advanced: &InvitationAdvanced,
+    route: &PlannedRoute,
+    connections: &[Connection],
+    existing: Option<&Connection>,
+) -> Result<String, InvitationRefused> {
+    if let Some(name) = advanced.name.as_deref().map(str::trim) {
+        if !name.is_empty() {
+            if name.len() > MAX_CONNECTION_NAME_BYTES {
+                return Err(InvitationRefused::choice(
+                    "Connection names can be at most 120 characters.",
+                ));
+            }
+            return Ok(name.to_owned());
+        }
+    }
+    let base = invitation
+        .workspace_name
+        .clone()
+        .unwrap_or_else(|| crew_invitation::workspace_label(invitation));
+    let taken = connections
+        .iter()
+        .any(|saved| existing.is_none_or(|existing| existing.id != saved.id) && saved.name == base);
+    let server = invitation
+        .ssh_host
+        .as_deref()
+        .or(route.ssh_target.as_deref())
+        .filter(|_| taken);
+    Ok(truncate_bytes(
+        &match server {
+            Some(server) => format!("{base} \u{2014} {server}"),
+            None => base,
+        },
+        MAX_CONNECTION_NAME_BYTES,
+    ))
+}
+
+/// The ordinary save path's input: the four pinned fields exactly as the invitation states them,
+/// everything else from the plan.
+fn save_input(
+    invitation: &WorkspaceInvitation,
+    advanced: &InvitationAdvanced,
+    route: &PlannedRoute,
+    name: String,
+    mode: ClusterMode,
+    institution_id: Option<String>,
+) -> SaveConnection {
+    SaveConnection {
+        preparation_id: advanced.preparation_id.clone(),
+        name,
+        ssh_target: route.ssh_target.clone().unwrap_or_default(),
+        port: route.port,
+        identity_file: advanced.identity_file.clone(),
+        proxy_jump: route.proxy_jump.clone(),
+        socket_path: invitation.socket_path.clone(),
+        owner_uid: invitation.owner_uid,
+        workspace_id: invitation.workspace_id.clone(),
+        workspace_public_key: invitation.workspace_public_key.clone(),
+        remote_root: advanced.remote_root.clone(),
+        remote_execution: advanced.remote_execution,
+        cluster_connection_id: None,
+        mode,
+        institution_id,
+    }
+}
+
+fn plan_invitation(
+    parsed: &ParsedInvitation,
+    overrides: &InvitationOverrides,
+    connections: &[Connection],
+) -> Result<InvitationPlan, InvitationRefused> {
+    let invitation = &parsed.invitation;
+    let advanced = &overrides.advanced;
+    let route = planned_route(invitation, overrides)?;
+    if let Some(identity) = &advanced.identity_file {
+        if !std::path::Path::new(identity).is_absolute() || identity.contains('\n') {
+            return Err(InvitationRefused::choice(
+                "Choose the identity file by its full path.",
+            ));
+        }
+    }
+    let workspace_mode = invitation.mode.as_ref().map(cluster_mode);
+    let mode = overrides.mode.or(workspace_mode).unwrap_or_default();
+    let institution_id = match overrides.institution_id.as_deref().map(str::trim) {
+        Some(typed) if !typed.is_empty() => Some(institution::normalize(typed).map_err(|_| {
+            InvitationRefused::choice(
+                "Type an institution as lowercase letters, numbers, - or _, like ucsf.",
+            )
+        })?),
+        _ => invitation.institution_id.clone(),
+    };
+    let mut missing = Vec::new();
+    if route.ssh_target.is_none() {
+        if route.username.is_none() {
+            missing.push(InvitationMissing::Username);
+        }
+        if invitation.ssh_host.is_none() {
+            missing.push(InvitationMissing::Server);
+        }
+    }
+    if mode == ClusterMode::Private && institution_id.is_none() {
+        missing.push(InvitationMissing::Institution);
+    }
+    let existing = saved_match(connections, invitation)?;
+    let name = planned_name(invitation, advanced, &route, connections, existing.as_ref())?;
+    let fingerprint = crew_invitation::workspace_key_fingerprint(&invitation.workspace_public_key)
+        .ok_or_else(|| {
+            InvitationRefused::new(
+                InvitationRefusal::Unreadable("invitation_invalid_field"),
+                "This invitation has an invalid workspace key. Ask your host to copy it again.",
+            )
+        })?;
+    let save = save_input(
+        invitation,
+        advanced,
+        &route,
+        name.clone(),
+        mode,
+        institution_id.clone(),
+    );
+    let preview = InvitationPreview {
+        source: match parsed.source {
+            crew_invitation::InvitationSource::Invitation => InvitationSourceKind::Invitation,
+            crew_invitation::InvitationSource::LegacyStatus => InvitationSourceKind::LegacyStatus,
+        },
+        workspace_id: invitation.workspace_id.clone(),
+        socket_path: invitation.socket_path.clone(),
+        owner_uid: invitation.owner_uid,
+        fingerprint: crew_invitation::grouped_fingerprint(&fingerprint),
+        workspace_key_fingerprint: fingerprint,
+        workspace_name: invitation.workspace_name.clone(),
+        workspace_label: crew_invitation::workspace_label(invitation),
+        host_username: invitation.host_username.clone(),
+        host_display_name: invitation.host_display_name.clone(),
+        workspace_mode,
+        workspace_institution_id: invitation.institution_id.clone(),
+        server: invitation.ssh_host.clone(),
+        invitee_username: invitation.invitee_username.clone(),
+        username: route.username,
+        ssh_target: route.ssh_target,
+        port: route.port,
+        proxy_jump: route.proxy_jump,
+        mode,
+        institution_id,
+        mode_differs: workspace_mode.is_some_and(|workspace| workspace != mode),
+        name,
+        existing_connection_id: existing.as_ref().map(|saved| saved.id.clone()),
+        missing,
+    };
+    Ok(InvitationPlan {
+        preview,
+        save,
+        existing,
+    })
+}
+
+fn missing_refusal(missing: InvitationMissing, preview: &InvitationPreview) -> InvitationRefused {
+    let server = preview.server.as_deref().unwrap_or("the server");
+    InvitationRefused::new(
+        InvitationRefusal::Missing(missing),
+        match missing {
+            InvitationMissing::Username => format!("Type your username on {server}."),
+            InvitationMissing::Server => {
+                "This invitation doesn't name its server. Add a server login under Advanced."
+                    .to_owned()
+            }
+            InvitationMissing::Institution => {
+                "Choose the institution for this private workspace, like ucsf.".to_owned()
+            }
+        },
+    )
+}
+
+/// What `enrollment.pending` said about an invited account. Unauthenticated: it chooses which
+/// card to show, never the code.
+struct PendingInvitation {
+    join_id: String,
+    workspace_name: Option<String>,
+    inviter: Option<JoinPerson>,
+    add_device: bool,
+    approved: bool,
+    expires_at: Option<u64>,
+    expired: bool,
+    code_mismatch: bool,
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+impl PendingInvitation {
+    /// `Ok(None)` for `{"invited": false}`. Anything malformed is refused rather than guessed.
+    fn read(answer: &Value) -> Result<Option<Self>> {
+        let invalid = || {
+            anyhow::anyhow!(
+                "The workspace sent a join status Biorouter can't read. Try again, or ask your host to update Crew on the server."
+            )
+        };
+        let flag = |field: &str| match answer.get(field) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(value)) => Ok(Some(*value)),
+            Some(_) => Err(invalid()),
+        };
+        if !flag("invited")?.ok_or_else(invalid)? {
+            return Ok(None);
+        }
+        let join_id = answer["join_id"]
+            .as_str()
+            .filter(|id| {
+                (1..=MAX_JOIN_ID_BYTES).contains(&id.len())
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            })
+            .ok_or_else(invalid)?
+            .to_owned();
+        let expires_at = match answer.get("expires_at") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or_else(invalid)?),
+        };
+        let expired = match flag("expired")? {
+            Some(expired) => expired,
+            None => expires_at.is_some_and(|at| at <= now_seconds()),
+        };
+        Ok(Some(Self {
+            join_id,
+            workspace_name: answer["workspace_name"]
+                .as_str()
+                .filter(|name| biorouter_crew::workspace_name_valid(name))
+                .map(str::to_owned),
+            inviter: join_person(&answer["inviter"]),
+            add_device: flag("add_device")?.unwrap_or(false),
+            approved: flag("approved")?.unwrap_or(false),
+            expires_at,
+            expired,
+            code_mismatch: answer["last_refusal"].as_str() == Some("code_mismatch"),
+        }))
+    }
+    fn state(&self) -> JoinState {
+        if self.expired {
+            JoinState::Expired
+        } else if self.code_mismatch {
+            JoinState::CodeMismatch
+        } else if self.approved {
+            JoinState::Approved
+        } else {
+            JoinState::Invited
+        }
+    }
+}
+
+/// A person from an unauthenticated answer, made safe to show: a valid username, and a display
+/// name that passes the display-name rules, else the username.
+fn join_person(value: &Value) -> Option<JoinPerson> {
+    let username = value["username"].as_str()?;
+    if !biorouter_crew::valid_username(username) || username.chars().any(char::is_control) {
+        return None;
+    }
+    let display_name = value["display_name"]
+        .as_str()
+        .map(|name| {
+            biorouter_crew::sanitize_display_name(name, username, std::iter::empty::<&str>())
+        })
+        .unwrap_or_else(|| username.to_owned());
+    Some(JoinPerson {
+        username: username.to_owned(),
+        display_name,
+    })
+}
+
+/// A join status as read, with the join ID a claim sends back.
+struct ObservedJoin {
+    status: JoinStatus,
+    join_id: Option<String>,
+}
+
+/// The address a joiner reaches the host's server by, as the host's own `ssh -G` resolves it.
+#[derive(Debug, PartialEq, Eq)]
+struct ServerAddress {
+    host: String,
+    port: Option<u16>,
+    proxy_jump: Option<String>,
+}
+
+/// `ssh -G <args>`: the effective settings, first value per key.
+async fn resolve_ssh(args: &[String]) -> Result<HashMap<String, String>> {
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::new("ssh");
+    command
+        .arg("-G")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    crate::subprocess::prepare_agent_child_command(&mut command);
+    let mut child = command
+        .spawn()
+        .context("Couldn't run ssh to read this server's address")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("SSH configuration output unavailable")?;
+    let read = async {
+        let mut bytes = Vec::new();
+        (&mut stdout)
+            .take(SSH_RESOLVE_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        ensure!(
+            bytes.len() as u64 <= SSH_RESOLVE_LIMIT,
+            "SSH configuration output exceeds one MiB"
+        );
+        ensure!(
+            child.wait().await?.success(),
+            "ssh couldn't read your settings for this server"
+        );
+        Ok::<_, anyhow::Error>(bytes)
+    };
+    let bytes = tokio::time::timeout(SSH_RESOLVE_TIMEOUT, read)
+        .await
+        .context("ssh took too long to read your settings for this server")??;
+    let text = String::from_utf8(bytes).context("SSH configuration output is not UTF-8")?;
+    let mut settings = HashMap::new();
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once(' ') {
+            settings
+                .entry(key.to_ascii_lowercase())
+                .or_insert_with(|| value.trim().to_owned());
+        }
+    }
+    Ok(settings)
+}
+
+/// A host name an invitation may carry: DNS characters only, so never a path, option or
+/// bracketed address.
+fn plain_host(host: &str) -> bool {
+    (1..=253).contains(&host.len())
+        && !host.starts_with(['-', '.'])
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+/// `hostname` and `port` from `ssh -G` settings.
+fn resolved_endpoint(settings: &HashMap<String, String>) -> Result<(String, u16)> {
+    let host = settings
+        .get("hostname")
+        .filter(|host| safe_atom(host) && !host.contains(['@', '/']) && host.len() <= 253)
+        .context("Couldn't read this server's address from your SSH settings")?;
+    let port: u16 = settings
+        .get("port")
+        .and_then(|port| port.parse().ok())
+        .filter(|port| *port > 0)
+        .context("Couldn't read this server's SSH port from your SSH settings")?;
+    Ok((host.clone(), port))
+}
+
+/// One hop of a ProxyJump route: `[ssh://][user@]host[:port]`, the user dropped (the joiner's
+/// account on a jump host is their own), the host and port kept.
+fn jump_hop(hop: &str) -> Option<(String, Option<u16>)> {
+    let authority = hop.strip_prefix("ssh://").unwrap_or(hop);
+    let address = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, address)| address);
+    let (host, port) = match address.split_once(':') {
+        Some((host, port)) => (host, Some(port.parse::<u16>().ok().filter(|p| *p > 0)?)),
+        None => (address, None),
+    };
+    plain_host(host).then(|| (host.to_owned(), port))
+}
+
+// ---------------------------------------------------------------------------------------------
+
+impl CrewManager {
+    /// Parse a pasted invitation (the host's whole message, the bare `brcrew1:` line, or the
+    /// legacy `biorouter-crew status` JSON) and preview it, or save a connection pinned exactly
+    /// as it says: the workspace ID, workspace key, socket and host UID are never taken from
+    /// anywhere else. Saving goes through the ordinary save path, so a Private save needs an
+    /// institution, which the invitation of a Private workspace supplies.
+    ///
+    /// A preview saves nothing and touches no credential. A save of a workspace this computer
+    /// already has returns that connection when the settings agree (so a repeated paste never
+    /// mints a second device key, which would change the device code), and is refused when
+    /// they differ or when the saved connection pins another identity.
+    pub async fn connection_from_invitation(
+        &self,
+        text: &str,
+        preview: bool,
+        overrides: InvitationOverrides,
+    ) -> Result<InvitationOutcome> {
+        let parsed = crew_invitation::parse(text).map_err(|error| {
+            InvitationRefused::new(
+                InvitationRefusal::Unreadable(error.code()),
+                error.to_string(),
+            )
+        })?;
+        if preview {
+            let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+            return Ok(InvitationOutcome::Preview(Box::new(plan.preview)));
+        }
+        let _serial = INVITATION_SAVES.lock().await;
+        let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+        if let Some(missing) = plan.preview.missing.first() {
+            return Err(missing_refusal(*missing, &plan.preview).into());
+        }
+        if let Some(existing) = plan.existing {
+            if same_settings(&existing, &plan.save) {
+                return Ok(InvitationOutcome::Saved(Box::new(existing)));
+            }
+            let mut refused = InvitationRefused::new(
+                InvitationRefusal::AlreadySaved,
+                format!(
+                    "This computer already has \u{201c}{}\u{201d} for this workspace. Change it in its connection settings instead.",
+                    super::plain_label(&existing.name)
+                ),
+            );
+            refused.connection_id = Some(existing.id.clone());
+            return Err(refused.into());
+        }
+        Ok(InvitationOutcome::Saved(Box::new(
+            self.save(plan.save).await?,
+        )))
+    }
+
+    /// The invitation a host sends, for `invitee` when given (`@bob` or `bob`).
+    ///
+    /// Built from this computer's verified connection (its four pinned fields, never its local
+    /// name or work folder), the workspace's name, privacy and institution (from the signed
+    /// `hello` v2 when the broker sent one, else from a fresh snapshot), the host's username
+    /// from that snapshot, and `ssh -G` for the connection's SSH login: the server's real
+    /// hostname, port and jump hosts, never a local alias.
+    pub async fn invitation_for(
+        &self,
+        connection_id: &str,
+        invitee: Option<&str>,
+    ) -> Result<InvitationText> {
+        let invitee = match invitee.map(str::trim).filter(|typed| !typed.is_empty()) {
+            Some(typed) => {
+                let name = typed.strip_prefix('@').unwrap_or(typed);
+                ensure!(
+                    biorouter_crew::valid_username(name),
+                    "Type the person's username on the server, like @bob."
+                );
+                Some(name.to_owned())
+            }
+            None => None,
+        };
+        let c = self.connection(connection_id).await?;
+        let hello = self
+            .broker_hello(connection_id)
+            .filter(|_| c.node_id.is_some())
+            .context("Connect to this workspace before inviting people.")?;
+        let snapshot = self
+            .human_request(connection_id, "workspace.snapshot", json!({}), None)
+            .await?;
+        let workspace = &snapshot["workspace"];
+        ensure!(
+            workspace["id"]
+                .as_str()
+                .is_some_and(|id| same_workspace_id(id, &c.workspace_id)),
+            "The workspace's answer doesn't match this connection. Reconnect and try again."
+        );
+        let (workspace_name, mode, institution_id) = if hello.signature_version >= 2 {
+            (
+                hello.workspace_name.clone(),
+                hello.mode.map(crew_mode),
+                hello.institution_id.clone(),
+            )
+        } else {
+            (
+                workspace["name"]
+                    .as_str()
+                    .filter(|name| biorouter_crew::workspace_name_valid(name))
+                    .map(str::to_owned),
+                serde_json::from_value::<biorouter_crew::Mode>(workspace["mode"].clone()).ok(),
+                workspace["institution_id"].as_str().map(str::to_owned),
+            )
+        };
+        let mode = mode.context("The workspace didn't say whether it is private or public.")?;
+        let host = snapshot["principals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|principal| {
+                principal["uid"].as_u64() == Some(u64::from(c.owner_uid))
+                    && principal["active"].as_bool() != Some(false)
+            })
+            .context("The workspace's host hasn't joined it yet. Create the workspace first.")?;
+        let host_username = host["username"]
+            .as_str()
+            .filter(|name| biorouter_crew::valid_username(name))
+            .context("The workspace's host has a username Biorouter can't put in an invitation.")?
+            .to_owned();
+        let host_display_name = host["display_name"]
+            .as_str()
+            .and_then(|name| biorouter_crew::validate_display_name(name).ok())
+            .filter(|name| {
+                biorouter_crew::name_key(name) != biorouter_crew::name_key(&host_username)
+            });
+        let server = self.server_address(&c).await?;
+        let invitation = WorkspaceInvitation {
+            workspace_id: uuid::Uuid::parse_str(&c.workspace_id)?
+                .hyphenated()
+                .to_string(),
+            workspace_public_key: c.workspace_public_key.to_ascii_lowercase(),
+            socket_path: c.socket_path.clone(),
+            owner_uid: c.owner_uid,
+            workspace_name,
+            host_username: Some(host_username),
+            host_display_name,
+            mode: Some(mode),
+            institution_id,
+            ssh_host: Some(server.host),
+            ssh_port: server.port,
+            proxy_jump: server.proxy_jump,
+            invitee_username: invitee,
+        };
+        let unusable = |error: crew_invitation::InvitationError| {
+            anyhow::anyhow!(
+                "Biorouter couldn't build an invitation from this connection's saved details ({}).",
+                error.code()
+            )
+        };
+        Ok(InvitationText {
+            line: crew_invitation::encode(&invitation).map_err(unusable)?,
+            message: crew_invitation::message(&invitation).map_err(unusable)?,
+        })
+    }
+
+    /// The server's hostname, port (when not 22) and jump hosts, as `ssh -G` resolves this
+    /// connection's login. Each jump host is resolved too, so no hop is a local alias; a route
+    /// that can't be described that way is left out, and the joiner sets it under Advanced.
+    async fn server_address(&self, c: &Connection) -> Result<ServerAddress> {
+        ensure!(
+            safe_atom(&c.ssh_target),
+            "SSH target must be a host alias or user@host"
+        );
+        let base = transport::ssh_args(c, &self.control_path(&c.id)?);
+        let config: Vec<String> = base
+            .windows(2)
+            .find(|pair| pair[0] == "-F")
+            .map(|pair| pair.to_vec())
+            .unwrap_or_default();
+        let mut args = base;
+        args.push(c.ssh_target.clone());
+        let settings = resolve_ssh(&args).await?;
+        let (host, port) = resolved_endpoint(&settings)?;
+        ensure!(
+            plain_host(&host),
+            "This server's address from your SSH settings can't be put in an invitation."
+        );
+        let mut hops = Vec::new();
+        let route = settings
+            .get("proxyjump")
+            .map(String::as_str)
+            .filter(|route| !route.is_empty() && *route != "none");
+        if let Some(route) = route {
+            for hop in route.split(',').take(MAX_JUMP_HOPS + 1) {
+                let Some((alias, hop_port)) = jump_hop(hop) else {
+                    hops.clear();
+                    break;
+                };
+                let mut hop_args = config.clone();
+                if let Some(hop_port) = hop_port {
+                    hop_args.extend(["-p".into(), hop_port.to_string()]);
+                }
+                hop_args.push(alias);
+                let (hop_host, hop_port) = resolved_endpoint(&resolve_ssh(&hop_args).await?)?;
+                if !plain_host(&hop_host) {
+                    hops.clear();
+                    break;
+                }
+                hops.push(if hop_port == 22 {
+                    hop_host
+                } else {
+                    format!("{hop_host}:{hop_port}")
+                });
+            }
+            if hops.len() > MAX_JUMP_HOPS {
+                hops.clear();
+            }
+        }
+        Ok(ServerAddress {
+            host,
+            port: (port != 22).then_some(port),
+            proxy_jump: (!hops.is_empty()).then(|| hops.join(",")),
+        })
+    }
+
+    /// Where this computer stands in joining the connection's workspace.
+    ///
+    /// Sends the **unsigned**, pre-authentication `enrollment.pending` over the bridge, as
+    /// `hello` is sent, only when the broker announced [`JOIN_BY_NAME_CAPABILITY`]
+    /// (`unsupported` otherwise, with nothing sent). When the account is not invited, one
+    /// signed read tells a member (`joined`) from a stranger (`not_invited`). The device code
+    /// is computed here from the saved device key and the pinned workspace key; the answer's
+    /// fields only choose which card to show.
+    pub async fn join_status(&self, id: &str) -> Result<JoinStatus> {
+        Ok(self.observe_join(id).await?.status)
+    }
+
+    /// Join the workspace: when (and only when) the workspace says the host approved this
+    /// computer, send `auth.challenge` and `auth.join {public_key, join_id}` signed with the
+    /// saved device key, through the one door that may send it. Idempotent: an account that
+    /// is already a member answers `joined` without sending anything.
+    ///
+    /// Any other state is a [`JoinRefused`] and sends nothing, because a claim under an
+    /// unapproved or already refused code would only show the host a warning about a device
+    /// with a different code.
+    pub async fn join(&self, id: &str) -> Result<JoinStatus> {
+        let observed = self.observe_join(id).await?;
+        let workspace_name = observed.status.workspace_name.clone();
+        if observed.status.status == JoinState::Joined {
+            return Ok(observed.status);
+        }
+        if let Some(refusal) = JoinRefusal::from_state(observed.status.status) {
+            return Err(JoinRefused::error(refusal));
+        }
+        let join_id = observed
+            .join_id
+            .context("The workspace approved a join without naming it")?;
+        let c = self.connection(id).await?;
+        let params = json!({"public_key": c.public_key, "join_id": join_id});
+        let answer = match self.signed_join_request(id, params, None).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                let Some((code, message)) = broker_refusal(&error) else {
+                    return Err(error);
+                };
+                let refusal = JoinRefusal::from_broker_code(&code);
+                // A second claim racing the first finds the join already used.
+                if refusal == JoinRefusal::NotInvited && self.is_member(id).await? {
+                    return Ok(JoinStatus::bare(JoinState::Joined, workspace_name));
+                }
+                return Err(anyhow::Error::new(JoinRefused {
+                    refusal,
+                    broker_message: Some(message),
+                }));
+            }
+        };
+        ensure!(
+            answer["device_id"]
+                .as_str()
+                .is_none_or(|device| device == c.device_id),
+            "The workspace's answer names a different device. Check your join status."
+        );
+        Ok(JoinStatus {
+            add_device: observed.status.add_device,
+            inviter: observed.status.inviter,
+            ..JoinStatus::bare(JoinState::Joined, workspace_name)
+        })
+    }
+
+    async fn observe_join(&self, id: &str) -> Result<ObservedJoin> {
+        let c = self.connection(id).await?;
+        // Disconnected is an error, not a status: nothing can be asked.
+        self.transport(id).await?;
+        let hello = self.broker_hello(id);
+        let signed_name = hello
+            .as_ref()
+            .filter(|hello| hello.signature_version >= 2)
+            .and_then(|hello| hello.workspace_name.clone());
+        let unsupported = || ObservedJoin {
+            status: JoinStatus::bare(JoinState::Unsupported, signed_name.clone()),
+            join_id: None,
+        };
+        if !hello.as_ref().is_some_and(|hello| {
+            hello
+                .capabilities
+                .iter()
+                .any(|capability| capability == JOIN_BY_NAME_CAPABILITY)
+        }) {
+            return Ok(unsupported());
+        }
+        let answer = match self
+            .pre_authentication_request(id, "enrollment.pending")
+            .await
+        {
+            Ok(answer) => answer,
+            // An unsigned capability can be spoofed; a broker without the method refuses it.
+            Err(error) => match broker_refusal(&error) {
+                Some((code, _)) if matches!(code.as_str(), "unauthorized" | "unsupported") => {
+                    return Ok(unsupported());
+                }
+                _ => return Err(error),
+            },
+        };
+        let Some(pending) = PendingInvitation::read(&answer)? else {
+            let state = if self.is_member(id).await? {
+                JoinState::Joined
+            } else {
+                JoinState::NotInvited
+            };
+            return Ok(ObservedJoin {
+                status: JoinStatus::bare(state, signed_name),
+                join_id: None,
+            });
+        };
+        let state = pending.state();
+        let code = match state {
+            JoinState::Invited | JoinState::Approved | JoinState::CodeMismatch => {
+                Some(self.device_code(&c)?)
+            }
+            _ => None,
+        };
+        Ok(ObservedJoin {
+            status: JoinStatus {
+                status: state,
+                code,
+                inviter: pending.inviter,
+                workspace_name: signed_name.or(pending.workspace_name),
+                expires_at: pending.expires_at,
+                add_device: pending.add_device,
+            },
+            join_id: Some(pending.join_id),
+        })
+    }
+
+    /// This computer's device code for the connection's workspace, formatted for display:
+    /// `device_code(workspace_id, W, K)` over the pinned workspace key `W` and the public key
+    /// `K` of the saved signing key, which must be the key the connection saved.
+    fn device_code(&self, c: &Connection) -> Result<String> {
+        let secret: [u8; 32] = unhex(&self.read_credential(&format!("device:{}", c.id))?)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
+        let public = SigningKey::from_bytes(&secret).verifying_key().to_bytes();
+        ensure!(
+            hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
+            "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
+        );
+        let workspace_key: [u8; 32] = unhex(&c.workspace_public_key)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid workspace key"))?;
+        Ok(biorouter_crew::format_device_code(
+            &biorouter_crew::device_code(&c.workspace_id, &workspace_key, &public),
+        ))
+    }
+
+    /// Whether this computer's key is a member's device: one signed read, refused as
+    /// `unauthorized` for a device the workspace does not know (or whose account left).
+    async fn is_member(&self, id: &str) -> Result<bool> {
+        match self
+            .signed_request(id, "profile.suggest", json!({}), None)
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) => match broker_refusal(&error) {
+                Some((code, _)) if code == "unauthorized" => Ok(false),
+                // Refused after authenticating: a member, on a broker without the method.
+                Some((code, _)) if code == "unsupported" => Ok(true),
+                _ => Err(error),
+            },
+        }
+    }
+
+    /// An unsigned request before authentication, like `hello`. Only `enrollment.pending`.
+    async fn pre_authentication_request(&self, id: &str, method: &str) -> Result<Value> {
+        ensure!(
+            method == "enrollment.pending",
+            "Only the join status is read before authentication"
+        );
+        let transport = self.transport(id).await?;
+        let mut locked = transport.lock().await;
+        let result = locked.request(method, json!({}), None, None, None).await;
+        let usable = locked.is_usable();
+        drop(locked);
+        if !usable {
+            self.retire_failed_transport(id, &transport).await?;
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -653,6 +2106,10 @@ mod tests {
             terminal_failure_message(HANDOFF_FAILURE_CODE),
             Some(HANDOFF_FAILURE_MESSAGE)
         );
+        assert_eq!(
+            terminal_failure_message(HANDOFF_FAILED_CODE),
+            Some(HANDOFF_FAILED_MESSAGE)
+        );
         let malicious = "authentication_handoff_failed: secret=synthetic\ntrace";
         assert_eq!(terminal_failure_message(malicious), None);
     }
@@ -723,5 +2180,1214 @@ mod tests {
         assert!(!state.overlapped_calls.load(Ordering::SeqCst));
         assert_eq!(state.active_calls.load(Ordering::SeqCst), 0);
         assert_eq!(owned.lock().unwrap().terminal_status, Some(Some(17)));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    //! Workspace admission (S3a). Tests that write credentials, spawn a fake `ssh` or move the
+    //! environment run in a process of their own, as the core's other Crew tests do.
+    use super::*;
+    use crate::crew::{BrokerHello, Registry, WorkspaceIdentityError};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    const WORKSPACE_ID: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000a1";
+    const SOCKET: &str = "/tmp/crew-1000-0123456789abcdef0123456789abcdef/broker.sock";
+
+    fn workspace_key() -> [u8; 32] {
+        SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes()
+    }
+
+    fn lab_invitation() -> WorkspaceInvitation {
+        WorkspaceInvitation {
+            workspace_id: WORKSPACE_ID.into(),
+            workspace_public_key: hex(&workspace_key()),
+            socket_path: SOCKET.into(),
+            owner_uid: 1000,
+            workspace_name: Some("lab".into()),
+            host_username: Some("alice".into()),
+            host_display_name: Some("Alice Chen".into()),
+            mode: Some(biorouter_crew::Mode::Private),
+            institution_id: Some("ucsf".into()),
+            ssh_host: Some("hpc.example.org".into()),
+            ssh_port: None,
+            proxy_jump: None,
+            invitee_username: Some("bob".into()),
+        }
+    }
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "biorouter-crew-admission-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn preview_of(outcome: InvitationOutcome) -> InvitationPreview {
+        match outcome {
+            InvitationOutcome::Preview(preview) => *preview,
+            InvitationOutcome::Saved(_) => panic!("a preview saved a connection"),
+        }
+    }
+
+    fn saved_of(outcome: InvitationOutcome) -> Connection {
+        match outcome {
+            InvitationOutcome::Saved(connection) => *connection,
+            InvitationOutcome::Preview(_) => panic!("a save only previewed"),
+        }
+    }
+
+    fn refused(error: &anyhow::Error) -> InvitationRefused {
+        error
+            .downcast_ref::<InvitationRefused>()
+            .cloned()
+            .unwrap_or_else(|| panic!("an invitation refusal is typed: {error:#}"))
+    }
+
+    /// A saved connection to `workspace_id`, pinned to `key`.
+    fn saved_connection(id: &str, name: &str, workspace_id: &str, key: &str) -> Connection {
+        let device = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
+        Connection {
+            id: id.into(),
+            node_id: Some("ab".repeat(32)),
+            name: name.into(),
+            ssh_target: "bob@hpc.example.org".into(),
+            port: None,
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: SOCKET.into(),
+            owner_uid: 1000,
+            workspace_id: workspace_id.into(),
+            workspace_public_key: key.into(),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: uuid::Uuid::new_v4().to_string(),
+            mode: ClusterMode::Private,
+            institution_id: Some("ucsf".into()),
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: hex(&Sha256::digest(device)),
+            public_key: hex(&device),
+        }
+    }
+
+    #[tokio::test]
+    async fn invitation_parser_accepts_the_message_the_bare_line_and_legacy_status() {
+        let root = fixture_root("forms");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        let line = crew_invitation::encode(&lab_invitation()).unwrap();
+        let fingerprint =
+            crew_invitation::workspace_key_fingerprint(&hex(&workspace_key())).unwrap();
+        for text in [
+            message.clone(),
+            line.clone(),
+            format!("Hi Bob!\n\n{message}\n\nSee you Monday."),
+        ] {
+            let preview = preview_of(
+                manager
+                    .connection_from_invitation(&text, true, InvitationOverrides::default())
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(preview.source, InvitationSourceKind::Invitation);
+            assert_eq!(preview.workspace_id, WORKSPACE_ID);
+            assert_eq!(preview.workspace_name.as_deref(), Some("lab"));
+            assert_eq!(preview.host_display_name.as_deref(), Some("Alice Chen"));
+            assert_eq!(preview.username.as_deref(), Some("bob"));
+            assert_eq!(preview.ssh_target.as_deref(), Some("bob@hpc.example.org"));
+            assert_eq!(preview.workspace_mode, Some(ClusterMode::Private));
+            assert_eq!(preview.mode, ClusterMode::Private);
+            assert_eq!(preview.institution_id.as_deref(), Some("ucsf"));
+            assert!(!preview.mode_differs);
+            assert!(preview.missing.is_empty());
+            assert_eq!(preview.name, "lab");
+            assert_eq!(
+                preview.fingerprint,
+                crew_invitation::grouped_fingerprint(&fingerprint)
+            );
+        }
+        let status = json!({"protocol": 1, "workspace_id": WORKSPACE_ID, "host_uid": 1000,
+            "workspace_public_key": hex(&workspace_key()), "socket": SOCKET,
+            "workspace_key_fingerprint": fingerprint})
+        .to_string();
+        let legacy = preview_of(
+            manager
+                .connection_from_invitation(
+                    &format!("$ biorouter-crew status\n{status}\n$"),
+                    true,
+                    InvitationOverrides::default(),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(legacy.source, InvitationSourceKind::LegacyStatus);
+        assert_eq!(legacy.workspace_mode, None);
+        assert_eq!(
+            legacy.missing,
+            vec![
+                InvitationMissing::Username,
+                InvitationMissing::Server,
+                InvitationMissing::Institution
+            ]
+        );
+        // A host saving their own workspace names their login and institution.
+        let host = InvitationOverrides {
+            institution_id: Some("ucsf".into()),
+            advanced: InvitationAdvanced {
+                ssh_target: Some("alice@hpc.example.org".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let host = preview_of(
+            manager
+                .connection_from_invitation(&status, true, host)
+                .await
+                .unwrap(),
+        );
+        assert!(host.missing.is_empty(), "{:?}", host.missing);
+        assert_eq!(host.ssh_target.as_deref(), Some("alice@hpc.example.org"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn invitation_parser_refuses_garbage_oversize_and_unknown_versions() {
+        let root = fixture_root("refusals");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let cases = [
+            (
+                "Hi Bob, here is the thing we talked about".to_owned(),
+                "invitation_not_found",
+            ),
+            ("brcrew1:!!!!".to_owned(), "invitation_malformed"),
+            (
+                "brcrew1:".to_owned() + &"A".repeat(crew_invitation::MAX_PASTED_BYTES),
+                "invitation_too_long",
+            ),
+            (
+                "brcrew1:eyJ2IjoyfQ".to_owned(),
+                "invitation_unsupported_version",
+            ),
+        ];
+        for (text, code) in cases {
+            for preview in [true, false] {
+                let error = manager
+                    .connection_from_invitation(&text, preview, InvitationOverrides::default())
+                    .await
+                    .unwrap_err();
+                let refusal = refused(&error);
+                assert_eq!(refusal.reason(), InvitationRefusal::Unreadable(code));
+                assert_eq!(refusal.api_code(), "crew_invitation_invalid");
+                assert!(!error.to_string().contains("talked about"), "{error}");
+            }
+        }
+        assert!(manager.list().await.is_empty());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_preview_saves_nothing_and_touches_no_credential() {
+        let root = fixture_root("preview");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        let preview = preview_of(
+            manager
+                .connection_from_invitation(&message, true, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert!(preview.existing_connection_id.is_none());
+        assert!(manager.list().await.is_empty());
+        assert!(manager.registry.lock().await.pending_device.is_none());
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            0,
+            "a preview writes nothing: no registry, no credential"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    async fn preview_with(
+        manager: &CrewManager,
+        text: &str,
+        overrides: InvitationOverrides,
+    ) -> Result<InvitationPreview> {
+        Ok(preview_of(
+            manager
+                .connection_from_invitation(text, true, overrides)
+                .await?,
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_preview_applies_the_persons_choices_and_only_the_invitations_hints() {
+        let root = fixture_root("choices");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let text = crew_invitation::message(&WorkspaceInvitation {
+            ssh_port: Some(2222),
+            proxy_jump: Some("gateway.example.org".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        let hinted = preview_with(&manager, &text, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (hinted.port, hinted.proxy_jump.as_deref()),
+            (Some(2222), Some("gateway.example.org"))
+        );
+        // A login from the person's own SSH settings brings its own port and route.
+        let alias = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                ssh_target: Some("hpc".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let alias = preview_with(&manager, &text, alias).await.unwrap();
+        assert_eq!(alias.ssh_target.as_deref(), Some("hpc"));
+        assert_eq!((alias.port, alias.proxy_jump), (None, None));
+        let no_jump = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                proxy_jump: Some(String::new()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            preview_with(&manager, &text, no_jump)
+                .await
+                .unwrap()
+                .proxy_jump,
+            None
+        );
+        let public = InvitationOverrides {
+            username: Some("@robert".into()),
+            mode: Some(ClusterMode::Public),
+            ..Default::default()
+        };
+        let public = preview_with(&manager, &text, public).await.unwrap();
+        assert!(public.mode_differs && public.missing.is_empty());
+        assert_eq!(public.ssh_target.as_deref(), Some("robert@hpc.example.org"));
+        assert_eq!(public.institution_id.as_deref(), Some("ucsf"));
+        for bad in [
+            InvitationOverrides {
+                username: Some("b ob".into()),
+                ..Default::default()
+            },
+            InvitationOverrides {
+                institution_id: Some("UCSF Health!".into()),
+                ..Default::default()
+            },
+            InvitationOverrides {
+                advanced: InvitationAdvanced {
+                    ssh_target: Some("-oProxyCommand=evil".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ] {
+            let error = preview_with(&manager, &text, bad).await.unwrap_err();
+            assert_eq!(refused(&error).reason(), InvitationRefusal::InvalidChoice);
+        }
+        assert!(manager.list().await.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_preview_names_the_saved_connection_and_never_re_pins_a_workspace() {
+        let root = fixture_root("saved");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let text = crew_invitation::message(&lab_invitation()).unwrap();
+        let key = hex(&workspace_key());
+        let other_workspace = "3f2a9c1e-77b0-4d4e-8a11-0000000000b2";
+        manager.registry.lock().await.connections = vec![
+            saved_connection("same", "lab", WORKSPACE_ID, &key),
+            saved_connection("elsewhere", "lab", other_workspace, &"12".repeat(32)),
+        ];
+        let preview = preview_with(&manager, &text, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(preview.existing_connection_id.as_deref(), Some("same"));
+        manager.registry.lock().await.connections.remove(0);
+        let preview = preview_with(&manager, &text, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(preview.existing_connection_id, None);
+        assert_eq!(preview.name, "lab \u{2014} hpc.example.org");
+        // The same workspace ID pinned to another key is refused, preview or save.
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(saved_connection(
+                "tampered",
+                "lab",
+                WORKSPACE_ID,
+                &hex(&SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes()),
+            ));
+        for preview in [true, false] {
+            let error = manager
+                .connection_from_invitation(&text, preview, InvitationOverrides::default())
+                .await
+                .unwrap_err();
+            let refusal = refused(&error);
+            assert_eq!(refusal.reason(), InvitationRefusal::IdentityConflict);
+            assert_eq!(refusal.api_code(), "crew_invitation_conflict");
+            assert_eq!(refusal.connection_id(), Some("tampered"));
+        }
+        assert_eq!(manager.list().await.len(), 2);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_pending_answer_maps_to_each_join_state() {
+        let far = now_seconds() + 3600;
+        let invited = json!({"invited": true, "join_id": "join-1", "workspace_name": "lab",
+            "inviter": {"username": "alice", "display_name": "Alice Chen"},
+            "add_device": false, "approved": false, "expires_at": far, "expired": false});
+        let with = |patch: Value| {
+            let mut answer = invited.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                answer[key] = value.clone();
+            }
+            answer
+        };
+        let state = |answer: &Value| {
+            PendingInvitation::read(answer)
+                .unwrap()
+                .map(|pending| pending.state())
+        };
+        assert_eq!(state(&invited), Some(JoinState::Invited));
+        assert_eq!(
+            state(&with(json!({"approved": true}))),
+            Some(JoinState::Approved)
+        );
+        assert_eq!(
+            state(&with(
+                json!({"approved": true, "last_refusal": "code_mismatch"})
+            )),
+            Some(JoinState::CodeMismatch)
+        );
+        assert_eq!(
+            state(&with(json!({"expired": true, "approved": true}))),
+            Some(JoinState::Expired)
+        );
+        assert_eq!(
+            state(&with(json!({"expired": null, "expires_at": 1}))),
+            Some(JoinState::Expired)
+        );
+        assert_eq!(state(&json!({"invited": false})), None);
+        let pending = PendingInvitation::read(&invited).unwrap().unwrap();
+        assert_eq!(pending.join_id, "join-1");
+        assert_eq!(
+            pending.inviter,
+            Some(JoinPerson {
+                username: "alice".into(),
+                display_name: "Alice Chen".into()
+            })
+        );
+        // A display name with nothing visible left is shown as the username; a username that
+        // is not an account name drops the inviter rather than showing it.
+        let blank =
+            with(json!({"inviter": {"username": "alice", "display_name": "\u{200b}\u{202e}"}}));
+        let pending = PendingInvitation::read(&blank).unwrap().unwrap();
+        assert_eq!(pending.inviter.unwrap().display_name, "alice");
+        let control = with(json!({"inviter": {"username": "al\u{7}ice"}}));
+        assert!(PendingInvitation::read(&control)
+            .unwrap()
+            .unwrap()
+            .inviter
+            .is_none());
+        for malformed in [
+            json!({}),
+            json!({"invited": "yes"}),
+            json!({"invited": true}),
+            with(json!({"join_id": "join 1"})),
+            with(json!({"join_id": "x".repeat(129)})),
+            with(json!({"approved": "true"})),
+            with(json!({"expires_at": "soon"})),
+        ] {
+            assert!(PendingInvitation::read(&malformed).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn a_broker_refusal_is_read_only_from_the_transport_envelope() {
+        let refusal = anyhow::anyhow!(
+            "{BROKER_REFUSAL_PREFIX}{}",
+            json!({"code": "code_mismatch", "message": "code_mismatch: no"})
+        );
+        assert_eq!(
+            broker_refusal(&refusal),
+            Some(("code_mismatch".into(), "code_mismatch: no".into()))
+        );
+        assert_eq!(broker_refusal(&anyhow::anyhow!("code_mismatch: no")), None);
+        assert_eq!(
+            broker_refusal(&anyhow::anyhow!("{BROKER_REFUSAL_PREFIX}not json")),
+            None
+        );
+        assert_eq!(
+            JoinRefusal::from_broker_code("code_mismatch").api_code(),
+            "crew_join_code_mismatch"
+        );
+        assert_eq!(
+            JoinRefusal::from_broker_code("something_new"),
+            JoinRefusal::Refused
+        );
+    }
+
+    #[test]
+    fn jump_hops_keep_the_host_and_port_and_drop_the_user() {
+        assert_eq!(
+            jump_hop("alice@gw.example.org:2222"),
+            Some(("gw.example.org".into(), Some(2222)))
+        );
+        assert_eq!(jump_hop("ssh://gw"), Some(("gw".into(), None)));
+        for refused in [
+            "-oProxyCommand=evil",
+            "[::1]:22",
+            "gw:0",
+            "gw:port",
+            "",
+            "a/b",
+        ] {
+            assert_eq!(jump_hop(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_device_code_is_the_one_the_broker_checks() {
+        let device = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
+        let code = biorouter_crew::format_device_code(&biorouter_crew::device_code(
+            WORKSPACE_ID,
+            &workspace_key(),
+            &device,
+        ));
+        assert_eq!(code.len(), 19);
+        assert!(biorouter_crew::device_code_matches(
+            &code,
+            WORKSPACE_ID,
+            &workspace_key(),
+            &device
+        ));
+        let other = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        assert!(!biorouter_crew::device_code_matches(
+            &code,
+            WORKSPACE_ID,
+            &workspace_key(),
+            &other
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_handoff_is_typed_for_people_and_keeps_its_diagnostic_for_logs() {
+        let manager = manager().unwrap();
+        let connection_id = format!("handoff-failure-{}", uuid::Uuid::new_v4());
+        manager.registry.lock().await.connections.push(Connection {
+            id: connection_id.clone(),
+            ..saved_connection("", "lab", WORKSPACE_ID, &hex(&workspace_key()))
+        });
+        let auth_id = uuid::Uuid::new_v4().to_string();
+        let controller = uuid::Uuid::new_v4().to_string();
+        let session = AuthSession {
+            info: AuthenticationSession {
+                authentication_id: auth_id.clone(),
+                connection_id: connection_id.clone(),
+                controller_id: controller.clone(),
+                instance_id: INSTANCE.clone(),
+            },
+            request_id: uuid::Uuid::new_v4().to_string(),
+            binding: Mutex::new(binding(&connection_id).await.unwrap()),
+            adopted: Arc::new(AtomicBool::new(false)),
+            plan: AuthenticationPlan {
+                program: "ssh".into(),
+                args: Vec::new(),
+                connection_id: connection_id.clone(),
+                authentication_id: auth_id.clone(),
+            },
+            created: Instant::now(),
+            size: dimensions(80, 24).unwrap(),
+            started: Mutex::new(true),
+            runtime: Mutex::new(None),
+        };
+        SESSIONS
+            .lock()
+            .unwrap()
+            .insert(auth_id.clone(), Arc::new(session));
+
+        let error = handoff(&auth_id, &controller).await.unwrap_err();
+        let typed = error
+            .downcast_ref::<HandoffFailed>()
+            .expect("a failed handoff is typed");
+        assert_eq!(typed.api_code(), "crew_handoff_failed");
+        assert_eq!(error.to_string(), HANDOFF_FAILED_MESSAGE);
+        assert!(typed.log_message().starts_with(HANDOFF_FAILURE_MESSAGE));
+        assert!(typed
+            .log_message()
+            .contains("Authentication terminal unavailable"));
+        assert!(!typed.workspace_identity_mismatch());
+        let saved = manager.connection(&connection_id).await.unwrap();
+        assert_eq!(saved.status, "disconnected");
+        assert_eq!(saved.last_error.as_deref(), Some(HANDOFF_FAILED_MESSAGE));
+
+        let identity = HandoffFailed::wrap(WorkspaceIdentityError::wrap(anyhow::anyhow!(
+            "Workspace identity mismatch"
+        )));
+        let identity = identity.downcast_ref::<HandoffFailed>().unwrap();
+        assert!(identity.workspace_identity_mismatch());
+        assert_eq!(identity.api_code(), HANDOFF_FAILED_CODE);
+
+        SESSIONS.lock().unwrap().remove(&auth_id);
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .retain(|c| c.id != connection_id);
+    }
+
+    /// Point the profile, credentials and `ssh` of this process at `root`: file credentials
+    /// under a development profile, never the OS keychain. Only inside a process of its own.
+    #[cfg(unix)]
+    fn isolated_env(root: &Path) -> env_lock::EnvGuard<'static> {
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", root.join("bin").display());
+        let profile = profile_root.to_string_lossy().into_owned();
+        crate::test_sandbox::relocate_path_root_and(
+            profile.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        )
+    }
+
+    /// A fake `ssh`. `-G` prints `hosts`' lines for its last argument first, then settings the
+    /// SSH preflight accepts. As a bridge, it logs every request line and answers
+    /// `auth.challenge`, then each of `answers` (a method and its whole envelope, `{"result":
+    /// …}` or `{"error": …}`), then anything else with `{"accepted_method":"fixture"}`.
+    #[cfg(unix)]
+    fn write_fake_ssh(root: &Path, hosts: &[(&str, &[&str])], answers: &[(&str, Value)]) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let quoted = |text: &str| {
+            assert!(
+                !text.contains('\'') && !text.contains('%'),
+                "fixture text must survive sh quoting and printf: {text}"
+            );
+            format!("'{text}'")
+        };
+        let mut cases = String::new();
+        for (host, lines) in hosts {
+            let lines: Vec<String> = lines.iter().map(|line| quoted(line)).collect();
+            cases.push_str(&format!(
+                "    {}) printf '%s\\n' {} ;;\n",
+                quoted(host),
+                lines.join(" ")
+            ));
+        }
+        let challenge = json!({"workspace_id": WORKSPACE_ID, "nonce": "nonce", "uid": 10001});
+        let mut branches = format!(
+            "  if printf '%s\\n' \"$line\" | grep -q '\"method\":\"auth.challenge\"'; then\n    printf '{{\"id\":\"%s\",\"result\":%s}}\\n' \"$id\" {}\n",
+            quoted(&challenge.to_string())
+        );
+        for (method, envelope) in answers {
+            let envelope = envelope.to_string();
+            let rest = envelope
+                .strip_prefix('{')
+                .expect("an envelope is an object");
+            branches.push_str(&format!(
+                "  elif printf '%s\\n' \"$line\" | grep -q '\"method\":\"{method}\"'; then\n    printf '{{\"id\":\"%s\",%s\\n' \"$id\" {}\n",
+                quoted(rest)
+            ));
+        }
+        let script = format!(
+            r#"#!/bin/sh
+log='{log}'
+if [ "$1" = "-G" ]; then
+  for last; do :; done
+  case "$last" in
+{cases}  esac
+  printf '%s\n' 'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
+    'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
+    'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
+    'tunnel no' 'forkafterauthentication no' \
+    'gssapidelegatecredentials no' 'proxycommand none' \
+    'controlmaster no' 'controlpersist no' 'controlpath none'
+  exit 0
+fi
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+{branches}  else
+    printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
+  fi
+done
+"#,
+            log = root.join("requests.log").display()
+        );
+        let ssh = bin.join("ssh");
+        fs::write(&ssh, script).unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn logged(root: &Path, method: &str) -> Vec<String> {
+        let needle = format!("\"method\":\"{method}\"");
+        fs::read_to_string(root.join("requests.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(&needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A fresh bridge for `connection`, replacing (and closing) any earlier one.
+    #[cfg(unix)]
+    async fn attach_transport(manager: &CrewManager, connection: &Connection) {
+        let control = manager.control_path(&connection.id).unwrap();
+        let fresh = transport::Transport::connect(connection, &control)
+            .await
+            .unwrap();
+        let old = manager.transports.lock().await.insert(
+            connection.id.clone(),
+            Arc::new(tokio::sync::Mutex::new(fresh)),
+        );
+        if let Some(old) = old {
+            old.lock().await.close().await;
+        }
+    }
+
+    /// What the broker's `hello` announced, as a verified connect would remember it.
+    fn remember_hello(
+        manager: &CrewManager,
+        id: &str,
+        signature_version: u8,
+        capabilities: &[&str],
+    ) {
+        let signed = signature_version >= 2;
+        manager.brokers.lock().unwrap().insert(
+            id.into(),
+            BrokerHello {
+                signature_version,
+                capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
+                workspace_name: signed.then(|| "lab".into()),
+                mode: signed.then_some(ClusterMode::Private),
+                institution_id: signed.then(|| "ucsf".into()),
+                policy_epoch: signed.then_some(1),
+            },
+        );
+    }
+
+    /// A connected manager holding `connection`, whose device key is `device`.
+    #[cfg(unix)]
+    async fn connected_manager(
+        root: &Path,
+        connection: &Connection,
+        device: &SigningKey,
+        capabilities: &[&str],
+    ) -> Arc<CrewManager> {
+        let registry = Registry {
+            connections: vec![connection.clone()],
+            ..Default::default()
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = Arc::new(CrewManager::new(root.to_owned()).unwrap());
+        manager
+            .write_credential(
+                &format!("device:{}", connection.id),
+                &hex(&device.to_bytes()),
+            )
+            .unwrap();
+        remember_hello(&manager, &connection.id, 2, capabilities);
+        attach_transport(&manager, connection).await;
+        manager
+    }
+
+    /// Bob's connection to `lab`, with the device key it saved.
+    fn joiner(id: &str) -> (Connection, SigningKey) {
+        let device = SigningKey::from_bytes(&[7; 32]);
+        (
+            saved_connection(id, "lab", WORKSPACE_ID, &hex(&workspace_key())),
+            device,
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_private_invitation_saves_pinned_with_its_institution() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("save");
+        let _env = isolated_env(&root);
+        let profile = root.join("crew");
+        let manager = CrewManager::new(profile.clone()).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        preview_with(&manager, &message, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert!(!profile.exists(), "a preview writes nothing");
+
+        let saved = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (saved.mode, saved.institution_id.as_deref()),
+            (ClusterMode::Private, Some("ucsf"))
+        );
+        assert_eq!(
+            (
+                saved.workspace_id.as_str(),
+                saved.workspace_public_key.as_str(),
+                saved.socket_path.as_str(),
+                saved.owner_uid
+            ),
+            (WORKSPACE_ID, hex(&workspace_key()).as_str(), SOCKET, 1000)
+        );
+        assert_eq!(saved.ssh_target, "bob@hpc.example.org");
+        assert_eq!((saved.name.as_str(), saved.port), ("lab", None));
+        let secret: [u8; 32] = unhex(
+            &manager
+                .read_credential(&format!("device:{}", saved.id))
+                .unwrap(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        assert_eq!(
+            hex(&SigningKey::from_bytes(&secret).verifying_key().to_bytes()),
+            saved.public_key
+        );
+
+        // Pasting the same invitation again keeps the one device key (and so the one code).
+        let again = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (again.id.as_str(), again.public_key.as_str()),
+            (saved.id.as_str(), saved.public_key.as_str())
+        );
+        let robert = InvitationOverrides {
+            username: Some("robert".into()),
+            ..Default::default()
+        };
+        let error = manager
+            .connection_from_invitation(&message, false, robert)
+            .await
+            .unwrap_err();
+        assert_eq!(refused(&error).api_code(), "crew_connection_exists");
+        assert_eq!(refused(&error).connection_id(), Some(saved.id.as_str()));
+        assert_eq!(
+            CrewManager::new(profile.clone())
+                .unwrap()
+                .list()
+                .await
+                .len(),
+            1
+        );
+
+        // A public workspace joined as Private needs an institution, and saves nothing without.
+        let public = crew_invitation::message(&WorkspaceInvitation {
+            workspace_id: "3f2a9c1e-77b0-4d4e-8a11-0000000000c3".into(),
+            mode: Some(biorouter_crew::Mode::Public),
+            institution_id: None,
+            ssh_host: Some("public.example.org".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        let private = InvitationOverrides {
+            mode: Some(ClusterMode::Private),
+            ..Default::default()
+        };
+        let error = manager
+            .connection_from_invitation(&public, false, private)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused(&error).reason(),
+            InvitationRefusal::Missing(InvitationMissing::Institution)
+        );
+        assert_eq!(manager.list().await.len(), 1);
+        let joined_public = saved_of(
+            manager
+                .connection_from_invitation(&public, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (joined_public.mode, joined_public.institution_id),
+            (ClusterMode::Public, None)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_status_maps_each_answer_and_computes_the_code_here() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("join-status");
+        let (connection, device) = joiner("4b4b4b4b-4b4b-44b4-84b4-4b4b4b4b4b4b");
+        write_fake_ssh(&root, &[], &[]);
+        let _env = isolated_env(&root);
+        let manager =
+            connected_manager(&root, &connection, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
+        let public = device.verifying_key().to_bytes();
+        let local = biorouter_crew::format_device_code(&biorouter_crew::device_code(
+            WORKSPACE_ID,
+            &workspace_key(),
+            &public,
+        ));
+        let invited = json!({"invited": true, "join_id": "join-1", "workspace_name": "lab",
+            "inviter": {"username": "alice", "display_name": "Alice Chen"},
+            "approved": false, "expires_at": now_seconds() + 3600, "expired": false,
+            "code": "ZZZZ-ZZZZ-ZZZZ-ZZZZ"});
+        let answer = |patch: Value| {
+            let mut answer = invited.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                answer[key] = value.clone();
+            }
+            json!({"result": answer})
+        };
+        let member = json!({"result": {"full_name": null}});
+        let stranger =
+            json!({"error": {"code": "unauthorized", "message": "unauthorized: unknown device"}});
+        let cases = [
+            (answer(json!({})), stranger.clone(), JoinState::Invited),
+            (
+                answer(json!({"approved": true})),
+                stranger.clone(),
+                JoinState::Approved,
+            ),
+            (
+                answer(json!({"approved": true, "last_refusal": "code_mismatch"})),
+                stranger.clone(),
+                JoinState::CodeMismatch,
+            ),
+            (
+                answer(json!({"expired": true})),
+                stranger.clone(),
+                JoinState::Expired,
+            ),
+            (
+                json!({"result": {"invited": false}}),
+                stranger.clone(),
+                JoinState::NotInvited,
+            ),
+            (
+                json!({"result": {"invited": false}}),
+                member,
+                JoinState::Joined,
+            ),
+            (
+                json!({"error": {"code": "unauthorized", "message": "unauthorized: signed device required"}}),
+                stranger,
+                JoinState::Unsupported,
+            ),
+        ];
+        for (pending, probe, expected) in cases {
+            write_fake_ssh(
+                &root,
+                &[],
+                &[("enrollment.pending", pending), ("profile.suggest", probe)],
+            );
+            attach_transport(&manager, &connection).await;
+            let status = manager.join_status(&connection.id).await.unwrap();
+            assert_eq!(status.status, expected);
+            let shows_code = matches!(
+                expected,
+                JoinState::Invited | JoinState::Approved | JoinState::CodeMismatch
+            );
+            // The code is this computer's, never the answer's, and it is the one the broker
+            // checks at `auth.join`.
+            assert_eq!(status.code.as_deref(), shows_code.then_some(local.as_str()));
+            if let Some(code) = &status.code {
+                assert!(biorouter_crew::device_code_matches(
+                    code,
+                    WORKSPACE_ID,
+                    &workspace_key(),
+                    &public
+                ));
+                assert!(!serde_json::to_string(&status).unwrap().contains("ZZZZ"));
+                assert_eq!(status.inviter.as_ref().unwrap().display_name, "Alice Chen");
+            }
+            assert_eq!(status.workspace_name.as_deref(), Some("lab"));
+        }
+        let pending = logged(&root, "enrollment.pending");
+        assert_eq!(pending.len(), 7);
+        assert!(
+            pending
+                .iter()
+                .all(|line| !line.contains("\"auth\"") && !line.contains("signature")),
+            "the join status is read unsigned"
+        );
+        assert!(
+            logged(&root, "auth.join").is_empty(),
+            "a status read never claims"
+        );
+
+        // Without the capability nothing is sent; disconnected is an error, not a status.
+        fs::remove_file(root.join("requests.log")).unwrap();
+        remember_hello(&manager, &connection.id, 2, &["human_chat"]);
+        let status = manager.join_status(&connection.id).await.unwrap();
+        assert_eq!((status.status, status.code), (JoinState::Unsupported, None));
+        assert!(!root.join("requests.log").exists());
+        manager.disconnect(&connection.id).await.unwrap();
+        let error = manager.join_status(&connection.id).await.unwrap_err();
+        assert!(error.to_string().contains("disconnected"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_claims_only_when_the_host_approved() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("join");
+        let (connection, device) = joiner("5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c");
+        write_fake_ssh(&root, &[], &[]);
+        let _env = isolated_env(&root);
+        let manager =
+            connected_manager(&root, &connection, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
+        let pending = |approved: bool, refused: bool| {
+            let mut answer = json!({"invited": true, "join_id": "join-1", "approved": approved,
+                "expires_at": now_seconds() + 3600});
+            if refused {
+                answer["last_refusal"] = json!("code_mismatch");
+            }
+            json!({"result": answer})
+        };
+        let stranger =
+            json!({"error": {"code": "unauthorized", "message": "unauthorized: unknown device"}});
+        let joined = json!({"result": {"principal": {"username": "bob", "display_name": "bob"},
+            "device_id": connection.device_id, "workspace": {"id": WORKSPACE_ID}}});
+        let mismatch = json!({"error": {"code": "code_mismatch", "message": "code_mismatch: not this device"}});
+        let other_device = json!({"result": {"device_id": "cd".repeat(32)}});
+        let cases: [(Value, Value, Value, Option<JoinRefusal>, usize); 6] = [
+            (
+                pending(false, false),
+                stranger.clone(),
+                joined.clone(),
+                Some(JoinRefusal::NotApproved),
+                0,
+            ),
+            (
+                pending(true, true),
+                stranger.clone(),
+                joined.clone(),
+                Some(JoinRefusal::CodeMismatch),
+                0,
+            ),
+            (
+                json!({"result": {"invited": false}}),
+                stranger.clone(),
+                joined.clone(),
+                Some(JoinRefusal::NotInvited),
+                0,
+            ),
+            (
+                json!({"result": {"invited": false}}),
+                json!({"result": {}}),
+                joined.clone(),
+                None,
+                0,
+            ),
+            (
+                pending(true, false),
+                stranger.clone(),
+                mismatch,
+                Some(JoinRefusal::CodeMismatch),
+                1,
+            ),
+            (pending(true, false), stranger, joined, None, 1),
+        ];
+        for (index, (status, probe, claim, refusal, claims)) in cases.into_iter().enumerate() {
+            let _ = fs::remove_file(root.join("requests.log"));
+            write_fake_ssh(
+                &root,
+                &[],
+                &[
+                    ("enrollment.pending", status),
+                    ("profile.suggest", probe),
+                    ("auth.join", claim),
+                ],
+            );
+            attach_transport(&manager, &connection).await;
+            let result = manager.join(&connection.id).await;
+            match refusal {
+                None => assert_eq!(result.unwrap().status, JoinState::Joined, "case {index}"),
+                Some(refusal) => {
+                    let error = result.unwrap_err();
+                    let typed = error
+                        .downcast_ref::<JoinRefused>()
+                        .unwrap_or_else(|| panic!("case {index}: {error:#}"));
+                    assert_eq!(typed.refusal(), refusal, "case {index}");
+                    assert_eq!(error.to_string(), refusal.message());
+                }
+            }
+            let sent = logged(&root, "auth.join");
+            assert_eq!(sent.len(), claims, "case {index}: claims sent");
+            for line in sent {
+                let frame: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(frame["params"]["join_id"], "join-1");
+                assert_eq!(frame["params"]["public_key"], json!(connection.public_key));
+                assert_eq!(frame["auth"]["device_id"], json!(connection.device_id));
+                assert!(frame["auth"]["signature"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 128));
+            }
+        }
+        write_fake_ssh(
+            &root,
+            &[],
+            &[
+                ("enrollment.pending", pending(true, false)),
+                ("auth.join", other_device),
+            ],
+        );
+        attach_transport(&manager, &connection).await;
+        let error = manager.join(&connection.id).await.unwrap_err();
+        assert!(error.to_string().contains("different device"), "{error}");
+
+        remember_hello(&manager, &connection.id, 2, &[]);
+        let _ = fs::remove_file(root.join("requests.log"));
+        let error = manager.join(&connection.id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_unsupported"
+        );
+        assert!(
+            !root.join("requests.log").exists(),
+            "nothing is sent to a broker without the capability"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_invitation_never_carries_an_alias_or_a_local_name() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("invitation-for");
+        let host_key = SigningKey::from_bytes(&[5; 32]);
+        let host_public = host_key.verifying_key().to_bytes();
+        let connection = Connection {
+            name: "Alice private nickname".into(),
+            ssh_target: "alice@hpc-alias".into(),
+            remote_root: Some("/home/alice/private-folder".into()),
+            device_id: hex(&Sha256::digest(host_public)),
+            public_key: hex(&host_public),
+            ..saved_connection(
+                "6d6d6d6d-6d6d-46d6-86d6-6d6d6d6d6d6d",
+                "",
+                WORKSPACE_ID,
+                &hex(&workspace_key()),
+            )
+        };
+        let snapshot = json!({"result": {
+        "workspace": {"id": WORKSPACE_ID, "host_uid": 1000, "name": "lab", "mode": "private",
+            "institution_id": "ucsf", "policy_epoch": 1, "host_principal_id": "p-alice"},
+        "principals": [
+            {"id": "p-carol", "uid": 1002, "username": "carol", "display_name": "carol", "active": true},
+            {"id": "p-alice", "uid": 1000, "username": "alice", "display_name": "Alice Chen", "active": true}
+        ]}});
+        write_fake_ssh(
+            &root,
+            &[
+                (
+                    "alice@hpc-alias",
+                    &[
+                        "hostname hpc.example.org",
+                        "port 2222",
+                        "proxyjump gw-alias",
+                    ],
+                ),
+                ("gw-alias", &["hostname gateway.example.org", "port 22"]),
+            ],
+            &[("workspace.snapshot", snapshot)],
+        );
+        let _env = isolated_env(&root);
+        let manager =
+            connected_manager(&root, &connection, &host_key, &[JOIN_BY_NAME_CAPABILITY]).await;
+        let expected = WorkspaceInvitation {
+            ssh_port: Some(2222),
+            proxy_jump: Some("gateway.example.org".into()),
+            ..lab_invitation()
+        };
+        for (signature_version, invitee) in [(2, Some("@bob")), (1, None)] {
+            remember_hello(
+                &manager,
+                &connection.id,
+                signature_version,
+                &[JOIN_BY_NAME_CAPABILITY],
+            );
+            let text = manager
+                .invitation_for(&connection.id, invitee)
+                .await
+                .unwrap();
+            assert!(text.message.contains(&text.line));
+            assert!(text.message.starts_with("Join lab on Crew."));
+            let parsed = crew_invitation::parse(&text.message).unwrap();
+            assert_eq!(
+                parsed.invitation,
+                WorkspaceInvitation {
+                    invitee_username: invitee.map(|_| "bob".into()),
+                    ..expected.clone()
+                }
+            );
+            let decoded = serde_json::to_string(&parsed.invitation).unwrap();
+            for local in [
+                "hpc-alias",
+                "gw-alias",
+                "private nickname",
+                "private-folder",
+            ] {
+                assert!(
+                    !decoded.contains(local) && !text.message.contains(local),
+                    "{local}"
+                );
+            }
+        }
+        let error = manager
+            .invitation_for(&connection.id, Some("b ob"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("username"), "{error}");
+        manager.disconnect(&connection.id).await.unwrap();
+        assert!(manager.invitation_for(&connection.id, None).await.is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }
