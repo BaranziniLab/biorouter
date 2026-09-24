@@ -368,11 +368,20 @@ function ComposerCard({
     e.preventDefault();
     if (!e.repeat) onSend();
   };
+  /**
+   * A pasted file goes to the upload path; pasted words stay words. Copying cells or rich text
+   * from another app often puts a rendered picture of it on the clipboard beside the text, with
+   * no file behind the picture, so the text wins unless a pasted item is a file on this
+   * computer (a file copied in the Finder or Explorer).
+   */
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(event.clipboardData?.files ?? []);
     if (files.length === 0) return;
+    const onDisk = files.filter((file) => Boolean(localPath(file)));
+    const text = event.clipboardData?.getData?.('text/plain') ?? '';
+    if (onDisk.length === 0 && text.trim()) return;
     event.preventDefault();
-    onPasteFiles(files);
+    onPasteFiles(onDisk.length > 0 ? onDisk : files);
   };
 
   return (

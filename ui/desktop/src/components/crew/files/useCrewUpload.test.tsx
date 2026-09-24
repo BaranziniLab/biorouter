@@ -259,6 +259,34 @@ describe('Crew files dropped or pasted', () => {
     );
   });
 
+  it('pastes the words when copied text comes with a picture of itself', () => {
+    (window as { electron?: unknown }).electron = {
+      crewSelectTransferFile: vi.fn(),
+      getPathForFile: () => '',
+    };
+    renderComposer(observedPublic);
+    const pasted = fireEvent.paste(screen.getByLabelText('Message #general'), {
+      clipboardData: { files: [file('cells.png')], getData: () => 'A1\tB1' },
+    });
+    expect(pasted).toBe(true);
+    expect(mocks.beginTransfer).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('uploads a file copied on this computer even when its name comes along as text', async () => {
+    (window as { electron?: unknown }).electron = {
+      crewSelectTransferFile: vi.fn(),
+      getPathForFile: () => '/Users/alice/counts.csv',
+    };
+    mocks.beginTransfer.mockResolvedValue(null);
+    renderComposer(observedPublic);
+    const pasted = fireEvent.paste(screen.getByLabelText('Message #general'), {
+      clipboardData: { files: [file('counts.csv')], getData: () => 'counts.csv' },
+    });
+    expect(pasted).toBe(false);
+    await waitFor(() => expect(mocks.beginTransfer).toHaveBeenCalledTimes(1));
+  });
+
   it('tells the person to save pasted data that has no file behind it', async () => {
     (window as { electron?: unknown }).electron = {
       crewSelectTransferFile: vi.fn(),
