@@ -829,6 +829,16 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 - **Display rules:** institution IDs shown as stored (proposal A) or as a registry `display_name` when passed. The renderer re-applies the broker's display-name sanitizer for older daemons, and also falls back to the username for all-digit names. RTL names get Unicode isolates in strings only when they contain RTL characters. Agent strings: header "Bob Lee's agent (@bob)", "@bob's agent" when name equals username, "Unknown member's agent"; ` · you` only on request.
 - **Testing note:** `@username` is always a separate element, so match composites with `toHaveTextContent` on `[data-person-context]` or `personLabel()`, not `getByText`.
 
+**UI-ACCESS outcome (2026-09-23, `38a02347`, `ec7b9cf1`, `854a3346`, `903a5814`).** Components exported from `crew/access/index.ts`; decisions that change the spec's surface:
+
+- **Stop on task rows** asks inline ("Stop your agent?" / Stop task / Keep running) and calls `controller.cancelRun` directly, not a confirm-dialog intent, because the rows also render inside WorkspaceSettingsDialog.
+- **Revoke results:** a device-only stop reads "Stopped on this device", stays visible with Retry and does not fold; it is window memory of the 503, so a reload shows "Revoked".
+- **Ordinary chat** (`useChatCrewAccess`, `ChatCrewAccessBar` in BaseChat's composer slot): channel named from labels the Crew view saw, in memory only, else "a channel in {workspace}"; composer held via `submissionBlocked` on revoke/expiry (one `expires_at` timer; never held when the lookup fails). Relies on SCOPE-BIND pruning stale scopes for reissued session ids from GET …/grants.
+- **Chat access pane** names the chat from the grant's `session_name`; before a grant, "This chat will be able to" (no session-title fetch). After Allow it shows "Connected." and does not navigate.
+- **Shared answers:** Crew-side grant lists share their last answer per Crew view (WeakMap on `subscribeSurfaceReset`); each still reads the daemon on open; nothing polls.
+- **AgentsSection** uses the Crew sidebar's `crew-sidebar-*` classes and renders only inside CrewSidebar.
+- **UI-INTEGRATE wiring:** `<AgentsSection onShowTask/>` → CrewSidebar `agentsSection` (timeline scrolls to/highlights the task); `<AccessTab/>` → DetailsPane `tabs.access`; `<ChatAccessPane/>` → DetailsPane `chatAccess`; `<ChatConnectNote/>` → composer note slot; `<WorkspaceAgentAccess/>` → WorkspaceSettingsDialog `agentAccess`; `useAgentAccessCount()` → header chip opening `{mode:'details', tab:'access'}`. Migrated CrewView tests must wait for the note to leave "Checking this chat’s access…".
+
 
 **UI-PRIM outcome (2026-09-23, `1c068364`, `49c7eec3`, `7181a809`).** Consumers of the primitives and `crew/crew-app.css` should build on these:
 
