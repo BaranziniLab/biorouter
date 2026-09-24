@@ -15,9 +15,10 @@ export interface AccessTabProps {
 }
 
 /**
- * The details pane's Access tab ("Chats and agents with access"): every chat and task that can post
- * in or read the selected channel, with Revoke on active chats and Stop on running tasks. The list is
- * read when the tab opens and after every action; it never polls.
+ * The details pane's Access tab, headed "Agent access" — the same name as Workspace settings' tab
+ * and the channel menu's item, since what it lists is agents, not people: every chat and task that
+ * can post in or read the selected channel, with Revoke on active chats and Stop on running tasks.
+ * The list is read when the tab opens and after every action; it never polls.
  */
 export function AccessTab({ className }: AccessTabProps) {
   const { snapshot, runs, channelId, channel } = useCrew();

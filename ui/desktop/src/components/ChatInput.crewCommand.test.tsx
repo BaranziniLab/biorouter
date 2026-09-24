@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../toasts', () => ({
   toastWarning: vi.fn(),
@@ -95,6 +96,9 @@ import type { View, ViewOptions } from '../utils/navigationUtils';
 import { refTag } from '../utils/resourceRefs';
 import { resetComposerDraftsForTests } from '../utils/composerDrafts';
 import { toastWarning } from '../toasts';
+import { ChatCrewAccessBar } from './crew/access/ChatCrewAccessBar';
+import type { ChatCrewAccess } from './crew/access/chatCrewAccess';
+import type { CrewSessionGrant } from './crew/api/grants';
 
 const droppedReport: DroppedFile = {
   id: 'drop-report',
@@ -196,19 +200,18 @@ describe('the /crew composer navigation command', () => {
     expect(composer().value).toBe('');
   });
 
-  it('opens Crew from Send with no session and bypasses provider, queue, and submission gates', () => {
+  it('opens Crew from Send and bypasses provider, queue, and submission gates', () => {
     model.currentProvider = null;
     model.currentModel = null;
     const { handleSubmit, onStop, setView } = renderComposer({
       initialValue: '/crew',
-      sessionId: null,
       chatState: ChatState.Streaming,
       submissionBlocked: true,
     });
 
     fireEvent.click(sendButton());
 
-    expect(setView).toHaveBeenCalledWith('crew', undefined);
+    expect(setView).toHaveBeenCalledWith('crew', { resumeSessionId: 'session-42' });
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(onStop).not.toHaveBeenCalled();
     expect(screen.queryByTestId('message-queue')).toBeNull();
@@ -223,6 +226,83 @@ describe('the /crew composer navigation command', () => {
 
     expect(setView).toHaveBeenCalledWith('crew', { resumeSessionId: 'session-42' });
     expect(handleSubmit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T-12 (live QA round 1): in a chat with no session yet — Home's composer, a new chat before its
+ * first send — `/crew` used to navigate to Crew with nothing to connect, dropping the chat, while
+ * the Access tab's own instruction says "type /crew in it". It now says what to do and keeps the
+ * draft, as /diverge does.
+ */
+describe('/crew in a chat that has no session yet', () => {
+  const START_FIRST = expect.objectContaining({
+    title: 'Start the chat first',
+    msg: 'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+  });
+
+  it('warns from Enter, keeps the draft and never navigates or submits', () => {
+    const { handleSubmit, onStop, setView } = renderComposer({
+      initialValue: '/crew',
+      sessionId: null,
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+    expect(toastWarning).toHaveBeenCalledWith(START_FIRST);
+    expect(setView).not.toHaveBeenCalled();
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
+    expect(composer().value).toBe('/crew');
+  });
+
+  it('warns from Send even while streaming with no model, and queues nothing', () => {
+    model.currentProvider = null;
+    model.currentModel = null;
+    const { handleSubmit, onStop, setView } = renderComposer({
+      initialValue: '/crew',
+      sessionId: null,
+      chatState: ChatState.Streaming,
+      submissionBlocked: true,
+    });
+
+    fireEvent.click(sendButton());
+
+    expect(toastWarning).toHaveBeenCalledWith(START_FIRST);
+    expect(setView).not.toHaveBeenCalled();
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('message-queue')).toBeNull();
+    expect(composer().value).toBe('/crew');
+  });
+
+  it('warns from the slash menu and closes it, without navigating', async () => {
+    const { handleSubmit, setView } = renderComposer({ sessionId: null });
+
+    fireEvent.change(composer(), { target: { value: '/', selectionStart: 1 } });
+    await waitFor(() => expect(screen.getByTestId('slash-crew-option')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('slash-crew-option'));
+
+    expect(toastWarning).toHaveBeenCalledWith(START_FIRST);
+    expect(setView).not.toHaveBeenCalled();
+    expect(handleSubmit).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId('slash-crew-option')).toBeNull());
+  });
+
+  it('still refuses local extras first, with the draft kept', () => {
+    const { setView } = renderComposer({
+      initialValue: '/crew',
+      sessionId: null,
+      droppedFiles: [droppedReport],
+    });
+
+    fireEvent.click(sendButton());
+
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+    expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
+    expect(setView).not.toHaveBeenCalled();
+    expect(composer().value).toBe('/crew');
   });
 });
 
@@ -313,5 +393,89 @@ describe('consumed /crew drafts do not resurrect after remount', () => {
     first.view.unmount();
     renderComposer({ initialValue: '', draftKey: 'tab:crew-command' });
     expect(composer().value).toBe('');
+  });
+});
+
+/**
+ * T-55 (live QA round 1): in a chat whose Crew access was removed, the composer is held and Enter
+ * did nothing at all. The access bar above the composer publishes the reason, and Enter says it —
+ * with the draft kept and nothing sent. The daemon refuses the turn either way.
+ */
+describe('Enter in a chat held by lapsed Crew access', () => {
+  const lapsed = (state: 'revoked' | 'expired'): ChatCrewAccess => ({
+    sessionId: 'session-42',
+    state,
+    grant: { session_id: 'session-42', connection_id: 'conn-1' } as unknown as CrewSessionGrant,
+    destination: '#general',
+    unconfirmed: false,
+    blocksComposer: true,
+    refetch: vi.fn(),
+  });
+
+  const renderHeld = (access: ChatCrewAccess | null, submissionBlocked = true) => {
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
+    render(
+      <MemoryRouter>
+        {access ? <ChatCrewAccessBar access={access} chatTitle="Plot review" /> : null}
+        <ChatInput
+          sessionId="session-42"
+          handleSubmit={handleSubmit}
+          chatState={ChatState.Idle}
+          submissionBlocked={submissionBlocked}
+          initialValue="summarise the channel"
+          setView={vi.fn<SetViewFn>()}
+          totalTokens={0}
+          accumulatedInputTokens={0}
+          accumulatedOutputTokens={0}
+          droppedFiles={[]}
+          onFilesProcessed={vi.fn()}
+          messagesLength={2}
+          disableAnimation
+          toolCount={0}
+          onWorkingDirChange={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    return { handleSubmit };
+  };
+
+  it('says the access was removed and keeps the draft', () => {
+    const { handleSubmit } = renderHeld(lapsed('revoked'));
+
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+
+    expect(toastWarning).toHaveBeenCalledWith({
+      title: 'Can’t send',
+      msg: 'Crew access to #general was removed. Grant it again or start a new chat.',
+    });
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(composer().value).toBe('summarise the channel');
+  });
+
+  it('says the access expired', () => {
+    renderHeld(lapsed('expired'));
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+    expect(toastWarning).toHaveBeenCalledWith({
+      title: 'Can’t send',
+      msg: 'Crew access to #general expired. Grant it again or start a new chat.',
+    });
+  });
+
+  it('stays quiet when the hold is not Crew’s, and says nothing for an empty composer', () => {
+    const { handleSubmit } = renderHeld(null);
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(handleSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(composer(), { target: { value: '' } });
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it('never stops a chat that is not held from sending', () => {
+    const { handleSubmit } = renderHeld(null, false);
+    fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(handleSubmit).toHaveBeenCalledTimes(1);
   });
 });

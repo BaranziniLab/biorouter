@@ -48,6 +48,7 @@ import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
 import { toastWarning } from '../toasts';
+import { useCrewComposerHold } from './crew/access/ChatCrewAccessBar';
 import { cn } from '../utils';
 import {
   appendComposerRef,
@@ -2294,6 +2295,9 @@ export default function ChatInput({
     effectiveModel?.provider ?? currentProvider
   );
 
+  // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
+  const crewHold = useCrewComposerHold(sessionId);
+
   const hasCrewCommandExtras =
     composerRefs.length > 0 || pastedImages.length > 0 || allDroppedFiles.length > 0;
   const isCrewNavigationCommand = splitComposerText(displayValue).body.trim() === '/crew';
@@ -2305,8 +2309,20 @@ export default function ChatInput({
       });
       return;
     }
+    // A chat with no session yet (Home's composer, a new chat before its first send) has nothing
+    // Crew could connect: navigating anyway dropped the chat and showed no connect offer, while
+    // the Access tab's own instruction says to type /crew in the chat. Say what to do instead and
+    // keep the draft, as /diverge does.
+    if (!sessionId) {
+      toastWarning({
+        title: 'Start the chat first',
+        msg: 'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+      });
+      setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+      return;
+    }
     displayValueRef.current = '';
-    setView('crew', sessionId ? { resumeSessionId: sessionId } : undefined);
+    setView('crew', { resumeSessionId: sessionId });
     setDisplayValue('');
     setValue('');
     setHasUserTyped(false);
@@ -2586,6 +2602,8 @@ export default function ChatInput({
 
       if (canSubmit && !submissionBlocked) {
         performSubmit();
+      } else if (canSubmit && submissionBlocked && crewHold) {
+        toastWarning({ title: crewHold.title, msg: crewHold.message });
       }
     }
   };

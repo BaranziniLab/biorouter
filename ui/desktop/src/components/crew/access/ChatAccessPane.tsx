@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  cacheGet,
+  isDefaultSessionName,
+  subscribeSessionNameChanges,
+} from '../../../utils/sessionNameSync';
 import { sessionGrantState, type CrewSessionGrant } from '../api/grants';
 import { AlertCircle } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
@@ -40,17 +45,45 @@ export interface ChatAccessPaneProps {
 
 const chatRoute = (sessionId: string) => `/pair?resumeSessionId=${encodeURIComponent(sessionId)}`;
 
+function knownTitle(name: string | null | undefined): string | null {
+  return name && !isDefaultSessionName(name) ? chatTitleOf({ session_name: name }) : null;
+}
+
+/**
+ * The chat's title as this window already knows it — the chat store's recent-sessions cache and its
+ * rename broadcasts — so the consent can name the chat BEFORE Allow, when no grant row carries
+ * `session_name` yet (live QA round 1, T-55). Never fetches: an unknown or default title
+ * ("New chat") is `null`, and the pane says "This chat".
+ */
+function useKnownChatTitle(sessionId: string | null): string | null {
+  const [title, setTitle] = useState(() =>
+    sessionId ? knownTitle(cacheGet(sessionId)?.session.name) : null
+  );
+  useEffect(() => {
+    if (!sessionId) {
+      setTitle(null);
+      return;
+    }
+    setTitle(knownTitle(cacheGet(sessionId)?.session.name));
+    return subscribeSessionNameChanges((change) => {
+      if (change.sessionId === sessionId) setTitle(knownTitle(change.name));
+    });
+  }, [sessionId]);
+  return title;
+}
+
 /**
  * The body of the details pane in `chat-access` mode (ui-redesign-spec, "Revoke", "The Chat access
  * pane"; the pane's header, title and close control belong to the details pane).
  *
- * - **No grant:** the consent summary — what the chat will be able to read and where it will post,
- *   as whom — with Advanced "Also read", and the pinned **Allow this conversation to read and post
- *   here**.
+ * - **No grant:** the consent summary — which chat, what it will be able to read and where it will
+ *   post, as whom — with Advanced "Also read", and **Allow “Plot review” to read and post in
+ *   #general** (the pinned **Allow this conversation to read and post here** while the chat's title
+ *   is unknown).
  * - **After Allow:** "Connected.", a primary **Back to chat** and **Revoke access**. It does not
  *   navigate by itself (L10), so the person sees where Revoke lives.
- * - **Active:** the summary with its Active (or "Expires 4:40 PM") badge, **Open chat** and
- *   **Revoke access**, which asks inline first.
+ * - **Active:** the summary with its "Active · ends 4:40 PM" badge (plain "Active" only until the
+ *   new grant is listed), **Open chat** and **Revoke access**, which asks inline first.
  * - **Results:** a confirmed revoke (200) says so, with Open chat and Done; a 503 is "Stopped on
  *   this device" with Retry; anything else is "Not revoked" with the daemon's words and Retry.
  *
@@ -95,6 +128,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const [revoking, setRevoking] = useState(false);
   const [outcome, setOutcome] = useState<RevokeOutcome | null>(null);
   const revokeButton = useRef<HTMLButtonElement>(null);
+  const cachedTitle = useKnownChatTitle(sessionId);
 
   // A new pane intent (Review, Manage, Grant again, a row) or another chat starts fresh.
   useEffect(() => {
@@ -123,7 +157,8 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
       state !== 'active' &&
       isUnconfirmedRevocation(grant.connection_id, grant.session_id));
   const active = !stoppedHere && (granted || state === 'active');
-  const chat = grant ? chatTitleOf(grant) : null;
+  // The daemon's name for the chat when a grant lists one; else the title this window knows.
+  const chat = (grant ? chatTitleOf(grant) : null) ?? cachedTitle;
   const canGrant = sessionId === grantSessionId;
   // The grant's own connection when it is listed; this one when it was just granted here.
   const target = grant?.connection_id ?? (granted ? connectionId : null);
@@ -294,8 +329,10 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
 
   // ── Active: just granted here, or listed active ──────────────────────────────────────────
   if (active) {
+    // The listed grant's own badge whenever it is the active one, so the same state reads "Active ·
+    // ends 4:40 PM" both right after Allow (once the list has the grant) and when reopened.
     const badge =
-      grant && !granted
+      grant && state === 'active'
         ? accessStatusOf(grant, Date.now(), false)
         : { status: 'active' as const, label: accessCopy.status.active };
     return (
@@ -400,12 +437,15 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         />
         {errorNote}
         <div className="flex justify-end">
+          {/* It names the chat, and a chat's title can be long: the label wraps rather than
+              overflowing the 360px pane or hiding which chat is being let in. */}
           <Button
             key="crew-chat-access-allow"
             type="submit"
+            className="h-auto min-h-control-md whitespace-normal break-words py-1.5"
             disabled={controller.isPending('grant')}
           >
-            {accessCopy.allow}
+            {chat && channel ? accessCopy.allowChat(chat, here) : accessCopy.allow}
           </Button>
         </div>
       </form>

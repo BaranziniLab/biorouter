@@ -225,8 +225,8 @@ describe('the Access tab', () => {
   });
 
   /**
-   * The 360px pane squeezed a one-line row until the title and destination were zero wide and `⋯`
-   * was clipped. The row now wraps: the text block keeps a floor, and the badge and the actions
+   * The 360px pane squeezed a one-line row until the title and destination were zero wide and its
+   * actions were clipped. The row now wraps: the text block keeps a floor, and the badge and the actions
    * move as ONE end group onto their own line. That only works if they are siblings in the right
    * containers (flex-wrap acts on direct children), so the structure is what is asserted here.
    * jsdom computes no layout and loads no stylesheet, so a width check here would prove nothing;
@@ -251,19 +251,20 @@ describe('the Access tab', () => {
 
     // The end group holds the badge first, then the actions, so they wrap as one.
     expect(end.children).toHaveLength(2);
-    expect(end.firstElementChild?.textContent).toMatch(/^(?:Active|Expires )/);
+    // One wording for an active grant, with its end time: never "Expires …" in one place and
+    // "Active" in another (T-55).
+    expect(end.firstElementChild?.textContent).toMatch(/^Active · ends \S/);
     expect(end.lastElementChild).toBe(actions);
 
-    // Accessible names and their order are unchanged, `⋯` included, and all in the end group.
+    // Accessible names and their order, all in the end group.
     const names = within(actions as HTMLElement)
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'));
     expect(names).toEqual([
       accessCopy.openName('Plot review'),
       accessCopy.revokeRowName('Plot review'),
-      accessCopy.rowMore('Plot review'),
     ]);
-    expect(within(chat).getAllByRole('button')).toHaveLength(3);
+    expect(within(chat).getAllByRole('button')).toHaveLength(2);
 
     const task = await rowFor(accessCopy.yourTask);
     const taskActions = task.querySelector('.crew-access-row-end > .crew-access-row-actions');
@@ -272,11 +273,7 @@ describe('the Access tab', () => {
       within(taskActions as HTMLElement)
         .getAllByRole('button')
         .map((button) => button.getAttribute('aria-label'))
-    ).toEqual([
-      accessCopy.openTaskName,
-      accessCopy.stopRowName,
-      accessCopy.rowMore(accessCopy.yourTask),
-    ]);
+    ).toEqual([accessCopy.openTaskName, accessCopy.stopRowName]);
 
     // While a revoke is confirmed inline, the badge stays in the end group and the actions leave.
     fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
@@ -284,16 +281,32 @@ describe('the Access tab', () => {
     expect(chat.querySelector('.crew-access-row-end')?.children).toHaveLength(1);
   });
 
-  it('copies a session ID from the row’s menu, and only there', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+  /**
+   * T-55: the only item a row's `⋯` held was "Copy session ID" — a machine ID of no use to the
+   * person reading the list — so a row offers no menu at all, current or revoked.
+   */
+  it('offers no ⋯ menu whose only item would be a session ID', async () => {
     setup({});
     const chat = await rowFor('Plot review');
-    const more = within(chat).getByRole('button', { name: 'More actions for Plot review' });
-    fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole('menuitem', { name: accessCopy.copySessionId }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('agent-1'));
-    expect(await screen.findByText(accessCopy.copiedSessionId)).toBeInTheDocument();
+    expect(within(chat).queryByRole('button', { name: /^More actions/ })).toBeNull();
+    expect(
+      within(await rowFor(accessCopy.yourTask)).queryByRole('button', { name: /^More/ })
+    ).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.showOld(2) }));
+    const old = await rowFor('Old chat');
+    expect(
+      within(old)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label'))
+    ).toEqual([accessCopy.openName('Old chat')]);
+    expect(screen.queryByText(/session ID/i)).toBeNull();
+    expect(screen.queryByRole('menuitem')).toBeNull();
+  });
+
+  it('heads the tab “Agent access”, the name every surface uses for this list', async () => {
+    setup({});
+    expect(await screen.findByRole('region', { name: 'Agent access' })).toBeInTheDocument();
+    expect(accessCopy.tabTitle).toBe('Agent access');
   });
 
   it('shows an empty channel, and a failed list with Retry', async () => {
@@ -306,7 +319,10 @@ describe('the Access tab', () => {
     fail = false;
     fireEvent.click(screen.getByRole('button', { name: accessCopy.listRetryName }));
     expect(await screen.findByText(accessCopy.empty('#general'))).toBeInTheDocument();
-    expect(screen.getByText(accessCopy.emptyHow)).toBeInTheDocument();
+    // T-12: a chat with no message has nothing to connect, so the instruction says to send one.
+    expect(
+      screen.getByText('To connect a chat, send it a message, then type /crew in it.')
+    ).toBeInTheDocument();
   });
 });
 

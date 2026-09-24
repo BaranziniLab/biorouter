@@ -1,9 +1,14 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Session } from '../../../api';
+import { announceSessionName, cacheSet } from '../../../utils/sessionNameSync';
 import { CrewHttpError } from '../crewApi';
+import CrewView from '../CrewView';
 import { useCrew } from '../state/CrewControllerContext';
 import { ChatAccessPane } from './ChatAccessPane';
-import { ChatConnectNote } from './ChatConnectNote';
+import { ChatConnectNote, chatAccessRoute, chatAccessRouteState } from './ChatConnectNote';
 import { accessCopy } from './copy';
 import {
   callsTo,
@@ -39,20 +44,36 @@ const REVOKE_PATH = '/connections/conn-1/sessions/agent-1/revoke';
 const GRANT_PATH = '/connections/conn-1/sessions/agent-1/grant';
 const GRANTS_PATH = '/connections/conn-1/grants';
 
-/** The composer's note slot and the pane, as the layout places them. */
+/**
+ * The composer's note slot and the pane, as the layout places them: the note only once a channel is
+ * selected, as `useComposerNote` does. "Toggle note" unmounts and remounts it, as a re-verification
+ * does in the app.
+ */
 function Layout() {
-  const { ui, channel } = useCrew();
+  const { ui, channel, closePane } = useCrew();
+  const [showNote, setShowNote] = useState(true);
   return (
     <div>
       {channel ? <p data-testid="channel-ready">{channel.name}</p> : null}
-      <ChatConnectNote />
+      <button type="button" onClick={() => setShowNote((shown) => !shown)}>
+        Toggle note
+      </button>
+      {channel && showNote ? <ChatConnectNote /> : null}
       {ui.pane?.mode === 'chat-access' ? (
         <aside data-testid="pane">
+          <button type="button" onClick={closePane}>
+            Close pane
+          </button>
           <ChatAccessPane />
         </aside>
       ) : null}
     </div>
   );
+}
+
+/** A chat this window already knows by name, as the chat store's recent-sessions cache holds it. */
+function rememberChat(id: string, name: string) {
+  cacheSet(id, { session: { id, name } as unknown as Session, messages: [] });
 }
 
 function setup(fixture: Partial<DaemonFixture> & { grants?: () => unknown[] }) {
@@ -109,6 +130,8 @@ describe('chat access: grant', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
     // The note follows the new grant without a poll.
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteActive('#general')));
+    // Once the new grant is listed, the badge reads as it will when the pane is reopened.
+    await waitFor(() => expect(within(pane()).getByText(/^Active · ends \S/)).toBeInTheDocument());
 
     fireEvent.click(within(pane()).getByRole('button', { name: accessCopy.backToChat }));
     expect(mocks.navigate).toHaveBeenCalledWith('/pair?resumeSessionId=agent-1');
@@ -166,7 +189,9 @@ describe('chat access: an active grant', () => {
     expect(paneNode).toHaveTextContent('“Plot review” can');
     expect(paneNode).toHaveTextContent('Reads #general');
     expect(paneNode).toHaveTextContent('Posts in #general as Alice Chen (@alice)');
-    expect(paneNode).toHaveTextContent(/Expires /);
+    // One badge wording for an active grant (T-55): never "Expires …" here and "Active" there.
+    expect(within(paneNode).getByText(/^Active · ends \S/)).toBeInTheDocument();
+    expect(paneNode).not.toHaveTextContent(/Expires/);
     expect(
       within(paneNode).getByRole('button', { name: accessCopy.revokeButton })
     ).toBeInTheDocument();
@@ -213,7 +238,9 @@ describe('chat access: an active grant', () => {
     expect(
       await within(pane()).findByText(accessCopy.paneRevoked('Plot review'))
     ).toBeInTheDocument();
-    expect(within(pane()).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+    expect(
+      within(pane()).getByRole('button', { name: accessCopy.allowChat('Plot review', '#general') })
+    ).toBeInTheDocument();
   });
 
   it('keeps access when the person chooses Keep access', async () => {
@@ -317,8 +344,12 @@ describe('chat access: other states of the note', () => {
     setup({ grants: () => [grantRow({ expires_at: Math.floor(Date.now() / 1000) - 60 })] });
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteExpired));
     const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
-    expect(paneNode).toHaveTextContent(accessCopy.paneExpired('Plot review'));
-    expect(within(paneNode).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+    expect(paneNode).toHaveTextContent('Crew access for “Plot review” expired.');
+    expect(
+      within(paneNode).getByRole('button', {
+        name: 'Allow “Plot review” to read and post in #general',
+      })
+    ).toBeInTheDocument();
   });
 
   it('asks consent for this channel when granting again after a grant elsewhere was revoked', async () => {
@@ -329,7 +360,9 @@ describe('chat access: other states of the note', () => {
     });
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked));
     const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
-    expect(paneNode).toHaveTextContent(accessCopy.paneRevoked('Plot review'));
+    // The possessive sits inside the sentence, never after the closing quote (T-55).
+    expect(paneNode).toHaveTextContent('Crew access for “Plot review” was revoked.');
+    expect(paneNode).not.toHaveTextContent('”’s');
     expect(paneNode).toHaveTextContent('Read #general');
     expect(paneNode).toHaveTextContent('Post in #general as Alice Chen (@alice)');
     expect(paneNode).not.toHaveTextContent('#methods');
@@ -369,5 +402,181 @@ describe('chat access: other states of the note', () => {
     });
     expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
     expect(callsTo(mocks, GRANTS_PATH, 'GET')).toHaveLength(0);
+  });
+});
+
+/**
+ * T-55 (live QA round 1): the consent never named the chat until after Allow, because only a
+ * listed grant carries `session_name`. It now names the chat this window already knows — from the
+ * chat store's cache, never a fetch — on the heading and on Allow itself.
+ */
+describe('chat access: the consent names the chat before Allow', () => {
+  const NAMED = 'chat-named';
+  const NAMED_GRANT = `/connections/conn-1/sessions/${NAMED}/grant`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+  });
+
+  it('names a chat this window knows, on the heading and on the Allow button', async () => {
+    rememberChat(NAMED, 'Greeting exchange');
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(Layout, `/crew?sessionId=${NAMED}`);
+
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    expect(paneNode).toHaveTextContent('“Greeting exchange” will be able to');
+    const allow = within(paneNode).getByRole('button', {
+      name: 'Allow “Greeting exchange” to read and post in #general',
+    });
+    expect(within(paneNode).queryByRole('button', { name: accessCopy.allow })).toBeNull();
+    expect(paneNode).not.toHaveTextContent('conversation');
+    // A long title wraps inside the pane instead of overflowing it on one fixed-height line.
+    expect(allow).toHaveClass('whitespace-normal', 'h-auto');
+    expect(allow).not.toHaveClass('whitespace-nowrap', 'h-control-md');
+
+    fireEvent.click(allow);
+    await waitFor(() => expect(callsTo(mocks, NAMED_GRANT, 'POST')).toHaveLength(1));
+    expect(await within(pane()).findByText(accessCopy.connected)).toBeInTheDocument();
+    expect(pane()).toHaveTextContent('“Greeting exchange” can');
+  });
+
+  it('keeps “This chat” and the pinned Allow for a default or unknown title', async () => {
+    rememberChat('chat-default', 'New chat');
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(Layout, '/crew?sessionId=chat-default');
+
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    expect(paneNode).toHaveTextContent('This chat will be able to');
+    expect(paneNode).not.toHaveTextContent('“New chat”');
+    expect(within(paneNode).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+  });
+
+  it('follows a rename of the chat while the consent is open', async () => {
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(Layout, '/crew?sessionId=chat-renamed');
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    expect(paneNode).toHaveTextContent('This chat will be able to');
+
+    act(() =>
+      announceSessionName({
+        sessionId: 'chat-renamed',
+        name: 'Plot review',
+        userSetName: false,
+        origin: 'llm',
+      })
+    );
+    expect(await within(pane()).findByText('“Plot review” will be able to')).toBeInTheDocument();
+    expect(
+      within(pane()).getByRole('button', {
+        name: accessCopy.allowChat('Plot review', '#general'),
+      })
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * T-55: re-granting took three screens — the chat's "Grant access again" landed on the Crew note,
+ * whose own button opened the pane. The chat's controls now carry an intent the note honours once,
+ * as soon as it knows the grant state, so the consent is one hop from the chat.
+ */
+describe('chat access: one hop from the ordinary chat', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+  });
+
+  function arriveFromChat(sessionId = 'agent-1') {
+    return render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/crew',
+            search: chatAccessRoute(sessionId).slice('/crew'.length),
+            state: chatAccessRouteState(),
+          },
+        ]}
+      >
+        <CrewView layout={Layout} />
+      </MemoryRouter>
+    );
+  }
+
+  it('opens the consent for a revoked chat without a second click, and grants only on Allow', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ expired: true })] });
+    arriveFromChat();
+
+    expect(
+      await within(await screen.findByTestId('pane')).findByText(
+        accessCopy.paneRevoked('Plot review')
+      )
+    ).toBeInTheDocument();
+    const allow = within(pane()).getByRole('button', {
+      name: accessCopy.allowChat('Plot review', '#general'),
+    });
+    // Opening the pane granted nothing.
+    expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(0);
+
+    fireEvent.click(allow);
+    await waitFor(() => expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(1));
+  });
+
+  it('opens Manage for an active chat, the chip’s one hop', async () => {
+    installDaemon(mocks, { grants: () => [grantRow()] });
+    arriveFromChat();
+    const paneNode = await screen.findByTestId('pane');
+    expect(await within(paneNode).findByText('“Plot review” can')).toBeInTheDocument();
+    expect(
+      within(paneNode).getByRole('button', { name: accessCopy.revokeButton })
+    ).toBeInTheDocument();
+  });
+
+  it('opens once: closing the pane is final, even when the note remounts and reads again', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ expired: true })] });
+    arriveFromChat();
+    await within(await screen.findByTestId('pane')).findByText(
+      accessCopy.paneRevoked('Plot review')
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
+    await waitFor(() => expect(screen.queryByTestId('pane')).toBeNull());
+    const listsBefore = callsTo(mocks, GRANTS_PATH, 'GET').length;
+
+    // A fresh note on the same history entry reads the grants again and must not reopen the pane.
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle note' }));
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle note' }));
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked));
+    expect(callsTo(mocks, GRANTS_PATH, 'GET').length).toBeGreaterThan(listsBefore);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('pane')).toBeNull();
+  });
+
+  it('waits for a failed list to be read, and opens once the note knows what to offer', async () => {
+    let fail = true;
+    installDaemon(mocks, {
+      grants: () => [grantRow({ expired: true })],
+      listFailure: () => (fail ? new CrewHttpError('boom', 500, 'crew_internal') : null),
+    });
+    arriveFromChat();
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.listFailed));
+    expect(screen.queryByTestId('pane')).toBeNull();
+
+    fail = false;
+    fireEvent.click(within(note()).getByRole('button', { name: accessCopy.listRetryName }));
+    expect(
+      await within(await screen.findByTestId('pane')).findByText(
+        accessCopy.paneRevoked('Plot review')
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('does nothing without the intent: arriving by /crew still waits for the note’s button', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ expired: true })] });
+    renderWithController(Layout);
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked));
+    expect(screen.queryByTestId('pane')).toBeNull();
   });
 });

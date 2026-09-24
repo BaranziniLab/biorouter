@@ -47,7 +47,7 @@ const CLIENT_INSERT_COMMANDS: Record<
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   crew: {
-    description: 'Open Crew. Press Enter',
+    description: 'Connect this chat to a Crew channel',
     insert: '/crew',
   },
   diverge: {

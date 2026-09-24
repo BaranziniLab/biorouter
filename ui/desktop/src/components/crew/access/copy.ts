@@ -4,7 +4,9 @@
  *
  * Tests import these rather than retyping them. `Review access and posting permission` and
  * `Allow this conversation to read and post here` are pinned: a regression test and the acceptance
- * evidence find the controls by them, so change them only together with those tests.
+ * evidence find the controls by them, so change them only together with those tests. The second is
+ * the Allow button's name only while the chat's title is unknown; a chat this window knows by name
+ * is named on the button itself (`allowChat`).
  *
  * A `chat` argument is a conversation's title, already fit to display, or `null` when the daemon
  * does not know it; every sentence that names a chat has a form for that case.
@@ -47,6 +49,9 @@ export const accessCopy = {
       : `Also reads ${count} ${count === 1 ? 'channel' : 'channels'}`,
   /** Pinned. */
   allow: 'Allow this conversation to read and post here',
+  /** The Allow button when the chat's title is known: the person sees which chat they let in. */
+  allowChat: (chat: string, channel: string) =>
+    `Allow ${quoted(chat)} to read and post in ${channel}`,
   connected: 'Connected.',
   backToChat: 'Back to chat',
   openChat: 'Open chat',
@@ -65,28 +70,34 @@ export const accessCopy = {
   notRevoked: 'Not revoked. This chat can still read and post.',
   retry: 'Retry',
   done: 'Done',
+  // "for “Plot review”", never "“Plot review”’s": a possessive after a closing quote reads as a
+  // typo (live QA round 1, T-55).
   paneRevoked: (chat: string | null) =>
-    chat ? `${quoted(chat)}’s Crew access was revoked.` : 'This chat’s Crew access was revoked.',
+    chat ? `Crew access for ${quoted(chat)} was revoked.` : 'This chat’s Crew access was revoked.',
   paneExpired: (chat: string | null) =>
-    chat ? `${quoted(chat)}’s access expired.` : 'This chat’s access expired.',
+    chat ? `Crew access for ${quoted(chat)} expired.` : 'This chat’s access expired.',
   /** A revoked chat that did not arrive here with /crew can only be connected from inside it. */
   reconnectHow: 'To connect it again, type /crew in that chat.',
 
   // ── Access rows (Access tab, Agent access tab, Agents section) ─────────────────────────────
-  tabTitle: 'Chats and agents with access',
+  /** One name wherever this list appears: the channel's Access tab and Workspace settings. */
+  tabTitle: 'Agent access',
   status: {
+    /** An active grant whose end time is not known yet (the moment after Allow). */
     active: 'Active',
-    expires: (time: string) => `Expires ${time}`,
+    /** One wording for the same state everywhere: never "Active" here and "Expires …" there. */
+    expires: (time: string) => `Active · ends ${time}`,
     expired: 'Expired',
     revoked: 'Revoked',
     unconfirmed: 'Stopped on this device',
   },
   showOld: (count: number) => `Show revoked and expired (${count})`,
   oldListName: 'Revoked and expired',
-  listLoading: 'Loading chats and agents with access…',
+  listLoading: 'Loading agent access…',
   empty: (channel: string) => `No chats or agents can post in ${channel}.`,
   emptyWorkspace: (workspace: string) => `No chats or agents can post in ${workspace}.`,
-  emptyHow: 'To connect a chat, type /crew in it.',
+  /** A chat with no message has nothing to connect, so the instruction says to send one first. */
+  emptyHow: 'To connect a chat, send it a message, then type /crew in it.',
   untitled: 'Untitled chat',
   yourTask: 'Your task',
   unknownChannel: 'a channel you can’t see',
@@ -106,10 +117,6 @@ export const accessCopy = {
   stopConfirmBody: 'It stops working on this task. Anything it already did stays done.',
   stopKeep: 'Keep running',
   stopConfirmAction: 'Stop task',
-  rowMore: (title: string) => `More actions for ${title}`,
-  copySessionId: 'Copy session ID',
-  copiedSessionId: 'Session ID copied',
-  copyFailed: 'Couldn’t copy the session ID.',
   listFailed: 'Couldn’t load which chats have access.',
   listRetryName: 'Retry loading chat access',
 
@@ -140,6 +147,12 @@ export const accessCopy = {
   chatNewChat: 'Start a new chat',
   chatGrantAgain: 'Grant access again',
   chatBlockedReason: 'This chat can’t continue without Crew access.',
+  /** What Enter says in a held chat instead of doing nothing. */
+  chatBlockedSendTitle: 'Can’t send',
+  chatBlockedSendRevoked: (destination: string) =>
+    `Crew access to ${destination} was removed. Grant it again or start a new chat.`,
+  chatBlockedSendExpired: (destination: string) =>
+    `Crew access to ${destination} expired. Grant it again or start a new chat.`,
   /** A destination whose channel name this computer has not seen: the workspace instead. */
   chatDestinationWorkspace: (workspace: string) => `a channel in ${workspace}`,
   chatDestinationUnknown: 'a Crew channel',

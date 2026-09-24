@@ -8,7 +8,8 @@ import {
   useChatCrewAccess,
   useChatCrewAccessState,
 } from './chatCrewAccess';
-import { ChatCrewAccessBar } from './ChatCrewAccessBar';
+import { ChatCrewAccessBar, useCrewComposerHold } from './ChatCrewAccessBar';
+import { chatAccessRouteState } from './ChatConnectNote';
 import { accessCopy } from './copy';
 import { connection, grantRow } from './testing';
 import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
@@ -49,14 +50,26 @@ function installDaemon(daemon: Daemon) {
 function Chat({ sessionId = 'chat-1' }: { sessionId?: string }) {
   const access = useChatCrewAccess(sessionId);
   const published = useChatCrewAccessState(sessionId);
+  const hold = useCrewComposerHold(sessionId);
   return (
     <div>
       <ChatCrewAccessBar access={access} chatTitle="Plot review" />
       <p data-testid="blocked">{String(access.blocksComposer)}</p>
       <p data-testid="state">{access.state}</p>
       <p data-testid="published">{String(published)}</p>
+      <p data-testid="hold">{hold ? `${hold.title} | ${hold.message}` : 'none'}</p>
     </div>
   );
+}
+
+/** The route state a one-hop navigation carried: the Chat access pane intent, nothing else. */
+function expectOneHop(sessionId: string) {
+  const calls = mocks.navigate.mock.calls;
+  const call = calls[calls.length - 1];
+  expect(call?.[0]).toBe(`/crew?sessionId=${sessionId}`);
+  const options = call?.[1] as { state?: Record<string, unknown> } | undefined;
+  expect(Object.keys(options?.state ?? {})).toEqual(Object.keys(chatAccessRouteState()));
+  expect(Object.values(options?.state ?? {})[0]).toEqual(expect.any(String));
 }
 
 function renderChat(sessionId?: string) {
@@ -119,9 +132,24 @@ describe('the ordinary chat’s Crew access', () => {
     expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
     expect(screen.getByTestId('blocked')).toHaveTextContent('false');
     expect(screen.getByTestId('published')).toHaveTextContent('active');
+    expect(screen.getByTestId('hold')).toHaveTextContent('none');
 
+    // "…, manage access": the chip opens the chat's access pane in Crew, in one hop.
     fireEvent.click(chip);
-    expect(mocks.navigate).toHaveBeenCalledWith('/crew?sessionId=chat-1');
+    expectOneHop('chat-1');
+  });
+
+  /**
+   * T-55: "Revoke access" was a ghost button — plain text beside a chip. It is a filled secondary
+   * control now. jsdom loads no stylesheet, so the variant's classes are what can be asserted.
+   */
+  it('draws Revoke access as a real button, not ghost text', async () => {
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1' })] });
+    renderChat();
+    const revoke = await screen.findByRole('button', { name: accessCopy.revokeButton });
+    expect(revoke.className).toMatch(/\bbg-background-medium\b/);
+    expect(revoke.className).not.toMatch(/\bbg-transparent\b/);
+    expect(revoke.className).toMatch(/\bh-control-sm\b/);
   });
 
   it('names the workspace when this computer has not seen the channel’s name', async () => {
@@ -236,8 +264,67 @@ describe('the ordinary chat’s Crew access', () => {
       replace: undefined,
       state: { newChat: true },
     });
-    fireEvent.click(within(lapsed).getByRole('button', { name: accessCopy.chatGrantAgain }));
-    expect(mocks.navigate).toHaveBeenCalledWith('/crew?sessionId=chat-1');
+    // One hop: straight to this chat's consent in Crew, not to a note whose button opens it.
+    const grantAgain = within(lapsed).getByRole('button', { name: accessCopy.chatGrantAgain });
+    expect(grantAgain.className).not.toMatch(/\bbg-transparent\b/);
+    fireEvent.click(grantAgain);
+    expectOneHop('chat-1');
+  });
+
+  /**
+   * T-55: Enter in a held chat did nothing. The bar — the one place that knows the channel's name —
+   * publishes the sentence the composer shows on Enter, and withdraws it when access is back or the
+   * bar goes away.
+   */
+  it('publishes why a held chat cannot send, and withdraws it', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    let expired = true;
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired })] });
+    const view = renderChat();
+    await waitFor(() =>
+      expect(screen.getByTestId('hold')).toHaveTextContent(
+        `Can’t send | Crew access to #general was removed. Grant it again or start a new chat.`
+      )
+    );
+
+    expired = false;
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'chat-1', change: 'granted' })
+    );
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expect(screen.getByTestId('hold')).toHaveTextContent('none');
+
+    expired = true;
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'chat-1', change: 'revoked' })
+    );
+    await waitFor(() => expect(screen.getByTestId('hold')).not.toHaveTextContent('none'));
+    view.unmount();
+
+    // Nothing is left behind for a chat whose bar is gone.
+    function Reader() {
+      const hold = useCrewComposerHold('chat-1');
+      return <p data-testid="orphan">{hold ? hold.message : 'none'}</p>;
+    }
+    render(<Reader />);
+    expect(screen.getByTestId('orphan')).toHaveTextContent('none');
+  });
+
+  it('says an expired grant expired when Enter is pressed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    const expiresAt = Math.floor(Date.now() / 1000) + 2;
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expires_at: expiresAt })] });
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('hold')).toHaveTextContent(
+        'Crew access to #general expired. Grant it again or start a new chat.'
+      )
+    );
   });
 
   it('says an expired grant expired, and holds the composer at the moment it runs out', async () => {

@@ -1,14 +1,8 @@
 import { useRef, useState } from 'react';
-import { AlertCircle, Bot, MessageSquare, MoreHorizontal } from '../../icons/app-icons';
+import { AlertCircle, Bot, MessageSquare } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Disclosure } from '../../ui/disclosure';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../../ui/dropdown-menu';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { accessStatusTone, splitAccessRows, type AccessRow } from './accessRows';
@@ -37,19 +31,15 @@ export interface AccessListProps {
 
 type Confirming = { key: string; action: 'revoke' | 'stop' } | null;
 
-async function copyText(text: string): Promise<void> {
-  if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-  await navigator.clipboard.writeText(text);
-}
-
 /**
  * The list of chats and tasks that can read or post (ui-redesign-spec, "Revoke", "Access rows"):
  * the Access tab's, and Workspace settings → Agent access's.
  *
- * A row: the chat's title (or "Your task"), `#destination (+n)`, a status badge, **Open**, a visible
- * **Revoke** on an active chat row or **Stop** on a running task row, and `⋯` → Copy session ID.
- * Revoked and expired rows collapse under "Show revoked and expired (n)". Revoke and Stop each ask
- * inline first; what a revoke came to is said once, above the list.
+ * A row: the chat's title (or "Your task"), `#destination (+n)`, a status badge, **Open**, and a
+ * visible **Revoke** on an active chat row or **Stop** on a running task row. There is no `⋯`: its
+ * only item was "Copy session ID", a machine ID with no use to the person reading the list (live QA
+ * round 1, T-55). Revoked and expired rows collapse under "Show revoked and expired (n)". Revoke and
+ * Stop each ask inline first; what a revoke came to is said once, above the list.
  *
  * The row's line wraps (`.crew-access-row-*` in `crew-app.css`, authored rather than utilities):
  * the badge and the actions share one end group, which moves to a line of its own whenever the
@@ -69,7 +59,6 @@ export function AccessList({
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [result, setResult] = useState<{ row: AccessRow; outcome: RevokeOutcome } | null>(null);
-  const [announcement, setAnnouncement] = useState('');
   const triggers = useRef(new Map<string, HTMLButtonElement>());
   const { current, old } = splitAccessRows(rows);
 
@@ -89,14 +78,6 @@ export function AccessList({
     setPendingKey(row.key);
     await onStop(row);
     setPendingKey(null);
-  };
-
-  const copySessionId = (row: AccessRow) => {
-    setAnnouncement('');
-    void copyText(row.sessionId).then(
-      () => setAnnouncement(accessCopy.copiedSessionId),
-      () => setAnnouncement(accessCopy.copyFailed)
-    );
   };
 
   const renderRow = (row: AccessRow) => {
@@ -185,24 +166,6 @@ export function AccessList({
                     {accessCopy.stopRow}
                   </Button>
                 ) : null}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      shape="round"
-                      aria-label={accessCopy.rowMore(row.title)}
-                    >
-                      <MoreHorizontal aria-hidden />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => copySessionId(row)}>
-                      {accessCopy.copySessionId}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
               </div>
             )}
           </div>
@@ -312,9 +275,6 @@ export function AccessList({
         />
       ) : null}
       {body}
-      <span className="sr-only" aria-live="polite">
-        {announcement}
-      </span>
     </div>
   );
 }
