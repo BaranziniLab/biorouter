@@ -32,6 +32,94 @@ fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
         .as_str()
         .ok_or_else(|| anyhow!("invalid_params: {key} must be a string"))
 }
+/// Folders under `HOME` a remote work folder may never equal, sit inside, or contain:
+/// authentication and Crew state, and (D15, SR4) the places a program or shell startup file
+/// the SSH login runs lives, so a confined worker writing into its work folder can never replace
+/// the bridge binary or wrap it through shell startup and become the in-path process of the
+/// join's threat model (M2).
+const PROTECTED_UNDER_HOME: [&str; 9] = [
+    ".ssh",
+    ".aws",
+    ".config",
+    ".local/state",
+    ".local/share/biorouter-crew",
+    ".local/bin",
+    "bin",
+    ".bashrc.d",
+    ".profile.d",
+];
+
+/// Every protected folder for one spelling of `HOME` and one location of the bridge: the
+/// fixed list under `HOME`, the directory holding the bridge executable, and that directory's
+/// ancestors strictly inside `HOME` (so nothing between `HOME` and the bridge can be granted
+/// either). A bridge outside `HOME` protects only its own directory; its ancestors are refused
+/// anyway, because a work folder may not contain a protected folder. A bridge directly in
+/// `HOME` (or above it) adds nothing: a work folder can never be `HOME` or an ancestor of it,
+/// and protecting everything *inside* `HOME` would refuse every work folder.
+fn protected_folders(home: &Path, bridge: &Path) -> Vec<PathBuf> {
+    let mut folders: Vec<PathBuf> = PROTECTED_UNDER_HOME
+        .iter()
+        .map(|folder| home.join(folder))
+        .collect();
+    if let Some(directory) = bridge
+        .parent()
+        .filter(|directory| !home.starts_with(directory))
+    {
+        folders.push(directory.to_path_buf());
+        folders.extend(
+            directory
+                .ancestors()
+                .skip(1)
+                .take_while(|ancestor| *ancestor != home && ancestor.starts_with(home))
+                .map(Path::to_path_buf),
+        );
+    }
+    folders
+}
+
+/// The path-only rules for a remote work folder, given every spelling of `HOME` and every
+/// resolved location of the bridge executable: an absolute, dedicated directory (at least two
+/// levels deep, not `HOME` or an ancestor of it) that is not equal to, inside, or an ancestor of
+/// any protected folder.
+fn check_work_folder(root: &Path, homes: &[PathBuf], bridges: &[PathBuf]) -> Result<()> {
+    ensure!(root.is_absolute(), "invalid_scope: root must be absolute");
+    ensure!(
+        root.components().count() >= 3 && homes.iter().all(|home| !home.starts_with(root)),
+        "invalid_scope: choose a dedicated work directory, not HOME or a filesystem root"
+    );
+    for home in homes {
+        for bridge in bridges {
+            for protected in protected_folders(home, bridge) {
+                ensure!(
+                    !root.starts_with(&protected) && !protected.starts_with(root),
+                    "invalid_scope: remote work directory overlaps protected authentication, application state, program or shell startup folders; choose a folder such as ~/crew-work/<workspace>"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `path` as given and, when it differs, as the filesystem resolves it, so a `HOME` reached
+/// through a symlink protects the same folders as its real location.
+fn path_variants(path: &Path) -> Vec<PathBuf> {
+    let mut variants = vec![path.to_path_buf()];
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        if resolved != path {
+            variants.push(resolved);
+        }
+    }
+    variants
+}
+
+/// Where the running bridge executable is, as reported and as resolved. Fails closed: a bridge
+/// that cannot locate itself cannot protect itself.
+fn bridge_executables() -> Result<Vec<PathBuf>> {
+    let executable = std::env::current_exe()
+        .map_err(|_| anyhow!("invalid_scope: cannot locate the Crew bridge executable"))?;
+    Ok(path_variants(&executable))
+}
+
 fn root(scope: &Value) -> Result<PathBuf> {
     ensure!(
         scope["public_provider"] == false,
@@ -45,20 +133,7 @@ fn root(scope: &Value) -> Result<PathBuf> {
         "invalid_scope: root must be canonical without symlinks"
     );
     let home = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unavailable"))?);
-    ensure!(
-        root.components().count() >= 3 && !home.starts_with(&root),
-        "invalid_scope: choose a dedicated work directory, not HOME or a filesystem root"
-    );
-    for protected in [
-        ".ssh",
-        ".aws",
-        ".config",
-        ".local/state",
-        ".local/share/biorouter-crew",
-    ] {
-        let protected = home.join(protected);
-        ensure!(!root.starts_with(&protected) && !protected.starts_with(&root),"invalid_scope: remote work directory overlaps protected authentication or application state");
-    }
+    check_work_folder(&root, &path_variants(&home), &bridge_executables()?)?;
     use std::os::unix::fs::MetadataExt;
     ensure!(
         std::fs::metadata(&root)?.uid() == unsafe { libc::geteuid() },
@@ -811,4 +886,147 @@ fn confine(root: &Path) -> Result<()> {
     let program: seccompiler::BpfProgram = filter.try_into()?;
     apply_filter(&program)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOME: &str = "/home/bob";
+    const BRIDGE: &str = "/home/bob/.local/bin/biorouter-crew";
+
+    fn check(root: &str, bridge: &str) -> Result<()> {
+        check_work_folder(
+            Path::new(root),
+            &[PathBuf::from(HOME)],
+            &[PathBuf::from(bridge)],
+        )
+    }
+
+    fn refused(root: &str, bridge: &str) {
+        let error = check(root, bridge).expect_err(root);
+        assert!(error.to_string().starts_with("invalid_scope:"), "{error}");
+    }
+
+    #[test]
+    fn each_protected_folder_is_refused_equal_inside_or_as_an_ancestor() {
+        for folder in PROTECTED_UNDER_HOME {
+            let protected = format!("{HOME}/{folder}");
+            refused(&protected, BRIDGE);
+            refused(&format!("{protected}/work"), BRIDGE);
+            refused(&format!("{protected}/deep/er"), BRIDGE);
+        }
+        // Ancestors of a protected folder contain it.
+        for ancestor in [
+            "/home/bob/.local",
+            "/home/bob/.local/share",
+            "/home/bob",
+            "/home",
+            "/",
+        ] {
+            refused(ancestor, BRIDGE);
+        }
+    }
+
+    #[test]
+    fn the_new_d15_folders_are_refused() {
+        for root in [
+            "/home/bob/.local/bin",
+            "/home/bob/bin",
+            "/home/bob/bin/tools",
+            "/home/bob/.bashrc.d",
+            "/home/bob/.profile.d",
+            "/home/bob/.profile.d/conda",
+        ] {
+            refused(root, "/opt/crew/bin/biorouter-crew");
+        }
+    }
+
+    #[test]
+    fn the_bridge_directory_and_its_ancestors_up_to_home_are_refused() {
+        let bridge = "/home/bob/tools/crew/bin/biorouter-crew";
+        for root in [
+            "/home/bob/tools/crew/bin",
+            "/home/bob/tools/crew/bin/scratch",
+            "/home/bob/tools/crew",
+            "/home/bob/tools/crew/lib",
+            "/home/bob/tools",
+            "/home/bob/tools/other-project",
+        ] {
+            refused(root, bridge);
+        }
+        // Siblings of the chain under HOME stay available.
+        check("/home/bob/crew-work/lab", bridge).unwrap();
+        check("/home/bob/toolshed", bridge).unwrap();
+    }
+
+    #[test]
+    fn a_bridge_outside_home_protects_its_own_directory() {
+        let bridge = "/opt/crew/bin/biorouter-crew";
+        refused("/opt/crew/bin", bridge);
+        refused("/opt/crew/bin/work", bridge);
+        refused("/opt/crew", bridge);
+        check("/opt/crew/work", bridge).unwrap();
+        check("/home/bob/crew-work/lab", bridge).unwrap();
+    }
+
+    #[test]
+    fn a_bridge_directly_in_home_does_not_refuse_every_work_folder() {
+        let bridge = "/home/bob/biorouter-crew";
+        check("/home/bob/crew-work/lab", bridge).unwrap();
+        refused("/home/bob", bridge);
+    }
+
+    #[test]
+    fn a_dedicated_crew_work_folder_is_accepted() {
+        check("/home/bob/crew-work/lab", BRIDGE).unwrap();
+        check("/home/bob/crew-work", BRIDGE).unwrap();
+        check("/home/bob/projects/analysis", BRIDGE).unwrap();
+        check("/scratch/bob/lab", BRIDGE).unwrap();
+        // Names that only share a prefix with a protected folder are different folders.
+        check("/home/bob/binaries", BRIDGE).unwrap();
+        check("/home/bob/.local-work", BRIDGE).unwrap();
+    }
+
+    #[test]
+    fn every_spelling_of_home_and_the_bridge_is_protected() {
+        let homes = [PathBuf::from("/home/bob"), PathBuf::from("/data/home/bob")];
+        let bridges = [
+            PathBuf::from("/home/bob/.local/bin/biorouter-crew"),
+            PathBuf::from("/data/home/bob/apps/crew/biorouter-crew"),
+        ];
+        for root in [
+            "/data/home/bob/.ssh",
+            "/data/home/bob/.local/bin",
+            "/data/home/bob/bin",
+            "/data/home/bob/apps/crew",
+            "/data/home/bob/apps",
+            "/data/home/bob",
+        ] {
+            assert!(
+                check_work_folder(Path::new(root), &homes, &bridges).is_err(),
+                "{root}"
+            );
+        }
+        check_work_folder(Path::new("/data/home/bob/crew-work/lab"), &homes, &bridges).unwrap();
+    }
+
+    #[test]
+    fn relative_and_shallow_roots_are_refused() {
+        refused("crew-work/lab", BRIDGE);
+        refused("/srv", BRIDGE);
+    }
+
+    #[test]
+    fn the_running_bridge_can_locate_itself() {
+        let bridges = bridge_executables().unwrap();
+        assert!(bridges.iter().all(|bridge| bridge.is_absolute()));
+        // Its own directory is refused as a work folder.
+        let own = bridges[0].parent().unwrap();
+        if own.components().count() >= 3 {
+            assert!(
+                check_work_folder(own, &[PathBuf::from("/nonexistent-home")], &bridges).is_err()
+            );
+        }
+    }
 }
