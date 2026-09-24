@@ -58,9 +58,15 @@ function savingDaemon(initial: Parameters<typeof installDaemon>[0] = {}): Script
   return daemon;
 }
 
-/** The typed confirmation for making the connection Public. */
+/** The typed confirmation for making the connection Public: an `alertdialog`, as every one is. */
 async function makePublicConfirmation() {
-  return screen.findByRole('dialog', { name: `Make your ${WORKSPACE} connection public?` });
+  return screen.findByRole('alertdialog', { name: `Make your ${WORKSPACE} connection public?` });
+}
+
+/** Neither a confirmation nor the popover (a Radix `dialog`) is still open. */
+function expectNothingOpen() {
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
 }
 
 /** The full record the daemon keeps (L18), with only the mode changed. */
@@ -80,15 +86,15 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
     const user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: /^Privacy: Private · ucsf/ }));
-    await user.click(await screen.findByRole('button', { name: 'Make public…' }));
+    await user.click(await screen.findByRole('button', { name: 'Make my connection public…' }));
     let dialog = await makePublicConfirmation();
     expect(within(dialog).getByRole('button', { name: 'Make public' })).toBeDisabled();
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(expectNothingOpen);
     expect(patches()).toEqual([]);
 
     await user.click(screen.getByRole('button', { name: /^Privacy: Private · ucsf/ }));
-    await user.click(await screen.findByRole('button', { name: 'Make public…' }));
+    await user.click(await screen.findByRole('button', { name: 'Make my connection public…' }));
     dialog = await makePublicConfirmation();
     await user.type(within(dialog).getByLabelText(`Type ${WORKSPACE} to confirm`), WORKSPACE);
     await user.click(within(dialog).getByRole('button', { name: 'Make public' }));
@@ -110,7 +116,7 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
     // Cancel steps back to the settings it came from, having changed nothing.
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: `Make your ${WORKSPACE} connection public?` })
+        screen.queryByRole('alertdialog', { name: `Make your ${WORKSPACE} connection public?` })
       ).toBeNull()
     );
     expect(patches()).toEqual([]);
@@ -165,7 +171,7 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
     await user.click(await screen.findByRole('button', { name: 'Make private' }));
 
     await waitFor(() => expect(patches()).toEqual([fullBody('private', publicConnection)]));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expectNothingOpen();
   });
 
   it('confirms the permanent institution label before policy.set, from the note and the Privacy tab', async () => {
@@ -180,12 +186,12 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
 
     // The host's note above the composer.
     await user.click(await screen.findByRole('button', { name: 'Set institution to ucsf…' }));
-    let dialog = await screen.findByRole('dialog', {
+    let dialog = await screen.findByRole('alertdialog', {
       name: `Set ${WORKSPACE}’s institution to ucsf?`,
     });
     expect(policySets()).toEqual([]);
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(expectNothingOpen);
     expect(policySets()).toEqual([]);
 
     // Workspace settings → Privacy.
@@ -195,7 +201,9 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
         name: 'Set institution to ucsf…',
       })
     );
-    dialog = await screen.findByRole('dialog', { name: `Set ${WORKSPACE}’s institution to ucsf?` });
+    dialog = await screen.findByRole('alertdialog', {
+      name: `Set ${WORKSPACE}’s institution to ucsf?`,
+    });
     expect(policySets()).toEqual([]);
     await user.click(within(dialog).getByRole('button', { name: 'Set ucsf permanently' }));
 
