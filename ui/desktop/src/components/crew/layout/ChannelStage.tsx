@@ -4,6 +4,7 @@ import { ChannelHeader, ConnectionBar } from '../channel';
 import { Composer } from '../composer/Composer';
 import type { CrewMessage } from '../crewApi';
 import { uniqueNamesSupported } from '../dialogs';
+import { CrewFileDropZone } from '../files/FileDropZone';
 import { FilesTab } from '../files/FilesTab';
 import { AgentTaskPane, DetailsPane } from '../pane';
 import { useCrew } from '../state/CrewControllerContext';
@@ -65,6 +66,11 @@ function useChannelAgentAccess(crew: CrewController) {
  * Slots are wired here and nowhere else: the Access area's chat note, pane and tab, the files
  * area's tab and attachment rows, the pane's Ask my agent with its "Show task in channel", and the
  * header's agent-access count.
+ *
+ * The whole body — timeline and composer — is one file drop zone. It has no target of its own: the
+ * composer registers its upload with it (`useCrewDropTarget`), so a file dropped on the messages
+ * goes where one dropped on the composer does, through the secure picker, and the zone takes
+ * nothing while the composer cannot (verifying, archived).
  */
 export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const crew = useCrew();
@@ -93,20 +99,22 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
         />
         <ConnectionBar className="crew-channel-bar" />
         <div className="crew-channel-body">
-          <div
-            className="crew-frame-timeline"
-            inert={verifying}
-            data-verifying={verifying ? 'true' : undefined}
-          >
-            <Timeline
-              view={lastView}
-              readOnly={verifying}
-              renderAttachments={renderAttachments}
-              highlightRunId={highlight.runId}
-              onHighlightDone={highlight.done}
-            />
-          </div>
-          <Composer note={note} />
+          <CrewFileDropZone className="crew-frame-drop">
+            <div
+              className="crew-frame-timeline"
+              inert={verifying}
+              data-verifying={verifying ? 'true' : undefined}
+            >
+              <Timeline
+                view={lastView}
+                readOnly={verifying}
+                renderAttachments={renderAttachments}
+                highlightRunId={highlight.runId}
+                onHighlightDone={highlight.done}
+              />
+            </div>
+            <Composer note={note} />
+          </CrewFileDropZone>
         </div>
       </section>
       <DetailsPane

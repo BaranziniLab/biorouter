@@ -25,6 +25,12 @@
   min-height: 0;
 }
 
+/* The channel body's file drop zone, around the timeline and the composer:
+   it fills the body, so a file dropped anywhere on the messages is taken. */
+.crew-frame-drop {
+  flex: 1 1 auto;
+}
+
 /* Attachments and server paths under a message body. */
 .crew-frame-files {
   display: flex;

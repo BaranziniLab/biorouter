@@ -47,7 +47,13 @@ export const filesCopy = {
 
   /** Drag and drop, and pasted files. */
   dropToShare: (channel: string) => `Drop to share in #${channel}`,
-  chooseInWindow: (name: string) => `Choose ${name} in the file window to share it.`,
+  /**
+   * While the secure file window a drop or paste opened is up. A dropped file is never shared
+   * by the drop itself: the window is where the person confirms it (the one file capability).
+   */
+  chooseInWindow: (name: string) => `To share ${name}, confirm it in the file window.`,
+  /** A drop or paste while a file window is already open: nothing new opens. */
+  finishChoosing: 'Finish choosing a file in the open file window first.',
   oneAtATime: 'Crew shares one file at a time.',
   folderRefused: 'Crew shares files, not folders. Choose a file inside the folder.',
   notSaved: 'Crew can share saved files only. Save it as a file first, then attach it.',

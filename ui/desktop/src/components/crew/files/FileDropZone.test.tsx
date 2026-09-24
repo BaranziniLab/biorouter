@@ -1,6 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Composer } from '../composer/Composer';
+import { channelReady, general, installDaemon, renderCrew } from '../integration/harness';
+import { installResizeObserverStub } from '../test/crewTestUtils';
 import { crewTestController, CrewTestProvider } from './crewTestController';
 import { CrewFileDropZone } from './FileDropZone';
 
@@ -13,7 +15,26 @@ vi.mock('../crewTransfers', () => ({
   pauseTransfer: vi.fn(),
   previewAttachment: vi.fn(),
   resumeTransfer: vi.fn(),
+  clearPublishedTransfers: vi.fn(),
 }));
+
+// The real layout, for the channel stage's own zone (see `integration/harness.tsx`).
+vi.mock('../crewApi', async () => {
+  const actual = await vi.importActual<typeof import('../crewApi')>('../crewApi');
+  return { ...actual, crewHttp: vi.fn(), crewRequest: vi.fn(), observeCrew: vi.fn() };
+});
+const config = vi.hoisted(() => ({
+  getProviders: async () => [{ name: 'fixture-provider', is_configured: true }],
+  read: async () => '',
+  getProviderModels: async () => ['fixture-model'],
+}));
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return { ...actual, useConfig: () => config };
+});
+vi.mock('../CrewAuthentication', () => ({ default: () => <div /> }));
+
+installResizeObserverStub();
 
 const files = (name: string) => ({
   types: ['Files'],
@@ -113,5 +134,47 @@ describe('CrewFileDropZone', () => {
     );
     fireEvent.dragEnter(screen.getByTestId('timeline'), { dataTransfer: files('counts.csv') });
     expect(screen.queryByText(/Drop to share/)).toBeNull();
+  });
+});
+
+describe('the channel stage’s drop zone (T-26)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.beginTransfer.mockReset().mockResolvedValue(null);
+    mocks.listTransfers.mockReset().mockResolvedValue([]);
+    installDaemon();
+  });
+
+  it('takes a file dropped on the messages, through the composer’s one upload path', async () => {
+    renderCrew();
+    await channelReady();
+    // One zone for the whole channel body: the composer registered with it.
+    expect(document.querySelectorAll('[data-drop-zone="true"]')).toHaveLength(1);
+    const log = screen.getByRole('log', { name: 'general messages' });
+    const zone = log.closest('[data-drop-zone="true"]') as HTMLElement;
+    expect(zone).not.toBeNull();
+    expect(zone).toContainElement(screen.getByRole('textbox', { name: 'Message #general' }));
+
+    fireEvent.dragEnter(log, { dataTransfer: files('counts.csv') });
+    expect(within(zone).getByTestId('crew-drop-overlay')).toHaveTextContent(
+      'Drop to share in #general'
+    );
+    fireEvent.drop(log, { dataTransfer: files('counts.csv') });
+    expect(screen.queryByTestId('crew-drop-overlay')).toBeNull();
+    // Through the secure picker, as a drop on the composer does; no path goes anywhere.
+    await waitFor(() =>
+      expect(mocks.beginTransfer).toHaveBeenCalledWith({
+        expected_mode: expect.any(String),
+        connection_id: expect.any(String),
+        channel_id: general.id,
+        direction: 'upload',
+      })
+    );
+    expect(Object.keys(mocks.beginTransfer.mock.calls[0][0]).sort()).toEqual([
+      'channel_id',
+      'connection_id',
+      'direction',
+      'expected_mode',
+    ]);
   });
 });

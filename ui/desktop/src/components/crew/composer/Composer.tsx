@@ -190,13 +190,18 @@ export function Composer({ note, inputRef }: ComposerProps) {
   /**
    * A drop or a paste. The `File` objects are looked at only for what the picker cannot say
    * in advance (a folder, a file over the limit, data with no file behind it); then the one
-   * upload path opens the secure picker, with a note naming the file to choose. The picker is
-   * the only source of a file capability, so a drop can never share a file by itself.
+   * upload path opens the secure picker, with a note naming the file to confirm there. The
+   * picker is the only source of a file capability, so a drop can never share a file by itself,
+   * and no path from the drop is handed to anything. While a picker is already open, a drop or
+   * paste opens nothing and the note says to finish the open one.
    */
   const takeFiles = useCallback(async ({ files, hasFolder }: DroppedFiles) => {
     const current = latestUpload.current;
     const [first] = files;
-    if (!first || current.choosing) return;
+    if (!first) return;
+    // One file window at a time. The one already open is the one to finish; a drop or paste
+    // now opens nothing, and says so instead of doing nothing.
+    if (current.choosing) return setDropHint(filesCopy.finishChoosing);
     if (hasFolder) return current.reportError(filesCopy.folderRefused);
     if (first.size > CREW_ATTACHMENT_LIMIT)
       return current.reportError(filesCopy.tooLarge(first.name));
@@ -213,6 +218,11 @@ export function Composer({ note, inputRef }: ComposerProps) {
       setDropHint('');
     }
   }, []);
+  // A note about the file window lasts only while one is open: however it was opened (the
+  // Attach menu, a drop, a paste), closing it clears the note.
+  useEffect(() => {
+    if (!upload.choosing) setDropHint('');
+  }, [upload.choosing]);
   const dropTarget = useMemo<CrewDropTarget | null>(
     () => (accepting ? { channelName: name, onFiles: (dropped) => void takeFiles(dropped) } : null),
     [accepting, name, takeFiles]

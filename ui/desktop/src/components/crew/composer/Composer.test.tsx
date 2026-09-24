@@ -481,6 +481,50 @@ describe('Crew composer', () => {
     });
   });
 
+  describe('a file while a file window is already open (T-26)', () => {
+    const originalElectron = (window as { electron?: unknown }).electron;
+    beforeEach(() => {
+      // A desktop surface: the secure picker exists, and a copied file has a path on disk.
+      (window as { electron?: unknown }).electron = {
+        crewSelectTransferFile: vi.fn(),
+        getPathForFile: () => '/Users/dave/counts.csv',
+      };
+    });
+    afterEach(() => {
+      (window as { electron?: unknown }).electron = originalElectron;
+    });
+
+    it('says to finish the open window instead of doing nothing, and lets the note go with it', async () => {
+      let finish!: () => void;
+      mocks.beginTransfer.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(null);
+          })
+      );
+      renderComposer();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Attach' }));
+      await user.click(await screen.findByRole('menuitem', { name: 'Upload a file…' }));
+      expect(mocks.beginTransfer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.paste(screen.getByLabelText('Message #general'), {
+          clipboardData: { files: [new File(['x'], 'counts.csv')], getData: () => '' },
+        });
+      });
+      expect(screen.getByRole('status')).toHaveTextContent(filesCopy.finishChoosing);
+      expect(filesCopy.finishChoosing).toBe(
+        'Finish choosing a file in the open file window first.'
+      );
+      // Nothing new opened: the open window is still the one.
+      expect(mocks.beginTransfer).toHaveBeenCalledTimes(1);
+
+      await act(async () => finish());
+      expect(screen.queryByText(filesCopy.finishChoosing)).toBeNull();
+    });
+  });
+
   describe('uploads and the verified scope', () => {
     const finished = {
       id: 'transfer-7',
