@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CREW_NOT_CONNECTED } from '../api/join';
 import { CrewHttpError } from '../crewApi';
 import { joinStateCopy, legacyJoinCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
@@ -298,6 +299,57 @@ describe('JoinStatusCard', () => {
       workspaceName: 'lab',
       joining: false,
     });
+  });
+
+  it('reconnects once per approval when finishing the join keeps finding no connection, then waits for the person', async () => {
+    vi.useFakeTimers();
+    // A link that drops on every claim while the status keeps answering `approved`: without a
+    // limit this is an unattended loop of SSH connects and claims signed with the device key.
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET')
+        return { status: 'approved', inviter: ALICE, workspace_name: 'lab' };
+      if (path === '/connections/conn-1/join' && method === 'POST')
+        throw new CrewHttpError('Connect first.', 409, CREW_NOT_CONNECTED);
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const connect = vi.fn(async (_opts?: { userInitiated?: boolean }) => {});
+    updateJoinContext('conn-1', { workspaceName: 'lab' });
+    renderCard({ connect });
+    const count = (method: string) =>
+      mocks.crewHttp.mock.calls.filter(([, called]) => called === method).length;
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    };
+
+    await advance(0);
+    await advance(JOIN_POLL_INTERVAL_MS * 4);
+    // The first claim, and one more after the one automatic reconnect.
+    expect(count('POST')).toBe(2);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith();
+    expect(screen.getByTestId('crew-join-not-connected')).toHaveTextContent(
+      joinStateCopy.notConnected('lab')
+    );
+    expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
+
+    // The status keeps answering; Reconnect stays offered and nothing is claimed by itself.
+    const gets = count('GET');
+    await advance(JOIN_POLL_INTERVAL_MS * 3);
+    expect(count('GET')).toBeGreaterThan(gets);
+    expect(count('POST')).toBe(2);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
+
+    // The person's press is the reconnect: exactly one more claim, then Reconnect again.
+    fireEvent.click(screen.getByRole('button', { name: joinStateCopy.reconnect }));
+    await advance(0);
+    await advance(JOIN_POLL_INTERVAL_MS * 3);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect).toHaveBeenLastCalledWith({ userInitiated: true });
+    expect(count('POST')).toBe(3);
+    expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
   });
 
   it('says so when the invitation adds this computer to the person’s account', async () => {

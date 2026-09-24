@@ -55,6 +55,11 @@ function visible(): boolean {
   return typeof document === 'undefined' || document.visibilityState !== 'hidden';
 }
 
+/** One host approval of this computer's code, as the claim path counts it. */
+function approvalOf(connectionId: string, status: CrewJoinStatus): string {
+  return `${connectionId}:${status.code ?? ''}`;
+}
+
 /**
  * The join state machine in the channel column (naming slice S3a).
  *
@@ -79,10 +84,20 @@ export function JoinStatusCard() {
     error: null,
   });
   const claimedFor = useRef<string | null>(null);
+  // The approval whose claim has used its one automatic reconnect. Counted apart from
+  // `reconnectTried`, which every answered poll resets: a claim only ever runs after a poll
+  // answered, so that counter alone let a link that drops on each claim reconnect and re-claim,
+  // signed with the device key, without end.
+  const claimReconnectFor = useRef<string | null>(null);
+  // The approval whose claim still found no connection after that reconnect. It stays claimed
+  // (`claimedFor`), so nothing claims it again by itself, and the card offers Reconnect for as long
+  // as the status still says that approval, however many polls answer meanwhile.
+  const [claimLost, setClaimLost] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
   const waitingId = useId();
   const [link, setLink] = useState<Link>('ok');
-  // One automatic reconnect per loss of the connection; reset once the route answers again.
+  // The poll path's automatic reconnect: one per loss of the connection, reset once the route
+  // answers again. The claim path counts its own reconnect in `claimReconnectFor`.
   const reconnectTried = useRef(false);
   // A connect is running: a second not-connected answer (the poll and a claim can both give one)
   // waits for its outcome instead of counting as a failed attempt.
@@ -95,6 +110,8 @@ export function JoinStatusCard() {
 
   const finishJoined = useCallback(
     (claimed?: CrewJoinClaim) => {
+      claimReconnectFor.current = null;
+      setClaimLost(null);
       // The workspace named who invited this computer: remember it for the screens that follow.
       const inviter = claimed?.inviter;
       updateJoinContext(connectionId, {
@@ -114,6 +131,11 @@ export function JoinStatusCard() {
    * The join route answered `crew_not_connected`: reconnect once by itself and ask again. If the
    * route still can't reach the workspace, stop asking and offer Reconnect instead of repeating a
    * poll error that can never clear by itself.
+   *
+   * Two counters decide "once". A poll's reconnect is `reconnectTried`, reset by every answered
+   * poll. A claim's is `claimReconnectFor`, one per approval: the claim path clears
+   * `reconnectTried` before calling here so its one reconnect really runs, and does not call here
+   * a second time for the same approval.
    */
   const recoverConnection = useCallback(() => {
     setPollError(null);
@@ -140,7 +162,11 @@ export function JoinStatusCard() {
     const askAgain = () => {
       connecting.current = false;
       if (!mounted.current) return;
+      // After a blocked claim, the person's connect stands in for that approval's reconnect: it
+      // gets one fresh claim, and a claim that still finds no connection comes back to Reconnect
+      // rather than reconnecting by itself (`claimReconnectFor` still names the approval).
       claimedFor.current = null;
+      setClaimLost(null);
       setClaim({ pending: false, error: null });
       setPollNonce((value) => value + 1);
     };
@@ -223,7 +249,7 @@ export function JoinStatusCard() {
   const status = state.kind === 'status' ? state.status : null;
   useEffect(() => {
     if (status?.status !== 'approved' || !connectionId) return;
-    const approval = `${connectionId}:${status.code ?? ''}`;
+    const approval = approvalOf(connectionId, status);
     if (claimedFor.current === approval) return;
     claimedFor.current = approval;
     setClaim({ pending: true, error: null });
@@ -236,10 +262,19 @@ export function JoinStatusCard() {
       (failure: unknown) => {
         if (!mounted.current) return;
         if (crewErrorCode(failure) === CREW_NOT_CONNECTED) {
-          // Claim again once the connection is back and the status still says approved.
-          claimedFor.current = null;
           setClaim({ pending: false, error: null });
-          recoverConnection();
+          if (claimReconnectFor.current !== approval) {
+            // Reconnect once by itself for this approval, and claim again once the connection is
+            // back and the status still says approved.
+            claimReconnectFor.current = approval;
+            claimedFor.current = null;
+            reconnectTried.current = false;
+            recoverConnection();
+            return;
+          }
+          // That reconnect did not help. Keep the approval claimed so no poll claims it again by
+          // itself, and wait for the person to press Reconnect.
+          setClaimLost(approval);
           return;
         }
         if (crewErrorCode(failure) === CREW_JOIN_CODE_MISMATCH) {
@@ -258,7 +293,10 @@ export function JoinStatusCard() {
   }, [status, connectionId, finishJoined, mounted, recoverConnection]);
 
   const retryClaim = () => {
+    // A person's press: one fresh claim, with its own automatic reconnect if the link dropped.
+    claimReconnectFor.current = null;
     claimedFor.current = null;
+    setClaimLost(null);
     setClaim({ pending: false, error: null });
     setPollNonce((value) => value + 1);
   };
@@ -284,6 +322,9 @@ export function JoinStatusCard() {
   const code = status?.code ?? null;
   // The invitation adds this computer to the person's existing account.
   const addDevice = status?.add_device === true;
+  // The claim for the approval on screen found no connection twice: offer Reconnect.
+  const claimBlocked =
+    status?.status === 'approved' && claimLost === approvalOf(connectionId, status);
 
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
@@ -404,7 +445,7 @@ export function JoinStatusCard() {
             {joinStateCopy.reconnecting(workspace)}
           </Note>
         </div>
-      ) : link === 'lost' ? (
+      ) : link === 'lost' || claimBlocked ? (
         <div className="crew-onboard-card">
           <Note
             tone="warning"
