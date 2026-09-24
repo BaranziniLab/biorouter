@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -15,6 +15,7 @@ import {
 } from '../channel/crewTestHarness';
 import { membersCopy } from './copy';
 import { MembersTab } from './MembersTab';
+import { COPY_FEEDBACK_MS, MENU_COPY_CLOSE_MS } from './presentation';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -70,7 +71,9 @@ describe('MembersTab', () => {
     renderCrew(Members);
     const tab = await shown();
     expect(within(tab).getByText(membersCopy.count(2))).toBeInTheDocument();
-    expect(rows(tab)).toEqual(['Alice Chen (@alice) · youOwner', 'Bob Lee (@bob)']);
+    expect(rows(tab)).toEqual([`Alice Chen (@alice) · you${membersCopy.owner}`, 'Bob Lee (@bob)']);
+    // The channel's owner, never a bare "Owner" that reads as the workspace's Host (Q2-69).
+    expect(membersCopy.owner).toBe('Channel owner');
     expect(tab.textContent).not.toContain('Carol');
     expect(tab.textContent).not.toMatch(UUID);
   });
@@ -118,10 +121,73 @@ describe('MembersTab', () => {
     // The username goes without its `@`, as Workspace settings copies it.
     await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyUsername }));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe('alice'));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), {
+      timeout: MENU_COPY_CLOSE_MS + 1000,
+    });
 
     await user.click(more);
     await user.click(await screen.findByRole('menuitem', { name: membersCopy.copyPersonId }));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(alice.id));
+  });
+
+  it('answers a copy on the item: "Copied" for a moment, then the menu closes (Q2-34)', async () => {
+    const user = userEvent.setup();
+    renderCrew(Members);
+    const tab = await shown();
+    const more = within(tab).getByRole('button', { name: membersCopy.more('Bob Lee (@bob)') });
+    await user.click(more);
+    const menu = await screen.findByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyUsername }));
+
+    // The menu stays open and the item itself says so…
+    const copied = await within(menu).findByRole('menuitem', { name: membersCopy.copied });
+    expect(copied).toHaveAttribute('data-crew-copy-state', 'copied');
+    expect(screen.getByRole('menu')).toBe(menu);
+    expect(await navigator.clipboard.readText()).toBe('bob');
+    // …the same result is spoken, from a region the open menu does not hide…
+    const region = tab.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(region).toHaveTextContent(membersCopy.copied);
+    expect(region.closest('[aria-hidden="true"]')).toBeNull();
+    // …and then the menu closes by itself, handing focus back to the ⋯.
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), {
+      timeout: MENU_COPY_CLOSE_MS + 1000,
+    });
+    await waitFor(() => expect(more).toHaveFocus());
+
+    // Opened again, the item reads as before.
+    await user.click(more);
+    expect(
+      await screen.findByRole('menuitem', { name: membersCopy.copyUsername })
+    ).toBeInTheDocument();
+  });
+
+  it('says a refused copy on the item and keeps the menu open', async () => {
+    const user = userEvent.setup();
+    const refuse = vi
+      .spyOn(navigator.clipboard, 'writeText')
+      .mockRejectedValue(new Error('denied'));
+    renderCrew(Members);
+    const tab = await shown();
+    await user.click(within(tab).getByRole('button', { name: membersCopy.more('Bob Lee (@bob)') }));
+    const menu = await screen.findByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyPersonId }));
+    expect(
+      await within(menu).findByRole('menuitem', { name: membersCopy.copyFailed })
+    ).toHaveAttribute('data-crew-copy-state', 'failed');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, MENU_COPY_CLOSE_MS + 100));
+    });
+    expect(screen.getByRole('menu')).toBe(menu);
+    // The label comes back; the menu is the person's to close.
+    await waitFor(
+      () =>
+        expect(
+          within(menu).getByRole('menuitem', { name: membersCopy.copyPersonId })
+        ).toBeInTheDocument(),
+      { timeout: COPY_FEEDBACK_MS + 1000 }
+    );
+    expect(screen.getByRole('menu')).toBe(menu);
+    refuse.mockRestore();
   });
 
   it('puts the owner’s actions on someone else after the copies', async () => {
@@ -255,7 +321,7 @@ describe('MembersTab', () => {
     renderCrew(Members);
     const tab = await shown();
     expect(rows(tab)).toEqual([
-      'Alice Chen (@alice) · youOwner',
+      `Alice Chen (@alice) · you${membersCopy.owner}`,
       'Bob Lee (@bob)',
       `Carol Diaz (@carol)${membersCopy.invited}`,
     ]);

@@ -2,7 +2,10 @@ import { forwardRef, useEffect, useId, useMemo, useState } from 'react';
 import type { ProviderDetails } from '../../../api';
 import { Check, ChevronDown } from '../../icons/app-icons';
 import { useConfig } from '../../ConfigContext';
-import { readProviderAffiliation } from '../../privacy/providerAffiliation';
+import {
+  affiliationPresentation,
+  readProviderAffiliation,
+} from '../../privacy/providerAffiliation';
 import { AffiliationBadge } from '../../ui/AffiliationBadge';
 import {
   Command,
@@ -21,23 +24,60 @@ import { providerLabel, type ModelChoice } from './useConfiguredModels';
 import './pane.css';
 
 /**
- * A model's tier and affiliation, as marks. The dense privacy badge names itself "Private chat",
- * which is the wrong subject here, so it is hidden from assistive technology and the tier is
- * said in words instead; the affiliation badge already names a model's affiliation.
+ * A model's tier and who approved it, as ONE mark with words: "🔒 Private · UCSF", or "Public"
+ * (Q2-67). It used to be two bare glyphs — the dense padlock and the dense affiliation mark — that
+ * a person could not read, under a tooltip about "this chat".
+ *
+ * The padlock pill is `PrivacyBadge`, the app's one mark for the private tier, followed by the
+ * affiliation's words (`affiliationPresentation`, the registry's name for the institution), as the
+ * sidebar's privacy chip writes "Private · ucsf". Its `title` says what the tier means for THIS
+ * task: "Only private models can run this task." only where the pane knows the task's context is
+ * protected (`privateOnly`); elsewhere, what a private model adds.
+ *
+ * `enforcementOff={false}`, as on the sidebar's chip: the daemon's Crew admission refuses a public
+ * model for protected context whatever this machine's privacy master switch says
+ * (`crew/institution.rs` `admission` reads no switch), so "(enforcement off)" would be false here.
  */
-export function ModelTierMarks({ provider }: { provider: ProviderDetails | undefined }) {
+export function ModelTierMarks({
+  provider,
+  privateOnly = false,
+}: {
+  provider: ProviderDetails | undefined;
+  /** The task's context is protected, so only a private model can run it. */
+  privateOnly?: boolean;
+}) {
   const tier = provider?.resolved_tier;
   const affiliation = readProviderAffiliation(provider);
-  if (!tier && !affiliation) return null;
+  if (!tier) {
+    // A tier the daemon could not resolve says nothing about privacy; an affiliation still names
+    // who approved the model.
+    return affiliation ? <AffiliationBadge affiliation={affiliation} /> : null;
+  }
+  const approvedBy = tier === 'private' ? affiliationPresentation(affiliation)?.label : null;
+  const title =
+    tier === 'public'
+      ? agentCopy.publicModel
+      : privateOnly
+        ? agentCopy.privateOnly
+        : agentCopy.privateModel;
   return (
-    <span className="inline-flex shrink-0 items-center gap-1">
-      {tier && (
-        <span aria-hidden="true" className="inline-flex">
-          <PrivacyBadge tier={tier} dense />
-        </span>
+    <span
+      className="inline-flex min-w-0 shrink-0 flex-wrap items-center gap-1 text-label"
+      title={title}
+      data-crew-model-tier={tier}
+    >
+      <PrivacyBadge tier={tier} enforcementOff={false} />
+      {/* The spaces are text, not layout (the flex gap draws the space), so the mark reads and
+          copies as "Private · UCSF" and is spoken "Private UCSF". */}
+      {approvedBy && (
+        <>
+          {' '}
+          <span aria-hidden="true" className="text-text-muted">
+            ·
+          </span>{' '}
+          <bdi className="text-text-default">{approvedBy}</bdi>
+        </>
       )}
-      {tier === 'private' && <span className="sr-only">{agentCopy.modelPrivate}</span>}
-      <AffiliationBadge affiliation={affiliation} dense />
     </span>
   );
 }
@@ -78,6 +118,8 @@ export interface CrewModelPickerProps {
    * but each is marked, so a person sees it before choosing (T-47).
    */
   unavailableReason?(provider: ProviderDetails): string | null;
+  /** The task's context is protected, so each model's mark says only private models can run it. */
+  privateOnly?: boolean;
   /** Field validation: the choice is missing. */
   invalid?: boolean;
   describedBy?: string;
@@ -107,6 +149,7 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
       onOpenChange,
       labelledBy,
       unavailableReason,
+      privateOnly = false,
       invalid = false,
       describedBy,
       disabled = false,
@@ -218,7 +261,7 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
             >
               {hasValue ? triggerValue : agentCopy.modelEmpty}
             </span>
-            {hasValue && <ModelTierMarks provider={selectedProvider} />}
+            {hasValue && <ModelTierMarks provider={selectedProvider} privateOnly={privateOnly} />}
             <ChevronDown
               aria-hidden="true"
               className="crew-model-chevron h-icon-row w-icon-row shrink-0 text-text-muted"
@@ -259,7 +302,7 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
                       heading={
                         <span className="inline-flex flex-wrap items-center gap-1.5">
                           <span>{group.label}</span>
-                          <ModelTierMarks provider={group.provider} />
+                          <ModelTierMarks provider={group.provider} privateOnly={privateOnly} />
                           {group.unavailable && (
                             <span className="text-supporting text-text-muted">
                               {group.unavailable}

@@ -128,14 +128,21 @@ describe('DetailsPane', () => {
     renderCrew(Layout);
     await user.click(await ready());
     const tabs = within(pane()).getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['About', 'Members', 'Files', 'Access']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      'About',
+      'Members',
+      'Files',
+      paneCopy.tabs.access,
+    ]);
+    // One name for agent access (Q2-66): "Access" alone said nothing about whose.
+    expect(paneCopy.tabs.access).toBe('Agent access');
     await waitFor(() => expect(within(pane()).getByRole('tab', { name: 'About' })).toHaveFocus());
     expect(within(pane()).getByRole('heading', { level: 2 })).toHaveTextContent('#general');
 
     await user.click(within(pane()).getByRole('tab', { name: 'Files' }));
     expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'files' });
     expect(within(pane()).getByText('Files slot')).toBeInTheDocument();
-    await user.click(within(pane()).getByRole('tab', { name: 'Access' }));
+    await user.click(within(pane()).getByRole('tab', { name: paneCopy.tabs.access }));
     expect(within(pane()).getByText('Access slot')).toBeInTheDocument();
   });
 
@@ -162,6 +169,64 @@ describe('DetailsPane', () => {
     expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'about' });
   });
 
+  describe('the × (Q2-68)', () => {
+    it('closes the pane on Escape while its tooltip shows', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const toggle = await ready();
+      await user.click(toggle);
+      await waitFor(() => expect(within(pane()).getByRole('tab', { name: 'About' })).toHaveFocus());
+      // Reached by keyboard, the × shows its tooltip, whose own dismissable layer takes Escape
+      // first. That is how Escape on "Close details" used to do nothing.
+      const close = within(pane()).getByRole('button', { name: paneCopy.close });
+      act(() => close.focus());
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(paneCopy.close);
+      await user.keyboard('{Escape}');
+      expect(currentCrew().ui.pane).toBeNull();
+      await waitFor(() => expect(toggle).toHaveFocus());
+    });
+
+    it('is named for what it closes', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      await user.click(await ready());
+      expect(within(pane()).getByRole('button', { name: paneCopy.close })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+      await screen.findByLabelText(agentCopy.task);
+      expect(within(pane()).queryByRole('button', { name: paneCopy.close })).toBeNull();
+      const close = within(pane()).getByRole('button', { name: paneCopy.closeAgent });
+      expect(paneCopy.closeAgent).toBe('Close Ask my agent');
+
+      // Its Escape closes Ask my agent too, and hands focus back to the opener.
+      act(() => close.focus());
+      await user.keyboard('{Escape}');
+      expect(currentCrew().ui.pane).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Ask my agent' })).toHaveFocus()
+      );
+
+      act(() => currentCrew().openPane({ mode: 'chat-access' }));
+      expect(
+        await within(pane()).findByRole('button', { name: paneCopy.closeChatAccess })
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('gives each tab panel a focus indicator for its tab stop (Q2-68)', async () => {
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    await user.click(await ready());
+    for (const name of ['About', 'Members', 'Files', paneCopy.tabs.access]) {
+      await user.click(within(pane()).getByRole('tab', { name }));
+      const panel = within(pane()).getByRole('tabpanel');
+      // `main.css` draws the inset edge for `.biorouter-focus-region:focus-visible`; a panel
+      // without it was a tab stop that showed nothing.
+      expect(panel).toHaveClass('biorouter-focus-region');
+      expect(panel).toHaveAttribute('tabindex', '0');
+    }
+  });
+
   it('returns focus to the channel menu trigger when the menu opened it', async () => {
     const user = userEvent.setup();
     renderCrew(Layout);
@@ -185,7 +250,7 @@ describe('DetailsPane', () => {
     await waitFor(() =>
       expect(within(pane()).getByRole('heading', { name: paneCopy.chatAccessTitle })).toHaveFocus()
     );
-    await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+    await user.click(within(pane()).getByRole('button', { name: paneCopy.closeChatAccess }));
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveFocus());
   });
 
@@ -284,10 +349,10 @@ describe('DetailsPane', () => {
     renderCrew(Layout);
     const toggle = await ready();
     await user.click(toggle);
-    await user.click(within(pane()).getByRole('tab', { name: 'Access' }));
+    await user.click(within(pane()).getByRole('tab', { name: paneCopy.tabs.access }));
     await user.click(within(pane()).getByRole('button', { name: 'Open chat access' }));
     expect(currentCrew().ui.pane).toEqual({ mode: 'chat-access' });
-    await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+    await user.click(within(pane()).getByRole('button', { name: paneCopy.closeChatAccess }));
     await waitFor(() => expect(toggle).toHaveFocus());
   });
 
@@ -301,7 +366,7 @@ describe('DetailsPane', () => {
       act(() => currentCrew().reportError('refused here', 'pane:agent'));
       expect(within(pane()).getByRole('alert')).toHaveTextContent('refused here');
 
-      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.closeAgent }));
       await waitFor(() => expect(currentCrew().error).toBeNull());
       expect(screen.queryByText('refused here')).toBeNull();
     });
@@ -324,7 +389,7 @@ describe('DetailsPane', () => {
       await ready();
       await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
       await screen.findByLabelText(agentCopy.task);
-      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.closeAgent }));
       act(() => currentCrew().reportError('late refusal', 'pane:agent'));
       await waitFor(() => expect(currentCrew().error?.message).toBe('late refusal'));
     });
@@ -336,7 +401,7 @@ describe('DetailsPane', () => {
       await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
       await screen.findByLabelText(agentCopy.task);
       act(() => currentCrew().reportError('connection trouble', 'global'));
-      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.closeAgent }));
       await waitFor(() => expect(currentCrew().ui.pane).toBeNull());
       expect(currentCrew().error?.message).toBe('connection trouble');
     });

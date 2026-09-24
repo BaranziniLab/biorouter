@@ -95,17 +95,52 @@ describe('CrewModelPicker', () => {
         .getAllByRole('option')
         .map((option) => option.textContent)
     ).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
-    // The tier is said in words; the dense padlock's "Private chat" name is hidden here.
+    // One mark with words, "Private · UCSF", never two bare glyphs or the chat badge's
+    // "Private chat" (Q2-67).
     expect(versaGroup).toHaveAccessibleName(/Private/);
-    expect(within(versaGroup).getByTestId('affiliation-badge')).toBeInTheDocument();
+    const versaMark = within(versaGroup).getByTitle(agentCopy.privateModel);
+    expect(versaMark).toHaveTextContent('Private · UCSF');
+    expect(within(versaGroup).queryByText(/Private chat/)).toBeNull();
+    expect(within(versaGroup).queryByTestId('affiliation-badge')).toBeNull();
     const ollamaGroup = within(list).getByRole('group', { name: /Ollama/ });
     expect(within(ollamaGroup).getAllByRole('option')).toHaveLength(2);
+    expect(within(ollamaGroup).getByTitle(agentCopy.privateModel)).toHaveTextContent(
+      'Private · On this machine'
+    );
     // A curated list is used as is; only a provider without one is asked.
     expect(mocks.getProviderModels).toHaveBeenCalledWith('ollama');
     expect(mocks.getProviderModels).not.toHaveBeenCalledWith('versa_azure');
-    expect(within(list).getByRole('group', { name: /OpenRouter/ })).not.toHaveAccessibleName(
-      /Private/
+    const openRouterGroup = within(list).getByRole('group', { name: /OpenRouter/ });
+    expect(openRouterGroup).not.toHaveAccessibleName(/Private/);
+    expect(within(openRouterGroup).getByTitle(agentCopy.publicModel)).toHaveTextContent('Public');
+  });
+
+  it('says only private models can run the task where its context is protected (Q2-67)', async () => {
+    const user = userEvent.setup();
+    render(
+      <CrewModelPicker
+        providers={[versa, openRouter]}
+        provider="versa_azure"
+        model="gpt-5.5"
+        privateOnly
+        onChange={() => undefined}
+      />
     );
+    const onTrigger = within(trigger()).getByTitle(agentCopy.privateOnly);
+    expect(onTrigger).toHaveTextContent('Private · UCSF');
+    expect(agentCopy.privateOnly).toBe('Private. Only private models can run this task.');
+    // The mark is not part of the field's name, which stays "Model {choice}".
+    expect(trigger()).toHaveAccessibleName('Model gpt-5.5 · Versa');
+    await user.click(trigger());
+    const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
+    const versaGroup = await within(list).findByRole('group', { name: /Versa/ });
+    expect(within(versaGroup).getByTitle(agentCopy.privateOnly)).toBeInTheDocument();
+    // A public model's mark says what it cannot read, not that it is private.
+    expect(
+      within(within(list).getByRole('group', { name: /OpenRouter/ })).getByTitle(
+        agentCopy.publicModel
+      )
+    ).toBeInTheDocument();
   });
 
   it('chooses a model and names it on the trigger', async () => {

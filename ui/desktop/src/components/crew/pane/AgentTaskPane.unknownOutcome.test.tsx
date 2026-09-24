@@ -141,7 +141,7 @@ describe('AgentTaskPane: the unknown-outcome gate', () => {
     expect(screen.getAllByRole('checkbox')).toHaveLength(1);
 
     // Closing the pane takes its error with it (T-48). The gate is not that error: it stays.
-    await user.click(screen.getByRole('button', { name: paneCopy.close }));
+    await user.click(screen.getByRole('button', { name: paneCopy.closeAgent }));
     await waitFor(() => expect(currentCrew().error).toBeNull());
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     expect(await screen.findByText(unknownOutcomeCopy.title)).toBeInTheDocument();

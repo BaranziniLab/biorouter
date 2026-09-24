@@ -1,9 +1,9 @@
-import { useId, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../../ui/button';
 import { cn } from '../../../utils';
 import { channelName, PersonName, teamName } from '../identity';
 import { aboutCopy } from './copy';
-import { copyText, usePanePresentation } from './presentation';
+import { COPY_FEEDBACK_MS, copyText, usePanePresentation } from './presentation';
 
 export interface AboutTabProps {
   /** Offer Rename… to the owner (the broker advertises `unique_names_v1`, naming slice S2). */
@@ -36,13 +36,38 @@ function Row({
  * read it ("Private models only" for a Restricted channel, T-67), who owns it (and to whom
  * ownership is offered), who made it, its team, Copy channel ID — the one place this tab holds an
  * ID, behind a copy — and the owner's danger zone. Copy channel ID sits above the danger zone,
- * never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). The owner's
- * actions open the same dialog intents as the channel menu; the broker decides.
+ * never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). It answers on
+ * itself: "Copied" (or "Couldn't copy") for a moment, also spoken (Q2-34). The owner's actions open
+ * the same dialog intents as the channel menu; the broker decides.
  */
 export function AboutTab({ canRename = false, className }: AboutTabProps) {
   const { crew, channel, team, dir, isOwner } = usePanePresentation();
   const dangerId = useId();
+  const [copyOutcome, setCopyOutcome] = useState<'copied' | 'failed' | null>(null);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    []
+  );
   if (!channel) return null;
+
+  const copyId = async () => {
+    const copied = await copyText(channel.id);
+    setCopyOutcome(copied ? 'copied' : 'failed');
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      setCopyOutcome(null);
+    }, COPY_FEEDBACK_MS);
+  };
+  const copyWords =
+    copyOutcome === 'copied'
+      ? aboutCopy.copied
+      : copyOutcome === 'failed'
+        ? aboutCopy.copyFailed
+        : null;
   const ownerTools = isOwner && !channel.archived;
   const restricted = channel.classification !== 'public_safe';
 
@@ -114,10 +139,14 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
           variant="ghost"
           size="sm"
           className="crew-pane-flush text-text-muted"
-          onClick={() => void copyText(channel.id)}
+          data-crew-copy-state={copyOutcome ?? undefined}
+          onClick={() => void copyId()}
         >
-          {aboutCopy.copyId}
+          {copyWords ?? aboutCopy.copyId}
         </Button>
+        <span className="sr-only" aria-live="polite" aria-atomic="true">
+          {copyWords ?? ''}
+        </span>
       </div>
 
       {ownerTools && (

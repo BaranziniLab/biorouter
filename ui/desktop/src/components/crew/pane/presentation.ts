@@ -82,6 +82,57 @@ export async function copyText(value: string): Promise<boolean> {
   }
 }
 
+/** How long a copy control reads "Copied" (or "Couldn't copy") before it reads as before. */
+export const COPY_FEEDBACK_MS = 1500;
+/** How long a menu stays open showing "Copied" before it closes itself (Q2-34). */
+export const MENU_COPY_CLOSE_MS = 600;
+
+/**
+ * A file named in a task (Q2-15): a word ending in one of the extensions a lab shares as data.
+ * `(?!-|\.\w)` keeps `counts.csv.gz` and `counts.csv-old` from reading as `counts.csv`.
+ */
+const FILE_NAME = /\b[\w.-]+\.(?:csv|tsv|xlsx?|json|txt|h5ad|parquet)\b(?!-|\.\w)/gi;
+
+/** The last segment of a path, as a shared file is named. */
+export function fileBaseName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] ?? '';
+}
+
+/**
+ * The file names a task mentions, first mention first, each once whatever its case. A name inside
+ * a URL (`https://…/table.csv`) is where the agent is sent, not a file it expects to find shared,
+ * so it is not one of them.
+ */
+export function mentionedFileNames(text: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(FILE_NAME)) {
+    const start = match.index ?? 0;
+    let token = start;
+    while (token > 0 && !/\s/.test(text[token - 1])) token -= 1;
+    if (text.slice(token, start).includes('://')) continue;
+    const key = match[0].toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(match[0]);
+  }
+  return names;
+}
+
+/**
+ * The mentioned names no shared file answers to, compared by file name and without case: a
+ * shared `/data/Plate.CSV` answers `plate.csv`.
+ */
+export function unsharedFileNames(
+  mentioned: readonly string[],
+  shared: Iterable<string>
+): string[] {
+  const names = new Set<string>();
+  for (const name of shared) names.add(fileBaseName(name).trim().toLowerCase());
+  return mentioned.filter((name) => !names.has(name.toLowerCase()));
+}
+
 /**
  * A model as the chat composer's model chip names it (T-47): `getModelDisplayName` (the
  * predefined-model alias, else the id) and `getProviderDisplayName` (the predefined subtext), then
@@ -141,6 +192,36 @@ export function workspaceInstitutionLabel(
 }
 
 /**
+ * Whether a task started here reads protected context, as far as the pane can see: the connection
+ * or the workspace is Private, a channel the task reads is Restricted, or the connection has a
+ * remote folder. The daemon then refuses a public model (`crew/institution.rs` `admission`) and
+ * holds a private one to the institution. The daemon may also protect context the pane does not
+ * see, so `false` means "not known to be protected", never "unprotected".
+ */
+export function protectedRunContext({
+  connection,
+  snapshot,
+  channel,
+  contextChannels,
+}: {
+  connection: CrewConnection | null;
+  snapshot: Snapshot | null;
+  channel: Channel | null;
+  contextChannels: readonly string[];
+}): boolean {
+  if (!snapshot || !channel) return false;
+  const restricted = (id: string) =>
+    snapshot.channels.find((item) => item.id === id)?.classification === 'restricted';
+  return (
+    connection?.mode === 'private' ||
+    snapshot.workspace.mode === 'private' ||
+    channel.classification === 'restricted' ||
+    contextChannels.some(restricted) ||
+    Boolean(connection?.remote_root)
+  );
+}
+
+/**
  * The institution a PRIVATE model must be approved for to start a task here, or `null` when the
  * pane cannot be sure the daemon will ask.
  *
@@ -166,15 +247,7 @@ export function runInstitution({
   known: readonly KnownInstitution[];
 }): RunInstitution | null {
   if (!snapshot || !channel) return null;
-  const restricted = (id: string) =>
-    snapshot.channels.find((item) => item.id === id)?.classification === 'restricted';
-  const protectedContext =
-    connection?.mode === 'private' ||
-    snapshot.workspace.mode === 'private' ||
-    channel.classification === 'restricted' ||
-    contextChannels.some(restricted) ||
-    Boolean(connection?.remote_root);
-  if (!protectedContext) return null;
+  if (!protectedRunContext({ connection, snapshot, channel, contextChannels })) return null;
   const ids = [
     ...new Set(
       [canonical(snapshot.workspace.institution_id), canonical(connection?.institution_id)].filter(

@@ -81,6 +81,18 @@ function landmarkOf(intent: PaneIntent, channel: string): string {
   return intent.mode === 'details' ? paneCopy.detailsName(channel) : titleOf(intent, channel);
 }
 
+/** The ×'s name: what it closes (Q2-68). */
+function closeNameOf(intent: PaneIntent): string {
+  switch (intent.mode) {
+    case 'details':
+      return paneCopy.close;
+    case 'agent':
+      return paneCopy.closeAgent;
+    case 'chat-access':
+      return paneCopy.closeChatAccess;
+  }
+}
+
 /** One mode's content. Keyed by mode, so a mode change mounts it afresh (and animates it in). */
 function PaneMode({ animate, children }: { animate: boolean; children: ReactNode }) {
   // Decided once, when this mode mounts: a later re-render must not cut the entrance short.
@@ -202,6 +214,15 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
     event.preventDefault();
     crew.closePane();
   };
+  // The ×'s own Escape (Q2-68). Focused by keyboard, it shows its tooltip, and the tooltip's
+  // dismissable layer takes Escape first — at the document, in the capture phase — and marks it
+  // handled, so the pane's handler above let it go and Escape on "Close details" did nothing.
+  // Escape on the control whose whole job is closing the pane closes it.
+  const onCloseKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    crew.closePane();
+  };
   const onFocus = () => {
     focusInside.current = true;
   };
@@ -238,7 +259,9 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
             ))}
           </TabsList>
           {TABS.map((value) => (
-            <TabsContent key={value} value={value} className="mt-3">
+            // A panel is a tab stop (Radix), so it shows the quiet inset edge every keyboard
+            // region draws when it takes focus, rather than nothing (Q2-68).
+            <TabsContent key={value} value={value} className="mt-3 biorouter-focus-region">
               {tabs[value] ??
                 (value === 'about' ? <AboutTab /> : value === 'members' ? <MembersTab /> : null)}
             </TabsContent>
@@ -284,14 +307,15 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
                 type="button"
                 variant="ghost"
                 shape="round"
-                aria-label={paneCopy.close}
+                aria-label={closeNameOf(shown)}
                 className="no-drag"
                 onClick={() => crew.closePane()}
+                onKeyDown={onCloseKeyDown}
               >
                 <X aria-hidden="true" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{paneCopy.close}</TooltipContent>
+            <TooltipContent>{closeNameOf(shown)}</TooltipContent>
           </Tooltip>
         </div>
         {body}

@@ -80,11 +80,27 @@
 
 /* Ask my agent's Task: at least six lines, growing with what is written, up
    to a height where it scrolls inside itself (T-47). 14px is its padding and
-   border (`py-1.5`, a 1px border), which `border-box` counts in the height. */
+   border (`py-1.5`, a 1px border), which `border-box` counts in the height.
+   It sizes itself, so it offers no native resize grip (Q2-30): a grip on a
+   field that already grows is a second, competing size. */
 .crew-agent-task {
   field-sizing: content;
   min-height: calc(6lh + 14px);
   max-height: calc(20lh + 14px);
+  resize: none;
+}
+
+/* Start's spinner while the task starts (Q2-67). The words beside it say
+   "Starting…", so under reduced motion it rests as a still ring. */
+.crew-agent-start-spinner {
+  flex: none;
+  animation: crew-pane-spin 700ms linear infinite;
+}
+
+@keyframes crew-pane-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Focus turns the Task's border to the accent edge, the chat composer's
@@ -114,5 +130,9 @@
   .crew-model-chevron,
   .crew-model-trigger[data-state='open'] .crew-model-chevron {
     transition: none;
+  }
+
+  .crew-agent-start-spinner {
+    animation: none;
   }
 }

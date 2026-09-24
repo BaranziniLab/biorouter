@@ -1,24 +1,29 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ProviderDetails } from '../../../api';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle } from '../../icons/app-icons';
+import { AlertTriangle, LoaderCircle } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
-import type { ObservedRun } from '../crewApi';
+import type { CrewMessage, ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
+import type { CrewController } from '../state/types';
 import { agentCopy, LONG_TASK_CHARS, LONG_TASK_LINES, unknownOutcomeCopy } from './copy';
 import { CrewModelPicker, ModelTierMarks } from './CrewModelPicker';
 import { newestTaskIn } from './newestTask';
 import {
+  fileBaseName,
   isAffiliationRefusal,
   knownInstitutions,
+  mentionedFileNames,
   modelDisplay,
   modelMismatch,
+  protectedRunContext,
   runInstitution,
+  unsharedFileNames,
   usePanePresentation,
   workspaceInstitutionLabel,
 } from './presentation';
@@ -27,6 +32,104 @@ import './pane.css';
 
 /** The Task field's height at rest; it grows with what is written (T-47). */
 const TASK_MIN_ROWS = 6;
+
+type SharedItem = { kind: 'attachment' | 'reference'; id: string };
+
+/** The files and server paths shared in these messages: the Files tab's "In this channel". */
+function sharedItems(
+  messages: readonly CrewMessage[],
+  channelId: string | undefined
+): SharedItem[] {
+  const seen = new Set<string>();
+  const items: SharedItem[] = [];
+  const add = (kind: SharedItem['kind'], id: string) => {
+    if (seen.has(`${kind}:${id}`)) return;
+    seen.add(`${kind}:${id}`);
+    items.push({ kind, id });
+  };
+  for (const message of messages) {
+    if (message.channel_id !== channelId) continue;
+    for (const id of message.attachments ?? []) add('attachment', id);
+    for (const id of message.references ?? []) add('reference', id);
+  }
+  return items;
+}
+
+/**
+ * The names of the files shared in this channel's loaded messages — the source the Files tab
+ * lists — or `null` while any of them is unknown: until the messages have loaded, while a name is
+ * being fetched, or when one could not be (Q2-15). Names are fetched only while `wanted` (the task
+ * names a file), once per file, with `blob.status` and `reference.get` as the Files tab's rows
+ * fetch them. A reference answers to its label and to its path's file name.
+ *
+ * Display only: it decides whether the pane warns, and nothing else.
+ */
+function useSharedFileNames(
+  crew: CrewController,
+  channelId: string | undefined,
+  wanted: boolean
+): readonly string[] | null {
+  const { messages, messagesLoaded, connectionId, request } = crew;
+  const items = useMemo(() => sharedItems(messages, channelId), [messages, channelId]);
+  const key = `${connectionId}\n${items.map((item) => `${item.kind}:${item.id}`).join('\n')}`;
+  const cache = useRef(new Map<string, readonly string[]>());
+  const [resolved, setResolved] = useState<{ key: string; names: string[] | null } | null>(null);
+  const ready = wanted && messagesLoaded;
+
+  useEffect(() => {
+    if (!ready) return;
+    const controller = new AbortController();
+    let active = true;
+    void Promise.all(
+      items.map(async (item): Promise<readonly string[] | null> => {
+        const cacheKey = `${connectionId}\n${item.kind}:${item.id}`;
+        const cached = cache.current.get(cacheKey);
+        if (cached) return cached;
+        try {
+          let names: string[];
+          if (item.kind === 'attachment') {
+            const blob = await request<{ name?: unknown }>(
+              'blob.status',
+              { blob_id: item.id },
+              { signal: controller.signal }
+            );
+            names = [blob?.name].filter((name): name is string => typeof name === 'string');
+          } else {
+            const reference = await request<{ label?: unknown; path?: unknown }>(
+              'reference.get',
+              { reference_id: item.id },
+              { signal: controller.signal }
+            );
+            names = [
+              reference?.label,
+              typeof reference?.path === 'string' ? fileBaseName(reference.path) : null,
+            ].filter((name): name is string => typeof name === 'string' && name !== '');
+          }
+          cache.current.set(cacheKey, names);
+          return names;
+        } catch {
+          return null;
+        }
+      })
+    ).then((results) => {
+      if (!active) return;
+      setResolved({
+        key,
+        names: results.some((names) => names === null)
+          ? null
+          : results.flatMap((names) => names ?? []),
+      });
+    });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+    // `key` stands for `items` and the connection: the same files are the same lookup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, key, request]);
+
+  return ready && resolved?.key === key ? resolved.names : null;
+}
 
 export interface AgentTaskPaneProps {
   /**
@@ -48,21 +151,26 @@ export interface AgentTaskPaneProps {
  * - **Task** has its own state, seeded once from the composer draft when the pane opens (L9). On
  *   success the Task clears, the composer draft clears only if it still equals that seed, and the
  *   pane closes. The daemon posts the task itself in the channel ("Task: …"), so the field says so,
- *   and says it again for a task long enough to be pasted data (T-24). It is at least six lines and
- *   grows with what is written (`.crew-agent-task`).
+ *   and says it again for a task long enough to be pasted data (T-24). It is at least six lines,
+ *   grows with what is written and has no resize grip (`.crew-agent-task`, Q2-30).
+ * - A task that names a file (`counts.csv`) no message in the loaded channel shares gets a warning
+ *   before Start: "No file named … is shared in #…". It does not disable Start (Q2-15).
  * - **Model**: the app's default model as a summary with Change when it resolves to a configured
  *   provider, else the picker; "No models are set up." with Open Settings when nothing is
  *   configured (Crew bypasses provider onboarding). A model is named as the composer's model chip
- *   names it and wraps rather than ellipsizing. A private model the workspace's institution has
- *   not approved is explained before Start, which it disables, and the daemon's "resolved
- *   affiliation" refusal is reworded the same way (T-47).
+ *   names it and wraps rather than ellipsizing, followed by one worded mark, "🔒 Private · UCSF"
+ *   (`ModelTierMarks`, Q2-67). A private model the workspace's institution has not approved is
+ *   explained before Start, which it disables, and the daemon's "resolved affiliation" refusal is
+ *   reworded the same way (T-47).
  * - **Advanced** holds Also read (unmounted while closed, which keeps the unknown-outcome gate's
- *   checkbox the only one in the document, C9) and the remote folder line. With neither to offer
- *   it is not shown at all.
+ *   checkbox the only one in the document, C9) and the remote folder line; closed, it says what it
+ *   holds: "Reads only #general" or "Also reads #methods". With neither to offer it is not shown
+ *   at all.
  * - Its errors are `pane:agent`'s. `DetailsPane` dismisses one when the pane leaves this mode, so
  *   a refusal does not reappear in the connection bar for a drawer that is gone (T-48).
  * - **Start my agent and allow posting here** is rendered unconditionally with a stable key, and
- *   its errors render in a fixed slot above it, so the node never remounts (C11).
+ *   its errors render in a fixed slot above it, so the node never remounts (C11). From the click
+ *   until the pane closes it reads "Starting…" beside a spinner (Q2-67).
  * - After `crew_start_outcome_unknown` the gate asks the person to inspect the previous task
  *   first. Start stays rendered and disabled (C12); **Start a new task** is enabled by the one
  *   checkbox and runs `form.reportValidity()` before a deliberate restart, which rotates the
@@ -85,6 +193,9 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [modelInvalid, setModelInvalid] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // From the click until the pane closes, Start reads "Starting…" (Q2-67). A failure or an
+  // unknown outcome gives Start its words back; reopening the pane starts afresh.
+  const [submitting, setSubmitting] = useState(false);
   const showError = useCrewErrorSlot('pane:agent');
   const starting = useRef(false);
   const form = useRef<HTMLFormElement>(null);
@@ -95,11 +206,20 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const modelErrorId = useId();
   const mismatchId = useId();
   const gateTitleId = useId();
+  const fileWarningId = useId();
 
   const { reportError, dismissError, error } = crew;
   useEffect(() => {
     if (models.failure) reportError(models.failure, 'pane:agent');
   }, [models.failure, reportError]);
+
+  const agentOpen = crew.ui.pane?.mode === 'agent';
+  useEffect(() => {
+    if (agentOpen) setSubmitting(false);
+  }, [agentOpen]);
+
+  const mentioned = useMemo(() => mentionedFileNames(task), [task]);
+  const sharedNames = useSharedFileNames(crew, channel?.id, mentioned.length > 0);
 
   const selected = choice ?? models.defaults;
   const summary = !picking && choice === null && models.defaults !== null;
@@ -117,6 +237,12 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     [snapshot]
   );
   const known = useMemo(() => knownInstitutions(models.providers), [models.providers]);
+  const privateOnly = protectedRunContext({
+    connection: crew.connection,
+    snapshot,
+    channel,
+    contextChannels: crew.contextChannels,
+  });
   const readsRestricted =
     channel?.classification === 'restricted' ||
     crew.contextChannels.some(
@@ -167,6 +293,21 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     otherChannels.length > 0 ||
     crew.contextChannels.length > 0 ||
     Boolean(crew.connection?.remote_root);
+  const folderText = crew.connection?.remote_root
+    ? crew.connection.remote_execution
+      ? agentCopy.folderExec(crew.connection.remote_root)
+      : agentCopy.folderRead(crew.connection.remote_root)
+    : null;
+  const alsoReads = crew.contextChannels
+    .filter((id) => id !== channel.id)
+    .map((id) => {
+      const item = snapshot?.channels.find((candidate) => candidate.id === id);
+      return item ? (channelLabels.get(id) ?? channelName(item)) : null;
+    })
+    .filter((label): label is string => label !== null);
+  // Only once every shared file's name is known: a warning must not appear for a file that is
+  // still loading, and "No file named …" is said only when it is true of the loaded channel.
+  const unshared = sharedNames === null ? [] : unsharedFileNames(mentioned, sharedNames);
   const unknownDestination =
     unknown ===
     `${crew.connection?.name ?? crew.connectionId} / ${team?.name ?? crew.teamId} / #${channel.name}`
@@ -181,8 +322,10 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
       return;
     }
     starting.current = true;
+    setSubmitting(true);
+    let started = false;
     try {
-      const started = await crew.startOwnedRun({
+      started = await crew.startOwnedRun({
         prompt: task,
         provider: selected.provider,
         model: selected.model,
@@ -196,6 +339,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
       }
     } finally {
       starting.current = false;
+      if (!started) setSubmitting(false);
     }
   };
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -210,6 +354,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   };
 
   const startDisabled =
+    submitting ||
     pending ||
     Boolean(unknown) ||
     !verified ||
@@ -286,7 +431,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             placeholder={agentCopy.taskPlaceholder}
             aria-describedby={taskHintId}
             onChange={(event) => setTask(event.target.value)}
-            className="crew-agent-task w-full resize-y rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-body text-text-default transition-[color,background-color,border-color,box-shadow] placeholder:text-text-muted hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
+            className="crew-agent-task w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-body text-text-default transition-[color,background-color,border-color,box-shadow] placeholder:text-text-muted hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
           />
           <p id={taskHintId} className="text-supporting text-text-muted">
             {agentCopy.taskPosted(here)}
@@ -298,31 +443,29 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
           {summary && selected ? (
             // A group named "Model", so the summary answers to the same name as the picker.
             // It wraps rather than ellipsizing (T-47): the provider was the part a truncation cut.
-            <div
-              role="group"
-              aria-labelledby={modelLabelId}
-              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
-            >
+            // The label sits above the value, as Task's and the picker's do, never centred
+            // against a value that wraps (Q2-67).
+            <div role="group" aria-labelledby={modelLabelId} className="flex flex-col gap-1.5">
               <span id={modelLabelId} className="text-label text-text-default">
                 {agentCopy.model}
               </span>
-              <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-label text-text-default">
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-label text-text-default">
                 <span className="min-w-0 break-words">{shownName}</span>
-                <ModelTierMarks provider={selectedProvider} />
+                <ModelTierMarks provider={selectedProvider} privateOnly={privateOnly} />
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto p-0 text-label"
+                  aria-label={agentCopy.modelChangeName}
+                  onClick={() => {
+                    setChoice(models.defaults);
+                    setPicking(true);
+                    setPickerOpen(true);
+                  }}
+                >
+                  {agentCopy.modelChange}
+                </Button>
               </span>
-              <Button
-                type="button"
-                variant="link"
-                className="h-auto p-0 text-label"
-                aria-label={agentCopy.modelChangeName}
-                onClick={() => {
-                  setChoice(models.defaults);
-                  setPicking(true);
-                  setPickerOpen(true);
-                }}
-              >
-                {agentCopy.modelChange}
-              </Button>
             </div>
           ) : noModels ? (
             <>
@@ -355,6 +498,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                 open={pickerOpen}
                 onOpenChange={setPickerOpen}
                 unavailableReason={notApproved}
+                privateOnly={privateOnly}
                 invalid={modelInvalid}
                 describedBy={modelInvalid ? modelErrorId : undefined}
                 onChange={(next) => {
@@ -380,7 +524,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
           <Disclosure
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
-            summary={agentCopy.advancedSummary(crew.contextChannels.length)}
+            summary={agentCopy.advancedSummary(here, alsoReads, folderText)}
           >
             <div className="flex flex-col gap-3">
               {otherChannels.length > 0 && (
@@ -410,13 +554,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                   ))}
                 </fieldset>
               )}
-              {crew.connection?.remote_root && (
-                <p className="text-supporting text-text-muted">
-                  {crew.connection.remote_execution
-                    ? agentCopy.folderExec(crew.connection.remote_root)
-                    : agentCopy.folderRead(crew.connection.remote_root)}
-                </p>
-              )}
+              {folderText && <p className="text-supporting text-text-muted">{folderText}</p>}
             </div>
           </Disclosure>
         )}
@@ -436,6 +574,14 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             <p id={mismatchId}>{mismatchText}</p>
           </Note>
         )}
+        {/* Before Start, which it does NOT disable: the task names a file nobody shared here, so
+            the agent would otherwise find something else by that name and say it used the file
+            (Q2-15). The agent is told to say what it used instead. */}
+        {unshared.length > 0 && (
+          <Note tone="warning" icon={AlertTriangle} testId="crew-agent-file-warning">
+            <p id={fileWarningId}>{agentCopy.fileNotShared(unshared, here)}</p>
+          </Note>
+        )}
         {/* The fixed error slot: its sibling below never moves or remounts (C11). */}
         <div>
           {showError && error && (
@@ -444,14 +590,35 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             </Note>
           )}
         </div>
+        {/* Start turns disabled while it works, which takes focus off it, so the same words are
+            spoken here. */}
+        <span
+          className="sr-only"
+          aria-live="polite"
+          aria-atomic="true"
+          data-crew-agent-start-status=""
+        >
+          {submitting ? agentCopy.starting : ''}
+        </span>
         <div className="flex justify-end">
           <Button
             key="start"
             type="submit"
             disabled={startDisabled}
-            aria-describedby={mismatchText ? mismatchId : undefined}
+            aria-describedby={
+              [mismatchText ? mismatchId : null, unshared.length > 0 ? fileWarningId : null]
+                .filter(Boolean)
+                .join(' ') || undefined
+            }
           >
-            {agentCopy.start}
+            {submitting ? (
+              <>
+                <LoaderCircle className="crew-agent-start-spinner" aria-hidden="true" />
+                {agentCopy.starting}
+              </>
+            ) : (
+              agentCopy.start
+            )}
           </Button>
         </div>
       </div>

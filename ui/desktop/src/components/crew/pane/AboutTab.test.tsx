@@ -13,6 +13,7 @@ import {
 } from '../channel/crewTestHarness';
 import { AboutTab } from './AboutTab';
 import { aboutCopy } from './copy';
+import { COPY_FEEDBACK_MS } from './presentation';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -108,6 +109,41 @@ describe('AboutTab', () => {
     await user.click(within(about).getByRole('button', { name: aboutCopy.copyId }));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
     expect(about.textContent).not.toMatch(UUID);
+  });
+
+  it('says "Copied" on Copy channel ID for a moment, and says it aloud (Q2-34)', async () => {
+    const user = userEvent.setup();
+    renderCrew(() => <About />);
+    const about = await shown();
+    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    await user.click(copy);
+    await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
+    // The same node flips its words, so focus stays where it was.
+    expect(copy).toHaveTextContent(aboutCopy.copied);
+    expect(copy).toHaveAttribute('data-crew-copy-state', 'copied');
+    expect(copy).toHaveFocus();
+    const region = about.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(region).toHaveTextContent(aboutCopy.copied);
+    expect(about.textContent).not.toMatch(UUID);
+    await waitFor(() => expect(copy).toHaveTextContent(aboutCopy.copyId), {
+      timeout: COPY_FEEDBACK_MS + 1000,
+    });
+    expect(region).toHaveTextContent('');
+    expect(COPY_FEEDBACK_MS).toBe(1500);
+  });
+
+  it('says so when the copy is refused', async () => {
+    const user = userEvent.setup();
+    const refuse = vi
+      .spyOn(navigator.clipboard, 'writeText')
+      .mockRejectedValue(new Error('denied'));
+    renderCrew(() => <About />);
+    const about = await shown();
+    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    await user.click(copy);
+    await waitFor(() => expect(copy).toHaveTextContent(aboutCopy.copyFailed));
+    expect(copy).toHaveAttribute('data-crew-copy-state', 'failed');
+    refuse.mockRestore();
   });
 
   it('offers Rename… to the owner once names are unique', async () => {

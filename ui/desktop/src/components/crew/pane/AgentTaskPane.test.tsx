@@ -10,6 +10,7 @@ import {
   installDaemon,
   installObserver,
   makeSnapshot,
+  message,
   methods,
   oldNotes,
   renderCrew,
@@ -19,6 +20,7 @@ import {
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
+import { mentionedFileNames, unsharedFileNames } from './presentation';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -344,6 +346,15 @@ describe('AgentTaskPane', () => {
       expect(sizing).toMatch(/field-sizing:\s*content;/);
       expect(sizing).toMatch(/min-height:\s*calc\(6lh \+ 14px\);/);
     });
+
+    it('sizes itself and offers no native resize grip (Q2-30)', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      // The grip was Tailwind's `resize-y`; the field grows by itself (`field-sizing: content`).
+      expect(task.className).not.toMatch(/(^|\s)resize(-[xy])?(\s|$)/);
+      expect(cssRule('.crew-agent-task')).toMatch(/resize:\s*none;/);
+    });
   });
 
   it('leaves an empty Task to native validation', async () => {
@@ -373,6 +384,18 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByRole('button', { name: /^Model/ })).toBeNull();
       // It wraps rather than ellipsizing: the provider was the part a truncation cut (T-47).
       expect(screen.getByText('gpt-5.5 · Versa')).not.toHaveClass('truncate');
+      // The label sits above the value, as Task's does, not centred beside what wraps (Q2-67).
+      const group = screen.getByRole('group', { name: agentCopy.model });
+      const label = within(group).getByText(agentCopy.model);
+      expect(label.parentElement).toBe(group);
+      expect(label.nextElementSibling).toContainElement(screen.getByText('gpt-5.5 · Versa'));
+      expect(group).toHaveClass('flex-col');
+      // One mark with words (Q2-67). #general is Restricted in a Private workspace, so only a
+      // private model can run this task, and the mark says so in the task's words.
+      const mark = within(group).getByTitle(agentCopy.privateOnly);
+      expect(mark).toHaveTextContent('Private · UCSF');
+      expect(within(group).queryByTestId('affiliation-badge')).toBeNull();
+      expect(group.innerHTML).not.toMatch(/this chat/);
 
       fireEvent.change(task, { target: { value: 'use the default' } });
       await user.click(startButton());
@@ -625,7 +648,7 @@ describe('AgentTaskPane', () => {
       renderCrew(Layout);
       await openAgent(user);
       expect(screen.queryByRole('button', { name: 'Advanced' })).toBeNull();
-      expect(screen.queryByText(agentCopy.advancedSummary(0))).toBeNull();
+      expect(screen.queryByText(agentCopy.advancedSummary('#general', []))).toBeNull();
     });
 
     it('keeps Also read unmounted while closed and summarizes what it adds', async () => {
@@ -633,7 +656,12 @@ describe('AgentTaskPane', () => {
       renderCrew(Layout);
       const task = await openAgent(user);
       expect(screen.queryByRole('checkbox')).toBeNull();
-      expect(screen.getByText(agentCopy.advancedSummary(0))).toBeInTheDocument();
+      // It says what the agent reads, never "Also reads nothing else" (Q2-67).
+      expect(screen.getByText('Reads only #general')).toBeInTheDocument();
+      expect(agentCopy.advancedSummary('#general', [])).toBe('Reads only #general');
+      expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAccessibleDescription(
+        'Reads only #general'
+      );
 
       await user.click(screen.getByRole('button', { name: 'Advanced' }));
       const also = screen.getByRole('checkbox', { name: '#methods' });
@@ -642,7 +670,8 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByRole('checkbox', { name: '#general' })).toBeNull();
       await user.click(also);
       await user.click(screen.getByRole('button', { name: 'Advanced' }));
-      expect(screen.getByText(agentCopy.advancedSummary(1))).toBeInTheDocument();
+      expect(screen.getByText('Also reads #methods')).toBeInTheDocument();
+      expect(screen.queryByText(/Reads only/)).toBeNull();
 
       fireEvent.change(task, { target: { value: 'read more' } });
       await chooseModel(user, 'fixture-model');
@@ -658,8 +687,236 @@ describe('AgentTaskPane', () => {
       ]);
       renderCrew(Layout);
       await openAgent(user);
+      // Closed, the summary names the folder too, and so never claims "Reads only".
+      expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAccessibleDescription(
+        agentCopy.folderExec('/home/alice/crew-work')
+      );
+      expect(screen.queryByText(/Reads only/)).toBeNull();
       await user.click(screen.getByRole('button', { name: 'Advanced' }));
       expect(screen.getByText(agentCopy.folderExec('/home/alice/crew-work'))).toBeInTheDocument();
+    });
+
+    it('names each channel it also reads, then counts the rest (Q2-67)', () => {
+      expect(agentCopy.advancedSummary('#general', ['#methods', 'Lab / #qc'])).toBe(
+        'Also reads #methods, Lab / #qc'
+      );
+      expect(agentCopy.advancedSummary('#general', ['#a', '#b', '#c', '#d', '#e'])).toBe(
+        'Also reads #a, #b, #c and 2 more'
+      );
+      expect(agentCopy.advancedSummary('#general', ['#a'], 'Can read /srv/x')).toBe(
+        'Also reads #a · Can read /srv/x'
+      );
+    });
+  });
+
+  describe('Start (Q2-67)', () => {
+    it('reads "Starting…" beside a spinner from the click until the pane closes', async () => {
+      const user = userEvent.setup();
+      let accept: (value: unknown) => void = () => undefined;
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST') {
+          return new Promise((resolve) => {
+            accept = resolve;
+          });
+        }
+        return {};
+      });
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      await chooseModel(user, 'fixture-model');
+      const start = startButton();
+      await user.click(start);
+
+      await waitFor(() => expect(start).toHaveTextContent(agentCopy.starting));
+      expect(start).toBeDisabled();
+      expect(start.querySelector('.crew-agent-start-spinner')).not.toBeNull();
+      expect(within(start).queryByText(agentCopy.start)).toBeNull();
+      // Disabling Start takes focus off it, so the words are also spoken.
+      const spoken = document.querySelector('[data-crew-agent-start-status]');
+      expect(spoken).toHaveAttribute('aria-live', 'polite');
+      expect(spoken).toHaveTextContent(agentCopy.starting);
+      expect(agentCopy.starting).toBe('Starting…');
+
+      await act(async () => accept({ run_id: 'run-1', session_id: 'session-1' }));
+      await waitFor(() => expect(currentCrew().ui.pane).toBeNull());
+    });
+
+    it('gives Start its words back when the start fails', async () => {
+      const user = userEvent.setup();
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST') {
+          throw new Error('start failed');
+        }
+        return {};
+      });
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      await chooseModel(user, 'fixture-model');
+      const start = startButton();
+      await user.click(start);
+      expect(await screen.findAllByText('start failed')).toHaveLength(1);
+      expect(start).toHaveTextContent(agentCopy.start);
+      expect(start).toBeEnabled();
+      expect(start.querySelector('.crew-agent-start-spinner')).toBeNull();
+    });
+
+    it('authors the spinner’s motion in pane.css, with a still rest under reduced motion', () => {
+      expect(cssRule('.crew-agent-start-spinner')).toMatch(/animation:\s*crew-pane-spin\b/);
+      expect(paneCss).toMatch(
+        /prefers-reduced-motion:\s*reduce[\s\S]*\.crew-agent-start-spinner\s*\{\s*animation:\s*none;/
+      );
+    });
+  });
+
+  describe('a file the task names (Q2-15)', () => {
+    const warning = (names: string[]) => agentCopy.fileNotShared(names, '#general');
+    const fileWarning = () => screen.queryByTestId('crew-agent-file-warning');
+
+    /** `blob.status` and `reference.get` as the daemon answers them for these fixtures. */
+    function installFiles(
+      blobs: Record<string, string>,
+      references: Record<string, { label: string; path: string }> = {}
+    ) {
+      mocks.crewRequest.mockImplementation(
+        async (_id: string, method: string, params?: Record<string, unknown>) => {
+          if (method === 'messages.history') return { messages: [], cursor: null };
+          if (method === 'blob.status') {
+            const id = String(params?.blob_id);
+            if (!(id in blobs)) throw new Error('unknown blob');
+            return { id, channel_id: general.id, name: blobs[id], complete: true };
+          }
+          if (method === 'reference.get') {
+            const reference = references[String(params?.reference_id)];
+            if (!reference) throw new Error('unknown reference');
+            return { ...reference, verified: false };
+          }
+          return {};
+        }
+      );
+    }
+
+    it('warns before Start when no message in the channel shares it, and still lets it start', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      fireEvent.change(task, {
+        target: {
+          value: 'Compute the means in my plate reader file (dave-plate-reader.csv). Use the file.',
+        },
+      });
+      const note = await screen.findByTestId('crew-agent-file-warning');
+      expect(note).toHaveTextContent(warning(['dave-plate-reader.csv']));
+      expect(warning(['dave-plate-reader.csv'])).toBe(
+        'No file named dave-plate-reader.csv is shared in #general. Your agent will say what it used instead.'
+      );
+      // It is before Start in the footer, and describes it.
+      const pane = screen.getByRole('complementary', { name: agentCopy.title });
+      expect(note.compareDocumentPosition(startButton()) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      );
+      expect(pane).toContainElement(note);
+      expect(startButton()).toHaveAccessibleDescription(warning(['dave-plate-reader.csv']));
+
+      // A warning, not a gate.
+      await chooseModel(user, 'fixture-model');
+      expect(startButton()).toBeEnabled();
+      await user.click(startButton());
+      await waitFor(() => expect(runPosts()).toHaveLength(1));
+    });
+
+    it('says nothing for a file the channel shares, whatever its case, and names only the others', async () => {
+      const user = userEvent.setup();
+      installFiles({ 'blob-1': 'Dave-Plate-Reader.CSV' });
+      installObserver({ messages: [{ ...message('1'), attachments: ['blob-1'] }] });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'Average dave-plate-reader.csv' } });
+      await waitFor(() =>
+        expect(mocks.crewRequest).toHaveBeenCalledWith(
+          connection.id,
+          'blob.status',
+          { blob_id: 'blob-1' },
+          false,
+          expect.any(AbortSignal)
+        )
+      );
+      await act(async () => undefined);
+      expect(fileWarning()).toBeNull();
+
+      fireEvent.change(task, {
+        target: { value: 'Average dave-plate-reader.csv against layout.xlsx and qc.json' },
+      });
+      expect(await screen.findByTestId('crew-agent-file-warning')).toHaveTextContent(
+        warning(['layout.xlsx', 'qc.json'])
+      );
+      expect(warning(['layout.xlsx', 'qc.json'])).toBe(
+        'No files named layout.xlsx or qc.json are shared in #general. Your agent will say what it used instead.'
+      );
+      // Each shared file is looked up once, not once per keystroke.
+      expect(
+        mocks.crewRequest.mock.calls.filter(([, method]) => method === 'blob.status')
+      ).toHaveLength(1);
+    });
+
+    it('counts a shared server path by its file name', async () => {
+      const user = userEvent.setup();
+      installFiles({}, { 'ref-1': { label: 'Counts', path: '/data/run7/Counts.TSV' } });
+      installObserver({ messages: [{ ...message('1'), references: ['ref-1'] }] });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'Plot counts.tsv' } });
+      await waitFor(() =>
+        expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'reference.get')).toBe(
+          true
+        )
+      );
+      await act(async () => undefined);
+      expect(fileWarning()).toBeNull();
+    });
+
+    it('stays quiet while it cannot tell: a shared file whose name could not be read', async () => {
+      const user = userEvent.setup();
+      installFiles({});
+      installObserver({ messages: [{ ...message('1'), attachments: ['blob-gone'] }] });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'Average counts.csv' } });
+      await waitFor(() =>
+        expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'blob.status')).toBe(
+          true
+        )
+      );
+      await act(async () => undefined);
+      // "No file named counts.csv is shared" might be false, so it is not said.
+      expect(fileWarning()).toBeNull();
+    });
+
+    it('finds the names a task mentions, and not the ones inside a URL', () => {
+      expect(
+        mentionedFileNames(
+          'Use (dave-plate-reader.csv), then Layout.XLSX and layout.xlsx; see https://x.org/ref.json.'
+        )
+      ).toEqual(['dave-plate-reader.csv', 'Layout.XLSX']);
+      expect(mentionedFileNames('counts.csv.gz and counts.csv-old are not counts.csv')).toEqual([
+        'counts.csv',
+      ]);
+      expect(mentionedFileNames('a.tsv b.xls c.txt d.h5ad e.parquet f.pdf')).toEqual([
+        'a.tsv',
+        'b.xls',
+        'c.txt',
+        'd.h5ad',
+        'e.parquet',
+      ]);
+      expect(unsharedFileNames(['plate.csv', 'Other.CSV'], ['/data/PLATE.csv'])).toEqual([
+        'Other.CSV',
+      ]);
     });
   });
 
