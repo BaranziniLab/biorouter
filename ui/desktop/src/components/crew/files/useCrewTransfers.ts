@@ -71,7 +71,16 @@ function fetchTransfers(connectionId: string, entry: Entry): Promise<void> {
   return listTransfers(connectionId).then(
     (transfers) => {
       if (!current()) return;
-      publish(entry, { transfers, loaded: true, error: '' });
+      // An answer that is not a list is a failed list, not an empty one: keep the last records.
+      if (!Array.isArray(transfers)) {
+        publish(entry, { ...entry.state, loaded: true, error: failureText(null) });
+      } else {
+        const records = transfers.filter(
+          (item): item is CrewTransfer =>
+            typeof item === 'object' && item !== null && typeof item.id === 'string'
+        );
+        publish(entry, { transfers: records, loaded: true, error: '' });
+      }
       schedule(connectionId, entry);
     },
     (failure: unknown) => {

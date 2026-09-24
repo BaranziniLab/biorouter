@@ -231,6 +231,15 @@ describe('the one transfers poller (L13)', () => {
     expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
   });
 
+  it('reads an answer that is not a list as a failed list, never as a crash', async () => {
+    mocks.listTransfers.mockResolvedValue(undefined);
+    render(cards(['a']));
+    await flush();
+    await flush();
+    expect(screen.getByText('a.csv')).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+  });
+
   it('keeps the last records and keeps trying after a failed list while a transfer moved', async () => {
     mocks.listTransfers.mockResolvedValueOnce([download('a')]);
     mocks.listTransfers.mockRejectedValueOnce(new Error('daemon restarting'));
