@@ -34,7 +34,9 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
 
 /**
  * How the new layout's surfaces react when the controller resets them. The details pane survives
- * a refresh (an error shown in it must outlive a manual refresh); it closes on a channel or
+ * a refresh (an error shown in it must outlive a manual refresh) and a channel switch, on the same
+ * tab, so two channels' members can be compared side by side (QA Q2-33); the agent and chat-access
+ * panes are about the channel they were opened on, so a switch closes them. Every pane closes on a
  * connection switch, on lost access, and when the verified view is cleared. A finished dialog
  * mutation closes its dialog; a started task leaves the pane to its layout.
  */
@@ -44,8 +46,12 @@ export function nextUiAfterReset(ui: CrewUi, reason: SurfaceResetReason): CrewUi
   switch (reason) {
     case 'refresh':
       return ui.dialog && isSnapshotBoundDialog(ui.dialog) ? { ...ui, dialog: null } : ui;
+    case 'channel-changed': {
+      const pane = ui.pane?.mode === 'details' ? ui.pane : null;
+      const dialog = keepDialog(ui.dialog);
+      return pane === ui.pane && dialog === ui.dialog ? ui : { dialog, pane };
+    }
     case 'protected-cleared':
-    case 'channel-changed':
     case 'channel-revoked':
     case 'connection-changed':
       return ui.pane || (ui.dialog && isSnapshotBoundDialog(ui.dialog))

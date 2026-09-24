@@ -61,6 +61,28 @@ describe('surface resets', () => {
     }
   );
 
+  // QA Q2-33: Members open on #methods closed when #general was clicked.
+  it('keeps the details pane, on its tab, across a channel switch, and closes the other panes', () => {
+    const details: CrewUi = { dialog: null, pane: { mode: 'details', tab: 'members' } };
+    expect(nextUiAfterReset(details, 'channel-changed')).toBe(details);
+    expect(
+      nextUiAfterReset({ dialog: { kind: 'edit-profile' }, pane: details.pane }, 'channel-changed')
+    ).toEqual({ dialog: null, pane: { mode: 'details', tab: 'members' } });
+    expect(
+      nextUiAfterReset(
+        { dialog: null, pane: { mode: 'chat-access', sessionId: 's-1' } },
+        'channel-changed'
+      )
+    ).toEqual({ dialog: null, pane: null });
+    expect(nextUiAfterReset({ dialog: null, pane: { mode: 'agent' } }, 'channel-changed')).toEqual({
+      dialog: null,
+      pane: null,
+    });
+    // Anything that ends the view still closes it.
+    for (const reason of ['protected-cleared', 'channel-revoked', 'connection-changed'] as const)
+      expect(nextUiAfterReset(details, reason)).toEqual({ dialog: null, pane: null });
+  });
+
   it('closes the dialog after a finished mutation and leaves a started task to the layout', () => {
     const ui: CrewUi = { dialog: { kind: 'create-team' }, pane };
     expect(nextUiAfterReset(ui, 'mutated')).toEqual({ dialog: null, pane });

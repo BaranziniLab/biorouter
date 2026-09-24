@@ -11,7 +11,8 @@ import { useCallback, useRef } from 'react';
  * So the opener is recorded when the dialog OPENS, while it still has focus, and focus is put back
  * on it once the dialog is gone:
  * - A menu item stands for the trigger of its menu (a menu closes as it acts, taking the item with
- *   it). A submenu's item climbs to the root menu's trigger.
+ *   it). A submenu's item climbs to the root menu's trigger. A control in a popover stands for the
+ *   popover's trigger the same way.
  * - A dialog opened from inside another dialog that it replaces keeps the first dialog's opener,
  *   because the control that opened the second one leaves with the first.
  * - Focus is only ever RESCUED: when something else deliberately took focus after the dialog closed
@@ -32,10 +33,19 @@ export const SIGN_IN_FOCUS_FALLBACKS: readonly string[] = [
   ...DIALOG_FOCUS_FALLBACKS,
 ];
 
-const MENU = '[role="menu"]';
+/**
+ * A surface that closes as it acts and stands for its trigger: a menu, and a popover (Radix renders
+ * one as `role="dialog"` inside its popper wrapper, which a modal dialog never is). A dialog opened
+ * from the privacy popover returned focus to the channel heading, because only menus climbed (QA
+ * Q2-27).
+ */
+const MENU = '[role="menu"], [data-radix-popper-content-wrapper] > [role="dialog"]';
 const DIALOG = '[role="dialog"], [role="alertdialog"]';
 
-/** The trigger a menu belongs to: the control it `aria-controls` from, else the one naming it. */
+/**
+ * The trigger a menu or popover belongs to: the control it `aria-controls` from, else the one
+ * naming it.
+ */
 function menuTrigger(menu: Element): HTMLElement | null {
   if (menu.id) {
     const controller = document.querySelector(`[aria-controls="${cssEscape(menu.id)}"]`);

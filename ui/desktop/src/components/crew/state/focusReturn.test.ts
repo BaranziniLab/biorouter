@@ -57,6 +57,27 @@ describe('openerOf', () => {
     expect(openerOf(byId('item'))).toBe(byId('trigger'));
   });
 
+  // QA Q2-27: Privacy… in the privacy popover returned focus to the channel heading on close.
+  it('stands a control in a popover in for the popover’s trigger', () => {
+    mount(`
+      <button id="chip" aria-controls="popover-1" aria-expanded="true">Private · ucsf</button>
+      <div data-radix-popper-content-wrapper>
+        <div role="dialog" id="popover-1"><button id="more">Privacy…</button></div>
+      </div>
+    `);
+    expect(openerOf(byId('more'))).toBe(byId('chip'));
+    byId('more').focus();
+    expect(nextOpener(null)).toBe(byId('chip'));
+  });
+
+  it('never climbs out of a modal dialog, which is no popover', () => {
+    mount(`
+      <button id="other" aria-controls="dialog-1">Somewhere else</button>
+      <div role="dialog" id="dialog-1"><button id="inside">Invite people…</button></div>
+    `);
+    expect(openerOf(byId('inside'))).toBe(byId('inside'));
+  });
+
   it('gives up on a menu whose trigger cannot be found', () => {
     mount('<div role="menu"><div role="menuitem" id="item">Orphan</div></div>');
     expect(openerOf(byId('item'))).toBeNull();

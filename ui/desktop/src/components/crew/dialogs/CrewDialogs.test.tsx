@@ -9,6 +9,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
 import { addPeopleCopy } from './copy';
@@ -185,6 +186,81 @@ describe('CrewDialogs', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  // QA Q2-27: a pointer, not only the keyboard — Workspace settings opened from the workspace menu
+  // by pointer returned focus to <body>.
+  it('returns focus to the switcher when a pointer chose the workspace-menu item and closed the dialog', async () => {
+    const user = userEvent.setup();
+    function WorkspaceMenu() {
+      const crew = useCrew();
+      return (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="crew-sidebar-switcher">
+              lab
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem
+              onSelect={() => crew.openDialog({ kind: 'workspace-settings', tab: 'people' })}
+            >
+              People…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      );
+    }
+    renderWithCrew(
+      <>
+        <WorkspaceMenu />
+        <CrewDialogs />
+      </>
+    );
+    const switcher = screen.getByRole('button', { name: 'lab' });
+    await user.click(switcher);
+    await user.click(await screen.findByRole('menuitem', { name: 'People…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(switcher).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // QA Q2-27: Privacy… in the privacy popover handed focus back to the channel heading.
+  it('returns focus to a popover’s trigger when a control in the popover opened the dialog', async () => {
+    const user = userEvent.setup();
+    function PrivacyPopover() {
+      const crew = useCrew();
+      return (
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button">Private · ucsf</button>
+          </PopoverTrigger>
+          <PopoverContent>
+            <button
+              type="button"
+              onClick={() => crew.openDialog({ kind: 'workspace-settings', tab: 'privacy' })}
+            >
+              Privacy…
+            </button>
+          </PopoverContent>
+        </Popover>
+      );
+    }
+    renderWithCrew(
+      <>
+        <PrivacyPopover />
+        <CrewDialogs />
+      </>
+    );
+    const chip = screen.getByRole('button', { name: 'Private · ucsf' });
+    await user.click(chip);
+    await user.click(await screen.findByRole('button', { name: 'Privacy…' }));
+    await screen.findByRole('dialog', { name: 'lab settings' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'lab settings' })).toBeNull());
+    await waitFor(() => expect(chip).toHaveFocus());
   });
 
   it('returns to the first opener when one dialog hands over to another', async () => {
