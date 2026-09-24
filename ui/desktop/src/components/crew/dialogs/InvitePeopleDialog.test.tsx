@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { STALE_DAEMON_MESSAGE } from '../api/errors';
 import { inviteCopy } from './copy';
 import { installResizeObserverStub, renderWithCrew, requestsFor } from './dialogsTestHarness';
-import { InvitePeopleDialog } from './InvitePeopleDialog';
+import { InvitePeopleDialog, withoutLeadingAt } from './InvitePeopleDialog';
 
 const mocks = vi.hoisted(() => ({ crewHttp: vi.fn() }));
 vi.mock('../crewApi', async () => {
@@ -96,6 +98,53 @@ describe('InvitePeopleDialog', () => {
       { username: 'bob' },
       { username: 'carol' },
     ]);
+  });
+
+  // QA Q2-24: the field shows its own @, so a typed one read as "@ @crew_frank".
+  it('drops a typed or pasted leading @ from the field, value and display alike', async () => {
+    const { crew } = renderInvite();
+    const username = await screen.findByLabelText('Username');
+    fireEvent.change(username, { target: { value: '@' } });
+    expect(username).toHaveValue('');
+    fireEvent.change(username, { target: { value: '@crew_frank' } });
+    expect(username).toHaveValue('crew_frank');
+    fireEvent.change(username, { target: { value: ' @@bob' } });
+    expect(username).toHaveValue('bob');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
+    });
+    expect(requestsFor(crew, 'enrollment.invite')).toEqual([{ username: 'bob' }]);
+    // Only a LEADING @: anything else is the broker's to refuse, in its own words.
+    expect(withoutLeadingAt('bo@b')).toBe('bo@b');
+  });
+
+  it('shows the install commands a line each, scrolling sideways instead of breaking a word', async () => {
+    renderInvite();
+    await invite('bob');
+    const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: inviteCopy.installed('bob', 'hpc.example.edu') })
+    );
+    const commands = await within(dialog).findByRole('button', {
+      name: `Copy ${inviteCopy.installCommandsLabel}`,
+    });
+    const field = commands.closest('[data-slot="copy-field"]')!;
+    expect(field).toHaveAttribute('data-multiline', 'true');
+    expect(field.querySelector('.biorouter-copy-field-value')).toHaveClass('crew-command-lines');
+
+    // jsdom loads no stylesheet: the rule is read at the source. It must out-rank the copy
+    // field's own multi-line `pre-wrap` (three selectors deep in main.css) to apply at all.
+    const css = readFileSync(join(__dirname, 'dialogs.css'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ' '
+    );
+    const rule = /([^{}]*\.crew-command-lines)\s*\{([^}]*)\}/.exec(css);
+    expect(rule, 'the .crew-command-lines rule').not.toBeNull();
+    expect(rule![2]).toMatch(/white-space:\s*pre;/);
+    expect(rule![2]).toMatch(/overflow-x:\s*auto;/);
+    expect(rule![2]).toMatch(/overflow-wrap:\s*normal;/);
+    const specificity = (rule![1].match(/\.[\w-]+|\[[^\]]+\]/g) ?? []).length;
+    expect(specificity).toBeGreaterThan(3);
   });
 
   it('gives install commands that run as written, with no placeholder path', () => {

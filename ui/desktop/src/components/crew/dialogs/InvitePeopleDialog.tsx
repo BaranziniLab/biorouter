@@ -26,6 +26,14 @@ function typedUsername(value: string): string {
   return value.trim().replace(/^@/, '');
 }
 
+/**
+ * What the field keeps of what was typed or pasted: without any leading `@`, because the field
+ * already shows one, and "@crew_frank" read as "@ @crew_frank" with no warning (QA Q2-24).
+ */
+export function withoutLeadingAt(value: string): string {
+  return value.replace(/^\s*@+/, '');
+}
+
 type Invitation =
   | { state: 'loading' }
   | { state: 'ready'; message: string }
@@ -180,7 +188,14 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               <p className="text-supporting text-text-muted">
                 {copy.installLead(result.username, server)}
               </p>
-              <CopyField value={copy.installCommands} label={copy.installCommandsLabel} multiline />
+              {/* One command per line, never broken mid-word ("biorouter–/crew" read as a hyphen to
+                  type): the lines keep their shape and scroll sideways (`dialogs.css`). */}
+              <CopyField
+                value={copy.installCommands}
+                label={copy.installCommandsLabel}
+                multiline
+                valueClassName="crew-command-lines"
+              />
             </div>
           </Disclosure>
           <p className="text-supporting text-text-muted">{copy.nextStep(first)}</p>
@@ -229,7 +244,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               aria-describedby={refusal ? `${refusalId} ${helpId(usernameId)}` : helpId(usernameId)}
               value={username}
               onChange={(event) => {
-                setUsername(event.target.value);
+                setUsername(withoutLeadingAt(event.target.value));
                 if (error) crew.dismissError();
               }}
             />

@@ -38,3 +38,12 @@
 .crew-dialog :read-write:focus-visible:not([aria-invalid='true']) {
   border-color: var(--border-accent);
 }
+
+/* Commands someone runs as written (Invite people's install help): each keeps its own line and the
+   block scrolls sideways, rather than wrapping mid-word — "biorouter–" / "crew" read as a hyphen to
+   type (QA Q2-24). Out-ranks the copy field's multi-line `pre-wrap` in `main.css`. */
+.crew-dialog [data-slot='copy-field'][data-multiline='true'] .crew-command-lines {
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: pre;
+}

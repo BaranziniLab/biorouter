@@ -22,6 +22,11 @@ export interface CopyFieldProps {
   onCopied?: () => void;
   /** Layout only (width, margins). The box is the primitive's. */
   className?: string;
+  /**
+   * A class for the value's own box, so an area's stylesheet can change how the value flows (Crew
+   * shows install commands unwrapped, scrolling sideways, so no line breaks mid-word).
+   */
+  valueClassName?: string;
 }
 
 /** How long "Copied" / "Copy failed" stays on the button. */
@@ -32,6 +37,28 @@ const MIDDLE_TAIL_LENGTH = 12;
 
 /** A fixed-width mask, so the mask does not disclose the secret's length. */
 const SECRET_MASK = '••••••••••••';
+
+/**
+ * The labels' shared cell. Inline styles, not utilities: a newly written utility can silently fail
+ * to generate (see `CLAUDE.md`, "Desktop shell geometry"), and this is load-bearing geometry.
+ */
+const LABEL_STACK_STYLE: React.CSSProperties = { display: 'inline-grid' };
+const LABEL_CELL_STYLE: React.CSSProperties = { gridArea: '1 / 1' };
+const LABEL_HIDDEN_STYLE: React.CSSProperties = { gridArea: '1 / 1', visibility: 'hidden' };
+
+/** One of the Copy button's labels, in the shared cell; the inactive one keeps its width only. */
+function CopyLabel({ active, children }: { active: boolean; children: React.ReactNode }) {
+  return (
+    <span
+      data-active={active ? 'true' : undefined}
+      aria-hidden={active ? undefined : true}
+      className="inline-flex items-center justify-center gap-1.5"
+      style={active ? LABEL_CELL_STYLE : LABEL_HIDDEN_STYLE}
+    >
+      {children}
+    </span>
+  );
+}
 
 type Feedback = 'idle' | 'copied' | 'failed';
 
@@ -74,6 +101,7 @@ export function CopyField({
   size = 'default',
   onCopied,
   className,
+  valueClassName,
 }: CopyFieldProps) {
   const [feedback, setFeedback] = React.useState<Feedback>('idle');
   const [announcement, setAnnouncement] = React.useState('');
@@ -184,7 +212,7 @@ export function CopyField({
     >
       <span
         ref={valueRef}
-        className="biorouter-copy-field-value"
+        className={cn('biorouter-copy-field-value', valueClassName)}
         data-truncate={singleLineTruncate}
         data-masked={masked ? 'true' : undefined}
       >
@@ -213,17 +241,22 @@ export function CopyField({
           aria-label={`Copy ${label}`}
           data-feedback={feedback}
         >
-          {feedback === 'copied' ? (
-            <>
-              <Check aria-hidden className="biorouter-check-settled" />
-              Copied
-            </>
-          ) : (
-            <>
+          {/* Both labels share one grid cell, the inactive one laid out but unseen, so the button
+              is always as wide as "Copied" and the value beside it never re-wraps when the label
+              swaps (QA Q2-24: an 18-line invitation reflowed for two seconds on every copy). */}
+          <span data-slot="copy-field-labels" style={LABEL_STACK_STYLE}>
+            <CopyLabel active={feedback !== 'copied'}>
               <Copy aria-hidden />
               {feedback === 'failed' ? 'Copy failed' : 'Copy'}
-            </>
-          )}
+            </CopyLabel>
+            <CopyLabel active={feedback === 'copied'}>
+              <Check
+                aria-hidden
+                className={feedback === 'copied' ? 'biorouter-check-settled' : undefined}
+              />
+              Copied
+            </CopyLabel>
+          </span>
         </Button>
       </span>
       <span className="sr-only" aria-live="polite" aria-atomic="true">

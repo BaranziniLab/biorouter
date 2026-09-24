@@ -9,6 +9,10 @@ const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 const liveRegion = (container: HTMLElement) =>
   container.querySelector('[aria-live="polite"]') as HTMLElement;
 
+/** The label the Copy button shows now; the other one only reserves its width. */
+const shown = (button: HTMLElement) =>
+  button.querySelector('[data-active="true"]')?.textContent ?? '';
+
 async function press(button: HTMLElement) {
   await act(async () => {
     fireEvent.click(button);
@@ -49,7 +53,7 @@ describe('CopyField', () => {
 
     await press(button);
     expect(onCopied).toHaveBeenCalledTimes(1);
-    expect(button).toHaveTextContent('Copied');
+    expect(shown(button)).toBe('Copied');
     expect(button.querySelector('.biorouter-check-settled')).not.toBeNull();
     // The name never changes identity; the live region carries the outcome.
     expect(button).toHaveAccessibleName('Copy invitation message');
@@ -61,13 +65,35 @@ describe('CopyField', () => {
     act(() => {
       vi.advanceTimersByTime(COPY_FIELD_FEEDBACK_MS - 1);
     });
-    expect(button).toHaveTextContent('Copied');
+    expect(shown(button)).toBe('Copied');
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(button).toHaveTextContent(/^Copy$/);
+    expect(shown(button)).toBe('Copy');
     expect(button.querySelector('.biorouter-check-settled')).toBeNull();
     expect(liveRegion(container)).toBeEmptyDOMElement();
+  });
+
+  // QA Q2-24: the pill grew by "Copied"'s width, and an 18-line invitation beside it re-wrapped.
+  it('keeps the button as wide as its widest label, whichever is showing', async () => {
+    render(<CopyField value="abc" label="command" />);
+    const button = screen.getByRole('button', { name: 'Copy command' });
+    const cells = Array.from(
+      button.querySelectorAll<HTMLElement>('[data-slot="copy-field-labels"] > span')
+    );
+    expect(cells.map((cell) => cell.textContent)).toEqual(['Copy', 'Copied']);
+    const stack = button.querySelector<HTMLElement>('[data-slot="copy-field-labels"]')!;
+    expect(stack.style.display).toBe('inline-grid');
+    // Both in the one cell; the inactive one laid out (so it holds the width) but unseen.
+    for (const cell of cells) expect(cell.style.gridArea).toContain('1 / 1');
+    expect(cells[0].style.visibility).toBe('');
+    expect(cells[1].style.visibility).toBe('hidden');
+    expect(cells[1]).toHaveAttribute('aria-hidden', 'true');
+
+    await press(button);
+    expect(cells[0].style.visibility).toBe('hidden');
+    expect(cells[1].style.visibility).toBe('');
+    expect(shown(button)).toBe('Copied');
   });
 
   it('restarts the two seconds when copied again', async () => {
@@ -82,11 +108,11 @@ describe('CopyField', () => {
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    expect(button).toHaveTextContent('Copied');
+    expect(shown(button)).toBe('Copied');
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    expect(button).toHaveTextContent(/^Copy$/);
+    expect(shown(button)).toBe('Copy');
   });
 
   it('on a clipboard failure says so and selects the value so ⌘C works', async () => {
@@ -103,7 +129,7 @@ describe('CopyField', () => {
     const button = screen.getByRole('button', { name: 'Copy server path' });
     await press(button);
 
-    expect(button).toHaveTextContent('Copy failed');
+    expect(shown(button)).toBe('Copy failed');
     expect(onCopied).not.toHaveBeenCalled();
     expect(liveRegion(container)).toHaveTextContent('Copy failed');
     // The whole value — both halves of the middle truncation — is selected.
@@ -146,7 +172,7 @@ describe('CopyField', () => {
       render(<CopyField value="ssh-ed25519 AAAA" label="public key" />);
       const button = screen.getByRole('button', { name: 'Copy public key' });
       await press(button);
-      expect(button).toHaveTextContent('Copy failed');
+      expect(shown(button)).toBe('Copy failed');
       expect(window.getSelection()?.toString()).toBe('ssh-ed25519 AAAA');
     } finally {
       if (original) Object.defineProperty(navigator, 'clipboard', original);
