@@ -1,0 +1,592 @@
+/* Crew timeline — the message list's stylesheet.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and `[data-*]` /
+   `[aria-*]` hooks (never an element selector — markdown elements get their
+   class from `MessageBody`'s component map), tokens only, `crew-*` keyframes
+   with a reduced-motion rest each. Load-bearing layout lives here rather than
+   in newly written Tailwind utilities, which can silently fail to generate
+   under `BIOROUTER_NO_HMR`.
+
+   What animates, and nothing else (ui-redesign-spec, "Motion"):
+   - a live arrival while following the bottom: `biorouter-tool-enter`, 160ms;
+   - the jump and history pills: opacity + 4px rise over `--dur-fast-max`;
+   - a running task's word: the tool-call text pulse;
+   - row hover, the gutter time and the row actions: `--dur-fast-min` fades;
+   - the re-verification dim: `--dur-fast`.
+   History pages, day dividers, the New line and status words do not move. */
+
+.crew-timeline {
+  /* The avatar column plus its gap: 32 + 12 = 44px, the gutter a continuation
+     row shows its time in. */
+  --crew-message-gutter: calc(var(--crew-avatar, 32px) + 12px);
+
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+/* Re-verification: the last verified view, dimmed and acting on nothing. */
+.crew-timeline[data-readonly='true'] {
+  opacity: 0.6;
+}
+
+.crew-timeline-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.crew-timeline-column {
+  padding-inline: 16px;
+}
+
+.crew-timeline-log {
+  display: flex;
+  flex-direction: column;
+  padding-block: 8px 24px;
+}
+
+/* ── Days ────────────────────────────────────────────────────────────────────
+   Each day is its own section, so its sticky pill rides only while the day is
+   on screen. The pill sits over the hairline and masks it with the canvas. */
+.crew-day {
+  position: relative;
+}
+
+.crew-day-rule {
+  height: 1px;
+  margin-top: 20px;
+  background-color: var(--border-subtle);
+}
+
+.crew-day-label {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  margin-top: -11px;
+  margin-bottom: 4px;
+  pointer-events: none;
+}
+
+.crew-day-pill {
+  padding: 2px 10px;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-canvas);
+  box-shadow: var(--inset-hairline);
+}
+
+/* ── The New line ────────────────────────────────────────────────────────── */
+.crew-new-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block: 12px 4px;
+}
+
+.crew-new-divider::before {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background-color: var(--accent-bar);
+}
+
+/* ── Message groups and rows ─────────────────────────────────────────────── */
+.crew-message-group {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.crew-message-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr);
+  margin-inline: -8px;
+  padding: 2px 8px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-message-row[data-head='true'] {
+  padding-top: 6px;
+}
+
+.crew-message-row:hover,
+.crew-message-row:focus-within {
+  background-color: var(--overlay-hover);
+}
+
+/* Focus is a fill, never a ring (D-15). A row is focused by the arrow keys. */
+.crew-message-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+}
+
+.crew-message-row[data-arriving='true'] {
+  animation: biorouter-tool-enter 160ms var(--ease-out) both;
+}
+
+.crew-message-gutter {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 2px;
+}
+
+.crew-message-gutter-time {
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-message-row:hover .crew-message-gutter-time,
+.crew-message-row:focus-within .crew-message-gutter-time {
+  opacity: 1;
+}
+
+.crew-message-main {
+  min-width: 0;
+}
+
+.crew-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.crew-message-author {
+  min-width: 0;
+}
+
+.crew-message-body {
+  overflow-wrap: anywhere;
+}
+
+/* The long-message fold: clipped to the chat's height, the cut faded by a
+   mask. A mask paints nothing — `black` here is alpha, not a colour — so the
+   fade is right on any ground, a hovered row included. */
+.crew-message-body[data-clamped='true'] {
+  max-height: var(--crew-clamp-height);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black calc(100% - 56px), transparent);
+}
+
+.crew-message-fold {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* ── Row actions ─────────────────────────────────────────────────────────────
+   A floating cluster on the popover surface at the row's top right, revealed
+   on hover and focus-within (and while its menu is open). Without a hover
+   pointer it sits in the flow, always shown. */
+.crew-row-actions {
+  position: absolute;
+  top: -12px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-message-row:hover > .crew-row-actions,
+.crew-message-row:focus-within > .crew-row-actions,
+.crew-row-actions[data-open='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .crew-row-actions {
+    position: static;
+    grid-column: 2;
+    justify-self: end;
+    background-color: transparent;
+    box-shadow: none;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ── An agent's folded tool updates ─────────────────────────────────────── */
+.crew-trace {
+  margin-inline-start: -8px;
+}
+
+.crew-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 4px 8px;
+  list-style: none;
+}
+
+.crew-trace-line {
+  overflow-wrap: anywhere;
+}
+
+/* ── Markdown ────────────────────────────────────────────────────────────── */
+.crew-md-p,
+.crew-md-heading,
+.crew-md-list,
+.crew-md-quote,
+.crew-md-code,
+.crew-md-table-scroll {
+  margin: 0 0 8px;
+}
+
+.crew-md-p:last-child,
+.crew-md-heading:last-child,
+.crew-md-list:last-child,
+.crew-md-quote:last-child,
+.crew-md-code:last-child,
+.crew-md-table-scroll:last-child {
+  margin-bottom: 0;
+}
+
+.crew-md-heading {
+  font-weight: 600;
+}
+
+.crew-md-link {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-accent) 40%, transparent);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--dur-fast) var(--ease-out);
+}
+
+.crew-md-link:hover {
+  text-decoration-color: var(--text-accent);
+}
+
+.crew-md-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.crew-md-image-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.crew-md-code-inline {
+  padding: 1px 4px;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-medium);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  overflow-wrap: anywhere;
+}
+
+/* A fenced block sits in the well, never on `--background-code`, which in
+   dark mode is the page itself. */
+.crew-md-code {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-well);
+}
+
+.crew-md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 2px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.crew-md-code-lang {
+  font-family: var(--font-mono);
+}
+
+.crew-md-code-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.crew-md-code-body:focus-visible,
+.crew-md-table-scroll:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+.crew-md-list {
+  padding-left: 1.5em;
+  list-style: disc outside;
+}
+
+.crew-md-list[data-ordered='true'] {
+  list-style-type: decimal;
+}
+
+.crew-md-list[data-tasks='true'] {
+  padding-left: 0.25em;
+  list-style: none;
+}
+
+.crew-md-list .crew-md-list {
+  margin: 2px 0;
+}
+
+.crew-md-item {
+  margin: 2px 0;
+}
+
+.crew-md-task-box {
+  margin-inline-end: 6px;
+  vertical-align: middle;
+}
+
+.crew-md-quote {
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.crew-md-rule {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.crew-md-table {
+  border-collapse: collapse;
+  font-size: var(--text-secondary);
+}
+
+.crew-md-cell {
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.crew-md-cell[data-head='true'] {
+  font-weight: 600;
+  background-color: var(--background-muted);
+}
+
+/* ── The viewer's task rows ──────────────────────────────────────────────── */
+.crew-task-row {
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr) auto;
+  align-items: center;
+  margin: 8px -8px 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-element);
+}
+
+.crew-task-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+}
+
+.crew-task-main {
+  min-width: 0;
+}
+
+.crew-task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-task-badge {
+  vertical-align: middle;
+}
+
+.crew-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+/* The running word pulses gently, like a running tool call (design.md §4.19). */
+.crew-task-running {
+  animation: crew-task-pulse 2.4s var(--ease-out) infinite;
+}
+
+@keyframes crew-task-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* ── The channel's start ─────────────────────────────────────────────────── */
+.crew-channel-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding-block: 24px 8px;
+}
+
+.crew-channel-intro-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+
+.crew-channel-intro-action {
+  margin-top: 8px;
+}
+
+.crew-history-sentinel {
+  display: flex;
+  justify-content: center;
+  padding-block: 8px;
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.crew-timeline-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 24px;
+}
+
+.crew-skeleton-row {
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr);
+}
+
+.crew-skeleton-avatar {
+  width: var(--crew-avatar, 32px);
+  height: var(--crew-avatar, 32px);
+  border-radius: var(--radius-full);
+}
+
+.crew-skeleton-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.crew-skeleton-name-short,
+.crew-skeleton-name-long,
+.crew-skeleton-line-long,
+.crew-skeleton-line-mid,
+.crew-skeleton-line-short {
+  height: 12px;
+}
+
+.crew-skeleton-name-short {
+  width: 96px;
+}
+
+.crew-skeleton-name-long {
+  width: 144px;
+}
+
+.crew-skeleton-line-long {
+  width: 80%;
+}
+
+.crew-skeleton-line-mid {
+  width: 60%;
+}
+
+.crew-skeleton-line-short {
+  width: 36%;
+}
+
+/* ── The pill above the composer ─────────────────────────────────────────── */
+.crew-timeline-pill-slot {
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.crew-jump-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: var(--radius-container);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  pointer-events: auto;
+  animation: crew-pill-enter var(--dur-fast-max) var(--ease-out);
+}
+
+.crew-jump-pill-text {
+  padding-inline-start: 10px;
+}
+
+@keyframes crew-pill-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Reduced motion: every animated rule's rest ──────────────────────────────
+   An arrival appears in place, the running word holds still, the pills keep
+   only their fade, and fades and the dim are instant. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-timeline,
+  .crew-message-row,
+  .crew-message-gutter-time,
+  .crew-row-actions,
+  .crew-md-link {
+    transition: none;
+  }
+
+  .crew-message-row[data-arriving='true'] {
+    animation: none;
+  }
+
+  .crew-task-running {
+    animation: none;
+  }
+
+  .crew-jump-pill {
+    animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+  }
+}
