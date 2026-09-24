@@ -512,7 +512,7 @@ fn invite(broker: &mut Broker, s: &mut State, actor: &Actor, req: &Request) -> R
     });
     let created_at = now();
     let join = PendingJoin {
-        join_id: digest(token().as_bytes())[..32].to_owned(),
+        join_id: hex::encode(&Sha256::digest(token().as_bytes())[..16]),
         uid: account.uid,
         username: account.name.clone(),
         full_name,

@@ -41,7 +41,7 @@
 mod support;
 
 use biorouter_crew::PendingJoin;
-use serde_json::{json, Value};
+use serde_json::json;
 use support::*;
 
 /// A journal with a pending join added and then removed replays on a broker built without
@@ -91,6 +91,7 @@ mod join {
         Directory, Mode, Request, Response,
     };
     use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1051,5 +1052,751 @@ mod join {
         ok(invite(&mut ws, "user7"));
         ok(ws.host_call("enrollment.cancel", json!({"username": "user3"})));
         ok(invite(&mut ws, "user100"));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // What never leaves the broker, and what the journal holds
+    // -----------------------------------------------------------------------------------------
+
+    /// Panics if `value` carries a code-shaped field, or any spelling of `codes`, or any of
+    /// `secrets`, anywhere.
+    fn assert_no_code(label: &str, value: &Value, codes: &[String], secrets: &[&str]) {
+        fn walk(label: &str, value: &Value, path: &str) {
+            match value {
+                Value::Object(map) => {
+                    for (key, child) in map {
+                        let lower = key.to_ascii_lowercase();
+                        assert!(
+                            !(lower.contains("code") || lower == "public_key"),
+                            "{label}: field {path}.{key} must not exist"
+                        );
+                        walk(label, child, &format!("{path}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        walk(label, child, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(label, value, "");
+        let text = value.to_string();
+        for code in codes {
+            for spelling in spellings(code) {
+                assert!(
+                    !text.contains(&spelling),
+                    "{label} carries a device code: {text}"
+                );
+            }
+        }
+        for secret in secrets {
+            assert!(!text.contains(secret), "{label} carries {secret}: {text}");
+        }
+    }
+
+    #[test]
+    fn no_response_carries_a_code() {
+        let mut ws = Workspace::new("join-schema-guard");
+        let (mut bob, join_id) = invited_bob(&mut ws, 21);
+        let attacker = key(66);
+        let attacker_code = device_code(
+            &ws.broker.workspace().id,
+            &workspace_key(&ws),
+            &attacker.verifying_key().to_bytes(),
+        );
+        let codes = [bob.code(), attacker_code];
+        let mut results = vec![("status", bob.status(&mut ws.broker))];
+        let mut attacker_link = Connection::new();
+        let (refusal, message) = refused(claim_on(
+            &mut ws,
+            BOB,
+            &mut attacker_link,
+            &attacker,
+            &join_id,
+        ));
+        assert_eq!(refusal, "code_mismatch");
+        results.push(("attacker refusal", json!({ "message": message })));
+        results.push(("approve", ok(approve(&mut ws, "bob", &bob.code()))));
+        results.push(("approve again", ok(approve(&mut ws, "bob", &bob.code()))));
+        results.push(("status approved", bob.status(&mut ws.broker)));
+        results.push(("host snapshot", ws.host_snapshot()));
+        results.push(("join", ok(bob.claim(&mut ws.broker, &join_id))));
+        results.push(("member snapshot", ws.snapshot(&mut bob.member)));
+        ws.directory.set(CAROL, "carol", None);
+        results.push(("invite", ok(invite(&mut ws, "carol"))));
+        results.push(("host snapshot 2", ws.host_snapshot()));
+        results.push((
+            "cancel",
+            ok(ws.host_call("enrollment.cancel", json!({"username": "carol"}))),
+        ));
+        for (label, result) in &results {
+            // Only the joiner's own `enrollment.pending` names its join ID; nothing names a
+            // code or the attacker's key.
+            let join_secret: &[&str] = if label.starts_with("status") {
+                &[]
+            } else {
+                &[&join_id]
+            };
+            assert_no_code(label, result, &codes, join_secret);
+            assert_no_code(label, result, &[], &[&key_hex(&attacker)]);
+        }
+        // The joiner's own key is echoed nowhere either, except as the device ID it becomes.
+        for (label, result) in &results {
+            assert_no_code(label, result, &[], &[&key_hex(&bob.member.key)]);
+        }
+    }
+
+    #[test]
+    fn the_host_projection_never_carries_a_code_key_uid_or_join_id() {
+        let mut ws = Workspace::new("join-projection");
+        let (bob, join_id) = invited_bob(&mut ws, 21);
+        ok(approve(&mut ws, "bob", &bob.code()));
+        let joins = host_joins(&mut ws);
+        assert_eq!(joins.len(), 1);
+        let keys: Vec<&String> = joins[0].as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "add_device",
+                "approved",
+                "created_at",
+                "expired",
+                "expires_at",
+                "full_name",
+                "mismatched_attempts",
+                "username"
+            ]
+        );
+        assert_eq!(joins[0]["username"], "bob");
+        assert_eq!(joins[0]["full_name"], "Bob Lee");
+        assert!(!joins[0].to_string().contains(&BOB.to_string()));
+        assert!(!joins[0].to_string().contains(&join_id));
+        // Only the host sees pending joins.
+        let mut carol = ws.enroll(CAROL, "carol", 42);
+        assert!(ws.snapshot(&mut carol).get("pending_joins").is_none());
+    }
+
+    #[test]
+    fn a_full_name_that_reads_as_another_username_is_not_offered() {
+        let mut ws = Workspace::new("join-full-name");
+        ws.directory.set(BOB, "bob", Some("alice"));
+        let invited = ok(invite(&mut ws, "bob"));
+        assert_eq!(invited["full_name"], Value::Null);
+        ws.directory.set(CAROL, "carol", Some("Carol \u{202e}Evil"));
+        assert_eq!(ok(invite(&mut ws, "carol"))["full_name"], Value::Null);
+        ws.directory.set(DAVE, "dave", Some("  Dave   Ng "));
+        assert_eq!(ok(invite(&mut ws, "dave"))["full_name"], "Dave Ng");
+    }
+
+    #[test]
+    fn the_dedupe_cache_for_the_new_methods_holds_no_code_key_uid_or_join_id() {
+        let mut ws = Workspace::new("join-dedupe");
+        let (mut bob, join_id) = invited_bob(&mut ws, 21);
+        ok(approve(&mut ws, "bob", &bob.code()));
+        ok(bob.claim(&mut ws.broker, &join_id));
+        ws.directory.set(CAROL, "carol", None);
+        ok(invite(&mut ws, "carol"));
+        ok(ws.host_call("enrollment.cancel", json!({"username": "carol"})));
+        let mut cached = 0;
+        for record in records(&ws) {
+            for patch in record["patches"].as_array().unwrap() {
+                if patch["path"][0] != "dedupe" {
+                    continue;
+                }
+                cached += 1;
+                let value = &patch["value"];
+                assert_no_code(
+                    "dedupe",
+                    value,
+                    &[bob.code()],
+                    &[&join_id, &key_hex(&bob.member.key), "\"uid\""],
+                );
+            }
+        }
+        assert!(
+            cached >= 4,
+            "invite, approve, invite and cancel were cached"
+        );
+    }
+
+    #[test]
+    fn a_join_is_journaled_as_one_top_level_set_and_removed_as_one_remove() {
+        let mut ws = Workspace::new("join-journal-shape");
+        let before = records(&ws).len();
+        ws.directory.set(BOB, "bob", None);
+        ok(invite(&mut ws, "bob"));
+        ok(ws.host_call("enrollment.cancel", json!({"username": "bob"})));
+        let written = records(&ws);
+        assert_eq!(written.len(), before + 2);
+        let touching = |record: &Value| -> Vec<Value> {
+            record["patches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|patch| patch["path"][0] == "pending_joins")
+                .cloned()
+                .collect()
+        };
+        let added = touching(&written[before]);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0]["op"], "set");
+        assert_eq!(added[0]["path"], json!(["pending_joins"]));
+        let join: PendingJoin =
+            serde_json::from_value(added[0]["value"][BOB.to_string()].clone()).unwrap();
+        assert_eq!(join.username, "bob");
+        let removed = touching(&written[before + 1]);
+        assert_eq!(
+            removed,
+            [json!({"op": "remove", "path": ["pending_joins"]})]
+        );
+        // What is left replays, and the state it rebuilds has no `pending_joins` key at all,
+        // exactly as the downgrade test (compiled with and without the feature) simulates.
+        let mut ws = ws.reopen();
+        ws.host_team("Lab");
+        let last = records(&ws).pop().unwrap();
+        assert!(!last.to_string().contains("pending_joins"));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The hostile-bridge harness (SR1)
+    // -----------------------------------------------------------------------------------------
+
+    /// The process M2 of the security analysis: it runs as **Bob's** UID in Bob's bridge path,
+    /// so every frame between Bob's desktop and the broker passes through it and it may drop,
+    /// reorder, substitute or replay any of them, inject its own frames on Bob's connection, and
+    /// open connections of its own. The broker sees Bob's kernel UID on all of them. It holds
+    /// its own device key, and never Bob's private key.
+    mod hostile_bridge {
+        use super::*;
+        use sha2::{Digest, Sha256};
+
+        /// M2's state: its own key and a connection it opened itself.
+        struct Relay {
+            key: SigningKey,
+            own: Connection,
+        }
+
+        impl Relay {
+            fn new(seed: u8) -> Self {
+                Self {
+                    key: key(seed),
+                    own: Connection::new(),
+                }
+            }
+            /// A claim with M2's own key on its own connection.
+            fn claim(&mut self, ws: &mut Workspace, join_id: &str) -> Response {
+                claim_on(ws, BOB, &mut self.own, &self.key, join_id)
+            }
+            /// A claim with M2's own key, injected on Bob's bridge connection.
+            fn claim_on_bobs_link(
+                &self,
+                ws: &mut Workspace,
+                bob: &mut Desktop,
+                join_id: &str,
+            ) -> Response {
+                claim_on(ws, BOB, &mut bob.member.connection, &self.key, join_id)
+            }
+        }
+
+        /// Bob's desktop asks for a challenge; the relay forwards it. Returns the nonce Bob sees.
+        fn bob_challenge(ws: &mut Workspace, bob: &mut Desktop) -> String {
+            let key = bob.member.key.clone();
+            challenge(&mut ws.broker, BOB, &mut bob.member.connection, &key)
+        }
+
+        /// The `auth.join` frame Bob's desktop signs over `nonce`; the relay decides its fate.
+        fn bob_join_frame(ws: &Workspace, bob: &Desktop, nonce: &str, join_id: &str) -> Request {
+            let params = json!({"public_key": key_hex(&bob.member.key), "join_id": join_id});
+            signed_frame(ws, BOB, &bob.member.key, nonce, "auth.join", params)
+        }
+
+        /// Forward `frame` on Bob's bridge connection.
+        fn forward(ws: &mut Workspace, bob: &mut Desktop, frame: Request) -> Response {
+            ws.broker.handle(BOB, &mut bob.member.connection, frame)
+        }
+
+        /// The keys bound to principals other than the host's, by device ID.
+        fn joined_devices(ws: &Workspace) -> Vec<String> {
+            let host_device = device_id(&ws.host.key);
+            records(ws)
+                .iter()
+                .flat_map(|record| record["patches"].as_array().unwrap().clone())
+                .filter(|patch| patch["path"][0] == "devices" && patch["op"] == "set")
+                .filter_map(|patch| patch["path"][1].as_str().map(str::to_owned))
+                .filter(|device| *device != host_device)
+                .collect()
+        }
+
+        /// The one invariant every scenario ends on: M2's key was never bound, and every bound
+        /// key is Bob's.
+        fn only_bob_bound(ws: &mut Workspace, relay: &Relay, bob: &Desktop, joined: bool) {
+            assert!(
+                !is_device(ws, BOB, &relay.key),
+                "the attacker's key is bound"
+            );
+            let expected: Vec<String> = if joined {
+                vec![device_id(&bob.member.key)]
+            } else {
+                vec![]
+            };
+            assert_eq!(joined_devices(ws), expected);
+            let joins = records(ws)
+                .iter()
+                .filter(|record| record["operation"] == "auth.join")
+                .count();
+            assert_eq!(joins, usize::from(joined));
+        }
+
+        #[test]
+        fn the_attacker_claims_first_and_the_host_is_warned_before_approving() {
+            let mut ws = Workspace::new("hostile-attacker-first");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let mut relay = Relay::new(66);
+            let (code, _) = refused(relay.claim(&mut ws, &join_id));
+            assert_eq!(code, "code_mismatch");
+            let (code, _) = refused(relay.claim_on_bobs_link(&mut ws, &mut bob, &join_id));
+            assert_eq!(code, "code_mismatch");
+            // The warning is there before the host has typed anything.
+            let joins = host_joins(&mut ws);
+            assert_eq!(joins[0]["approved"], false);
+            assert_eq!(joins[0]["mismatched_attempts"], 2);
+            // The host approves the code Bob's own screen shows.
+            ok(approve(&mut ws, "bob", &bob.code()));
+            assert!(bob.status(&mut ws.broker).get("last_refusal").is_none());
+            for _ in 0..3 {
+                let (code, _) = refused(relay.claim(&mut ws, &join_id));
+                assert_eq!(code, "code_mismatch");
+            }
+            assert_eq!(bob.status(&mut ws.broker)["last_refusal"], "code_mismatch");
+            assert_eq!(host_joins(&mut ws)[0]["mismatched_attempts"], 5);
+            // Bob's desktop still claims once approved, whatever `last_refusal` says, and the
+            // relay forwarding his frames is enough.
+            let nonce = bob_challenge(&mut ws, &mut bob);
+            let frame = bob_join_frame(&ws, &bob, &nonce, &join_id);
+            ok(forward(&mut ws, &mut bob, frame));
+            only_bob_bound(&mut ws, &relay, &bob, true);
+        }
+
+        #[test]
+        fn bob_claims_first_and_the_attacker_gets_nothing() {
+            let mut ws = Workspace::new("hostile-bob-first");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let mut relay = Relay::new(66);
+            ok(approve(&mut ws, "bob", &bob.code()));
+            // M2 takes a challenge first, but Bob's frame lands first.
+            let attacker_nonce = challenge(&mut ws.broker, BOB, &mut relay.own, &relay.key);
+            let nonce = bob_challenge(&mut ws, &mut bob);
+            let frame = bob_join_frame(&ws, &bob, &nonce, &join_id);
+            ok(forward(&mut ws, &mut bob, frame));
+            let params = json!({"public_key": key_hex(&relay.key), "join_id": join_id});
+            let late = signed_frame(&ws, BOB, &relay.key, &attacker_nonce, "auth.join", params);
+            let (code, _) = refused(ws.broker.handle(BOB, &mut relay.own, late));
+            assert_eq!(code, "not_invited");
+            let (code, _) = refused(relay.claim_on_bobs_link(&mut ws, &mut bob, &join_id));
+            assert_eq!(code, "not_invited");
+            only_bob_bound(&mut ws, &relay, &bob, true);
+        }
+
+        #[test]
+        fn blocking_bob_only_delays_him() {
+            let mut ws = Workspace::new("hostile-bob-blocked");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let mut relay = Relay::new(66);
+            ok(approve(&mut ws, "bob", &bob.code()));
+            // Every frame of Bob's is dropped; the attacker keeps trying its own key.
+            for _ in 0..10 {
+                let nonce = bob_challenge(&mut ws, &mut bob);
+                let _dropped = bob_join_frame(&ws, &bob, &nonce, &join_id);
+                let (code, _) = refused(relay.claim(&mut ws, &join_id));
+                assert_eq!(code, "code_mismatch");
+            }
+            let joins = host_joins(&mut ws);
+            assert_eq!(joins[0]["approved"], true);
+            assert_eq!(joins[0]["mismatched_attempts"], 10);
+            only_bob_bound(&mut ws, &relay, &bob, false);
+            // The join lapses; nothing was gained.
+            let mut ws = expire_bob(ws);
+            let (code, _) = refused(relay.claim(&mut ws, &join_id));
+            assert_eq!(code, "join_expired");
+            ws.host_team("Lab");
+            assert!(host_joins(&mut ws).is_empty());
+            only_bob_bound(&mut ws, &relay, &bob, false);
+        }
+
+        #[test]
+        fn replayed_reordered_and_substituted_frames_never_bind_the_attacker() {
+            let mut ws = Workspace::new("hostile-replay");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let mut relay = Relay::new(66);
+            ok(approve(&mut ws, "bob", &bob.code()));
+            let nonce = bob_challenge(&mut ws, &mut bob);
+            let captured = bob_join_frame(&ws, &bob, &nonce, &join_id);
+
+            // Replayed on M2's own connection: the nonce lives on Bob's.
+            let (code, _) = refused(ws.broker.handle(BOB, &mut relay.own, captured.clone()));
+            assert_eq!(code, "unauthorized");
+            // M2 signs its own claim over Bob's nonce: the challenge names Bob's device.
+            let params = json!({"public_key": key_hex(&relay.key), "join_id": join_id});
+            let stolen = signed_frame(&ws, BOB, &relay.key, &nonce, "auth.join", params);
+            let (code, _) = refused(forward(&mut ws, &mut bob, stolen));
+            assert_eq!(code, "unauthorized");
+            // Bob's signed frame with M2's key substituted fails the signature.
+            let nonce = bob_challenge(&mut ws, &mut bob);
+            let mut substituted = bob_join_frame(&ws, &bob, &nonce, &join_id);
+            substituted.params["public_key"] = json!(key_hex(&relay.key));
+            let (code, _) = refused(forward(&mut ws, &mut bob, substituted.clone()));
+            assert_eq!(code, "unauthorized");
+            // ... and with M2's device ID swapped in as well.
+            substituted.auth.as_mut().unwrap().device_id = device_id(&relay.key);
+            let (code, _) = refused(forward(&mut ws, &mut bob, substituted));
+            assert_eq!(code, "unauthorized");
+            // A tampered join ID is refused before the signature is even checked.
+            let nonce = bob_challenge(&mut ws, &mut bob);
+            let mut retargeted = bob_join_frame(&ws, &bob, &nonce, &join_id);
+            retargeted.params["join_id"] = json!("0".repeat(32));
+            let (code, _) = refused(forward(&mut ws, &mut bob, retargeted));
+            assert_eq!(code, "join_changed");
+            only_bob_bound(&mut ws, &relay, &bob, false);
+
+            // Reordered: Bob's genuine frame, held back and forwarded late, still binds Bob.
+            let frame = bob_join_frame(&ws, &bob, &nonce, &join_id);
+            ok(forward(&mut ws, &mut bob, frame.clone()));
+            // Replaying it afterwards changes nothing.
+            let (code, _) = refused(forward(&mut ws, &mut bob, frame));
+            assert_eq!(code, "not_invited");
+            let (code, _) = refused(forward(&mut ws, &mut bob, captured));
+            assert_eq!(code, "not_invited");
+            only_bob_bound(&mut ws, &relay, &bob, true);
+        }
+
+        #[test]
+        fn a_tampered_status_cannot_change_the_code_bob_shows() {
+            let mut ws = Workspace::new("hostile-status");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let relay = Relay::new(66);
+            let shown = bob.code();
+            // M2 rewrites every status Bob's desktop reads: approved, another join, a "code".
+            let mut forged = bob.status(&mut ws.broker);
+            forged["approved"] = json!(true);
+            forged["join_id"] = json!("f".repeat(32));
+            forged["code"] = json!(format_device_code(&device_code(
+                &ws.broker.workspace().id,
+                &workspace_key(&ws),
+                &relay.key.verifying_key().to_bytes(),
+            )));
+            assert_eq!(
+                bob.code(),
+                shown,
+                "the code comes from Bob's key and pin alone"
+            );
+            // Acting on the forged status gets Bob nowhere, and gets M2 nothing.
+            let forged_join = forged["join_id"].as_str().unwrap().to_owned();
+            let (code, _) = refused(bob.claim(&mut ws.broker, &forged_join));
+            assert_eq!(code, "join_changed");
+            // Once the host approves what Bob's screen shows, Bob joins.
+            ok(approve(&mut ws, "bob", &shown));
+            ok(bob.claim(&mut ws.broker, &join_id));
+            only_bob_bound(&mut ws, &relay, &bob, true);
+        }
+
+        /// The 80 bits a device code encodes, from its 16 Crockford characters.
+        fn code_bits(code: &str) -> [u8; 10] {
+            const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+            let value = code.bytes().fold(0u128, |acc, c| {
+                let digit = ALPHABET
+                    .iter()
+                    .position(|a| *a == c)
+                    .expect("a code character");
+                (acc << 5) | digit as u128
+            });
+            value.to_be_bytes()[6..].try_into().unwrap()
+        }
+
+        /// The device-code hash with its fixed prefix (domain, workspace ID, `W`) absorbed once,
+        /// so each candidate key costs one clone and one short update. An independent restatement
+        /// of the design's formula, checked against the library's below.
+        struct Grinder(Sha256);
+
+        impl Grinder {
+            fn new(workspace_id: &str, workspace_key: &[u8; 32]) -> Self {
+                let mut hasher = Sha256::new();
+                hasher.update(b"biorouter-crew-device-code-v1\0");
+                hasher.update(workspace_id.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(workspace_key);
+                Self(hasher)
+            }
+            fn bits(&self, device_key: &[u8; 32]) -> [u8; 10] {
+                let mut hasher = self.0.clone();
+                hasher.update(device_key);
+                hasher.finalize()[..10].try_into().unwrap()
+            }
+        }
+
+        /// How many grinding candidates the offline search tries.
+        const GRIND: u64 = 1_000_000;
+
+        #[test]
+        fn grinding_a_million_keys_finds_no_key_with_bobs_code() {
+            let mut ws = Workspace::new("hostile-grind");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let workspace_id = ws.broker.workspace().id.clone();
+            let grinder = Grinder::new(&workspace_id, &workspace_key(&ws));
+            for seed in [21u8, 66, 99, 200] {
+                let sample = key(seed).verifying_key().to_bytes();
+                let code = device_code(&workspace_id, &workspace_key(&ws), &sample);
+                assert_eq!(
+                    grinder.bits(&sample),
+                    code_bits(&code),
+                    "the formula agrees"
+                );
+            }
+            let target = code_bits(&bob.code());
+            ok(approve(&mut ws, "bob", &bob.code()));
+
+            // Offline: M2 knows W and the workspace ID, and may even learn Bob's key from the
+            // frames it relays. It needs a key of its own whose code equals Bob's. Raw 32-byte
+            // values are a superset of the keys it could sign with.
+            let number = |bits: &[u8; 10]| {
+                bits.iter()
+                    .fold(0u128, |acc, byte| (acc << 8) | u128::from(*byte))
+            };
+            let goal = number(&target);
+            let mut candidate = [0x5au8; 32];
+            let mut best = 0u32;
+            for i in 0..GRIND {
+                candidate[..8].copy_from_slice(&i.to_le_bytes());
+                let bits = grinder.bits(&candidate);
+                assert_ne!(bits, target, "candidate {i} collides with Bob's code");
+                best = best.max((number(&bits) ^ goal).leading_zeros() - 48);
+            }
+            eprintln!("closest of {GRIND} candidates shares {best} of 80 leading bits");
+            assert!(best < 80);
+
+            // Online: every key M2 can actually sign with is refused, and counted for the host.
+            let mut relay = Relay::new(66);
+            for seed in 100u8..164 {
+                relay.key = key(seed);
+                let (code, _) = refused(relay.claim(&mut ws, &join_id));
+                assert_eq!(code, "code_mismatch");
+            }
+            assert_eq!(host_joins(&mut ws)[0]["mismatched_attempts"], 64);
+            ok(bob.claim(&mut ws.broker, &join_id));
+            relay.key = key(66);
+            only_bob_bound(&mut ws, &relay, &bob, true);
+        }
+
+        #[test]
+        fn a_tampered_invitation_admits_no_one() {
+            let mut ws = Workspace::new("hostile-invitation");
+            let (mut bob, join_id) = invited_bob(&mut ws, 21);
+            let mut relay = Relay::new(66);
+            // M2 swapped the workspace key in the invitation Bob pasted for one it controls.
+            let forged_key = key(99).verifying_key().to_bytes();
+            let tampered_code = device_code(
+                &ws.broker.workspace().id,
+                &forged_key,
+                &bob.member.key.verifying_key().to_bytes(),
+            );
+            assert_ne!(tampered_code, bob.code());
+            ok(approve(&mut ws, "bob", &tampered_code));
+            let (code, _) = refused(bob.claim(&mut ws.broker, &join_id));
+            assert_eq!(code, "code_mismatch");
+            let (code, _) = refused(relay.claim(&mut ws, &join_id));
+            assert_eq!(code, "code_mismatch");
+            only_bob_bound(&mut ws, &relay, &bob, false);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Linux: `hello` and a real broker over its socket
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(all(target_os = "linux", feature = "join-by-name"))]
+mod linux {
+    use super::join::*;
+    use super::*;
+    use biorouter_crew::{device_code, invitation, Connection, Request, Response};
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn hello_signs_the_workspace_key_the_join_code_is_computed_over() {
+        let mut ws = Workspace::new("join-hello");
+        let hello = ok(ws.broker.handle(
+            BOB,
+            &mut Connection::new(),
+            request("hello", "hello", json!({"challenge_nonce": "n"})),
+        ));
+        assert_eq!(
+            hello["workspace_public_key"],
+            hex::encode(workspace_key(&ws)).as_str()
+        );
+        assert!(hello["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("join_by_name_v1")));
+    }
+
+    fn crew(args: &[&str]) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// Stops the broker the test started, whatever happens to the test.
+    struct Running(PathBuf, PathBuf);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = crew(&["stop", "--state-dir", self.0.to_str().unwrap()]);
+            let _ = std::fs::remove_file(&self.1);
+            if let Some(directory) = self.1.parent() {
+                let _ = std::fs::remove_dir(directory);
+            }
+        }
+    }
+
+    /// One connection to the broker's socket; the kernel reports this process's UID on it.
+    struct Link(UnixStream, BufReader<UnixStream>);
+
+    impl Link {
+        fn open(socket: &Path) -> Self {
+            let stream = UnixStream::connect(socket).unwrap();
+            let reader = BufReader::new(stream.try_clone().unwrap());
+            Self(stream, reader)
+        }
+        fn call(&mut self, request: &Request) -> Response {
+            let mut bytes = serde_json::to_vec(request).unwrap();
+            bytes.push(b'\n');
+            self.0.write_all(&bytes).unwrap();
+            let mut line = String::new();
+            self.1.read_line(&mut line).unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        /// Challenge, sign and send `method(params)` with `signer`.
+        fn signed(
+            &mut self,
+            workspace_id: &str,
+            signer: &ed25519_dalek::SigningKey,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            use ed25519_dalek::Signer;
+            let challenge = self.call(&request(
+                "challenge",
+                "auth.challenge",
+                json!({"device_id": device_id(signer)}),
+            ));
+            let nonce = ok(challenge)["nonce"].as_str().unwrap().to_owned();
+            let payload =
+                biorouter_crew::signing_payload(workspace_id, host_uid(), &nonce, method, &params);
+            let mut frame = request("signed", method, params);
+            frame.auth = Some(biorouter_crew::DeviceAuth {
+                device_id: device_id(signer),
+                nonce,
+                signature: hex::encode(signer.sign(&payload).to_bytes()),
+            });
+            self.call(&frame)
+        }
+    }
+
+    /// A real broker, a real socket and real NSS: the host adds a second computer by invitation
+    /// and device code while an in-path process of the same UID, with its own key, is refused.
+    #[test]
+    fn a_real_broker_adds_a_device_by_code_and_refuses_the_in_path_key() {
+        if host_uid() == 0 || !Path::new("/etc/machine-id").exists() {
+            eprintln!("skipped: a real broker needs an ordinary user and /etc/machine-id");
+            return;
+        }
+        let state = TempRoot::new("join-real");
+        let host_key = key(7);
+        let output = crew(&[
+            "start",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--bootstrap-key",
+            &key_hex(&host_key),
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let started: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let line = started["invitation"]
+            .as_str()
+            .expect("start prints the invitation");
+        let pinned = invitation::parse(line).unwrap().invitation;
+        let socket = PathBuf::from(&pinned.socket_path);
+        let _running = Running(state.path().to_path_buf(), socket.clone());
+        let workspace_id = pinned.workspace_id.clone();
+        let workspace_key: [u8; 32] = hex::decode(&pinned.workspace_public_key)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let mut host = Link::open(&socket);
+        let bootstrap = host.signed(
+            &workspace_id,
+            &host_key,
+            "auth.bootstrap",
+            json!({"public_key": key_hex(&host_key)}),
+        );
+        let username = ok(bootstrap)["principal"]["username"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let invited = ok(host.signed(
+            &workspace_id,
+            &host_key,
+            "enrollment.invite",
+            json!({"username": format!("@{username}"), "add_device": true, "idempotency_key": "i1"}),
+        ));
+        assert_eq!(invited["username"], username.as_str());
+
+        let laptop = key(21);
+        let mut joiner = Link::open(&socket);
+        let status = ok(joiner.call(&request("p", "enrollment.pending", json!({}))));
+        assert_eq!(status["invited"], true);
+        assert_eq!(status["add_device"], true);
+        let join_id = status["join_id"].as_str().unwrap().to_owned();
+        let code = device_code(
+            &workspace_id,
+            &workspace_key,
+            &laptop.verifying_key().to_bytes(),
+        );
+
+        let intruder = key(66);
+        let mut in_path = Link::open(&socket);
+        let claim = |signer: &ed25519_dalek::SigningKey| json!({"public_key": key_hex(signer), "join_id": join_id});
+        let (refusal, _) =
+            refused(in_path.signed(&workspace_id, &intruder, "auth.join", claim(&intruder)));
+        assert_eq!(refusal, "code_mismatch");
+        let snapshot = ok(host.signed(&workspace_id, &host_key, "workspace.snapshot", json!({})));
+        assert_eq!(snapshot["pending_joins"][0]["mismatched_attempts"], 1);
+        ok(host.signed(
+            &workspace_id,
+            &host_key,
+            "enrollment.approve",
+            json!({"username": username, "code": code, "idempotency_key": "a1"}),
+        ));
+        let joined = ok(joiner.signed(&workspace_id, &laptop, "auth.join", claim(&laptop)));
+        assert_eq!(joined["principal"]["username"], username.as_str());
+
+        let (refusal, _) =
+            refused(in_path.signed(&workspace_id, &intruder, "auth.join", claim(&intruder)));
+        assert_eq!(refusal, "not_invited");
+        let (refusal, _) =
+            refused(in_path.signed(&workspace_id, &intruder, "workspace.snapshot", json!({})));
+        assert_eq!(refusal, "unauthorized");
+        let view = ok(joiner.signed(&workspace_id, &laptop, "workspace.snapshot", json!({})));
+        assert_eq!(view["actor"]["devices"].as_array().unwrap().len(), 2);
     }
 }
