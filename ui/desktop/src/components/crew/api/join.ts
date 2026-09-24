@@ -8,6 +8,11 @@ import { isRecord, nullableNumber, nullableText, optionalText } from './parse';
 
 /** Connection settings a joiner may change before saving. Everything else comes from the invitation. */
 export interface CrewInvitationAdvanced {
+  /**
+   * An SSH alias from the joiner's own SSH config, used instead of `{username}@{ssh_host}`. The
+   * workspace pins stay exactly as the invitation says; only how SSH reaches the server changes.
+   */
+  ssh_target?: string;
   name?: string;
   port?: number;
   identity_file?: string;
@@ -45,6 +50,13 @@ export interface CrewInvitationPreview {
   proxy_jump: string | null;
   /** The username the host invited, used to prefill "Your username on {server}". */
   invitee_username: string | null;
+  /**
+   * The broker socket and the host's numeric UID the invitation pins. Machine fields: never shown.
+   * The Host flow saves them with its prepared identity (`POST /crew/connections`), because a host
+   * pastes `biorouter-crew`'s own output, which cannot name the SSH host.
+   */
+  socket_path: string | null;
+  owner_uid: number | null;
 }
 
 /** The message a host sends a joiner, and the `brcrew1:` line inside it. */
@@ -145,6 +157,7 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
   const workspaceId = optionalText(body.workspace_id);
   if (!workspaceId) return null;
   const port = nullableNumber(body.ssh_port);
+  const ownerUid = nullableNumber(body.owner_uid);
   return {
     workspace_id: workspaceId,
     workspace_name: orNull(nullableText(body.workspace_name)),
@@ -158,6 +171,11 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
     ssh_port: typeof port === 'number' && Number.isSafeInteger(port) && port > 0 ? port : null,
     proxy_jump: orNull(nullableText(body.proxy_jump)),
     invitee_username: orNull(nullableText(body.invitee_username)),
+    socket_path: orNull(nullableText(body.socket_path)),
+    owner_uid:
+      typeof ownerUid === 'number' && Number.isSafeInteger(ownerUid) && ownerUid >= 0
+        ? ownerUid
+        : null,
   };
 }
 

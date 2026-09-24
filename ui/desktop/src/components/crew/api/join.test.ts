@@ -95,6 +95,8 @@ describe('previewInvitation', () => {
       ssh_port: 22,
       proxy_jump: null,
       invitee_username: 'bob',
+      socket_path: '/tmp/crew-1000-abc/broker.sock',
+      owner_uid: 1000,
     };
     mocks.crewHttp.mockResolvedValueOnce(summary);
     await expect(previewInvitation(LINE)).resolves.toEqual(expected);
@@ -126,6 +128,8 @@ describe('previewInvitation', () => {
       ssh_port: null,
       proxy_jump: null,
       invitee_username: null,
+      socket_path: null,
+      owner_uid: null,
     });
   });
 
