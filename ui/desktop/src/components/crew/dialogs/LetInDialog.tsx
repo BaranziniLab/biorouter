@@ -45,7 +45,9 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const [approved, setApproved] = React.useState(false);
   const join = snapshot?.pending_joins?.find((item) => item.username === username) ?? null;
   const person = joinerPerson(username, join?.full_name);
-  const first = firstName(person);
+  // Once the person is a member (or is adding a device), the directory knows their chosen name.
+  const member = dir.people.find((item) => item.username === username && !item.isFormer) ?? null;
+  const first = firstName(member ?? person);
   const approving = crew.isPending(APPROVE_KEY);
   const problem = code ? deviceCodeProblem(code) : null;
   const showProblem = attempted && problem !== null;
@@ -86,7 +88,6 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   ) : undefined;
 
   if (approved) {
-    const member = dir.people.find((item) => item.username === username && !item.isFormer) ?? null;
     // Only a team's creator can invite to it, and a team the person is already in needs nothing.
     const myTeams = (snapshot?.teams ?? []).filter(
       (team) => team.created_by === dir.me?.id && !(member?.id && team.members.includes(member.id))
