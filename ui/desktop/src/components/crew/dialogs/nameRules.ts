@@ -26,12 +26,14 @@ export const CHANNEL_NAME_MAX_CHARS = 80;
  * ⚠ HTML `pattern` attributes are compiled with the `v` flag (Chromium since 112, and jsdom), and
  * under `v` a bare `-` inside a character class is a SYNTAX ERROR — the browser then ignores the
  * pattern silently and the field accepts anything. So every `-` in a class below is escaped.
- * `identity/institution.ts`'s `INSTITUTION_ID_PATTERN` (`[a-z0-9][a-z0-9_-]{0,63}`) has exactly this
- * defect, which is why the institution fields here use their own copy of the same rule.
  */
 
-/** The HTML `pattern` for an institution ID: `is_canonical_institution_id`, `v`-flag safe. */
-export const INSTITUTION_FIELD_PATTERN = '[a-z0-9][a-z0-9_\\-]{0,63}';
+/**
+ * The HTML `pattern` for an institution ID: `is_canonical_institution_id`, `v`-flag safe. It is
+ * `identity/institution.ts`'s `INSTITUTION_ID_PATTERN` under the name the dialogs import — one
+ * rule, so the dialog fields, the privacy popover and onboarding cannot drift apart again.
+ */
+export { INSTITUTION_ID_PATTERN as INSTITUTION_FIELD_PATTERN } from '../identity';
 /** The HTML `pattern` for a workspace name (naming design, "Workspace name"). */
 export const WORKSPACE_NAME_PATTERN = '[a-z0-9](?:[a-z0-9\\-]{0,38}[a-z0-9])?';
 /** The HTML `pattern` for an absolute path on the server. */

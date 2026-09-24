@@ -20,8 +20,15 @@ import { sanitizeDisplayText } from './displayText';
  * The HTML `pattern` for an institution ID field: the same rule as
  * `is_canonical_institution_id` (1–64 of `a-z 0-9 _ -`, starting with a letter
  * or digit). `pattern` is anchored by the browser.
+ *
+ * ⚠ The `-` in the second class is escaped, and must stay escaped. Browsers
+ * (Chromium since 112, and jsdom) compile a `pattern` attribute with the `v`
+ * flag, under which a bare `-` inside a class is a SYNTAX ERROR — and a pattern
+ * that fails to compile is ignored without a word, so the field would accept
+ * `UCSF` and the refusal would only come from the daemon. Without a flag, as
+ * {@link isInstitutionId} compiles it, `\-` is the same literal `-`.
  */
-export const INSTITUTION_ID_PATTERN = '[a-z0-9][a-z0-9_-]{0,63}';
+export const INSTITUTION_ID_PATTERN = '[a-z0-9][a-z0-9_\\-]{0,63}';
 
 const CANONICAL_INSTITUTION_ID = new RegExp(`^${INSTITUTION_ID_PATTERN}$`);
 

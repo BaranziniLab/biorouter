@@ -25,6 +25,37 @@ describe('isInstitutionId', () => {
     expect(anchored.test('ucsf')).toBe(true);
     expect(anchored.test('UCSF')).toBe(false);
   });
+
+  /*
+   * A browser compiles `pattern` with the `v` flag, and a pattern that does not compile there is
+   * dropped silently — the field then accepts anything. A bare `-` in a class is exactly such a
+   * syntax error under `v`, and this pattern shipped with one.
+   */
+  it('compiles under the `v` flag a browser gives a `pattern` attribute', () => {
+    expect(() => new RegExp(`^(?:${INSTITUTION_ID_PATTERN})$`, 'v')).not.toThrow();
+  });
+
+  describe.each([
+    ['the `v` flag, as a browser compiles it', 'v'],
+    ['no flag, as isInstitutionId compiles it', ''],
+  ])('under %s', (_label, flags) => {
+    // Compiled inside each test, so a pattern that does not compile fails these tests by name
+    // instead of aborting the whole file at collection.
+    const anchored = () => new RegExp(`^(?:${INSTITUTION_ID_PATTERN})$`, flags);
+
+    it.each(['ucsf', 'ucsf-med', 'a_b', 'sdsc-west', '0lab', 'a'.repeat(64)])(
+      'accepts %j',
+      (id) => {
+        expect(anchored().test(id)).toBe(true);
+        expect(isInstitutionId(id)).toBe(true);
+      }
+    );
+
+    it.each(['UCSF', '-x', '_x', 'a'.repeat(65), 'uc sf', 'ucsf.edu', ''])('refuses %j', (id) => {
+      expect(anchored().test(id)).toBe(false);
+      expect(isInstitutionId(id)).toBe(false);
+    });
+  });
 });
 
 describe('institutionLabel', () => {
