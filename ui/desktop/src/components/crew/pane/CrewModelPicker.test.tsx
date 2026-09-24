@@ -1,0 +1,174 @@
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderDetails } from '../../../api';
+import { agentCopy } from './copy';
+import { CrewModelPicker } from './CrewModelPicker';
+import type { ModelChoice } from './useConfiguredModels';
+
+const mocks = vi.hoisted(() => ({ getProviderModels: vi.fn() }));
+
+vi.mock('../../ConfigContext', () => ({
+  useConfig: () => ({ getProviderModels: mocks.getProviderModels }),
+  usePrivacyTiersEnabled: () => true,
+}));
+
+const versa = {
+  name: 'versa_azure',
+  is_configured: true,
+  resolved_tier: 'private',
+  affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+  metadata: {
+    display_name: 'Versa',
+    known_models: [{ name: 'gpt-5.5' }, { name: 'gpt-5.5-mini' }],
+  },
+} as unknown as ProviderDetails;
+const ollama = {
+  name: 'ollama',
+  is_configured: true,
+  resolved_tier: 'private',
+  affiliation: { kind: 'local', institutions: [] },
+  metadata: { display_name: 'Ollama', known_models: [] },
+} as unknown as ProviderDetails;
+const openRouter = {
+  name: 'openrouter',
+  is_configured: true,
+  resolved_tier: 'public',
+  metadata: { display_name: 'OpenRouter', known_models: [{ name: 'free-model' }] },
+} as unknown as ProviderDetails;
+
+function Picker({
+  providers = [versa, ollama, openRouter],
+  initial = null,
+  onChange = () => undefined,
+}: {
+  providers?: ProviderDetails[] | null;
+  initial?: ModelChoice | null;
+  onChange?: (choice: ModelChoice) => void;
+}) {
+  const [value, setValue] = useState<ModelChoice | null>(initial);
+  return (
+    <CrewModelPicker
+      providers={providers}
+      provider={value?.provider ?? ''}
+      model={value?.model ?? ''}
+      onChange={(choice) => {
+        setValue(choice);
+        onChange(choice);
+      }}
+    />
+  );
+}
+
+const trigger = () => screen.getByRole('button', { name: /^Model/ });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.getProviderModels.mockImplementation(async (name: string) =>
+    name === 'ollama' ? ['qwen3.6', 'gemma4'] : []
+  );
+});
+
+describe('CrewModelPicker', () => {
+  it('reads as a field named Model, with "Choose a model" until one is chosen', () => {
+    render(<Picker />);
+    expect(trigger()).toHaveAccessibleName(`Model ${agentCopy.modelEmpty}`);
+    expect(trigger()).toHaveAttribute('aria-haspopup', 'dialog');
+  });
+
+  it('groups models by configured provider under headings with their privacy marks', async () => {
+    const user = userEvent.setup();
+    render(<Picker />);
+    await user.click(trigger());
+    const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
+    const versaGroup = await within(list).findByRole('group', { name: /Versa/ });
+    expect(
+      within(versaGroup)
+        .getAllByRole('option')
+        .map((option) => option.textContent)
+    ).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
+    // The tier is said in words; the dense padlock's "Private chat" name is hidden here.
+    expect(versaGroup).toHaveAccessibleName(/Private/);
+    expect(within(versaGroup).getByTestId('affiliation-badge')).toBeInTheDocument();
+    const ollamaGroup = within(list).getByRole('group', { name: /Ollama/ });
+    expect(within(ollamaGroup).getAllByRole('option')).toHaveLength(2);
+    // A curated list is used as is; only a provider without one is asked.
+    expect(mocks.getProviderModels).toHaveBeenCalledWith('ollama');
+    expect(mocks.getProviderModels).not.toHaveBeenCalledWith('versa_azure');
+    expect(within(list).getByRole('group', { name: /OpenRouter/ })).not.toHaveAccessibleName(
+      /Private/
+    );
+  });
+
+  it('chooses a model and names it on the trigger', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Picker onChange={onChange} />);
+    await user.click(trigger());
+    await user.click(await screen.findByRole('option', { name: /^qwen3\.6/ }));
+    expect(onChange).toHaveBeenCalledWith({ provider: 'ollama', model: 'qwen3.6' });
+    expect(trigger()).toHaveAccessibleName('Model qwen3.6 · Ollama');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('filters by model or provider and offers the typed name with each provider', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Picker onChange={onChange} />);
+    await user.click(trigger());
+    const search = await screen.findByRole('combobox', { name: agentCopy.searchModels });
+    await user.type(search, 'mini');
+    const list = screen.getByRole('listbox');
+    expect(
+      within(list)
+        .getAllByRole('option')
+        .map((option) => option.textContent)
+    ).toEqual([
+      'gpt-5.5-mini',
+      agentCopy.modelUse('mini', 'Versa'),
+      agentCopy.modelUse('mini', 'Ollama'),
+      agentCopy.modelUse('mini', 'OpenRouter'),
+    ]);
+
+    await user.clear(search);
+    await user.type(search, 'llama3.3');
+    await user.click(
+      screen.getByRole('option', { name: agentCopy.modelUse('llama3.3', 'Ollama') })
+    );
+    expect(onChange).toHaveBeenCalledWith({ provider: 'ollama', model: 'llama3.3' });
+  });
+
+  it('does not offer free text for a name that is already listed', async () => {
+    const user = userEvent.setup();
+    render(<Picker />);
+    await user.click(trigger());
+    await user.type(await screen.findByRole('combobox'), 'GPT-5.5-MINI');
+    expect(
+      screen.queryByRole('option', { name: agentCopy.modelUse('GPT-5.5-MINI', 'Versa') })
+    ).toBeNull();
+  });
+
+  it('works with a provider row that carries no metadata', async () => {
+    const user = userEvent.setup();
+    mocks.getProviderModels.mockResolvedValue(['fixture-model']);
+    render(
+      <Picker
+        providers={[
+          { name: 'fixture-provider', is_configured: true } as unknown as ProviderDetails,
+        ]}
+      />
+    );
+    await user.click(trigger());
+    await user.click(await screen.findByRole('option', { name: /^fixture-model/ }));
+    expect(trigger()).toHaveAccessibleName('Model fixture-model · fixture-provider');
+  });
+
+  it('says so while providers are loading', async () => {
+    const user = userEvent.setup();
+    render(<Picker providers={null} />);
+    await user.click(trigger());
+    expect(await screen.findByText(agentCopy.loadingModels)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull());
+  });
+});

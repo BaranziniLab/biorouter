@@ -1,0 +1,66 @@
+/* Crew — the details pane's inside: its header band, scrolling body and the
+   Ask my agent footer. The pane's geometry, ground, hairline and push/cover
+   motion live in `crew/crew-app.css` (`.crew-pane`, `.crew-pane-content`);
+   `DetailsPane` renders those hooks.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and data/aria hooks
+   only, tokens only, a reduced-motion rest for anything that moves. */
+
+/* The pane header meets the channel header and the sidebar's band at one top
+   edge: a 44px band while the pane is pushed beside the channel. */
+.crew-pane-header {
+  height: var(--chrome-height);
+}
+
+/* Covering, the pane sits BELOW the channel header, so its own header is a
+   40px row rather than a second band. */
+@container crew-main (width < 800px) {
+  .crew-pane-header {
+    height: 40px;
+  }
+}
+
+/* The mode's content: header, then a body that scrolls, then (Ask my agent)
+   the footer holding the one Start button, which never scrolls away. */
+.crew-pane-mode {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.crew-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.crew-pane-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border-subtle);
+  background-color: var(--background-canvas);
+}
+
+/* The model picker's list: tall enough for three provider groups, then it
+   scrolls inside the popover. */
+.crew-model-list {
+  max-height: 20rem;
+}
+
+.crew-model-chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.crew-model-trigger[data-state='open'] .crew-model-chevron {
+  transform: rotate(180deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-model-chevron,
+  .crew-model-trigger[data-state='open'] .crew-model-chevron {
+    transition: none;
+  }
+}
