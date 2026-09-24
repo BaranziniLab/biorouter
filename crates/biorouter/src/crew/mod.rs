@@ -5,6 +5,10 @@ mod institution;
 #[cfg(test)]
 #[path = "institution_tests.rs"]
 mod institution_tests;
+mod keepalive;
+#[cfg(test)]
+#[path = "keepalive_tests.rs"]
+mod keepalive_tests;
 pub mod observation;
 #[cfg(test)]
 #[path = "registry_lock_tests.rs"]
@@ -282,6 +286,9 @@ const GRANT_UNCONFIRMED: &str =
 const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
 /// The grant changed between two reads of one check.
 const ACCESS_CHANGED: &str = "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again.";
+/// A bridge that failed carrying a request: what was sent may or may not have reached the
+/// workspace.
+const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted operation before retrying because its outcome may be unknown.";
 
 /// Whether a grant stored under a session id is the grant of the chat that holds that id now
 /// (SCOPE-BIND). See [`CrewManager::standing`].
@@ -430,6 +437,15 @@ pub struct CrewManager {
     /// The store a test resolves chats against in place of the shared one (SCOPE-BIND).
     #[cfg(test)]
     session_store: StdMutex<Option<Arc<crate::session::SessionManager>>>,
+    /// This manager, for the keepalive task a connect starts (D-KEEPALIVE). Set by
+    /// [`CrewManager::shared`]; a manager built by [`CrewManager::new`] alone starts none.
+    this: std::sync::OnceLock<std::sync::Weak<CrewManager>>,
+    /// How often an idle bridge is kept alive, and how a dropped one is dialled again.
+    keepalive: StdMutex<keepalive::KeepaliveTiming>,
+    /// Connections whose bridge dropped while idle and whose re-dial may be tried again,
+    /// each with the token of the attempt that armed it. A person's Connect or Disconnect
+    /// (any connect or disconnect) clears it, so a retry never undoes what someone chose.
+    idle_redial: StdMutex<HashMap<String, u64>>,
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -449,7 +465,7 @@ pub fn manager() -> Result<Arc<CrewManager>> {
     if let Some(manager) = managers.get(&path) {
         return Ok(manager.clone());
     }
-    let manager = Arc::new(CrewManager::new(path.clone())?);
+    let manager = CrewManager::shared(path.clone())?;
     managers.insert(path, manager.clone());
     Ok(manager)
 }
@@ -884,7 +900,16 @@ impl CrewManager {
             saved_digest: StdMutex::new(saved_digest),
             #[cfg(test)]
             session_store: StdMutex::new(None),
+            this: std::sync::OnceLock::new(),
+            keepalive: StdMutex::new(keepalive::KeepaliveTiming::default()),
+            idle_redial: StdMutex::new(HashMap::new()),
         })
+    }
+    /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
+    pub fn shared(root: PathBuf) -> Result<Arc<Self>> {
+        let manager = Arc::new(Self::new(root)?);
+        let _ = manager.this.set(Arc::downgrade(&manager));
+        Ok(manager)
     }
     /// The capabilities the connected broker announced in its last verified `hello`, or
     /// `None` when this process has not connected to it (or has since disconnected). They
@@ -1671,7 +1696,7 @@ impl CrewManager {
     pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
         let c = self.connection(id).await?;
         let mut transport = transport::Transport::connect(&c, &self.control_path(id)?).await?;
-        let challenge_nonce = uuid::Uuid::new_v4().to_string();
+        let challenge_nonce = hello_nonce();
         let hello = transport
             .request(
                 "hello",
@@ -1683,10 +1708,22 @@ impl CrewManager {
             .await?;
         let verified = Self::verify_workspace_identity(&c, &hello, &challenge_nonce)?;
         let connected = self.adopt_verified_hello(id, &c, verified).await?;
-        self.transports
+        let transport = Arc::new(Mutex::new(transport));
+        let replaced = self
+            .transports
             .lock()
             .await
-            .insert(id.into(), Arc::new(Mutex::new(transport)));
+            .insert(id.into(), Arc::clone(&transport));
+        if let Some(replaced) = replaced {
+            // Its keepalive sees it is no longer current and stops; its `ssh` ends here, or
+            // when a request still holding it lets go.
+            if let Ok(mut old) = replaced.try_lock() {
+                old.close().await;
+            }
+        }
+        // Connected again, by whoever asked: no idle re-dial is still owed.
+        self.disarm_idle_redial(id);
+        self.start_keepalive(id, &transport);
         Ok(connected)
     }
     /// Pin the verified node, merge its cluster, persist, and only then remember what the
@@ -1721,8 +1758,24 @@ impl CrewManager {
             .node_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Connect to this workspace first."))?;
-        let cached = self.broker_hello(id);
         let transport = self.transport(id).await?;
+        let (answer, usable) = self.hello_over(id, &c, &pinned, &transport).await;
+        if !usable {
+            self.retire_failed_transport(id, &transport).await?;
+        }
+        answer
+    }
+    /// [`Self::refresh_broker_hello`]'s exchange over one given bridge, and whether that bridge
+    /// is still usable afterwards. Never retires it: the caller decides what a dead bridge
+    /// means (a refresh retires it; the keepalive dials again).
+    pub(super) async fn hello_over(
+        &self,
+        id: &str,
+        c: &Connection,
+        pinned: &str,
+        transport: &Arc<Mutex<transport::Transport>>,
+    ) -> (Result<BrokerHello>, bool) {
+        let cached = self.broker_hello(id);
         let challenge_nonce = hello_nonce();
         let mut locked = transport.lock().await;
         let answer = locked
@@ -1736,10 +1789,26 @@ impl CrewManager {
             .await;
         let usable = locked.is_usable();
         drop(locked);
-        if !usable {
-            self.retire_failed_transport(id, &transport).await?;
-        }
-        let verified = Self::verify_workspace_identity(&c, &answer?, &challenge_nonce)?;
+        let verified = match answer
+            .and_then(|hello| Self::verify_workspace_identity(c, &hello, &challenge_nonce))
+        {
+            Ok(verified) => verified,
+            Err(error) => return (Err(error), usable),
+        };
+        (
+            self.adopt_refreshed_hello(id, pinned, cached, verified, transport)
+                .await,
+            usable,
+        )
+    }
+    async fn adopt_refreshed_hello(
+        &self,
+        id: &str,
+        pinned: &str,
+        cached: Option<BrokerHello>,
+        verified: VerifiedHello,
+        transport: &Arc<Mutex<transport::Transport>>,
+    ) -> Result<BrokerHello> {
         if verified.node_id != pinned {
             return Err(WorkspaceIdentityError::wrap(anyhow::anyhow!(
                 "Verified SSH node identity changed; create a newly verified connection"
@@ -1755,7 +1824,7 @@ impl CrewManager {
         ensure!(
             transports
                 .get(id)
-                .is_some_and(|current| Arc::ptr_eq(current, &transport)),
+                .is_some_and(|current| Arc::ptr_eq(current, transport)),
             "Crew connection changed while checking the workspace; reconnect and try again."
         );
         self.remember_broker(id, verified.broker.clone());
@@ -1895,6 +1964,8 @@ impl CrewManager {
         self.disconnect_locked(id).await
     }
     pub(super) async fn disconnect_locked(&self, id: &str) -> Result<()> {
+        // A disconnect (the person's, or an edit or removal) ends any idle re-dial for good.
+        self.disarm_idle_redial(id);
         authentication::cancel_connection(id);
         if let Ok(connection) = self.connection(id).await {
             let control = self.control_path(id)?;
@@ -1934,6 +2005,17 @@ impl CrewManager {
         // Callers release the transport mutex before taking lifecycle ownership.
         // Connect/update/remove hold this same guard while replacing publication.
         let _lifecycle = self.connection_guard(id).await?;
+        self.retire_locked(id, failed, BRIDGE_FAILED).await;
+        Ok(())
+    }
+    /// Unpublish `failed` if it is still `id`'s bridge, mark the connection disconnected with
+    /// `message`, and end its `ssh`. The caller holds the connection's lifecycle guard.
+    pub(super) async fn retire_locked(
+        &self,
+        id: &str,
+        failed: &Arc<Mutex<transport::Transport>>,
+        message: &str,
+    ) {
         let removed = {
             let mut transports = self.transports.lock().await;
             if transports
@@ -1949,12 +2031,11 @@ impl CrewManager {
             let mut registry = self.registry.lock().await;
             if let Some(connection) = registry.connections.iter_mut().find(|c| c.id == id) {
                 connection.status = "disconnected".into();
-                connection.last_error = Some("SSH bridge failed. Reconnect; inspect any submitted operation before retrying because its outcome may be unknown.".into());
+                connection.last_error = Some(message.into());
             }
             drop(registry);
             removed.lock().await.close().await;
         }
-        Ok(())
     }
     async fn transport(&self, id: &str) -> Result<Arc<Mutex<transport::Transport>>> {
         self.transports
@@ -2100,7 +2181,9 @@ impl CrewManager {
                 "Enrollment identity changed; refresh the saved connection before joining"
             );
         }
-        let transport = self.transport(id).await?;
+        // A bridge that ended, or sat idle long enough for the broker to drop it, is checked
+        // (and dialled again without a prompt) before anything is written to it.
+        let transport = self.live_transport(id).await?;
         let mut locked = transport.lock().await;
         let result = self
             .signed_exchange(&mut locked, &c, method, params, request_id, &signer)

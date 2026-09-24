@@ -248,6 +248,10 @@ pub struct Transport {
     answered: bool,
     /// The server and login this bridge signs in to, for a refusal a person can read.
     sign_in: Option<SignInTarget>,
+    /// When a request last started or finished on this bridge, by the wall clock. The
+    /// broker drops a bridge that sends nothing for 300 s, and that clock keeps running while
+    /// this computer sleeps, which a monotonic `Instant` would not see (D-KEEPALIVE).
+    last_activity: std::time::SystemTime,
 }
 
 /// Who the bridge signs in as, and where, from the saved SSH login (`user@host` or an alias).
@@ -387,6 +391,7 @@ impl Transport {
             unusable: false,
             answered: false,
             sign_in: None,
+            last_activity: std::time::SystemTime::now(),
         })
     }
     pub async fn request(
@@ -412,8 +417,10 @@ impl Transport {
         // Cancellation after a write must never allow the next caller to consume
         // this request's late reply. Only a complete valid envelope rearms it.
         self.unusable = true;
+        self.last_activity = std::time::SystemTime::now();
         let result =
             tokio::time::timeout(Duration::from_secs(45), self.exchange(&bytes, &id)).await;
+        self.last_activity = std::time::SystemTime::now();
         match result {
             Ok(Ok(v)) => {
                 self.unusable = false;
@@ -524,6 +531,18 @@ impl Transport {
     }
     pub fn is_usable(&self) -> bool {
         !self.unusable
+    }
+    /// How long, by the wall clock, since a request last started or finished here.
+    pub fn idle_for(&self) -> Duration {
+        std::time::SystemTime::now()
+            .duration_since(self.last_activity)
+            .unwrap_or(Duration::ZERO)
+    }
+    /// Whether this bridge can no longer carry a request: it was left unusable, or its `ssh`
+    /// has exited. Asked **before** a request is written, so a dead bridge is noticed while
+    /// nothing has been submitted over it.
+    pub fn has_ended(&mut self) -> bool {
+        self.unusable || !matches!(self.child.try_wait(), Ok(None))
     }
     pub async fn close(&mut self) {
         self.unusable = true;
