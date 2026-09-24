@@ -3,8 +3,9 @@
 //! admission, and the task conversation's first message.
 use super::names::{SelectorInput, SelectorKind};
 use super::{
-    connect_refusal, institution_refusal_details, resolve, task_brief, task_context_message,
-    task_title, title_task_session, CrewRouteError, ResolveRequest, INSTITUTION_REFUSAL_MARKER,
+    connect_refusal, host_start, host_start_cancel, host_start_refusal, host_start_state,
+    institution_refusal_details, resolve, task_brief, task_context_message, task_title,
+    title_task_session, CrewRouteError, ResolveRequest, INSTITUTION_REFUSAL_MARKER,
     OWNED_TASK_INSTRUCTIONS,
 };
 use axum::http::{HeaderMap, StatusCode};
@@ -419,4 +420,51 @@ fn the_institution_refusal_names_the_model_its_approvers_and_the_workspace() {
     // The marker is the daemon's own sentence, which the desktop also matches.
     let source = include_str!("../../../../biorouter/src/crew/institution.rs");
     assert!(source.contains(INSTITUTION_REFUSAL_MARKER));
+}
+
+/// D-HOST: every "Start it for me" door needs proof that a person asked, before it reads the
+/// body, looks up a run or touches a host setup.
+#[tokio::test]
+async fn host_start_needs_a_person_at_every_door() {
+    use axum::extract::Path;
+    let proofless = |refusal: CrewRouteError| async move {
+        let (status, body) = refusal_body(refusal).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            matches!(
+                body["code"].as_str(),
+                Some("crew_user_action_required" | "crew_human_authority_unavailable")
+            ),
+            "{body}"
+        );
+    };
+    let body = json!({"preparation_id": "p", "workspace_name": "lab", "ssh_target": "a@b"});
+    match host_start(HeaderMap::new(), Json(body)).await {
+        Err(refusal) => proofless(refusal).await,
+        Ok(_) => panic!("started without proof of a person"),
+    }
+    match host_start_state(HeaderMap::new(), Path("job".into())).await {
+        Err(refusal) => proofless(refusal).await,
+        Ok(_) => panic!("read a run without proof of a person"),
+    }
+    match host_start_cancel(HeaderMap::new(), Path("job".into())).await {
+        Err(refusal) => proofless(refusal).await,
+        Ok(_) => panic!("stopped a run without proof of a person"),
+    }
+}
+
+#[tokio::test]
+async fn a_host_start_refusal_keeps_its_status_and_code() {
+    let refusal = host_start_refusal(anyhow::Error::new(biorouter::crew::HostStartRefused {
+        status: 409,
+        code: "crew_host_setup_used",
+        message: "This host setup already has a saved connection. Open it from Crew.".into(),
+    }));
+    let (status, body) = refusal_body(refusal).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "crew_host_setup_used");
+    // Anything else is an ordinary refusal.
+    let (status, body) = refusal_body(host_start_refusal(anyhow::anyhow!("preflight"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "crew_request_refused");
 }

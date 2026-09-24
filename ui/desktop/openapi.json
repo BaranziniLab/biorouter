@@ -2101,7 +2101,7 @@
         "operationId": "list_connections",
         "responses": {
           "200": {
-            "description": "",
+            "description": "`connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only",
             "content": {
               "application/json": {
                 "schema": {}
@@ -3106,6 +3106,155 @@
         "responses": {
           "200": {
             "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/host/start": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Start Crew on the server for this computer's host setup (\"Start it for me\").",
+        "description": "D-HOST. On a person's click, run the Host dialog's fixed start and status commands on the\nserver, as the login they typed, for this computer's own pending host setup; see\n`biorouter::crew` `host_start`. The body names no command: the daemon builds it from the\nworkspace name and its own prepared hosting key.",
+        "operationId": "crew_host_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostStartStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/host/start/{job_id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Where a \"Start it for me\" run stands.",
+        "description": "Its output so far and, once done, what it read.",
+        "operationId": "crew_host_start_status",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The run `POST /crew/host/start` answered",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostStartStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_host_start_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Stop a \"Start it for me\" run.",
+        "operationId": "crew_host_start_cancel",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The run to stop",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{\"cancelled\": true}`; stopping a finished run changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_host_start_not_found`",
             "content": {
               "application/json": {
                 "schema": {}
@@ -10269,6 +10418,115 @@
           }
         }
       },
+      "HostStartError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "HostStartRequest": {
+        "type": "object",
+        "description": "What the person asked to host: the name, and the SSH login and route they typed.",
+        "required": [
+          "preparation_id",
+          "workspace_name",
+          "ssh_target"
+        ],
+        "properties": {
+          "identity_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "preparation_id": {
+            "type": "string",
+            "description": "This computer's pending hosting identity, from `POST /crew/devices/prepare`."
+          },
+          "proxy_jump": {
+            "type": "string",
+            "nullable": true
+          },
+          "ssh_target": {
+            "type": "string",
+            "description": "The SSH login to start Crew as: an alias or `user@host`."
+          },
+          "workspace_name": {
+            "type": "string",
+            "description": "The workspace name, as the broker's rule allows it (`lab`, `chen-lab`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HostStartState": {
+        "type": "string",
+        "description": "Where a run stands.",
+        "enum": [
+          "running",
+          "finished",
+          "failed"
+        ]
+      },
+      "HostStartStatus": {
+        "type": "object",
+        "description": "A run, as `GET /crew/host/start/{id}` answers it.",
+        "required": [
+          "job_id",
+          "command",
+          "state",
+          "output"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The exact command text that runs, as the dialog shows it."
+          },
+          "error": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HostStartError"
+              }
+            ],
+            "nullable": true
+          },
+          "exit_code": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string",
+            "description": "Everything the commands printed so far (stdout and stderr, in arrival order), without\ncontrol characters, at most 64 KiB."
+          },
+          "result": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StartOutput"
+              }
+            ],
+            "nullable": true
+          },
+          "state": {
+            "$ref": "#/components/schemas/HostStartState"
+          }
+        }
+      },
       "Icon": {
         "type": "object",
         "required": [
@@ -10824,6 +11082,11 @@
           "server": {
             "type": "string",
             "description": "The server named by the invitation.",
+            "nullable": true
+          },
+          "server_label": {
+            "type": "string",
+            "description": "What to call the server on screen (D-ALIAS): the person's own SSH alias for the address\nsaving would use, when one maps to it, else that address's host. Display only; `server`\nand `ssh_target` stay the invitation's resolved address. See [`super::server_label`].",
             "nullable": true
           },
           "socket_path": {
@@ -15832,6 +16095,56 @@
           "working_dir": {
             "type": "string"
           }
+        }
+      },
+      "StartOutput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The text to preview and pin: the `brcrew1:` line `start` printed, else the status\nJSON on one line.",
+            "required": [
+              "text",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "found"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Why the output can't pin a workspace: `starting` (Crew was still starting),\n`not_installed` (no `biorouter-crew` on the server), `server_error` (it printed an\nerror, in `detail`), or `unreadable` (nothing Crew printed).",
+            "required": [
+              "problem",
+              "kind"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string",
+                "nullable": true
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "problem"
+                ]
+              },
+              "problem": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "What the output says, read as the dialog reads a paste.",
+        "discriminator": {
+          "propertyName": "kind"
         }
       },
       "StartRunRequest": {

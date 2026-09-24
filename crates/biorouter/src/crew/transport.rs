@@ -296,11 +296,34 @@ impl SignInTarget {
 const SIGN_IN_REFUSED: &str = "ssh_sign_in_refused";
 
 pub fn ssh_args(c: &Connection, control: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-T".into(),
-        "-S".into(),
-        control.to_string_lossy().into_owned(),
-    ];
+    login_args(
+        c.port,
+        c.identity_file.as_deref(),
+        c.proxy_jump.as_deref(),
+        Some(control),
+    )
+}
+
+/// The options every Crew `ssh` carries, for a login given by its parts: the hardening,
+/// the development profile's SSH files, and the route. With no `control` socket, no
+/// multiplexed master is used at all (`ControlPath=none`), not even one the person's own
+/// configuration names.
+pub(super) fn login_args(
+    port: Option<u16>,
+    identity_file: Option<&str>,
+    proxy_jump: Option<&str>,
+    control: Option<&Path>,
+) -> Vec<String> {
+    let mut args = vec!["-T".into()];
+    match control {
+        Some(control) => args.extend(["-S".into(), control.to_string_lossy().into_owned()]),
+        None => args.extend([
+            "-o".into(),
+            "ControlPath=none".into(),
+            "-o".into(),
+            "ControlMaster=no".into(),
+        ]),
+    }
     if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
         let ssh = std::path::PathBuf::from(profile).join("home/.ssh");
         args.extend([
@@ -326,16 +349,22 @@ pub fn ssh_args(c: &Connection, control: &Path) -> Vec<String> {
     ] {
         args.extend(["-o".into(), option.into()]);
     }
-    if let Some(port) = c.port {
+    if let Some(port) = port {
         args.extend(["-p".into(), port.to_string()]);
     }
-    if let Some(identity) = &c.identity_file {
-        args.extend(["-i".into(), identity.clone()]);
+    if let Some(identity) = identity_file {
+        args.extend(["-i".into(), identity.to_owned()]);
     }
-    if let Some(jump) = &c.proxy_jump {
-        args.extend(["-J".into(), jump.clone()]);
+    if let Some(jump) = proxy_jump {
+        args.extend(["-J".into(), jump.to_owned()]);
     }
     args
+}
+
+/// How a finished `ssh` failed, from its exit status and OpenSSH's own words, by the same
+/// rules as a bridge's failure.
+pub(super) fn classify_exit(code: Option<i32>, stderr: &str) -> SshFailureKind {
+    classify(ChildState::Exited(code), stderr)
 }
 
 impl Transport {

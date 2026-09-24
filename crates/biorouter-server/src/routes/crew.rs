@@ -7,7 +7,8 @@ use axum::{Json, Router};
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::crew::{
-    manager, AdmissionLabels, SaveConnection, SshFailure, WorkspaceIdentityError,
+    cancel_host_start, host_start_status, manager, AdmissionLabels, HostStartRefused,
+    HostStartRequest, HostStartStatus, SaveConnection, SshFailure, WorkspaceIdentityError,
 };
 use biorouter::model::ModelConfig;
 use biorouter::session::SessionType;
@@ -434,6 +435,108 @@ pub async fn authentication_plan(headers: HeaderMap, Path(id): Path<String>) -> 
         serde_json::to_value(manager()?.authentication_plan(&id).await?)
             .map_err(anyhow::Error::from)?,
     ))
+}
+
+/// D-HOST's refusals keep their own status and code; anything else is an ordinary refusal.
+fn host_start_refusal(error: anyhow::Error) -> CrewRouteError {
+    if let Some(refused) = error.downcast_ref::<HostStartRefused>() {
+        let status = StatusCode::from_u16(refused.status).unwrap_or(StatusCode::BAD_REQUEST);
+        return CrewRouteError::new(status, refused.code, refused.message.clone());
+    }
+    error.into()
+}
+
+/// Start Crew on the server for this computer's host setup ("Start it for me").
+///
+/// D-HOST. On a person's click, run the Host dialog's fixed start and status commands on the
+/// server, as the login they typed, for this computer's own pending host setup; see
+/// `biorouter::crew` `host_start`. The body names no command: the daemon builds it from the
+/// workspace name and its own prepared hosting key.
+#[utoipa::path(
+    post,
+    operation_id = "crew_host_start",
+    path = "/crew/host/start",
+    request_body = HostStartRequest,
+    responses(
+        (status = 200, description = "The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs", body = HostStartStatus),
+        (status = 400, description = "`crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses", body = Value),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)", body = Value),
+        (status = 409, description = "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once", body = Value)
+    ),
+    tag = "Crew"
+)]
+pub async fn host_start(
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<HostStartStatus>, CrewRouteError> {
+    require_person(&headers)?;
+    let request: HostStartRequest = serde_json::from_value(body).map_err(|_| {
+        CrewRouteError::new(
+            StatusCode::BAD_REQUEST,
+            "crew_request_invalid",
+            "Send the host setup's ID, the workspace name and the server login, and nothing else.",
+        )
+    })?;
+    manager()?
+        .start_host(request)
+        .await
+        .map(Json)
+        .map_err(host_start_refusal)
+}
+
+/// Where a "Start it for me" run stands.
+///
+/// Its output so far and, once done, what it read.
+#[utoipa::path(
+    get,
+    operation_id = "crew_host_start_status",
+    path = "/crew/host/start/{job_id}",
+    params(("job_id" = String, Path, description = "The run `POST /crew/host/start` answered")),
+    responses(
+        (status = 200, description = "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)", body = HostStartStatus),
+        (status = 403, description = "No proof that a person asked", body = Value),
+        (status = 404, description = "`crew_host_start_not_found`", body = Value)
+    ),
+    tag = "Crew"
+)]
+pub async fn host_start_state(
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<Json<HostStartStatus>, CrewRouteError> {
+    require_person(&headers)?;
+    host_start_status(&job_id).map(Json).ok_or_else(|| {
+        CrewRouteError::new(
+            StatusCode::NOT_FOUND,
+            "crew_host_start_not_found",
+            "That run is not on this computer any more. Start again.",
+        )
+    })
+}
+
+/// Stop a "Start it for me" run.
+#[utoipa::path(
+    delete,
+    operation_id = "crew_host_start_cancel",
+    path = "/crew/host/start/{job_id}",
+    params(("job_id" = String, Path, description = "The run to stop")),
+    responses(
+        (status = 200, description = "`{\"cancelled\": true}`; stopping a finished run changes nothing", body = Value),
+        (status = 403, description = "No proof that a person asked", body = Value),
+        (status = 404, description = "`crew_host_start_not_found`", body = Value)
+    ),
+    tag = "Crew"
+)]
+pub async fn host_start_cancel(headers: HeaderMap, Path(job_id): Path<String>) -> CrewResult {
+    require_person(&headers)?;
+    if cancel_host_start(&job_id) {
+        Ok(Json(json!({"cancelled": true})))
+    } else {
+        Err(CrewRouteError::new(
+            StatusCode::NOT_FOUND,
+            "crew_host_start_not_found",
+            "That run is not on this computer any more.",
+        ))
+    }
 }
 
 /// Resolve typed names (`@bob`, `analysis-lab`, `#methods`, `analysis-lab/methods`, a saved
@@ -2059,6 +2162,11 @@ pub async fn shutdown_owned_runs() {
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/crew/devices/prepare", post(prepare_device))
+        .route("/crew/host/start", post(host_start))
+        .route(
+            "/crew/host/start/{job_id}",
+            get(host_start_state).delete(host_start_cancel),
+        )
         .route("/crew/resolve", post(resolve))
         .route(
             "/crew/connections",

@@ -1,10 +1,18 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
 mod credentials;
+mod host_start;
+#[cfg(test)]
+#[path = "host_start_tests.rs"]
+mod host_start_tests;
 mod institution;
 #[cfg(test)]
 #[path = "institution_tests.rs"]
 mod institution_tests;
+pub use host_start::{
+    cancel_host_start, host_start_command, host_start_status, read_start_output, HostStartError,
+    HostStartRefused, HostStartRequest, HostStartState, HostStartStatus, StartOutput,
+};
 mod keepalive;
 mod server_label;
 pub use server_label::server_label;

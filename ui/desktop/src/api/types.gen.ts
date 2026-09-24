@@ -1465,6 +1465,57 @@ export type HistoryQuery = {
     limit?: number;
 };
 
+export type HostStartError = {
+    code: string;
+    message: string;
+};
+
+/**
+ * What the person asked to host: the name, and the SSH login and route they typed.
+ */
+export type HostStartRequest = {
+    identity_file?: string | null;
+    port?: number | null;
+    /**
+     * This computer's pending hosting identity, from `POST /crew/devices/prepare`.
+     */
+    preparation_id: string;
+    proxy_jump?: string | null;
+    /**
+     * The SSH login to start Crew as: an alias or `user@host`.
+     */
+    ssh_target: string;
+    /**
+     * The workspace name, as the broker's rule allows it (`lab`, `chen-lab`).
+     */
+    workspace_name: string;
+};
+
+/**
+ * Where a run stands.
+ */
+export type HostStartState = 'running' | 'finished' | 'failed';
+
+/**
+ * A run, as `GET /crew/host/start/{id}` answers it.
+ */
+export type HostStartStatus = {
+    /**
+     * The exact command text that runs, as the dialog shows it.
+     */
+    command: string;
+    error?: HostStartError | null;
+    exit_code?: number | null;
+    job_id: string;
+    /**
+     * Everything the commands printed so far (stdout and stderr, in arrival order), without
+     * control characters, at most 64 KiB.
+     */
+    output: string;
+    result?: StartOutput | null;
+    state: HostStartState;
+};
+
 export type Icon = {
     mimeType?: string;
     sizes?: Array<string>;
@@ -1750,6 +1801,12 @@ export type InvitationPreview = {
      * The server named by the invitation.
      */
     server?: string | null;
+    /**
+     * What to call the server on screen (D-ALIAS): the person's own SSH alias for the address
+     * saving would use, when one maps to it, else that address's host. Display only; `server`
+     * and `ssh_target` stay the invitation's resolved address. See [`super::server_label`].
+     */
+    server_label?: string | null;
     socket_path: string;
     source: InvitationSourceKind;
     ssh_target?: string | null;
@@ -4344,6 +4401,18 @@ export type StartAgentRequest = {
     working_dir: string;
 };
 
+/**
+ * What the output says, read as the dialog reads a paste.
+ */
+export type StartOutput = {
+    kind: 'found';
+    text: string;
+} | {
+    detail?: string | null;
+    kind: 'problem';
+    problem: string;
+};
+
 export type StartRunRequest = {
     channel_id: string;
     context_channels?: Array<string>;
@@ -6520,6 +6589,9 @@ export type ListConnectionsData = {
 };
 
 export type ListConnectionsResponses = {
+    /**
+     * `connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only
+     */
     200: unknown;
 };
 
@@ -7056,6 +7128,99 @@ export type CrewTransferConfirmFileData = {
 export type CrewTransferConfirmFileResponses = {
     200: unknown;
 };
+
+export type CrewHostStartData = {
+    body: HostStartRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/host/start';
+};
+
+export type CrewHostStartErrors = {
+    /**
+     * `crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)
+     */
+    403: unknown;
+    /**
+     * `crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once
+     */
+    409: unknown;
+};
+
+export type CrewHostStartResponses = {
+    /**
+     * The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs
+     */
+    200: HostStartStatus;
+};
+
+export type CrewHostStartResponse = CrewHostStartResponses[keyof CrewHostStartResponses];
+
+export type CrewHostStartCancelData = {
+    body?: never;
+    path: {
+        /**
+         * The run to stop
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/host/start/{job_id}';
+};
+
+export type CrewHostStartCancelErrors = {
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_host_start_not_found`
+     */
+    404: unknown;
+};
+
+export type CrewHostStartCancelResponses = {
+    /**
+     * `{"cancelled": true}`; stopping a finished run changes nothing
+     */
+    200: unknown;
+};
+
+export type CrewHostStartStatusData = {
+    body?: never;
+    path: {
+        /**
+         * The run `POST /crew/host/start` answered
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/host/start/{job_id}';
+};
+
+export type CrewHostStartStatusErrors = {
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_host_start_not_found`
+     */
+    404: unknown;
+};
+
+export type CrewHostStartStatusResponses = {
+    /**
+     * `state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)
+     */
+    200: HostStartStatus;
+};
+
+export type CrewHostStartStatusResponse = CrewHostStartStatusResponses[keyof CrewHostStartStatusResponses];
 
 export type ResolveData = {
     body: ResolveRequest;
