@@ -1156,7 +1156,10 @@ fn invitation_summary(preview: &Value) -> Vec<String> {
         ));
     }
     if let Some(name) = field("name") {
-        lines.push(format!("  Saved on this computer as {}", name_text(name)));
+        lines.push(format!(
+            "  Connection name on this computer: {}",
+            name_text(name)
+        ));
     }
     if field("existing_connection_id").is_some() {
         lines.push(
@@ -1445,15 +1448,12 @@ async fn enrollment(api: &Api, command: EnrollmentCommand) -> Result<Reply> {
     })
 }
 
-/// A device code as the joiner sent it: 16 letters and digits once spaces and hyphens are
-/// removed. The broker applies the full Crockford normalization.
+/// A device code as the joiner sent it: 16 letters and digits, whatever separates them. The
+/// broker applies the full Crockford normalization and refuses what it cannot read.
 fn check_device_code(code: &str) -> Result<()> {
-    let bare: String = code
-        .chars()
-        .filter(|c| !matches!(c, '-' | ' ' | '\t'))
-        .collect();
+    let bare: Vec<char> = code.chars().filter(|c| c.is_alphanumeric()).collect();
     ensure!(
-        bare.chars().count() == 16 && bare.chars().all(|c| c.is_ascii_alphanumeric()),
+        bare.len() == 16 && bare.iter().all(char::is_ascii_alphanumeric),
         "A code has 16 letters and digits, like 7QK2-M9XA-3JTP-WZ4D. Copy it exactly as they sent it."
     );
     Ok(())
@@ -1606,7 +1606,8 @@ fn revoke_confirmation(
 
 async fn revoke_member(api: &Api, member: &str, confirm: Option<&str>) -> Result<Reply> {
     let target = api.target(Kind::Person, member).await?;
-    let label = if api.text() || target.username.is_some() {
+    let asks = target.username.is_some() && confirm.is_none() && api.interactive;
+    let label = if api.text() || asks {
         api.authority_label(&target).await
     } else {
         String::new()
@@ -1787,39 +1788,7 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
             );
             api.say(result, vec![format!("Archived {archived}.")])
         }
-        ChannelCommand::MarkRead { channel, cursor } => {
-            let channel = api.target(Kind::Channel, &channel).await?;
-            let label = api.label(&channel, "the channel", "channel ID");
-            let cursor = match cursor {
-                Some(cursor) => cursor,
-                None => {
-                    let newest = api
-                        .broker(
-                            "messages.history",
-                            json!({"channel_id":channel.id,"latest":true,"limit":1}),
-                            false,
-                        )
-                        .await?;
-                    match newest["cursor"].as_str() {
-                        Some(cursor) => cursor.to_owned(),
-                        None => {
-                            return Ok(api.say(
-                                json!({"channel_id":channel.id,"sequence":null}),
-                                vec![format!("{label} has no messages to mark as read.")],
-                            ))
-                        }
-                    }
-                }
-            };
-            let result = api
-                .broker(
-                    "channel.read",
-                    json!({"channel_id":channel.id,"sequence":cursor}),
-                    true,
-                )
-                .await?;
-            api.say(result, vec![format!("Marked {label} as read.")])
-        }
+        ChannelCommand::MarkRead { channel, cursor } => mark_read(api, &channel, cursor).await?,
         ChannelCommand::Rename { channel, name } => {
             let channel = api.target(Kind::Channel, &channel).await?;
             let result = api
@@ -1840,6 +1809,41 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
             )
         }
     })
+}
+
+/// `channels mark-read CHANNEL [CURSOR]`: up to `cursor`, or to the newest message.
+async fn mark_read(api: &Api, channel: &str, cursor: Option<String>) -> Result<Reply> {
+    let channel = api.target(Kind::Channel, channel).await?;
+    let label = api.label(&channel, "the channel", "channel ID");
+    let cursor = match cursor {
+        Some(cursor) => cursor,
+        None => {
+            let newest = api
+                .broker(
+                    "messages.history",
+                    json!({"channel_id":channel.id,"latest":true,"limit":1}),
+                    false,
+                )
+                .await?;
+            match newest["cursor"].as_str() {
+                Some(cursor) => cursor.to_owned(),
+                None => {
+                    return Ok(api.say(
+                        json!({"channel_id":channel.id,"sequence":null}),
+                        vec![format!("{label} has no messages to mark as read.")],
+                    ))
+                }
+            }
+        }
+    };
+    let result = api
+        .broker(
+            "channel.read",
+            json!({"channel_id":channel.id,"sequence":cursor}),
+            true,
+        )
+        .await?;
+    Ok(api.say(result, vec![format!("Marked {label} as read.")]))
 }
 
 async fn invitations(api: &Api, command: InvitationCommand) -> Result<Reply> {
@@ -3608,6 +3612,25 @@ mod tests {
             fake.broker_call("enrollment.cancel").expect("cancel")["username"],
             "bob"
         );
+    }
+
+    #[test]
+    fn a_device_code_is_checked_for_its_length_whatever_separates_it() {
+        for code in [
+            "7QK2-M9XA-3JTP-WZ4D",
+            "7qk2m9xa3jtpwz4d",
+            "7QK2 M9XA 3JTP WZ4D",
+            "7QK2\u{2013}M9XA\u{2013}3JTP\u{2013}WZ4D",
+        ] {
+            check_device_code(code).unwrap_or_else(|error| panic!("{code}: {error}"));
+        }
+        for code in [
+            "7QK2-M9XA-3JTP",
+            "7QK2-M9XA-3JTP-WZ4D-1",
+            "7QK2-M9XA-3JTP-WZ4\u{0414}",
+        ] {
+            assert!(check_device_code(code).is_err(), "{code}");
+        }
     }
 
     #[test]
