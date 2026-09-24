@@ -57,6 +57,27 @@ describe('CrewFileDropZone', () => {
     );
   });
 
+  it('clears the overlay when the drag ends somewhere else', () => {
+    render(
+      <CrewTestProvider controller={crewTestController()}>
+        <CrewFileDropZone>
+          <div data-testid="timeline">messages</div>
+          <Composer />
+        </CrewFileDropZone>
+        <div data-testid="elsewhere">elsewhere</div>
+      </CrewTestProvider>
+    );
+    const timeline = screen.getByTestId('timeline');
+    fireEvent.dragEnter(timeline, { dataTransfer: files('counts.csv') });
+    fireEvent.dragEnter(screen.getByLabelText('Message #general'), {
+      dataTransfer: files('counts.csv'),
+    });
+    expect(screen.getByText('Drop to share in #general')).toBeInTheDocument();
+    fireEvent.drop(screen.getByTestId('elsewhere'), { dataTransfer: files('counts.csv') });
+    expect(screen.queryByText('Drop to share in #general')).toBeNull();
+    expect(mocks.beginTransfer).not.toHaveBeenCalled();
+  });
+
   it('takes nothing, and shows nothing, while no surface can take files', () => {
     render(
       <CrewFileDropZone>

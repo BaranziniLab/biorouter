@@ -101,6 +101,34 @@ export function CrewFileDropZone({
     setDragging(false);
   }, [target]);
 
+  // A drag can end without a matching `dragleave` here: dropped somewhere else in the window,
+  // cancelled, or carried out of the window. Any of those clears the overlay.
+  useEffect(() => {
+    if (!dragging) return;
+    const reset = () => {
+      depth.current = 0;
+      setDragging(false);
+    };
+    // Leaving the window is the one `dragleave` with no element to go to and a pointer at or
+    // past the edge; judging by the element alone would also clear it between two children.
+    const leftWindow = (event: globalThis.DragEvent) => {
+      const outside =
+        event.clientX <= 0 ||
+        event.clientY <= 0 ||
+        event.clientX >= window.innerWidth ||
+        event.clientY >= window.innerHeight;
+      if (event.relatedTarget === null && outside) reset();
+    };
+    window.addEventListener('drop', reset, true);
+    window.addEventListener('dragend', reset, true);
+    document.addEventListener('dragleave', leftWindow, true);
+    return () => {
+      window.removeEventListener('drop', reset, true);
+      window.removeEventListener('dragend', reset, true);
+      document.removeEventListener('dragleave', leftWindow, true);
+    };
+  }, [dragging]);
+
   const onDragEnter = (event: DragEvent<HTMLDivElement>) => {
     if (!carriesFiles(event)) return;
     event.preventDefault();
@@ -111,6 +139,11 @@ export function CrewFileDropZone({
     if (!carriesFiles(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = target ? 'copy' : 'none';
+    // `dragover` repeats while the pointer is here, so a count that drifted re-arms itself.
+    if (target && !dragging) {
+      depth.current = Math.max(depth.current, 1);
+      setDragging(true);
+    }
   };
   const onDragLeave = (event: DragEvent<HTMLDivElement>) => {
     if (!carriesFiles(event)) return;
