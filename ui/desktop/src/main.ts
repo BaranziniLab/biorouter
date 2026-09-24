@@ -94,6 +94,15 @@ import {
 } from './utils/artifactPreviewLimits';
 import { artifactSourceRevision } from './utils/artifactSourceRevision';
 import { sanitizeUntrustedLabel } from './utils/untrustedText';
+import {
+  CrewSharePending,
+  DEV_AUTO_CONFIRM_SHARE_ENV,
+  crewShareCopy,
+  parseCrewShareRequest,
+  resolveDevAutoConfirmShare,
+  shareDroppedFile,
+} from './utils/crewSharePath';
+import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
@@ -4734,6 +4743,55 @@ function disposeTerminalSession(sessionId: string) {
   return terminalSessions.release(sessionId);
 }
 
+// D-DROP: a file dropped or pasted into Crew is shared after ONE confirmation in a
+// native dialog. The rules (what is refused, what the dialog says, the re-checks)
+// live in `utils/crewSharePath.ts`; this is only the Electron and daemon wiring.
+// Set once in `appMain` from `resolveDevAutoConfirmShare`, and false everywhere else.
+let crewShareAutoConfirm = false;
+const crewSharePending = new CrewSharePending();
+
+function registerCrewShareHandler() {
+  ipcMain.handle(CREW_SHARE_DROPPED_FILE_CHANNEL, async (event, raw: unknown) => {
+    const request = parseCrewShareRequest(raw);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    const ownerId = event.sender.id;
+    if (!crewSharePending.enter(ownerId))
+      return { outcome: 'refused', message: crewShareCopy.busy };
+    const crewFiles = async (endpoint: string, method: 'POST' | 'DELETE', body: unknown) => {
+      if (event.sender.isDestroyed() || owner.isDestroyed())
+        throw new Error('The Crew window closed.');
+      const settings = loadSettings();
+      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Secret-Key': getServerSecret(settings),
+          'X-User-Action': getUserActionKey(settings),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      return { ok: response.ok, body: await response.json().catch(() => null) };
+    };
+    try {
+      return await shareDroppedFile(request, {
+        autoConfirm: crewShareAutoConfirm,
+        confirm: async (options) => (await dialog.showMessageBox(owner, options)).response,
+        register: (body) => crewFiles('', 'POST', body),
+        discard: async (capabilityId) => {
+          await crewFiles(`/${encodeURIComponent(capabilityId)}`, 'DELETE', {});
+        },
+        isClosed: () => event.sender.isDestroyed() || owner.isDestroyed(),
+        log: (message) => log.warn(message),
+      });
+    } finally {
+      crewSharePending.leave(ownerId);
+    }
+  });
+}
+
 function registerCliInstallHandlers() {
   // Is the `biorouter` command callable from a terminal, and is it current?
   //
@@ -6072,6 +6130,18 @@ async function appMain() {
     },
     validate: validateDaemonApprovalSecret,
   });
+  // The development auto-confirm for a dropped Crew file: the approval stdin's gate
+  // above, plus its own explicit switch. It fails closed (the native dialog stays on)
+  // and never throws, and says why when a set switch is ignored.
+  const crewShareAutoConfirmGate = resolveDevAutoConfirmShare({
+    value: process.env[DEV_AUTO_CONFIRM_SHARE_ENV],
+    isPackaged: app.isPackaged,
+    developmentProfileRoot,
+    testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),
+    sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,
+  });
+  crewShareAutoConfirm = crewShareAutoConfirmGate.enabled;
+  if (crewShareAutoConfirmGate.notice) log.warn(`[crew-share] ${crewShareAutoConfirmGate.notice}`);
   // Install synchronously before this function's first `await`.
   //
   // A permission handler or a CSP header installed after a window exists has
@@ -6097,6 +6167,7 @@ async function appMain() {
   registerUpdateIpcHandlers();
   registerDependencyIpcHandlers();
   registerCliInstallHandlers();
+  registerCrewShareHandler();
 
   try {
     globalShortcut.register('CommandOrControl+Alt+Shift+G', () => {
