@@ -77,7 +77,12 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
  *   sidebar announcer). When these handlers moved onto the renderer's
  *   partition, this permission fell under the audio-only rule below and every
  *   Copy in the app failed with `NotAllowedError`. Chromium sanitises what the
- *   write may put on the pasteboard, and a write reads nothing back.
+ *   write may put on the pasteboard, and a write reads nothing back. Chromium
+ *   also refuses the write itself, before either handler hears of it, when
+ *   the call carries no user activation. So a real click on Copy succeeds,
+ *   while a bare DevTools or CDP `writeText` still throws even with this grant
+ *   (measured on the live app). That refusal is Chromium's rule, not this
+ *   policy's.
  * - **`media`, audio only**, for dictation.
  *
  * `clipboard-read` (and `deprecated-sync-clipboard-read`) stay DENIED. A read
