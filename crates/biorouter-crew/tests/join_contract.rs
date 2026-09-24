@@ -336,6 +336,7 @@ mod join {
                 uid,
                 name: name.into(),
                 full_name: None,
+                shell: None,
             };
             self.accounts.lock().unwrap().insert(uid, account);
         }
@@ -361,6 +362,7 @@ mod join {
                     uid: *uid,
                     name: name.into(),
                     full_name: None,
+                    shell: None,
                 });
             }
             self.accounts

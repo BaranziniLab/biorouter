@@ -112,6 +112,25 @@ pub struct Account {
     /// The first field of the account's GECOS entry, trimmed; `None` when empty or not UTF-8.
     /// A label only: never validated here and never used for authority.
     pub full_name: Option<String>,
+    /// The account's login shell (`pw_shell`); `None` when empty or not UTF-8. Read only to
+    /// refuse system accounts (a `nologin` or `false` shell) at invitation time.
+    pub shell: Option<String>,
+}
+
+/// `UID_MIN` when `/etc/login.defs` does not say, as shadow-utils and every major distribution
+/// default it.
+const DEFAULT_UID_MIN: u32 = 1000;
+/// `UID_MIN` from the text of `/etc/login.defs`: the last uncommented `UID_MIN <n>` line, else
+/// `None`.
+fn parse_uid_min(login_defs: &str) -> Option<u32> {
+    login_defs.lines().rev().find_map(|line| {
+        let line = line.split('#').next().unwrap_or_default();
+        let mut fields = line.split_whitespace();
+        (fields.next() == Some("UID_MIN"))
+            .then(|| fields.next())
+            .flatten()
+            .and_then(|value| value.parse().ok())
+    })
 }
 
 /// The node's account database, as the broker reads it: point lookups only, never an
@@ -126,6 +145,12 @@ pub trait Directory {
     /// The account named exactly `name`, as NSS resolves it (which may be an alias whose
     /// canonical name differs; callers that care compare `by_uid(account.uid)`).
     fn by_name(&self, name: &str) -> Result<Account>;
+    /// The lowest UID of an ordinary login account. The shipped directory reads `UID_MIN` from
+    /// `/etc/login.defs`, and 1000 when that file does not say; anything else answers 1000
+    /// unless it overrides this.
+    fn uid_min(&self) -> u32 {
+        DEFAULT_UID_MIN
+    }
 }
 
 /// The node's NSS account database.
@@ -181,10 +206,21 @@ impl SystemDirectory {
                     .filter(|first| !first.is_empty())
                     .map(str::to_owned)
             };
+            let shell = if entry.pw_shell.is_null() {
+                None
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) }
+                    .to_str()
+                    .ok()
+                    .map(str::trim)
+                    .filter(|shell| !shell.is_empty())
+                    .map(str::to_owned)
+            };
             return Ok(Account {
                 uid: entry.pw_uid,
                 name,
                 full_name,
+                shell,
             });
         }
     }
@@ -202,6 +238,12 @@ impl Directory for SystemDirectory {
         Self::lookup(|entry, buffer, length, found| unsafe {
             libc::getpwnam_r(name.as_ptr(), entry, buffer, length, found)
         })
+    }
+    fn uid_min(&self) -> u32 {
+        fs::read_to_string("/etc/login.defs")
+            .ok()
+            .and_then(|text| parse_uid_min(&text))
+            .unwrap_or(DEFAULT_UID_MIN)
     }
 }
 fn private_dir(path: &Path) -> Result<()> {
@@ -466,6 +508,12 @@ const GENERAL_RESERVED: &str =
     "name_invalid: Channel name general is reserved for the team's first channel.";
 const TARGET_MISMATCH: &str =
     "target_mismatch: The person you chose no longer has that username. Refresh and choose again.";
+/// A direct add (`team.add_member`, `channel.add_member`) through an agent's grant. The worker
+/// allowlist refuses it first; this is the second, method-level wall.
+const DIRECT_ADD_AGENT_REFUSED: &str = "forbidden: only a person can add people";
+/// A listed channel that is not in the team, or not visible to the caller.
+const DIRECT_ADD_UNKNOWN_CHANNEL: &str =
+    "invalid_params: One of the chosen channels isn't in this team. Refresh and choose again.";
 /// Methods whose collision refusals count toward, and are blocked by, the rate limit.
 const NAME_METHODS: [&str; 5] = [
     "team.create",
@@ -1020,7 +1068,13 @@ impl Broker {
         ]))?);
         if let Some(saved) = self.state.dedupe.get(&key) {
             if let Some(channel) = req.params.get("channel_id").and_then(Value::as_str) {
-                self.channel(&self.state, &actor.id, channel, false)?;
+                // The host may add people to a channel it is not in (direct add), so its
+                // retry of that add is re-authorized as the host, not as a member.
+                let host_add = req.method == "channel.add_member"
+                    && self.manager(&self.state, &actor.id).is_ok();
+                if !host_add {
+                    self.channel(&self.state, &actor.id, channel, false)?;
+                }
             }
             if let Some(blob_id) = req.params.get("blob_id").and_then(Value::as_str) {
                 let blob = self
@@ -1152,6 +1206,7 @@ impl Broker {
             "scoped_runs",
             "human_names_v1",
             "unique_names_v1",
+            "direct_add_v1",
         ];
         #[cfg(feature = "join-by-name")]
         capabilities.push("join_by_name_v1");
@@ -2126,6 +2181,8 @@ impl Broker {
             "workspace.rename" => self.mutate_workspace_rename(s, actor, req),
             "invitation.create" => self.mutate_invitation_create(s, actor, req),
             "invitation.accept" => self.mutate_invitation_accept(s, actor, req),
+            "team.add_member" => self.mutate_team_add_member(s, actor, req),
+            "channel.add_member" => self.mutate_channel_add_member(s, actor, req),
             "channel.archive" | "channel.transfer" | "membership.revoke" => {
                 self.mutate_channel_archive(s, actor, req)
             }
@@ -2564,6 +2621,178 @@ impl Broker {
         s.invitations.remove(&invitation.id);
         s.workspace.policy_epoch += 1;
         Ok(json!({"accepted":true}))
+    }
+    /// `team.add_member {team_id, principal_id, expected_username, channel_ids?}` (direct add,
+    /// `direct_add_v1`): the team's owner or the workspace host, from a person's own signed
+    /// device, adds an admitted member straight into the team, its `#general`, and each listed
+    /// channel of the team the caller owns (any of them, for the host). No acceptance step: the
+    /// member consented when they joined the workspace, and this record is the owner's.
+    ///
+    /// Every check runs before anything changes, so one refused channel refuses the whole add.
+    /// A member already in the team and every listed channel is a successful no-op that leaves
+    /// the policy epoch alone; any real addition moves it, as `invitation.accept` does.
+    fn mutate_team_add_member(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), DIRECT_ADD_AGENT_REFUSED);
+        let host = self.manager(s, who).is_ok();
+        let team_id = text(p, "team_id")?;
+        let team = s
+            .teams
+            .get(team_id)
+            .filter(|team| host || team.members.contains(who))
+            .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
+        ensure!(
+            host || team.created_by == *who,
+            "forbidden: Only the team's owner or the workspace host can add people to it."
+        );
+        let principal_id = text(p, "principal_id")?;
+        let target = self.direct_add_target(s, p, principal_id)?;
+        let requested: BTreeSet<String> = match p.get("channel_ids") {
+            None | Some(Value::Null) => BTreeSet::new(),
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                anyhow!("invalid_params: channel_ids must be a list of channel IDs")
+            })?,
+        };
+        ensure!(
+            requested.len() <= 1000,
+            "invalid_params: too many channel_ids"
+        );
+        let general = team.general_channel_id.clone();
+        for channel_id in requested.iter().filter(|id| **id != general) {
+            // A channel of another team, or one the caller can't see, reads exactly as one
+            // that doesn't exist: the refusal is never an oracle for channel names.
+            let channel = s
+                .channels
+                .get(channel_id)
+                .filter(|c| c.team_id == team_id && (host || c.members.contains(who)))
+                .ok_or_else(|| anyhow!(DIRECT_ADD_UNKNOWN_CHANNEL))?;
+            ensure!(
+                host || channel.owner_id == *who,
+                "forbidden: You can only add people to channels you own. Uncheck #{} and try again.",
+                channel.name
+            );
+            ensure!(
+                !channel.archived,
+                "channel_archived: #{} is archived, so no one can be added to it.",
+                channel.name
+            );
+        }
+        let already_member = team.members.contains(&target);
+        let mut added_channels = Vec::new();
+        s.teams
+            .get_mut(team_id)
+            .expect("authorized team")
+            .members
+            .insert(target.clone());
+        for channel_id in
+            std::iter::once(&general).chain(requested.iter().filter(|id| **id != general))
+        {
+            let channel = s
+                .channels
+                .get_mut(channel_id)
+                .ok_or_else(|| anyhow!("storage_corrupt"))?;
+            if channel.members.insert(target.clone()) {
+                added_channels.push(channel_id.clone());
+            }
+        }
+        if !already_member || !added_channels.is_empty() {
+            s.invitations.retain(|_, invitation| {
+                invitation.principal_id != target
+                    || (invitation.target_id != team_id
+                        && !added_channels.contains(&invitation.target_id))
+            });
+            s.workspace.policy_epoch += 1;
+        }
+        Ok(json!({
+            "team_id": team_id,
+            "principal_id": target,
+            "added_channels": added_channels,
+            "already_member": already_member,
+        }))
+    }
+    /// `channel.add_member {channel_id, principal_id, expected_username}` (direct add): the
+    /// channel's owner or the workspace host adds a member of the channel's team. As
+    /// [`Self::mutate_team_add_member`], an existing member is a no-op that leaves the epoch
+    /// alone.
+    fn mutate_channel_add_member(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), DIRECT_ADD_AGENT_REFUSED);
+        let host = self.manager(s, who).is_ok();
+        let channel_id = text(p, "channel_id")?;
+        let channel = if host {
+            s.channels
+                .get(channel_id)
+                .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?
+        } else {
+            self.channel(s, who, channel_id, false)?
+        };
+        ensure!(
+            host || channel.owner_id == *who,
+            "forbidden: Only the channel's owner or the workspace host can add people to it."
+        );
+        ensure!(
+            !channel.archived,
+            "channel_archived: #{} is archived, so no one can be added to it.",
+            channel.name
+        );
+        let principal_id = text(p, "principal_id")?;
+        let target = self.direct_add_target(s, p, principal_id)?;
+        let username = s
+            .principals
+            .get(&target)
+            .map(|principal| principal.username.clone())
+            .unwrap_or_default();
+        ensure!(
+            s.teams
+                .get(&channel.team_id)
+                .is_some_and(|team| team.members.contains(&target)),
+            "forbidden: @{username} isn't in this channel's team yet. Add them to the team first."
+        );
+        let channel = s.channels.get_mut(channel_id).expect("authorized channel");
+        let already_member = !channel.members.insert(target.clone());
+        if !already_member {
+            s.invitations.retain(|_, invitation| {
+                invitation.principal_id != target || invitation.target_id != channel_id
+            });
+            s.workspace.policy_epoch += 1;
+        }
+        Ok(json!({
+            "channel_id": channel_id,
+            "principal_id": target,
+            "already_member": already_member,
+        }))
+    }
+    /// The principal a direct add names, once it is shown to be an admitted person: active
+    /// (never a pending join or a former member), still holding exactly the `expected_username`
+    /// the caller confirmed (required here, unlike the optional check elsewhere), and still the
+    /// account of that name on this server (a renamed or recycled UID is refused).
+    fn direct_add_target(&self, s: &State, p: &Value, principal_id: &str) -> Result<String> {
+        let expected = text(p, "expected_username")?;
+        let expected = expected.strip_prefix('@').unwrap_or(expected);
+        let target = s
+            .principals
+            .get(principal_id)
+            .filter(|principal| principal.active)
+            .ok_or_else(|| {
+                anyhow!("forbidden: @{expected} isn't a member of this workspace. Invite them to the workspace first.")
+            })?;
+        ensure!(target.username == expected, TARGET_MISMATCH);
+        ensure!(
+            self.directory
+                .by_uid(target.uid)
+                .is_ok_and(|account| account.name == target.username),
+            "target_mismatch: @{}'s account on this server changed since they joined, so they can't be added. The host can remove @{} and invite them again.",
+            target.username,
+            target.username
+        );
+        Ok(target.id.clone())
     }
     fn mutate_channel_archive(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
@@ -4060,4 +4289,25 @@ fn stop(root: &Path) -> Result<Value> {
 #[cfg(not(target_os = "linux"))]
 fn stop(_root: &Path) -> Result<Value> {
     bail!("unsupported: stop requires Linux pidfd")
+}
+
+#[cfg(test)]
+mod uid_min_tests {
+    use super::*;
+
+    #[test]
+    fn uid_min_is_the_last_uncommented_setting_in_login_defs() {
+        assert_eq!(parse_uid_min(""), None);
+        assert_eq!(parse_uid_min("UID_MAX 60000\n"), None);
+        assert_eq!(
+            parse_uid_min("# UID_MIN 10\nUID_MIN\t\t 1000\n"),
+            Some(1000)
+        );
+        assert_eq!(
+            parse_uid_min("UID_MIN 500 # old RHEL\nUID_MIN 1000\n"),
+            Some(1000)
+        );
+        assert_eq!(parse_uid_min("SYS_UID_MIN 100\nUID_MIN 2000\n"), Some(2000));
+        assert_eq!(parse_uid_min("UID_MIN lots\n"), None);
+    }
 }

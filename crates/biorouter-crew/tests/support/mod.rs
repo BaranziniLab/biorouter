@@ -117,6 +117,8 @@ impl Drop for TempRoot {
 pub struct FakeDirectory {
     accounts: Arc<Mutex<BTreeMap<u32, Account>>>,
     calls: Arc<AtomicUsize>,
+    /// `UID_MIN` as this fake's `login.defs` would say it; `None` answers the trait's default.
+    uid_min: Arc<Mutex<Option<u32>>>,
 }
 
 impl FakeDirectory {
@@ -127,8 +129,25 @@ impl FakeDirectory {
                 uid,
                 name: name.into(),
                 full_name: full_name.map(str::to_owned),
+                shell: None,
             },
         );
+    }
+    /// As [`Self::set`], with a login shell.
+    pub fn set_with_shell(&self, uid: u32, name: &str, shell: &str) {
+        self.accounts.lock().unwrap().insert(
+            uid,
+            Account {
+                uid,
+                name: name.into(),
+                full_name: None,
+                shell: Some(shell.into()),
+            },
+        );
+    }
+    /// Answer `uid_min` with `uid_min`, as a node whose `login.defs` sets it.
+    pub fn set_uid_min(&self, uid_min: u32) {
+        *self.uid_min.lock().unwrap() = Some(uid_min);
     }
     pub fn remove(&self, uid: u32) {
         self.accounts.lock().unwrap().remove(&uid);
@@ -161,6 +180,9 @@ impl Directory for FakeDirectory {
             .find(|account| account.name == name)
             .cloned()
             .ok_or_else(|| anyhow!("identity_unavailable: Unix account cannot be resolved"))
+    }
+    fn uid_min(&self) -> u32 {
+        (*self.uid_min.lock().unwrap()).unwrap_or(1000)
     }
 }
 

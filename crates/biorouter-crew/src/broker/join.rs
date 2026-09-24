@@ -441,6 +441,39 @@ fn canonical_account(broker: &mut Broker, typed: &str) -> Result<Account> {
     Ok(account)
 }
 
+/// The kernel's overflow UID, which NSS reports as `nobody`: never a person.
+const OVERFLOW_UID: u32 = 65534;
+
+/// Whether an account is a system account that can never join a workspace: UID 0, a UID below
+/// `uid_min` or the overflow UID, or a `nologin`/`false` login shell.
+fn is_system_account(account: &Account, uid_min: u32) -> bool {
+    let shell = account.shell.as_deref().map(|shell| {
+        shell
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(shell)
+    });
+    account.uid == 0
+        || account.uid < uid_min
+        || account.uid == OVERFLOW_UID
+        || account.uid == u32::MAX
+        || shell.is_some_and(|name| name.ends_with("nologin") || name == "false")
+}
+
+/// T-54: UID 0, a UID below the node's `UID_MIN` (or the overflow UID `nobody` holds), and an
+/// account whose login shell is `nologin` or `false` are the server's own, never a person's.
+/// Checked on the canonical account, through the [`Directory`] seam, before anything is
+/// recorded.
+fn refuse_system_account(broker: &Broker, account: &Account) -> Result<()> {
+    ensure!(
+        !is_system_account(account, broker.directory.uid_min()),
+        "name_invalid: @{} is a system account on this server and can't join a workspace.",
+        account.name
+    );
+    Ok(())
+}
+
 /// Who the join admits: `Some(principal)` to add a device to the account's active principal,
 /// `None` for a new person. Refuses the cases that need the host to act first.
 fn admission_target(s: &State, account: &Account, add_device: bool) -> Result<Option<String>> {
@@ -489,6 +522,7 @@ fn invite(broker: &mut Broker, s: &mut State, actor: &Actor, req: &Request) -> R
     let typed = username_param(p)?;
     let add_device = flag(p, "add_device")?;
     let account = canonical_account(broker, typed)?;
+    refuse_system_account(broker, &account)?;
     let existing_principal_id = admission_target(s, &account, add_device)?;
     Broker::ensure_username_free(s, account.uid, &account.name)?;
     if let Some(other) = s
@@ -616,4 +650,53 @@ pub(super) fn prune_expired(s: &mut State, now: u64) {
 /// Completing the legacy token path for `uid` removes its pending join.
 pub(super) fn on_legacy_enrolled(s: &mut State, uid: u32) {
     s.pending_joins.remove(&uid.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(uid: u32, shell: Option<&str>) -> Account {
+        Account {
+            uid,
+            name: "someone".into(),
+            full_name: None,
+            shell: shell.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn system_accounts_are_root_low_uids_nobody_and_accounts_without_a_login_shell() {
+        for (uid, shell) in [
+            (0, Some("/bin/bash")),
+            (1, Some("/usr/sbin/nologin")),
+            (999, Some("/bin/bash")),
+            (65_534, None),
+            (65_534, Some("/bin/sh")),
+            (u32::MAX, Some("/bin/bash")),
+            (1_001, Some("/usr/sbin/nologin")),
+            (1_001, Some("/sbin/nologin")),
+            (1_001, Some("/bin/false")),
+            (1_001, Some("/usr/bin/false")),
+        ] {
+            assert!(
+                is_system_account(&account(uid, shell), 1000),
+                "{uid} {shell:?}"
+            );
+        }
+        for (uid, shell) in [
+            (1_000, Some("/bin/bash")),
+            (1_001, None),
+            (71_001, Some("/usr/bin/zsh")),
+            (1_001, Some("/opt/false-positive/bin/bash")),
+        ] {
+            assert!(
+                !is_system_account(&account(uid, shell), 1000),
+                "{uid} {shell:?}"
+            );
+        }
+        // A node whose login.defs starts people at 500.
+        assert!(!is_system_account(&account(600, Some("/bin/bash")), 500));
+        assert!(is_system_account(&account(0, Some("/bin/bash")), 0));
+    }
 }
