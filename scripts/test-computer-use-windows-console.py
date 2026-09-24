@@ -27,6 +27,7 @@ import (
     "os"
     "os/exec"
     "syscall"
+    "unsafe"
 )
 
 func consoleVerdict() string {
@@ -43,15 +44,26 @@ func consoleVerdict() string {
     return "hidden"
 }
 
+func startupInfo() (uint32, uint16) {
+    var info syscall.StartupInfo
+    info.Cb = uint32(unsafe.Sizeof(info))
+    _ = syscall.GetStartupInfo(&info)
+    return info.Flags, info.ShowWindow
+}
+
 func main() {
     report := os.Getenv("BIOROUTER_CONSOLE_PROBE_FILE")
     if report == "" {
         fmt.Fprintln(os.Stderr, "missing console probe report path")
         os.Exit(2)
     }
+    startupFlags, showWindow := startupInfo()
     result, err := json.Marshal(map[string]any{
         "verdict": consoleVerdict(),
         "pid": os.Getpid(),
+        "startup_flags": startupFlags,
+        "show_window": showWindow,
+        "startup_hidden": startupFlags&syscall.STARTF_USESHOWWINDOW != 0 && showWindow == syscall.SW_HIDE,
     })
     if err == nil {
         err = os.WriteFile(report, append(result, '\n'), 0600)
@@ -147,8 +159,8 @@ def run_control(wrapper, work, real_powershell):
     if completed.returncode:
         raise AssertionError(f"unflagged control failed: {completed.stderr[:1000]!r}")
     result = read_probe(report, "unflagged control")
-    if result["verdict"] != "visible":
-        raise AssertionError(f"unflagged control did not show a console: {result}")
+    if result["verdict"] != "visible" or result.get("startup_hidden") is not False:
+        raise AssertionError(f"unflagged control did not show an unhidden console: {result}")
     return result
 
 
@@ -191,6 +203,10 @@ def observe(patched, baseline, wrapper, real_powershell):
         after = run_helper(patched, wrapper, real_powershell, work, "after")
     if after["verdict"] == "visible":
         raise AssertionError(f"patched helper showed its PowerShell child: {after}")
+    if before.get("startup_hidden") is not False:
+        raise AssertionError(f"pre-fix helper unexpectedly requested a hidden PowerShell startup: {before}")
+    if after.get("startup_hidden") is not True:
+        raise AssertionError(f"patched helper did not request a hidden PowerShell startup: {after}")
     return {
         "positive_control": positive,
         "pre_fix_helper": before,

@@ -42,6 +42,13 @@ func consoleVerdict() string {
     return "hidden"
 }
 
+func startupInfo() (uint32, uint16) {
+    var info syscall.StartupInfo
+    info.Cb = uint32(unsafe.Sizeof(info))
+    _ = syscall.GetStartupInfo(&info)
+    return info.Flags, info.ShowWindow
+}
+
 func ancestry() (int, string, int, string) {
     parentPID := os.Getppid()
     snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
@@ -78,6 +85,7 @@ func main() {
     }
     directory := filepath.Dir(executable)
     parentPID, parentImage, grandparentPID, grandparentImage := ancestry()
+    startupFlags, showWindow := startupInfo()
     control := len(os.Args) == 2 && os.Args[1] == "--probe-only"
     record, err := json.Marshal(map[string]any{
         "pid": os.Getpid(), "parent_pid": parentPID,
@@ -85,6 +93,8 @@ func main() {
         "grandparent_image": grandparentImage,
         "mode": map[bool]string{true: "control", false: "forward"}[control],
         "verdict": consoleVerdict(),
+        "startup_flags": startupFlags, "show_window": showWindow,
+        "startup_hidden": startupFlags&syscall.STARTF_USESHOWWINDOW != 0 && showWindow == syscall.SW_HIDE,
     })
     if err == nil {
         err = os.WriteFile(filepath.Join(directory, fmt.Sprintf("console-%d.json", os.Getpid())), record, 0600)
@@ -127,8 +137,9 @@ def observe(cli, wrapper):
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                              timeout=15, check=False)
     positive = records(directory, "control")
-    if control.returncode or len(positive) != 1 or positive[0].get("verdict") != "visible":
-        raise AssertionError(f"GUI positive control did not show a console: {positive}, exit={control.returncode}")
+    if (control.returncode or len(positive) != 1 or positive[0].get("verdict") != "visible"
+            or positive[0].get("startup_hidden") is not False):
+        raise AssertionError(f"GUI positive control did not show an unhidden console: {positive}, exit={control.returncode}")
 
     env = dict(os.environ)
     env.pop("BIOROUTER_COMPUTER_USE_DIR", None)
@@ -202,6 +213,8 @@ def observe(cli, wrapper):
             raise AssertionError(f"packaged Copilot PowerShell child showed a console: {child}")
         if child.get("verdict") not in {"none", "hidden"}:
             raise AssertionError(f"PowerShell child did not report a console state: {child}")
+        if child.get("startup_hidden") is not True:
+            raise AssertionError(f"packaged Go helper did not request a hidden PowerShell startup: {child}")
     return {"positive_control": positive[0], "packaged_cli_pid": process.pid,
             "native_power_shell_children": children, "list_apps_success": True,
             "coverage": "packaged CLI -> Rust MCP -> packaged Go helper -> PowerShell child"}
