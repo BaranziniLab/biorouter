@@ -1,41 +1,29 @@
+import { CopyField } from '../ui/copy-field';
+import { signInCopy } from './auth/copy';
+import './auth/auth.css';
+
+/** The known-hosts file this computer's SSH reads for Crew connections. */
+export function knownHostsPath(profileRoot: unknown): string {
+  return typeof profileRoot === 'string' && profileRoot
+    ? `${profileRoot.replace(/\/+$/, '')}/home/.ssh/known_hosts`
+    : '~/.ssh/known_hosts';
+}
+
+/**
+ * The body of "Trouble signing in?" under the sign-in terminal: use the same credentials as for
+ * the server, add a jump host in Connection settings if IT gave one, and the known-hosts file
+ * Crew checks servers against — an isolated development profile's own file when one is set.
+ *
+ * Verifying a new or changed host key lives on the trust panes, which never offer to accept one.
+ */
 export default function CrewHostTrust() {
   const profileRoot = window.appConfig?.get('BIOROUTER_DEV_PROFILE_ROOT');
   return (
-    <details className="crew-trust">
-      <summary>New host or changed host key? Verify SSH trust</summary>
-      <ol>
-        <li>
-          Obtain the SSH host’s public key or SHA-256 fingerprint through your institution’s trusted
-          directory, administrator, or cloud control plane. Verify every jump host as well.
-        </li>
-        <li>
-          Use your existing SSH trust setup to compare the fingerprint. Import the verified full
-          host public key into the known-hosts file used by this connection. A fingerprint alone is
-          not a known-hosts entry.
-        </li>
-        <li>
-          Return to Crew and choose Reconnect, then Authenticate if the host requests a password or
-          MFA.
-        </li>
-      </ol>
-      <p>
-        {typeof profileRoot === 'string' && profileRoot ? (
-          <>
-            This isolated profile uses <code>{profileRoot}/home/.ssh/known_hosts</code>. Its fixture
-            keys must be provisioned separately from your personal SSH setup.
-          </>
-        ) : (
-          <>
-            Crew uses your existing OpenSSH configuration and known-hosts settings, normally{' '}
-            <code>~/.ssh/known_hosts</code>.
-          </>
-        )}
-      </p>
-      <p>
-        A changed key requires independent re-verification. Crew never accepts an unknown host
-        automatically. The workspace public key in your invitation is a separate broker identity
-        pin.
-      </p>
-    </details>
+    <div className="crew-signin-help text-body text-text-default">
+      <p>{signInCopy.sameCredentials}</p>
+      <p>{signInCopy.jumpHost}</p>
+      <p>{signInCopy.knownHosts}</p>
+      <CopyField value={knownHostsPath(profileRoot)} label={signInCopy.knownHostsLabel} />
+    </div>
   );
 }

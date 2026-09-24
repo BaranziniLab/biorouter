@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { GENERATED_THEMES } from '../../styles/themes.generated';
 import CrewAuthentication from './CrewAuthentication';
 
 const mocks = vi.hoisted(() => {
@@ -11,6 +12,8 @@ const mocks = vi.hoisted(() => {
     cols = 80;
     rows = 12;
     writes: string[] = [];
+    // xterm's live options, which a re-theme writes to without recreating the terminal.
+    options: Record<string, unknown>;
     open = vi.fn();
     loadAddon = vi.fn();
     focus = vi.fn();
@@ -18,12 +21,14 @@ const mocks = vi.hoisted(() => {
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     write = vi.fn((data: string) => this.writes.push(data));
 
-    constructor() {
+    constructor(init: Record<string, unknown> = {}) {
+      this.options = { ...init };
       terminals.push(this);
     }
   }
 
   return {
+    theme: { family: 'parchment' as string, mode: 'light' as 'light' | 'dark' },
     terminals,
     dataListeners,
     exitListeners,
@@ -52,6 +57,12 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 vi.mock('./CrewHostTrust', () => ({ default: () => <div /> }));
+// The theme hooks are non-throwing outside a provider (parchment, light); this lets the restyle
+// test change family and mode under a live session.
+vi.mock('../../contexts/ThemeContext', () => ({
+  useThemeFamily: () => mocks.theme.family,
+  useResolvedTheme: () => mocks.theme.mode,
+}));
 
 class ResizeObserverStub {
   observe = vi.fn();
@@ -78,6 +89,8 @@ function installElectron() {
 }
 
 beforeEach(() => {
+  mocks.theme.family = 'parchment';
+  mocks.theme.mode = 'light';
   vi.stubGlobal('ResizeObserver', ResizeObserverStub);
   mocks.terminals.length = 0;
   mocks.dataListeners.length = 0;
@@ -189,5 +202,43 @@ describe('CrewAuthentication', () => {
     expect(mocks.terminals[0]?.writes).toEqual(['matching data']);
     expect(removeData).toHaveBeenCalledOnce();
     expect(removeExit).toHaveBeenCalledOnce();
+  });
+
+  it('shows Close as its visible text under the pinned accessible name, with the sign-in help', async () => {
+    mocks.createCrewAuthentication.mockResolvedValue({ success: true, sessionId: 'session-6' });
+    render(
+      <CrewAuthentication connectionId="connection-6" onConnected={vi.fn()} onClose={vi.fn()} />
+    );
+    const close = screen.getByRole('button', { name: 'Close authentication connection' });
+    expect(close).toHaveTextContent(/^Close$/);
+    expect(screen.getByRole('button', { name: 'Trouble signing in?' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.resizeTerminalSession).toHaveBeenCalledWith('session-6', 80, 12)
+    );
+  });
+
+  it('wears the family terminal palette at 13/20 and re-themes without a new session', async () => {
+    mocks.createCrewAuthentication.mockResolvedValue({ success: true, sessionId: 'session-7' });
+    const props = { connectionId: 'connection-7', onConnected: vi.fn(), onClose: vi.fn() };
+    const view = render(<CrewAuthentication {...props} />);
+    await waitFor(() =>
+      expect(mocks.resizeTerminalSession).toHaveBeenCalledWith('session-7', 80, 12)
+    );
+
+    const terminal = mocks.terminals[0];
+    expect(terminal?.options.fontSize).toBe(13);
+    expect(terminal?.options.lineHeight).toBe(20 / 13);
+    expect(terminal?.options.theme).toEqual(GENERATED_THEMES.parchment.light.terminal);
+    expect(JSON.stringify(terminal?.options.theme)).not.toContain('#17191c');
+
+    mocks.theme.family = 'roche-limit';
+    mocks.theme.mode = 'dark';
+    view.rerender(<CrewAuthentication {...props} />);
+
+    expect(terminal?.options.theme).toEqual(GENERATED_THEMES['roche-limit'].dark.terminal);
+    expect(mocks.terminals).toHaveLength(1);
+    expect(mocks.createCrewAuthentication).toHaveBeenCalledOnce();
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+    expect(mocks.disposeTerminalSession).not.toHaveBeenCalled();
   });
 });

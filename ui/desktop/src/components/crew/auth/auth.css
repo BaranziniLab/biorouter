@@ -1,0 +1,39 @@
+/* Crew sign-in — the body `CrewAuthentication` renders inside the Sign in
+   dialog: the SSH terminal, its one alert, "Trouble signing in?" and Close.
+
+   Bound by the contract in `crew/crew-app.css` (enforced by
+   `crew/crewCss.sourceGuard.test.ts`). The terminal's own colours come from
+   the family's generated terminal palette (`GENERATED_THEMES[family][mode]`),
+   set on xterm, and the box is painted with that family's `terminalGround`
+   token inline; this file owns only the box's geometry. */
+
+.crew-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-block-end: 16px;
+}
+
+/* Twelve 20px rows plus the inset: xterm's fit addon measures this box, so its
+   height is load-bearing. */
+.crew-signin-terminal {
+  height: 256px;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+}
+
+.crew-signin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.crew-signin-help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
