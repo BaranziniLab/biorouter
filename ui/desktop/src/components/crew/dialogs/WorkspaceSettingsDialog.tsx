@@ -23,6 +23,7 @@ import {
   type CrewPerson,
 } from '../identity';
 import { sidebarCopy } from '../sidebar/copy';
+import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/types';
 import { copyText } from './clipboard';
@@ -31,6 +32,7 @@ import { workspaceSettingsCopy as copy } from './copy';
 import { DialogErrorNote, useDismissOwnError } from './fields';
 import { MakePrivateDialog } from './MakePrivateDialog';
 import { uniqueNamesSupported, useDialogView, type DialogView } from './workspace';
+import './dialogs.css';
 
 const SOURCE: ErrorSource = 'dialog:workspace-settings';
 
@@ -52,7 +54,14 @@ export interface WorkspaceSettingsDialogProps {
  * Every control here sends a request the broker or daemon decides; host-only controls are shown
  * only to the host because they are the only person the broker would accept them from, not because
  * this dialog grants anything. Changes that expose data or cannot be undone go through the
- * confirmations of the copy deck, opened over this dialog so Cancel returns here.
+ * confirmations of the copy deck, opened over this dialog so Cancel returns here — and focus to
+ * the control that opened them.
+ *
+ * The dialog is as tall as its tallest own tab whichever is showing (QA T-30): General, People and
+ * Privacy stay mounted, stacked in one grid cell, and only the selected one is visible and in the
+ * accessibility tree, so switching tabs never moves the footer. The tab list is named, and
+ * Shift+Tab from it leaves the list (to the dialog's last control, as a focus trap wraps) instead
+ * of Radix's roving group handing focus straight back to the selected tab (QA T-39).
  */
 export function WorkspaceSettingsDialog({
   tab,
@@ -69,11 +78,20 @@ export function WorkspaceSettingsDialog({
   const [confirm, setConfirm] = React.useState<ConfirmIntent | null>(null);
   const [makingPrivate, setMakingPrivate] = React.useState(false);
   const dismissOwnError = useDismissOwnError(SOURCE, 'dialog:confirm');
+  const nestedFocus = useFocusReturn();
 
   const ask = (intent: ConfirmIntent) => {
     dismissOwnError();
+    nestedFocus.remember();
     setConfirm(intent);
   };
+  const panel = (value: WorkspaceSettingsTab) => ({
+    value,
+    forceMount: true as const,
+    className: 'crew-settings-panel',
+    // Mounted but not selected: out of sight (CSS), of the tab order and of the a11y tree.
+    ...(current === value ? {} : { 'aria-hidden': true, inert: true }),
+  });
 
   return (
     <ModalShell
@@ -90,7 +108,7 @@ export function WorkspaceSettingsDialog({
         onValueChange={(value) => setCurrent(value as WorkspaceSettingsTab)}
         className="py-3"
       >
-        <TabsList>
+        <TabsList aria-label={copy.tabsLabel} onKeyDown={leaveTabListBackward}>
           <TabsTrigger value="general">{copy.tabs.general}</TabsTrigger>
           <TabsTrigger value="people">{copy.tabs.people}</TabsTrigger>
           <TabsTrigger value="privacy">{copy.tabs.privacy}</TabsTrigger>
@@ -98,29 +116,93 @@ export function WorkspaceSettingsDialog({
             <TabsTrigger value="agent-access">{copy.tabs.agentAccess}</TabsTrigger>
           ) : null}
         </TabsList>
-        <TabsContent value="general">
-          <GeneralTab view={view} />
-        </TabsContent>
-        <TabsContent value="people">
-          <PeopleTab view={view} onConfirm={ask} />
-        </TabsContent>
-        <TabsContent value="privacy">
-          <PrivacyTab view={view} onConfirm={ask} onMakePrivate={() => setMakingPrivate(true)} />
-        </TabsContent>
-        {agentAccess !== undefined ? (
-          <TabsContent value="agent-access">{agentAccess}</TabsContent>
-        ) : null}
+        <div className="crew-settings-panels">
+          <TabsContent {...panel('general')}>
+            <GeneralTab view={view} />
+          </TabsContent>
+          <TabsContent {...panel('people')}>
+            <PeopleTab view={view} onConfirm={ask} />
+          </TabsContent>
+          <TabsContent {...panel('privacy')}>
+            <PrivacyTab
+              view={view}
+              onConfirm={ask}
+              onMakePrivate={() => {
+                nestedFocus.remember();
+                setMakingPrivate(true);
+              }}
+            />
+          </TabsContent>
+          {/* The access area's content mounts only while it is selected: it is not ours to run
+              hidden. It shares the cell, so the dialog is at least as tall as the tallest of ours. */}
+          {agentAccess !== undefined ? (
+            <TabsContent value="agent-access" className="crew-settings-panel">
+              {agentAccess}
+            </TabsContent>
+          ) : null}
+        </div>
       </Tabs>
       <DialogErrorNote source={SOURCE} className="mb-2" />
 
-      {confirm ? <CrewConfirmation confirm={confirm} onClose={() => setConfirm(null)} /> : null}
+      {confirm ? (
+        <CrewConfirmation
+          confirm={confirm}
+          onClose={() => {
+            setConfirm(null);
+            nestedFocus.restore();
+          }}
+        />
+      ) : null}
       {makingPrivate && crew.connection ? (
         <MakePrivateDialog
           connection={savedConnection(view) ?? crew.connection}
-          onClose={() => setMakingPrivate(false)}
+          onClose={() => {
+            setMakingPrivate(false);
+            nestedFocus.restore();
+          }}
         />
       ) : null}
     </ModalShell>
+  );
+}
+
+/**
+ * Shift+Tab inside the tab list. Radix's roving group answers it by making the list untabbable for
+ * a moment so the browser can move focus backward — but nothing in this dialog comes before the
+ * list, so the dialog's focus trap caught the escaping focus and put it straight back on the
+ * selected tab, and Shift+Tab looped there forever. Move it where a focus trap wraps to instead:
+ * the dialog's last control (its ×).
+ */
+function leaveTabListBackward(event: React.KeyboardEvent<HTMLElement>) {
+  if (event.key !== 'Tab' || !event.shiftKey || event.defaultPrevented) return;
+  const dialog = event.currentTarget.closest('[role="dialog"], [role="alertdialog"]');
+  if (!dialog) return;
+  const list = event.currentTarget;
+  const before = tabbables(dialog).filter(
+    (element) =>
+      !list.contains(element) &&
+      element.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING
+  );
+  // Something before the list takes focus the ordinary way; only a list that is first wraps.
+  if (before.length > 0) return;
+  const last = tabbables(dialog)
+    .filter((element) => !list.contains(element))
+    .pop();
+  if (!last) return;
+  event.preventDefault();
+  last.focus();
+}
+
+const TABBABLE =
+  'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+
+/** The dialog's keyboard stops, in document order: enabled, not hidden, not inert. */
+function tabbables(root: Element): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
+    (element) =>
+      !element.hasAttribute('disabled') &&
+      element.getAttribute('tabindex') !== '-1' &&
+      element.closest('[inert], [aria-hidden="true"], [hidden]') === null
   );
 }
 
@@ -207,7 +289,7 @@ function PeopleTab({
   const { crew, dir, snapshot, workspace } = view;
   const isHost = dir.viewerIsHost;
   const waiting = isHost ? (snapshot?.pending_joins ?? []) : [];
-  const people = dir.people;
+  const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
 
   return (
@@ -251,6 +333,18 @@ function PeopleTab({
         </Note>
       ) : null}
     </div>
+  );
+}
+
+/** The host, then you, then everyone else alphabetically by name (QA T-32). */
+function peopleInOrder(people: readonly CrewPerson[]): CrewPerson[] {
+  const rank = (person: CrewPerson) => (person.isHost ? 0 : person.isYou ? 1 : 2);
+  const name = (person: CrewPerson) => person.displayName || person.username;
+  return [...people].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      name(a).localeCompare(name(b), undefined, { sensitivity: 'base' }) ||
+      a.username.localeCompare(b.username)
   );
 }
 

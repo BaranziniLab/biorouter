@@ -119,7 +119,7 @@ describe('WorkspaceSettingsDialog', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Remove from lab…' }));
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
     });
     expect(within(confirm).getByLabelText('Type bob to confirm')).toBeInTheDocument();
@@ -196,13 +196,13 @@ describe('WorkspaceSettingsDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     expect(dialog).toHaveTextContent(copy.privateForEveryone);
     fireEvent.click(within(dialog).getByRole('button', { name: copy.allowPublic }));
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.allowWorkspacePublic.title('lab'),
     });
     fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: confirmCopy.allowWorkspacePublic.title('lab') })
+        screen.queryByRole('alertdialog', { name: confirmCopy.allowWorkspacePublic.title('lab') })
       ).toBeNull()
     );
     // Cancel returns to the settings, having sent nothing.
@@ -214,7 +214,7 @@ describe('WorkspaceSettingsDialog', () => {
     const { crew } = renderSettings({ tab: 'privacy' });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     fireEvent.click(within(dialog).getByRole('button', { name: copy.makePublic }));
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.makeConnectionPublic.title('lab'),
     });
     expect(crew.updateConnection).not.toHaveBeenCalled();
@@ -270,7 +270,7 @@ describe('WorkspaceSettingsDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     expect(dialog).toHaveTextContent(copy.notSet);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set institution to ucsf…' }));
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.setInstitution.title('lab', 'ucsf'),
     });
     await act(async () => {
@@ -279,6 +279,80 @@ describe('WorkspaceSettingsDialog', () => {
     await waitFor(() =>
       expect(requestsFor(crew, 'policy.set')).toEqual([{ mode: 'private', institution_id: 'ucsf' }])
     );
+  });
+
+  it('names its tab list and lets Shift+Tab leave it instead of looping on the tab', async () => {
+    const user = userEvent.setup();
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(within(dialog).getByRole('tablist', { name: copy.tabsLabel })).toBeInTheDocument();
+    const people = within(dialog).getByRole('tab', { name: 'People' });
+    await waitFor(() => expect(people).toHaveFocus());
+
+    // Nothing in the dialog comes before the tab list, so backward wraps to its last control.
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
+    // …and on backward through the dialog's controls, not back onto the same tab.
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus();
+  });
+
+  it('keeps every tab of its own mounted, so its height is the tallest one’s', async () => {
+    renderSettings({ tab: 'general' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const panels = dialog.querySelectorAll('.crew-settings-panel');
+    expect(panels).toHaveLength(3);
+    const inactive = Array.from(panels).filter(
+      (panel) => panel.getAttribute('data-state') === 'inactive'
+    );
+    expect(inactive).toHaveLength(2);
+    // Out of the tab order and the accessibility tree, not merely unseen.
+    for (const panel of inactive) {
+      expect(panel).toHaveAttribute('aria-hidden', 'true');
+      expect(panel).toHaveAttribute('inert');
+    }
+    expect(within(dialog).queryByRole('button', { name: copy.invite })).toBeNull();
+    expect(within(dialog).getAllByRole('tabpanel')).toHaveLength(1);
+  });
+
+  it('lists the host first, then you, then everyone else alphabetically', async () => {
+    const zed = { id: 'person-zed', uid: 1009, username: 'zed', nickname: 'Aaron Zed' };
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [
+        { id: 'person-dan', uid: 1003, username: 'dan', nickname: 'Dan Wu' },
+        bob,
+        zed,
+        { id: 'person-carol', uid: 1002, username: 'carol', nickname: 'Carol Diaz' },
+        alice,
+      ],
+    });
+    renderSettings({ tab: 'people' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const rows = within(dialog)
+      .getAllByRole('button', { name: / options$/ })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(rows).toEqual([
+      'Alice Chen (@alice) options',
+      'Bob Lee (@bob) options',
+      'Aaron Zed (@zed) options',
+      'Carol Diaz (@carol) options',
+      'Dan Wu (@dan) options',
+    ]);
+  });
+
+  it('returns focus to the row menu’s trigger when a confirmation opened from it is cancelled', async () => {
+    const user = userEvent.setup();
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const trigger = within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove from lab…' }));
+    const confirm = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
+    });
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it('tells the host to add an institution to the connection first', async () => {

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { ModalShellDefaultsContext, type ModalShellDefaults } from '../../ModalShell';
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent, DialogKind } from '../state/types';
 import { AddPeopleDialog } from './AddPeopleDialog';
@@ -49,15 +50,43 @@ export interface CrewDialogsProps {
 }
 
 /**
+ * What every Crew dialog's `ModalShell` gets, including dialogs this file mounts but another area
+ * wrote:
+ * - `anchor: 'top'`, so a dialog whose height changes (a tab, a result, an error) grows downward
+ *   instead of re-centring under the pointer (QA T-30);
+ * - a close handler that keeps Radix from moving focus. These dialogs have no `Dialog.Trigger`
+ *   (they open from `openDialog`), so Radix would focus nothing and focus would fall to `<body>`;
+ *   the controller's surfaces return it to the recorded opener instead (`state/focusReturn.ts`).
+ */
+const CREW_DIALOG_DEFAULTS: ModalShellDefaults = {
+  anchor: 'top',
+  onCloseAutoFocus: (event) => event.preventDefault(),
+};
+
+/**
  * Renders the dialog the controller's `ui.dialog` intent names, if this area owns it. Areas open
  * each other's dialogs only through `openDialog(intent)`, never by importing them; the layout
  * mounts this once. Each dialog is mounted only while its intent is open, so none carries state
- * from one opening to the next, and closing one returns focus to whatever opened it.
+ * from one opening to the next.
+ *
+ * Closing one returns focus to whatever opened it — but not through Radix, which restores focus
+ * only to a `Dialog.Trigger` and these dialogs have none. `openDialog` records the opener (a menu
+ * item stands for its menu's trigger) and the controller's surfaces put focus back once the dialog
+ * has unmounted, falling back to the channel heading or the composer when the opener is gone.
  */
 export function CrewDialogs({ agentAccess }: CrewDialogsProps) {
-  const { ui, closeDialog } = useCrew();
+  const { ui } = useCrew();
   const intent = ui.dialog;
   if (!intent) return null;
+  return (
+    <ModalShellDefaultsContext.Provider value={CREW_DIALOG_DEFAULTS}>
+      <HostedDialog intent={intent} agentAccess={agentAccess} />
+    </ModalShellDefaultsContext.Provider>
+  );
+}
+
+function HostedDialog({ intent, agentAccess }: { intent: DialogIntent; agentAccess?: ReactNode }) {
+  const { closeDialog } = useCrew();
   const key = dialogKey(intent);
   switch (intent.kind) {
     case 'connection-settings':

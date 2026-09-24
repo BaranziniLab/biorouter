@@ -78,6 +78,8 @@ const SENTENCE_CODES = new Set([
   'device_code_invalid',
   'rate_limited',
   'target_mismatch',
+  // `team.add_member` / `channel.add_member` (`direct_add_v1`): the person's username changed.
+  'name_mismatch',
   'not_invited',
   'identity_unavailable',
   'identity_ambiguous',

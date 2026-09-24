@@ -5,7 +5,7 @@ import { Note } from '../../ui/note';
 import { AlertTriangle } from '../../icons/app-icons';
 import { cn } from '../../../utils';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
-import type { ErrorSource } from '../state/types';
+import type { CrewController, ErrorSource } from '../state/types';
 import { refusalText } from './refusals';
 
 /**
@@ -121,10 +121,55 @@ export function RadioRows<T extends string>({
 }
 
 /**
+ * How many surfaces still show each dialog source's errors, per controller (keyed by its stable
+ * `dismissError`). A dialog renders its error slot in more than one place over its life — a form
+ * and the result that replaces it — so "the slot unmounted" is not "the dialog closed"; only the
+ * last one leaving is.
+ */
+const openSlots = new WeakMap<CrewController['dismissError'], Map<ErrorSource, number>>();
+
+/**
+ * Dismiss the controller's error when the dialog that shows it closes, if it is still that
+ * dialog's error (QA T-08). The person read the refusal in the dialog and chose Cancel or ×:
+ * without this, the error fell through to the connection bar (every error renders somewhere) and
+ * the bar then repeated it raw — "name_taken: …" over the page after the dialog had gone. An error
+ * that arrives AFTER the dialog closed (an action still in flight) is untouched, and still lands in
+ * the connection bar.
+ */
+function useDismissErrorOnClose(source: ErrorSource): void {
+  const crew = useCrew();
+  const latest = React.useRef({ error: crew.error, dismissError: crew.dismissError });
+  React.useEffect(() => {
+    latest.current = { error: crew.error, dismissError: crew.dismissError };
+  });
+  const { dismissError } = crew;
+  React.useEffect(() => {
+    let counts = openSlots.get(dismissError);
+    if (!counts) {
+      counts = new Map();
+      openSlots.set(dismissError, counts);
+    }
+    const slots = counts;
+    slots.set(source, (slots.get(source) ?? 0) + 1);
+    return () => {
+      slots.set(source, Math.max(0, (slots.get(source) ?? 1) - 1));
+      // After the whole commit: a form replaced by its result mounts the next slot in the same
+      // commit, and that is not a close.
+      queueMicrotask(() => {
+        if ((slots.get(source) ?? 0) > 0) return;
+        const { error, dismissError: dismiss } = latest.current;
+        if (error?.source === source) dismiss();
+      });
+    };
+  }, [dismissError, source]);
+}
+
+/**
  * The one place a dialog shows an action error, and only while the controller routes that error
  * here (`useCrewErrorSlot`): a failure from a dialog that has since closed falls back to the
  * connection bar, so every error still renders exactly once. `render` rewords a refusal the copy
- * deck has its own sentence for; the text is always its own node.
+ * deck has its own sentence for; the text is always its own node. Closing the dialog dismisses
+ * the error it was showing.
  */
 export function DialogErrorNote({
   source,
@@ -137,6 +182,7 @@ export function DialogErrorNote({
 }) {
   const crew = useCrew();
   const here = useCrewErrorSlot(source);
+  useDismissErrorOnClose(source);
   if (!here || !crew.error) return null;
   return (
     <Note tone="danger" role="alert" icon={AlertTriangle} className={className}>
@@ -145,10 +191,14 @@ export function DialogErrorNote({
   );
 }
 
-/** The controller's error when it is routed to `source`, for a dialog that renders it on a field. */
+/**
+ * The controller's error when it is routed to `source`, for a dialog that renders it on a field.
+ * Closing the dialog dismisses the error it was showing.
+ */
 export function useDialogError(source: ErrorSource): string | null {
   const crew = useCrew();
   const here = useCrewErrorSlot(source);
+  useDismissErrorOnClose(source);
   return here && crew.error ? crew.error.message : null;
 }
 
@@ -184,4 +234,37 @@ export function useDismissOwnError(...sources: ErrorSource[]): () => void {
   return () => {
     if (error && sources.includes(error.source)) dismissError();
   };
+}
+
+/** How long an inline error waits for typing to pause before it is announced. */
+export const ANNOUNCE_DELAY_MS = 500;
+
+/**
+ * A polite, visually hidden announcement of `text` once it has held still for `delay` ms (QA
+ * T-72). An inline name error is already the field's description, but a description is read only
+ * when the field is focused again: while the person is typing, nothing said that the name had
+ * become invalid. Debounced, so a screen reader is not interrupted on every keystroke, and cleared
+ * when the problem goes away.
+ */
+export function DebouncedAnnouncement({
+  text,
+  delay = ANNOUNCE_DELAY_MS,
+}: {
+  text: string | null | undefined;
+  delay?: number;
+}) {
+  const [spoken, setSpoken] = React.useState('');
+  React.useEffect(() => {
+    if (!text) {
+      setSpoken('');
+      return;
+    }
+    const timer = window.setTimeout(() => setSpoken(text), delay);
+    return () => window.clearTimeout(timer);
+  }, [text, delay]);
+  return (
+    <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+      {spoken}
+    </span>
+  );
 }

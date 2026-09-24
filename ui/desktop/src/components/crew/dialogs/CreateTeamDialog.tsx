@@ -8,8 +8,17 @@ import { unexpectedCrewResponse } from '../api/errors';
 import { personLabel, teamName } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { addPeopleCopy, createTeamCopy as copy } from './copy';
-import { ErrorNote, Field, helpId, labelId, useCustomValidity, useDialogError } from './fields';
+import {
+  DebouncedAnnouncement,
+  ErrorNote,
+  Field,
+  helpId,
+  labelId,
+  useCustomValidity,
+  useDialogError,
+} from './fields';
 import { teamNameProblem } from './nameRules';
+import { directAddResultFrom, directAddSupported } from './people';
 import { PersonPicker } from './PersonPicker';
 import { isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useDialogView } from './workspace';
@@ -17,18 +26,27 @@ import { useDialogView } from './workspace';
 const SOURCE: ErrorSource = 'dialog:create-team';
 const CREATE_KEY = 'mutate:team.create';
 const INVITE_KEY = 'mutate:invitation.create';
+const ADD_KEY = 'mutate:team.add_member';
 
 interface CreatedTeam {
   id: string;
   name: string;
+  /** Its #general, as `#slug`: a person added to the team can see it. */
+  general: string;
 }
 
-/** `team.create` answers `{team, channel}`; the team's ID is what the next step invites to. */
+/** `team.create` answers `{team, channel}`; the team's ID is what the next step adds people to. */
 function createdTeamFrom(value: unknown, typed: string): CreatedTeam {
   const team = isRecord(value) && isRecord(value.team) ? value.team : null;
   const id = team ? optionalText(team.id) : undefined;
   if (!team || !id) throw unexpectedCrewResponse('a new team');
-  return { id, name: teamName({ id, name: optionalText(team.name) ?? typed }) };
+  const channel = isRecord(value) && isRecord(value.channel) ? value.channel : null;
+  const general = channel ? optionalText(channel.name) : undefined;
+  return {
+    id,
+    name: teamName({ id, name: optionalText(team.name) ?? typed }),
+    general: `#${(general ?? 'general').replace(/^#+/, '')}`,
+  };
 }
 
 export interface CreateTeamDialogProps {
@@ -52,7 +70,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
   const error = useDialogError(SOURCE);
   const nameRef = useCustomValidity<HTMLInputElement>(teamNameProblem(name));
   const creating = crew.isPending(CREATE_KEY);
-  const inviting = crew.isPending(INVITE_KEY);
+  // A broker that adds members directly puts them in the new team; an older one invites them.
+  const directAdd = directAddSupported(crew.capabilities);
+  const inviting = crew.isPending(directAdd ? ADD_KEY : INVITE_KEY);
   const candidates = dir.people.filter((person) => !person.isYou && !person.isFormer && person.id);
 
   const finish = (created: CreatedTeam) => {
@@ -81,23 +101,37 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
     event.preventDefault();
     const person = candidates.find((item) => item.id === principalId);
     if (!team || !person?.id) return;
+    const label = personLabel(person, 'inline', dir);
     void crew
-      .act(SOURCE, INVITE_KEY, async () => {
-        await crew.request(
-          'invitation.create',
-          {
-            kind: 'team',
-            target_id: team.id,
-            principal_id: person.id,
-            expected_username: person.username,
-          },
-          { mutation: true }
+      .act(SOURCE, directAdd ? ADD_KEY : INVITE_KEY, async () => {
+        if (!directAdd) {
+          await crew.request(
+            'invitation.create',
+            {
+              kind: 'team',
+              target_id: team.id,
+              principal_id: person.id,
+              expected_username: person.username,
+            },
+            { mutation: true }
+          );
+          return addPeopleCopy.sent(label);
+        }
+        // A new team has only its #general, which comes with the team: no channels to list.
+        const result = directAddResultFrom(
+          await crew.request(
+            'team.add_member',
+            { team_id: team.id, principal_id: person.id, expected_username: person.username },
+            { mutation: true }
+          )
         );
-        return true as const;
+        return result.alreadyMember
+          ? addPeopleCopy.alreadyIn(label, team.name)
+          : addPeopleCopy.added(label, team.general);
       })
-      .then((done) => {
-        if (done !== true) return;
-        toastSuccess({ msg: addPeopleCopy.sent(personLabel(person, 'inline', dir)) });
+      .then((said) => {
+        if (said === undefined) return;
+        toastSuccess({ msg: said });
         finish(team);
       });
   };
@@ -147,6 +181,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
   }
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'team') : null;
+  const fieldError = nameError ?? teamNameProblem(name);
   return (
     <ModalShell
       open
@@ -170,7 +205,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
           id={nameId}
           label={copy.name}
           helper={copy.helper(workspace)}
-          error={nameError ?? teamNameProblem(name) ?? undefined}
+          error={fieldError ?? undefined}
         >
           <Input
             id={nameId}
@@ -178,7 +213,8 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             required
             autoComplete="off"
             placeholder={copy.placeholder}
-            aria-invalid={nameError || teamNameProblem(name) ? true : undefined}
+            aria-invalid={fieldError ? true : undefined}
+            // The helper ("Team names are unique in …"), or the error that replaces it.
             aria-describedby={helpId(nameId)}
             value={name}
             onChange={(event) => {
@@ -187,6 +223,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             }}
           />
         </Field>
+        <DebouncedAnnouncement text={fieldError} />
         {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
       </form>
     </ModalShell>

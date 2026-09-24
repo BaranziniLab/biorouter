@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { DangerousConfirmDialog } from '../../ui/DangerousConfirmDialog';
 import { toastSuccess } from '../../../toasts';
@@ -20,11 +20,38 @@ import { useDialogView } from './workspace';
  * case-sensitively on top of the primitive's case-folded gate; the irreversible institution label
  * has a confirmation no key can answer. Destructive confirmations hold focus on Cancel.
  *
+ * Every one is an `alertdialog` (QA T-72): it interrupts to ask about one consequential action,
+ * which is what that role tells a screen reader, where a plain `dialog` reads as a form.
+ *
  * React authorizes nothing here: each confirm sends the request the broker or daemon decides, and a
  * refusal renders in the confirmation that sent it (`dialog:confirm`).
  */
 
 const SOURCE: ErrorSource = 'dialog:confirm';
+
+/**
+ * Makes the confirmation it is rendered in an `alertdialog`. The shared primitives
+ * (`ConfirmationModal`, `DangerousConfirmDialog`) render Radix's `role="dialog"` and take no role
+ * of their own, and they belong to every privacy surface in the app, so the role is set here, on
+ * the one element Radix names the dialog by. React never rewrites an attribute whose prop did not
+ * change, so it holds for the dialog's life.
+ */
+function AlertDialogRole() {
+  const mark = useCallback((node: HTMLSpanElement | null) => {
+    node?.closest('[role="dialog"]')?.setAttribute('role', 'alertdialog');
+  }, []);
+  return <span ref={mark} hidden />;
+}
+
+/** The body every confirmation renders between its words and its buttons. */
+function ConfirmBody() {
+  return (
+    <>
+      <AlertDialogRole />
+      <DialogErrorNote source={SOURCE} />
+    </>
+  );
+}
 
 export interface CrewConfirmationProps {
   confirm: ConfirmIntent;
@@ -109,7 +136,7 @@ export function MakeConnectionPublicDialog({
       onConfirm={onConfirm}
       onCancel={onCancel}
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </DangerousConfirmDialog>
   );
 }
@@ -167,7 +194,7 @@ function AllowWorkspacePublic({ onClose }: { onClose(): void }) {
         }).then((done) => done && onClose())
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </DangerousConfirmDialog>
   );
 }
@@ -198,7 +225,7 @@ function MakeWorkspacePrivate({ onClose }: { onClose(): void }) {
         })
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </ConfirmationModal>
   );
 }
@@ -225,7 +252,7 @@ function SetInstitution({ institutionId, onClose }: { institutionId: string; onC
         }).then((done) => done && onClose())
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </DangerousConfirmDialog>
   );
 }
@@ -268,7 +295,7 @@ function RemovePerson({ principalId, onClose }: { principalId: string; onClose()
         ).then((done) => done && onClose());
       }}
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </DangerousConfirmDialog>
   );
 }
@@ -295,7 +322,7 @@ function ArchiveChannel({ channelId, onClose }: { channelId: string; onClose(): 
         ).then((done) => done && onClose())
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </ConfirmationModal>
   );
 }
@@ -338,7 +365,7 @@ function RemoveChannelMember({
         ).then((done) => done && onClose())
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </ConfirmationModal>
   );
 }
@@ -362,7 +389,7 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
         )
       }
     >
-      <DialogErrorNote source={SOURCE} />
+      <ConfirmBody />
     </ConfirmationModal>
   );
 }
@@ -385,6 +412,8 @@ function StopTask({ runId, onClose }: { runId: string; onClose(): void }) {
         void crew.cancelRun(runId);
         onClose();
       }}
-    />
+    >
+      <AlertDialogRole />
+    </ConfirmationModal>
   );
 }

@@ -10,3 +10,20 @@
   width: var(--radix-popover-trigger-width);
   max-width: var(--radix-popover-content-available-width);
 }
+
+/* Workspace settings: every tab of the dialog's own sits in one grid cell, so the dialog is as tall
+   as the tallest of them whichever is selected, and switching tabs never moves the footer (QA
+   T-30). The unselected panels stay laid out but unseen; `WorkspaceSettingsDialog` also takes them
+   out of the tab order and the accessibility tree (`inert`, `aria-hidden`). */
+.crew-settings-panels {
+  display: grid;
+}
+
+.crew-settings-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-settings-panel[data-state='inactive'] {
+  visibility: hidden;
+}

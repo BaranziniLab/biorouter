@@ -8,6 +8,7 @@ import type { ErrorSource } from '../state/types';
 import { createChannelCopy as copy, nameRuleCopy } from './copy';
 import {
   AdornedInput,
+  DebouncedAnnouncement,
   ErrorNote,
   Field,
   helpId,
@@ -79,6 +80,13 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'channel') : null;
   const fieldError = nameError ?? (touched ? problem : null);
   const helper = slug && !problem ? copy.preview(slug) : undefined;
+  const consequenceId = `${formId}-consequence`;
+  // The preview or the error, then the consequence line — both describe the name (QA T-72).
+  const describedBy = [helper || fieldError ? helpId(nameId) : null, consequenceId]
+    .filter(Boolean)
+    .join(' ');
+  // Announced as typing pauses: while typing, the problem shows before the field is left.
+  const spokenProblem = nameError ?? problem;
 
   return (
     <ModalShell
@@ -110,7 +118,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
             spellCheck={false}
             placeholder={copy.placeholder}
             aria-invalid={fieldError ? true : undefined}
-            aria-describedby={helper || fieldError ? helpId(nameId) : undefined}
+            aria-describedby={describedBy}
             value={name}
             onBlur={() => setTouched(name.trim().length > 0)}
             onInvalid={() => setTouched(true)}
@@ -130,7 +138,10 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
             { value: 'public_safe', label: copy.publicSafe, detail: copy.publicSafeDetail },
           ]}
         />
-        <p className="text-supporting text-text-muted">{nameRuleCopy.consequence}</p>
+        <DebouncedAnnouncement text={spokenProblem} />
+        <p id={consequenceId} className="text-supporting text-text-muted">
+          {nameRuleCopy.consequence}
+        </p>
         {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
       </form>
     </ModalShell>

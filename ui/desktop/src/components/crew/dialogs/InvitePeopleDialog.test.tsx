@@ -61,6 +61,49 @@ describe('InvitePeopleDialog', () => {
     expect(screen.queryByLabelText(inviteCopy.legacy.joinRequest)).toBeNull();
   });
 
+  it('asks for their login on the server, and reminds the host what theirs is', async () => {
+    // QA T-23: the placeholder said `bob` while the broker wanted the server login.
+    renderInvite();
+    const username = await screen.findByLabelText('Username');
+    expect(username).toHaveAttribute('placeholder', 'their login on hpc.example.edu');
+    expect(username).toHaveAccessibleDescription(
+      'The name they sign in to hpc.example.edu with; yours is @alice.'
+    );
+  });
+
+  it('keeps the reminder beside a refusal, which it describes the field with first', async () => {
+    renderInvite('unknown_account: There is no account @Bob on this server. Check the spelling.');
+    await invite('Bob');
+    const username = screen.getByLabelText('Username');
+    await waitFor(() =>
+      expect(username).toHaveAccessibleDescription(
+        `${inviteCopy.refusal.noAccount('Bob')} The name they sign in to hpc.example.edu with; yours is @alice.`
+      )
+    );
+  });
+
+  it('starts again with an empty field after Invite another', async () => {
+    const { crew } = renderInvite();
+    await invite('bob');
+    const another = await screen.findByRole('button', { name: inviteCopy.inviteAnother });
+    fireEvent.click(another);
+    const username = await screen.findByLabelText('Username');
+    expect(username).toHaveValue('');
+    await waitFor(() => expect(username).toHaveFocus());
+    expect(screen.queryByRole('button', { name: 'Copy invitation message' })).toBeNull();
+    await invite('carol');
+    expect(requestsFor(crew, 'enrollment.invite')).toEqual([
+      { username: 'bob' },
+      { username: 'carol' },
+    ]);
+  });
+
+  it('gives install commands that run as written, with no placeholder path', () => {
+    // QA T-44: `/path/to/biorouter-crew` is not something a person can run.
+    expect(inviteCopy.installCommands).not.toMatch(/\/path\/to/);
+    expect(inviteCopy.installCommands).toContain('"$HOME/.local/bin/biorouter-crew"');
+  });
+
   it('invites by username and renders the broker’s answer, then the message to send', async () => {
     const { crew } = renderInvite();
     await invite('@bob');

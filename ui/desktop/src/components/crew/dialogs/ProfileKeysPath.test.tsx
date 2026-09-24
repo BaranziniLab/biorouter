@@ -11,6 +11,7 @@ import {
   requestsFor,
 } from './dialogsTestHarness';
 import { EditProfileDialog } from './EditProfileDialog';
+import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { KeysDialog } from './KeysDialog';
 import { SharePathDialog } from './SharePathDialog';
 
@@ -92,12 +93,18 @@ describe('KeysDialog', () => {
     };
   });
 
-  it('loads the storage status on open and shows this device’s key', async () => {
+  it('loads the storage status on open and shows this device as its fingerprint, never its key', async () => {
     credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
     renderWithCrew(<KeysDialog onClose={vi.fn()} />);
     expect(await screen.findByText(keysCopy.keychain)).toBeInTheDocument();
     expect(credentials).toHaveBeenCalledWith('status');
-    expect(screen.getByRole('button', { name: 'Copy this device’s key' })).toBeInTheDocument();
+    const fingerprint = groupedFingerprint((await workspaceKeyFingerprint(connection.public_key))!);
+    expect(await screen.findByText(fingerprint)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Copy this device’s fingerprint' })
+    ).toBeInTheDocument();
+    // The 64-hex key is a machine string: nowhere on screen (QA T-33).
+    expect(document.body.textContent).not.toContain(connection.public_key);
     expect(screen.queryByRole('button', { name: 'Refresh credential status' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: keysCopy.vaultToggle }));
@@ -131,6 +138,36 @@ describe('KeysDialog', () => {
     expect(credentials).toHaveBeenLastCalledWith('unlock');
     expect(await screen.findByText(keysCopy.unlocked)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Lock' })).toBeInTheDocument();
+  });
+
+  it('says a development profile keeps keys in a file, never that a keychain holds them', async () => {
+    credentials.mockResolvedValue({ backend: 'file', initialized: true, locked: false });
+    renderWithCrew(<KeysDialog onClose={vi.fn()} />);
+    expect(await screen.findByText(keysCopy.file)).toBeInTheDocument();
+    expect(screen.queryByText(keysCopy.keychain)).toBeNull();
+    // A file store has no vault to switch to from here.
+    expect(screen.queryByRole('button', { name: keysCopy.vaultToggle })).toBeNull();
+  });
+
+  it('marks this device in the account’s device list', async () => {
+    credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
+    const mine = groupedFingerprint((await workspaceKeyFingerprint(connection.public_key))!);
+    renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
+      snapshot: makeSnapshot({
+        actor: {
+          ...alice,
+          devices: [
+            { fingerprint: '3F2A 9C1E 77B0 D4E1', added_at: 1_700_000_000, added_via: 'bootstrap' },
+            { fingerprint: mine, added_at: 1_700_000_100, added_via: 'invitation_code' },
+          ],
+        },
+      }),
+    });
+    const devices = await screen.findByRole('region', { name: keysCopy.devices });
+    await waitFor(() => expect(within(devices).getAllByText(keysCopy.thisDevice)).toHaveLength(1));
+    const rows = within(devices).getAllByRole('listitem');
+    expect(rows[1]).toHaveTextContent(keysCopy.thisDevice);
+    expect(rows[0]).not.toHaveTextContent(keysCopy.thisDevice);
   });
 
   it('shows a failure in the dialog and lists the account’s devices', async () => {

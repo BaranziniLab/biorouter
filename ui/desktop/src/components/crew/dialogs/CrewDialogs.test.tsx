@@ -1,12 +1,58 @@
-import { act, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../ui/dropdown-menu';
+import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
+import { addPeopleCopy } from './copy';
 import { CrewDialogs, dialogKey, HOSTED_DIALOG_KINDS } from './CrewDialogs';
-import { installResizeObserverStub, makeSnapshot, renderWithCrew } from './dialogsTestHarness';
+import {
+  alice,
+  installResizeObserverStub,
+  makeSnapshot,
+  renderWithCrew,
+} from './dialogsTestHarness';
 
 installResizeObserverStub();
 
+beforeEach(() => {
+  Object.assign(window, {
+    electron: { ...window.electron, crewCredentials: vi.fn(async () => ({ cancelled: true })) },
+  });
+});
 afterEach(() => vi.clearAllMocks());
+
+/** A control that opens `intent` the way every Crew surface does: through the controller. */
+function Opener({ intent, label = 'Open' }: { intent: DialogIntent; label?: string }) {
+  const crew = useCrew();
+  return (
+    <button type="button" onClick={() => crew.openDialog(intent)}>
+      {label}
+    </button>
+  );
+}
+
+/** One of every hosted dialog kind, opened as a person would reach it. */
+const EVERY_KIND: DialogIntent[] = [
+  { kind: 'connection-settings', connectionId: 'conn-1' },
+  { kind: 'workspace-settings', tab: 'people' },
+  { kind: 'invite-people' },
+  { kind: 'let-in', username: 'eve' },
+  { kind: 'create-team' },
+  { kind: 'create-channel', teamId: 'team-1' },
+  { kind: 'add-people', target: 'channel', targetId: 'channel-general' },
+  { kind: 'transfer-ownership', channelId: 'channel-general' },
+  { kind: 'rename', target: 'team', targetId: 'team-1' },
+  { kind: 'edit-profile' },
+  { kind: 'keys' },
+  { kind: 'share-path' },
+  { kind: 'confirm', confirm: { action: 'archive-channel', channelId: 'channel-general' } },
+];
 
 /** Each hosted dialog, and the control its first focus lands on. */
 const FIRST_FIELDS: [DialogIntent, string][] = [
@@ -50,9 +96,6 @@ describe('CrewDialogs', () => {
   });
 
   it('closes through the controller, and renders nothing for dialogs other areas own', async () => {
-    Object.assign(window, {
-      electron: { ...window.electron, crewCredentials: vi.fn(async () => ({ cancelled: true })) },
-    });
     const { crew } = renderWithCrew(<CrewDialogs />, { dialog: { kind: 'keys' } });
     expect(await screen.findByRole('dialog', { name: 'Keys and security' })).toBeInTheDocument();
     act(() => crew.current().closeDialog());
@@ -78,6 +121,97 @@ describe('CrewDialogs', () => {
     expect(dialogKey({ kind: 'let-in', username: 'eve' })).not.toBe(
       dialogKey({ kind: 'let-in', username: 'frank' })
     );
+  });
+
+  it('covers every hosted kind in the focus-return check below', () => {
+    expect([...new Set(EVERY_KIND.map((intent) => intent.kind))].sort()).toEqual(
+      [...HOSTED_DIALOG_KINDS].sort()
+    );
+  });
+
+  // QA T-15: these dialogs have no Radix trigger, so focus fell to <body> on every close.
+  it.each(EVERY_KIND.map((intent) => [intent.kind, intent] as const))(
+    'returns focus to the button that opened %s when Escape closes it',
+    async (_kind, intent) => {
+      const user = userEvent.setup();
+      renderWithCrew(
+        <>
+          <Opener intent={intent} />
+          <CrewDialogs />
+        </>,
+        { snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }) }
+      );
+      const open = screen.getByRole('button', { name: 'Open' });
+      await user.click(open);
+      const role = intent.kind === 'confirm' ? 'alertdialog' : 'dialog';
+      const dialog = await screen.findByRole(role);
+      await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole(role)).toBeNull());
+      await waitFor(() => expect(open).toHaveFocus());
+    }
+  );
+
+  it('returns focus to a menu’s trigger when a menu item opened the dialog', async () => {
+    const user = userEvent.setup();
+    function Menu() {
+      const crew = useCrew();
+      return (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button">Channel menu</button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem onSelect={() => crew.openDialog({ kind: 'edit-profile' })}>
+              Edit profile…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      );
+    }
+    renderWithCrew(
+      <>
+        <Menu />
+        <CrewDialogs />
+      </>
+    );
+    const trigger = screen.getByRole('button', { name: 'Channel menu' });
+    await user.click(trigger);
+    await user.keyboard('{ArrowDown}');
+    await user.keyboard('{Enter}');
+    await screen.findByRole('dialog', { name: 'Edit profile' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('returns to the first opener when one dialog hands over to another', async () => {
+    // Add people (nobody else has joined) → "Invite people to lab…" → Escape: the button inside
+    // Add people is gone, so focus goes back to what opened Add people.
+    const user = userEvent.setup();
+    renderWithCrew(
+      <>
+        <Opener intent={{ kind: 'add-people', target: 'team', targetId: 'team-1' }} />
+        <CrewDialogs />
+      </>,
+      { snapshot: makeSnapshot({ principals: [alice] }) }
+    );
+    const open = screen.getByRole('button', { name: 'Open' });
+    await user.click(open);
+    await user.click(
+      await screen.findByRole('button', { name: addPeopleCopy.inviteToWorkspace('lab') })
+    );
+    await screen.findByRole('dialog', { name: 'Invite people to lab' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(open).toHaveFocus());
+  });
+
+  it('pins its dialogs by their top edge, so a change of height never re-centres them', async () => {
+    renderWithCrew(<CrewDialogs />, { dialog: { kind: 'workspace-settings' } });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    expect(within(dialog).getByRole('tablist')).toBeInTheDocument();
   });
 
   it('hosts every dialog kind but join, host and sign-in', () => {

@@ -42,14 +42,21 @@ export const connectionSettingsCopy = {
   remoteExecution: 'Let my agent run commands in this folder',
   remoteExecutionNeedsFolder: 'Set a remote work folder first.',
   portRange: 'Use a port from 1 to 65535.',
+  /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
+  workspaceDetailsSummary: 'IDs for support',
   workspaceId: 'Workspace ID',
   fingerprint: 'Fingerprint',
   workspaceKey: 'Workspace key',
   socketPath: 'Socket path',
+  /** Kept for callers; the numeric UID is never rendered (spec identity rule 6). */
   hostUserId: 'Host user ID',
   deviceId: 'Device ID',
   clusterId: 'Cluster ID',
+  /** The button that copies a machine value the dialog does not show (spec rule 13). */
+  copyValue: (what: string) => `Copy ${what}`,
+  copied: 'Copied',
+  copyFailed: 'Copy failed',
   /** Pinned: the submit button. */
   save: 'Save connection',
   cancel: 'Cancel',
@@ -67,6 +74,8 @@ export const workspaceSettingsCopy = {
   hostedBy: 'Hosted by',
   server: 'Server',
   rename: 'Rename…',
+  /** The tab list's accessible name (QA T-39). */
+  tabsLabel: 'Workspace settings sections',
   waiting: 'Waiting to join',
   members: 'Members',
   invite: 'Invite people…',
@@ -74,8 +83,9 @@ export const workspaceSettingsCopy = {
   you: 'you',
   letIn: 'Let in…',
   letInLabel: (username: string) => `Let @${username} in`,
+  /** The first sentence of `letInCopy.mismatch`; the Let in dialog says what to do about it. */
   otherDevice: (username: string) =>
-    `A device with a different code tried to join as @${username}.`,
+    `A computer trying to join as @${username} showed a different code.`,
   cancelInvitation: 'Cancel invitation',
   cancelInvitationLabel: (username: string) => `Cancel @${username}’s invitation`,
   cancelInvitationConfirm: (username: string) => `Cancel @${username}’s invitation?`,
@@ -109,7 +119,14 @@ export const makePrivateCopy = {
 export const inviteCopy = {
   title: (workspace: string) => `Invite people to ${workspace}`,
   username: 'Username',
-  usernamePlaceholder: 'bob',
+  /** Used only where no server is known; `loginPlaceholder` otherwise. */
+  usernamePlaceholder: 'their server login',
+  /** The field wants the account name on the server, not a display name (QA T-23). */
+  loginPlaceholder: (server: string) =>
+    server ? `their login on ${server}` : 'their server login',
+  /** Under the field, and again beside a refusal: what a username is here, with the host's own. */
+  loginHelper: (server: string, me: string | null) =>
+    `The name they sign in to ${server || 'the server'} with${me ? `; yours is @${me}` : ''}.`,
   submit: 'Invite',
   invited: 'invited',
   sendInvitation: (first: string) => `Send ${first} this invitation:`,
@@ -117,20 +134,24 @@ export const inviteCopy = {
   installed: (username: string, server: string) =>
     `Is Crew installed for @${username} on ${server}?`,
   installLead: (username: string, server: string) =>
-    `Crew runs from ~/.local/bin/biorouter-crew in each person’s own account. @${username} runs this on ${server}, or asks your IT team to:`,
+    `Crew runs from ~/.local/bin/biorouter-crew in each person’s own account. If Crew is installed on ${server} for everyone, @${username} copies it there with these commands; if not, ask your IT team to install it:`,
+  /** Runnable as written: copies the server-wide install, with no placeholder path (QA T-44). */
   installCommands: [
     'mkdir -p "$HOME/.local/bin"',
-    'install -m 0755 /path/to/biorouter-crew "$HOME/.local/bin/biorouter-crew"',
+    'install -m 0755 "$(command -v biorouter-crew)" "$HOME/.local/bin/biorouter-crew"',
     '"$HOME/.local/bin/biorouter-crew" --version',
   ].join('\n'),
   installCommandsLabel: 'install commands',
   nextStep: (first: string) =>
     `When ${first} sends you a code, choose Let in… next to their name in the sidebar.`,
   done: 'Done',
+  /** After an invitation, start again with an empty field (QA T-44). */
+  inviteAnother: 'Invite another',
   cancel: 'Cancel',
   retry: 'Retry',
   invitationUnavailable: 'The invitation message couldn’t be loaded.',
   addDevice: (username: string) => `Add another device for @${username}`,
+  addDeviceUnnamed: 'Add another device for this person',
   refusal: {
     noAccount: (text: string) => `No account named @${text} on this server.`,
     alreadyMember: (username: string, workspace: string) =>
@@ -160,13 +181,30 @@ export const letInCopy = {
   code: (first: string) => `Code from ${first}`,
   helper: (first: string) => `Paste the code ${first} sends you directly.`,
   submit: (first: string) => `Let ${first} in`,
+  /**
+   * Before the field, when a computer with a different code has tried to join as this person. The
+   * sidebar (`sidebar/copy.ts`) and the CLI (`enroll pending`) say the same (QA T-13).
+   */
+  mismatch: (username: string) =>
+    `A computer trying to join as @${username} showed a different code. Check the code @${username} sent you. If you typed it wrong, enter it again and choose Replace. Don’t approve a code you didn’t get from @${username}.`,
+  /** Back from the saved-code view to the field, when a mismatch shows the code was wrong. */
+  enterAgain: 'Enter the code again',
   /** `already_approved`: a device was let in already. Same words as the CLI (`enroll approve`). */
   alreadyApproved: (username: string) => `You already let a device in for @${username}.`,
   replaceHelp: 'Replace the code only if they sent you a new one.',
   replace: 'Replace code',
-  approved: (first: string) => `Approved. ${first} joins as soon as their Crew checks in.`,
-  addToTeam: (first: string, team: string) => `Add ${first} to ${team}`,
-  addedToTeam: (first: string, team: string) => `Invited ${first} to ${team}`,
+  /**
+   * The broker only records the code: it cannot tell yet whether it is the right one, so this
+   * never says "Approved" (QA T-13). Same words as the CLI (`enroll approve`).
+   */
+  approved: (who: string) => `Code saved. ${who} joins when their computer confirms the same code.`,
+  /** Replaces `approved` once the directory shows the person as a member. */
+  joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
+  /** An older broker: the team is an invitation the person accepts in Crew. */
+  addToTeam: (who: string, team: string) => `Invite ${who} to ${team}`,
+  addedToTeam: (who: string) => `Invited. ${who} will see it in Crew and needs to accept.`,
+  /** A broker that adds members directly (`direct_add_v1`). */
+  directAddToTeam: (who: string, team: string) => `Add ${who} to ${team}`,
   addAfterJoin: (first: string) => `You can add ${first} to a team once they’ve joined.`,
   done: 'Done',
   cancel: 'Cancel',
@@ -238,9 +276,28 @@ export const addPeopleCopy = {
   allInTeam: (team: string) => `Everyone in ${team} is already here.`,
   allInWorkspace: (workspace: string) => `Everyone in ${workspace} is already here.`,
   noOne: (workspace: string) => `No one else has joined ${workspace} yet.`,
+  /** A channel whose team has no one else in it yet. */
+  noOneInTeam: (team: string) => `No one else is in ${team} yet.`,
+  /** People invited to the team (or channel) who have not accepted: named, so nothing is hidden. */
+  waitingToAccept: (names: string) =>
+    `Invited, not accepted yet: ${names}. They’ll appear here once they accept.`,
+  waiting: (names: string) => `Invited, not accepted yet: ${names}.`,
+  allInvited: (workspace: string, team: string, names: string) =>
+    `Everyone else in ${workspace} has been invited to ${team}. Waiting for: ${names}.`,
+  /** The way out of an empty picker, for the host (QA T-22). */
+  inviteToWorkspace: (workspace: string) => `Invite people to ${workspace}…`,
+  /** The way out of an empty channel picker, for whoever can add people to the team. */
+  addToTeam: (team: string) => `Add people to ${team}…`,
+  /** The channel choices beside a direct team addition. */
+  channels: 'Also add to',
+  generalIncluded: 'comes with the team',
   submit: 'Add',
   cancel: 'Cancel',
-  sent: (person: string) => `Invitation sent to ${person}`,
+  /** An older broker invites: say that it is waiting on the person, never that they are in. */
+  sent: (person: string) => `Invited. ${person} will see it in Crew and needs to accept.`,
+  /** A direct addition landed: `channels` is `#general and #methods`. */
+  added: (person: string, channels: string) => `Added. ${person} can now see ${channels}.`,
+  alreadyIn: (person: string, place: string) => `${person} is already in ${place}.`,
 } as const;
 
 export const transferCopy = {
@@ -278,13 +335,17 @@ export const keysCopy = {
   title: 'Keys and security',
   checking: 'Checking where your keys are stored…',
   keychain: 'Stored in your system keychain.',
+  /** A development profile keeps keys in plain files; never claim a keychain it is not using. */
+  file: 'Stored in a file on this computer (development profile).',
   vault: 'Stored in an encrypted vault',
   locked: 'Locked',
   unlocked: 'Unlocked',
   unlock: 'Unlock',
   lock: 'Lock',
-  deviceKey: 'This device’s key',
-  deviceKeyLabel: 'this device’s key',
+  /** This device's key, shown as its grouped fingerprint — never the 64-hex key (QA T-33). */
+  deviceKey: 'This device',
+  deviceKeyLabel: 'this device’s fingerprint',
+  thisDevice: 'This device',
   devices: 'Devices on your account',
   deviceAdded: (date: string) => `Added ${date}`,
   addedVia: {

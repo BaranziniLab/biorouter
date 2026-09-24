@@ -90,7 +90,7 @@ describe('ConnectionSettingsDialog', () => {
     fireEvent.click(await screen.findByRole('radio', { name: /^Public/ }));
     save();
 
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.makeConnectionPublic.title('lab'),
     });
     expect(crew.updateConnection).not.toHaveBeenCalled();
@@ -103,7 +103,7 @@ describe('ConnectionSettingsDialog', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: confirmCopy.makeConnectionPublic.title('lab') })
+        screen.queryByRole('alertdialog', { name: confirmCopy.makeConnectionPublic.title('lab') })
       ).toBeNull()
     );
     expect(crew.updateConnection).not.toHaveBeenCalled();
@@ -115,7 +115,7 @@ describe('ConnectionSettingsDialog', () => {
     const { crew, saved, onClose } = renderSettings();
     fireEvent.click(await screen.findByRole('radio', { name: /^Public/ }));
     save();
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.makeConnectionPublic.title('lab'),
     });
     fireEvent.change(within(confirm).getByLabelText('Type lab to confirm'), {
@@ -204,19 +204,65 @@ describe('ConnectionSettingsDialog', () => {
     expect(execution).toBeEnabled();
   });
 
-  it('lists the pinned workspace identity read-only, with the fingerprint grouped', async () => {
-    renderSettings({ port: 2222 });
+  it('keeps Workspace details closed, even when Advanced opens by itself', async () => {
+    // A remote folder opens Advanced (the normal setup for an agent that works there); the machine
+    // IDs must not come with it (QA T-33).
+    renderSettings({ remote_root: '/home/alice/project', remote_execution: true });
+    expect(await screen.findByLabelText('Remote work folder')).toHaveValue('/home/alice/project');
+    expect(screen.getByRole('button', { name: /^Workspace details/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(screen.queryByRole('button', { name: 'Copy workspace ID' })).toBeNull();
+    expect(document.body.textContent).not.toContain(connection.workspace_id);
+  });
+
+  it('shows the fingerprint and puts every machine ID behind a Copy button, never on screen', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderSettings();
+    fireEvent.click(await screen.findByRole('button', { name: /^Workspace details/ }));
     expect(await screen.findByText('9A2D B2E2 3F15 04CD')).toBeInTheDocument();
     for (const name of [
       'Copy workspace ID',
       'Copy fingerprint',
       'Copy socket path',
-      'Copy host user ID',
       'Copy device ID',
       'Copy cluster ID',
     ])
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    // Identity rule 6: the numeric host UID is not offered at all.
+    expect(screen.queryByRole('button', { name: 'Copy host user ID' })).toBeNull();
+    const dialog = screen.getByRole('dialog', { name: 'Connection settings' });
+    for (const value of [
+      connection.workspace_id,
+      connection.socket_path,
+      connection.device_id,
+      connection.cluster_connection_id,
+      connection.workspace_public_key,
+    ])
+      expect(dialog).not.toHaveTextContent(value);
     expect(screen.queryByRole('textbox', { name: 'Workspace ID' })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy workspace ID' }));
+    });
+    expect(writeText).toHaveBeenCalledWith(connection.workspace_id);
+    expect(await screen.findByText(connectionSettingsCopy.copied)).toBeInTheDocument();
+    // The button keeps its name through the feedback.
+    expect(screen.getByRole('button', { name: 'Copy workspace ID' })).toBeInTheDocument();
+  });
+
+  it('puts Remove on its own row, apart from Cancel and Save, which never wrap', async () => {
+    renderSettings();
+    const remove = await screen.findByRole('button', {
+      name: connectionSettingsCopy.remove('lab'),
+    });
+    const save = screen.getByRole('button', { name: connectionSettingsCopy.save });
+    const actions = save.parentElement!;
+    expect(actions).toHaveClass('flex-nowrap');
+    expect(actions).toContainElement(screen.getByRole('button', { name: 'Cancel' }));
+    expect(actions).not.toContainElement(remove);
   });
 
   it('leaves an error another surface is showing alone when it opens a confirmation', async () => {
@@ -225,7 +271,7 @@ describe('ConnectionSettingsDialog', () => {
     fireEvent.click(
       await screen.findByRole('button', { name: connectionSettingsCopy.remove('lab') })
     );
-    await screen.findByRole('dialog', { name: confirmCopy.removeConnection.title('lab') });
+    await screen.findByRole('alertdialog', { name: confirmCopy.removeConnection.title('lab') });
     expect(crew.current().error).toEqual({ message: 'Crew updates stopped.', source: 'global' });
   });
 
@@ -234,7 +280,7 @@ describe('ConnectionSettingsDialog', () => {
     fireEvent.click(
       await screen.findByRole('button', { name: connectionSettingsCopy.remove('lab') })
     );
-    const confirm = await screen.findByRole('dialog', {
+    const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
     expect(crew.removeConnection).not.toHaveBeenCalled();

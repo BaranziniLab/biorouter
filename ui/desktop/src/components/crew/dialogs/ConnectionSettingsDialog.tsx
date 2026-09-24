@@ -5,10 +5,13 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
+import { Copy } from '../../icons/app-icons';
 import type { CrewConnection } from '../crewApi';
 import { isInstitutionId } from '../identity';
+import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ErrorSource, SaveConnectionInput } from '../state/types';
+import { copyText } from './clipboard';
 import { MakeConnectionPublicDialog, CrewConfirmation } from './confirmations';
 import { connectionSettingsCopy as copy } from './copy';
 import { DialogErrorNote, Field, helpId, RadioRows, useDismissOwnError } from './fields';
@@ -52,7 +55,11 @@ function formFrom(connection: CrewConnection): ConnectionForm {
   };
 }
 
-/** Advanced opens by itself when the saved record already uses anything inside it. */
+/**
+ * Advanced opens by itself when the saved record already uses anything inside it. Workspace details
+ * is a separate disclosure and never opens by itself (QA T-33): a remote folder is the normal setup
+ * for anyone who lets an agent work, and that must not put machine IDs on the default path.
+ */
 export function advancedInUse(connection: CrewConnection): boolean {
   return Boolean(
     (connection.port && connection.port !== DEFAULT_PORT) ||
@@ -132,8 +139,12 @@ export interface ConnectionSettingsDialogProps {
  *   submit that would fail on a hidden field opens it and focuses that field.
  * - Saving a Private connection as Public first asks for the workspace's name
  *   (`DangerousConfirmDialog`); Cancel there sends nothing. The PATCH carries the whole record.
- * - The workspace's identity (ID, fingerprint, socket, host user ID, device and cluster IDs) is
- *   read-only here: it is what the connection was pinned to, not a preference.
+ * - The workspace's identity is read-only here, under its own closed **Workspace details**: the
+ *   fingerprint a person compares, and the machine IDs (workspace, socket, device, cluster) only
+ *   as "Copy …" buttons, never on screen (spec rule 13). The numeric host UID is not offered at
+ *   all (identity rule 6).
+ * - The destructive **Remove …** sits on its own row below the form, apart from the footer's
+ *   Cancel and **Save connection**, which stay on one line (QA T-45).
  */
 export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSettingsDialogProps) {
   const { crew } = useDialogView(connectionId);
@@ -163,6 +174,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   const [confirmBody, setConfirmBody] = React.useState<SaveConnectionInput | null>(null);
   const [removing, setRemoving] = React.useState(false);
   const saving = crew.isPending(SAVE_KEY);
+  const confirmFocus = useFocusReturn();
   const fingerprint = useWorkspaceKeyFingerprint(saved.workspace_public_key);
   const dismissOwnError = useDismissOwnError(SOURCE, CONFIRM_SOURCE);
 
@@ -207,6 +219,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     // Exposing a Private connection asks for the workspace's name first, from every path.
     if (saved.mode === 'private' && body.mode === 'public') {
       dismissOwnError();
+      confirmFocus.remember();
       setConfirmBody(body);
       return;
     }
@@ -226,27 +239,33 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
       scrollBody
       title={copy.title}
       footer={
-        <>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="mr-auto text-text-danger"
-            disabled={saving}
-            onClick={() => {
-              dismissOwnError();
-              setRemoving(true);
-            }}
-          >
-            {copy.remove(workspace)}
-          </Button>
-          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
-            {copy.cancel}
-          </Button>
-          <Button type="submit" form={formId} disabled={saving}>
-            {copy.save}
-          </Button>
-        </>
+        // Two rows: the destructive Remove on its own, then Cancel and Save, which never wrap.
+        <div className="flex w-full min-w-0 flex-col gap-2">
+          <div className="flex min-w-0">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="min-w-0 text-text-danger"
+              disabled={saving}
+              onClick={() => {
+                dismissOwnError();
+                confirmFocus.remember();
+                setRemoving(true);
+              }}
+            >
+              <span className="truncate">{copy.remove(workspace)}</span>
+            </Button>
+          </div>
+          <div className="flex flex-nowrap items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+              {copy.cancel}
+            </Button>
+            <Button type="submit" form={formId} disabled={saving}>
+              {copy.save}
+            </Button>
+          </div>
+        </div>
       }
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-4 py-3">
@@ -386,8 +405,11 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
                 onCheckedChange={(checked) => update('remote_execution', checked)}
               />
             </div>
-            <WorkspaceDetails connection={saved} fingerprint={fingerprint} />
           </div>
+        </Disclosure>
+
+        <Disclosure label={copy.workspaceDetails} summary={copy.workspaceDetailsSummary}>
+          <WorkspaceDetails connection={saved} fingerprint={fingerprint} />
         </Disclosure>
 
         <DialogErrorNote source={SOURCE} />
@@ -401,6 +423,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
           onCancel={() => {
             dismissOwnError();
             setConfirmBody(null);
+            confirmFocus.restore();
           }}
           onConfirm={() => void save(confirmBody, CONFIRM_SOURCE)}
         />
@@ -408,14 +431,22 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
       {removing ? (
         <CrewConfirmation
           confirm={{ action: 'remove-connection', connectionId: saved.id }}
-          onClose={() => setRemoving(false)}
+          onClose={() => {
+            setRemoving(false);
+            confirmFocus.restore();
+          }}
         />
       ) : null}
     </ModalShell>
   );
 }
 
-/** The pinned identity of the workspace, read-only, each value one click from the clipboard. */
+/**
+ * The pinned identity of the workspace, read-only. The fingerprint is shown (grouped, as the Join
+ * dialog shows it) because it is what a person compares with the host; every other value is a
+ * machine ID and stays off the screen, one click from the clipboard (spec rule 13). The numeric
+ * host UID is left out entirely (identity rule 6).
+ */
 function WorkspaceDetails({
   connection,
   fingerprint,
@@ -423,45 +454,68 @@ function WorkspaceDetails({
   connection: CrewConnection;
   fingerprint: string | null;
 }) {
-  const rows: { label: string; copyLabel: string; value: string; display?: string }[] = [
-    { label: copy.workspaceId, copyLabel: 'workspace ID', value: connection.workspace_id },
-    fingerprint
-      ? {
-          label: copy.fingerprint,
-          copyLabel: 'fingerprint',
-          value: fingerprint,
-          display: groupedFingerprint(fingerprint),
-        }
-      : {
-          label: copy.workspaceKey,
-          copyLabel: 'workspace key',
-          value: connection.workspace_public_key,
-        },
-    { label: copy.socketPath, copyLabel: 'socket path', value: connection.socket_path },
-    { label: copy.hostUserId, copyLabel: 'host user ID', value: String(connection.owner_uid) },
-    { label: copy.deviceId, copyLabel: 'device ID', value: connection.device_id },
-    {
-      label: copy.clusterId,
-      copyLabel: 'cluster ID',
-      value: connection.cluster_connection_id,
-    },
-  ].filter((row) => typeof row.value === 'string' && row.value.length > 0);
-
+  const ids: { what: string; value: string | undefined }[] = [
+    { what: 'workspace ID', value: connection.workspace_id },
+    // Without a fingerprint to show, the key it would be computed from is still one click away.
+    ...(fingerprint ? [] : [{ what: 'workspace key', value: connection.workspace_public_key }]),
+    { what: 'socket path', value: connection.socket_path },
+    { what: 'device ID', value: connection.device_id },
+    { what: 'cluster ID', value: connection.cluster_connection_id },
+  ];
+  const present = ids.filter(
+    (row): row is { what: string; value: string } =>
+      typeof row.value === 'string' && row.value.length > 0
+  );
   return (
-    <section className="flex min-w-0 flex-col gap-2" aria-label={copy.workspaceDetails}>
-      <h3 className="text-caps text-text-muted">{copy.workspaceDetails}</h3>
-      {rows.map((row) => (
-        <div key={row.label} className="flex min-w-0 flex-col gap-1">
-          <span className="text-supporting text-text-muted">{row.label}</span>
+    <section className="flex min-w-0 flex-col gap-3 pt-2" aria-label={copy.workspaceDetails}>
+      {fingerprint ? (
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-supporting text-text-muted">{copy.fingerprint}</span>
           <CopyField
-            value={row.value}
-            display={row.display}
-            label={row.copyLabel}
-            // Long machine strings keep their tail visible; a grouped fingerprint fits whole.
-            truncate={(row.display ?? row.value).length > 24 ? 'middle' : undefined}
+            value={fingerprint}
+            display={groupedFingerprint(fingerprint)}
+            label="fingerprint"
           />
         </div>
-      ))}
+      ) : null}
+      <div className="flex min-w-0 flex-wrap gap-2">
+        {present.map((row) => (
+          <CopyValueButton key={row.what} what={row.what} value={row.value} />
+        ))}
+      </div>
     </section>
+  );
+}
+
+/** How long "Copied" / "Copy failed" stays beside a copy button. */
+const COPY_FEEDBACK_MS = 2000;
+
+/**
+ * A "Copy {what}" button for a machine value the dialog does not show. Its name never changes; the
+ * outcome is said beside it in a polite live region, so a screen reader hears it and the button
+ * keeps its identity.
+ */
+function CopyValueButton({ what, value }: { what: string; value: string }) {
+  const [outcome, setOutcome] = React.useState<'copied' | 'failed' | null>(null);
+  React.useEffect(() => {
+    if (!outcome) return;
+    const timer = window.setTimeout(() => setOutcome(null), COPY_FEEDBACK_MS);
+    return () => window.clearTimeout(timer);
+  }, [outcome]);
+  return (
+    <span className="inline-flex min-w-0 items-center gap-2">
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        onClick={() => void copyText(value).then((ok) => setOutcome(ok ? 'copied' : 'failed'))}
+      >
+        <Copy aria-hidden className="h-icon-row w-icon-row shrink-0" />
+        {copy.copyValue(what)}
+      </Button>
+      <span role="status" aria-live="polite" className="text-supporting text-text-muted">
+        {outcome === 'copied' ? copy.copied : outcome === 'failed' ? copy.copyFailed : ''}
+      </span>
+    </span>
   );
 }

@@ -1,7 +1,9 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
-import { createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
+import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
+import { addPeopleCopy, createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { CreateTeamDialog } from './CreateTeamDialog';
 import { CrewDialogs } from './CrewDialogs';
@@ -13,6 +15,8 @@ import {
   renderWithCrew,
   requestsFor,
 } from './dialogsTestHarness';
+import { ANNOUNCE_DELAY_MS } from './fields';
+import { DIRECT_ADD_CAPABILITY } from './people';
 import { RenameDialog } from './RenameDialog';
 
 const toasts = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
@@ -88,6 +92,65 @@ describe('CreateChannelDialog', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('describes the name with its consequence line, and announces a problem once typing pauses', async () => {
+    renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    const name = await screen.findByLabelText('Name');
+    // QA T-72: the consequence line was on screen but not linked to the field.
+    expect(name).toHaveAccessibleDescription(nameRuleCopy.consequence);
+    fireEvent.change(name, { target: { value: 'methods' } });
+    expect(name).toHaveAccessibleDescription(
+      `${createChannelCopy.preview('methods')} ${nameRuleCopy.consequence}`
+    );
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(name, { target: { value: 'results/final' } });
+      const region = screen.getByRole('status');
+      expect(region).toHaveAttribute('aria-live', 'polite');
+      // Not on every keystroke…
+      expect(region).toHaveTextContent('');
+      act(() => vi.advanceTimersByTime(ANNOUNCE_DELAY_MS));
+      // …but once the person stops typing.
+      expect(region).toHaveTextContent(nameRuleCopy.channelReserved);
+      fireEvent.change(name, { target: { value: 'results' } });
+      expect(region).toHaveTextContent('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgets its own refusal when it closes, instead of passing it to the connection bar', async () => {
+    // QA T-08: Cancel after a refusal left "name_taken: …" raw over the page.
+    const { crew } = renderWithCrew(<CrewDialogs />, {
+      dialog: { kind: 'create-channel', teamId: 'team-1' },
+      request: () => {
+        throw new CrewHttpError(CHANNEL_TAKEN, 400, 'crew_request_refused');
+      },
+    });
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'general' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    expect(await screen.findByText(nameRuleCopy.channelTaken)).toBeInTheDocument();
+    expect(crew.current().error?.source).toBe('dialog:create-channel');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(crew.current().error).toBeNull());
+  });
+
+  it('leaves an error from another surface alone when it closes', async () => {
+    const { crew } = renderWithCrew(<CrewDialogs />, {
+      dialog: { kind: 'create-channel', teamId: 'team-1' },
+    });
+    await screen.findByLabelText('Name');
+    act(() => crew.current().reportError('Crew updates stopped.', 'global'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await act(async () => {});
+    expect(crew.current().error).toEqual({ message: 'Crew updates stopped.', source: 'global' });
+  });
+
   it('starts clean every time it opens (L14)', async () => {
     const { crew } = renderWithCrew(<CrewDialogs />, {
       dialog: { kind: 'create-channel', teamId: 'team-1' },
@@ -115,6 +178,7 @@ describe('CreateTeamDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Create team' });
     expect(dialog).toHaveTextContent(createTeamCopy.helper('lab'));
     const name = screen.getByLabelText('Name');
+    expect(name).toHaveAccessibleDescription(createTeamCopy.helper('lab'));
     await waitFor(() => expect(name).toHaveFocus());
     fireEvent.change(name, { target: { value: 'Imaging Core' } });
     await act(async () => {
@@ -136,6 +200,55 @@ describe('CreateTeamDialog', () => {
         { kind: 'team', target_id: 'team-new', principal_id: bob.id, expected_username: 'bob' },
       ])
     );
+    expect(toasts.toastSuccess).toHaveBeenCalledWith({
+      msg: 'Invited. Bob Lee (@bob) will see it in Crew and needs to accept.',
+    });
+    expect(crew.selectTeam).toHaveBeenCalledWith('team-new');
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('adds the person straight into the new team when the broker adds directly', async () => {
+    function WithDirectAdd({ children }: { children: ReactNode }) {
+      const crew = useCrew();
+      return (
+        <CrewControllerProvider controller={{ ...crew, capabilities: [DIRECT_ADD_CAPABILITY] }}>
+          {children}
+        </CrewControllerProvider>
+      );
+    }
+    const onClose = vi.fn();
+    const { crew } = renderWithCrew(
+      <WithDirectAdd>
+        <CreateTeamDialog onClose={onClose} />
+      </WithDirectAdd>,
+      {
+        request: (method) =>
+          method === 'team.create'
+            ? {
+                team: { id: 'team-new', name: 'Imaging Core' },
+                channel: { id: 'channel-new-general', name: 'general' },
+              }
+            : { team_id: 'team-new', principal_id: bob.id, added_channels: [] },
+      }
+    );
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Imaging Core' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create team' }));
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /^Person/ }));
+    fireEvent.click(await screen.findByRole('option', { name: /Bob Lee/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'team.add_member')).toEqual([
+        { team_id: 'team-new', principal_id: bob.id, expected_username: 'bob' },
+      ])
+    );
+    expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+    expect(toasts.toastSuccess).toHaveBeenCalledWith({
+      msg: addPeopleCopy.added('Bob Lee (@bob)', '#general'),
+    });
     expect(crew.selectTeam).toHaveBeenCalledWith('team-new');
     expect(onClose).toHaveBeenCalled();
   });

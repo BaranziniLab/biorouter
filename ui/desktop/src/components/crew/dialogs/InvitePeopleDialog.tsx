@@ -46,7 +46,7 @@ export interface InvitePeopleDialogProps {
  * than accepting a near miss. Older brokers keep the token path under its own disclosure.
  */
 export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
-  const { crew, workspace, server } = useDialogView();
+  const { crew, dir, workspace, server } = useDialogView();
   const formId = React.useId();
   const usernameId = `${formId}-username`;
   const deviceId = `${formId}-device`;
@@ -61,6 +61,25 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
     error && lastAction === 'invite'
       ? inviteRefusal(error, typedUsername(username), workspace)
       : null;
+  const typed = typedUsername(username);
+  const refusalId = `${formId}-refusal`;
+  const usernameRef = React.useRef<HTMLInputElement>(null);
+  const [again, setAgain] = React.useState(false);
+
+  // "Invite another" puts focus back in the empty field it returns to.
+  React.useEffect(() => {
+    if (!again || result) return;
+    usernameRef.current?.focus();
+    setAgain(false);
+  }, [again, result]);
+
+  const inviteAnother = () => {
+    setResult(null);
+    setUsername('');
+    setAddDevice(false);
+    setInvitation({ state: 'loading' });
+    setAgain(true);
+  };
 
   const loadInvitation = React.useCallback(
     (invitee: string) => {
@@ -109,12 +128,18 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
         purpose="form"
         title={copy.title(workspace)}
         footer={
-          // The form that had focus is gone; land on the result's one action, not the dialog frame.
-          // The key makes it a new element: reconciled in place of the form's Cancel, React would
-          // reuse that node and never apply `autoFocus`.
-          <Button key="done" autoFocus onClick={onClose}>
-            {copy.done}
-          </Button>
+          <>
+            {/* One at a time is the broker's shape; this keeps the host in the dialog for the next. */}
+            <Button key="another" type="button" variant="outline" onClick={inviteAnother}>
+              {copy.inviteAnother}
+            </Button>
+            {/* The form that had focus is gone; land on the result's main action, not the dialog
+                frame. The key makes it a new element: reconciled in place of the form's Cancel,
+                React would reuse that node and never apply `autoFocus`. */}
+            <Button key="done" autoFocus onClick={onClose}>
+              {copy.done}
+            </Button>
+          </>
         }
       >
         <div className="flex flex-col gap-4 pb-1">
@@ -184,18 +209,24 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
     >
       <div className="flex flex-col gap-4 pb-1">
         <form id={formId} onSubmit={invite} className="flex flex-col gap-3">
-          <Field id={usernameId} label={copy.username}>
+          <Field
+            id={usernameId}
+            label={copy.username}
+            helper={copy.loginHelper(server, dir.me?.username ?? null)}
+          >
             <AdornedInput
               adornment="@"
               id={usernameId}
+              ref={usernameRef}
               required
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
               translate="no"
-              placeholder={copy.usernamePlaceholder}
+              placeholder={copy.loginPlaceholder(server)}
               aria-invalid={refusal ? true : undefined}
-              aria-describedby={refusal ? `${formId}-refusal` : undefined}
+              // The refusal first, then the reminder of what a username is here (QA T-23).
+              aria-describedby={refusal ? `${refusalId} ${helpId(usernameId)}` : helpId(usernameId)}
               value={username}
               onChange={(event) => {
                 setUsername(event.target.value);
@@ -206,12 +237,12 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
           {refusal?.alreadyMember || addDevice ? (
             <div className="flex min-w-0 items-center justify-between gap-3">
               <label htmlFor={deviceId} className="text-label text-text-default">
-                {copy.addDevice(typedUsername(username) || copy.usernamePlaceholder)}
+                {typed ? copy.addDevice(typed) : copy.addDeviceUnnamed}
               </label>
               <Switch id={deviceId} checked={addDevice} onCheckedChange={setAddDevice} />
             </div>
           ) : null}
-          <div id={`${formId}-refusal`}>
+          <div id={refusalId}>
             <DialogErrorNote
               source={SOURCE}
               render={(message) =>

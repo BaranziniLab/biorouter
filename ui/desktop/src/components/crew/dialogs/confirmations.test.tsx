@@ -20,7 +20,7 @@ afterEach(() => vi.clearAllMocks());
 describe('CrewConfirmation', () => {
   it('removes a person only when their username is typed exactly, case included', async () => {
     const { crew, onClose } = renderConfirm({ action: 'remove-person', principalId: bob.id });
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
     });
     await waitFor(() =>
@@ -64,7 +64,7 @@ describe('CrewConfirmation', () => {
 
   it('asks for the workspace name before allowing Public', async () => {
     const { crew } = renderConfirm({ action: 'allow-workspace-public' });
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.allowWorkspacePublic.title('lab'),
     });
     const allow = within(dialog).getByRole('button', { name: 'Allow Public' });
@@ -84,7 +84,7 @@ describe('CrewConfirmation', () => {
     const snapshot = makeSnapshot();
     snapshot.workspace.mode = 'public';
     const { crew, onClose } = renderConfirm({ action: 'make-workspace-private' }, { snapshot });
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.makeWorkspacePrivate.title('lab'),
     });
     await waitFor(() =>
@@ -111,7 +111,7 @@ describe('CrewConfirmation', () => {
       { action: 'set-institution', institutionId: 'ucsf' },
       { snapshot }
     );
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.setInstitution.title('lab', 'ucsf'),
     });
     expect(within(dialog).queryByRole('textbox')).toBeNull();
@@ -131,7 +131,7 @@ describe('CrewConfirmation', () => {
       action: 'make-connection-public',
       connectionId: connection.id,
     });
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.makeConnectionPublic.title('lab'),
     });
     fireEvent.change(within(dialog).getByLabelText('Type lab to confirm'), {
@@ -151,7 +151,7 @@ describe('CrewConfirmation', () => {
 
   it('archives a channel and removes a channel member by name, with the expected username', async () => {
     const archive = renderConfirm({ action: 'archive-channel', channelId: 'channel-general' });
-    const archiveDialog = await screen.findByRole('dialog', {
+    const archiveDialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.archiveChannel.title('#general'),
     });
     await act(async () => {
@@ -169,7 +169,7 @@ describe('CrewConfirmation', () => {
       channelId: 'channel-general',
       principalId: bob.id,
     });
-    const removeDialog = await screen.findByRole('dialog', {
+    const removeDialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeChannelMember.title('Bob Lee (@bob)', '#general'),
     });
     await act(async () => {
@@ -184,7 +184,7 @@ describe('CrewConfirmation', () => {
 
   it('stops a task through the cancel route, with its own wording', async () => {
     const { crew, onClose } = renderConfirm({ action: 'stop-task', runId: 'run-7' });
-    const dialog = await screen.findByRole('dialog', { name: 'Stop your agent?' });
+    const dialog = await screen.findByRole('alertdialog', { name: 'Stop your agent?' });
     expect(within(dialog).getByRole('button', { name: 'Keep running' })).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop task' }));
     expect(crew.cancelRun).toHaveBeenCalledWith('run-7');
@@ -200,7 +200,7 @@ describe('CrewConfirmation', () => {
         },
       }
     );
-    const dialog = await screen.findByRole('dialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.archiveChannel.title('#general'),
     });
     await act(async () => {
@@ -213,6 +213,6 @@ describe('CrewConfirmation', () => {
   it('closes rather than confirm a removal it has no username for', async () => {
     const { onClose } = renderConfirm({ action: 'remove-person', principalId: 'person-unknown' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 });
