@@ -110,6 +110,131 @@ export function hostStartCommands(slug: string, bootstrapKey: string): string {
   ].join('\n');
 }
 
+/**
+ * What a host pasted from the terminal after running the start commands, made ready for the
+ * daemon to read (T-27). The daemon still parses and validates everything; this only finds the
+ * part it reads inside the terminal text around it, and names a problem it can see for itself.
+ *
+ * - `text`: hand this to the daemon. The `brcrew1:` line from `start`'s JSON, rejoined if the
+ *   terminal copy broke it across lines; else the status JSON, on one line, without the prompt or
+ *   other output around it; else the paste as it is, for the daemon to judge.
+ * - `problem`: the paste shows why it can't hold the workspace yet — Crew was still starting, the
+ *   copy stops partway through the JSON, `biorouter-crew` isn't installed, or it printed an error.
+ */
+export type StartOutput =
+  | { kind: 'text'; text: string }
+  | { kind: 'problem'; problem: 'starting' | 'cut-off' | 'not-installed' }
+  | { kind: 'problem'; problem: 'server-error'; detail: string };
+
+/** The invitation inside `start`'s JSON: everything up to the closing quote is the token. */
+const INVITATION_IN_JSON = /"invitation"\s*:\s*"(brcrew1:[^"]*)"/;
+const INVITATION_TOKEN = /brcrew1:/;
+/** A shell that could not find `biorouter-crew` (bash, zsh and sh word it differently). */
+const NOT_INSTALLED =
+  /biorouter-crew[^\n]*(?:no such file or directory|command not found|not found)|(?:command not found|no such file or directory)[^\n]*biorouter-crew/i;
+/** What `biorouter-crew` prints when a command fails (`Error: …` from its `main`). */
+const CREW_ERROR = /^\s*Error:\s*(.+?)\s*$/m;
+/** Only the start JSON's own keys mark an unfinished paste as Crew's; any other `{` is noise. */
+const CREW_KEYS = /"(?:workspace_id|socket|started_pid|workspace_public_key|invitation)"/;
+const MAX_ERROR_DETAIL = 200;
+
+/** How many `{` the reader starts from before it stops looking: a paste is terminal output. */
+const MAX_OBJECT_STARTS = 64;
+
+/**
+ * The `{…}` objects in the text, in order. One with no closing brace is reported unfinished
+ * (`complete: false`), and the search goes on from the next `{`, so a stray brace in a prompt
+ * cannot hide the JSON after it.
+ */
+function jsonObjects(text: string): { text: string; complete: boolean }[] {
+  const found: { text: string; complete: boolean }[] = [];
+  let start = text.indexOf('{');
+  for (let starts = 0; start !== -1 && starts < MAX_OBJECT_STARTS; starts += 1) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = index;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      found.push({ text: text.slice(start), complete: false });
+      start = text.indexOf('{', start + 1);
+    } else {
+      found.push({ text: text.slice(start, end + 1), complete: true });
+      start = text.indexOf('{', end + 1);
+    }
+  }
+  return found;
+}
+
+function parseObject(text: string): Record<string, unknown> | null {
+  try {
+    // A terminal copy can break a long line anywhere, even inside a string; JSON has no raw
+    // newlines of its own to lose.
+    const value: unknown = JSON.parse(text.replace(/[\r\n]+/g, ''));
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readStartOutput(pasted: string): StartOutput | null {
+  if (!pasted.trim()) return null;
+
+  const quoted = INVITATION_IN_JSON.exec(pasted);
+  if (quoted) return { kind: 'text', text: quoted[1].replace(/\s+/g, '') };
+  // A bare `brcrew1:` line: the daemon finds it wherever it sits.
+  if (INVITATION_TOKEN.test(pasted)) return { kind: 'text', text: pasted };
+
+  let starting = false;
+  let invitationError: string | null = null;
+  const objects = jsonObjects(pasted);
+  for (const object of objects) {
+    if (!object.complete) continue;
+    const value = parseObject(object.text);
+    if (!value) continue;
+    if (typeof value.workspace_id === 'string' && typeof value.socket === 'string') {
+      return { kind: 'text', text: object.text.replace(/[\r\n]+/g, '') };
+    }
+    if (value.state === 'starting' && 'started_pid' in value) starting = true;
+    // `start` ran but could not write the invitation line; it says why.
+    if (value.invitation === null && typeof value.invitation_error === 'string') {
+      invitationError ??= value.invitation_error;
+    }
+  }
+  // Crew's JSON that never closes, with nothing complete after it: the copy stopped early.
+  const last = objects[objects.length - 1];
+  if (last && !last.complete && CREW_KEYS.test(last.text)) {
+    return { kind: 'problem', problem: 'cut-off' };
+  }
+  if (NOT_INSTALLED.test(pasted)) return { kind: 'problem', problem: 'not-installed' };
+  if (starting) return { kind: 'problem', problem: 'starting' };
+  const error = invitationError ?? CREW_ERROR.exec(pasted)?.[1] ?? null;
+  if (error) {
+    const detail = error.replace(/\s+/g, ' ').trim().slice(0, MAX_ERROR_DETAIL);
+    if (detail) return { kind: 'problem', problem: 'server-error', detail };
+  }
+  return { kind: 'text', text: pasted };
+}
+
 /** The `ssh` command that signs in to the server as the connection will. */
 export function sshLoginCommand(input: {
   ssh_target: string;

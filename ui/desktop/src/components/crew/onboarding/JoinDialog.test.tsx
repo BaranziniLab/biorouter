@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
@@ -119,6 +120,10 @@ describe('JoinDialog', () => {
     expect(screen.getByTestId('crew-join-workspace-privacy')).toHaveTextContent('Private');
     expect(screen.getByTestId('crew-join-workspace-privacy')).toHaveTextContent('ucsf');
     expect(within(summary).getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
+    // The fingerprint says what it is for (T-34).
+    expect(screen.getByTestId('crew-join-fingerprint-helper')).toHaveTextContent(
+      'Check this matches the fingerprint Alice sees.'
+    );
     expect(screen.getByLabelText(joinCopy.username('hpc.ucsf.edu'))).toHaveValue('bob');
     expect(screen.getByRole('button', { name: 'Join lab' })).toBeEnabled();
   });
@@ -136,6 +141,10 @@ describe('JoinDialog', () => {
     expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: joinCopy.change }));
+    // Privacy is said once: the radio rows replace the line, and focus lands on the choice
+    // rather than falling to the page when Change goes.
+    expect(screen.queryByTestId('crew-join-as')).toBeNull();
+    expect(screen.getByRole('radio', { name: /^Private/ })).toHaveFocus();
     const institution = screen.getByPlaceholderText('For example, ucsf or sdsc');
     expect(institution).toHaveValue('ucsf');
     expect(institution).toBeRequired();
@@ -198,7 +207,15 @@ describe('JoinDialog', () => {
     expect(screen.queryByLabelText(joinCopy.identityFile)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByLabelText(joinCopy.identityFile)).toBeInTheDocument();
-    expect(screen.getByRole('switch', { name: joinCopy.remoteExecution })).toBeDisabled();
+    const agent = screen.getByRole('switch', { name: joinCopy.remoteExecution });
+    expect(agent).toBeDisabled();
+    // A switch that is off limits says why (T-42).
+    expect(agent).toHaveAccessibleDescription(joinCopy.remoteExecutionNeedsFolder);
+    fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+      target: { value: '/work/lab' },
+    });
+    expect(agent).toBeEnabled();
+    expect(agent).not.toHaveAccessibleDescription(joinCopy.remoteExecutionNeedsFolder);
   });
 
   it('saves the connection as the invitation pins it, then selects and connects it', async () => {
@@ -525,9 +542,10 @@ describe('JoinDialog', () => {
     expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
-    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('You’ll join as');
-    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('Public');
+    // The choice stays on screen, where it can still be changed; it states itself, once.
     expect(screen.getByRole('radio', { name: /^Public/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^Private/ })).not.toBeChecked();
+    expect(screen.queryByTestId('crew-join-as')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
     await waitFor(() =>
       expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
@@ -588,5 +606,151 @@ describe('JoinDialog', () => {
     await paste();
     expect(await screen.findAllByText('Crew request failed (500)')).toHaveLength(1);
     expect(screen.getByRole('alert')).toHaveTextContent('Crew request failed (500)');
+  });
+  describe('the institution a Private join needs', () => {
+    const NO_INSTITUTION: CrewInvitationPreview = {
+      ...PREVIEW,
+      workspace_institution_id: null,
+      institution_id: null,
+      missing: ['institution'],
+    };
+    const PLACEHOLDER = 'For example, ucsf or sdsc';
+
+    it('keeps the field while it is typed in, key by key, and saves every letter (P0-4)', async () => {
+      mocks.previewInvitation.mockResolvedValue(NO_INSTITUTION);
+      mocks.saveFromInvitation.mockResolvedValue(fakeConnection({ id: 'conn-new' }));
+      const user = userEvent.setup();
+      renderDialog();
+      await paste();
+
+      const field = await screen.findByPlaceholderText(PLACEHOLDER);
+      await user.click(field);
+      await user.keyboard('ucsf');
+      // The same node, never unmounted after the first letter, still focused, holding it all.
+      expect(screen.getByPlaceholderText(PLACEHOLDER)).toBe(field);
+      expect(field).toHaveValue('ucsf');
+      expect(field).toHaveFocus();
+      expect(screen.getByRole('radio', { name: /^Private/ })).toBeChecked();
+      // The invitation named no institution, so "Private for ucsf" differs from nothing.
+      expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
+
+      await user.click(screen.getByRole('button', { name: 'Join lab' }));
+      await waitFor(() =>
+        expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
+          mode: 'private',
+          institution_id: 'ucsf',
+          username: 'bob',
+        })
+      );
+    });
+
+    it('keeps the choice on screen after choosing Public, and the typed value for Private', async () => {
+      mocks.previewInvitation.mockResolvedValue(NO_INSTITUTION);
+      const user = userEvent.setup();
+      renderDialog();
+      await paste();
+      await user.type(await screen.findByPlaceholderText(PLACEHOLDER), 'ucsf');
+
+      await user.click(screen.getByRole('radio', { name: /^Public/ }));
+      expect(screen.getByRole('radio', { name: /^Public/ })).toBeChecked();
+      expect(screen.getByRole('radio', { name: /^Private/ })).toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(PLACEHOLDER)).toBeNull();
+
+      await user.click(screen.getByRole('radio', { name: /^Private/ }));
+      expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue('ucsf');
+    });
+
+    it('keeps the choice on screen when Public is chosen before anything is typed', async () => {
+      mocks.previewInvitation.mockResolvedValue(NO_INSTITUTION);
+      renderDialog();
+      await paste();
+      await screen.findByPlaceholderText(PLACEHOLDER);
+      fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+      expect(screen.getByRole('radio', { name: /^Public/ })).toBeChecked();
+      expect(screen.getByRole('radio', { name: /^Private/ })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: joinCopy.change })).toBeNull();
+    });
+
+    it('marks it required, says whom to ask, and answers a blank submit under the field (T-11)', async () => {
+      mocks.previewInvitation.mockResolvedValue(NO_INSTITUTION);
+      const user = userEvent.setup();
+      renderDialog();
+      await paste();
+
+      const field = await screen.findByPlaceholderText(PLACEHOLDER);
+      expect(field).toBeRequired();
+      expect(field).toHaveAttribute('aria-required', 'true');
+      // Visibly marked, beside the label but outside it: the field's name stays "Institution".
+      expect(screen.getByLabelText(joinCopy.institution)).toBe(field);
+      expect(screen.getByText(joinCopy.institution).parentElement).toHaveTextContent(
+        joinCopy.required
+      );
+      // The invitation carried no institution, so the helper says whom to ask, not to guess.
+      const ask = joinCopy.institutionUnknown('@alice', 'lab');
+      expect(screen.getByText(ask)).toBeInTheDocument();
+      expect(field).toHaveAccessibleDescription(ask);
+
+      // No native bubble: the form checks itself and answers under the field.
+      expect(field.closest('form')).toHaveAttribute('novalidate');
+      await user.click(screen.getByRole('button', { name: 'Join lab' }));
+      const message = await screen.findByText(joinCopy.institutionRequired);
+      expect(message).toHaveClass('text-supporting', 'text-text-danger');
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(field.getAttribute('aria-describedby')?.split(' ')).toContain(message.id);
+      expect(field).toHaveFocus();
+      expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
+
+      // A value the pattern refuses says what the pattern wants; a good one clears it.
+      await user.type(field, 'UCSF');
+      expect(await screen.findByText(joinCopy.institutionInvalid)).toBeInTheDocument();
+      expect(screen.queryByText(joinCopy.institutionRequired)).toBeNull();
+      await user.clear(field);
+      await user.type(field, 'ucsf');
+      await waitFor(() => expect(screen.queryByText(joinCopy.institutionInvalid)).toBeNull());
+      expect(field).not.toHaveAttribute('aria-invalid');
+    });
+
+    it('prefills the institution the invitation states and keeps the plain helper', async () => {
+      mocks.previewInvitation.mockResolvedValue(PREVIEW);
+      renderDialog();
+      await paste();
+      fireEvent.click(await screen.findByRole('button', { name: joinCopy.change }));
+      const field = screen.getByPlaceholderText(PLACEHOLDER);
+      expect(field).toHaveValue('ucsf');
+      expect(field).toHaveAccessibleDescription(joinCopy.institutionHelper);
+    });
+  });
+
+  it('folds a read invitation to "Invitation read · Edit", keeping focus, and Edit brings it back', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const user = userEvent.setup();
+    renderDialog();
+    expect(screen.getByLabelText(joinCopy.invitation)).toHaveFocus();
+    await paste();
+
+    const read = await screen.findByTestId('crew-join-invitation-read');
+    expect(read).toHaveTextContent(joinCopy.invitationRead);
+    // No base64 wall above the summary.
+    expect(screen.queryByLabelText(joinCopy.invitation)).toBeNull();
+    expect(document.body.textContent).not.toContain('brcrew1:');
+    const edit = screen.getByRole('button', { name: joinCopy.editInvitationLabel });
+    expect(edit).toHaveFocus();
+
+    await user.click(edit);
+    const box = screen.getByLabelText(joinCopy.invitation);
+    expect(box).toHaveValue(MESSAGE);
+    expect(box).toHaveFocus();
+    // Typing in the box never folds it away under the person, even when what they type parses.
+    await user.type(box, ' Thanks!');
+    await waitFor(() =>
+      expect(mocks.previewInvitation).toHaveBeenLastCalledWith(
+        `${MESSAGE} Thanks!`,
+        {},
+        expect.any(AbortSignal)
+      )
+    );
+    await screen.findByTestId('crew-join-summary');
+    expect(screen.getByLabelText(joinCopy.invitation)).toHaveFocus();
+    expect(screen.queryByTestId('crew-join-invitation-read')).toBeNull();
   });
 });

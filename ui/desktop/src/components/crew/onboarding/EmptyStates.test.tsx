@@ -1,9 +1,10 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewController } from '../state/types';
 import { checklistCopy, emptyCopy, INSTALL_COMMANDS, notSetUpCopy, welcomeCopy } from './copy';
 import {
   ConnectingCard,
+  focusComposerOnceMounted,
   NoChannelState,
   NoTeamState,
   OfflineState,
@@ -151,6 +152,95 @@ describe('NoTeamState', () => {
     expect(crew.mutate).toHaveBeenCalledWith('invitation.accept', { invitation_id: 'inv-1' });
   });
 
+  describe('focus after joining the team', () => {
+    const invited = () =>
+      fakeSnapshot({
+        invitations: [
+          {
+            id: 'inv-1',
+            kind: 'team',
+            target_id: 'team-1',
+            principal_id: 'p-bob',
+            inviter_id: 'p-alice',
+            expires_at: 0,
+            target_name: 'Analysis Lab',
+            inviter: { username: 'alice', display_name: 'Alice Chen' },
+          },
+        ],
+      });
+    let composer: HTMLTextAreaElement | null = null;
+    afterEach(() => {
+      composer?.remove();
+      composer = null;
+    });
+    const mountComposer = () => {
+      composer = document.createElement('textarea');
+      composer.setAttribute('aria-label', 'Message #general');
+      document.body.appendChild(composer);
+      return composer;
+    };
+
+    it('lands in the channel’s composer once it opens, instead of on the page (T-15)', async () => {
+      const view = renderWithCrew(
+        <NoTeamState />,
+        crewWith({ snapshot: invited(), screen: 'no-team' })
+      );
+      const join = screen.getByRole('button', { name: emptyCopy.invitedAction('Analysis Lab') });
+      join.focus();
+      fireEvent.click(join);
+      await waitFor(() => expect(view.crew().mutate).toHaveBeenCalled());
+      // The card goes as the team's channel replaces it; the composer mounts a moment later.
+      view.unmount();
+      expect(document.activeElement).toBe(document.body);
+      const box = await act(async () => mountComposer());
+      await waitFor(() => expect(box).toHaveFocus());
+    });
+
+    it('leaves focus where the person put it meanwhile', async () => {
+      const view = renderWithCrew(
+        <NoTeamState />,
+        crewWith({ snapshot: invited(), screen: 'no-team' })
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: emptyCopy.invitedAction('Analysis Lab') })
+      );
+      await waitFor(() => expect(view.crew().mutate).toHaveBeenCalled());
+      view.unmount();
+      const elsewhere = document.createElement('button');
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+      const box = await act(async () => mountComposer());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(box).not.toHaveFocus();
+      expect(elsewhere).toHaveFocus();
+      elsewhere.remove();
+    });
+
+    it('moves nothing when joining failed', async () => {
+      const mutate = vi.fn().mockRejectedValue(new Error('refused'));
+      const view = renderWithCrew(
+        <NoTeamState />,
+        crewWith({ snapshot: invited(), screen: 'no-team', mutate })
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: emptyCopy.invitedAction('Analysis Lab') })
+      );
+      await waitFor(() => expect(mutate).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      view.unmount();
+      const box = await act(async () => mountComposer());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(box).not.toHaveFocus();
+    });
+
+    it('focuses a composer that is already there', () => {
+      const box = mountComposer();
+      const stop = focusComposerOnceMounted(null);
+      expect(box).toHaveFocus();
+      stop();
+    });
+  });
+
   it('shows the host the setup checklist', () => {
     const snapshot = fakeSnapshot({
       actor: { id: 'p-alice', uid: 1000, username: 'alice', nickname: 'Alice Chen' },
@@ -269,6 +359,37 @@ describe('SetupChecklist', () => {
       kind: 'connection-settings',
       connectionId: 'conn-1',
     });
+  });
+
+  it('keeps "Invite people to {workspace}…" in reach of a channel while the host is alone (T-22)', () => {
+    const crew = crewWith({ snapshot: hostSnapshot(), isHost: true });
+    renderWithCrew(<SetupChecklist compact />, crew);
+    const nudge = screen.getByTestId('crew-setup-invite-nudge');
+    expect(nudge).toHaveTextContent(checklistCopy.aloneTitle('lab'));
+    fireEvent.click(screen.getByRole('button', { name: checklistCopy.invitePeopleTo('lab') }));
+    expect(crew.openDialog).toHaveBeenCalledWith({ kind: 'invite-people' });
+    // One line, not the whole checklist.
+    expect(screen.queryByTestId('crew-setup-checklist')).toBeNull();
+  });
+
+  it('drops the compact invite once someone else is in, or asks to be', () => {
+    const joined = hostSnapshot();
+    joined.principals = [
+      ...joined.principals,
+      { id: 'p-bob', uid: 1001, username: 'bob', nickname: 'bob' },
+    ];
+    const view = renderWithCrew(
+      <SetupChecklist compact />,
+      crewWith({ snapshot: joined, isHost: true })
+    );
+    expect(screen.queryByTestId('crew-setup-invite-nudge')).toBeNull();
+    view.unmount();
+
+    renderWithCrew(
+      <SetupChecklist compact />,
+      crewWith({ snapshot: hostSnapshot(), isHost: false })
+    );
+    expect(screen.queryByTestId('crew-setup-invite-nudge')).toBeNull();
   });
 
   it('hides on this computer, and never shows to a member', () => {

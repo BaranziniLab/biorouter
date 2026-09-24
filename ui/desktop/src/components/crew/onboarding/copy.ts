@@ -21,11 +21,17 @@ export const joinCopy = {
   invitation: 'Invitation from your host',
   invitationPlaceholder: 'Paste the whole message your host sent you',
   checking: 'Reading the invitation…',
+  /** The invitation box after the daemon read it: the summary below says what it holds. */
+  invitationRead: 'Invitation read',
+  editInvitation: 'Edit',
+  editInvitationLabel: 'Edit the invitation',
   invalid: 'This doesn’t look like a Crew invitation. Ask your host to copy it again.',
   hostedBy: 'Hosted by',
   on: 'on',
   fingerprint: 'Fingerprint',
   fingerprintLabel: 'workspace fingerprint',
+  /** What to do with the fingerprint: compare it with the host's. */
+  fingerprintHelper: (host: string) => `Check this matches the fingerprint ${host} sees.`,
   username: (server: string) => `Your username on ${server}`,
   usernameFallback: 'Your username on the server',
   privacyLine: 'You’ll join as',
@@ -41,7 +47,16 @@ export const joinCopy = {
   publicHint: 'Public models allowed for public-safe work',
   institution: 'Institution',
   institutionPlaceholder: 'For example, ucsf or sdsc',
-  institutionHelper: 'Your organization’s short ID, as your host uses it.',
+  institutionHelper: 'Your organization’s short ID. It must match the one your host uses.',
+  /** The invitation states no institution, so the joiner can't know it: say whom to ask. */
+  institutionUnknown: (host: string, workspace: string) =>
+    `Your invitation didn’t include the lab’s institution. Ask ${host} which institution ${workspace} uses.`,
+  institutionRequired: 'Private needs an institution. Enter it, or choose Public.',
+  institutionInvalid: 'Use the short ID: lowercase letters, numbers, - or _, like ucsf.',
+  /** The visible mark beside a field that must be filled in. */
+  required: 'Required',
+  fieldRequired: 'Fill this in to continue.',
+  fieldInvalid: 'Check this value.',
   /** "{workspace} is Private for ucsf. Your connection will be Public." */
   mismatch: (workspace: string, workspaceMode: string, choice: string) =>
     `${workspace} is ${workspaceMode}. Your connection will be ${choice}.`,
@@ -55,20 +70,28 @@ export const joinCopy = {
   serverLogin: 'Server login',
   serverLoginHelper: (defaultLogin: string) =>
     `An SSH alias from your SSH config, instead of ${defaultLogin}.`,
+  serverLoginInvalid:
+    'Use a server login or SSH alias: letters, numbers and _ . / : @ % -, not starting with a dash.',
   port: 'Port',
+  portInvalid: 'Use a port from 1 to 65535.',
   identityFile: 'Identity file',
   identityFileHelper: 'Leave empty to use your SSH config.',
   jumpHost: 'Jump host',
   connectionName: 'Connection name',
   remoteFolder: 'Remote work folder',
   remoteFolderHelper: 'An absolute path on the server.',
+  remoteFolderInvalid: 'Start with / — an absolute path on the server.',
   remoteExecution: 'Let my agent run commands in this folder',
+  /** Why the agent-commands switch is off limits: it needs the folder first. */
+  remoteExecutionNeedsFolder: 'Add a remote work folder first.',
   manual: 'Enter workspace details manually',
   manualServerLogin: 'Your server login',
-  manualServerLoginPlaceholder: 'bob@hpc.example.edu',
+  manualServerLoginPlaceholder: 'e.g. bob@hpc.example.edu',
   socketPath: 'Socket path',
+  socketPathInvalid: 'Start with / — the full path Crew printed.',
   workspaceId: 'Workspace ID',
   hostUserId: 'Host user ID',
+  hostUserIdInvalid: 'A number, like 1000.',
   workspaceKey: 'Workspace key',
   workspaceKeyHelper: '64 characters, 0–9 and a–f.',
   staleDaemon:
@@ -106,7 +129,10 @@ export const joinStateCopy = {
   /** "your host" at the start of a sentence. */
   yourHostSubject: 'Your host',
   theWorkspace: 'the workspace',
-  other: 'Other ways to join',
+  /** The legacy token path, collapsed: it is needed only when the host says so. */
+  other: 'Having trouble joining?',
+  otherBody:
+    'Only needed if your host’s Crew can’t let you in with a code. Your host will tell you if so.',
   pollFailed: 'Crew couldn’t check your invitation. It tries again by itself.',
   claimFailed: 'Joining didn’t finish.',
   retry: 'Try again',
@@ -127,7 +153,7 @@ export const legacyJoinCopy = {
   requestLabel: 'join request',
   /** The accessible name of the token field (pinned). */
   tokenName: 'Enrollment invitation',
-  tokenPlaceholder: 'Invitation token',
+  tokenPlaceholder: 'Token from an older invitation',
   submit: 'Join workspace',
   submitting: 'Joining…',
   /** The body of the join request, which a host pastes into the older invitation form. */
@@ -154,12 +180,14 @@ export const hostCopy = {
   // Step 1
   nameHeading: 'Name your workspace',
   workspaceName: 'Workspace name',
-  workspaceNamePlaceholder: 'lab',
+  workspaceNamePlaceholder: 'e.g. lab',
   workspaceNameHelper: 'Lowercase letters, numbers and dashes.',
   workspaceNameInvalid: 'Use at least one letter or number.',
   preview: (slug: string) => `Your workspace: ${slug}`,
   serverLogin: 'Your server login',
-  serverLoginPlaceholder: 'alice@hpc.example.edu',
+  serverLoginPlaceholder: 'e.g. alice@hpc.example.edu',
+  /** The host is the one whose institution everyone else must match. */
+  institutionHelper: 'Your organization’s short ID. People who join as Private use the same one.',
   continue: 'Continue',
   preparing: 'Preparing…',
   advancedSummary: 'Port 22 · your SSH settings · agent commands off',
@@ -183,6 +211,17 @@ export const hostCopy = {
   installLabel: 'install commands',
   consequence: 'Anyone who can sign in to this server can see the workspace name.',
   bad: 'That isn’t what Crew prints. Copy everything after the command ran and paste again.',
+  /** The paste, checked inline before Continue. */
+  checkingPaste: 'Checking what you pasted…',
+  found: (workspace: string, server: string) => `Found ${workspace} on ${server}`,
+  theServer: 'the server',
+  pasteStarting:
+    'Crew was still starting when this was printed. Wait a few seconds, run the last command again and paste what it prints.',
+  pasteCutOff:
+    'The paste stops partway through what Crew printed. Copy the whole line, from { to }, and paste again.',
+  pasteNotInstalled:
+    'biorouter-crew isn’t installed on the server yet. Open “biorouter-crew isn’t installed yet?” below.',
+  pasteServerError: (detail: string) => `Crew on the server said: ${detail}`,
   /** A paste the daemon read, but whose preview lacks the details a new workspace pins. */
   detailsMissing:
     'Biorouter read the workspace but not every detail it needs. Enter the rest from what the commands printed.',
@@ -194,6 +233,9 @@ export const hostCopy = {
   createHeading: (workspace: string, server: string) => `${workspace} on ${server}`,
   createBody: (workspace: string) =>
     `Creating ${workspace} makes this computer its first admin device.`,
+  /** The host's own fingerprint: what the people they invite compare. */
+  fingerprintHelper:
+    'People you invite see this fingerprint when they join. Tell them to check it matches.',
   create: 'Create workspace',
   creating: 'Creating…',
   signingIn: 'Waiting for you to sign in…',
@@ -217,6 +259,9 @@ export const checklistCopy = {
   createTeam: 'Create team',
   invite: 'Invite people',
   invitePeople: 'Invite people…',
+  /** The compact nudge a channel keeps while the host is still alone in the workspace. */
+  aloneTitle: (workspace: string) => `No one else has joined ${workspace} yet.`,
+  invitePeopleTo: (workspace: string) => `Invite people to ${workspace}…`,
   done: 'Done',
   hide: 'Hide',
   label: 'Setup checklist',

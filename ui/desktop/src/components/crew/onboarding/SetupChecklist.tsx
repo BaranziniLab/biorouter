@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check } from '../../icons/app-icons';
+import { Check, UserPlus } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { usePeopleDirectory, workspaceName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
@@ -40,10 +40,21 @@ interface ChecklistRow {
  * a step is open; Hide is remembered on this computer. `force` keeps it on screen without Hide (it
  * is the whole of the host's empty workspace).
  *
+ * `compact` is the one line a channel keeps while the host is still alone in the workspace (T-22):
+ * "No one else has joined {workspace} yet." with **Invite people to {workspace}…**. Opening a
+ * channel used to take the checklist, and its invite row, away with it. It goes by itself once
+ * someone else joins or asks to, and honors the same Hide.
+ *
  * Every action opens the dialog that asks; the irreversible institution label goes through its own
  * confirmation. The broker decides each one.
  */
-export function SetupChecklist({ force = false }: { force?: boolean }) {
+export function SetupChecklist({
+  force = false,
+  compact = false,
+}: {
+  force?: boolean;
+  compact?: boolean;
+}) {
   const crew = useCrew();
   const view = crew.snapshot ?? crew.lastVerified?.snapshot ?? null;
   const directory = usePeopleDirectory(view, crew.labels);
@@ -102,13 +113,39 @@ export function SetupChecklist({ force = false }: { force?: boolean }) {
     },
   ];
   const open = rows.some((row) => !row.done);
+  const title = workspaceName(view.workspace, directory.host);
+
+  if (compact) {
+    const invite = rows.find((row) => row.key === 'invite');
+    if (!invite || invite.done || hidden.includes(workspaceId)) return null;
+    return (
+      <div
+        className="crew-onboard-nudge"
+        role="group"
+        aria-label={checklistCopy.label}
+        data-testid="crew-setup-invite-nudge"
+      >
+        <span className="crew-onboard-nudge-text text-supporting text-text-muted">
+          {checklistCopy.aloneTitle(title)}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!live}
+          onClick={() => crew.openDialog({ kind: 'invite-people' })}
+        >
+          <UserPlus aria-hidden />
+          {checklistCopy.invitePeopleTo(title)}
+        </Button>
+      </div>
+    );
+  }
+
   if (!force && (!open || hidden.includes(workspaceId))) return null;
 
   return (
-    <SetupCard
-      title={checklistCopy.title(workspaceName(view.workspace, directory.host))}
-      testId="crew-setup-checklist"
-    >
+    <SetupCard title={checklistCopy.title(title)} testId="crew-setup-checklist">
       <ul className="crew-onboard-checklist" aria-label={checklistCopy.label}>
         {rows.map((row) => (
           <li

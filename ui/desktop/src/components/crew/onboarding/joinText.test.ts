@@ -7,6 +7,7 @@ import {
   hostStartCommands,
   isUnknownDeviceFailure,
   isWorkspaceName,
+  readStartOutput,
   sshLoginCommand,
   sshUsername,
   workspaceSlug,
@@ -124,5 +125,75 @@ describe('isUnknownDeviceFailure', () => {
     expect(isUnknownDeviceFailure('unauthorized: unknown device Your unsent draft…')).toBe(true);
     expect(isUnknownDeviceFailure('unauthorized: account enrollment changed')).toBe(false);
     expect(isUnknownDeviceFailure(null)).toBe(false);
+  });
+});
+
+describe('readStartOutput', () => {
+  const STATUS = '{"workspace_id":"w-1","socket":"/tmp/crew-1000-abc/broker.sock","host_uid":1000}';
+  const TOKEN = 'brcrew1:eyJ2IjoxLCJ3b3Jrc3BhY2VfaWQiOiIuLi4ifQ';
+
+  it('takes the invitation line out of start’s JSON, rejoined when the copy broke it', () => {
+    const start = `{"started_pid":4242,"state":"running","invitation":"${TOKEN}","name":"lab"}`;
+    expect(readStartOutput(`alice@hpc:~$ ${start}\nalice@hpc:~$ `)).toEqual({
+      kind: 'text',
+      text: TOKEN,
+    });
+    const broken = start.replace('eyJ2IjoxLCJ3b3Jr', 'eyJ2IjoxLC\nJ3b3Jr');
+    expect(readStartOutput(broken)).toEqual({ kind: 'text', text: TOKEN });
+  });
+
+  it('leaves a bare invitation line for the daemon to find', () => {
+    const message = `Join lab on Crew.\n${TOKEN}`;
+    expect(readStartOutput(message)).toEqual({ kind: 'text', text: message });
+  });
+
+  it('finds the status JSON inside prompts, other output and a stray brace, on one line', () => {
+    const pasted = [
+      'alice@hpc ~ ${PWD',
+      'started pid 4242',
+      '{"workspace_id":"w-1","socket":"/tmp/crew-1000-abc/bro',
+      'ker.sock","host_uid":1000}',
+      'alice@hpc:~$ ',
+    ].join('\n');
+    expect(readStartOutput(pasted)).toEqual({ kind: 'text', text: STATUS });
+    expect(readStartOutput(`  ${STATUS}  `)).toEqual({ kind: 'text', text: STATUS });
+  });
+
+  it('names what it can see is wrong', () => {
+    expect(readStartOutput('{"workspace_id":"w-1","socket":"/tmp/crew-')).toEqual({
+      kind: 'problem',
+      problem: 'cut-off',
+    });
+    expect(
+      readStartOutput('{"started_pid":4242,"state":"starting","status_command":"status"}')
+    ).toEqual({ kind: 'problem', problem: 'starting' });
+    for (const shell of [
+      'bash: /home/alice/.local/bin/biorouter-crew: No such file or directory',
+      'zsh: no such file or directory: /home/alice/.local/bin/biorouter-crew',
+      'sh: 1: biorouter-crew: not found',
+    ]) {
+      expect(readStartOutput(shell)).toEqual({ kind: 'problem', problem: 'not-installed' });
+    }
+    expect(
+      readStartOutput('Error: name_mismatch: this workspace already has another name')
+    ).toEqual({
+      kind: 'problem',
+      problem: 'server-error',
+      detail: 'name_mismatch: this workspace already has another name',
+    });
+    expect(
+      readStartOutput(
+        '{"started_pid":1,"state":"running","invitation":null,"invitation_error":"no hello"}'
+      )
+    ).toEqual({ kind: 'problem', problem: 'server-error', detail: 'no hello' });
+  });
+
+  it('hands anything else to the daemon as it is, and nothing for an empty paste', () => {
+    expect(readStartOutput('oops')).toEqual({ kind: 'text', text: 'oops' });
+    expect(readStartOutput('{"unrelated": true}')).toEqual({
+      kind: 'text',
+      text: '{"unrelated": true}',
+    });
+    expect(readStartOutput('   \n ')).toBeNull();
   });
 });

@@ -390,9 +390,14 @@ export function JoinStatusCard() {
   // A connect the card started is running, whichever mount started it.
   const reconnecting = link === 'reconnecting' || claimState.connecting;
 
+  // The token path, folded under "Having trouble joining?" with one sentence on when it is
+  // needed, so it never reads as a second step after the code (T-35).
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
-      <LegacyJoinForm workspace={workspace} username={username || null} />
+      <div className="crew-onboard-stack">
+        <p className="text-supporting text-text-muted">{joinStateCopy.otherBody}</p>
+        <LegacyJoinForm workspace={workspace} username={username || null} />
+      </div>
     </Disclosure>
   );
 
@@ -438,12 +443,8 @@ export function JoinStatusCard() {
           <p className="text-body text-text-default">{joinStateCopy.sendCode(first)}</p>
         )}
         {code ? (
-          <CopyField
-            size="code"
-            value={code}
-            display={groupDeviceCode(code)}
-            label={joinStateCopy.codeLabel}
-          />
+          // Copy what is shown, dashes and all (T-36): the host's code field takes it either way.
+          <CopyField size="code" value={groupDeviceCode(code)} label={joinStateCopy.codeLabel} />
         ) : null}
         <Progress indeterminate aria-labelledby={waitingId} />
         <p id={waitingId} className="text-supporting text-text-muted">

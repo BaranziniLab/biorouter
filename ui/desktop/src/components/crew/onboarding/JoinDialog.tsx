@@ -1,4 +1,13 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
+import { Check } from '../../icons/app-icons';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import CustomRadio from '../../ui/CustomRadio';
@@ -26,10 +35,18 @@ import {
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import type { SaveConnectionInput } from '../state/types';
 import { connectionUpdateBody } from '../state/useCrewConnections';
-import { joinCopy } from './copy';
-import { Field, PrivacyFields, SwitchRow, useMounted, useOpenGeneration } from './fields';
+import { joinCopy, joinStateCopy } from './copy';
+import {
+  Field,
+  FieldErrorsProvider,
+  PrivacyFields,
+  SwitchRow,
+  useFormValidation,
+  useMounted,
+  useOpenGeneration,
+} from './fields';
 import { updateJoinContext } from './joinContext';
-import { groupWorkspaceFingerprint } from './joinText';
+import { firstName, groupWorkspaceFingerprint } from './joinText';
 import { PrivacyLabel } from './parts';
 
 type Mode = 'private' | 'public';
@@ -109,15 +126,32 @@ export function JoinDialog({ open, onOpenChange }: JoinDialogProps) {
   return <JoinDialogView key={generation} open={isOpen} onClose={close} />;
 }
 
+/** A change that put a whole invitation in the box (a paste, a drop, a programmatic set). */
+function replacedWhole(event: { nativeEvent: Event }): boolean {
+  const type = (event.nativeEvent as InputEvent).inputType;
+  return !type || type === 'insertFromPaste' || type === 'insertFromDrop';
+}
+
 function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void }) {
   const crew = useCrew();
   const formId = useId();
-  const formRef = useRef<HTMLFormElement>(null);
   const mounted = useMounted();
+  const { errors, validate, formProps } = useFormValidation();
 
   const [invitation, setInvitation] = useState('');
   const [previewState, setPreviewState] = useState<PreviewState>({ kind: 'idle' });
   const preview = previewState.kind === 'ready' ? previewState.preview : null;
+  /**
+   * The box shrinks to "Invitation read ✓ · Edit" once a pasted invitation is read, so the base64
+   * wall doesn't sit above the summary (T-43). Only a paste collapses it: a box the person is
+   * typing in never disappears under them.
+   */
+  const [invitationCollapsed, setInvitationCollapsed] = useState(false);
+  const collapseOnRead = useRef(true);
+  const invitationRef = useRef<HTMLTextAreaElement>(null);
+  const editInvitationRef = useRef<HTMLButtonElement>(null);
+  /** Where focus goes after the box changes shape: the box had it, so its replacement takes it. */
+  const [invitationFocus, setInvitationFocus] = useState<'edit' | 'box' | null>(null);
 
   // The person's own edits win over what the invitation prefills.
   const [username, setUsername] = useState('');
@@ -126,7 +160,16 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [mode, setMode] = useState<Mode | null>('private');
   const [institution, setInstitution] = useState('');
   const [privacyEdited, setPrivacyEdited] = useState(false);
+  /**
+   * The privacy fields, once on screen, stay on screen (P0-4): typing an institution or choosing
+   * Public must never unmount the field in use. Latched by every path that shows them.
+   */
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  /** Move focus into the privacy fields once Change has revealed them (Change itself goes). */
+  const [focusPrivacy, setFocusPrivacy] = useState(false);
+  const privacyRef = useRef<HTMLDivElement>(null);
+  /** The preview whose prefill has landed: until then `mode` and `institution` are the old ones. */
+  const [prefilledFor, setPrefilledFor] = useState<CrewInvitationPreview | null>(null);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [sshAlias, setSshAlias] = useState('');
@@ -167,7 +210,12 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     const timer = setTimeout(() => {
       previewInvitation(invitation, {}, controller.signal).then(
         (result) => {
-          if (!controller.signal.aborted) setPreviewState({ kind: 'ready', preview: result });
+          if (controller.signal.aborted) return;
+          setPreviewState({ kind: 'ready', preview: result });
+          if (collapseOnRead.current) {
+            if (document.activeElement === invitationRef.current) setInvitationFocus('edit');
+            setInvitationCollapsed(true);
+          }
         },
         (failure: unknown) => {
           if (controller.signal.aborted) return;
@@ -205,6 +253,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       setMode(preview.workspace_mode);
       setInstitution(preview.workspace_institution_id ?? '');
     }
+    setPrefilledFor(preview);
   }, [preview, usernameEdited, privacyEdited]);
 
   // An invitation that names no server needs the login from Advanced: open it, once per paste.
@@ -217,8 +266,15 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   useEffect(() => {
     if (!validateHidden) return;
     setValidateHidden(false);
-    formRef.current?.reportValidity();
-  }, [validateHidden]);
+    validate();
+  }, [validateHidden, validate]);
+
+  // The invitation box changed shape while it had focus: hand focus to what replaced it.
+  useLayoutEffect(() => {
+    if (!invitationFocus) return;
+    setInvitationFocus(null);
+    (invitationFocus === 'edit' ? editInvitationRef.current : invitationRef.current)?.focus();
+  }, [invitationFocus, invitationCollapsed]);
 
   // Connect only once the controller has selected the saved connection and lists it: the
   // controller's `connect` is bound to the selection of the render it came from.
@@ -243,10 +299,23 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const defaultPort = preview?.ssh_port ?? 22;
   const portValue = port.trim() ? Number(port) : null;
   // A Private connection needs an institution. When the invitation has none, show the field
-  // rather than letting the save dead-end. An unchosen privacy shows the choice at once.
+  // rather than letting the save dead-end. An unchosen privacy shows the choice at once. Only a
+  // settled prefill counts: the render a preview arrives in still holds the previous values.
+  const prefilled = manual || (preview !== null && prefilledFor === preview);
   const needsInstitution = mode === 'private' && !institution.trim();
-  const privacyShown =
-    privacyOpen || mode === null || (needsInstitution && (Boolean(preview) || manual));
+  const privacyShown = privacyOpen || mode === null || (needsInstitution && prefilled);
+
+  // Latch: once shown, the fields stay, however the value that showed them changes.
+  useEffect(() => {
+    if (privacyShown && !privacyOpen) setPrivacyOpen(true);
+  }, [privacyShown, privacyOpen]);
+
+  // Change unmounts itself: put focus on the chosen privacy instead of dropping it to the page.
+  useLayoutEffect(() => {
+    if (!focusPrivacy || !privacyShown) return;
+    setFocusPrivacy(false);
+    privacyRef.current?.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.focus();
+  }, [focusPrivacy, privacyShown]);
 
   // A connection this computer already has for the workspace: offer it instead of saving again.
   const existingId = !manual ? (preview?.existing_connection_id ?? null) : null;
@@ -348,6 +417,8 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       setValidateHidden(true);
       return;
     }
+    // The form is `noValidate`: its fields are checked here and answered under each field.
+    if (!validate()) return;
     if (!manual && !preview) return;
     // Never save a privacy the person did not choose.
     if (mode === null) return;
@@ -442,6 +513,14 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         display_name: preview.host_display_name,
       })
     : null;
+  // "Ask @alice which institution lab uses": the invitation carried none, so say whom to ask.
+  const institutionHelper =
+    preview && !preview.workspace_institution_id
+      ? joinCopy.institutionUnknown(
+          host ? `@${host.username}` : joinStateCopy.yourHost,
+          workspaceLabel
+        )
+      : undefined;
   // Copy the full hex; show the short form the host reads out (computed here, else the daemon's).
   const fingerprint = preview?.workspace_key_fingerprint ?? null;
   const fingerprintShort =
@@ -455,6 +534,9 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         : previewState.kind === 'checking'
           ? joinCopy.checking
           : undefined;
+
+  // "Check this matches the fingerprint Alice sees." (T-34)
+  const fingerprintHost = firstName(host) ?? joinStateCopy.yourHost;
 
   return (
     <ModalShell
@@ -489,320 +571,384 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         </>
       }
     >
-      <form
-        id={formId}
-        ref={formRef}
-        className="crew-onboard-form pb-3"
-        onSubmit={(event) => void submit(event)}
-        aria-busy={locked}
-      >
-        {!manual ? (
-          <Field
-            label={joinCopy.invitation}
-            helper={invitationHelper}
-            invalid={previewState.kind === 'invalid' || previewState.kind === 'failed'}
-          >
-            {(props) => (
-              <textarea
-                {...props}
-                autoFocus
-                required
-                rows={4}
-                disabled={locked}
-                value={invitation}
-                onChange={(event) => setInvitation(event.target.value)}
-                placeholder={joinCopy.invitationPlaceholder}
-                spellCheck={false}
-                className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
-              />
-            )}
-          </Field>
-        ) : null}
-
-        {previewConflictId ? (
-          <div className="crew-onboard-actions">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={locked}
-              onClick={() => void openConnection(previewConflictId)}
-            >
-              {openLabel(previewConflictId)}
-            </Button>
-          </div>
-        ) : null}
-
-        {previewState.kind === 'stale' ? (
-          <Note tone="warning" role="status">
-            {joinCopy.staleDaemon}
-          </Note>
-        ) : null}
-
-        {existingId ? (
-          <Note tone="info" role="status" testId="crew-join-existing">
-            {joinCopy.existing(workspaceLabel)}
-          </Note>
-        ) : null}
-
-        {preview ? (
-          <div className="crew-onboard-summary" data-testid="crew-join-summary">
-            <div className="text-label text-text-default">
-              <bdi>{workspaceLabel}</bdi>
-            </div>
-            {host || server ? (
-              <div className="text-supporting text-text-muted" data-testid="crew-join-hosted-by">
-                {host ? (
-                  <>
-                    {joinCopy.hostedBy} <PersonName person={host} context="inline" />
-                  </>
-                ) : null}
-                {server ? (
-                  <>
-                    {host ? ` ${joinCopy.on} ` : ''}
-                    <bdi>{server}</bdi>
-                  </>
-                ) : null}
-              </div>
-            ) : null}
-            {/* What the invitation states, never the privacy saving would default to. */}
-            <div data-testid="crew-join-workspace-privacy">
-              {statedMode ? (
-                <PrivacyLabel mode={statedMode} institutionId={preview.workspace_institution_id} />
-              ) : (
-                <span className="text-supporting text-text-muted">
-                  {joinCopy.privacy}: {joinCopy.privacyUnstated}
+      <FieldErrorsProvider value={errors}>
+        <form
+          id={formId}
+          {...formProps}
+          className="crew-onboard-form crew-onboard-dialog-form"
+          onSubmit={(event) => void submit(event)}
+          aria-busy={locked}
+        >
+          {!manual && invitationCollapsed && preview ? (
+            <div className="crew-onboard-field">
+              <span className="text-label text-text-default">{joinCopy.invitation}</span>
+              <div className="crew-onboard-invitation-read" data-testid="crew-join-invitation-read">
+                <span className="crew-onboard-row" role="status">
+                  <Check aria-hidden className="h-4 w-4 text-text-success" />
+                  <span className="text-body text-text-default">{joinCopy.invitationRead}</span>
                 </span>
-              )}
-            </div>
-            {fingerprint || fingerprintShort ? (
-              <div className="crew-onboard-field">
-                <span className="text-supporting text-text-muted">{joinCopy.fingerprint}</span>
-                <CopyField
-                  value={fingerprint ?? fingerprintShort ?? ''}
-                  display={fingerprintShort ?? fingerprint ?? ''}
-                  label={joinCopy.fingerprintLabel}
-                />
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {preview && !existingId ? (
-          <Field label={server ? joinCopy.username(server) : joinCopy.usernameFallback}>
-            {(props) => (
-              <Input
-                {...props}
-                required
-                disabled={locked}
-                value={username}
-                autoComplete="username"
-                spellCheck={false}
-                onChange={(event) => {
-                  setUsernameEdited(true);
-                  setUsername(event.target.value);
-                }}
-              />
-            )}
-          </Field>
-        ) : null}
-
-        {(preview && !existingId) || manual ? (
-          <div className="crew-onboard-stack">
-            <div
-              className="crew-onboard-row text-body text-text-default"
-              data-testid="crew-join-as"
-            >
-              {mode === null ? (
-                <span>{joinCopy.privacyChoose}</span>
-              ) : (
-                <>
-                  <span>{joinCopy.privacyLine}</span>
-                  <PrivacyLabel
-                    mode={mode}
-                    institutionId={mode === 'private' ? institution.trim() : null}
-                  />
-                </>
-              )}
-              {!privacyShown ? (
+                <span aria-hidden="true" className="text-text-muted">
+                  ·
+                </span>
                 <Button
+                  ref={editInvitationRef}
                   type="button"
                   variant="link"
                   className="h-auto p-0"
                   disabled={locked}
-                  onClick={() => setPrivacyOpen(true)}
+                  aria-label={joinCopy.editInvitationLabel}
+                  onClick={() => {
+                    // Editing keeps the box open: only a new paste collapses it again.
+                    collapseOnRead.current = false;
+                    setInvitationCollapsed(false);
+                    setInvitationFocus('box');
+                  }}
                 >
-                  {joinCopy.change}
+                  {joinCopy.editInvitation}
                 </Button>
-              ) : null}
+              </div>
             </div>
-            <MismatchLine
-              workspace={preview}
-              workspaceLabel={workspaceLabel}
-              mode={mode}
-              institution={institution.trim()}
-            />
-            {privacyShown && mode === null ? (
-              <UnchosenPrivacy
-                disabled={locked}
-                onMode={(next) => {
-                  // Keep the choice in view once made, so it can still be changed.
-                  setPrivacyOpen(true);
-                  setPrivacyEdited(true);
-                  setMode(next);
-                }}
-              />
-            ) : privacyShown && mode !== null ? (
-              <PrivacyFields
-                mode={mode}
-                institution={institution}
-                disabled={locked}
-                onMode={(next) => {
-                  setPrivacyEdited(true);
-                  setMode(next);
-                }}
-                onInstitution={(next) => {
-                  setPrivacyEdited(true);
-                  setInstitution(next);
-                }}
-              />
-            ) : null}
-          </div>
-        ) : null}
-
-        <Disclosure
-          open={advancedOpen}
-          onOpenChange={setAdvancedOpen}
-          summary={joinCopy.advancedSummary(portValue ?? defaultPort)}
-        >
-          <div className="crew-onboard-form">
+          ) : !manual ? (
             <Field
-              label={joinCopy.serverLogin}
-              helper={
-                serverMissing && !manual
-                  ? joinCopy.serverMissing
-                  : joinCopy.serverLoginHelper(`${username.trim() || 'you'}@${server || 'server'}`)
-              }
+              label={joinCopy.invitation}
+              helper={invitationHelper}
+              invalid={previewState.kind === 'invalid' || previewState.kind === 'failed'}
             >
               {(props) => (
-                <Input
+                <textarea
                   {...props}
-                  required={serverMissing && !manual}
-                  disabled={locked || manual}
-                  pattern={SSH_LOGIN_PATTERN}
-                  value={sshAlias}
+                  ref={invitationRef}
+                  autoFocus={!invitation}
+                  required
+                  rows={4}
+                  disabled={locked}
+                  value={invitation}
+                  onChange={(event) => {
+                    collapseOnRead.current = replacedWhole(event);
+                    setInvitation(event.target.value);
+                  }}
+                  placeholder={joinCopy.invitationPlaceholder}
                   spellCheck={false}
-                  onChange={(event) => setSshAlias(event.target.value)}
+                  className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
                 />
               )}
             </Field>
-            <Field label={joinCopy.port}>
+          ) : null}
+
+          {previewConflictId ? (
+            <div className="crew-onboard-actions">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={locked}
+                onClick={() => void openConnection(previewConflictId)}
+              >
+                {openLabel(previewConflictId)}
+              </Button>
+            </div>
+          ) : null}
+
+          {previewState.kind === 'stale' ? (
+            <Note tone="warning" role="status">
+              {joinCopy.staleDaemon}
+            </Note>
+          ) : null}
+
+          {existingId ? (
+            <Note tone="info" role="status" testId="crew-join-existing">
+              {joinCopy.existing(workspaceLabel)}
+            </Note>
+          ) : null}
+
+          {preview ? (
+            <div className="crew-onboard-summary" data-testid="crew-join-summary">
+              <div className="text-label text-text-default">
+                <bdi>{workspaceLabel}</bdi>
+              </div>
+              {host || server ? (
+                <div className="text-supporting text-text-muted" data-testid="crew-join-hosted-by">
+                  {host ? (
+                    <>
+                      {joinCopy.hostedBy} <PersonName person={host} context="inline" />
+                    </>
+                  ) : null}
+                  {server ? (
+                    <>
+                      {host ? ` ${joinCopy.on} ` : ''}
+                      <bdi>{server}</bdi>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              {/* What the invitation states, never the privacy saving would default to. */}
+              <div data-testid="crew-join-workspace-privacy">
+                {statedMode ? (
+                  <PrivacyLabel
+                    mode={statedMode}
+                    institutionId={preview.workspace_institution_id}
+                  />
+                ) : (
+                  <span className="text-supporting text-text-muted">
+                    {joinCopy.privacy}: {joinCopy.privacyUnstated}
+                  </span>
+                )}
+              </div>
+              {fingerprint || fingerprintShort ? (
+                <div className="crew-onboard-field">
+                  <span className="text-supporting text-text-muted">{joinCopy.fingerprint}</span>
+                  <CopyField
+                    value={fingerprint ?? fingerprintShort ?? ''}
+                    display={fingerprintShort ?? fingerprint ?? ''}
+                    label={joinCopy.fingerprintLabel}
+                  />
+                  <p
+                    className="text-supporting text-text-muted"
+                    data-testid="crew-join-fingerprint-helper"
+                  >
+                    {joinCopy.fingerprintHelper(fingerprintHost)}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {preview && !existingId ? (
+            <Field label={server ? joinCopy.username(server) : joinCopy.usernameFallback}>
               {(props) => (
                 <Input
                   {...props}
-                  type="number"
-                  min={1}
-                  max={65535}
+                  required
                   disabled={locked}
-                  placeholder={String(defaultPort)}
-                  value={port}
-                  onChange={(event) => setPort(event.target.value)}
-                />
-              )}
-            </Field>
-            <Field label={joinCopy.identityFile} helper={joinCopy.identityFileHelper}>
-              {(props) => (
-                <Input
-                  {...props}
-                  disabled={locked}
-                  value={identityFile}
-                  spellCheck={false}
-                  onChange={(event) => setIdentityFile(event.target.value)}
-                />
-              )}
-            </Field>
-            <Field label={joinCopy.jumpHost}>
-              {(props) => (
-                <Input
-                  {...props}
-                  disabled={locked}
-                  placeholder={preview?.proxy_jump ?? ''}
-                  value={proxyJump}
-                  spellCheck={false}
-                  onChange={(event) => setProxyJump(event.target.value)}
-                />
-              )}
-            </Field>
-            <Field label={joinCopy.connectionName}>
-              {(props) => (
-                <Input
-                  {...props}
-                  disabled={locked}
-                  placeholder={preview?.workspace_name ?? ''}
-                  value={connectionName}
-                  onChange={(event) => setConnectionName(event.target.value)}
-                />
-              )}
-            </Field>
-            <Field label={joinCopy.remoteFolder} helper={joinCopy.remoteFolderHelper}>
-              {(props) => (
-                <Input
-                  {...props}
-                  disabled={locked}
-                  pattern="/.*"
-                  value={remoteRoot}
+                  value={username}
+                  autoComplete="username"
                   spellCheck={false}
                   onChange={(event) => {
-                    setRemoteRoot(event.target.value);
-                    if (!event.target.value.trim()) setRemoteExecution(false);
+                    setUsernameEdited(true);
+                    setUsername(event.target.value);
                   }}
                 />
               )}
             </Field>
-            <SwitchRow
-              label={joinCopy.remoteExecution}
-              checked={remoteExecution}
-              disabled={locked || !remoteRoot.trim()}
-              onCheckedChange={setRemoteExecution}
-            />
-            <SwitchRow
-              label={joinCopy.manual}
-              checked={manual}
-              disabled={locked}
-              onCheckedChange={setManual}
-            />
-            {manual ? (
-              <ManualDetails
-                disabled={locked}
-                values={{ manualLogin, socketPath, workspaceId, ownerUid, workspaceKey }}
-                onChange={{
-                  manualLogin: setManualLogin,
-                  socketPath: setSocketPath,
-                  workspaceId: setWorkspaceId,
-                  ownerUid: setOwnerUid,
-                  workspaceKey: setWorkspaceKey,
-                }}
-              />
-            ) : null}
-          </div>
-        </Disclosure>
+          ) : null}
 
-        <JoinErrorSlot
-          action={
-            saveConflictId ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={locked}
-                onClick={() => void openConnection(saveConflictId)}
+          {(preview && !existingId) || manual ? (
+            <div className="crew-onboard-stack" ref={privacyRef}>
+              {/* Privacy is said once: this line while the fields are folded away, the radio
+                  rows once they are open. An unchosen privacy keeps the line as its prompt. */}
+              {!privacyShown || mode === null ? (
+                <div
+                  className="crew-onboard-row text-body text-text-default"
+                  data-testid="crew-join-as"
+                >
+                  {mode === null ? (
+                    <span>{joinCopy.privacyChoose}</span>
+                  ) : (
+                    <>
+                      <span>{joinCopy.privacyLine}</span>
+                      <PrivacyLabel
+                        mode={mode}
+                        institutionId={mode === 'private' ? institution.trim() : null}
+                      />
+                    </>
+                  )}
+                  {!privacyShown ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto p-0"
+                      disabled={locked}
+                      onClick={() => {
+                        setPrivacyOpen(true);
+                        setFocusPrivacy(true);
+                      }}
+                    >
+                      {joinCopy.change}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {privacyShown && mode === null ? (
+                <UnchosenPrivacy
+                  disabled={locked}
+                  onMode={(next) => {
+                    // Keep the choice in view once made, so it can still be changed.
+                    setPrivacyOpen(true);
+                    setPrivacyEdited(true);
+                    setMode(next);
+                  }}
+                />
+              ) : privacyShown && mode !== null ? (
+                <PrivacyFields
+                  mode={mode}
+                  institution={institution}
+                  disabled={locked}
+                  institutionHelper={institutionHelper}
+                  onMode={(next) => {
+                    setPrivacyOpen(true);
+                    setPrivacyEdited(true);
+                    setMode(next);
+                  }}
+                  onInstitution={(next) => {
+                    setPrivacyOpen(true);
+                    setPrivacyEdited(true);
+                    setInstitution(next);
+                  }}
+                />
+              ) : null}
+              <MismatchLine
+                workspace={preview}
+                workspaceLabel={workspaceLabel}
+                mode={mode}
+                institution={institution.trim()}
+              />
+            </div>
+          ) : null}
+
+          <Disclosure
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            summary={joinCopy.advancedSummary(portValue ?? defaultPort)}
+          >
+            <div className="crew-onboard-form">
+              <Field
+                label={joinCopy.serverLogin}
+                required={serverMissing && !manual}
+                invalidMessage={joinCopy.serverLoginInvalid}
+                helper={
+                  serverMissing && !manual
+                    ? joinCopy.serverMissing
+                    : joinCopy.serverLoginHelper(
+                        `${username.trim() || 'you'}@${server || 'server'}`
+                      )
+                }
               >
-                {openLabel(saveConflictId)}
-              </Button>
-            ) : undefined
-          }
-        />
-      </form>
+                {(props) => (
+                  <Input
+                    {...props}
+                    required={serverMissing && !manual}
+                    disabled={locked || manual}
+                    pattern={SSH_LOGIN_PATTERN}
+                    value={sshAlias}
+                    spellCheck={false}
+                    onChange={(event) => setSshAlias(event.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={joinCopy.port} invalidMessage={joinCopy.portInvalid}>
+                {(props) => (
+                  <Input
+                    {...props}
+                    type="number"
+                    min={1}
+                    max={65535}
+                    disabled={locked}
+                    placeholder={String(defaultPort)}
+                    value={port}
+                    onChange={(event) => setPort(event.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={joinCopy.identityFile} helper={joinCopy.identityFileHelper}>
+                {(props) => (
+                  <Input
+                    {...props}
+                    disabled={locked}
+                    value={identityFile}
+                    spellCheck={false}
+                    onChange={(event) => setIdentityFile(event.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={joinCopy.jumpHost}>
+                {(props) => (
+                  <Input
+                    {...props}
+                    disabled={locked}
+                    placeholder={preview?.proxy_jump ?? ''}
+                    value={proxyJump}
+                    spellCheck={false}
+                    onChange={(event) => setProxyJump(event.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={joinCopy.connectionName}>
+                {(props) => (
+                  <Input
+                    {...props}
+                    disabled={locked}
+                    placeholder={preview?.workspace_name ?? ''}
+                    value={connectionName}
+                    spellCheck={false}
+                    onChange={(event) => setConnectionName(event.target.value)}
+                  />
+                )}
+              </Field>
+              <Field
+                label={joinCopy.remoteFolder}
+                helper={joinCopy.remoteFolderHelper}
+                invalidMessage={joinCopy.remoteFolderInvalid}
+              >
+                {(props) => (
+                  <Input
+                    {...props}
+                    disabled={locked}
+                    pattern="/.*"
+                    value={remoteRoot}
+                    spellCheck={false}
+                    onChange={(event) => {
+                      setRemoteRoot(event.target.value);
+                      if (!event.target.value.trim()) setRemoteExecution(false);
+                    }}
+                  />
+                )}
+              </Field>
+              <SwitchRow
+                label={joinCopy.remoteExecution}
+                checked={remoteExecution}
+                disabled={locked || !remoteRoot.trim()}
+                hint={remoteRoot.trim() ? undefined : joinCopy.remoteExecutionNeedsFolder}
+                onCheckedChange={setRemoteExecution}
+              />
+              <SwitchRow
+                label={joinCopy.manual}
+                checked={manual}
+                disabled={locked}
+                onCheckedChange={setManual}
+              />
+              {manual ? (
+                <ManualDetails
+                  disabled={locked}
+                  values={{ manualLogin, socketPath, workspaceId, ownerUid, workspaceKey }}
+                  onChange={{
+                    manualLogin: setManualLogin,
+                    socketPath: setSocketPath,
+                    workspaceId: setWorkspaceId,
+                    ownerUid: setOwnerUid,
+                    workspaceKey: setWorkspaceKey,
+                  }}
+                />
+              ) : null}
+            </div>
+          </Disclosure>
+
+          <JoinErrorSlot
+            action={
+              saveConflictId ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={locked}
+                  onClick={() => void openConnection(saveConflictId)}
+                >
+                  {openLabel(saveConflictId)}
+                </Button>
+              ) : undefined
+            }
+          />
+        </form>
+      </FieldErrorsProvider>
     </ModalShell>
   );
 }
@@ -848,7 +994,8 @@ function UnchosenPrivacy({
 
 /**
  * "{workspace} is Private for ucsf. Your connection will be Public." — only when they differ, and
- * only against the privacy the invitation STATES.
+ * only against the privacy the invitation STATES. An invitation that names no institution states
+ * nothing to differ from, so a Private choice with an institution is not a mismatch.
  */
 function MismatchLine({
   workspace,
@@ -865,7 +1012,8 @@ function MismatchLine({
   if (!workspace || workspaceMode === null || mode === null) return null;
   const workspaceInstitution = workspace.workspace_institution_id ?? '';
   const differs =
-    workspaceMode !== mode || (mode === 'private' && workspaceInstitution !== institution);
+    workspaceMode !== mode ||
+    (mode === 'private' && Boolean(workspaceInstitution) && workspaceInstitution !== institution);
   if (!differs) return null;
   const words = (value: Mode, id: string) =>
     value === 'public' ? joinCopy.public : id ? joinCopy.privateFor(id) : joinCopy.private;
@@ -907,7 +1055,7 @@ function ManualDetails({
           />
         )}
       </Field>
-      <Field label={joinCopy.socketPath}>
+      <Field label={joinCopy.socketPath} invalidMessage={joinCopy.socketPathInvalid}>
         {(props) => (
           <Input
             {...props}
@@ -932,7 +1080,7 @@ function ManualDetails({
           />
         )}
       </Field>
-      <Field label={joinCopy.hostUserId}>
+      <Field label={joinCopy.hostUserId} invalidMessage={joinCopy.hostUserIdInvalid}>
         {(props) => (
           <Input
             {...props}
@@ -945,7 +1093,11 @@ function ManualDetails({
           />
         )}
       </Field>
-      <Field label={joinCopy.workspaceKey} helper={joinCopy.workspaceKeyHelper}>
+      <Field
+        label={joinCopy.workspaceKey}
+        helper={joinCopy.workspaceKeyHelper}
+        invalidMessage={joinCopy.workspaceKeyHelper}
+      >
         {(props) => (
           <Input
             {...props}

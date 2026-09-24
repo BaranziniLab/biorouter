@@ -94,6 +94,56 @@ export function SignInNeededState() {
   );
 }
 
+/** The channel composer a person lands in once a team's channel opens. */
+const COMPOSER_SELECTOR = 'textarea[aria-label^="Message #"]';
+
+/** How long focus waits for the joined team's channel to open before it gives up. */
+export const LANDING_FOCUS_TIMEOUT_MS = 10_000;
+
+let stopLandingFocus: (() => void) | null = null;
+
+/**
+ * "Join {team}" unmounts itself: the invitation card is replaced by the team's channel, and focus
+ * would fall to `<body>` (T-15). Once the composer mounts, put focus there, unless the person has
+ * already put it somewhere themselves (then nothing moves). Returns a stop.
+ */
+export function focusComposerOnceMounted(origin: HTMLElement | null): () => void {
+  stopLandingFocus?.();
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
+  let stopped = false;
+  const observer = new MutationObserver(() => {
+    attempt();
+  });
+  const timer = setTimeout(() => stop(), LANDING_FOCUS_TIMEOUT_MS);
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    observer.disconnect();
+    clearTimeout(timer);
+    if (stopLandingFocus === stop) stopLandingFocus = null;
+  }
+  /** Focus was not moved by the person: it is on nothing, or still on the button pressed. */
+  function unclaimed(): boolean {
+    const active = document.activeElement;
+    return !active || active === document.body || !active.isConnected || active === origin;
+  }
+  function attempt() {
+    if (stopped) return;
+    if (!unclaimed()) {
+      stop();
+      return;
+    }
+    const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+    if (!composer) return;
+    composer.focus();
+    stop();
+  }
+  stopLandingFocus = stop;
+  attempt();
+  if (!stopped) observer.observe(document.body, { childList: true, subtree: true });
+  return stop;
+}
+
 /** A team invitation addressed to the viewer that has not expired. */
 function pendingTeamInvitation(view: Snapshot): Invitation | null {
   return (
@@ -147,11 +197,17 @@ export function NoTeamState() {
             <Button
               type="button"
               disabled={!live || accepting}
-              onClick={() =>
-                void crew.act('global', 'mutate:invitation.accept', () =>
-                  crew.mutate('invitation.accept', { invitation_id: invitation.id })
-                )
-              }
+              onClick={(event) => {
+                const origin = event.currentTarget;
+                void crew
+                  .act('global', 'mutate:invitation.accept', async () => {
+                    await crew.mutate('invitation.accept', { invitation_id: invitation.id });
+                    return true;
+                  })
+                  .then((joined) => {
+                    if (joined) focusComposerOnceMounted(origin);
+                  });
+              }}
             >
               {emptyCopy.invitedAction(team)}
             </Button>

@@ -126,12 +126,52 @@ describe('HostDialog', () => {
     expect(screen.getByText(hostCopy.stepOf(1, 3, 'Name'))).toBeInTheDocument();
     const name = screen.getByLabelText(hostCopy.workspaceName);
     expect(name).toHaveFocus();
+    // An example, marked as one, never a value that looks typed already (T-42).
+    expect(name).toHaveAttribute('placeholder', 'e.g. lab');
+    expect(screen.getByLabelText(hostCopy.serverLogin)).toHaveAttribute(
+      'placeholder',
+      'e.g. alice@hpc.example.edu'
+    );
     fireEvent.change(name, { target: { value: 'Lab Data' } });
     expect(screen.getByText(/Your workspace: lab-data/)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /^Private/ })).toBeChecked();
     await waitFor(() => expect(screen.getByLabelText(joinCopy.institution)).toHaveValue('ucsf'));
     expect(screen.getByLabelText(joinCopy.institution)).toBeRequired();
+    // The host is the one others match, so the helper says so rather than "as your host uses it".
+    expect(screen.getByLabelText(joinCopy.institution)).toHaveAccessibleDescription(
+      hostCopy.institutionHelper
+    );
     expect(screen.getByText(hostCopy.advancedSummary)).toBeInTheDocument();
+  });
+
+  it('shows the steps as one numbered row in the header, not a second list in the body', async () => {
+    renderHost();
+    const steps = screen.getByTestId('crew-host-steps');
+    expect(steps.closest('form')).toBeNull();
+    const current = steps.querySelector('[data-state="current"]');
+    expect(current).toHaveTextContent('1Name');
+    expect(steps.querySelectorAll('[data-state="next"]')).toHaveLength(2);
+    // A screen reader hears the position once, as the dialog's description.
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(hostCopy.stepOf(1, 3, 'Name'));
+    expect(screen.queryByRole('list', { name: hostCopy.stepsLabel })).toBeNull();
+
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    expect(steps.querySelector('[data-state="done"]')).toHaveTextContent('Name');
+    expect(steps.querySelector('[data-state="current"]')).toHaveTextContent('2Start');
+  });
+
+  it('answers a blank required field under it instead of with a native bubble', async () => {
+    const view = renderHost();
+    const name = screen.getByLabelText(hostCopy.workspaceName);
+    expect(name.closest('form')).toHaveAttribute('novalidate');
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    const message = await screen.findAllByText(joinCopy.fieldRequired);
+    expect(message[0]).toHaveClass('text-text-danger');
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(name).toHaveFocus();
+    expect(view.crew().prepareHostingDevice).not.toHaveBeenCalled();
   });
 
   it('prepares the hosting identity on Continue and shows the start command with its key', async () => {
@@ -143,7 +183,9 @@ describe('HostDialog', () => {
     expect(view.crew().prepareHostingDevice).toHaveBeenCalledOnce();
     expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
     expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeInTheDocument();
-    expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/)).toBeInTheDocument();
+    const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
+    // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
+    expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.consequence)).toBeInTheDocument();
 
     // The embedded terminal is a plain shell: nothing is typed or run for the person.
@@ -298,6 +340,8 @@ describe('HostDialog', () => {
     await throughStart();
 
     expect(screen.getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
+    // The fingerprint says what it is for (T-34).
+    expect(screen.getByText(hostCopy.fingerprintHelper)).toBeInTheDocument();
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
 
@@ -417,5 +461,155 @@ describe('HostDialog', () => {
       )
     );
     expect(view.crew().saveConnection).not.toHaveBeenCalled();
+  });
+  it('reads the paste as soon as it is pasted, through the terminal text around it (T-27)', async () => {
+    renderHost();
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+
+    // A prompt before the JSON, and a copy that broke the long line inside the socket path.
+    const noisy = [
+      'alice@hpc:~$ "$HOME/.local/bin/biorouter-crew" status --state-dir lab-data',
+      'alice@hpc:~$ {"workspace_id":"w-1","socket":"/tmp/crew-1000-abc/bro',
+      'ker.sock","host_uid":1000}',
+      'alice@hpc:~$ ',
+    ].join('\n');
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: noisy } });
+
+    const found = await screen.findByTestId('crew-host-paste-found');
+    expect(found).toHaveTextContent(hostCopy.found('lab-data', 'hpc.ucsf.edu'));
+    expect(found.closest('[aria-live="polite"]')).not.toBeNull();
+    expect(mocks.previewInvitation).toHaveBeenCalledWith(
+      '{"workspace_id":"w-1","socket":"/tmp/crew-1000-abc/broker.sock","host_uid":1000}',
+      {},
+      expect.any(AbortSignal)
+    );
+
+    // Continue moves on with what was read, without asking the daemon again.
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    expect(mocks.previewInvitation).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      'Crew was still starting',
+      '{"started_pid":4242,"state":"starting","status_command":"status"}',
+      hostCopy.pasteStarting,
+    ],
+    [
+      'the copy stopped partway',
+      'alice@hpc:~$ {"workspace_id":"w-1","socket":"/tmp/crew-1000-',
+      hostCopy.pasteCutOff,
+    ],
+    [
+      'biorouter-crew is missing',
+      'bash: /home/alice/.local/bin/biorouter-crew: No such file or directory',
+      hostCopy.pasteNotInstalled,
+    ],
+  ])('says exactly what is wrong when %s, before Continue', async (_case, paste, message) => {
+    renderHost();
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    const box = screen.getByLabelText(hostCopy.pasted);
+    fireEvent.change(box, { target: { value: paste } });
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(box).toHaveAttribute('aria-invalid', 'true');
+    // Nothing the daemon could read, so it was not asked; Continue stays on Start.
+    expect(mocks.previewInvitation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
+  });
+
+  it('opens the workspace it just created connected, and ignores an error from before it existed (T-09)', async () => {
+    const connect = vi.fn().mockResolvedValue(undefined);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const bootstrap = deferred<unknown>();
+    const request = vi.fn((method: string) =>
+      method === 'auth.bootstrap' ? bootstrap.promise : Promise.resolve({})
+    );
+    const saved = fakeConnection({
+      id: 'conn-host',
+      ssh_target: 'alice@hpc.ucsf.edu',
+      status: 'disconnected',
+    });
+    const view = renderHost({
+      connect,
+      refresh,
+      request: request as unknown as CrewController['request'],
+      saveConnection: vi.fn().mockResolvedValue(saved),
+    });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({
+      connectionId: 'conn-host',
+      connections: [saved],
+      connection: { ...saved, status: 'connected' },
+    });
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'auth.bootstrap',
+        { public_key: DEVICE_KEY },
+        { mutation: true }
+      )
+    );
+
+    // Before the workspace existed, its observer gave up and the connection dropped.
+    view.update({
+      connection: { ...saved, status: 'disconnected' },
+      refreshError: 'Room observation ended.',
+    });
+    await act(async () => bootstrap.resolve({}));
+
+    // Connected again first, then verified.
+    await waitFor(() => expect(connect).toHaveBeenCalledWith({ userInitiated: true }));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(connect.mock.invocationCallOrder[0]).toBeLessThan(
+      refresh.mock.invocationCallOrder[refresh.mock.invocationCallOrder.length - 1]
+    );
+    // The error from before is not a verdict on the new workspace: the dialog waits.
+    expect(view.crew().closeDialog).not.toHaveBeenCalled();
+
+    view.update({
+      refreshError: null,
+      connection: { ...saved, status: 'connected' },
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'private',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+  });
+
+  it('closes on an observation error that arose while verifying, for the connection bar to explain', async () => {
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    expect(view.crew().closeDialog).not.toHaveBeenCalled();
+
+    view.update({ refreshError: 'The workspace refused this computer.' });
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
   });
 });

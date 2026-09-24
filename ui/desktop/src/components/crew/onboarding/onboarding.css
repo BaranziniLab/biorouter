@@ -89,6 +89,31 @@
   min-width: 0;
 }
 
+/* A field's label, and "Required" beside it (outside the label, so the
+   control's accessible name stays the label's words). */
+.crew-onboard-label-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+/* The Join and Host dialogs' form: the same 12px under the header hairline
+   and above the footer's that every other Biorouter dialog keeps, so the
+   first label never touches the divider (T-43). */
+.crew-onboard-dialog-form {
+  padding-block: 12px;
+}
+
+/* A placeholder is an example, never a value (T-42, T-43): body weight in
+   the body face, even in a monospace box, so "e.g. lab" can't be mistaken
+   for something already typed. */
+.crew-onboard-form ::placeholder {
+  font-family: var(--font-sans);
+  font-weight: var(--text-body--font-weight);
+}
+
 .crew-onboard-row {
   display: flex;
   flex-wrap: wrap;
@@ -108,6 +133,36 @@
 .crew-onboard-textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+/* The invitation box once the daemon read it: "✓ Invitation read · Edit",
+   in the box's place, instead of the base64 wall. */
+.crew-onboard-invitation-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-card);
+}
+
+/* "Found lab on hpc.ucsf.edu ✓" under the Start step's paste. */
+.crew-onboard-found {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The start commands: one command per line, scrolling sideways instead of
+   wrapping mid-flag (T-42). The copy field's own rule wraps every value so a
+   long token never pushes Copy out; here the box scrolls instead. */
+.crew-onboard-command[data-slot='copy-field'][data-multiline='true'] > :first-child {
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: pre;
 }
 
 /* The invitation summary inside the Join dialog. */
@@ -137,20 +192,60 @@
   min-width: 0;
 }
 
-/* The host dialog's stepper: Name · Start · Create. */
+/* The host dialog's stepper, one numbered row in the header (T-42):
+   1 Name — 2 Start — 3 Create. Done steps carry a tick, the current one the
+   accent. */
 .crew-onboard-steps {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  margin: 0 0 4px;
-  padding: 0;
-  list-style: none;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
   color: var(--text-muted);
 }
 
-.crew-onboard-steps [aria-current='step'] {
+.crew-onboard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crew-onboard-step:not(:first-child)::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 1px;
+  margin-inline-end: 2px;
+  background-color: var(--border-emphasized);
+}
+
+.crew-onboard-step-number {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-emphasized);
+  border-radius: var(--radius-full);
+  font-variant-numeric: tabular-nums;
+}
+
+.crew-onboard-step[data-state='current'] {
   color: var(--text-default);
   font-weight: var(--text-label--font-weight);
+}
+
+.crew-onboard-step[data-state='current'] .crew-onboard-step-number {
+  border-color: var(--border-accent);
+  background-color: var(--background-accent);
+  color: var(--text-on-accent);
+}
+
+.crew-onboard-step[data-state='done'] .crew-onboard-step-number {
+  border-color: transparent;
+  background-color: var(--wash-success);
+  color: var(--text-success);
 }
 
 .crew-onboard-list {
@@ -209,6 +304,21 @@
 
 .crew-onboard-check-row[data-done='true'] .crew-onboard-check-text {
   color: var(--text-muted);
+}
+
+/* The compact invite line a channel keeps while the host is still alone in
+   the workspace (SetupChecklist compact, T-22). */
+.crew-onboard-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.crew-onboard-nudge-text {
+  flex: 1 1 200px;
+  min-width: 0;
 }
 
 /* The embedded terminal (InAppTerminalDock). The dock sizes itself for a chat

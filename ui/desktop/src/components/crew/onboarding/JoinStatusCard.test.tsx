@@ -146,9 +146,11 @@ describe('JoinStatusCard', () => {
     ).toBeInTheDocument();
     expect(crew.setJoinStatus).toHaveBeenCalledWith('invited');
 
-    // Copy takes the ungrouped value the daemon computed.
+    // Copy takes what is shown: the daemon's code, grouped with its dashes (T-36).
     fireEvent.click(screen.getByRole('button', { name: 'Copy device code' }));
-    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(LOCAL_CODE));
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('7QK2-M9XA-3JTP-WZ4D')
+    );
   });
 
   it('refuses a code the daemon did not compute in its own canonical form', async () => {
@@ -222,7 +224,8 @@ describe('JoinStatusCard', () => {
     expect(screen.getByText(new RegExp(`Device key: ${DEVICE_KEY}`))).toBeInTheDocument();
 
     const token = screen.getByLabelText('Enrollment invitation');
-    expect(token).toHaveAttribute('placeholder', 'Invitation token');
+    // Not "Invitation token": that read as the invitation the person already pasted (T-35).
+    expect(token).toHaveAttribute('placeholder', 'Token from an older invitation');
     fireEvent.change(token, { target: { value: 'token-123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Join workspace' }));
 
@@ -236,10 +239,18 @@ describe('JoinStatusCard', () => {
     await waitFor(() => expect(crew.refresh).toHaveBeenCalled());
   });
 
-  it('offers the token path behind "Other ways to join" too', async () => {
+  it('folds the token path behind "Having trouble joining?", and says when it is needed', async () => {
     answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE });
     renderCard();
-    fireEvent.click(await screen.findByRole('button', { name: joinStateCopy.other }));
+    const trouble = await screen.findByRole('button', { name: 'Having trouble joining?' });
+    expect(trouble).toHaveAttribute('aria-expanded', 'false');
+    // Folded: no second join form, token field or device key competes with the code.
+    expect(screen.queryByLabelText('Enrollment invitation')).toBeNull();
+    expect(screen.queryByText(joinStateCopy.otherBody)).toBeNull();
+    expect(document.body.textContent).not.toMatch(/Device key/);
+
+    fireEvent.click(trouble);
+    expect(screen.getByText(joinStateCopy.otherBody)).toBeInTheDocument();
     expect(screen.getByLabelText('Enrollment invitation')).toBeInTheDocument();
   });
 
