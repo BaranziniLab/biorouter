@@ -90,7 +90,7 @@ const primaryItems: NavigationItem[] = [
     path: '/crew',
     label: 'Crew',
     icon: Users,
-    tooltip: 'Collaborate with your team over SSH',
+    tooltip: 'Work with your team',
   },
 ];
 

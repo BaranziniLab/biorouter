@@ -47,7 +47,7 @@ const CLIENT_INSERT_COMMANDS: Record<
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   crew: {
-    description: 'Open Crew workspaces, channels, files, and your agents. Press Enter',
+    description: 'Open Crew. Press Enter',
     insert: '/crew',
   },
   diverge: {
@@ -139,7 +139,8 @@ export const getMentionInsertText = (item: DisplayItem) => {
       : refTag(reference.kind, reference.value);
   }
 
-  const clientInsert = item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
+  const clientInsert =
+    item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
   if (clientInsert) return clientInsert;
 
   return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;

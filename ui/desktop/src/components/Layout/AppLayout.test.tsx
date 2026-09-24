@@ -1,5 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { sidebarAutoCollapseAction } from './AppLayout';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AppLayout, isChatRoute, sidebarAutoCollapseAction } from './AppLayout';
+
+// The layout's own children are not what is under test; each is a heavy surface with its own
+// suite. What is under test is the layout's body class, so they are stood in for.
+vi.mock('../BioRouterSidebar/AppSidebar', () => ({
+  default: () => <div data-testid="app-sidebar" />,
+}));
+vi.mock('../DependencySetupModal', () => ({ default: () => null }));
+vi.mock('../ExtensionUpdateReporter', () => ({ default: () => null }));
+vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
 
 /**
  * The user-reported bug: "the responsiveness of the sidebar collapse button is
@@ -138,5 +149,85 @@ describe('sidebarAutoCollapseAction', () => {
     open = true; // 4. user clicks the toggle to bring it back
     expect(settle(true)).toBe('none'); // <-- was 'collapse' before the fix
     expect(open).toBe(true); // the rail STAYS open on the first click
+  });
+});
+
+const CHAT_ROUTE_CLASS = 'biorouter-chat-route-active';
+
+/** A route body that can move the router, so one mounted layout sees a route change. */
+function RouteBody({ path }: { path: string }) {
+  const navigate = useNavigate();
+  return (
+    <div data-testid="route-body" data-path={path}>
+      <button onClick={() => navigate('/crew')}>go crew</button>
+      <button onClick={() => navigate('/settings')}>go settings</button>
+    </div>
+  );
+}
+
+function renderLayoutAt(entry: string) {
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route element={<AppLayout />}>
+          <Route path="*" element={<RouteBody path={entry} />} />
+        </Route>
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+/**
+ * The 32px titlebar drag strip stops taking pointer events on a route whose own top band holds
+ * controls (issue #74). Crew's switcher, channel header and pane header live in that band, so
+ * `/crew` is one of those routes. jsdom sees no drag rect; what it can see is the class the
+ * `main.css` rule keys on.
+ */
+describe('the chat-route body class', () => {
+  afterEach(() => {
+    document.body.classList.remove(CHAT_ROUTE_CLASS);
+  });
+
+  it('counts the chat, the new-chat route and Crew as chat routes, and nothing else', () => {
+    expect(isChatRoute('/')).toBe(true);
+    expect(isChatRoute('/pair')).toBe(true);
+    expect(isChatRoute('/crew')).toBe(true);
+    expect(isChatRoute('/crew/anything')).toBe(true);
+    expect(isChatRoute('/crewmate')).toBe(false);
+    expect(isChatRoute('/settings')).toBe(false);
+    expect(isChatRoute('/knowledge')).toBe(false);
+  });
+
+  it('sets the class on /crew in the real layout', () => {
+    renderLayoutAt('/crew');
+    expect(screen.getByTestId('route-body')).toBeInTheDocument();
+    expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
+  });
+
+  it('leaves it off a route with no controls in the band', () => {
+    renderLayoutAt('/settings');
+    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
+  });
+
+  it('follows the route as it changes, and clears it on unmount', () => {
+    const view = renderLayoutAt('/settings');
+    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'go crew' }));
+    });
+    expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'go settings' }));
+    });
+    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'go crew' }));
+    });
+    expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
+    view.unmount();
+    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
   });
 });

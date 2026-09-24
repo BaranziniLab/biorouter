@@ -48,6 +48,31 @@ export function sidebarAutoCollapseAction(opts: {
   return autoCollapsed ? 'restore' : 'none';
 }
 
+/**
+ * The routes whose own top band holds interactive controls where the 32px titlebar drag strip
+ * lies: the chat (`/`, `/pair`) and Crew (`/crew`, whose workspace switcher, channel header and
+ * pane header sit in that band). On them `biorouter-chat-route-active` makes the strip stop
+ * taking pointer events (`main.css`), so it cannot take the clicks meant for those controls
+ * (issue #74). Crew's bands declare no drag region of their own; the real-app check with the
+ * sidebar open and collapsed is the only proof, because jsdom sees no drag rects.
+ */
+export function isChatRoute(pathname: string): boolean {
+  return (
+    pathname === '/' ||
+    pathname === '/pair' ||
+    pathname === '/crew' ||
+    pathname.startsWith('/crew/')
+  );
+}
+
+/** Keeps `biorouter-chat-route-active` on `<body>` exactly while a chat route is showing. */
+export function useChatRouteBodyClass(pathname: string): void {
+  React.useEffect(() => {
+    document.body.classList.toggle('biorouter-chat-route-active', isChatRoute(pathname));
+    return () => document.body.classList.remove('biorouter-chat-route-active');
+  }, [pathname]);
+}
+
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -67,11 +92,7 @@ const AppLayoutContent: React.FC = () => {
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
 
-  React.useEffect(() => {
-    const isChatRoute = location.pathname === '/' || location.pathname === '/pair';
-    document.body.classList.toggle('biorouter-chat-route-active', isChatRoute);
-    return () => document.body.classList.remove('biorouter-chat-route-active');
-  }, [location.pathname]);
+  useChatRouteBodyClass(location.pathname);
 
   /**
    * Auto-collapse the sidebar when the window gets too narrow, and restore it
