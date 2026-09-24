@@ -1,3 +1,4 @@
+import { stripHiddenCharacters } from '../../../utils/untrustedText';
 import { isMachineIdShaped } from './nameKey';
 
 /**
@@ -11,13 +12,31 @@ import { isMachineIdShaped } from './nameKey';
  * right-to-left override, a zero-width joiner, or `(@alice)`.
  */
 
-/**
+/*
  * Categories a name may never contain: controls, format characters (every bidi
  * override and isolate, zero-width space and joiner, BOM), private use, lone
  * surrogates, unassigned, line and paragraph separators, and every
  * `Default_Ignorable_Code_Point` (variation selectors, Hangul fillers, …).
+ *
+ * The first two — controls and format characters — are the hidden-character
+ * drop set, which has exactly one definition: `stripHiddenCharacters` in
+ * `utils/untrustedText.ts`. This file removes them by calling it, and names only
+ * the classes a display name refuses *beyond* that set here.
  */
-const REJECTED = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * What a display name refuses beyond the hidden-character drop set.
+ *
+ * ⚠ It is applied BEFORE {@link stripHiddenCharacters}, not after, and the order
+ * is what keeps the two passes equal to the single class they replaced. This
+ * class holds the lone surrogates, so while it runs every surrogate that is not
+ * already half of a pair goes in one pass. Run it second and the first pass
+ * could delete a format character standing between a lone high and a lone low
+ * surrogate (`\uD800\u2066\uDC00`), joining them into a real astral character
+ * (U+10000) that no later pass removes — where the single class dropped all
+ * three. Pinned in `displayText.test.ts`.
+ */
+const REJECTED_BEYOND_HIDDEN = /[\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 const WHITE_SPACE_RUN = /\p{White_Space}+/gu;
 const SPACE_RUN = / {2,}/g;
 const HAS_LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
@@ -32,12 +51,11 @@ export const DISPLAY_NAME_MAX_CHARS = 64;
  */
 export function sanitizeDisplayText(raw: unknown): string {
   if (typeof raw !== 'string') return '';
-  return raw
+  const collapsed = raw
     .normalize('NFC')
     .replace(WHITE_SPACE_RUN, ' ')
-    .replace(REJECTED, '')
-    .replace(SPACE_RUN, ' ')
-    .trim();
+    .replace(REJECTED_BEYOND_HIDDEN, '');
+  return stripHiddenCharacters(collapsed).replace(SPACE_RUN, ' ').trim();
 }
 
 /**
@@ -55,11 +73,12 @@ function stripHandleMarks(value: string): string {
 }
 
 /**
- * What an avatar may not contain. Lighter than {@link REJECTED}: an avatar is a
- * few characters of decoration and may be an emoji, whose sequences need the
- * zero-width joiner and variation selectors. Controls, bidi embeddings,
- * overrides, isolates and marks, private use, surrogates and unassigned code
- * points still go.
+ * What an avatar may not contain. Lighter than {@link sanitizeDisplayText}'s
+ * rule (the hidden-character drop set and {@link REJECTED_BEYOND_HIDDEN}): an
+ * avatar is a few characters of decoration and may be an emoji, whose sequences
+ * need the zero-width joiner and variation selectors. Controls, bidi
+ * embeddings, overrides, isolates and marks, private use, surrogates and
+ * unassigned code points still go.
  */
 const AVATAR_REJECTED =
   /[\p{Cc}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
