@@ -679,6 +679,26 @@ const STDERR_FIXTURES: &[(&str, &str, i32, SshFailureKind)] = &[
         1,
         SshFailureKind::Other,
     ),
+    // The bridge's own startup errors: SSH connected, so the status is the
+    // bridge's (anyhow's `Error: …`, exit 1), and the SSH rules must not read it.
+    (
+        "a stopped broker's stale socket is not an unreachable host",
+        "Error: Connection refused (os error 111)\n",
+        1,
+        SshFailureKind::Other,
+    ),
+    (
+        "a runtime-directory permission error is not a sign-in failure",
+        "Error: Permission denied (os error 13)\n",
+        1,
+        SshFailureKind::Other,
+    ),
+    (
+        "a bridge timeout is not an unreachable host",
+        "Error: Connection timed out (os error 110)\n",
+        1,
+        SshFailureKind::Other,
+    ),
     (
         "a stale control socket is not unreachability",
         "Control socket connect(/tmp/crew-control.sock): Connection refused\r\n",
@@ -964,7 +984,10 @@ fn only_an_exited_child_is_classified() {
         SshFailureKind::Other
     );
     assert_eq!(
-        classify(ChildState::Exited(None), "Host key verification failed."),
+        classify(
+            ChildState::Exited(Some(255)),
+            "Host key verification failed."
+        ),
         SshFailureKind::HostKeyUnknown
     );
     assert_eq!(
@@ -974,6 +997,51 @@ fn only_an_exited_child_is_classified() {
     assert_eq!(
         classify(ChildState::Exited(Some(255)), ""),
         SshFailureKind::Other
+    );
+}
+
+#[test]
+fn only_ssh_s_own_status_is_read_by_the_ssh_rules() {
+    // Every SSH-level text, under a status ssh itself never exits with for its
+    // own failure: the remote bridge's 1, and a signal death (no status).
+    let ssh_level = [
+        "alice@h: Permission denied (publickey).",
+        "Error: Permission denied (os error 13)",
+        "Host key verification failed.",
+        "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
+        "Error: Connection refused (os error 111)",
+        "ssh: Could not resolve hostname h: Name or service not known",
+    ];
+    for state in [
+        ChildState::Exited(Some(1)),
+        ChildState::Exited(Some(2)),
+        ChildState::Exited(None),
+    ] {
+        for text in ssh_level {
+            assert_eq!(
+                classify(state, text),
+                SshFailureKind::Other,
+                "{state:?}: {text}"
+            );
+        }
+        // The bridge-missing rules are the remote shell's, so they still apply.
+        assert_eq!(
+            classify(
+                state,
+                "sh: 1: /home/alice/.local/bin/biorouter-crew: not found"
+            ),
+            SshFailureKind::BridgeMissing,
+            "{state:?}"
+        );
+    }
+    // The same texts under 255 are ssh's own report.
+    assert_eq!(
+        classify(ChildState::Exited(Some(255)), ssh_level[0]),
+        SshFailureKind::AuthRequired
+    );
+    assert_eq!(
+        classify(ChildState::Exited(Some(255)), ssh_level[4]),
+        SshFailureKind::Unreachable
     );
 }
 

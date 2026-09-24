@@ -491,6 +491,10 @@ fn classify_failure(
     }
 }
 
+/// The status OpenSSH exits with for every failure of its own, a jump host's
+/// included. Any other status is the remote command's.
+const SSH_OWN_FAILURE_STATUS: i32 = 255;
+
 /// Map ssh's exit status and its (sanitized) stderr onto a kind. Only a child
 /// that has exited is classified: while ssh still runs, the session was
 /// established, so its stderr (a banner, the bridge's own logs) cannot explain
@@ -513,56 +517,18 @@ fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
         .filter(|line| !line.contains("control socket"))
         .collect();
 
-    // The changed banner also ends in "Host key verification failed", so it is
-    // tested first; a revoked key or a spoofed-IP warning is the same danger.
-    if any_line_contains(
-        &lines,
-        &[
-            "remote host identification has changed",
-            "revoked host key",
-            "possible dns spoofing detected",
-            "differs from the key for the ip address",
-        ],
-    ) || any_line(&lines, |line| {
-        line.contains("host key for ") && line.contains(" has changed")
-    }) {
-        return SshFailureKind::HostKeyChanged;
-    }
-    if any_line_contains(
-        &lines,
-        &["host key verification failed", "host key is known for"],
-    ) {
-        return SshFailureKind::HostKeyUnknown;
-    }
-    if any_line_contains(
-        &lines,
-        &[
-            "permission denied (",
-            "authentication failed",
-            "too many authentication failures",
-            "no more authentication methods",
-            "keyboard-interactive",
-        ],
-    ) {
-        return SshFailureKind::AuthRequired;
-    }
-    if any_line_contains(
-        &lines,
-        &[
-            "could not resolve hostname",
-            "name or service not known",
-            "nodename nor servname provided",
-            "temporary failure in name resolution",
-            "connection refused",
-            "connection timed out",
-            "operation timed out",
-            "no route to host",
-            "network is unreachable",
-            "host is down",
-            "open failed: connect failed",
-        ],
-    ) {
-        return SshFailureKind::Unreachable;
+    // Once ssh has connected, its stderr also carries the remote bridge's, and
+    // its status is the bridge's. The bridge reports its own startup errors as
+    // `Error: <io error>` and exits 1: a stopped broker's stale socket reads
+    // "Connection refused (os error 111)", a runtime-directory EACCES reads
+    // "Permission denied (os error 13)". Read by the SSH rules those would say
+    // the host is unreachable or ask the person to sign in again while SSH is
+    // working. So only ssh's own 255 is read as an SSH-level failure. A signal
+    // death is not ssh reporting a failure either, so it gets the same treatment.
+    if code == Some(SSH_OWN_FAILURE_STATUS) {
+        if let Some(kind) = ssh_level_kind(&lines) {
+            return kind;
+        }
     }
     if any_line(&lines, |line| {
         line.contains("biorouter-crew")
@@ -578,6 +544,63 @@ fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
         return SshFailureKind::BridgeMissing;
     }
     SshFailureKind::Other
+}
+
+/// The kinds only OpenSSH itself can report, in the order they must be tested.
+/// The caller has already established that ssh exited with its own status.
+fn ssh_level_kind(lines: &[String]) -> Option<SshFailureKind> {
+    // The changed banner also ends in "Host key verification failed", so it is
+    // tested first; a revoked key or a spoofed-IP warning is the same danger.
+    if any_line_contains(
+        lines,
+        &[
+            "remote host identification has changed",
+            "revoked host key",
+            "possible dns spoofing detected",
+            "differs from the key for the ip address",
+        ],
+    ) || any_line(lines, |line| {
+        line.contains("host key for ") && line.contains(" has changed")
+    }) {
+        return Some(SshFailureKind::HostKeyChanged);
+    }
+    if any_line_contains(
+        lines,
+        &["host key verification failed", "host key is known for"],
+    ) {
+        return Some(SshFailureKind::HostKeyUnknown);
+    }
+    if any_line_contains(
+        lines,
+        &[
+            "permission denied (",
+            "authentication failed",
+            "too many authentication failures",
+            "no more authentication methods",
+            "keyboard-interactive",
+        ],
+    ) {
+        return Some(SshFailureKind::AuthRequired);
+    }
+    if any_line_contains(
+        lines,
+        &[
+            "could not resolve hostname",
+            "name or service not known",
+            "nodename nor servname provided",
+            "temporary failure in name resolution",
+            "connection refused",
+            "connection timed out",
+            "operation timed out",
+            "no route to host",
+            "network is unreachable",
+            "host is down",
+            "open failed: connect failed",
+        ],
+    ) {
+        return Some(SshFailureKind::Unreachable);
+    }
+    None
 }
 
 fn any_line(lines: &[String], test: impl Fn(&str) -> bool) -> bool {
