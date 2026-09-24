@@ -2224,117 +2224,156 @@ async fn add_member(
         .map(|(kind, text)| (*kind, text.as_str()))
         .collect();
     let targets = api.resolve(&borrowed).await?;
-    let who = &targets[0];
-    let username = match &who.username {
-        Some(username) => username.clone(),
-        None => {
-            // An ID given as it is was never looked up: the broker needs the username the
-            // person is known by, so it is read from the workspace, never guessed.
-            let snapshot = api.snapshot().await?;
-            snapshot["principals"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|principal| principal["id"].as_str() == Some(who.id.as_str()))
-                .and_then(|principal| principal["username"].as_str())
-                .map(str::to_owned)
-                .context(
-                    "Name the person as @username; that ID isn't a member of this workspace.",
-                )?
+    let (who, places) = targets
+        .split_first()
+        .context("A name was left unresolved")?;
+    let username = member_username(api, who).await?;
+    let (result, added) = match team {
+        Some(_) => {
+            let (team, channels) = places.split_first().context("A name was left unresolved")?;
+            add_to_team(api, who, &username, team, channels).await?
         }
-    };
-    let handle = format!("@{}", safe_text(&username));
-    let unsupported = |error: anyhow::Error| {
-        if error_code(&error).as_deref() == Some("unsupported")
-            || format!("{error:#}").contains("unsupported: operation is not supported")
-        {
-            error.context(format!(
-                "This workspace's server can't add people directly yet. Invite them instead: biorouter crew invites create {handle} --team <team>"
-            ))
-        } else {
-            error
-        }
-    };
-    let (result, added) = if team.is_some() {
-        let team_target = &targets[1];
-        let channel_ids: Vec<&str> = targets[2..].iter().map(|c| c.id.as_str()).collect();
-        let result = api
-            .broker(
-                "team.add_member",
-                json!({
-                    "team_id": team_target.id,
-                    "principal_id": who.id,
-                    "expected_username": username,
-                    "channel_ids": channel_ids,
-                }),
-                true,
-            )
-            .await
-            .map_err(unsupported)?;
-        let added: Vec<String> = result["added_channels"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        (result, added)
-    } else {
-        let mut results = Vec::new();
-        let mut added = Vec::new();
-        for (step, channel) in targets[1..].iter().enumerate() {
-            let result = api
-                .broker_step(
-                    "channel.add_member",
-                    json!({
-                        "channel_id": channel.id,
-                        "principal_id": who.id,
-                        "expected_username": username,
-                    }),
-                    step,
-                )
-                .await
-                .map_err(unsupported);
-            let result = match result {
-                Ok(result) => result,
-                Err(error) if !added.is_empty() => {
-                    return Err(error.context(format!(
-                        "{handle} was added to some of the channels before this one failed; run the same command again with --request-id {} to finish.",
-                        api.request_id
-                    )))
-                }
-                Err(error) => return Err(error),
-            };
-            if result["already_member"].as_bool() == Some(false) {
-                added.push(channel.id.clone());
-            }
-            results.push(result);
-        }
-        (Value::Array(results), added)
+        None => add_to_channels(api, who, &username, places).await?,
     };
     let lines = if api.text() {
-        let names = api.names().await;
-        let label = |id: &str| {
-            let known = names.channel_label(id);
-            if known.starts_with('#') {
-                return known;
-            }
-            targets[1..]
-                .iter()
-                .find(|target| target.id == id)
-                .and_then(|target| target.label.as_deref())
-                .map_or(known, name_text)
-        };
-        if added.is_empty() {
-            vec![format!("{handle} is already in everything you chose.")]
-        } else {
-            let seen: Vec<String> = added.iter().map(|id| label(id)).collect();
-            vec![format!("Added. {handle} can now see {}.", and_list(&seen))]
-        }
+        added_lines(api, &username, &added, places).await
     } else {
         Vec::new()
     };
     Ok(api.say(result, lines))
+}
+
+/// The username a direct add confirms. An ID given as it is was never looked up, so it is read
+/// from the workspace, never guessed.
+async fn member_username(api: &Api, who: &Target) -> Result<String> {
+    if let Some(username) = &who.username {
+        return Ok(username.clone());
+    }
+    let snapshot = api.snapshot().await?;
+    snapshot["principals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|principal| principal["id"].as_str() == Some(who.id.as_str()))
+        .and_then(|principal| principal["username"].as_str())
+        .map(str::to_owned)
+        .context("Name the person as @username; that ID isn't a member of this workspace.")
+}
+
+/// A broker that predates direct add answers `unsupported`; say so, and point at invitations.
+fn direct_add_unsupported(error: anyhow::Error, username: &str) -> anyhow::Error {
+    if error_code(&error).as_deref() == Some("unsupported")
+        || format!("{error:#}").contains("unsupported: operation is not supported")
+    {
+        error.context(format!(
+            "This workspace's server can't add people directly yet. Invite them instead: biorouter crew invites create @{} --team <team>",
+            safe_text(username)
+        ))
+    } else {
+        error
+    }
+}
+
+/// `team.add_member`: the broker's answer and the channels Bob was newly added to.
+async fn add_to_team(
+    api: &Api,
+    who: &Target,
+    username: &str,
+    team: &Target,
+    channels: &[Target],
+) -> Result<(Value, Vec<String>)> {
+    let channel_ids: Vec<&str> = channels.iter().map(|c| c.id.as_str()).collect();
+    let result = api
+        .broker(
+            "team.add_member",
+            json!({
+                "team_id": team.id,
+                "principal_id": who.id,
+                "expected_username": username,
+                "channel_ids": channel_ids,
+            }),
+            true,
+        )
+        .await
+        .map_err(|error| direct_add_unsupported(error, username))?;
+    let added = result["added_channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    Ok((result, added))
+}
+
+/// One `channel.add_member` per channel, each with its own idempotency key.
+async fn add_to_channels(
+    api: &Api,
+    who: &Target,
+    username: &str,
+    channels: &[Target],
+) -> Result<(Value, Vec<String>)> {
+    let mut results = Vec::new();
+    let mut added = Vec::new();
+    for (step, channel) in channels.iter().enumerate() {
+        let answer = api
+            .broker_step(
+                "channel.add_member",
+                json!({
+                    "channel_id": channel.id,
+                    "principal_id": who.id,
+                    "expected_username": username,
+                }),
+                step,
+            )
+            .await
+            .map_err(|error| direct_add_unsupported(error, username));
+        let result = match answer {
+            Ok(result) => result,
+            Err(error) if !added.is_empty() => {
+                return Err(error.context(format!(
+                    "@{} was added to some of the channels before this one failed; run the same command again with --request-id {} to finish.",
+                    safe_text(username),
+                    api.request_id
+                )))
+            }
+            Err(error) => return Err(error),
+        };
+        if result["already_member"].as_bool() == Some(false) {
+            added.push(channel.id.clone());
+        }
+        results.push(result);
+    }
+    Ok((Value::Array(results), added))
+}
+
+/// "Added. @bob can now see #general and #methods.", or that nothing needed adding.
+async fn added_lines(
+    api: &Api,
+    username: &str,
+    added: &[String],
+    places: &[Target],
+) -> Vec<String> {
+    let handle = format!("@{}", safe_text(username));
+    if added.is_empty() {
+        return vec![format!("{handle} is already in everything you chose.")];
+    }
+    let names = api.names().await;
+    let seen: Vec<String> = added
+        .iter()
+        .map(|id| {
+            let known = names.channel_label(id);
+            if known.starts_with('#') {
+                return known;
+            }
+            places
+                .iter()
+                .find(|target| target.id == *id)
+                .and_then(|target| target.label.as_deref())
+                .map_or(known, name_text)
+        })
+        .collect();
+    vec![format!("Added. {handle} can now see {}.", and_list(&seen))]
 }
 
 async fn remove_member(api: &Api, channel: &str, member: &str, former: bool) -> Result<Reply> {

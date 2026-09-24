@@ -1794,6 +1794,36 @@ impl CrewManager {
         None
     }
 
+    /// T-10: the cached `hello` is the answer at connect time. When the workspace has changed
+    /// since (a host set the institution, or renamed it), an invitation is built from a fresh,
+    /// verified `hello`, never from the unsigned snapshot and never from the stale answer; if
+    /// that can't be had, nothing is built.
+    async fn current_signed_hello(
+        &self,
+        connection_id: &str,
+        c: &Connection,
+        cached: super::BrokerHello,
+        workspace: &Value,
+    ) -> Result<super::BrokerHello> {
+        if cached.signature_version < 2 || !hello_is_stale(&cached, workspace) {
+            return Ok(cached);
+        }
+        let reconnect = format!(
+            "Reconnect to {}, then invite again.",
+            cached
+                .workspace_name
+                .as_deref()
+                .map(super::plain_label)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| super::plain_label(&c.name))
+        );
+        match self.refresh_broker_hello(connection_id).await {
+            Ok(fresh) if fresh.signature_version >= 2 => Ok(fresh),
+            Ok(_) => anyhow::bail!(reconnect),
+            Err(error) => Err(error.context(reconnect)),
+        }
+    }
+
     /// The invitation a host sends, for `invitee` when given (`@bob` or `bob`).
     ///
     /// Built from this computer's verified connection (its four pinned fields, never its local
@@ -1832,28 +1862,9 @@ impl CrewManager {
                 .is_some_and(|id| same_workspace_id(id, &c.workspace_id)),
             "The workspace's answer doesn't match this connection. Reconnect and try again."
         );
-        // T-10: the cached `hello` is the answer at connect time. When the workspace has
-        // changed since (a host set the institution, or renamed it), the invitation is built
-        // from a fresh, verified `hello`, never from the unsigned snapshot and never from the
-        // stale answer; if that can't be had, nothing is built.
-        let hello = if cached.signature_version >= 2 && hello_is_stale(&cached, workspace) {
-            let reconnect = format!(
-                "Reconnect to {}, then invite again.",
-                cached
-                    .workspace_name
-                    .as_deref()
-                    .map(super::plain_label)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| super::plain_label(&c.name))
-            );
-            match self.refresh_broker_hello(connection_id).await {
-                Ok(fresh) if fresh.signature_version >= 2 => fresh,
-                Ok(_) => anyhow::bail!(reconnect),
-                Err(error) => return Err(error.context(reconnect)),
-            }
-        } else {
-            cached
-        };
+        let hello = self
+            .current_signed_hello(connection_id, &c, cached, workspace)
+            .await?;
         let (workspace_name, mode, institution_id) = if hello.signature_version >= 2 {
             (
                 hello.workspace_name.clone(),
