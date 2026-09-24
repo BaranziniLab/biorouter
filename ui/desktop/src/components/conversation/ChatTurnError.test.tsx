@@ -196,6 +196,40 @@ describe('ChatTurnError', () => {
     ).toBe('Model turn ended unexpectedly');
   });
 
+  /**
+   * Q2-08 (live QA round 2): a chat with Crew access whose connection was down failed as "Model
+   * request failed · Crew connection is disconnected; authenticate and connect in Crew" — the model
+   * blamed for Crew's outage. The daemon's words are `crates/biorouter/src/crew/mod.rs`'s.
+   */
+  it('names a Crew connection that is down instead of blaming the model', () => {
+    const daemon = 'Crew connection is disconnected; authenticate and connect in Crew';
+    for (const failure of [
+      error({ message: daemon, code: 'provider_failure', scope: 'provider' }),
+      error({ message: `Stream error: ${daemon}`, code: 'stream_error', scope: 'internal' }),
+      error({ message: 'Tool call failed', technicalDetails: `crew: ${daemon}` }),
+      error({ message: daemon, providerKind: 'server' }),
+    ]) {
+      const presentation = presentChatTurnError(failure);
+      expect(presentation.title).toBe('Crew is offline');
+      expect(presentation.message).toBe(
+        "This chat's Crew connection is offline. Open Crew and connect, then retry."
+      );
+      expect(presentation.title).not.toMatch(/Model/);
+    }
+
+    render(<ChatTurnError error={error({ message: daemon })} />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Crew is offline');
+    expect(alert).not.toHaveTextContent('Model request failed');
+  });
+
+  it('does not take any other Crew failure for a disconnected connection', () => {
+    expect(
+      presentChatTurnError(error({ message: 'Crew run was revoked; request a fresh human grant' }))
+        .title
+    ).toBe('Model request failed');
+  });
+
   it('does not duplicate a backend error message that is already in the transcript', () => {
     const turnError = error({ message: 'Authentication failed. Status: 401 Unauthorized' });
     const messages = [

@@ -53,6 +53,19 @@ const STOP_TITLES: Record<string, string> = {
   stop_not_confirmed: 'Stop not confirmed',
 };
 
+// A chat with Crew access whose Crew connection is down: the daemon refuses the turn with
+// "Crew connection is disconnected; authenticate and connect in Crew"
+// (`crates/biorouter/src/crew/mod.rs`, `transport`). It is not the model's failure, and "Model
+// request failed" sent people to the model's settings (live QA round 2, Q2-08).
+const CREW_DISCONNECTED = 'Crew connection is disconnected';
+
+function isCrewDisconnected(error: ChatTurnErrorData): boolean {
+  return (
+    error.message.includes(CREW_DISCONNECTED) ||
+    (error.technicalDetails ?? '').includes(CREW_DISCONNECTED)
+  );
+}
+
 function isBackendUnreachable(error: ChatTurnErrorData): boolean {
   return (
     (error.scope === 'transport' || isConnectionError(error.message)) &&
@@ -65,6 +78,10 @@ function isMidStreamDrop(error: ChatTurnErrorData): boolean {
 }
 
 function userFacingMessage(error: ChatTurnErrorData): string {
+  if (isCrewDisconnected(error)) {
+    return "This chat's Crew connection is offline. Open Crew and connect, then retry.";
+  }
+
   const decoded = providerMessage(error.message) ?? providerMessage(error.technicalDetails ?? '');
   if (decoded) return decoded;
 
@@ -92,6 +109,8 @@ export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPre
   let title = 'Model request failed';
   if (STOP_TITLES[error.code]) {
     title = STOP_TITLES[error.code];
+  } else if (isCrewDisconnected(error)) {
+    title = 'Crew is offline';
   } else if (error.providerKind && PROVIDER_TITLES[error.providerKind]) {
     title = PROVIDER_TITLES[error.providerKind];
   } else if (error.message.includes('insufficient_quota')) {
