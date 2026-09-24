@@ -1,11 +1,14 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
 import { identityCopy } from '../identity';
+import { useCrew } from '../state/CrewControllerContext';
 import { timelineCopy } from './copy';
 import { HISTORY_PAGE_SIZE } from './groupMessages';
-import { Timeline } from './Timeline';
+import { PENDING_POST_TIMEOUT_MS, Timeline } from './Timeline';
 import { TimelineCopyProvider, useTimelineCopy } from './TimelineCopy';
 import { SKELETON_DELAY_MS } from './TimelineSkeleton';
 import {
@@ -100,6 +103,40 @@ describe('the channel’s start', () => {
     expect(screen.getAllByRole('button', { name: timelineCopy.introAddPeople })).toHaveLength(1);
   });
 
+  it('tells a member how other channels appear, and whom to ask (T-28)', () => {
+    const member = makeController({
+      snapshot: snapshotFor({
+        actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+      }),
+    });
+    renderWithController(<Timeline />, member);
+    expect(
+      screen.getByText(
+        'Only channels you’ve been added to appear here. Ask @alice to add you to others.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('does not tell the owner to ask themselves', () => {
+    renderWithController(<Timeline />, makeController());
+    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+    expect(screen.queryByText(/Only channels you’ve been added to/)).toBeNull();
+  });
+
+  it('names no owner it cannot name, and never an ID', () => {
+    const member = makeController({
+      snapshot: snapshotFor({
+        actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+      }),
+      channel: { ...channel, owner_id: ID.gone },
+    });
+    renderWithController(<Timeline />, member);
+    expect(
+      screen.getByText('Only channels you’ve been added to appear here.', { exact: true })
+    ).toBeInTheDocument();
+    expect(timelineRoot().innerHTML).not.toMatch(MACHINE_STRING);
+  });
+
   it('never offers a second “Ask my agent” — the composer’s is the only one', () => {
     renderWithController(<Timeline />, makeController());
     expect(screen.queryByRole('button', { name: /ask my agent/i })).toBeNull();
@@ -126,16 +163,76 @@ describe('the channel’s start', () => {
 });
 
 describe('the log', () => {
-  it('is a polite, focusable log named for the channel, busy until its messages have arrived', () => {
+  it('is a focusable log named for the channel, silent and busy until its messages have arrived, then polite', () => {
     vi.useFakeTimers();
     renderWithController(<Timeline />, makeController({ messages: [message()] }));
     const log = screen.getByRole('log', { name: 'general messages' });
-    expect(log).toHaveAttribute('aria-live', 'polite');
     expect(log).toHaveAttribute('tabindex', '0');
+    // The opening streams in without being read out, message by message (T-56).
+    expect(log).toHaveAttribute('aria-live', 'off');
     expect(log).toHaveAttribute('aria-busy', 'true');
     openFully();
     expect(log).not.toHaveAttribute('aria-busy');
+    // Polite once a frame has been drawn with the opening in it, not in the same commit.
+    expect(log).toHaveAttribute('aria-live', 'off');
+    act(() => {
+      vi.advanceTimersByTime(64);
+    });
+    expect(log).toHaveAttribute('aria-live', 'polite');
     expect(timelineRoot().querySelector('.biorouter-scroll-fade-top')).not.toBeNull();
+  });
+
+  it('describes its keyboard model, which nothing on screen shows (T-64)', () => {
+    renderWithController(<Timeline />, makeController({ messages: [message()] }));
+    const log = screen.getByRole('log', { name: 'general messages' });
+    expect(log).toHaveAttribute('aria-description', timelineCopy.logDescription);
+    expect(timelineCopy.logDescription).toMatch(/Up and Down/);
+    expect(timelineCopy.logDescription).toMatch(/Tab reaches the message’s actions/);
+  });
+
+  it('names every row by its author and its own time, with the full date for a screen reader', () => {
+    const messages = [
+      message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+      message({ id: 'b', body: 'Plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+    ];
+    renderWithController(<Timeline />, makeController({ messages }));
+    const [head, continuation] = screen
+      .getAllByRole('group')
+      .filter((node) => node.hasAttribute('data-crew-row'));
+    expect(head).toHaveAccessibleName('Bob Lee @bob 10:02 AM, Tuesday, September 22, 2026');
+    // A continuation has no author of its own on screen: it is named by the head's author.
+    expect(continuation).toHaveAccessibleName('Bob Lee @bob 10:03 AM, Tuesday, September 22, 2026');
+    expect(within(continuation).getByText('Plot next?')).toBeInTheDocument();
+    // The date is in the time itself, not only in a hover tooltip.
+    const time = within(head).getAllByText('10:02 AM')[0].closest('time') as HTMLElement;
+    expect(time.querySelector('.sr-only')).toHaveTextContent(', Tuesday, September 22, 2026');
+  });
+
+  it('names each row’s actions for its message, so no two read the same (T-56)', () => {
+    const messages = [
+      message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+      message({ id: 'b', body: 'Plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+      message({
+        id: 'c',
+        body: 'Done.',
+        actor_id: ID.carol,
+        at: new Date(2026, 8, 22, 10, 4),
+      }),
+    ];
+    renderWithController(<Timeline />, makeController({ messages }));
+    const copies = screen
+      .getAllByRole('button', { name: /^Copy text/, hidden: true })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(copies).toEqual([
+      timelineCopy.copyTextOf('Bob Lee', '10:02 AM'),
+      timelineCopy.copyTextOf('Bob Lee', '10:03 AM'),
+      timelineCopy.copyTextOf('@carol', '10:04 AM'),
+    ]);
+    const more = screen
+      .getAllByRole('button', { name: /^More actions/, hidden: true })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(new Set(more).size).toBe(3);
+    expect(more[0]).toBe(timelineCopy.moreActionsFor('Bob Lee', '10:02 AM'));
   });
 
   it('groups a person’s messages under one head with a short time and the full date in a tooltip', async () => {
@@ -351,28 +448,57 @@ describe('copying', () => {
     return { user, writeText };
   }
 
+  const copyButton = () => screen.getByRole('button', { name: /^Copy text of Bob Lee’s message/ });
+  const moreButton = () => screen.getByRole('button', { name: /^More actions for Bob Lee’s/ });
+  const liveStatus = () =>
+    screen.getAllByRole('status').find((node) => node.getAttribute('aria-live') === 'polite');
+
   it('copies the text and, from ⋯, the message ID, and says so without a toast', async () => {
     renderWithController(
       <Timeline />,
       makeController({ messages: [message({ id: 'msg-7', body: 'Counts are **in**.' })] })
     );
     const { user, writeText } = setupWithClipboard();
-    await user.click(screen.getByRole('button', { name: timelineCopy.copyText }));
+    await user.click(copyButton());
     expect(writeText).toHaveBeenCalledWith('Counts are **in**.');
-    expect(await screen.findByRole('status')).toHaveTextContent(timelineCopy.copied);
+    await waitFor(() => expect(liveStatus()).toHaveTextContent(timelineCopy.copied));
 
-    await user.click(screen.getByRole('button', { name: timelineCopy.moreActions }));
+    await user.click(moreButton());
     await user.click(await screen.findByRole('menuitem', { name: timelineCopy.copyMessageId }));
     expect(writeText).toHaveBeenLastCalledWith('msg-7');
     expect(document.querySelector('.Toastify')).toBeNull();
   });
 
-  it('says how to copy by hand when the clipboard refuses', async () => {
+  it('answers on the control itself: “Copied” with a check, for two seconds', async () => {
+    renderWithController(<Timeline />, makeController({ messages: [message()] }));
+    const { user } = setupWithClipboard();
+    await user.click(copyButton());
+    await waitFor(() => expect(copyButton()).toHaveAttribute('data-copy-outcome', 'copied'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(timelineCopy.copied);
+  });
+
+  it('says how to copy by hand when the clipboard refuses, and “Couldn’t copy” on the control', async () => {
     renderWithController(<Timeline />, makeController({ messages: [message()] }));
     const { user, writeText } = setupWithClipboard();
     writeText.mockRejectedValueOnce(new Error('denied'));
-    await user.click(screen.getByRole('button', { name: timelineCopy.copyText }));
-    expect(await screen.findByRole('status')).toHaveTextContent(timelineCopy.copyFailed);
+    await user.click(copyButton());
+    await waitFor(() => expect(liveStatus()).toHaveTextContent(timelineCopy.copyFailed));
+    // Never silent where the press happened (T-56).
+    expect(copyButton()).toHaveAttribute('data-copy-outcome', 'failed');
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(timelineCopy.copyFailedShort);
+  });
+
+  it('never gives ⋯ a menu that holds only the message ID', async () => {
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'msg-8', body: 'Plot it.' })] })
+    );
+    const { user, writeText } = setupWithClipboard();
+    await user.click(moreButton());
+    const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
+    expect(items).toEqual([timelineCopy.copyText, timelineCopy.copyMessageId]);
+    await user.click(screen.getByRole('menuitem', { name: timelineCopy.copyText }));
+    expect(writeText).toHaveBeenLastCalledWith('Plot it.');
   });
 });
 
@@ -537,6 +663,55 @@ describe('older history', () => {
     expect(screen.getByText(timelineCopy.loadingOlder)).toBeInTheDocument();
   });
 
+  it('keeps an older page out of the live announcements while it lands (T-56)', async () => {
+    const live = page(HISTORY_PAGE_SIZE);
+    const controller = makeController({ messages: live });
+    const view = renderWithController(<Timeline />, controller);
+    const log = screen.getByRole('log');
+    await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'));
+    expect(log).not.toHaveAttribute('aria-busy');
+
+    // The boundary moves first, with the previous page still drawn: busy and silent.
+    view.rerenderWith({ ...controller, historyBefore: live[0].sequence });
+    expect(log).toHaveAttribute('aria-busy', 'true');
+    expect(log).toHaveAttribute('aria-live', 'off');
+
+    // The list is cleared, then the older page lands: still silent while it goes in.
+    view.rerenderWith({
+      ...controller,
+      historyBefore: live[0].sequence,
+      messages: [],
+      messagesLoaded: false,
+    });
+    expect(log).toHaveAttribute('aria-live', 'off');
+    const older = Array.from({ length: 5 }, (_, index) =>
+      message({ id: `o-${index}`, body: `older ${index}`, at: new Date(2026, 8, 21, 9, index) })
+    );
+    const seen: MutationRecord[] = [];
+    const mutations = new MutationObserver((records) => seen.push(...records));
+    mutations.observe(log, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['aria-live'],
+      attributeOldValue: true,
+    });
+    view.rerenderWith({ ...controller, historyBefore: live[0].sequence, messages: older });
+    seen.push(...mutations.takeRecords());
+    const landed = seen.length;
+    // The rows went in with the log off, and it stays off for the frame that draws them.
+    expect(seen.some((record) => record.addedNodes.length > 0)).toBe(true);
+    expect(log).toHaveAttribute('aria-live', 'off');
+    expect(log).not.toHaveAttribute('aria-busy');
+    await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'));
+    seen.push(...mutations.takeRecords());
+    mutations.disconnect();
+    // Polite again only after that frame, in a change that inserts nothing of its own.
+    const flipped = seen.slice(landed);
+    expect(flipped.some((record) => record.oldValue === 'off')).toBe(true);
+    expect(flipped.some((record) => record.addedNodes.length > 0)).toBe(false);
+  });
+
   it('shows the pinned history pill with Jump to latest while a page is shown', async () => {
     const controller = makeController({ messages: page(5), historyBefore: 's100' });
     renderWithController(<Timeline />, controller);
@@ -549,6 +724,114 @@ describe('older history', () => {
     renderWithController(<Timeline />, makeController({ messages: page(5) }));
     expect(screen.queryByText('Viewing earlier messages')).toBeNull();
     expect(screen.queryByRole('button', { name: timelineCopy.jumpToLatest })).toBeNull();
+  });
+});
+
+describe('a post on its way (T-37)', () => {
+  const sent = 'Hi all, the counts are in.';
+  const draft = (body: string) => ({ body, attachments: [], references: [] });
+  const before = message({ id: 'm-before', body: 'Morning.' });
+
+  /** The controller as the composer drives it: the draft, then the post in flight, then its answer. */
+  function stages() {
+    const idle = makeController({ messages: [before], draft: draft(sent) });
+    const posting = { ...idle, isPending: vi.fn((key: string) => key === 'send') };
+    const accepted = { ...idle, draft: draft(''), isPending: vi.fn(() => false) };
+    return { idle, posting, accepted };
+  }
+  const sending = () => screen.queryByText(timelineCopy.sending);
+
+  it('shows the words that left the composer as “Sending…” until the observer delivers them', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    // While the broker has not answered, the composer still holds the words and shows its spinner.
+    expect(sending()).toBeNull();
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+    const row = sending()?.closest('.crew-pending-row') as HTMLElement;
+    expect(row).toHaveTextContent(sent);
+    // Not a message yet: out of the log's announcements, the row keys and the tab order.
+    expect(row).toHaveAttribute('aria-hidden', 'true');
+    expect(row).not.toHaveAttribute('data-crew-row');
+    expect(row.hasAttribute('inert')).toBe(true);
+
+    view.rerenderWith({
+      ...accepted,
+      messages: [before, message({ id: 'm-sent', actor_id: ID.alice, body: sent })],
+    });
+    expect(sending()).toBeNull();
+    // Delivered in the same render the stand-in goes: the words are never on screen twice.
+    expect(screen.getAllByText(sent)).toHaveLength(1);
+  });
+
+  it('shows nothing for a post the broker refused: the composer keeps the words and says why', () => {
+    const { idle, posting } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith({
+      ...idle,
+      error: { message: 'Not allowed.', source: 'composer' },
+      isPending: vi.fn(() => false),
+    });
+    expect(sending()).toBeNull();
+  });
+
+  it('takes a draft cleared by a dropped verified view for no answer at all', () => {
+    // As the layout mounts it: while Crew re-verifies, the last verified view, read-only.
+    const lastView = {
+      snapshot: snapshotFor(),
+      channel,
+      messages: [before],
+      messagesLoaded: true,
+      runs: [],
+      labels: null,
+      historyBefore: null,
+    };
+    function Stage() {
+      const crew = useCrew();
+      return <Timeline view={crew.snapshot ? null : lastView} readOnly={!crew.snapshot} />;
+    }
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Stage />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith({ ...accepted, snapshot: null });
+    view.rerenderWith(accepted);
+    expect(screen.getByText('Morning.')).toBeInTheDocument();
+    expect(sending()).toBeNull();
+  });
+
+  it('is not fooled by someone else posting the same words', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    view.rerenderWith({
+      ...accepted,
+      messages: [before, message({ id: 'm-bob', actor_id: ID.bob, body: sent })],
+    });
+    expect(sending()).toBeInTheDocument();
+  });
+
+  it('goes quietly if the message never arrives', () => {
+    vi.useFakeTimers();
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(PENDING_POST_TIMEOUT_MS);
+    });
+    expect(sending()).toBeNull();
+  });
+
+  it('draws nothing in a read-only view', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline readOnly />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    expect(sending()).toBeNull();
   });
 });
 
@@ -1073,7 +1356,7 @@ describe('keyboard', () => {
     renderWithController(<Timeline />, makeController({ messages }));
     const log = screen.getByRole('log');
     const rows = log.querySelectorAll<HTMLElement>('[data-crew-row]');
-    const copyButtons = () => screen.getAllByRole('button', { name: timelineCopy.copyText });
+    const copyButtons = () => screen.getAllByRole('button', { name: /^Copy text of / });
     expect(copyButtons().every((button) => button.tabIndex === -1)).toBe(true);
 
     log.focus();
@@ -1128,7 +1411,7 @@ describe('highlighting a task', () => {
           runs: [run()],
         })
       );
-      const row = screen.getByRole('group', { name: /Your agent/ });
+      const row = screen.getByRole('group', { name: /^Your agent · / });
       expect(row).toHaveClass('crew-highlight');
       expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'center' }));
       fireEvent.animationEnd(row);
@@ -1137,5 +1420,40 @@ describe('highlighting a task', () => {
     } finally {
       scrollIntoView.mockRestore();
     }
+  });
+});
+
+describe('the stylesheet (what jsdom cannot lay out)', () => {
+  const css = readFileSync(join(__dirname, 'timeline.css'), 'utf8').replace(
+    /\/\*[\s\S]*?\*\//g,
+    ''
+  );
+  const rule = (selector: string) => {
+    const at = css.indexOf(`${selector} {`);
+    if (at < 0) throw new Error(`no rule for ${selector}`);
+    return css.slice(at, css.indexOf('}', at));
+  };
+
+  it('keeps the hover toolbar off the New label (T-56)', () => {
+    expect(
+      rule(
+        '.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions'
+      )
+    ).toMatch(/top: 4px;/);
+  });
+
+  it('gives tables tabular numbers and the element radius (T-62)', () => {
+    const table = rule('.crew-md-table');
+    expect(table).toMatch(/font-variant-numeric: tabular-nums;/);
+    expect(table).toMatch(/border-radius: var\(--radius-element\);/);
+    // A collapsed table ignores its radius.
+    expect(table).toMatch(/border-collapse: separate;/);
+    expect(table).toMatch(/overflow: hidden;/);
+  });
+
+  it('sets an agent’s post on the 14/21 reading line (T-62)', () => {
+    expect(css).toMatch(
+      /\.crew-message-group\[data-agent='true'\] \.crew-md,\s*\.crew-message-group\[data-agent='true'\] \.crew-message-gutter-time \{\s*line-height: 21px;/
+    );
   });
 });

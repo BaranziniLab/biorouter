@@ -11,6 +11,9 @@
 export const timelineCopy = {
   /** The log's accessible name, `{name} messages` (the channel slug, no `#`). */
   logLabel: (name: string) => `${name} messages`,
+  /** The log's description: its keyboard model, which nothing on screen shows. */
+  logDescription:
+    'Use Up and Down to move between messages, and Home and End to reach the first and last. Tab reaches the message’s actions.',
   /** Pinned. The sentinel at the top of a full page of history. */
   older: 'Older messages',
   loadingOlder: 'Loading earlier messages…',
@@ -21,6 +24,14 @@ export const timelineCopy = {
   /** Follows the creator, formatted by `PersonName` in its inline context. */
   introCreatedBy: ' created this channel.',
   introAddPeople: 'Add people',
+  /**
+   * For a member who does not own the channel: why they may not see every channel, and who to
+   * ask. `owner` is `@username`; without one the first sentence stands alone.
+   */
+  introOtherChannels: (owner: string | null) =>
+    owner
+      ? `Only channels you’ve been added to appear here. Ask ${owner} to add you to others.`
+      : 'Only channels you’ve been added to appear here.',
 
   today: 'Today',
   yesterday: 'Yesterday',
@@ -33,11 +44,25 @@ export const timelineCopy = {
   agentBadge: 'Agent',
   restricted: 'Restricted',
   restrictedTooltip: 'Only private models can read this message.',
+  /** The visible label (tooltip, menu item) of a message's copy action. */
   copyText: 'Copy text',
+  /**
+   * A row action's accessible name: the action, then whose message and when, so a list of
+   * buttons never reads "Copy text, Copy text, …". `who` comes from `personLabel`.
+   */
+  copyTextOf: (who: string, time: string) => `Copy text of ${who}’s message, ${time}`,
   copyMessageId: 'Copy message ID',
   moreActions: 'More actions',
+  moreActionsFor: (who: string, time: string) => `More actions for ${who}’s message, ${time}`,
+  /** Pinned: what the copy control itself says for two seconds after a copy. */
   copied: 'Copied',
+  /** Pinned: what the copy control itself says when the clipboard refused. */
+  copyFailedShort: 'Couldn’t copy',
+  /** The polite announcement of a refused copy: what to do instead. */
   copyFailed: 'Couldn’t copy. Select the text and copy it instead.',
+
+  /** A post the broker accepted, until the observer delivers it into the log. */
+  sending: 'Sending…',
 
   /** Long-message fold (`utils/messageClamp.ts` decides; this names the control). */
   showMore: 'Show more',

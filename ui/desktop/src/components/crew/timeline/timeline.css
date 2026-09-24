@@ -13,7 +13,8 @@
    - the jump and history pills: opacity + 4px rise over `--dur-fast-max`;
    - a running task's word: the tool-call text pulse;
    - row hover, the gutter time and the row actions: `--dur-fast-min` fades;
-   - the re-verification dim: `--dur-fast`.
+   - the re-verification dim: `--dur-fast`;
+   - a pending post's spinner (the app's one spinner, `animate-spin`).
    History pages, day dividers, the New line and status words do not move. */
 
 .crew-timeline {
@@ -137,6 +138,14 @@
   align-items: flex-start;
 }
 
+/* An agent's post is prose — lists, tables, several paragraphs — so it takes
+   the 14/21 reading line (design.md's body role) where a person's short
+   messages keep the denser 14/20. Its gutter times keep level with it. */
+.crew-message-group[data-agent='true'] .crew-md,
+.crew-message-group[data-agent='true'] .crew-message-gutter-time {
+  line-height: 21px;
+}
+
 /* On the body's 20px line, so it reads level with the text beside it. */
 .crew-message-gutter-time {
   line-height: var(--text-body--line-height);
@@ -211,6 +220,12 @@
 .crew-row-actions[data-open='true'] {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Right under the New line, the cluster would sit on its "New" label: it
+   drops inside the row instead. */
+.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions {
+  top: 4px;
 }
 
 @media (hover: none) {
@@ -380,21 +395,58 @@
   overflow-x: auto;
 }
 
+/* Numbers line up in columns (design.md: tables are tabular), and the corners
+   are rounded like a code block's. Rounded corners need the separate border
+   model — a collapsed table ignores its radius — so each cell draws only its
+   start and top edges, and the table draws the outside. */
 .crew-md-table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  overflow: hidden;
   font-size: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .crew-md-cell {
   padding: 4px 10px;
-  border: 1px solid var(--border-subtle);
+  border: 0;
+  border-inline-start: 1px solid var(--border-subtle);
+  border-block-start: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: top;
 }
 
+.crew-md-cell:first-child {
+  border-inline-start: 0;
+}
+
+/* A GFM table has exactly one header row, and it is the first. */
 .crew-md-cell[data-head='true'] {
+  border-block-start: 0;
   font-weight: 600;
   background-color: var(--background-muted);
+}
+
+/* ── A post on its way ───────────────────────────────────────────────────────
+   The words dimmed, "Sending…" at full muted ink under them. Inert, so it
+   takes no hover and no focus. */
+.crew-pending-row .crew-message-body {
+  opacity: 0.6;
+}
+
+.crew-pending-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+}
+
+.crew-pending-spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
 }
 
 /* ── The viewer's task rows ──────────────────────────────────────────────── */
@@ -471,6 +523,10 @@
 
 .crew-channel-intro-action {
   margin-top: 8px;
+}
+
+.crew-channel-intro-hint {
+  margin: 4px 0 0;
 }
 
 .crew-history-sentinel {

@@ -13,8 +13,9 @@ import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
 import type { Channel, CrewMessage, CrewMessagePeople, ObservedRun, Snapshot } from '../crewApi';
 import { channelSlug, usePeopleDirectory } from '../identity';
+import { crewActionCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
-import type { CrewFrameLabels } from '../state/types';
+import type { CrewController, CrewFrameLabels } from '../state/types';
 import { ChannelIntro } from './ChannelIntro';
 import { timelineCopy } from './copy';
 import { DayDivider } from './DayDivider';
@@ -34,6 +35,7 @@ import {
 import { HistorySentinel } from './HistorySentinel';
 import { JumpPill } from './JumpPill';
 import { MessageGroup } from './MessageGroup';
+import { PendingPostRow } from './MessageRow';
 import { NewDivider } from './NewDivider';
 import { TaskStatusRow } from './TaskStatusRow';
 import { TimelineContextProvider, type TimelineContextValue } from './TimelineContext';
@@ -94,6 +96,106 @@ export interface TimelineProps {
 
 const NO_IDS: ReadonlySet<string> = new Set<string>();
 
+/**
+ * How long a "Sending…" row waits for the observer to deliver its message
+ * before it goes quietly. The broker accepted the post, so the message is
+ * coming; this only keeps a stalled observation from leaving the row for good.
+ */
+export const PENDING_POST_TIMEOUT_MS = 30_000;
+
+/** A post the broker has accepted, from this timeline's composer. */
+interface PendingPost {
+  body: string;
+  /** Messages already on screen when it was sent: the delivered one is not among them. */
+  before: ReadonlySet<string>;
+}
+
+/** The draft as a send began: what to recognize the delivered message by. */
+interface PostAttempt extends PendingPost {
+  attachments: readonly string[];
+}
+
+/**
+ * Whether the send that just settled was accepted. The controller's `send()`
+ * says nothing (and `state/*` is not this area's to change), so it is read the
+ * way the composer sees it: an accepted post clears exactly what was sent from
+ * the draft, and a refused one leaves the draft and records a composer error. A
+ * post whose only trouble was the kept upload record still went out. A draft
+ * cleared because the verified view was dropped proves nothing either way.
+ */
+function postAccepted(attempt: PostAttempt, crew: CrewController): boolean {
+  const { error, draft, snapshot } = crew;
+  if (error?.source === 'composer' && error.message !== crewActionCopy.sendTransferRecordKept) {
+    return false;
+  }
+  // A reset that dropped the verified view (and cleared the draft with it) is not an answer.
+  if (!snapshot) return false;
+  const bodyCleared = !attempt.body.trim() || !draft.body.trim();
+  const filesCleared = attempt.attachments.every(
+    (id) => !draft.attachments.some((file) => file.id === id)
+  );
+  return bodyCleared && filesCleared;
+}
+
+function isDelivery(post: PendingPost, message: CrewMessage, viewerId: string | null): boolean {
+  return (
+    viewerId !== null &&
+    !post.before.has(message.id) &&
+    message.actor_id === viewerId &&
+    !message.run_id &&
+    message.body.trim() === post.body.trim()
+  );
+}
+
+/**
+ * The post between Send and its arrival (T-37). The send is not optimistic —
+ * the draft stays until the broker answers — but once it has answered the draft
+ * is cleared, and the message arrived only when the observer next delivered it,
+ * seconds later, with nothing on screen in between. So from the answer until
+ * the message is in the list, a dimmed "Sending…" row stands in for it. It is
+ * matched by who posted it and its words, among messages that were not already
+ * on screen; `send()` returns no message ID to match by.
+ */
+function usePendingPost(
+  crew: CrewController,
+  messages: readonly CrewMessage[],
+  viewerId: string | null
+): PendingPost | null {
+  const posting = crew.isPending('send');
+  const [pending, setPending] = useState<PendingPost | null>(null);
+  const attempt = useRef<PostAttempt | null>(null);
+  const wasPosting = useRef(false);
+  const latest = useRef({ crew, messages });
+  latest.current = { crew, messages };
+  useEffect(() => {
+    const was = wasPosting.current;
+    wasPosting.current = posting;
+    const { crew: now, messages: list } = latest.current;
+    if (posting && !was) {
+      attempt.current = {
+        body: now.draft.body,
+        attachments: now.draft.attachments.map((file) => file.id),
+        before: new Set(list.map((message) => message.id)),
+      };
+    } else if (!posting && was) {
+      const sent = attempt.current;
+      attempt.current = null;
+      setPending(sent && postAccepted(sent, now) ? { body: sent.body, before: sent.before } : null);
+    }
+  }, [posting]);
+  const delivered =
+    pending !== null && messages.some((message) => isDelivery(pending, message, viewerId));
+  useEffect(() => {
+    if (delivered) setPending(null);
+  }, [delivered]);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => setPending(null), PENDING_POST_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
+  return pending && !delivered ? pending : null;
+}
+
 /** How close to the bottom edge the newest row counts as on screen for mark-read. */
 const BOTTOM_TOLERANCE_PX = 4;
 
@@ -107,6 +209,26 @@ function scrollToBottom(handle: ScrollAreaHandle | null, behavior: 'auto' | 'smo
   if (!handle || !viewport) return;
   if (typeof viewport.scrollTo === 'function') handle.scrollToBottom(behavior);
   else viewport.scrollTop = viewport.scrollHeight;
+}
+
+/**
+ * Run `callback` once a frame has been drawn after now: two animation frames,
+ * so the frame between them has been painted and its accessibility tree sent.
+ * Returns the cancel.
+ */
+function afterAFrame(callback: () => void): () => void {
+  if (typeof window.requestAnimationFrame !== 'function') {
+    const timer = window.setTimeout(callback, 32);
+    return () => window.clearTimeout(timer);
+  }
+  let second: number | null = null;
+  const first = window.requestAnimationFrame(() => {
+    second = window.requestAnimationFrame(callback);
+  });
+  return () => {
+    window.cancelAnimationFrame(first);
+    if (second !== null) window.cancelAnimationFrame(second);
+  };
 }
 
 function prefersReducedMotion(): boolean {
@@ -254,6 +376,20 @@ function ChannelTimeline({
     newestId,
     backlogComplete,
   });
+
+  // ── What the log announces ──────────────────────────────────────────────
+  // A polite log reads out what is inserted into it, so while a page streams or
+  // lands in (the opening, an older page) it is `aria-live="off"` as well as
+  // busy: VoiceOver does not honour `aria-busy` reliably, and read the opening
+  // out as a flood of messages. It turns polite only after a frame has been
+  // drawn with the page in it, so the insertions that opened it are already
+  // behind it when the region starts listening.
+  const [liveKey, setLiveKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!opened) return;
+    return afterAFrame(() => setLiveKey(loadKey));
+  }, [opened, loadKey]);
+  const live = opened && liveKey === loadKey;
 
   // ── The New line: fixed once, as soon as the live tail decides its place ──
   const [newLine, setNewLine] = useState<{ computed: boolean; id: string | null }>({
@@ -454,6 +590,10 @@ function ChannelTimeline({
     highlightDone.current?.();
   }, []);
 
+  // ── The post between Send and its arrival ───────────────────────────────
+  const pendingPost = usePendingPost(crew, messages, viewerId);
+  const showPending = pendingPost !== null && !readOnly && historyBefore === null;
+
   // ── Keyboard: ↑/↓ move between rows, Home/End to the ends ────────────────
   const [activeRow, setActiveRow] = useState<string | null>(null);
   const onLogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -537,9 +677,10 @@ function ChannelTimeline({
             <div className="crew-timeline-column max-w-measure-chat mx-auto">
               <div
                 role="log"
-                aria-live="polite"
+                aria-live={live ? 'polite' : 'off'}
                 aria-label={timelineCopy.logLabel(slug)}
-                aria-busy={opened ? undefined : 'true'}
+                aria-description={timelineCopy.logDescription}
+                aria-busy={opened && !loadingPage ? undefined : 'true'}
                 tabIndex={0}
                 className="crew-timeline-log biorouter-focus-region"
                 onKeyDown={onLogKeyDown}
@@ -579,6 +720,7 @@ function ChannelTimeline({
                     ))}
                   </section>
                 ))}
+                {showPending && <PendingPostRow body={pendingPost.body} />}
               </div>
             </div>
           </ScrollArea>

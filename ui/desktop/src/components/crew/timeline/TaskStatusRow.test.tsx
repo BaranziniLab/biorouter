@@ -64,7 +64,8 @@ function renderTask(status: string, extra: Parameters<typeof run>[0] = {}) {
     runs: [run({ status, ...extra })],
   });
   const view = renderWithController(<Timeline />, controller);
-  const row = screen.getByRole('group', { name: new RegExp(`^${identityCopy.yourAgent}`) });
+  // The task row, not the agent's message row beside it (also a group, named "Your agent 10:02 AM…").
+  const row = screen.getByRole('group', { name: new RegExp(`^${identityCopy.yourAgent} · `) });
   return { controller, row, ...view };
 }
 
@@ -177,7 +178,7 @@ describe('task status rows', () => {
       runs: [run({ status: 'running' })],
     });
     renderWithController(<Timeline />, controller);
-    const row = screen.getByRole('group', { name: /Your agent/ });
+    const row = screen.getByRole('group', { name: /^Your agent · / });
     expect(row).toHaveTextContent(`${identityCopy.yourAgent} · Working…`);
     expect(row.querySelector('.crew-task-title')).toBeNull();
     const log = screen.getByRole('log');

@@ -1,7 +1,7 @@
 import { Button } from '../../ui/button';
 import { Hash } from '../../icons/app-icons';
 import type { Channel } from '../crewApi';
-import { PersonName, channelSlug, type PeopleDirectory } from '../identity';
+import { PersonName, channelSlug, isolate, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { timelineCopy } from './copy';
 
@@ -10,6 +10,11 @@ import { timelineCopy } from './copy';
  * who created it, and — for its owner — one secondary Add people. There is no
  * "Ask my agent" here: the composer's button stays the only control with that
  * name, so a query for it is never ambiguous.
+ *
+ * Everyone else learns how the other channels appear: only channels someone
+ * added you to are listed, so a `#methods` named in a post and missing from the
+ * sidebar is not broken — and the owner is who to ask. (Crew lists no channel
+ * to a non-member, so nothing here can name the ones you are not in.)
  *
  * `pending` keeps its place while the live tail is still streaming in and the
  * start is not yet known to be loaded: laid out but invisible, hidden from
@@ -30,6 +35,11 @@ export function ChannelIntro({
 }) {
   const { openDialog } = useCrew();
   const owner = viewerId !== null && channel.owner_id === viewerId;
+  const ownerPerson = owner ? null : dir.byId(channel.owner_id);
+  const ownerHandle =
+    ownerPerson && !ownerPerson.isFormer && ownerPerson.username
+      ? isolate(`@${ownerPerson.username}`)
+      : null;
   return (
     <div
       className="crew-channel-intro"
@@ -45,6 +55,11 @@ export function ChannelIntro({
         <PersonName person={channel.created_by} context="inline" dir={dir} />
         {timelineCopy.introCreatedBy}
       </p>
+      {!owner && (
+        <p className="crew-channel-intro-hint text-supporting text-text-muted">
+          {timelineCopy.introOtherChannels(ownerHandle)}
+        </p>
+      )}
       {owner && !channel.archived && (
         <Button
           type="button"

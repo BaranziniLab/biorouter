@@ -10,16 +10,17 @@ import {
 } from 'react';
 import { Button } from '../../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import { Check, Copy } from '../../icons/app-icons';
+import { Check, Copy, X } from '../../icons/app-icons';
 import { cn } from '../../../utils';
 import { timelineCopy } from './copy';
 
 /**
  * Copying from the timeline — a message's text, a code block, a message or task
  * ID, a task's error — confirms itself without a toast: the control that copied
- * shows a check for two seconds, and ONE polite region per timeline says
- * "Copied" (or how to copy by hand when the clipboard refuses). The region sits
- * outside the log, so an announcement never reads as a new message.
+ * says so itself for two seconds ("Copied" with a check, or "Couldn't copy"),
+ * and ONE polite region per timeline says "Copied" (or how to copy by hand when
+ * the clipboard refuses). The region sits outside the log, so an announcement
+ * never reads as a new message. A refused copy is never silent.
  */
 
 /** How long a copy control shows its check, as `CopyField` does. */
@@ -102,10 +103,13 @@ export function useTimelineCopy(): TimelineCopyApi['copy'] {
   );
 }
 
-/** A check for two seconds after a successful copy. */
-export function useCopiedFlag(): [boolean, (text: string) => Promise<void>] {
+/** What a copy control shows: nothing yet, or the outcome of its last copy. */
+export type CopyOutcome = 'copied' | 'failed' | null;
+
+/** The outcome of this control's last copy, for two seconds. */
+export function useCopyOutcome(): [CopyOutcome, (text: string) => Promise<void>] {
   const copy = useTimelineCopy();
-  const [copied, setCopied] = useState(false);
+  const [outcome, setOutcome] = useState<CopyOutcome>(null);
   const timer = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -116,50 +120,66 @@ export function useCopiedFlag(): [boolean, (text: string) => Promise<void>] {
   const run = useCallback(
     async (text: string) => {
       const landed = await copy(text);
-      if (!landed) return;
-      setCopied(true);
+      setOutcome(landed ? 'copied' : 'failed');
       if (timer.current !== null) window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
+      timer.current = window.setTimeout(() => setOutcome(null), COPY_FEEDBACK_MS);
     },
     [copy]
   );
-  return [copied, run];
+  return [outcome, run];
 }
 
-/** A glyph-only copy button: the name is its tooltip, and the glyph turns into a check. */
+/**
+ * A glyph-only copy button. `label` is what its tooltip says at rest ("Copy text"); `name`,
+ * when given, is its fuller accessible name ("Copy text of Bob Lee’s message, 10:02 AM"), which
+ * contains the label. After a press the control itself answers: the glyph turns into a check
+ * and the tooltip, held open, says "Copied" — or an X and "Couldn't copy".
+ */
 export function CopyIconButton({
   text,
   label,
+  name,
   tabIndex,
   className,
 }: {
   text: string;
   label: string;
+  name?: string;
   tabIndex?: number;
   className?: string;
 }) {
-  const [copied, copy] = useCopiedFlag();
+  const [outcome, copy] = useCopyOutcome();
+  const [hovered, setHovered] = useState(false);
+  const tip =
+    outcome === 'copied'
+      ? timelineCopy.copied
+      : outcome === 'failed'
+        ? timelineCopy.copyFailedShort
+        : label;
   return (
-    <Tooltip>
+    <Tooltip open={outcome !== null || hovered} onOpenChange={setHovered}>
       <TooltipTrigger asChild>
         <Button
           type="button"
           variant="ghost"
           size="sm"
           shape="round"
-          aria-label={label}
+          aria-label={name ?? label}
           tabIndex={tabIndex}
+          data-copy-outcome={outcome ?? undefined}
           className={cn('text-text-muted', className)}
           onClick={() => void copy(text)}
         >
-          {copied ? (
+          {outcome === 'copied' ? (
             <Check aria-hidden className="biorouter-check-settled" />
+          ) : outcome === 'failed' ? (
+            <X aria-hidden />
           ) : (
             <Copy aria-hidden />
           )}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tip}</TooltipContent>
     </Tooltip>
   );
 }

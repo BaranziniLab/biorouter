@@ -139,7 +139,10 @@ describe('no machine IDs by default (naming rule 8)', () => {
 
     // A message by a former member: its row's ⋯.
     await user.click(
-      within(rowOf('Counts are in.')).getByRole('button', { name: 'More actions', hidden: true })
+      within(rowOf('Counts are in.')).getByRole('button', {
+        name: /^More actions for /,
+        hidden: true,
+      })
     );
     await user.click(await screen.findByRole('menuitem', { name: 'Copy message ID' }));
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.messages[0]));
