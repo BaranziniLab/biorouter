@@ -174,6 +174,21 @@ describe('the log', () => {
     expect(human.querySelector('[data-slot="avatar"]')).toHaveTextContent('BL');
   });
 
+  it('names a former author from the names their messages came with, not as “Unknown member”', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [message({ actor_id: ID.gone, body: 'before I left' })],
+        people: { [ID.gone]: { username: 'dan', display_name: 'Dan Wu', active: false } },
+      })
+    );
+    const article = screen.getByRole('article');
+    expect(article).toHaveTextContent('Dan Wu');
+    expect(article).toHaveTextContent(`· ${identityCopy.formerMember}`);
+    expect(article).not.toHaveTextContent(identityCopy.unknownMember);
+    expect(timelineRoot().innerHTML).not.toContain(ID.gone);
+  });
+
   it('names an author it does not know as “Unknown member”, never by ID', () => {
     renderWithController(
       <Timeline />,
@@ -503,6 +518,16 @@ describe('older history', () => {
     expect(arrivingRows()).toBe(1);
   });
 
+  it('measures a full page by the size the observer asks for', () => {
+    const controller = makeController({ messages: page(50), pageSize: 50 });
+    renderWithController(<Timeline />, controller);
+    expect(screen.getByRole('button', { name: 'Older messages' })).toBeInTheDocument();
+    expect(screen.queryByText('Welcome to #general')).toBeNull();
+    // The same list under a full-size page is the whole channel.
+    renderWithController(<Timeline />, makeController({ messages: page(50), pageSize: 200 }));
+    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+  });
+
   it('marks the log busy while a page loads', () => {
     renderWithController(
       <Timeline />,
@@ -745,6 +770,184 @@ describe('a channel streaming in, one message per frame', () => {
     expect(line).not.toBeNull();
     expect(before(screen.getByText('tail 2'), line as Node)).toBe(true);
     expect(before(line as Node, screen.getByText('tail 3'))).toBe(true);
+  });
+});
+
+describe('the observer’s word on the backlog', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const short = () =>
+    Array.from({ length: 5 }, (_, index) =>
+      message({ id: `b-${index}`, body: `backlog ${index}`, at: new Date(2026, 8, 22, 7, index) })
+    );
+
+  it('keeps the opening open while the daemon says more is coming, and never times it out', () => {
+    const tail = short();
+    const controller = makeController({
+      messages: tail,
+      backlogComplete: false,
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: tail[4].sequence },
+        unread: { [ID.general]: 0 },
+      }),
+    });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    act(() => {
+      vi.advanceTimersByTime(OPENING_STALL_MS * 2);
+    });
+    // No quiet or stall timer decides for a daemon that counts the backlog down.
+    expect(screen.getByRole('log')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByRole('heading', { name: 'Welcome to #general' })).toBeNull();
+
+    rerenderWith({ ...controller, backlogComplete: true });
+    expect(screen.getByRole('log')).not.toHaveAttribute('aria-busy');
+    expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
+  });
+
+  it('opens at once when the daemon says the backlog is in', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: short(), backlogComplete: true })
+    );
+    expect(screen.getByRole('log')).not.toHaveAttribute('aria-busy');
+    expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
+  });
+});
+
+describe('following a full live tail', () => {
+  // jsdom lays nothing out. The scroll area's viewport is given a fixed height and content, and a
+  // scrollTop that clamps, from before the timeline mounts — the scroll area measures the viewport
+  // when it mounts, and a height that changed afterwards would read as a resize, not a scroll.
+  const SCROLL_HEIGHT = 20_000;
+  const CLIENT_HEIGHT = 600;
+  const MAX_TOP = SCROLL_HEIGHT - CLIENT_HEIGHT;
+  const tops = new WeakMap<Element, number>();
+  const scrollTo = vi.fn();
+  const isViewport = (element: Element) => element.hasAttribute('data-radix-scroll-area-viewport');
+  const inherited = (name: 'scrollHeight' | 'clientHeight' | 'scrollTop') =>
+    Object.getOwnPropertyDescriptor(Element.prototype, name);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const proto = HTMLDivElement.prototype as unknown as Record<string, unknown>;
+    Object.defineProperty(proto, 'scrollHeight', {
+      configurable: true,
+      get(this: Element) {
+        return isViewport(this) ? SCROLL_HEIGHT : inherited('scrollHeight')?.get?.call(this);
+      },
+    });
+    Object.defineProperty(proto, 'clientHeight', {
+      configurable: true,
+      get(this: Element) {
+        return isViewport(this) ? CLIENT_HEIGHT : inherited('clientHeight')?.get?.call(this);
+      },
+    });
+    Object.defineProperty(proto, 'scrollTop', {
+      configurable: true,
+      get(this: Element) {
+        return isViewport(this) ? (tops.get(this) ?? 0) : inherited('scrollTop')?.get?.call(this);
+      },
+      set(this: Element, value: number) {
+        if (isViewport(this)) tops.set(this, Math.max(0, Math.min(value, MAX_TOP)));
+        else inherited('scrollTop')?.set?.call(this, value);
+      },
+    });
+    scrollTo.mockReset();
+    scrollTo.mockImplementation(function (this: HTMLElement, options?: { top?: number }) {
+      if (typeof options?.top === 'number') this.scrollTop = options.top;
+    });
+    proto.scrollTo = scrollTo;
+  });
+  afterEach(() => {
+    const proto = HTMLDivElement.prototype as unknown as Record<string, unknown>;
+    for (const name of ['scrollHeight', 'clientHeight', 'scrollTop', 'scrollTo'])
+      delete proto[name];
+    vi.restoreAllMocks();
+  });
+
+  function viewport(): HTMLElement {
+    const element = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!element) throw new Error('no viewport');
+    return element;
+  }
+  const fromBottom = () => MAX_TOP - viewport().scrollTop;
+  /** Where the browser's scroll anchoring leaves the view: no scroll event is dispatched. */
+  const place = (top: number) => tops.set(viewport(), top);
+
+  it('keeps the newest message in view when an arrival does not grow the log, and marks read only once it is on screen', () => {
+    const tail = page(HISTORY_PAGE_SIZE);
+    const readAll = snapshotFor({
+      read_positions: { [ID.general]: tail[HISTORY_PAGE_SIZE - 1].sequence },
+      unread: { [ID.general]: 0 },
+    });
+    const controller = makeController({ messages: tail, snapshot: readAll });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    // The channel opened at its newest message.
+    expect(fromBottom()).toBe(0);
+
+    // The oldest message leaves as the newest arrives: the tail keeps its size, the content
+    // does not grow, and scroll anchoring holds the rows on screen — one row above the bottom.
+    const arrived = postedNow({ id: 'arrived', body: 'new on a full tail' });
+    const next = [...tail, arrived].slice(-HISTORY_PAGE_SIZE);
+    expect(next).toHaveLength(HISTORY_PAGE_SIZE);
+    place(MAX_TOP - 100);
+    rerenderWith({ ...controller, messages: next });
+    expect(fromBottom()).toBe(0);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(1);
+    expect(controller.markRead).toHaveBeenCalledWith(ID.general, arrived.sequence);
+
+    // A view that does not reach the bottom: the reader still "follows", but the newest row is
+    // below the fold, so nothing is marked read however long they wait.
+    scrollTo.mockImplementation(() => {});
+    place(MAX_TOP - 100);
+    const second = postedNow({ id: 'second', body: 'second arrival' });
+    rerenderWith({ ...controller, messages: [...next, second].slice(-HISTORY_PAGE_SIZE) });
+    expect(fromBottom()).toBe(100);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS * 3);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(1);
+
+    // The newest message comes into view: it is marked read after the next look.
+    place(MAX_TOP);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(2);
+    expect(controller.markRead).toHaveBeenLastCalledWith(ID.general, second.sequence);
+  });
+
+  it('leaves a reader who scrolled up where they are', () => {
+    const tail = page(HISTORY_PAGE_SIZE);
+    const controller = makeController({ messages: tail });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    expect(fromBottom()).toBe(0);
+    place(2_000);
+    fireEvent.scroll(viewport());
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    scrollTo.mockClear();
+    rerenderWith({
+      ...controller,
+      messages: [...tail, postedNow({ id: 'later', body: 'later' })].slice(-HISTORY_PAGE_SIZE),
+    });
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS);
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport().scrollTop).toBe(2_000);
+    expect(controller.markRead).not.toHaveBeenCalled();
   });
 });
 

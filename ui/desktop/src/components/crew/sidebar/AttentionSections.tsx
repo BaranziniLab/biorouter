@@ -15,7 +15,8 @@ export const acceptKey = (invitationId: string) => `mutate:invitation.accept:${i
 /**
  * The sidebar's attention sections (ui-redesign-spec, "The Crew sidebar"), each shown only when
  * it has a row: **Invitations** addressed to me, with a small Accept, and — for the host —
- * **Waiting to join**, with Let in… and the different-code warning.
+ * **Waiting to join**, with Let in… and the different-code warning, or, once an invitation has
+ * run out, "Invitation expired · Invite again…" and no Let in.
  *
  * Both name people through `PersonName` and never show an ID: an invitation the broker did not
  * name yet reads "Invitation" from its inviter, and a joiner reads `@bob` first (the joiner
@@ -48,7 +49,22 @@ export function AttentionSections() {
                     context="joiner"
                   />
                 </span>
-                {join.approved ? (
+                {join.expired ? (
+                  <span className="flex shrink-0 items-center gap-1 text-supporting text-text-muted">
+                    <span>{copy.waiting.expired}</span>
+                    <span aria-hidden="true">{` ${copy.waiting.separator} `}</span>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="no-drag"
+                      aria-label={copy.waiting.inviteAgainLabel(join.username)}
+                      disabled={!verified}
+                      onClick={() => crew.openDialog({ kind: 'invite-people' })}
+                    >
+                      {copy.waiting.inviteAgain}
+                    </Button>
+                  </span>
+                ) : join.approved ? (
                   <span className="shrink-0 text-supporting text-text-muted">
                     {copy.waiting.approved}
                   </span>

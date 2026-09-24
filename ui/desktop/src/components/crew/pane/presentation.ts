@@ -37,7 +37,8 @@ export function usePanePresentation(): PanePresentation {
   );
   const snapshot = crew.snapshot ?? crew.lastVerified?.snapshot ?? null;
   const labels = crew.snapshot ? crew.labels : (crew.lastVerified?.labels ?? null);
-  const dir = usePeopleDirectory(snapshot, labels);
+  const people = crew.snapshot ? crew.people : crew.lastVerified?.people;
+  const dir = usePeopleDirectory(snapshot, labels, people ?? null);
   const channel = snapshot?.channels.find((item) => item.id === crew.channelId) ?? null;
   const team = channel
     ? (snapshot?.teams.find((item) => item.id === channel.team_id) ?? null)

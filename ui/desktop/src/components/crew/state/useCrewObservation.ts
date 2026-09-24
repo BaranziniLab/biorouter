@@ -7,17 +7,28 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
+import { crewBrokerCode } from '../api/errors';
 import {
+  CrewHttpError,
   crewRequest,
   observeCrew,
+  validatedPeople,
   type CrewConnection,
   type CrewMessage,
+  type CrewMessageAuthor,
+  type CrewMessagePeople,
   type ObservedRun,
   type Snapshot,
 } from '../crewApi';
+import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
 import type { CrewDraftState } from './crewSend';
-import { failureCode, failureMessage, observationFailureOutcome } from './observationFailure';
+import {
+  DRAFT_CLEARING_OBSERVATION_CODES,
+  failureCode,
+  failureMessage,
+  observationFailureOutcome,
+} from './observationFailure';
 import type {
   CrewFrameLabels,
   CrewJoinStatus,
@@ -34,6 +45,65 @@ export function frameLabels(frame: unknown): CrewFrameLabels | null {
   return labels !== null && typeof labels === 'object' && !Array.isArray(labels)
     ? (labels as CrewFrameLabels)
     : null;
+}
+
+/**
+ * `base` with the entries of `next` added, as a new map only when something changed, so a
+ * directory memoized on it is not rebuilt for every frame that names the same authors.
+ */
+export function mergePeople(
+  base: CrewMessagePeople | null,
+  next: CrewMessagePeople | null | undefined
+): CrewMessagePeople | null {
+  if (!next) return base;
+  const entries = Object.entries(next);
+  const changed = entries.some(([id, author]) => {
+    const known = base ? base[id] : undefined;
+    return (
+      !known ||
+      known.username !== author.username ||
+      known.display_name !== author.display_name ||
+      known.active !== author.active
+    );
+  });
+  if (!changed) return base;
+  const merged: Record<string, CrewMessageAuthor> = Object.create(null);
+  if (base) for (const [id, author] of Object.entries(base)) merged[id] = author;
+  for (const [id, author] of entries) merged[id] = author;
+  return merged;
+}
+
+/**
+ * Broker refusals of an older page that say nothing about access, privacy or who is asking: the
+ * page cannot be loaded as asked, and the verified view stays. `response_too_large` is retried
+ * with a smaller page first.
+ */
+const LOCAL_HISTORY_BROKER_CODES: readonly string[] = [
+  'response_too_large',
+  'rate_limited',
+  'quota_exceeded',
+  'invalid_params',
+  'invalid_request',
+];
+
+/**
+ * An older page failed for a reason that leaves the verified view standing: the daemon could not
+ * serve it (5xx), or the broker refused its size or shape. Anything else — access, privacy, the
+ * person, a stale cursor (which is also what a message the viewer may no longer see looks like),
+ * or a failure it cannot classify — still clears the view, as every observation failure does.
+ */
+export function isLocalHistoryFailure(failure: unknown): boolean {
+  if (!(failure instanceof CrewHttpError)) return false;
+  const code = failure.brokerCode ?? failure.code;
+  if (code && DRAFT_CLEARING_OBSERVATION_CODES.includes(code)) return false;
+  if (failure.brokerCode) return LOCAL_HISTORY_BROKER_CODES.includes(failure.brokerCode);
+  return failure.status >= 500;
+}
+
+function sameList(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
 }
 
 export interface CrewObservationContext {
@@ -68,6 +138,14 @@ export interface CrewObservation {
   setHistoryBefore: Dispatch<SetStateAction<string | null>>;
   historyPage: MutableRefObject<string | null>;
   labels: CrewFrameLabels | null;
+  /** The live tail's opening backlog has arrived (true), is arriving (false), or unknown. */
+  backlogComplete: boolean | undefined;
+  /** The full-page size of what is shown: the live tail's, or the older page's. */
+  pageSize: number;
+  /** Authors the selected channel's message pages named. */
+  people: CrewMessagePeople | null;
+  /** The connected broker's capabilities, from the last `state` frame that carried any. */
+  capabilities: readonly string[] | null;
   refreshError: string;
   lastVerified: VerifiedView | null;
   setSnapshot: Dispatch<SetStateAction<Snapshot | null>>;
@@ -124,6 +202,15 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const [messages, setMessages] = useState<CrewMessage[]>([]);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [historyBefore, setHistoryBefore] = useState<string | null>(null);
+  const [backlog, setBacklog] = useState<boolean | undefined>(undefined);
+  const [livePageSize, setLivePageSize] = useState(HISTORY_PAGE_SIZE);
+  const livePageSizeRef = useRef(HISTORY_PAGE_SIZE);
+  useEffect(() => {
+    livePageSizeRef.current = livePageSize;
+  }, [livePageSize]);
+  const [historyPageSize, setHistoryPageSize] = useState<number | null>(null);
+  const [people, setPeople] = useState<CrewMessagePeople | null>(null);
+  const [capabilities, setCapabilities] = useState<readonly string[] | null>(null);
   const [refreshError, setRefreshError] = useState('');
   const [lastVerified, setLastVerified] = useState<VerifiedView | null>(null);
   const observer = useRef<AbortController | null>(null);
@@ -146,7 +233,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setMessages([]);
     setMessagesLoaded(false);
     setLabels(null);
+    setPeople(null);
+    setBacklog(undefined);
+    setCapabilities(null);
     setHistoryBefore(null);
+    setHistoryPageSize(null);
     historyPage.current = null;
     setLastVerified(null);
     resetSurfaces('protected-cleared');
@@ -171,6 +262,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setMessages([]);
     setMessagesLoaded(false);
     setLabels(null);
+    setPeople(null);
+    setBacklog(undefined);
     resetSurfaces('refresh');
     setRefreshError('');
     try {
@@ -210,6 +303,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setMessages([]);
     setMessagesLoaded(false);
     setLabels(null);
+    setPeople(null);
+    setBacklog(undefined);
+    setCapabilities(null);
+    setLivePageSize(HISTORY_PAGE_SIZE);
     setChannelId('');
     setTeamId('');
     setBody('');
@@ -228,7 +325,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     historyPage.current = null;
     setHistoryBefore(null);
+    setHistoryPageSize(null);
     setMessagesLoaded(false);
+    setPeople(null);
+    setBacklog(undefined);
     setBody('');
     setAttachments([]);
     setReferences([]);
@@ -296,6 +396,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               );
               setSnapshot(frame.snapshot);
               setLabels(frameLabels(frame));
+              const frameCapabilities = frame.capabilities?.length ? frame.capabilities : null;
+              setCapabilities((previous) =>
+                sameList(previous, frameCapabilities) ? previous : frameCapabilities
+              );
               setRuns(frame.runs);
               setRefreshError('');
               onVerifiedFrame(connectionId);
@@ -314,6 +418,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 setReferences([]);
                 setContextChannels([]);
                 setHistoryBefore(null);
+                setPeople(null);
+                setBacklog(undefined);
                 historyPage.current = null;
                 pendingMessage.current = null;
                 resetSurfaces('channel-revoked');
@@ -322,6 +428,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               }
             } else if (frame.type === 'messages' && frame.channel_id === channelId) {
               cursor = frame.cursor ?? null;
+              const pageSize = frame.page_size;
+              if (pageSize !== undefined) setLivePageSize(pageSize);
               if (historyPage.current !== null) return;
               setMessages((previous) => {
                 const next = frame.reset ? [] : [...previous];
@@ -330,8 +438,15 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   if (index < 0) next.push(message);
                   else next[index] = message;
                 }
-                return next.slice(-200);
+                return next.slice(-HISTORY_PAGE_SIZE);
               });
+              const framePeople = frame.people;
+              setPeople((previous) => mergePeople(frame.reset ? null : previous, framePeople));
+              // `remaining` counts down the page this frame came from; the page a reset opens is
+              // the channel's backlog, so its last frame (`0`) is the end of the opening.
+              const remaining = frame.remaining;
+              if (remaining === 0) setBacklog(true);
+              else if (remaining !== undefined && frame.reset) setBacklog(false);
               setMessagesLoaded(true);
             } else if (frame.type === 'reconnect') {
               cursor = frame.cursor ?? null;
@@ -380,61 +495,101 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setContextChannels,
   ]);
 
+  // An older page. It asks for the page size the observer settled on, halves it while the broker
+  // answers `response_too_large`, and records the size it was loaded with, so a full page of that
+  // size still offers the page before it. A failure that says nothing about access returns to the
+  // live tail with the error in the connection bar; any other clears the view.
   useEffect(() => {
     if (historyBefore === null || !connectionId || !channelId) return;
     const controller = new AbortController();
     const current = generation.current;
+    const fresh = () => !controller.signal.aborted && current === generation.current;
     setMessages([]);
     setMessagesLoaded(false);
-    void crewRequest<{ messages: CrewMessage[]; cursor: string | null }>(
-      connectionId,
-      'messages.history',
-      {
-        channel_id: channelId,
-        limit: 200,
-        latest: true,
-        before: historyBefore,
-      },
-      false,
-      controller.signal
-    )
-      .then((page) => {
-        if (!controller.signal.aborted && current === generation.current) {
+    setHistoryPageSize(null);
+    void (async () => {
+      let limit = Math.max(1, Math.min(livePageSizeRef.current, HISTORY_PAGE_SIZE));
+      for (;;) {
+        try {
+          const page = await crewRequest<{
+            messages: CrewMessage[];
+            cursor: string | null;
+            people?: unknown;
+          }>(
+            connectionId,
+            'messages.history',
+            { channel_id: channelId, limit, latest: true, before: historyBefore },
+            false,
+            controller.signal
+          );
+          if (!fresh()) return;
+          const pagePeople = validatedPeople(page.people);
+          setHistoryPageSize(limit);
           setMessages(page.messages);
+          setPeople((previous) => mergePeople(previous, pagePeople));
           setMessagesLoaded(true);
+          return;
+        } catch (failure: unknown) {
+          if (!fresh()) return;
+          if (crewBrokerCode(failure) === 'response_too_large' && limit > 1) {
+            limit = Math.max(1, Math.floor(limit / 2));
+            continue;
+          }
+          if (isLocalHistoryFailure(failure)) {
+            const detail = failure instanceof Error ? failure.message : '';
+            historyPage.current = null;
+            setHistoryBefore(null);
+            reportError(
+              detail
+                ? `${crewObservationCopy.historyFailed} ${detail}`
+                : crewObservationCopy.historyFailed,
+              'observer',
+              failureCode(failure)
+            );
+            // The live observer ignored the tail while the page was asked for: start it over.
+            setObservationRevision((revision) => revision + 1);
+            return;
+          }
+          observer.current?.abort();
+          generation.current += 1;
+          observationFailure(
+            failureMessage(failure, crewObservationCopy.historyFailed),
+            failureCode(failure)
+          );
+          return;
         }
-      })
-      .catch((failure: unknown) => {
-        if (controller.signal.aborted || current !== generation.current) return;
-        observer.current?.abort();
-        generation.current += 1;
-        observationFailure(
-          failureMessage(failure, crewObservationCopy.historyFailed),
-          failureCode(failure)
-        );
-      });
+      }
+    })();
     return () => controller.abort();
-  }, [historyBefore, connectionId, channelId, observationRevision, observationFailure, generation]);
+  }, [
+    historyBefore,
+    connectionId,
+    channelId,
+    observationRevision,
+    observationFailure,
+    reportError,
+    generation,
+  ]);
 
   // Presentation only: remember the last verified view so a re-verification can keep drawing it.
   useEffect(() => {
     if (!keepLastVerifiedView || !snapshot || observedPrivacy?.connectionId !== connectionId)
       return;
-    setLastVerified((previous) => ({
-      connectionId,
-      snapshot,
-      observedPrivacy,
-      runs,
-      labels,
-      teamId,
-      channelId,
-      messages:
-        messagesLoaded || !channelId
-          ? messages
-          : previous?.connectionId === connectionId && previous.channelId === channelId
-            ? previous.messages
-            : [],
-    }));
+    setLastVerified((previous) => {
+      const current = messagesLoaded || !channelId;
+      const same = previous?.connectionId === connectionId && previous.channelId === channelId;
+      return {
+        connectionId,
+        snapshot,
+        observedPrivacy,
+        runs,
+        labels,
+        teamId,
+        channelId,
+        messages: current ? messages : same ? previous.messages : [],
+        people: current ? people : same ? (previous.people ?? null) : null,
+      };
+    });
   }, [
     keepLastVerifiedView,
     connectionId,
@@ -444,6 +599,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     observedPrivacy,
     runs,
     labels,
+    people,
     messages,
     messagesLoaded,
   ]);
@@ -460,6 +616,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setHistoryBefore,
     historyPage,
     labels,
+    backlogComplete: backlog,
+    pageSize: historyBefore !== null ? (historyPageSize ?? HISTORY_PAGE_SIZE) : livePageSize,
+    people,
+    capabilities,
     refreshError,
     lastVerified,
     setSnapshot,

@@ -17,6 +17,7 @@ import {
   CREW_USER_ACTION_REQUIRED,
   CREW_WORKSPACE_IDENTITY_MISMATCH,
   STALE_DAEMON_MESSAGE,
+  crewBrokerCode,
   crewErrorCode,
   crewErrorDetail,
   isConnectFailureCode,
@@ -83,6 +84,42 @@ describe('CrewHttpError capture', () => {
     expect(failure.detail).toBe(detail);
     expect(crewErrorCode(failure)).toBe(CREW_SSH_HOST_KEY_UNKNOWN);
     expect(crewErrorDetail(failure)).toBe(detail);
+  });
+
+  it('keeps the broker’s own code beside the daemon’s for a refusal the broker made', async () => {
+    const error = 'name_taken: A team with this name, or one that looks like it, already exists.';
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(400, { code: 'crew_request_refused', broker_code: 'name_taken', error })
+        )
+    );
+
+    const failure = await failureOf(
+      crewHttp('/connections/conn-1/request', 'POST', { method: 'team.create' })
+    );
+
+    expect(failure.message).toBe(error);
+    expect(failure.code).toBe('crew_request_refused');
+    expect(failure.brokerCode).toBe('name_taken');
+    expect(crewBrokerCode(failure)).toBe('name_taken');
+    expect(crewErrorCode(failure)).toBe('crew_request_refused');
+  });
+
+  it('reads no broker code from a refusal without one, or with one that is not a code', async () => {
+    for (const body of [
+      { code: 'crew_request_refused', error: 'Crew connection not found' },
+      { code: 'crew_request_refused', broker_code: 7, error: 'x' },
+      { code: 'crew_request_refused', broker_code: 'Not A Code', error: 'x' },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(400, body)));
+      const failure = await failureOf(crewHttp('/connections/conn-1/request', 'POST', {}));
+      expect(failure.brokerCode).toBeUndefined();
+      expect(crewBrokerCode(failure)).toBeUndefined();
+    }
+    expect(crewBrokerCode(new Error('name_taken: x'))).toBeUndefined();
   });
 
   it('falls back to the status when the body is not a typed refusal', async () => {

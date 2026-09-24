@@ -22,6 +22,7 @@ import {
   personLabel,
   type CrewPerson,
 } from '../identity';
+import { sidebarCopy } from '../sidebar/copy';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/types';
 import { copyText } from './clipboard';
@@ -162,7 +163,7 @@ function Section({
 
 function GeneralTab({ view }: { view: DialogView }) {
   const { crew, dir, snapshot, server } = view;
-  const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot);
+  const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
   return (
     <div className="flex flex-col">
       <div className="biorouter-settings-list">
@@ -322,6 +323,8 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
   const key = `mutate:enrollment.cancel:${join.username}`;
   const pending = crew.isPending(key);
   const mismatched = (join.mismatched_attempts ?? 0) > 0;
+  // The broker's word, not the local clock: an expired join can only be invited again.
+  const expired = join.expired === true;
   const dismissOwnError = useDismissOwnError(SOURCE);
 
   const cancel = () =>
@@ -340,7 +343,20 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
         <div className="min-w-0 flex-1 truncate text-label">
           <PersonName person={person} context="joiner" />
         </div>
-        {confirming ? (
+        {expired ? (
+          <div className="flex items-center gap-2 text-supporting text-text-muted">
+            <span>{sidebarCopy.waiting.expired}</span>
+            <span aria-hidden="true">{` ${sidebarCopy.waiting.separator} `}</span>
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-label={sidebarCopy.waiting.inviteAgainLabel(join.username)}
+              onClick={() => crew.openDialog({ kind: 'invite-people' })}
+            >
+              {sidebarCopy.waiting.inviteAgain}
+            </Button>
+          </div>
+        ) : confirming ? (
           <div className="flex items-center gap-2">
             <span className="text-supporting text-text-muted">
               {copy.cancelInvitationConfirm(join.username)}

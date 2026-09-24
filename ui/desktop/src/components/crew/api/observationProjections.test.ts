@@ -6,8 +6,9 @@ vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'projection-test-proof' }),
 }));
 
-// The `labels`, `former_principals`, `pending_joins` and `actor.devices` projections on a state
-// frame (S1a/S3a). crewApi.observation.test.ts covers the framing and stays unchanged.
+// The `labels`, `capabilities`, `former_principals`, `pending_joins`, `actor.devices` and run
+// `started_at` projections on a state frame (S1a/S3a). crewApi.observation.test.ts covers the
+// framing and the projections beside a messages frame.
 
 const encoder = new TextEncoder();
 
@@ -231,6 +232,59 @@ describe('observation state projections', () => {
     expect(nulled.snapshot).not.toHaveProperty('former_principals');
     expect(nulled.snapshot).not.toHaveProperty('pending_joins');
     expect(nulled.snapshot.actor).not.toHaveProperty('devices');
+  });
+
+  it('passes the broker’s capabilities through, keeping only words', async () => {
+    const observed = await observedState(
+      state({}, { capabilities: ['unique_names_v1', 7, '', 'join_v1'] })
+    );
+    expect(observed.capabilities).toEqual(['unique_names_v1', 'join_v1']);
+    expect(await observedState(state())).not.toHaveProperty('capabilities');
+    expect(await observedState(state({}, { capabilities: 'unique_names_v1' }))).not.toHaveProperty(
+      'capabilities'
+    );
+  });
+
+  it('keeps a run’s start time only when it is one', async () => {
+    const run = { run_id: 'run-1', channel_id: 'c', session_id: 's', status: 'completed' };
+    const observed = await observedState(
+      state(
+        {},
+        {
+          runs: [
+            { ...run, started_at: 1_790_000_000_000 },
+            { ...run, run_id: 'run-2', started_at: -1 },
+            { ...run, run_id: 'run-3', started_at: '1790000000000' },
+            { ...run, run_id: 'run-4' },
+          ],
+        }
+      )
+    );
+    expect(observed.runs.map((item) => item.started_at)).toEqual([
+      1_790_000_000_000,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(observed.runs.map((item) => item.run_id)).toEqual(['run-1', 'run-2', 'run-3', 'run-4']);
+    expect(observed.runs[1]).not.toHaveProperty('started_at');
+  });
+
+  it('keeps a pending join’s expired flag only when it is a flag', async () => {
+    const observed = await observedState(
+      state({
+        pending_joins: [
+          { username: 'carol', expired: true },
+          { username: 'dee', expired: 'yes' },
+          { username: 'erin' },
+        ],
+      })
+    );
+    expect(observed.snapshot.pending_joins).toEqual([
+      { username: 'carol', expired: true },
+      { username: 'dee' },
+      { username: 'erin' },
+    ]);
   });
 
   it('still refuses a state frame whose required parts are malformed', async () => {

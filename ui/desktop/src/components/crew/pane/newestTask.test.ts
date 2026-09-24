@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { CrewMessage, ObservedRun } from '../crewApi';
 import { newestTaskIn } from './newestTask';
 
-const run = (run_id: string, channel_id = 'general'): ObservedRun => ({
+const run = (run_id: string, channel_id = 'general', started_at?: number): ObservedRun => ({
   run_id,
   channel_id,
   session_id: `session-${run_id}`,
   status: 'running',
+  ...(started_at === undefined ? {} : { started_at }),
 });
 
 const post = (sequence: string, run_id?: string, channel_id = 'general'): CrewMessage => ({
@@ -47,6 +48,22 @@ describe('newestTaskIn', () => {
     const shown = run('shown');
     const unseen = run('unseen');
     expect(newestTaskIn([shown, unseen], [post('1', 'shown')], 'general')).toBe(shown);
+  });
+
+  it('takes the task that started last when the daemon says when each started', () => {
+    const older = run('older', 'general', 1_000);
+    const newer = run('newer', 'general', 2_000);
+    // The older task's post is the lower one on screen; the start time still wins.
+    const messages = [post('1', 'newer'), post('2', 'older')];
+    expect(newestTaskIn([newer, older], messages, 'general')).toBe(newer);
+    expect(newestTaskIn([older, newer], [], 'general')).toBe(newer);
+  });
+
+  it('counts any dated task as newer than one recorded before start times were kept', () => {
+    const undated = run('undated');
+    const dated = run('dated', 'general', 5);
+    expect(newestTaskIn([dated, undated], [post('1', 'undated')], 'general')).toBe(dated);
+    expect(newestTaskIn([undated, run('elsewhere', 'methods', 9)], [], 'general')).toBe(undated);
   });
 
   it('falls back to the last listed task, the row the timeline draws last', () => {

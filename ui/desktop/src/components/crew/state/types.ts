@@ -1,4 +1,12 @@
-import type { Channel, CrewConnection, CrewMessage, ObservedRun, Snapshot, Team } from '../crewApi';
+import type {
+  Channel,
+  CrewConnection,
+  CrewMessage,
+  CrewMessagePeople,
+  ObservedRun,
+  Snapshot,
+  Team,
+} from '../crewApi';
 import type { ConnectFailureKind } from './connectFailure';
 import type { ConnectionStatusKey, CrewScreen } from './crewStatus';
 
@@ -41,6 +49,8 @@ export interface VerifiedView {
   channelId: string;
   /** The selected channel's messages when they had loaded; otherwise an earlier copy or none. */
   messages: CrewMessage[];
+  /** The authors those messages' pages named, including people who have left. Display only. */
+  people?: CrewMessagePeople | null;
 }
 
 /** A file already uploaded and waiting in the composer. */
@@ -268,6 +278,28 @@ export interface CrewController {
   /** The sequence before which a history page is shown, or null for the live tail. */
   historyBefore: string | null;
   labels: CrewFrameLabels | null;
+  /**
+   * Whether the live tail's opening backlog has arrived, from the observer's `remaining`: true once
+   * it has, false while the daemon says more is coming, and absent when the daemon does not say
+   * (an older daemon), so the timeline falls back to timing the stream.
+   */
+  backlogComplete?: boolean;
+  /**
+   * The size of a full page of what is shown: the page the observer asks the broker for on the
+   * live tail, or the one an older page was loaded with. It shrinks when the broker answers
+   * `response_too_large`. Absent: `HISTORY_PAGE_SIZE`.
+   */
+  pageSize?: number;
+  /**
+   * Authors the selected channel's message pages named, by principal ID, including people who have
+   * left the workspace. Display only; the snapshot wins where both name someone.
+   */
+  people?: CrewMessagePeople | null;
+  /**
+   * What the connected broker says it supports (for example `unique_names_v1`). Decides only which
+   * controls to offer; the broker still refuses what it does not support. Absent or null: unknown.
+   */
+  capabilities?: readonly string[] | null;
   refreshError: string | null;
   /** Unchanged order: connections before observe. */
   refresh(): Promise<void>;

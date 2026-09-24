@@ -17,7 +17,10 @@ import { dayKey, dayLabel, messageTime } from './timelineTime';
  *   observer sends the channel one message per frame, means once enough of it
  *   has arrived that the line cannot move (`newLineDecided`, `openingProgress`).
  * - A task status row is anchored after the first message carrying its
- *   `run_id` (the agent's "Task: …" post), else at the end of the live log.
+ *   `run_id` (the agent's "Task: …" post), else at the end of the live log —
+ *   there only while the task is live, or when it started no earlier than the
+ *   oldest message loaded (`started_at`), so an old task whose post has scrolled
+ *   out of the tail does not pile up below the newest message.
  *
  * Supplement (baseline critique): an agent's step-by-step tool updates ("Using
  * crew__request", "Tool failed: blob.read. …") are folded behind one "Show
@@ -30,9 +33,32 @@ export const GROUP_GAP_MS = 5 * 60 * 1000;
 /**
  * The size of a full page: the live tail keeps at most this many messages, and
  * `messages.history` returns at most this many. A shorter list reaches the
- * channel's start; a full one may have older messages behind it.
+ * channel's start; a full one may have older messages behind it. The observer
+ * asks for less when the broker answers `response_too_large`, and says so
+ * (`page_size`, the controller's `pageSize`): the functions below take that size.
  */
 export const HISTORY_PAGE_SIZE = 200;
+
+/**
+ * Run statuses in which a task is still going or waits on its owner. The
+ * daemon lists every such run in a `state` frame, beside only the newest
+ * finished ones (`routes/crew_observation.rs`, `run_is_live`).
+ */
+export const LIVE_RUN_STATUSES: readonly string[] = [
+  'starting',
+  'running',
+  'waiting_for_approval',
+  'cancellation_pending',
+  'cancellation_unconfirmed',
+];
+
+/** `started_at` when the daemon recorded one (Unix milliseconds), else null. */
+export function runStartedAt(run: ObservedRun): number | null {
+  const startedAt = run.started_at;
+  return typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt >= 0
+    ? startedAt
+    : null;
+}
 
 const TASK_PREFIX = 'Task: ';
 
@@ -140,7 +166,9 @@ export interface GroupMessagesOptions {
   runs: readonly ObservedRun[];
   /**
    * Show runs whose first message is not loaded at the end of the log. The live
-   * tail does; an older history page shows only the runs it anchors.
+   * tail does; an older history page shows only the runs it anchors. Even then,
+   * only a live run, or one that started no earlier than the oldest loaded
+   * message, is shown, oldest first.
    */
   includeUnanchoredRuns: boolean;
   now: Date;
@@ -237,7 +265,22 @@ export function groupMessages(
   });
 
   if (options.includeUnanchoredRuns) {
-    const unplaced = runs.filter((run) => !placed.has(run.run_id));
+    const oldest = messages.length > 0 ? messageTime(messages[0].created_at).getTime() : null;
+    const unplaced = runs
+      .filter((run) => {
+        if (placed.has(run.run_id)) return false;
+        if (LIVE_RUN_STATUSES.includes(run.status)) return true;
+        const startedAt = runStartedAt(run);
+        return startedAt !== null && (oldest === null || startedAt >= oldest);
+      })
+      .map((run, index) => ({ run, index, startedAt: runStartedAt(run) }))
+      // Oldest first, so the newest task sits lowest; an undated one after every dated one.
+      .sort(
+        (a, b) =>
+          (a.startedAt ?? Number.POSITIVE_INFINITY) - (b.startedAt ?? Number.POSITIVE_INFINITY) ||
+          a.index - b.index
+      )
+      .map(({ run }) => run);
     if (unplaced.length > 0) {
       let tail = days[days.length - 1];
       if (!tail) {
@@ -396,7 +439,8 @@ export function newLineDecided(messages: readonly CrewMessage[], input: NewLineI
 
 /**
  * How far the live tail's opening backlog has provably arrived, from the list
- * and the snapshot alone (the observer marks no end of it):
+ * and the snapshot alone — for a daemon that does not mark the end of it
+ * (`remaining`, the controller's `backlogComplete`, which the timeline prefers):
  *
  * - `complete`: the list itself proves it — nothing at all (the observer's
  *   first frame was empty), or a full page, which is the most a tail holds.
@@ -413,9 +457,10 @@ export type OpeningProgress = 'complete' | 'caught-up' | 'streaming' | 'unknown'
 
 export function openingProgress(
   messages: readonly CrewMessage[],
-  input: NewLineInput
+  input: NewLineInput,
+  pageSize: number = HISTORY_PAGE_SIZE
 ): OpeningProgress {
-  if (messages.length === 0 || messages.length >= HISTORY_PAGE_SIZE) return 'complete';
+  if (messages.length === 0 || messages.length >= pageSize) return 'complete';
   const { readPosition, unread, viewerId } = input;
   let from: number;
   if (readPosition === null) from = 0;
@@ -430,8 +475,11 @@ export function openingProgress(
 }
 
 /** The channel's start is loaded: the list is shorter than a full page. */
-export function reachesChannelStart(messages: readonly CrewMessage[]): boolean {
-  return messages.length < HISTORY_PAGE_SIZE;
+export function reachesChannelStart(
+  messages: readonly CrewMessage[],
+  pageSize: number = HISTORY_PAGE_SIZE
+): boolean {
+  return messages.length < pageSize;
 }
 
 /**

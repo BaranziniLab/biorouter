@@ -75,6 +75,14 @@ export function crewErrorCode(error: unknown): string | undefined {
   return error instanceof CrewHttpError ? error.code : undefined;
 }
 
+/**
+ * The broker's own refusal code (`name_taken`, `forbidden`…) for a refusal the daemon passed on
+ * from the broker, if it gave one. The daemon's own `code` is then `crew_request_refused`.
+ */
+export function crewBrokerCode(error: unknown): string | undefined {
+  return error instanceof CrewHttpError ? error.brokerCode : undefined;
+}
+
 /** The daemon's diagnostic detail for "Copy details", if it gave one. */
 export function crewErrorDetail(error: unknown): string | undefined {
   return error instanceof CrewHttpError ? error.detail : undefined;

@@ -63,6 +63,12 @@ export const sidebarCopy = {
     approved: 'Approved',
     otherDevice: (username: string) =>
       `A device with a different code tried to join as @${username}.`,
+    /** A join whose invitation ran out: it can no longer be let in, only invited again. */
+    expired: 'Invitation expired',
+    /** Between `expired` and `inviteAgain`, read as one line. */
+    separator: '·',
+    inviteAgain: 'Invite again…',
+    inviteAgainLabel: (username: string) => `Invite @${username} again`,
   },
 
   team: {

@@ -186,6 +186,28 @@ describe('Waiting to join', () => {
     expect(rows[0]).not.toHaveTextContent(sidebarCopy.waiting.otherDevice('bob'));
   });
 
+  it('shows an expired join as expired, to invite again, never to let in', () => {
+    const controller = makeController({
+      snapshot: makeSnapshot({
+        pending_joins: [
+          { username: 'gail', approved: true, expired: true, mismatched_attempts: 1 },
+        ],
+      }),
+    });
+    renderWithCrew(<AttentionSections />, controller);
+    const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    expect(row).toHaveTextContent(
+      `${sidebarCopy.waiting.expired} ${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.inviteAgain}`
+    );
+    expect(row).not.toHaveTextContent(sidebarCopy.waiting.approved);
+    expect(within(row).queryByRole('button', { name: 'Let @gail in' })).toBeNull();
+    // The different-code warning still says someone tried.
+    expect(row).toHaveTextContent(sidebarCopy.waiting.otherDevice('gail'));
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Invite @gail again' }));
+    expect(controller.openDialog).toHaveBeenCalledWith({ kind: 'invite-people' });
+  });
+
   it('shows an approved joiner as approved, with nothing to press', () => {
     renderWithCrew(<AttentionSections />, asHost());
     const rows = within(section(sidebarCopy.section.waiting)).getAllByRole('listitem');

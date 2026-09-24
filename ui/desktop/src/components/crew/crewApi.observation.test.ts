@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { client } from '../../api/client.gen';
-import { observeCrew } from './crewApi';
+import { observeCrew, type CrewObservation } from './crewApi';
 
 vi.mock('../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'observer-test-proof' }),
@@ -245,5 +245,105 @@ describe('observeCrew NDJSON framing', () => {
       { type: 'error', clear: true, code: 'policy_changed', error: 'stale policy' },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the display projections beside a messages frame', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    client.setConfig({ baseUrl: 'http://crew-observer.test', headers: {} });
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      writable: true,
+      value: { getSecretKey: vi.fn().mockResolvedValue('observer-secret') },
+    });
+  });
+
+  async function observedMessages(line: string) {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(responseFromChunks([encoder.encode(`${line}\n${reconnectFrame()}\n`)]))
+    );
+    const received: CrewObservation[] = [];
+    await expect(
+      observeCrew('connection-1', 'channel-1', null, new AbortController().signal, (frame) =>
+        received.push(frame)
+      )
+    ).resolves.toBe('reconnect');
+    const first = received[0];
+    if (first?.type !== 'messages') throw new Error('expected a messages frame');
+    return first;
+  }
+
+  const withFields = (fields: Record<string, unknown>) =>
+    JSON.stringify({ ...JSON.parse(messageFrame()), ...fields });
+
+  it('passes the backlog count, the page size and the names through', async () => {
+    const frame = await observedMessages(
+      withFields({
+        remaining: 0,
+        page_size: 100,
+        people: { 'person-dan': { username: 'dan', display_name: 'Dan Wu', active: false } },
+        channel_names: { 'channel-1': 'general' },
+      })
+    );
+    expect(frame.remaining).toBe(0);
+    expect(frame.page_size).toBe(100);
+    expect({ ...frame.people }).toEqual({
+      'person-dan': { username: 'dan', display_name: 'Dan Wu', active: false },
+    });
+    expect({ ...frame.channel_names }).toEqual({ 'channel-1': 'general' });
+  });
+
+  it('leaves out what an older daemon does not send', async () => {
+    const frame = await observedMessages(messageFrame());
+    for (const key of ['remaining', 'page_size', 'people', 'channel_names'])
+      expect(frame).not.toHaveProperty(key);
+  });
+
+  it('drops a malformed count, page size or name and keeps the frame', async () => {
+    for (const [remaining, pageSize] of [
+      [-1, 0],
+      [1.5, -3],
+      ['2', '200'],
+      [null, null],
+    ]) {
+      const frame = await observedMessages(
+        withFields({ remaining, page_size: pageSize, people: ['dan'], channel_names: 'general' })
+      );
+      expect(frame.messages).toHaveLength(1);
+      for (const key of ['remaining', 'page_size', 'people', 'channel_names'])
+        expect(frame).not.toHaveProperty(key);
+    }
+    const frame = await observedMessages(
+      withFields({
+        people: {
+          good: { username: 'erin', display_name: 7, active: 'no', uid: 1002 },
+          'no-username': { display_name: 'Nameless' },
+          blank: { username: '  ' },
+          scalar: 'mallory',
+        },
+        channel_names: { 'channel-1': 'general', 'channel-2': 7, 'channel-3': '' },
+      })
+    );
+    expect({ ...frame.people }).toEqual({ good: { username: 'erin' } });
+    expect({ ...frame.channel_names }).toEqual({ 'channel-1': 'general' });
+  });
+
+  it('never lets a "__proto__" or "constructor" name reach a prototype', async () => {
+    const line = messageFrame().replace(
+      /}$/,
+      ',"people":{"__proto__":{"username":"mallory"},"constructor":{"username":"eve"},' +
+        '"person-1":{"username":"alice"}},"channel_names":{"__proto__":"polluted"}}'
+    );
+    const frame = await observedMessages(line);
+    const people = frame.people!;
+    expect(Object.getPrototypeOf(people)).toBeNull();
+    expect(Object.keys(people)).toEqual(['person-1']);
+    expect(Object.keys(frame.channel_names!)).toEqual([]);
+    expect(({} as Record<string, unknown>).username).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });

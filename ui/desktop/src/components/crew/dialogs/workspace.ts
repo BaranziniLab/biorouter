@@ -57,13 +57,24 @@ export function workspacePhraseFor(
   return workspaceLabelFor(connections, connectionId, snapshot, dir);
 }
 
+/** The broker `hello` capability for the S2 naming rules. */
+export const UNIQUE_NAMES_CAPABILITY = 'unique_names_v1';
+
 /**
- * Whether the broker speaks the S2 naming rules (unique names, renames). The daemon does not yet
- * surface the `hello` capability `unique_names_v1` to the renderer, so this reads the one
- * projection only an S2 broker sends: a `handle` on every team and channel.
+ * Whether the broker speaks the S2 naming rules (unique names, renames). It says so in its `hello`
+ * (`unique_names_v1`), which the observer's `state` frame carries as `capabilities`; that answer
+ * wins whenever it is known. Without it (an older daemon, or before the first verified hello),
+ * this reads the one projection only an S2 broker sends: a `handle` on every team and channel —
+ * which a new workspace with no teams yet cannot show. Display only: the broker refuses a rename
+ * it does not support.
  */
-export function uniqueNamesSupported(snapshot: Snapshot | null | undefined): boolean {
+export function uniqueNamesSupported(
+  snapshot: Snapshot | null | undefined,
+  capabilities?: readonly string[] | null
+): boolean {
   if (!snapshot) return false;
+  if (Array.isArray(capabilities) && capabilities.length > 0)
+    return capabilities.includes(UNIQUE_NAMES_CAPABILITY);
   const objects = [...(snapshot.teams ?? []), ...(snapshot.channels ?? [])];
   return objects.some((object) => typeof object.handle === 'string' && object.handle.length > 0);
 }

@@ -3,6 +3,7 @@ import type { CrewMessage } from '../crewApi';
 import {
   GROUP_GAP_MS,
   HISTORY_PAGE_SIZE,
+  LIVE_RUN_STATUSES,
   canBePageBefore,
   groupMessages,
   isTraceMessage,
@@ -359,6 +360,51 @@ describe('task rows', () => {
     });
   });
 
+  it('shows a finished task with no loaded post only when it started after the oldest loaded message', () => {
+    const list = [message({ id: 'first', at: at(10, 0) }), message({ id: 'last', at: at(11, 0) })];
+    const ms = (date: Date) => date.getTime();
+    const runs = [
+      run({ run_id: 'late', status: 'failed', started_at: ms(at(10, 45)) }),
+      run({ run_id: 'before-the-page', status: 'completed', started_at: ms(at(9, 0)) }),
+      run({ run_id: 'undated', status: 'completed' }),
+      run({ run_id: 'early', status: 'failed', started_at: ms(at(10, 0)) }),
+    ];
+    const days = groupMessages(list, options({ runs }));
+    const tasks = items(days).filter((item) => item.kind === 'task');
+    // Oldest first, so the newest task sits lowest; the old and the undated ones do not pile up.
+    expect(tasks.map((task) => task.kind === 'task' && task.run.run_id)).toEqual(['early', 'late']);
+    expect(tasks.every((task) => task.kind === 'task' && !task.anchored)).toBe(true);
+  });
+
+  it('always shows a live task, whenever it started, after the dated ones', () => {
+    const list = [message({ id: 'only', at: at(12, 0) })];
+    const ms = (date: Date) => date.getTime();
+    for (const status of LIVE_RUN_STATUSES) {
+      const runs = [
+        run({ run_id: 'old-live', status }),
+        run({ run_id: 'recent', status: 'completed', started_at: ms(at(12, 30)) }),
+      ];
+      const tasks = items(groupMessages(list, options({ runs }))).filter(
+        (item) => item.kind === 'task'
+      );
+      expect(tasks.map((task) => task.kind === 'task' && task.run.run_id)).toEqual([
+        'recent',
+        'old-live',
+      ]);
+    }
+  });
+
+  it('shows dated finished tasks in a channel with nothing loaded, but not undated ones', () => {
+    const runs = [
+      run({ run_id: 'dated', status: 'failed', started_at: at(9, 0).getTime() }),
+      run({ run_id: 'undated', status: 'interrupted' }),
+    ];
+    const tasks = items(groupMessages([], options({ runs }))).filter(
+      (item) => item.kind === 'task'
+    );
+    expect(tasks.map((task) => task.kind === 'task' && task.run.run_id)).toEqual(['dated']);
+  });
+
   it('reads a title only from a "Task: …" post', () => {
     expect(taskTitle('Task: Plot counts\nsecond line')).toBe('Plot counts');
     expect(taskTitle('Using crew__request')).toBeNull();
@@ -473,6 +519,16 @@ describe('history pages', () => {
     expect(reachesChannelStart(page(0))).toBe(true);
     expect(reachesChannelStart(page(HISTORY_PAGE_SIZE - 1))).toBe(true);
     expect(reachesChannelStart(page(HISTORY_PAGE_SIZE))).toBe(false);
+  });
+
+  it('measures a full page by the size the observer asks for, when it asked for less', () => {
+    const page = (count: number) =>
+      Array.from({ length: count }, (_, index) => message({ id: `${index}` }));
+    expect(reachesChannelStart(page(50), 50)).toBe(false);
+    expect(reachesChannelStart(page(49), 50)).toBe(true);
+    const read = { readPosition: null, unread: 3, viewerId: ID.alice };
+    expect(openingProgress(page(50), read, 50)).toBe('complete');
+    expect(openingProgress(page(2), read, 50)).toBe('streaming');
   });
 
   it('knows the list on screen is not yet the page before its first message', () => {

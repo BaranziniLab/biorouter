@@ -106,11 +106,6 @@ export interface Invitation {
   inviter?: CrewPersonName;
   /** Only the inviter sees expired invitations; the broker omits them for the invitee. */
   expired?: boolean;
-  /**
-   * @deprecated The broker has never sent an invitation status. The field stays only so the legacy
-   * layout, moved unchanged into `crew/legacy/`, still compiles; it is always absent. Use `expired`.
-   */
-  status?: never;
 }
 /**
  * A person the host has invited to join the workspace (S3a, manager snapshot only). Only `username`
@@ -126,6 +121,8 @@ export interface PendingJoin {
   expires_at?: number;
   /** How many times a device with a different code tried to join as this person. */
   mismatched_attempts?: number;
+  /** The invitation ran out before the person joined; it can no longer be let in. */
+  expired?: boolean;
 }
 export interface CrewRun {
   id: string;
@@ -180,6 +177,11 @@ export interface CrewMessageAuthor {
   active?: boolean;
 }
 /**
+ * A validated `people` map, keyed by principal ID. It has no prototype, so no key can reach one.
+ * Display only: it names authors the snapshot no longer does, such as someone who left.
+ */
+export type CrewMessagePeople = Readonly<Record<string, CrewMessageAuthor>>;
+/**
  * The result of `messages.history`, `messages.search`, `message.post` and the other calls that
  * return messages. `people` names every author once per response instead of once per message, and
  * `channel_names` covers only channels the viewer can read.
@@ -208,11 +210,21 @@ export class CrewHttpError extends Error {
     public readonly status: number,
     public readonly code?: string,
     /** Diagnostic text for "Copy details" (for example OpenSSH's own words), never shown by default. */
-    public readonly detail?: string
+    public readonly detail?: string,
+    /**
+     * The broker's own refusal code (`name_taken`, `forbidden`, `response_too_large`…) when the
+     * daemon passed a broker refusal on; `code` is then `crew_request_refused`.
+     */
+    public readonly brokerCode?: string
   ) {
     super(message);
     this.name = 'CrewHttpError';
   }
+}
+
+/** A broker refusal code as the daemon forwards one: a short snake_case word. */
+function brokerCodeOf(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-z0-9_]{1,64}$/.test(value) ? value : undefined;
 }
 
 function crewHttpErrorFrom(result: unknown, status: number, fallback: string): CrewHttpError {
@@ -222,7 +234,8 @@ function crewHttpErrorFrom(result: unknown, status: number, fallback: string): C
     typeof body.error === 'string' ? body.error : fallback,
     status,
     typeof body.code === 'string' ? body.code : undefined,
-    typeof body.detail === 'string' ? body.detail : undefined
+    typeof body.detail === 'string' ? body.detail : undefined,
+    brokerCodeOf(body.broker_code)
   );
 }
 
@@ -288,16 +301,28 @@ export interface ObservedRun {
   session_id: string;
   status: string;
   error?: string;
+  /** When this device admitted the task, in Unix milliseconds. Absent for an older run. */
+  started_at?: number;
 }
 // The generated union owns the wire contract; these refinements describe validated payloads.
 type ObservationPayload<T> = T extends { type: 'state' }
-  ? Omit<T, 'snapshot' | 'runs' | 'labels'> & {
+  ? Omit<T, 'snapshot' | 'runs' | 'labels' | 'capabilities'> & {
       snapshot: Snapshot;
       runs: ObservedRun[];
       labels?: CrewPersonLabels;
+      /** What the connected broker says it supports (for example `unique_names_v1`). */
+      capabilities?: string[];
     }
   : T extends { type: 'messages' }
-    ? Omit<T, 'messages'> & { messages: CrewMessage[] }
+    ? Omit<T, 'messages' | 'remaining' | 'page_size' | 'people' | 'channel_names'> & {
+        messages: CrewMessage[];
+        /** How many messages of this page are still to come; `0` ends the opening backlog. */
+        remaining?: number;
+        /** The page size the observer asks the broker for now. */
+        page_size?: number;
+        people?: CrewMessagePeople;
+        channel_names?: Readonly<Record<string, string>>;
+      }
     : T;
 export type CrewObservation = ObservationPayload<ObserveEvent>;
 
@@ -328,6 +353,44 @@ function validatedLabels(value: unknown): CrewPersonLabels | undefined {
   );
 }
 
+/** Keys a map from the wire never gets, whatever prototype it has. */
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * A `people` map (a message result's, or an observation frame's), keeping only entries a renderer
+ * can name someone from. Built on a null prototype, so no key reaches `Object.prototype`.
+ */
+export function validatedPeople(value: unknown): CrewMessagePeople | undefined {
+  if (!isRecord(value)) return undefined;
+  const people: Record<string, CrewMessageAuthor> = Object.create(null);
+  for (const [principalId, entry] of Object.entries(value)) {
+    if (!principalId || RESERVED_KEYS.has(principalId)) continue;
+    if (!isRecord(entry) || !nonEmptyText(entry.username)) continue;
+    const author: CrewMessageAuthor = { username: entry.username };
+    if (typeof entry.display_name === 'string') author.display_name = entry.display_name;
+    if (typeof entry.active === 'boolean') author.active = entry.active;
+    people[principalId] = author;
+  }
+  return people;
+}
+
+/** A `channel_names` map: channel ID to its name, strings only, on a null prototype. */
+export function validatedChannelNames(
+  value: unknown
+): Readonly<Record<string, string>> | undefined {
+  if (!isRecord(value)) return undefined;
+  const names: Record<string, string> = Object.create(null);
+  for (const [channelId, name] of Object.entries(value)) {
+    if (channelId && !RESERVED_KEYS.has(channelId) && nonEmptyText(name)) names[channelId] = name;
+  }
+  return names;
+}
+
+/** A non-negative integer count from the wire, or undefined for anything else. */
+function count(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function recordsWith<T>(value: unknown, keys: string[]): T[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter(
@@ -340,8 +403,22 @@ function assignOptional(target: Record<string, unknown>, key: string, value: unk
   else target[key] = value;
 }
 
+/** A run as observed, without a `started_at` that is not a time. */
+function validatedRun(run: unknown): unknown {
+  if (!isRecord(run) || !('started_at' in run)) return run;
+  const { started_at: startedAt, ...rest } = run;
+  return count(startedAt) === undefined ? rest : run;
+}
+
+/** A pending join, without an `expired` that is not a flag. */
+function validatedPendingJoin(join: PendingJoin): PendingJoin {
+  if (!('expired' in join) || typeof join.expired === 'boolean') return join;
+  const { expired: _expired, ...rest } = join;
+  return rest;
+}
+
 function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObservation {
-  const { labels, ...state } = frame;
+  const { labels, capabilities, ...state } = frame;
   const snapshot = { ...(frame.snapshot as Record<string, unknown>) };
   if (isRecord(snapshot.actor)) {
     const actor = { ...snapshot.actor };
@@ -356,11 +433,32 @@ function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObse
   assignOptional(
     snapshot,
     'pending_joins',
-    recordsWith<PendingJoin>(snapshot.pending_joins, ['username'])
+    recordsWith<PendingJoin>(snapshot.pending_joins, ['username'])?.map(validatedPendingJoin)
   );
   state.snapshot = snapshot;
+  state.runs = (frame.runs as unknown[]).map(validatedRun);
   assignOptional(state, 'labels', validatedLabels(labels));
+  assignOptional(
+    state,
+    'capabilities',
+    Array.isArray(capabilities)
+      ? capabilities.filter((capability): capability is string => nonEmptyText(capability))
+      : undefined
+  );
   return state as unknown as CrewObservation;
+}
+
+// The backlog marker, the page size and the names beside a message are display projections too:
+// a malformed one is dropped and the frame is kept.
+function messagesWithValidatedProjections(frame: Record<string, unknown>): CrewObservation {
+  const { remaining, page_size: pageSize, people, channel_names: channelNames, ...rest } = frame;
+  const messages: Record<string, unknown> = rest;
+  assignOptional(messages, 'remaining', count(remaining));
+  const size = count(pageSize);
+  assignOptional(messages, 'page_size', size !== undefined && size > 0 ? size : undefined);
+  assignOptional(messages, 'people', validatedPeople(people));
+  assignOptional(messages, 'channel_names', validatedChannelNames(channelNames));
+  return messages as unknown as CrewObservation;
 }
 
 function observationFrame(line: string): CrewObservation {
@@ -405,7 +503,7 @@ function observationFrame(line: string): CrewObservation {
         message.channel_id === frame.channel_id
     )
   )
-    return frame;
+    return messagesWithValidatedProjections(frame);
   if (frame.type === 'reconnect' && cursorValid) return frame;
   if (
     frame.type === 'error' &&

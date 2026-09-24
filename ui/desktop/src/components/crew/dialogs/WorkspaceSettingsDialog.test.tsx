@@ -1,6 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { sidebarCopy } from '../sidebar/copy';
+import { CrewControllerProvider } from '../state/CrewControllerContext';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { confirmCopy, workspaceSettingsCopy as copy } from './copy';
 import {
@@ -68,6 +70,40 @@ describe('WorkspaceSettingsDialog', () => {
     });
   });
 
+  it('offers Rename in a new workspace with no teams when the broker says it speaks the rules', async () => {
+    const snapshot = makeSnapshot({ teams: [], channels: [] });
+    const onClose = vi.fn();
+    const { crew } = renderWithCrew(
+      (fake) => (
+        <CrewControllerProvider controller={{ ...fake, capabilities: ['unique_names_v1'] }}>
+          <WorkspaceSettingsDialog onClose={onClose} />
+        </CrewControllerProvider>
+      ),
+      { snapshot }
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename…' }));
+    expect(crew.current().ui.dialog).toEqual({
+      kind: 'rename',
+      target: 'workspace',
+      targetId: 'workspace-1',
+    });
+  });
+
+  it('does not offer Rename when the broker says it lacks the rules, whatever it projects', async () => {
+    const snapshot = makeSnapshot();
+    snapshot.teams[0].handle = 'analysis-lab';
+    renderWithCrew(
+      (fake) => (
+        <CrewControllerProvider controller={{ ...fake, capabilities: ['join_v1'] }}>
+          <WorkspaceSettingsDialog onClose={vi.fn()} />
+        </CrewControllerProvider>
+      ),
+      { snapshot }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(within(dialog).queryByRole('button', { name: 'Rename…' })).toBeNull();
+  });
+
   it('lists members by name with a row menu to copy and, for the host, remove', async () => {
     const user = userEvent.setup();
     const writeText = vi.fn(async () => {});
@@ -120,6 +156,23 @@ describe('WorkspaceSettingsDialog', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Let @eve in' }));
     expect(crew.current().ui.dialog).toEqual({ kind: 'let-in', username: 'eve' });
+  });
+
+  it('shows an expired join as expired, to invite again, never to let in', async () => {
+    const snapshot = makeSnapshot({
+      pending_joins: [{ username: 'eve', full_name: 'Eve Park', approved: true, expired: true }],
+    });
+    const { crew } = renderSettings({ tab: 'people' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(dialog).toHaveTextContent('@eve · Eve Park (name on the server account)');
+    expect(dialog).toHaveTextContent(
+      `${sidebarCopy.waiting.expired} ${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.inviteAgain}`
+    );
+    expect(within(dialog).queryByRole('button', { name: 'Let @eve in' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Cancel @eve’s invitation' })).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Invite @eve again' }));
+    expect(crew.current().ui.dialog).toEqual({ kind: 'invite-people' });
   });
 
   it('shows a member neither waiting joiners nor host controls', async () => {

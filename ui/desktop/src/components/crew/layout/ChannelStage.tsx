@@ -32,6 +32,7 @@ export function lastVerifiedTimeline(
     runs: view.runs,
     labels: view.labels,
     historyBefore: null,
+    people: view.people ?? null,
   };
 }
 
@@ -71,7 +72,10 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const verifying = !crew.snapshot;
   const lastView = verifying ? lastVerifiedTimeline(crew.lastVerified, crew.channelId) : null;
   const access = useChannelAgentAccess(crew);
-  const canRename = uniqueNamesSupported(crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
+  const canRename = uniqueNamesSupported(
+    crew.snapshot ?? crew.lastVerified?.snapshot ?? null,
+    crew.capabilities
+  );
   const note = useComposerNote();
   const { connectionId } = crew;
   const renderAttachments = useCallback(

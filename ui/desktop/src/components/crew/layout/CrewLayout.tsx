@@ -56,7 +56,7 @@ export function CrewLayout() {
         <div className="crew-sidebar">
           <CrewSidebar
             agentsSection={<AgentsSection onShowTask={highlight.show} />}
-            renameEnabled={uniqueNamesSupported(snapshot)}
+            renameEnabled={uniqueNamesSupported(snapshot, crew.capabilities)}
           />
         </div>
       )}

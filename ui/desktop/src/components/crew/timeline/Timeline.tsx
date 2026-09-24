@@ -11,7 +11,7 @@ import {
 } from 'react';
 import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
-import type { Channel, CrewMessage, ObservedRun, Snapshot } from '../crewApi';
+import type { Channel, CrewMessage, CrewMessagePeople, ObservedRun, Snapshot } from '../crewApi';
 import { channelSlug, usePeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewFrameLabels } from '../state/types';
@@ -57,6 +57,15 @@ export interface TimelineView {
   labels: CrewFrameLabels | null;
   /** The sequence an older page is shown before, or null for the live tail. */
   historyBefore: string | null;
+  /** The size of a full page of this view. Absent: `HISTORY_PAGE_SIZE`. */
+  pageSize?: number;
+  /**
+   * The observer's word on the live tail's backlog (`controller.backlogComplete`).
+   * Absent when it gives none: the stream is then timed (`useOpening`).
+   */
+  backlogComplete?: boolean;
+  /** Authors the message pages named, including people who have left. Display only. */
+  people?: CrewMessagePeople | null;
 }
 
 export interface TimelineProps {
@@ -84,6 +93,9 @@ export interface TimelineProps {
 }
 
 const NO_IDS: ReadonlySet<string> = new Set<string>();
+
+/** How close to the bottom edge the newest row counts as on screen for mark-read. */
+const BOTTOM_TOLERANCE_PX = 4;
 
 /**
  * `ScrollAreaHandle.scrollToBottom`, where the element can scroll that way. A
@@ -141,6 +153,9 @@ export function Timeline({ view, ...props }: TimelineProps) {
           runs: crew.runs,
           labels: crew.labels,
           historyBefore: crew.historyBefore,
+          pageSize: crew.pageSize,
+          backlogComplete: crew.backlogComplete,
+          people: crew.people,
         }
       : null);
   if (!current) return null;
@@ -164,7 +179,11 @@ function ChannelTimeline({
 }) {
   const crew = useCrew();
   const { snapshot, channel, messages, messagesLoaded, runs, labels, historyBefore } = view;
-  const dir = usePeopleDirectory(snapshot, labels);
+  const pageSize =
+    typeof view.pageSize === 'number' && view.pageSize > 0 ? view.pageSize : HISTORY_PAGE_SIZE;
+  // The observer's word on the backlog, for the live tail only: an older page lands whole.
+  const backlogComplete = historyBefore === null ? view.backlogComplete : undefined;
+  const dir = usePeopleDirectory(snapshot, labels, view.people ?? null);
   const viewerId = typeof snapshot.actor?.id === 'string' ? snapshot.actor.id : null;
   const slug = channelSlug(channel);
   const scroller = useRef<ScrollAreaHandle>(null);
@@ -212,22 +231,28 @@ function ChannelTimeline({
   // true from its first message. Nothing that describes the whole channel may be
   // decided from what has arrived so far: the New line waits until its place
   // cannot move, and the intro, the automatic mark-read, `aria-busy` and live
-  // arrivals wait until the opening has arrived (`useOpening`). An older page
-  // lands whole.
+  // arrivals wait until the opening has arrived (`useOpening`) — which the
+  // observer says itself (`remaining`, `backlogComplete`) when it is new enough
+  // to. An older page lands whole.
   const readState: NewLineInput = {
     readPosition: snapshot.read_positions?.[channel.id],
     unread: snapshot.unread?.[channel.id],
     viewerId,
   };
-  const progress = historyBefore === null ? openingProgress(messages, readState) : 'complete';
+  const progress =
+    historyBefore !== null || backlogComplete === true
+      ? 'complete'
+      : openingProgress(messages, readState, pageSize);
   const reloading = !messagesLoaded && messages.length === 0;
+  const newestId = messages[messages.length - 1]?.id ?? null;
   const opened = useOpening({
     loadKey,
     pageReady,
     reloading,
     progress,
     size: messages.length,
-    newestId: messages[messages.length - 1]?.id ?? null,
+    newestId,
+    backlogComplete,
   });
 
   // ── The New line: fixed once, as soon as the live tail decides its place ──
@@ -336,11 +361,27 @@ function ChannelTimeline({
     armed.current = false;
   }, [pageReady, loadKey]);
 
+  // ── Following the live tail ─────────────────────────────────────────────
+  // A full tail keeps its last page (useCrewObservation drops the oldest
+  // message as the newest arrives), so an arrival need not grow the content:
+  // the scroll area, which follows growth, then leaves the newest message below
+  // the fold. So a new newest message on the page already open is followed
+  // here, while the reader follows the bottom. Opening a page is the effect
+  // above's, and is not scrolled twice.
+  const followed = useRef<{ key: string; id: string | null } | null>(null);
+  useLayoutEffect(() => {
+    const previous = followed.current;
+    followed.current = pageReady ? { key: loadKey, id: newestId } : null;
+    if (!pageReady || historyBefore !== null || !followingRef.current) return;
+    if (!previous || previous.key !== loadKey || previous.id === newestId) return;
+    scrollToBottom(scroller.current, 'auto');
+  }, [newestId, pageReady, loadKey, historyBefore]);
+
   // ── Older history ───────────────────────────────────────────────────────
   const loadingPage = !pageReady;
   // Drawn from the list on screen, so the row stays put (as "Loading…") while
   // the previous page is still drawn.
-  const hasOlder = messagesLoaded && messages.length >= HISTORY_PAGE_SIZE;
+  const hasOlder = messagesLoaded && messages.length >= pageSize;
   const lastTop = useRef(0);
   const onViewportScroll = useCallback((viewport: HTMLDivElement) => {
     // Scrolling UP is what arms the automatic load, so a page that lands with
@@ -357,6 +398,17 @@ function ChannelTimeline({
   const sentinelRoot = useCallback(() => scroller.current?.viewportRef.current ?? null, []);
 
   // ── Automatic mark-read ─────────────────────────────────────────────────
+  // `following` is the scroll area's last verdict; the newest row must also be
+  // on screen, measured, when the dwell ends.
+  const newestOnScreen = useCallback(() => {
+    const handle = scroller.current;
+    const viewport = handle?.viewportRef.current;
+    if (!handle || !viewport) return false;
+    return (
+      handle.isAtBottom() &&
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_TOLERANCE_PX
+    );
+  }, []);
   const latest = messages[messages.length - 1];
   useAutoMarkRead({
     channelId: channel.id,
@@ -364,6 +416,7 @@ function ChannelTimeline({
     readPosition: snapshot.read_positions?.[channel.id],
     unread: snapshot.unread?.[channel.id],
     atBottom: following,
+    isAtBottom: newestOnScreen,
     // Not while the tail streams in: the newest message so far is not the channel's.
     enabled: !readOnly && historyBefore === null && opened && messages.length > 0,
     markRead: crew.markRead,
@@ -457,7 +510,7 @@ function ChannelTimeline({
   // can show: while it streams in, the list is short whatever the channel's
   // size. Its place is kept meanwhile (hidden, named nothing), so a short
   // channel's messages do not move down when it appears; a full page removes it.
-  const intro: 'shown' | 'pending' | null = !reachesChannelStart(messages)
+  const intro: 'shown' | 'pending' | null = !reachesChannelStart(messages, pageSize)
     ? null
     : opened
       ? 'shown'

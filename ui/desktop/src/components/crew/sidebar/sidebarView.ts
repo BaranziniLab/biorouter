@@ -179,6 +179,11 @@ export interface WaitingRow {
   username: string;
   serverName: string | null;
   approved: boolean;
+  /**
+   * The invitation ran out before the person joined (the broker's `expired`, not the local clock,
+   * which can be skewed against the broker's). Such a join cannot be let in; it is invited again.
+   */
+  expired: boolean;
   /** A device with a different code tried to join as this person. */
   otherDeviceTried: boolean;
 }
@@ -193,6 +198,7 @@ export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null):
       username: join.username,
       serverName: typeof join.full_name === 'string' ? join.full_name : null,
       approved: join.approved === true,
+      expired: join.expired === true,
       otherDeviceTried:
         typeof join.mismatched_attempts === 'number' && join.mismatched_attempts > 0,
     }));
