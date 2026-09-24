@@ -32,6 +32,7 @@ import { CrewConfirmation } from './confirmations';
 import { workspaceSettingsCopy as copy } from './copy';
 import { DialogErrorNote, useDismissOwnError } from './fields';
 import { MakePrivateDialog } from './MakePrivateDialog';
+import { peopleInOrder } from './people';
 import { uniqueNamesSupported, useDialogView, type DialogView } from './workspace';
 import './dialogs.css';
 
@@ -352,18 +353,6 @@ function PeopleTab({
         </Note>
       ) : null}
     </div>
-  );
-}
-
-/** The host, then you, then everyone else alphabetically by name (QA T-32). */
-function peopleInOrder(people: readonly CrewPerson[]): CrewPerson[] {
-  const rank = (person: CrewPerson) => (person.isHost ? 0 : person.isYou ? 1 : 2);
-  const name = (person: CrewPerson) => person.displayName || person.username;
-  return [...people].sort(
-    (a, b) =>
-      rank(a) - rank(b) ||
-      name(a).localeCompare(name(b), undefined, { sensitivity: 'base' }) ||
-      a.username.localeCompare(b.username)
   );
 }
 

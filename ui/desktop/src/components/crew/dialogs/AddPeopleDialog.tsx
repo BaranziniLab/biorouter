@@ -1,23 +1,29 @@
 import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
+import { Avatar } from '../../ui/avatar';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
-import { toastSuccess } from '../../../toasts';
-import { channelName, personLabel, teamName } from '../identity';
+import { AlertTriangle, Check } from '../../icons/app-icons';
+import { channelName, PersonName, teamName, type CrewPerson } from '../identity';
+import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
-import { addPeopleCopy as copy } from './copy';
-import { DialogErrorNote, Field, labelId } from './fields';
+import { addPeopleCopy as copy, dialogErrorCopy } from './copy';
+import { DialogErrorNote } from './fields';
 import {
   addPeopleCandidates,
   channelsSeenAfterTeamAdd,
   directAddChannels,
   directAddResultFrom,
   directAddSupported,
+  listOf,
+  targetMembers,
   usernameList,
+  workspaceInvitees,
   type ChannelChoice,
+  type DirectAddResult,
 } from './people';
-import { PersonPicker } from './PersonPicker';
+import { PersonChecklist } from './PersonPicker';
 import { directAddRefusalText, refusalText } from './refusals';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
@@ -33,8 +39,24 @@ export interface AddPeopleDialogProps {
   onClose(): void;
 }
 
+/** What one person's addition came to, in a run of several. */
+type Outcome =
+  | { person: CrewPerson; ok: true; result: DirectAddResult | null }
+  | { person: CrewPerson; ok: false; reason: string };
+
+/** The summary a run of additions leaves in the dialog. */
+interface Summary {
+  text: string;
+  failed: boolean;
+}
+
 /**
  * Add people to a team or a channel (ui-redesign-spec, "Dialog inventory"; L4).
+ *
+ * Several at once (QA Q2-05): a checklist of the people who may be added, with a search and
+ * "Select all", and one "Add {n} people" that sends one request per person — the broker's shape —
+ * and says in one line, in the dialog, who was added and who couldn't be and why. One refusal never
+ * stops the others. The dialog stays open until Done, so the next few can follow.
  *
  * Two brokers, two honest outcomes:
  * - One that adds members directly (`direct_add_v1` in its hello) gets `team.add_member` or
@@ -44,17 +66,23 @@ export interface AddPeopleDialogProps {
  * - An older one gets `invitation.create`, which the person must accept in Crew. Nothing here says
  *   they are in: the result, and every waiting invitation, reads "invited, not accepted yet".
  *
- * Either way the choice is sent with the person's `expected_username`, so a snapshot altered on the
- * way cannot redirect it to someone else, and the broker decides whether the viewer may add them.
- * An empty picker is never a dead end: it names who is still waiting and offers the next step —
- * inviting people to the workspace (the host), or adding them to the team first.
+ * Either way each person is sent with their `expected_username`, so a snapshot altered on the way
+ * cannot redirect it to someone else, and the broker decides whether the viewer may add them.
+ *
+ * Never a dead end (QA Q2-22): someone who may not add people here is told who may; with no one left
+ * to add, the dialog lists who is already in, names the workspace's invitees who have not joined,
+ * offers the next step, and shows one Done — no disabled Add.
  */
 export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogProps) {
   const { crew, snapshot, dir, workspace } = useDialogView();
   const formId = React.useId();
-  const personId = `${formId}-person`;
-  const [principalId, setPrincipalId] = React.useState<string | null>(null);
+  const labelId = `${formId}-label`;
+  const noteId = `${formId}-note`;
+  const [selected, setSelected] = React.useState<string[]>([]);
   const [checked, setChecked] = React.useState<Record<string, boolean>>({});
+  // The people this dialog added, kept out of the list until the next state frame shows them in.
+  const [added, setAdded] = React.useState<ReadonlySet<string>>(() => new Set());
+  const [summary, setSummary] = React.useState<Summary | null>(null);
   const directAdd = directAddSupported(crew.capabilities);
   const channel =
     target === 'channel' ? (snapshot?.channels.find((item) => item.id === targetId) ?? null) : null;
@@ -64,75 +92,143 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
       : channel
         ? (snapshot?.teams.find((item) => item.id === channel.team_id) ?? null)
         : null;
+  const pickerTarget =
+    target === 'team'
+      ? ({ kind: 'team', teamId: targetId } as const)
+      : ({ kind: 'channel', channelId: targetId } as const);
   const { candidates, others, pending, pendingTeam } = addPeopleCandidates(
     snapshot,
     dir,
-    target === 'team'
-      ? { kind: 'team', teamId: targetId }
-      : { kind: 'channel', channelId: targetId },
+    pickerTarget,
     { directAdd }
   );
+  const offered = candidates.filter((person) => !added.has(person.id as string));
+  const chosen = offered.filter((person) => selected.includes(person.id as string));
   const choices = directAdd && target === 'team' ? directAddChannels(snapshot, targetId, dir) : [];
   const key = !directAdd ? INVITE_KEY : target === 'team' ? TEAM_ADD_KEY : CHANNEL_ADD_KEY;
   const sending = crew.isPending(key);
+  const place = target === 'channel' ? channelName(channel) : teamName(team);
+  const invitees = workspaceInvitees(snapshot);
   useCloseWhenMissing(
     snapshot !== null && (target === 'team' ? team === null : channel === null),
     onClose
   );
 
+  // The broker's rule, said before anyone is picked: adding directly, the owner (a team's creator)
+  // or the host; inviting, the owner only. Unknown ownership is left to the broker.
+  const ownerId = target === 'team' ? team?.created_by : channel?.owner_id;
+  const owner = ownerId ? dir.byId(ownerId) : null;
+  const mayAdd = !ownerId || ownerId === dir.me?.id || (directAdd && dir.viewerIsHost);
+
   const isChecked = (choice: ChannelChoice) =>
     choice.always || (checked[choice.id] ?? choice.checked);
 
+  const summarize = (outcomes: readonly Outcome[]): Summary => {
+    const done = outcomes.filter(
+      (outcome): outcome is Extract<Outcome, { ok: true }> => outcome.ok
+    );
+    const already = done.filter(
+      (outcome) =>
+        outcome.result?.alreadyMember === true &&
+        (target === 'channel' || outcome.result.addedChannels.length === 0)
+    );
+    const landed = done.filter((outcome) => !already.includes(outcome));
+    const names = (list: readonly { person: CrewPerson }[]) =>
+      usernameList(list.map((outcome) => outcome.person));
+    const parts: string[] = [];
+    if (landed.length > 0) {
+      if (!directAdd) parts.push(copy.invitedMany(names(landed)));
+      else if (target === 'channel') parts.push(copy.addedToChannel(names(landed), place));
+      else {
+        const channels = [
+          ...new Set(landed.flatMap((outcome) => outcome.result?.addedChannels ?? [])),
+        ];
+        parts.push(
+          copy.addedToTeam(
+            names(landed),
+            place,
+            channelsSeenAfterTeamAdd(snapshot, targetId, channels)
+          )
+        );
+      }
+    }
+    if (already.length === 1) parts.push(copy.alreadyIn(names(already), place));
+    else if (already.length > 1) parts.push(copy.alreadyInMany(names(already), place));
+    // One sentence per reason, so ten people refused for the same reason read as one line.
+    const reasons = new Map<string, CrewPerson[]>();
+    for (const outcome of outcomes) {
+      if (outcome.ok) continue;
+      reasons.set(outcome.reason, [...(reasons.get(outcome.reason) ?? []), outcome.person]);
+    }
+    for (const [reason, people] of reasons)
+      parts.push(copy.couldNotAdd(usernameList(people), reason));
+    return { text: parts.join(' '), failed: reasons.size > 0 };
+  };
+
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const person = candidates.find((item) => item.id === principalId);
-    if (!person?.id) return;
-    const label = personLabel(person, 'inline', dir);
+    const people = chosen;
+    if (people.length === 0 || sending) return;
     const channelIds = choices
       .filter((choice) => !choice.always && isChecked(choice))
       .map((choice) => choice.id);
+    const words = directAdd ? directAddRefusalText : refusalText;
     void crew
       .act(SOURCE, key, async () => {
-        if (!directAdd) {
-          await crew.mutate('invitation.create', {
-            kind: target,
-            target_id: targetId,
-            principal_id: person.id,
-            expected_username: person.username,
-          });
-          return copy.sent(label);
+        const outcomes: Outcome[] = [];
+        // One at a time, in the order shown: each is its own request, and each its own answer.
+        for (const person of people) {
+          const params = !directAdd
+            ? {
+                kind: target,
+                target_id: targetId,
+                principal_id: person.id,
+                expected_username: person.username,
+              }
+            : target === 'team'
+              ? {
+                  team_id: targetId,
+                  principal_id: person.id,
+                  expected_username: person.username,
+                  ...(channelIds.length > 0 ? { channel_ids: channelIds } : {}),
+                }
+              : {
+                  channel_id: targetId,
+                  principal_id: person.id,
+                  expected_username: person.username,
+                };
+          const method = !directAdd
+            ? 'invitation.create'
+            : target === 'team'
+              ? 'team.add_member'
+              : 'channel.add_member';
+          try {
+            const answer = await crew.request(method, params, { mutation: true });
+            outcomes.push({
+              person,
+              ok: true,
+              result: directAdd ? directAddResultFrom(answer) : null,
+            });
+          } catch (failure) {
+            outcomes.push({
+              person,
+              ok: false,
+              reason: words(failureMessage(failure, dialogErrorCopy.fallback)),
+            });
+          }
         }
-        if (target === 'team') {
-          const result = directAddResultFrom(
-            await crew.mutate('team.add_member', {
-              team_id: targetId,
-              principal_id: person.id,
-              expected_username: person.username,
-              ...(channelIds.length > 0 ? { channel_ids: channelIds } : {}),
-            })
-          );
-          return result.alreadyMember && result.addedChannels.length === 0
-            ? copy.alreadyIn(label, teamName(team))
-            : copy.added(label, channelsSeenAfterTeamAdd(snapshot, targetId, result.addedChannels));
-        }
-        const result = directAddResultFrom(
-          await crew.mutate('channel.add_member', {
-            channel_id: targetId,
-            principal_id: person.id,
-            expected_username: person.username,
-          })
-        );
-        return result.alreadyMember
-          ? copy.alreadyIn(label, channelName(channel))
-          : copy.added(label, channelName(channel));
+        return outcomes;
       })
-      .then((said) => {
-        if (said === undefined) return;
-        toastSuccess({ msg: said });
-        onClose();
+      .then((outcomes) => {
+        if (!outcomes) return;
+        const landed = outcomes.filter((outcome) => outcome.ok).map((outcome) => outcome.person.id);
+        setAdded((current) => new Set([...current, ...(landed as string[])]));
+        setSelected((current) => current.filter((id) => !landed.includes(id)));
+        setSummary(summarize(outcomes));
       });
   };
 
+  /** Why there is no one to pick, and the way on from here. */
   function emptyState(): { text: string; action?: React.ReactNode } {
     const inviteToWorkspace = dir.viewerIsHost ? (
       <Button
@@ -184,7 +280,36 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
     };
   }
 
-  const empty = candidates.length === 0 ? emptyState() : null;
+  // A body that is only a message is the dialog's description (QA Q2-28).
+  const message: { text: string; action?: React.ReactNode } | null = !mayAdd
+    ? {
+        text: directAdd
+          ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
+          : copy.onlyOwner(owner ? `@${owner.username}` : null, place),
+      }
+    : offered.length === 0
+      ? emptyState()
+      : null;
+  const members = message ? targetMembers(snapshot, dir, pickerTarget, added) : [];
+  const inviteesLine =
+    invitees.length > 0
+      ? copy.invitedNotJoined(workspace, listOf(invitees.map((join) => `@${join.username}`)))
+      : null;
+
+  const footer = message ? (
+    <Button key="done" type="button" onClick={onClose}>
+      {copy.done}
+    </Button>
+  ) : (
+    <>
+      <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
+        {summary ? copy.done : copy.cancel}
+      </Button>
+      <Button type="submit" form={formId} disabled={sending || chosen.length === 0}>
+        {chosen.length > 1 ? copy.addMany(chosen.length) : copy.submit}
+      </Button>
+    </>
+  );
 
   return (
     <ModalShell
@@ -197,35 +322,54 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
           ? copy.titleChannel(channelName(channel))
           : copy.titleTeam(teamName(team))
       }
-      footer={
-        <>
-          <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
-            {copy.cancel}
-          </Button>
-          <Button type="submit" form={formId} disabled={sending || !principalId}>
-            {copy.submit}
-          </Button>
-        </>
-      }
+      describedBy={message ? noteId : undefined}
+      footer={footer}
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-3 pb-1">
-        {empty === null ? (
+        {/* Always mounted, so each run's summary is announced as it lands. */}
+        <div role="status" aria-live="polite">
+          {summary ? (
+            <Note
+              tone={summary.failed ? 'warning' : 'success'}
+              icon={summary.failed ? AlertTriangle : Check}
+            >
+              <span>{summary.text}</span>
+            </Note>
+          ) : null}
+        </div>
+        {message ? (
           <>
-            <Field id={personId} label={copy.person}>
-              <PersonPicker
-                id={personId}
-                labelledBy={labelId(personId)}
-                label={copy.person}
-                candidates={candidates}
-                value={principalId}
-                onChange={setPrincipalId}
+            <Note tone="neutral" action={message.action}>
+              <span id={noteId}>{message.text}</span>
+            </Note>
+            {inviteesLine ? (
+              <p className="text-supporting text-text-muted">{inviteesLine}</p>
+            ) : null}
+            <MemberList place={place} people={members} dir={dir} />
+          </>
+        ) : (
+          <>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <span id={labelId} className="text-label text-text-default">
+                {copy.people}
+              </span>
+              <PersonChecklist
+                candidates={offered}
+                selected={selected}
+                onChange={setSelected}
+                label={copy.people}
+                labelledBy={labelId}
                 dir={dir}
+                disabled={sending}
               />
-            </Field>
+            </div>
             {!directAdd && pending.length > 0 ? (
               <p className="text-supporting text-text-muted">
                 {copy.waiting(usernameList(pending))}
               </p>
+            ) : null}
+            {inviteesLine ? (
+              <p className="text-supporting text-text-muted">{inviteesLine}</p>
             ) : null}
             {choices.length > 0 ? (
               <ChannelChoices
@@ -236,14 +380,53 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
               />
             ) : null}
           </>
-        ) : (
-          <Note tone="neutral" role="status" action={empty.action}>
-            {empty.text}
-          </Note>
         )}
         <DialogErrorNote source={SOURCE} render={directAdd ? directAddRefusalText : refusalText} />
       </form>
     </ModalShell>
+  );
+}
+
+/** Who is in the team or channel already: host, then you, then by name. */
+function MemberList({
+  place,
+  people,
+  dir,
+}: {
+  place: string;
+  people: readonly CrewPerson[];
+  dir: ReturnType<typeof useDialogView>['dir'];
+}) {
+  const headingId = React.useId();
+  if (people.length === 0) return null;
+  return (
+    <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-1.5">
+      <h3 id={headingId} className="text-caps text-text-muted">
+        {copy.alreadyInPlace(place)}
+      </h3>
+      <ul role="list" className="crew-person-checklist flex min-w-0 flex-col">
+        {people.map((person) => (
+          <li
+            key={person.id ?? person.username}
+            className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
+          >
+            <Avatar
+              size={20}
+              fallback={person.avatar}
+              name={person.displayName}
+              username={person.username}
+            />
+            <PersonName
+              person={person}
+              context="header"
+              dir={dir}
+              you={person.isYou}
+              className="min-w-0 flex-1 truncate"
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

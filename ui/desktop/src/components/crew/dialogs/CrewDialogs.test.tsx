@@ -79,12 +79,12 @@ describe('CrewDialogs', () => {
     await waitFor(() => expect(field).toHaveFocus());
   });
 
-  it('opens a picker dialog on its picker', async () => {
+  it('opens Add people on its checklist’s search', async () => {
     renderWithCrew(<CrewDialogs />, {
       dialog: { kind: 'add-people', target: 'channel', targetId: 'channel-general' },
     });
-    const picker = await screen.findByRole('button', { name: /^Person/ });
-    await waitFor(() => expect(picker).toHaveFocus());
+    const search = await screen.findByRole('searchbox', { name: addPeopleCopy.search });
+    await waitFor(() => expect(search).toHaveFocus());
   });
 
   it('opens a destructive confirmation on Cancel', async () => {

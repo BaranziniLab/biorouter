@@ -11,6 +11,13 @@
   max-width: var(--radix-popover-content-available-width);
 }
 
+/* Add people's checklist scrolls inside the dialog once a lab outgrows it, so the search box, Select
+   all and the footer stay in view (QA Q2-05). */
+.crew-person-checklist {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
 /* Workspace settings: every tab of the dialog's own sits in one grid cell, so the dialog is as tall
    as the tallest of them whichever is selected, and switching tabs never moves the footer (QA
    T-30). The unselected panels stay laid out but unseen; `WorkspaceSettingsDialog` also takes them

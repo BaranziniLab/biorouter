@@ -1,4 +1,4 @@
-import type { Invitation, Snapshot } from '../crewApi';
+import type { Invitation, PendingJoin, Snapshot } from '../crewApi';
 import {
   channelName,
   cleanName,
@@ -265,4 +265,50 @@ export function personMatches(person: CrewPerson, query: string): boolean {
   const wanted = nameKey(query.trim().replace(/^@/, ''));
   if (!wanted) return true;
   return nameKey(person.displayName).includes(wanted) || nameKey(person.username).includes(wanted);
+}
+
+/** The host, then you, then everyone else alphabetically by name (QA T-32). */
+export function peopleInOrder(people: readonly CrewPerson[]): CrewPerson[] {
+  const rank = (person: CrewPerson) => (person.isHost ? 0 : person.isYou ? 1 : 2);
+  const name = (person: CrewPerson) => person.displayName || person.username;
+  return [...people].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      name(a).localeCompare(name(b), undefined, { sensitivity: 'base' }) ||
+      a.username.localeCompare(b.username)
+  );
+}
+
+/**
+ * The people already in a team or channel, host first, then you, then by name (QA Q2-22): what an
+ * Add people with no one left to add shows instead of an empty picker. `extra` are principal IDs
+ * the caller knows were just added, before the next state frame lists them.
+ */
+export function targetMembers(
+  snapshot: Snapshot | null | undefined,
+  dir: PeopleDirectory,
+  target: PickerTarget,
+  extra: Iterable<string> = []
+): CrewPerson[] {
+  const object =
+    target.kind === 'team'
+      ? snapshot?.teams.find((item) => item.id === target.teamId)
+      : snapshot?.channels.find((item) => item.id === target.channelId);
+  const ids = new Set([...(object?.members ?? []), ...extra]);
+  const people: CrewPerson[] = [];
+  for (const id of ids) {
+    const person = dir.byId(id);
+    if (person && !person.isFormer) people.push(person);
+  }
+  return peopleInOrder(people);
+}
+
+/**
+ * The people invited to the workspace who have not joined yet (the host's `pending_joins`): not
+ * expired, and not a device being added for someone who is already a member.
+ */
+export function workspaceInvitees(snapshot: Snapshot | null | undefined): PendingJoin[] {
+  return (snapshot?.pending_joins ?? []).filter(
+    (join) => join && typeof join.username === 'string' && join.expired !== true && !join.add_device
+  );
 }

@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { Avatar } from '../../ui/avatar';
+import { Checkbox } from '../../ui/Checkbox';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '../../ui/command';
+import { Input } from '../../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { ChevronDown } from '../../icons/app-icons';
 import { cn } from '../../../utils';
@@ -150,5 +152,124 @@ export function PersonPicker({
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+export interface PersonChecklistProps {
+  /** Who may be chosen. The caller has already removed members and pending invitees. */
+  candidates: readonly CrewPerson[];
+  /** The chosen principal IDs, in any order. Kept through a search that hides some of them. */
+  selected: readonly string[];
+  onChange(principalIds: string[]): void;
+  /** The group's name in words (its visible label is the caller's `labelledBy`). */
+  label: string;
+  /** The id of the visible label naming the list. */
+  labelledBy?: string;
+  dir?: PeopleDirectory | null;
+  disabled?: boolean;
+}
+
+/**
+ * Choosing several people at once for Add people (QA Q2-05: four people took sixteen interactions,
+ * one dialog each, and a lab of twenty would take eighty). A search box, "Select all ({n})" for the
+ * people it shows, and one real checkbox per person, each wrapped in its label so the whole row
+ * toggles it.
+ *
+ * Every row shows the person in the authority form — display name AND `@username`, in full —
+ * before they can be ticked, as `PersonPicker` does, so a nickname that imitates someone cannot pass
+ * for them. The choice is principal IDs; the caller sends each with its `expected_username`, and
+ * the broker decides whether the viewer may add them.
+ */
+export function PersonChecklist({
+  candidates,
+  selected,
+  onChange,
+  label,
+  labelledBy,
+  dir,
+  disabled,
+}: PersonChecklistProps) {
+  const [query, setQuery] = React.useState('');
+  const listId = React.useId();
+  const chosen = new Set(selected);
+  const visible = candidates.filter((person) => person.id && personMatches(person, query));
+  const visibleIds = visible.map((person) => person.id as string);
+  const allShown = visibleIds.length > 0 && visibleIds.every((id) => chosen.has(id));
+  const someShown = visibleIds.some((id) => chosen.has(id));
+
+  const toggle = (id: string, next: boolean) =>
+    onChange(
+      next
+        ? [...selected.filter((item) => item !== id), id]
+        : selected.filter((item) => item !== id)
+    );
+  const toggleShown = (next: boolean) =>
+    onChange(
+      next
+        ? [...selected, ...visibleIds.filter((id) => !chosen.has(id))]
+        : selected.filter((id) => !visibleIds.includes(id))
+    );
+
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <Input
+        type="search"
+        placeholder={addPeopleCopy.search}
+        aria-label={addPeopleCopy.search}
+        aria-controls={listId}
+        autoComplete="off"
+        spellCheck={false}
+        disabled={disabled}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      {visible.length > 1 ? (
+        <label className="flex min-w-0 items-center gap-2 px-1 text-label text-text-default">
+          <Checkbox
+            checked={allShown}
+            indeterminate={!allShown && someShown}
+            disabled={disabled}
+            onChange={(event) => toggleShown(event.target.checked)}
+          />
+          <span>{addPeopleCopy.selectAll(visible.length)}</span>
+        </label>
+      ) : null}
+      <ul
+        id={listId}
+        role="list"
+        aria-labelledby={labelledBy}
+        aria-label={labelledBy ? undefined : label}
+        className="crew-person-checklist flex min-w-0 flex-col"
+      >
+        {visible.map((person) => (
+          <li key={person.id}>
+            <label className="flex min-w-0 items-center gap-2 px-1 py-1 text-label">
+              <Checkbox
+                checked={chosen.has(person.id as string)}
+                disabled={disabled}
+                onChange={(event) => toggle(person.id as string, event.target.checked)}
+              />
+              <Avatar
+                size={20}
+                fallback={person.avatar}
+                name={person.displayName}
+                username={person.username}
+              />
+              <PersonName
+                person={person}
+                context="authority"
+                dir={dir}
+                className="min-w-0 flex-1 truncate"
+              />
+            </label>
+          </li>
+        ))}
+      </ul>
+      {visible.length === 0 ? (
+        <p role="status" className="px-1 text-supporting text-text-muted">
+          {addPeopleCopy.noMatch(query.trim())}
+        </p>
+      ) : null}
+    </div>
   );
 }

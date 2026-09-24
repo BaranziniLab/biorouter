@@ -23,16 +23,27 @@ vi.mock('../../../toasts', () => toasts);
 
 installResizeObserverStub();
 
-async function openPicker(name: RegExp = /^Person/) {
-  fireEvent.click(await screen.findByRole('button', { name }));
-  return screen.findByRole('listbox');
-}
-
 /** Each row's person, as rendered (the avatar is decorative and aria-hidden). */
 const optionNames = (listbox: HTMLElement) =>
   within(listbox)
     .queryAllByRole('option')
     .map((option) => option.querySelector('[data-person-context]')?.textContent);
+
+/** The checklist of people who can be added, and each row's person as rendered. */
+const checklist = () => screen.findByRole('list', { name: addPeopleCopy.people });
+const rowNames = (list: HTMLElement) =>
+  within(list)
+    .queryAllByRole('listitem')
+    .map((row) => row.querySelector('[data-person-context]')?.textContent);
+/** Tick a person by name, as a person would: their row's checkbox. */
+async function tick(name: RegExp) {
+  fireEvent.click(within(await checklist()).getByRole('checkbox', { name }));
+}
+async function add(name: string | RegExp = /^Add/) {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name }));
+  });
+}
 
 afterEach(() => vi.clearAllMocks());
 
@@ -77,7 +88,11 @@ function WithDirectAdd({ children }: { children: React.ReactNode }) {
 /** The dialog under a broker that says it adds members directly (`direct_add_v1`). */
 function renderDirect(
   props: Omit<AddPeopleDialogProps, 'onClose'>,
-  options: { snapshot?: Snapshot; answer?: unknown } = {}
+  options: {
+    snapshot?: Snapshot;
+    answer?: unknown;
+    request?: (method: string, params: Record<string, unknown>) => unknown;
+  } = {}
 ) {
   const onClose = vi.fn();
   const view = renderWithCrew(
@@ -86,38 +101,25 @@ function renderDirect(
     </WithDirectAdd>,
     {
       snapshot: options.snapshot,
-      request: (method) =>
-        method === 'team.add_member' || method === 'channel.add_member' ? options.answer : {},
+      request:
+        options.request ??
+        ((method) =>
+          method === 'team.add_member' || method === 'channel.add_member' ? options.answer : {}),
     }
   );
   return { ...view, onClose };
 }
 
-describe('AddPeopleDialog and PersonPicker', () => {
+const eve = { id: 'person-eve', uid: 1004, username: 'eve', nickname: 'Eve Park' };
+
+describe('AddPeopleDialog and its checklist', () => {
   it('offers a team only people who are not members and not already invited', async () => {
     const snapshot = makeSnapshot({
       // Bob and Carol are members; Dan has a live invitation; Eve has an expired one.
-      principals: [
-        ...makeSnapshot().principals,
-        { id: 'person-eve', uid: 1004, username: 'eve', nickname: 'Eve Park' },
-      ],
+      principals: [...makeSnapshot().principals, eve],
       invitations: [
-        {
-          id: 'inv-1',
-          kind: 'team',
-          target_id: 'team-1',
-          principal_id: dan.id,
-          inviter_id: alice.id,
-          expires_at: Date.now() / 1000 + 3600,
-        },
-        {
-          id: 'inv-2',
-          kind: 'team',
-          target_id: 'team-1',
-          principal_id: 'person-eve',
-          inviter_id: alice.id,
-          expires_at: Date.now() / 1000 - 10,
-        },
+        invitation('team', 'team-1', dan.id),
+        { ...invitation('team', 'team-1', eve.id), expires_at: Date.now() / 1000 - 10 },
       ],
     });
     renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
@@ -126,8 +128,7 @@ describe('AddPeopleDialog and PersonPicker', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Add people to Analysis Lab' })
     ).toBeInTheDocument();
-    const listbox = await openPicker();
-    expect(optionNames(listbox)).toEqual(['Eve Park (@eve)']);
+    expect(rowNames(await checklist())).toEqual(['Eve Park (@eve)']);
   });
 
   it('offers a channel only members of its team who are not in the channel', async () => {
@@ -137,9 +138,8 @@ describe('AddPeopleDialog and PersonPicker', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Add people to #general' })
     ).toBeInTheDocument();
-    const listbox = await openPicker();
     // Bob is in #general; Dan is not in the team at all.
-    expect(optionNames(listbox)).toEqual(['Carol Diaz (@carol)']);
+    expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
   });
 
   it('shows every row with its @username and searches display names and usernames', async () => {
@@ -149,36 +149,27 @@ describe('AddPeopleDialog and PersonPicker', () => {
     renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
       snapshot,
     });
-    const listbox = await openPicker();
-    expect(optionNames(listbox)).toEqual([
-      'Bob Lee (@bob)',
-      'Carol Diaz (@carol)',
-      'Dan Wu (@dan)',
-    ]);
-    const search = screen.getByRole('combobox', { name: addPeopleCopy.search });
+    const list = await checklist();
+    expect(rowNames(list)).toEqual(['Bob Lee (@bob)', 'Carol Diaz (@carol)', 'Dan Wu (@dan)']);
+    const search = screen.getByRole('searchbox', { name: addPeopleCopy.search });
     fireEvent.change(search, { target: { value: 'diaz' } });
-    expect(optionNames(listbox)).toEqual(['Carol Diaz (@carol)']);
+    expect(rowNames(list)).toEqual(['Carol Diaz (@carol)']);
     fireEvent.change(search, { target: { value: '@da' } });
-    expect(optionNames(listbox)).toEqual(['Dan Wu (@dan)']);
+    expect(rowNames(list)).toEqual(['Dan Wu (@dan)']);
     fireEvent.change(search, { target: { value: 'zed' } });
-    expect(within(listbox).getByText(addPeopleCopy.noMatch('zed'))).toBeInTheDocument();
+    expect(screen.getByText(addPeopleCopy.noMatch('zed'))).toBeInTheDocument();
   });
 
-  it('sends the chosen person with their expected username, then says they still have to accept', async () => {
+  it('invites the ticked person with their expected username, says they still have to accept, and stays open', async () => {
     const onClose = vi.fn();
     const { crew } = renderWithCrew(
       <AddPeopleDialog target="channel" targetId="channel-general" onClose={onClose} />
     );
-    const add = await screen.findByRole('button', { name: 'Add' });
-    expect(add).toBeDisabled();
-    const listbox = await openPicker();
-    fireEvent.click(within(listbox).getByRole('option', { name: /Carol Diaz/ }));
-    expect(screen.getByRole('button', { name: /^Person/ })).toHaveTextContent(
-      'Carol Diaz (@carol)'
-    );
-    await act(async () => {
-      fireEvent.click(add);
-    });
+    const submit = await screen.findByRole('button', { name: 'Add' });
+    expect(submit).toBeDisabled();
+    await tick(/Carol Diaz/);
+    expect(submit).toBeEnabled();
+    await add('Add');
     await waitFor(() =>
       expect(requestsFor(crew, 'invitation.create')).toEqual([
         {
@@ -189,11 +180,15 @@ describe('AddPeopleDialog and PersonPicker', () => {
         },
       ])
     );
-    await waitFor(() =>
-      expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: 'Invited. Carol Diaz (@carol) will see it in Crew and needs to accept.',
-      })
-    );
+    expect(
+      await screen.findByText('Invited @carol. They’ll see it in Crew and need to accept.')
+    ).toBeInTheDocument();
+    expect(toasts.toastSuccess).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // No one is left to add: one Done, no disabled Add.
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -210,7 +205,7 @@ describe('AddPeopleDialog and PersonPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: addPeopleCopy.inviteToWorkspace('lab') }));
   });
 
-  it('lists a channel’s waiting invitees beside the picker', async () => {
+  it('lists a channel’s waiting invitees beside the checklist', async () => {
     const snapshot = makeSnapshot({
       teams: [{ ...makeSnapshot().teams[0], members: [alice.id, bob.id, carol.id, dan.id] }],
       invitations: [invitation('channel', 'channel-general', dan.id)],
@@ -220,8 +215,7 @@ describe('AddPeopleDialog and PersonPicker', () => {
       { snapshot }
     );
     expect(await screen.findByText(addPeopleCopy.waiting('@dan'))).toBeInTheDocument();
-    const listbox = await openPicker();
-    expect(optionNames(listbox)).toEqual(['Carol Diaz (@carol)']);
+    expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
   });
 
   it('says a channel is empty because its team is, names the team’s waiting invitees, and offers the team', async () => {
@@ -250,18 +244,6 @@ describe('AddPeopleDialog and PersonPicker', () => {
     });
   });
 
-  it('says so when everyone is already here', async () => {
-    const snapshot = makeSnapshot({
-      channels: [{ ...makeSnapshot().channels[0], members: [alice.id, bob.id, carol.id] }],
-    });
-    renderWithCrew(
-      <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />,
-      { snapshot }
-    );
-    expect(await screen.findByText(addPeopleCopy.allInTeam('Analysis Lab'))).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Person/ })).toBeNull();
-  });
-
   it('says so when no one else has joined, and offers the host the way to invite them', async () => {
     const snapshot = makeSnapshot({ principals: [alice] });
     const { crew } = renderWithCrew(
@@ -272,13 +254,82 @@ describe('AddPeopleDialog and PersonPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Invite people to lab…' }));
     expect(crew.current().ui.dialog).toEqual({ kind: 'invite-people' });
   });
+});
 
-  it('offers a member who is not the host no invite button', async () => {
+describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
+  it('lists who is in already, host and you first, names the workspace’s invitees, and shows one Done', async () => {
+    const zed = { id: 'person-zed', uid: 1009, username: 'zed', nickname: 'Aaron Zed' };
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [alice, bob, carol, zed],
+      channels: [
+        {
+          ...makeSnapshot().channels[0],
+          owner_id: bob.id,
+          members: [carol.id, zed.id, bob.id, alice.id],
+        },
+      ],
+      teams: [{ ...makeSnapshot().teams[0], members: [alice.id, bob.id, carol.id, zed.id] }],
+      pending_joins: [
+        { username: 'crew_frank' },
+        { username: 'old', expired: true },
+        { username: 'carol', add_device: true },
+      ],
+    });
+    const onClose = vi.fn();
+    renderWithCrew(
+      <AddPeopleDialog target="channel" targetId="channel-general" onClose={onClose} />,
+      { snapshot }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Add people to #general' });
+    expect(within(dialog).getByText(addPeopleCopy.allInTeam('Analysis Lab'))).toBeInTheDocument();
+    // The message is the dialog's description (QA Q2-28).
+    expect(dialog).toHaveAccessibleDescription(addPeopleCopy.allInTeam('Analysis Lab'));
+    const members = within(dialog).getByRole('region', {
+      name: addPeopleCopy.alreadyInPlace('#general'),
+    });
+    expect(
+      within(members)
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('[data-person-context]')?.textContent)
+    ).toEqual([
+      expect.stringContaining('Alice Chen'),
+      expect.stringContaining('Bob Lee'),
+      expect.stringContaining('Aaron Zed'),
+      expect.stringContaining('Carol Diaz'),
+    ]);
+    expect(
+      within(dialog).getByText('Invited to lab, not joined yet: @crew_frank.')
+    ).toBeInTheDocument();
+    // One Done, and no Add to press, disabled or otherwise.
+    expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('tells someone who may not add people here who may, with one Done', async () => {
+    // Bob is neither Analysis Lab's owner nor the host.
+    const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
+    renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', { name: 'Add people to Analysis Lab' });
+    const text = 'Only @alice or the host can add people to Analysis Lab.';
+    expect(within(dialog).getByText(text)).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleDescription(text);
+    expect(within(dialog).queryByRole('list', { name: addPeopleCopy.people })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Invite people to/ })).toBeNull();
+  });
+
+  it('says only the owner invites under an older broker', async () => {
     const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob] });
     renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
       snapshot,
     });
-    expect(await screen.findByText(addPeopleCopy.allInWorkspace('lab'))).toBeInTheDocument();
+    expect(
+      await screen.findByText('Only @alice can add people to Analysis Lab.')
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Invite people to/ })).toBeNull();
   });
 });
@@ -302,9 +353,8 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
         },
       }
     );
-    const listbox = await openPicker();
-    expect(optionNames(listbox)).toEqual(['Dan Wu (@dan)']);
-    fireEvent.click(within(listbox).getByRole('option', { name: /Dan Wu/ }));
+    expect(rowNames(await checklist())).toEqual(['Dan Wu (@dan)']);
+    await tick(/Dan Wu/);
 
     const channels = screen.getByRole('group', { name: addPeopleCopy.channels });
     const general = within(channels).getByRole('checkbox', { name: /#general/ });
@@ -312,9 +362,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     expect(general).toBeDisabled();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    });
+    await add('Add');
     await waitFor(() =>
       expect(requestsFor(crew, 'team.add_member')).toEqual([
         {
@@ -326,12 +374,10 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       ])
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
-    await waitFor(() =>
-      expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: 'Added. Dan Wu (@dan) can now see #general and #methods.',
-      })
-    );
-    expect(onClose).toHaveBeenCalled();
+    expect(
+      await screen.findByText('Added @dan to Analysis Lab. They can now see #general and #methods.')
+    ).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('leaves out a channel the host unchecks', async () => {
@@ -340,21 +386,17 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       { target: 'team', targetId: 'team-1' },
       { snapshot, answer: { added_channels: [], already_member: false } }
     );
-    fireEvent.click(within(await openPicker()).getByRole('option', { name: /Dan Wu/ }));
+    await tick(/Dan Wu/);
     fireEvent.click(screen.getByRole('checkbox', { name: /#methods/ }));
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    });
+    await add('Add');
     await waitFor(() =>
       expect(requestsFor(crew, 'team.add_member')).toEqual([
         { team_id: 'team-1', principal_id: dan.id, expected_username: 'dan' },
       ])
     );
-    await waitFor(() =>
-      expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: 'Added. Dan Wu (@dan) can now see #general.',
-      })
-    );
+    expect(
+      await screen.findByText('Added @dan to Analysis Lab. They can now see #general.')
+    ).toBeInTheDocument();
   });
 
   it('adds a team member straight into a channel', async () => {
@@ -362,28 +404,20 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       { target: 'channel', targetId: 'channel-general' },
       { answer: { already_member: false } }
     );
-    fireEvent.click(within(await openPicker()).getByRole('option', { name: /Carol Diaz/ }));
+    await tick(/Carol Diaz/);
     expect(screen.queryByRole('group', { name: addPeopleCopy.channels })).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    });
+    await add('Add');
     await waitFor(() =>
       expect(requestsFor(crew, 'channel.add_member')).toEqual([
         { channel_id: 'channel-general', principal_id: carol.id, expected_username: 'carol' },
       ])
     );
-    await waitFor(() =>
-      expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: 'Added. Carol Diaz (@carol) can now see #general.',
-      })
-    );
+    expect(await screen.findByText('Added @carol to #general.')).toBeInTheDocument();
   });
 
-  it('shows a refusal in the dialog and adds no one', async () => {
-    renderWithCrew(
-      <WithDirectAdd>
-        <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />
-      </WithDirectAdd>,
+  it('shows a refusal in words, in the dialog, and adds no one', async () => {
+    renderDirect(
+      { target: 'channel', targetId: 'channel-general' },
       {
         request: (method) => {
           if (method === 'channel.add_member')
@@ -395,15 +429,96 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
         },
       }
     );
-    fireEvent.click(within(await openPicker()).getByRole('option', { name: /Carol Diaz/ }));
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    });
+    await tick(/Carol Diaz/);
+    await add('Add');
     // Its sentence, without the code: written for a person, shown to one.
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /^Only the channel's owner or the workspace host can add people to it\.$/
-    );
+    expect(
+      await screen.findByText(
+        "Couldn’t add @carol: Only the channel's owner or the workspace host can add people to it."
+      )
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('forbidden:');
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
+    // Carol can still be picked again.
+    expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
+  });
+});
+
+describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
+  /** Four people in the team and none in #methods but Alice. */
+  const four = () =>
+    makeSnapshot({
+      principals: [...makeSnapshot().principals, eve],
+      teams: [
+        { ...makeSnapshot().teams[0], members: [alice.id, bob.id, carol.id, dan.id, eve.id] },
+      ],
+      channels: [...makeSnapshot().channels, methods],
+    });
+
+  it('adds everyone Select all ticks, one request each, with one summary, and stays open', async () => {
+    const { crew, onClose } = renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      { snapshot: four(), answer: { already_member: false } }
+    );
+    const list = await checklist();
+    expect(rowNames(list)).toHaveLength(4);
+    fireEvent.click(screen.getByRole('checkbox', { name: addPeopleCopy.selectAll(4) }));
+    await add(addPeopleCopy.addMany(4));
+    await waitFor(() => expect(requestsFor(crew, 'channel.add_member')).toHaveLength(4));
+    expect(requestsFor(crew, 'channel.add_member')).toEqual(
+      [bob, carol, dan, eve].map((person) => ({
+        channel_id: 'channel-methods',
+        principal_id: person.id,
+        expected_username: person.username,
+      }))
+    );
+    const summary = await screen.findByText('Added @bob, @carol, @dan and @eve to #methods.');
+    expect(summary.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByText(/^Added /)).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Add people to #methods' })).toBeInTheDocument();
+    expect(toasts.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('keeps adding after one refusal, and says who could not be added and why', async () => {
+    const { crew } = renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      {
+        snapshot: four(),
+        request: (method, params) => {
+          if (method === 'channel.add_member' && params.principal_id === carol.id)
+            throw new Error('forbidden: principal unavailable');
+          return method === 'channel.add_member' ? { already_member: false } : {};
+        },
+      }
+    );
+    await checklist();
+    fireEvent.click(screen.getByRole('checkbox', { name: addPeopleCopy.selectAll(4) }));
+    await add(addPeopleCopy.addMany(4));
+    await waitFor(() => expect(requestsFor(crew, 'channel.add_member')).toHaveLength(4));
+    const summary = await screen.findByText(/^Added @bob, @dan and @eve to #methods\. /);
+    expect(summary).toHaveTextContent(/Couldn’t add @carol: /);
+    // The one refused stays on the list, ticked, to try again; the others have gone.
+    expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
+    expect(screen.getByRole('checkbox', { name: /Carol Diaz/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+  });
+
+  it('still adds one person, as ever, when only one is ticked', async () => {
+    const { crew } = renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      { snapshot: four(), answer: { already_member: false } }
+    );
+    await tick(/Dan Wu/);
+    expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled();
+    await add('Add');
+    await waitFor(() =>
+      expect(requestsFor(crew, 'channel.add_member')).toEqual([
+        { channel_id: 'channel-methods', principal_id: dan.id, expected_username: 'dan' },
+      ])
+    );
+    expect(await screen.findByText('Added @dan to #methods.')).toBeInTheDocument();
   });
 });
 

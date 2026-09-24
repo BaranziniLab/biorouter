@@ -322,6 +322,34 @@ export const addPeopleCopy = {
   /** A direct addition landed: `channels` is `#general and #methods`. */
   added: (person: string, channels: string) => `Added. ${person} can now see ${channels}.`,
   alreadyIn: (person: string, place: string) => `${person} is already in ${place}.`,
+  /** The checklist (QA Q2-05): everyone it shows, ticked at once. */
+  people: 'People',
+  selectAll: (count: number) => `Select all (${count})`,
+  /** The submit with more than one person ticked; `submit` with one. */
+  addMany: (count: number) => `Add ${count} people`,
+  done: 'Done',
+  /** One line for a whole run of additions, shown in the dialog, which stays open until Done. */
+  addedToChannel: (people: string, channel: string) => `Added ${people} to ${channel}.`,
+  addedToTeam: (people: string, team: string, channels: string) =>
+    `Added ${people} to ${team}. They can now see ${channels}.`,
+  invitedMany: (people: string) => `Invited ${people}. They’ll see it in Crew and need to accept.`,
+  alreadyInMany: (people: string, place: string) => `${people} are already in ${place}.`,
+  couldNotAdd: (people: string, reason: string) => `Couldn’t add ${people}: ${reason}`,
+  /** Instead of an empty picker (QA Q2-22): who is there already, host and you first. */
+  alreadyInPlace: (place: string) => `Already in ${place}`,
+  /** The host's invitees who have not joined the workspace yet (QA Q2-22). */
+  invitedNotJoined: (workspace: string, names: string) =>
+    `Invited to ${workspace}, not joined yet: ${names}.`,
+  /** Someone who may not add people here, told who may (the broker's rule, QA Q2-22). */
+  onlyOwnerOrHost: (owner: string | null, place: string) =>
+    owner
+      ? `Only ${owner} or the host can add people to ${place}.`
+      : `Only the owner of ${place} or the host can add people to it.`,
+  /** The same under an older broker, where only the owner invites. */
+  onlyOwner: (owner: string | null, place: string) =>
+    owner
+      ? `Only ${owner} can add people to ${place}.`
+      : `Only the owner of ${place} can add people to it.`,
 } as const;
 
 export const transferCopy = {
