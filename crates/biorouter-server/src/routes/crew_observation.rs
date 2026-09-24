@@ -122,9 +122,12 @@ impl Observer {
             })
         });
         person(&self.headers)?;
-        Ok(
-            json!({"type":"state","connection_id":self.connection,"connection_mode":self.binding["mode"],"connection_policy_epoch":self.binding["policy_epoch"],"connection_institution_id":self.binding["institution_id"],"snapshot":snapshot,"runs":runs}),
-        )
+        Ok(state_frame_json(
+            &self.connection,
+            &self.binding,
+            snapshot,
+            runs,
+        ))
     }
 
     async fn admit_frame(&mut self, frame: &Bytes, cancel: &CancellationToken) -> Result<Value> {
@@ -329,6 +332,18 @@ pub async fn observe(
         .header("Cache-Control", "no-store")
         .body(Body::from_stream(stream))
         .unwrap())
+}
+
+/// A `state` frame. Its `labels` are computed from the very snapshot it carries, so a label
+/// never names someone the frame does not.
+fn state_frame_json(
+    connection: &str,
+    binding: &Value,
+    snapshot: Value,
+    runs: Vec<super::crew::RunView>,
+) -> Value {
+    let labels = super::crew::names::project_labels(&snapshot);
+    json!({"type":"state","connection_id":connection,"connection_mode":binding["mode"],"connection_policy_epoch":binding["policy_epoch"],"connection_institution_id":binding["institution_id"],"snapshot":snapshot,"runs":runs,"labels":labels})
 }
 
 fn connection_binding(connection: &biorouter::crew::Connection) -> Result<Value> {
@@ -718,6 +733,7 @@ mod tests {
                 connection_institution_id: Some("ucsf".into()),
                 snapshot: json!({}),
                 runs: vec![],
+                labels: Default::default(),
             };
             let encoded = serde_json::to_vec(&event).unwrap();
             let decoded: ObserveEvent = serde_json::from_slice(&encoded).unwrap();
@@ -743,6 +759,76 @@ mod tests {
                 "state without a valid connection mode must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn state_frames_carry_labels_computed_from_their_own_snapshot() {
+        let person = |id: &str, username: &str, display_name: &str| {
+            json!({"id": id, "username": username, "nickname": display_name,
+                "display_name": display_name, "active": true})
+        };
+        let snapshot = json!({
+            "actor": person("p-alice", "alice", "Alice Chen"),
+            "principals": [
+                person("p-alice", "alice", "Alice Chen"),
+                person("p-spark", "spark", "Sam Park"),
+                person("p-sampark", "sampark", "Sam Park"),
+                person("p-carol", "carol", "carol"),
+            ],
+            "former_principals": [
+                {"id": "p-dave", "username": "dave", "display_name": "Dave Old", "active": false},
+            ],
+        });
+        let binding = json!({"mode": "private", "policy_epoch": 3, "institution_id": "ucsf"});
+        let frame = state_frame_json("connection-1", &binding, snapshot, vec![]);
+        assert_eq!(
+            frame["labels"]["p-spark"],
+            json!({"full": "Sam Park (@spark)", "short": "Sam Park (@spark)", "collides": true})
+        );
+        assert_eq!(
+            frame["labels"]["p-alice"],
+            json!({"full": "Alice Chen (@alice)", "short": "Alice Chen", "collides": false})
+        );
+        assert_eq!(frame["labels"]["p-carol"]["full"], "@carol");
+        assert_eq!(frame["labels"]["p-dave"]["full"], "Dave Old (@dave)");
+        assert_eq!(frame["labels"].as_object().unwrap().len(), 5);
+        // Every label names someone the frame's own snapshot names.
+        let named: Vec<&str> = ["principals", "former_principals"]
+            .iter()
+            .flat_map(|key| frame["snapshot"][key].as_array().unwrap())
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+        assert!(frame["labels"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|id| named.contains(&id.as_str())));
+
+        match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
+            ObserveEvent::State { labels, .. } => {
+                assert!(labels["p-sampark"].collides);
+                assert_eq!(labels["p-alice"].short, "Alice Chen");
+            }
+            _ => panic!("expected a state frame"),
+        }
+    }
+
+    #[test]
+    fn a_state_frame_without_people_still_parses_and_labels_nobody() {
+        let binding = json!({"mode": "public", "policy_epoch": 1, "institution_id": null});
+        let frame = state_frame_json("connection-1", &binding, json!({}), vec![]);
+        assert_eq!(frame["labels"], json!({}));
+        match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
+            ObserveEvent::State { labels, .. } => assert!(labels.is_empty()),
+            _ => panic!("expected a state frame"),
+        }
+        // A daemon that predates labels sends none; the frame still parses.
+        let legacy = json!({"type":"state","connection_id":"c","connection_mode":"private",
+            "connection_policy_epoch":1,"connection_institution_id":null,"snapshot":{},"runs":[]});
+        assert!(matches!(
+            serde_json::from_value::<ObserveEvent>(legacy).unwrap(),
+            ObserveEvent::State { labels, .. } if labels.is_empty()
+        ));
     }
 
     #[test]

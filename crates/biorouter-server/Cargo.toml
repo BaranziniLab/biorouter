@@ -12,6 +12,9 @@ workspace = true
 
 [dependencies]
 biorouter = { path = "../biorouter" }
+# The Crew naming rules (name keys, the confusable skeleton, UUID-shaped IDs) the broker also
+# applies, so the daemon's resolver and labels agree with it byte for byte.
+biorouter-crew = { path = "../biorouter-crew" }
 biorouter-mcp = { path = "../biorouter-mcp", features = ["utoipa"] }
 rmcp = { workspace = true }
 async-trait = "0.1.89"
