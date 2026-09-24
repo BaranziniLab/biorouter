@@ -5262,3 +5262,375 @@ code [class~='token'] {
 .br-preview-measure-strip {
   padding-inline: max(14px, calc((100% - var(--measure-chat)) / 2));
 }
+
+/* ── Shared primitives: CopyField, StatusDot, Disclosure, Avatar ──────────
+   Four `components/ui/` primitives the Crew redesign needed and the app did
+   not have. Every rule below is AUTHORED rather than written as utilities at
+   the call site, for the reason the blocks above give: a newly written class
+   can silently fail to generate under `BIOROUTER_NO_HMR` (`watch: { ignored:
+   ['**'] }` is the same signal Tailwind's scanner uses), and each of these
+   needs a pseudo-element, `@keyframes`, a reduced-motion rest or a descendant
+   rule that a utility cannot express anyway. Tokens only; no family forks —
+   each rule reads the family's own tokens, so Alma Mater and Roche Limit
+   re-skin all four with zero edits here. */
+
+/* CopyField (`components/ui/copy-field.tsx`) — the one box for everything a
+   person hands to someone else.
+
+   Ground: `--background-well` in BOTH forms, single-line and multi-line.
+   Never `--background-code`: in dark mode it equals the page, so the box
+   vanished inside a dialog, and `--background-muted` is the lightest step in
+   dark. The well reads as an inset in every family and mode.
+
+   Geometry: a 32px single-line box (1px border + 1px inset + the 28px `sm`
+   Copy button + 1px + 1px), the value inset 12px like an input's text, the
+   Copy button hugging the right edge. The value carries 4px block padding so
+   one 20px line centres against the 28px button, which is also what lets the
+   multi-line form keep its first line level with a top-right Copy. */
+.biorouter-copy-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 1px;
+  padding-inline: 12px 1px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-well);
+}
+
+.biorouter-copy-field[data-multiline='true'] {
+  align-items: flex-start;
+}
+
+.biorouter-copy-field-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-block: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+  font-weight: var(--text-code--font-weight);
+  color: var(--text-default);
+  /* One click selects the whole value, so a manual ⌘C takes all of it. */
+  user-select: all;
+  /* An untruncated single-line value WRAPS rather than overflowing: a long
+     token must never push the Copy button out of the box, and nothing may be
+     hidden that the caller did not ask to truncate. */
+  overflow-wrap: anywhere;
+}
+
+.biorouter-copy-field[data-multiline='true'] .biorouter-copy-field-value {
+  white-space: pre-wrap;
+}
+
+/* A device code someone reads aloud: 20/28 mono. */
+.biorouter-copy-field[data-size='code'] .biorouter-copy-field-value {
+  font-size: var(--text-heading);
+  line-height: var(--text-heading--line-height);
+}
+
+.biorouter-copy-field-value[data-truncate='end'] {
+  overflow: hidden;
+  overflow-wrap: normal;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Middle truncation keeps a path's file name. Two spans, head and tail; only
+   the head gives way. The full value is still both spans' text, so selecting
+   and copying take all of it — the ellipsis is paint, not content. `pre` keeps
+   a space at the seam from collapsing. */
+.biorouter-copy-field-value[data-truncate='middle'] {
+  display: flex;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.biorouter-copy-field-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.biorouter-copy-field-tail {
+  flex: none;
+}
+
+/* The mask is not the value: a drag-select must not take the bullets. */
+.biorouter-copy-field-value[data-masked='true'] {
+  user-select: none;
+}
+
+.biorouter-copy-field-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* StatusDot (`components/ui/status-dot.tsx`) — design.md §4.16: an 8px circle
+   whose fill is a status token, and for a LIVE dot a 2px halo that pulses on
+   a slow period.
+
+   The halo is a hollow ring (a 2px border on a pseudo-element set 2px outside
+   the dot), not a filled disc: a disc painted above the dot would tint the
+   dot itself. Its period is four turns of `--dur-slow` — 2.1s, the scale's
+   ambient-loop tier, the same period the composer's working edge uses —
+   rather than a literal 2s that exists nowhere on the scale. */
+.biorouter-status-dot {
+  --status-dot-fill: var(--background-strong);
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background-color: var(--status-dot-fill);
+  vertical-align: middle;
+}
+
+.biorouter-status-dot[data-tone='success'] {
+  --status-dot-fill: var(--background-success);
+}
+
+.biorouter-status-dot[data-tone='warning'] {
+  --status-dot-fill: var(--background-warning);
+}
+
+.biorouter-status-dot[data-tone='danger'] {
+  --status-dot-fill: var(--background-danger);
+}
+
+.biorouter-status-dot[data-tone='neutral'] {
+  --status-dot-fill: var(--text-subtle);
+}
+
+.biorouter-status-dot[data-tone='idle'] {
+  --status-dot-fill: var(--background-strong);
+}
+
+.biorouter-status-dot[data-live='true']::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--status-dot-fill);
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  animation: biorouter-status-halo calc(var(--dur-slow) * 4) var(--ease-out) infinite;
+}
+
+@keyframes biorouter-status-halo {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* StatusDot reduced-motion rest */
+/* The global reset clamps an infinite loop to one near-instant iteration,
+   which would leave the halo at whatever its first frame is — invisible here —
+   and erase the difference between a live dot and a still one. The rest is a
+   STILL halo: the distinction survives, the motion does not. */
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-status-dot[data-live='true']::after {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
+/* Disclosure (`components/ui/disclosure.tsx`) — the one Advanced control.
+
+   The trigger is a ghost `sm` Button, so its label sits 12px inside its own
+   box; the negative start margin lets the chevron share the left edge of the
+   fields above it, with the hover tint bleeding into the gutter the way a
+   list row's does. The chevron turns 90° over `--dur-fast-max` and returns
+   over `--dur-fast` (exits are shorter): the open-state rule carries the
+   longer duration because a transition runs with the duration of the state it
+   is going TO.
+
+   The body's height animation is authored because the `collapsible-down/up`
+   keyframes tw-animate-css ships are not emitted by this build. Radix exposes
+   the measured height as `--radix-collapsible-content-height` and waits for
+   the closing animation before it unmounts the content. `overflow-y: clip`
+   (not `hidden`) is what lets the horizontal axis stay visible, so a field's
+   own inset edge is never shaved during or after the tween. */
+.biorouter-disclosure-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.biorouter-disclosure-trigger {
+  margin-inline-start: -12px;
+}
+
+.biorouter-disclosure-summary {
+  min-width: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.biorouter-disclosure-chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[data-state='open'] > .biorouter-disclosure-chevron {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+.biorouter-disclosure-panel {
+  overflow-x: visible;
+  overflow-y: clip;
+}
+
+.biorouter-disclosure-panel[data-state='open'] {
+  animation: biorouter-disclosure-open var(--dur-med) var(--ease-out);
+}
+
+.biorouter-disclosure-panel[data-state='closed'] {
+  animation: biorouter-disclosure-close var(--dur-fast) var(--ease-out);
+}
+
+@keyframes biorouter-disclosure-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes biorouter-disclosure-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+.biorouter-disclosure-body {
+  padding-top: 12px;
+}
+
+/* Disclosure reduced-motion rest */
+/* Instant both ways. `animation: none` also tells Radix's presence there is no
+   exit animation to wait for, so the body unmounts on the same frame. */
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-disclosure-panel[data-state] {
+    animation: none;
+  }
+
+  .biorouter-disclosure-chevron {
+    transition: none;
+  }
+}
+
+/* Avatar (`components/ui/avatar.tsx`) — the one identity tile: 20, 24 or 32px,
+   a circle for people and a square for agents and objects, initials in muted
+   ink on the medium step. `--radius-full` is sanctioned here by name (see its
+   declaration: status dots, the switch knob and avatars). A square takes the
+   ladder: `--radius-inner` at 20 and 24, `--radius-element` at 32, because an
+   8px corner on a 20px tile is already most of a circle.
+
+   Initials never go below 11px ("nothing below 11px exists"): 20px takes the
+   caps size, 24 the chip size, 32 the dense-control size, all at 500.
+
+   `ring` separates avatars that overlap in a stack. It paints
+   `--biorouter-avatar-ring`, which the stack sets to its OWN ground (a member
+   stack in a 44px band on `--sidebar` sets `--sidebar`); an avatar cannot know
+   what it sits on, so the canvas is only the default. A box-shadow ring is
+   outside the border box, so the tile's own `overflow: hidden` never clips
+   it. */
+.biorouter-avatar {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  width: 32px;
+  height: 32px;
+  background-color: var(--background-medium);
+  color: var(--text-muted);
+  font-weight: var(--text-label--font-weight);
+  vertical-align: middle;
+  user-select: none;
+}
+
+.biorouter-avatar[data-size='20'] {
+  width: 20px;
+  height: 20px;
+  font-size: var(--text-caps);
+  line-height: var(--text-caps--line-height);
+}
+
+.biorouter-avatar[data-size='24'] {
+  width: 24px;
+  height: 24px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+}
+
+.biorouter-avatar[data-size='32'] {
+  width: 32px;
+  height: 32px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.biorouter-avatar[data-shape='circle'] {
+  border-radius: var(--radius-full);
+}
+
+.biorouter-avatar[data-shape='square'] {
+  border-radius: var(--radius-inner);
+}
+
+.biorouter-avatar[data-shape='square'][data-size='32'] {
+  border-radius: var(--radius-element);
+}
+
+.biorouter-avatar[data-ring='true'] {
+  box-shadow: 0 0 0 2px var(--biorouter-avatar-ring, var(--background-canvas));
+}
+
+.biorouter-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.biorouter-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* The avatar sizes its glyph, whatever the caller passed: 14px at 20 and 24,
+   the 16px row size at 32. Unlayered, so it outranks a `size-*` utility. */
+.biorouter-avatar-fallback svg {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+.biorouter-avatar[data-size='32'] .biorouter-avatar-fallback svg {
+  width: var(--icon-row);
+  height: var(--icon-row);
+}
