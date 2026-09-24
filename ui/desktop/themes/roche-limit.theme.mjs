@@ -66,10 +66,14 @@ export default {
       'text-muted': '#5c5a55',
       'text-subtle': '#69675f',
       'text-inverse': '#ffffff',
-      'text-danger': '#c4232b',
-      'text-success': '#0f7150',
-      'text-warning': '#6e6300',
-      'text-info': '#0a69bc',
+      // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
+      // 22% over the ground), not just on white: a Note paints the pair, and the
+      // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
+      // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
+      'text-danger': '#a8061c',
+      'text-success': '#026546',
+      'text-warning': '#625800',
+      'text-info': '#0258a2',
       ring: '#5c5a55',
       'background-focus': '#e0e0dc',
       'border-focus': '#6b6963',

@@ -389,6 +389,83 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     scope
   );
 
+  // The focus EDGE (live QA 2026-09-24, T-16). The fill above is deliberately
+  // soft — measured 1.10–1.44:1 against the resting control — so it is not an
+  // indicator on its own; every focused control also draws a 2px inset edge in
+  // `--border-focus` (main.css: the D-15 base rule, `.biorouter-focus-surface`),
+  // a focused tab underlines its label in it, and a focused sidebar resize
+  // handle paints its 8px target with it. SC 1.4.11 asks 3:1 against every
+  // colour the edge touches: the focus fill inside it, and every ground and
+  // row fill the control can sit on outside it — including the sidebar's
+  // active and hover rows, where the app nav's selected item lives.
+  //
+  // ⚠ `--border-accent` was the audit's suggestion and is deliberately NOT the
+  // token: Roche Limit light's is `#ee6c1a`, 2.33:1 on the focus fill and
+  // 2.88:1 on the sidebar. Asserting the neutral edge here is what keeps a
+  // future swap from shipping that.
+  for (const g of [
+    '--background-focus',
+    ...RING_GROUNDS,
+    '--background-card',
+    '--sidebar-hover',
+    '--sidebar-active',
+  ]) {
+    assert(`${theme}: focus edge (border-focus) on ${g}`, '--border-focus', g, 3.0, scope);
+  }
+  // A solid accent control cannot take the neutral edge (1.00:1 on Parchment's
+  // hover fill), so `.biorouter-focus-surface-accent` draws its edge in the
+  // label ink instead. It sits on the hover fill (the focused state) and
+  // replaces the resting fill's pixels, so it owes 3:1 against both.
+  assert(
+    `${theme}: accent focus edge (text-on-accent) on accent-hover`,
+    '--text-on-accent',
+    '--background-accent-hover',
+    3.0,
+    scope
+  );
+
+  // Status ink ON ITS OWN WASH (live QA 2026-09-24, T-18). A `Note`
+  // (`ui/note.tsx`), a status chip and the tinted destructive button paint
+  // `--text-X` on `--wash-X` — the hue at a fraction over whatever ground they
+  // sit on — and the wash darkens (light) or lifts (dark) the ground under the
+  // text. The assertion above measures the ink on `--background-app` alone,
+  // which is how warning and danger shipped at 4.31:1 and 4.49:1 in Parchment
+  // light with every row here green: axe caught it on the Crew banners.
+  //
+  // The mix is READ from the stylesheet, not assumed: the wash must stay
+  // "this same ink at N% over transparent", and N is what is composited. A
+  // wash rewritten into another shape fails here as UNRESOLVED rather than
+  // being measured as something it no longer is. Grounds are the body-text
+  // grounds, because a Note lands wherever body text does.
+  for (const s of ['danger', 'success', 'warning', 'info']) {
+    const raw = resolveRaw(`--wash-${s}`, scope);
+    const m = raw?.match(
+      /^color-mix\(in [a-z]+,\s*var\((--[\w-]+)\)\s+(\d+(?:\.\d+)?)%,\s*transparent\)$/
+    );
+    if (!m || m[1] !== `--text-${s}`) {
+      failures++;
+      rows.push([
+        'UNRESOLVED',
+        '',
+        `${theme}: text-${s} on its wash`,
+        `--wash-${s} is ${JSON.stringify(raw)}; expected color-mix(in …, var(--text-${s}) N%, transparent)`,
+      ]);
+      continue;
+    }
+    const alpha = parseFloat(m[2]) / 100;
+    for (const g of TEXT_GROUNDS) {
+      assertOverTint(
+        `${theme}: text-${s} on its wash over ${g}`,
+        `--text-${s}`,
+        `--text-${s}`,
+        alpha,
+        g,
+        4.5,
+        scope
+      );
+    }
+  }
+
   // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
   // asks it against every row the icon can sit on — the resting sidebar, the
   // hover fill, and the active fill. The darkest row is what binds. Alma Mater

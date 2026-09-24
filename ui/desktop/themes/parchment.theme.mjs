@@ -71,10 +71,14 @@ export default {
       'text-muted': '#635c54',
       'text-subtle': '#6e6760',
       'text-inverse': '#ffffff',
-      'text-danger': '#b3261e',
-      'text-success': '#1f7a3d',
-      'text-warning': '#8a5a00',
-      'text-info': '#1e5fbf',
+      // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
+      // 22% over the ground), not just on white: a Note paints the pair, and the
+      // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
+      // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
+      'text-danger': '#a51a14',
+      'text-success': '#05662d',
+      'text-warning': '#7a5000',
+      'text-info': '#1053b0',
       ring: '#5c5a55',
       'background-focus': '#e0e0dc',
       'border-focus': '#6b6963',
@@ -192,10 +196,11 @@ export default {
       'text-muted': '#b0a892',
       'text-subtle': '#9c937b',
       'text-inverse': '#16120c',
-      'text-danger': '#f07575',
+      // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
+      'text-danger': '#ff8f8c',
       'text-success': '#7ac87c',
       'text-warning': '#f0c84a',
-      'text-info': '#7aabf5',
+      'text-info': '#80b0fa',
       ring: '#a5a39d',
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',

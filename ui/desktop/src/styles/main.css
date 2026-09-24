@@ -706,12 +706,26 @@
   --text-subtle: #6e6760; /* min 5.06:1, on --background-muted */
   --text-inverse: var(--color-white);
 
-  /* Status TEXT/ICON colours — must themselves pass on the page ground.
-     Deliberately a different hue from the dark theme's stop. */
-  --text-danger: var(--color-red-600); /* 6.54:1 on white */
-  --text-success: var(--color-green-600); /* 5.37:1 */
-  --text-warning: var(--color-yellow-700); /* 5.93:1 */
-  --text-info: var(--color-blue-700); /* 6.10:1 */
+  /* Status TEXT/ICON colours — must themselves pass on the page ground AND on
+     their own wash. Deliberately a different hue from the dark theme's stop.
+
+     ⚠ **The binding pair is the ink on its WASH, not the ink on white.** A
+     `Note` (`ui/note.tsx`), a status chip and the tinted destructive button all
+     paint `--text-X` on `--wash-X` — the same hue at 22% over whatever ground
+     they sit on — and the wash darkens the ground under the text. These used to
+     be the palette stops (`red-600`, `yellow-700`, `blue-700`, `green-600`) and
+     quoted their ratio on white (6.54 / 5.93 / 6.10 / 5.37), which is why nobody
+     saw that the Crew banners measured 4.49:1 (danger) and 4.31:1 (warning) in
+     axe (live QA 2026-09-24, T-18). Each stop is now darkened in OKLCH lightness
+     at a fixed hue until the ink clears 4.5:1 on its wash over every body-text
+     ground; `check-contrast.mjs` asserts that pair for every tone, family and
+     mode. The figures below are that worst case (the wash over
+     `--background-muted`) — re-measure rather than carry them forward.
+     Mirrored in `themes/parchment.theme.mjs`; change the two together. */
+  --text-danger: #a51a14; /* 4.69:1 on its wash, 7.61:1 on white */
+  --text-success: #05662d; /* 4.60:1 on its wash */
+  --text-warning: #7a5000; /* 4.61:1 on its wash */
+  --text-info: #1053b0; /* 4.69:1 on its wash */
 
   /* Status WASHES — the translucent counterpart of the solid `--background-*`
      fills above (§2.5, §3.4). Status is a wash with tinted ink almost
@@ -754,7 +768,8 @@
      because browsers treat text inputs as always `:focus-visible`, it fired on a
      plain mouse click, not just on keyboard navigation.
      neutral-600 clears 3:1 against every ground it can appear on. It is only
-     drawn under `prefers-contrast: more` / `forced-colors` — see @layer base.
+     drawn under `prefers-contrast: more` / `forced-colors` — see the unlayered
+     "OS-requested focus ring" block at the very end of this file.
      Neutral by definition, so it is SHARED: the ring, the focus fill and the
      focused edge come from the one ramp, not from each family's ink. */
   --ring: var(--color-neutral-600);
@@ -891,10 +906,13 @@
   --text-muted: #b0a892; /* min 5.91:1, on --background-medium */
   --text-subtle: #9c937b; /* min 5.16:1, on --background-muted */
   --text-inverse: #16120c;
-  --text-danger: var(--color-red-100);
+  /* Status inks are held to 4.5:1 on their own wash (see the light block):
+     danger and info were lifted off `red-100` / `blue-100` (4.32 / 4.86 on the
+     wash over the card ground, 3.95 / 4.43 over `--background-muted`). */
+  --text-danger: #ff8f8c; /* 4.66:1 on its wash */
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
-  --text-info: var(--color-blue-100);
+  --text-info: #80b0fa; /* 4.62:1 on its wash */
 
   /* Focus (D-03, revised by D-15) — neutral, not coral, and shared. */
   --ring: #a5a39d;
@@ -1013,9 +1031,9 @@
   --text-muted: #506380;
   --text-subtle: #586780;
   --text-inverse: #ffffff;
-  --text-danger: #c40d3e;
-  --text-success: #007242;
-  --text-warning: #8a5a00;
+  --text-danger: #a8032f;
+  --text-success: #02653a;
+  --text-warning: #7a5000;
   --text-info: #0f388a;
   --ring: #5c5a55;
   --background-focus: #e0e0dc;
@@ -1076,8 +1094,8 @@
   --text-muted: #b4b9bf;
   --text-subtle: #909aa6;
   --text-inverse: #052049;
-  --text-danger: #f5768a;
-  --text-success: #5fbf74;
+  --text-danger: #fd90a0;
+  --text-success: #63c277;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
   --ring: #a5a39d;
@@ -1171,10 +1189,10 @@
   --text-muted: #5c5a55;
   --text-subtle: #69675f;
   --text-inverse: #ffffff;
-  --text-danger: #c4232b;
-  --text-success: #0f7150;
-  --text-warning: #6e6300;
-  --text-info: #0a69bc;
+  --text-danger: #a8061c;
+  --text-success: #026546;
+  --text-warning: #625800;
+  --text-info: #0258a2;
   --ring: #5c5a55;
   --background-focus: #e0e0dc;
   --border-focus: #6b6963;
@@ -1474,7 +1492,32 @@
      An outline drawn around the control reads as an alarm on a surface whose
      whole thesis is calm, and because browsers treat text fields as always
      `:focus-visible`, it fired on a plain mouse click too. Instead the focused
-     control deepens its own fill by one step and firms its text.
+     control deepens its own fill by one step, firms its text, and draws a 2px
+     INSET edge in `--border-focus`.
+
+     ⚠ **The fill alone was not an indicator (live QA 2026-09-24, T-16).** The
+     a11y audit measured the focused-vs-resting change at 1.23:1 on the sidebar,
+     1.32:1 on white, 1.10:1 on the already-filled selected row and ≈1.10:1 on
+     every menu item — all under the 3:1 a state indicator owes (WCAG 1.4.11),
+     and the app nav's active "Crew" item changed by nothing at all, because its
+     `data-[active=true]:bg-*` utility out-ranks this layered fill. A fill
+     cannot reach 3:1 against its ground and still leave `--text-default`
+     readable on top, so an edge is the only shape that can. The edge is INSET
+     (D-15: nothing is drawn outside the control, nothing is clipped by an
+     ancestor's overflow, nothing moves) and NEUTRAL: `--border-focus` is the
+     token D-03 names for the focused edge, and it clears 3:1 against the focus
+     fill and every ground in all six scopes (min 4.15:1 on the fill, 4.55:1 on
+     `--sidebar-active`; asserted in `check-contrast.mjs`). `--border-accent`
+     was the audit's suggestion and fails there — Roche Limit light's is
+     `#ee6c1a`, 2.33:1 on the fill and 2.88:1 on the sidebar — and the Crew spec
+     keeps accent to six named places, none of them focus.
+
+     It is a `box-shadow`, and it stays in this layer on purpose: a component
+     that already draws its own focus ring or elevation with a `ring-*` /
+     `shadow-*` utility keeps it (every layered utility out-ranks this rule),
+     and loses nothing it had before. Text fields do not take it — their own
+     border firms instead (the rule below resets it), so a mouse click into a
+     field still draws nothing new.
 
      `:where()` keeps specificity at 0 so any component can still opt out.
 
@@ -1537,6 +1580,8 @@
         summary,
         [role='button'],
         [role='menuitem'],
+        [role='menuitemcheckbox'],
+        [role='menuitemradio'],
         [role='option'],
         input[type='checkbox'],
         input[type='radio'],
@@ -1546,6 +1591,7 @@
     outline: none;
     background-color: var(--background-focus);
     color: var(--text-default);
+    box-shadow: inset 0 0 0 2px var(--border-focus);
   }
 
   /* ⚠ **Dropping the panel from the block above drops its `outline: none` with
@@ -1576,16 +1622,18 @@
      layer; it must stay unlayered, and this rule must stay a bare
      `outline: none`, or the two halves start fighting.
 
-     The `prefers-contrast: more` / `forced-colors` block below is deliberately
-     NOT narrowed by any of this: it still reaches the panel and the region
-     through the same `[tabindex]` arm, so a user who asked their OS for a
-     stronger signal keeps the ring here as everywhere else. */
+     The `prefers-contrast: more` / `forced-colors` block at the end of this
+     file is deliberately NOT narrowed by any of this: it still reaches the
+     panel and the region through its `[tabindex]` arm, so a user who asked
+     their OS for a stronger signal keeps the ring here as everywhere else. */
   :where([role='tabpanel'], .biorouter-focus-region):focus-visible {
     outline: none;
   }
 
   /* Text fields already own a border, so they shift their fill AND firm that
-     existing edge. No new strip is introduced. */
+     existing edge. No new strip is introduced — `box-shadow: none` takes back
+     the control rule's inset edge from a field that also carries a `tabindex`,
+     because a text field is `:focus-visible` on a plain mouse click. */
   :where(
     input:not([type='checkbox']):not([type='radio']):not([type='range']),
     textarea,
@@ -1599,6 +1647,7 @@
     outline: none;
     background-color: var(--background-focus);
     border-color: var(--border-focus);
+    box-shadow: none;
   }
 
   /* A container that holds a focused field (the composer, a search shell) takes
@@ -1607,24 +1656,13 @@
     border-color: var(--border-focus);
   }
 
-  /* The colour shift is deliberately soft, which is the point — but it cannot
-     meet the 3:1 non-text contrast floor for a state indicator. Users who have
-     asked their OS for a stronger signal get the ring back. */
-  @media (prefers-contrast: more), (forced-colors: active) {
-    :where(
-      a,
-      button,
-      input,
-      textarea,
-      select,
-      summary,
-      [tabindex]:not([tabindex='-1'])
-    ):focus-visible {
-      outline: 2px solid var(--ring);
-      outline-offset: 2px;
-      border-radius: inherit;
-    }
-  }
+  /* Users who have asked their OS for a stronger signal get a ring. That rule
+     is NOT here: it is the unlayered "OS-requested focus ring" block at the very
+     end of this file, and it must stay there. Inside this layer it lost to
+     every unlayered `outline: none` in the app — `.biorouter-focus-surface`,
+     the tab label rule below, the Crew sidebar rows — so Increase Contrast and
+     Windows High Contrast users had no focus indicator at all on most Crew
+     controls (live QA 2026-09-24, P0-5). `focusFallback.test.ts`. */
 }
 
 /* D-15, amended 2026-09-08 — a TAB TRIGGER's focus indicator is its underline
@@ -1666,10 +1704,34 @@
  * `height: 3px` landing on it over-constrains the box and collapses the
  * hairline to a stub the moment a tab is both mid-drag and focused. Dropping
  * the FILL still applies to it (harmlessly — `.br-tab` writes its own
- * unlayered `background: transparent`, so the base fill never reached it). */
+ * unlayered `background: transparent`, so the base fill never reached it).
+ *
+ * ⚠ **The bar alone was not an indicator (live QA 2026-09-24, T-16).** The
+ * a11y audit captured the focused and unfocused selected tab (Crew's details
+ * pane, Workspace settings) at device scale and got PIXEL-IDENTICAL images:
+ * activation follows focus, so the focused tab is always the selected one,
+ * the bar is already painted, and one extra pixel of it plus a label colour
+ * the selected tab already had is not a change anyone can see. So the label
+ * also takes a 2px UNDERLINE in `--border-focus`, 4px below the text:
+ *   - it is not a ring and not a fill, so D-15 and the "weird shade" report
+ *     both stand, and it never touches `::after`, which is the selection bar
+ *     here and the drag hairline on a document tab;
+ *   - it sits on the label, not the box, because a Radix trigger has no
+ *     horizontal padding — an inset edge would be drawn through the glyphs;
+ *   - `--border-focus`, not `--accent-bar`: the bar is the SELECTION and
+ *     keeps the accent, focus is a separate state in the neutral focus token,
+ *     and `--accent-bar` falls to 2.86:1 on `--background-muted` in Alma Mater
+ *     light where `--border-focus` holds 4.98:1 or better on every ground.
+ * It also reaches the document tabs' inner `role="tab"` buttons (the chat,
+ * artifact and dock strips put the role on a button INSIDE `.br-tab`), which
+ * had no focus change at all. */
 :where([role='tab']:not(.br-tab)):focus-visible {
   outline: none;
   color: var(--text-default);
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--border-focus);
+  text-underline-offset: 4px;
 }
 
 :where([role='tab']:not(.br-tab)):focus-visible::after {
@@ -3465,15 +3527,27 @@
 }
 
 .biorouter-sidebar-resize-handle:hover::after,
-.biorouter-sidebar-resize-handle:focus-visible::after,
 .biorouter-sidebar-resize-handle[data-resizing]::after {
   background: var(--border-strong);
 }
 
-/* The hairline above IS the focus indication — a ring on an 8px sliver flush
-   against the window edge would be clipped rather than seen. */
+/* No ring by default — an outset one on an 8px sliver flush against the window
+   edge would be clipped rather than seen (the OS-requested ring at the end of
+   this file insets it). The hover hairline is NOT the focus indicator either:
+   it is 2px of `--border-strong`, 1.41:1 on `--sidebar` in light and 1.65:1 in
+   dark, and the audit found the focused separator indistinguishable from the
+   resting one (live QA 2026-09-24, T-16/T-58). Focus paints the whole 8px
+   target in `--border-focus`, which clears 3:1 on the sidebar in every family
+   and mode (5.12:1 light, 6.37:1 dark); the hairline takes the same colour so
+   the strip reads as one bar.
+   Keyboard only: `:focus-visible` is withheld from a mouse drag. */
 .biorouter-sidebar-resize-handle:focus-visible {
   outline: none;
+  background-color: var(--border-focus);
+}
+
+.biorouter-sidebar-resize-handle:focus-visible::after {
+  background: var(--border-focus);
 }
 
 /* A collapsed sidebar has no edge to drag: offcanvas has translated it out of
@@ -5157,18 +5231,42 @@ code [class~='token'] {
  * solid fill is that it brightens its own token, which is what
  * `--background-accent-hover` is.
  *
- * No ring, in either case. Focus is a surface shift; the ring comes back only
- * under `prefers-contrast: more` / `forced-colors`, which the base block
- * already handles.
+ * No ring, in either case. Focus is a surface shift plus an INSET edge; the
+ * ring comes back only under `prefers-contrast: more` / `forced-colors`, in the
+ * unlayered block at the very end of this file.
+ *
+ * ⚠ **The edge is what makes it an indicator (live QA 2026-09-24, T-16).** The
+ * fill alone measured 1.23–1.44:1 against the resting control — the Crew
+ * channel header, pane and dialog buttons all ride this class — and a fill
+ * cannot reach 3:1 without making the label on it unreadable. The edge is the
+ * base block's: 2px, inset, `--border-focus`, which clears 3:1 against the
+ * focus fill and every ground in all six scopes (`check-contrast.mjs`).
+ *   - A text field does not take it (`:not(input, textarea, select)`): it firms
+ *     its own border below, and it is `:focus-visible` on a mouse click.
+ *   - The solid accent fill takes `--text-on-accent` instead, because the
+ *     neutral edge measures 1.00:1 on Parchment's `--background-accent-hover`.
+ *     The label ink is 4.62:1 or better on that hover fill in every family, so
+ *     the inner edge reads as a white (or ink) frame inside the accent.
+ *   - `var(--tw-shadow, …)` keeps a control's own drop shadow under the edge:
+ *     this rule is unlayered, so a bare `box-shadow` would erase it.
  */
 .biorouter-focus-surface:focus-visible {
   outline: none;
   background-color: var(--background-focus);
 }
 
+.biorouter-focus-surface:not(input, textarea, select):focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--border-focus),
+    var(--tw-shadow, 0 0 #0000);
+}
+
 .biorouter-focus-surface-accent:focus-visible {
   outline: none;
   background-color: var(--background-accent-hover);
+  box-shadow:
+    inset 0 0 0 2px var(--text-on-accent),
+    var(--tw-shadow, 0 0 #0000);
 }
 
 /* A text field owns a border, so it firms that edge as well rather than
@@ -5635,4 +5733,97 @@ code [class~='token'] {
 .biorouter-avatar[data-size='32'] .biorouter-avatar-fallback svg {
   width: var(--icon-row);
   height: var(--icon-row);
+}
+
+/*
+ * THE OS-REQUESTED FOCUS RING — D-15's escape hatch. KEEP THIS BLOCK LAST, AND
+ * KEEP IT UNLAYERED.
+ *
+ * Focus is a quiet surface shift plus an inset edge (the base block, the tab
+ * label rule and `.biorouter-focus-surface` above). A user who has asked the OS
+ * for a stronger signal — macOS Increase Contrast (`prefers-contrast: more`),
+ * Windows High Contrast (`forced-colors: active`) — gets a real 2px ring on
+ * every focusable thing, whatever any component says.
+ *
+ * ⚠ **This used to live inside `@layer base`, and there it could never win
+ * (live QA 2026-09-24, P0-5).** Every unlayered declaration beats every layered
+ * one whatever the specificity, and the quiet-focus rules that write
+ * `outline: none` are unlayered on purpose — `.biorouter-focus-surface`, the
+ * tab label rule, the Crew sidebar rows and timeline (`crew/**.css`). Measured
+ * with a Tab walk: under `prefers-contrast: more` 12 of 14 Crew stops showed no
+ * ring; under `forced-colors: active` no Crew button, tab or menu item did, and
+ * forced colours also strip the fill and the box-shadow edge, so focus was
+ * simply invisible. Menu items (`div[role=menuitem][tabindex=-1]`) were never
+ * matched at all by the old `[tabindex]:not([tabindex='-1'])` arm.
+ *
+ * Why each part is shaped the way it is:
+ *   - UNLAYERED + `!important`. Crew's stylesheets are imported after this file
+ *     and their `:focus-visible { outline: none }` rules tie on specificity, so
+ *     source order alone would lose. An important declaration beats every
+ *     normal one in the author origin. (A layered `!important` — Tailwind's
+ *     `outline-none!` — would still beat this; `focusFallback.test.ts` asserts
+ *     none exists in `src/`.)
+ *   - BARE `[tabindex]`, not `[tabindex]:not([tabindex='-1'])`: a roving-
+ *     tabindex row, a menu item or a heading focused programmatically is
+ *     exactly where a keyboard user is, and it carries `tabindex="-1"`.
+ *   - `[data-highlighted]` on menu rows and options, as the audit asked: it is
+ *     the row Radix treats as current, and ringing a hovered row costs nothing
+ *     to a user who asked the OS for more signal.
+ *   - INSET (`-2px`) for rows, regions and separators: they sit inside a
+ *     scroller or flush against a window edge, where an outset ring is clipped.
+ *   - `Highlight` in forced colours: a non-system colour there is replaced, so
+ *     the ring names the user's own focus colour explicitly.
+ *   - No `border-radius` here: the old block wrote `border-radius: inherit`,
+ *     which re-shaped the focused control to its PARENT's radius.
+ */
+@media (prefers-contrast: more), (forced-colors: active) {
+  :is(
+      a,
+      button,
+      input,
+      textarea,
+      select,
+      summary,
+      [contenteditable],
+      [role='button'],
+      [role='menuitem'],
+      [role='menuitemcheckbox'],
+      [role='menuitemradio'],
+      [role='option'],
+      [role='tab'],
+      [role='log'],
+      [role='region'],
+      [role='separator'],
+      [tabindex]
+    ):focus-visible,
+  [role='menuitem'][data-highlighted],
+  [role='menuitemcheckbox'][data-highlighted],
+  [role='menuitemradio'][data-highlighted],
+  [role='option'][data-highlighted] {
+    outline: 2px solid var(--ring) !important;
+    outline-offset: 2px !important;
+  }
+
+  :is(
+      [role='menuitem'],
+      [role='menuitemcheckbox'],
+      [role='menuitemradio'],
+      [role='option'],
+      [role='log'],
+      [role='region'],
+      [role='tabpanel'],
+      [role='separator']
+    ):is(:focus-visible, [data-highlighted]) {
+    outline-offset: -2px !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :focus-visible,
+  [role='menuitem'][data-highlighted],
+  [role='menuitemcheckbox'][data-highlighted],
+  [role='menuitemradio'][data-highlighted],
+  [role='option'][data-highlighted] {
+    outline-color: Highlight !important;
+  }
 }
