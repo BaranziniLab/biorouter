@@ -819,6 +819,17 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 - **Display rules:** institution IDs shown as stored (proposal A) or as a registry `display_name` when passed. The renderer re-applies the broker's display-name sanitizer for older daemons, and also falls back to the username for all-digit names. RTL names get Unicode isolates in strings only when they contain RTL characters. Agent strings: header "Bob Lee's agent (@bob)", "@bob's agent" when name equals username, "Unknown member's agent"; ` · you` only on request.
 - **Testing note:** `@username` is always a separate element, so match composites with `toHaveTextContent` on `[data-person-context]` or `personLabel()`, not `getByText`.
 
+
+**UI-PRIM outcome (2026-09-23, `1c068364`, `49c7eec3`, `7181a809`).** Consumers of the primitives and `crew/crew-app.css` should build on these:
+
+- **Avatar:** props add `name`, `username`, `src`, `label`; `fallback` (chosen avatar text, clamped to 2 characters) wins over derived initials; `avatarInitials(name, username)` is exported (first letters of the first two words). `ring` paints `--biorouter-avatar-ring` (default canvas); a member stack sets it to its band colour (`var(--sidebar)`).
+- **StatusDot:** halo period `calc(var(--dur-slow) * 4)` = 2.1s; reduced motion shows a still halo at 0.3 opacity.
+- **CopyField:** failure reveals a masked secret before selecting it; ⌘C copies `value`, not `display`; live region announces "Copied"/"Copy failed", button name stays "Copy {label}"; unwrapped single-line values wrap; middle truncation keeps the last 12 characters.
+- **Disclosure:** trigger -12px start margin; `summary` shown only while closed and used as the trigger's `aria-describedby`; panel `overflow-y: clip`.
+- **Crew CSS rules (enforced by `crewCss.sourceGuard.test.ts`):** crew classes plus `[data-*]`/`[aria-*]` only; no element, `*`, id or non-`crew-*` class selectors; no colour literals or px font sizes; keyframes named `crew-*`, unique and used, each with a reduced-motion rule; `crew/legacy/**` exempt; no new arbitrary-value Tailwind classes in crew `.ts`/`.tsx`.
+- **Layout classes:** `.crew-app`, `.crew-sidebar`, `.crew-main` (container `crew-main`, literal 800px threshold pinned to `yieldLadder.ts`), `.crew-stage`, `.crew-channel`, `.crew-channel-body`, `.crew-pane[data-state]`, `.crew-pane-content`, `.crew-cover-only`/`.crew-push-only`, `.crew-crossfade`/`.crew-crossfade-item`, `.crew-highlight`, `.crew-setup`. The pane animates its own width. The highlight wash's reduced-motion rule holds the full 1575ms so `animationend` fires; remove the class on it.
+- **For UI-INTEGRATE:** `CrewLayout.tsx` must import `crew-app.css` and keep a closing pane mounted (Radix Presence, `data-state='closed'`) for the exit animation.
+
 Consequences of the one-owner-per-file rule, and other ordering constraints:
 
 - **Broker packages do not split cleanly by slice.** `broker.rs` can have only one owner, so N-BROKER-S1S2 does the S1a and S2a name work and adds the hooks S3a needs. The S3a join logic lives in `crates/biorouter-crew/src/broker/join.rs`, compiled only with the `join-by-name` feature, so S1a and S2a can ship while S3a waits for its review gate (naming criterion 5 above). S4 is outside this campaign.
