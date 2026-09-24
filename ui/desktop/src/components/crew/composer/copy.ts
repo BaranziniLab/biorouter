@@ -18,6 +18,8 @@ export const composerCopy = {
   send: 'Send message',
   sendTooltip: 'Send',
   sending: 'Sending…',
+  /** The chips row: what goes with the message. */
+  chips: 'Attachments',
   /** Pinned: the attachment chip's remove control. */
   removeFile: (name: string) => `Remove ${name}`,
   /** Pinned: the server-path chip's remove control. */

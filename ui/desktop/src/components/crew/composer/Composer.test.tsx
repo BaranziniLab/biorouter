@@ -164,6 +164,22 @@ describe('Crew composer', () => {
       rerenderWith({ ...withBody(''), send });
       expect(screen.getByRole('button', { name: 'Send message' })).toBe(button);
     });
+
+    it('keeps the text read-only, not disabled, while posting, and focus in it after a press', async () => {
+      const send = vi.fn(async () => undefined);
+      const { rerenderWith } = renderComposer({ ...withBody('post me'), send });
+      const input = screen.getByLabelText('Message #general');
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Send message' }));
+      expect(input).toHaveFocus();
+
+      rerenderWith({ ...withBody('post me'), send, isPending: (key) => key === 'send' });
+      expect(input).toHaveAttribute('readonly');
+      expect(input).not.toBeDisabled();
+      expect(input).toHaveFocus();
+
+      rerenderWith({ ...withBody(''), send });
+      expect(input).not.toHaveAttribute('readonly');
+    });
   });
 
   describe('stand-ins for the card', () => {
@@ -287,6 +303,74 @@ describe('Crew composer', () => {
       expect(registerErrorSlot).toHaveBeenCalledWith('composer');
       unmount();
       expect(unregister).toHaveBeenCalled();
+    });
+  });
+
+  describe('uploads and the verified scope', () => {
+    const finished = {
+      id: 'transfer-7',
+      request_id: 'request-7',
+      connection_id: 'connection-1',
+      channel_id: 'channel-1',
+      direction: 'upload',
+      name: 'late.csv',
+      size: 1,
+      sha256: '',
+      offset: 1,
+      blob_id: 'blob-7',
+      state: 'completed',
+      error: null,
+    };
+
+    async function startUpload() {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Attach' }));
+      await user.click(await screen.findByRole('menuitem', { name: 'Upload a file…' }));
+    }
+
+    it('drops an upload started under a privacy scope that has since changed', async () => {
+      const addAttachment = vi.fn();
+      let transfers: unknown[] = [];
+      mocks.listTransfers.mockImplementation(async () => transfers);
+      mocks.beginTransfer.mockResolvedValue({ id: 'transfer-7' });
+      const { rerenderWith } = renderComposer({ addAttachment });
+      await startUpload();
+      expect(mocks.beginTransfer).toHaveBeenCalledTimes(1);
+
+      rerenderWith({
+        addAttachment,
+        observedPrivacy: {
+          connectionId: 'connection-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 2,
+        },
+      });
+      transfers = [finished];
+      await act(async () => {
+        const { refreshCrewTransfers } = await import('../files/useCrewTransfers');
+        await refreshCrewTransfers('connection-1');
+      });
+      expect(addAttachment).not.toHaveBeenCalled();
+    });
+
+    it('keeps an upload across a refresh that verifies the same scope again', async () => {
+      const addAttachment = vi.fn();
+      let transfers: unknown[] = [];
+      mocks.listTransfers.mockImplementation(async () => transfers);
+      mocks.beginTransfer.mockResolvedValue({ id: 'transfer-7' });
+      const { rerenderWith } = renderComposer({ addAttachment });
+      await startUpload();
+
+      rerenderWith({ addAttachment, snapshot: null, channel: null });
+      expect(screen.queryByLabelText('Message #general')).toBeNull();
+      rerenderWith({ addAttachment });
+      transfers = [finished];
+      await act(async () => {
+        const { refreshCrewTransfers } = await import('../files/useCrewTransfers');
+        await refreshCrewTransfers('connection-1');
+      });
+      expect(addAttachment).toHaveBeenCalledWith({ id: 'blob-7', name: 'late.csv' });
     });
   });
 

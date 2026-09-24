@@ -32,7 +32,7 @@ export function ComposerChips({
 }) {
   if (attachments.length === 0 && references.length === 0 && uploads.length === 0) return null;
   return (
-    <ul className="crew-composer-chips" aria-label="Attachments">
+    <ul className="crew-composer-chips" aria-label={composerCopy.chips}>
       {uploads.map((transfer) => (
         <li key={`upload:${transfer.id}`} className="crew-composer-chip-item">
           <UploadChip transfer={transfer} onPause={onPauseUpload} onResume={onResumeUpload} />

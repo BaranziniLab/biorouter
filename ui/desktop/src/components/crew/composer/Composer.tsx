@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -131,6 +132,22 @@ export function Composer({ note, inputRef }: ComposerProps) {
       setDropHint('');
     }
   });
+
+  // The observer clears the draft when the verified privacy scope changes under it (a new
+  // connection or workspace policy epoch, or a new mode). An upload started under the old scope
+  // must not land in the draft that was cleared for that reason.
+  const scope =
+    snapshot && expectedMode
+      ? [connectionId, expectedMode, observedPrivacy?.policyEpoch, snapshot.workspace.policy_epoch]
+          .map(String)
+          .join('\n')
+      : '';
+  const lastScope = useRef('');
+  useEffect(() => {
+    if (!scope) return;
+    if (lastScope.current && lastScope.current !== scope) latestUpload.current.forget();
+    lastScope.current = scope;
+  }, [scope]);
 
   const verified = Boolean(snapshot);
   const archived = Boolean(channel?.archived);
@@ -376,6 +393,10 @@ function ComposerCard({
         placeholder={composerCopy.placeholder(name)}
         rows={1}
         value={body}
+        // Read-only, not disabled, while the post is in flight: focus stays here, and nothing
+        // typed now can be wiped by the success that clears what was sent.
+        readOnly={posting}
+        aria-busy={posting || undefined}
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
@@ -405,6 +426,9 @@ function ComposerCard({
                 className={cn(!hasContent && 'cursor-not-allowed disabled:opacity-100')}
                 onClick={() => {
                   if (!posting) onSend();
+                  // After a send the person keeps typing: focus goes back to the text, not to a
+                  // button that is about to be disabled by the emptied draft.
+                  textarea.current?.focus();
                 }}
               >
                 {posting ? (
