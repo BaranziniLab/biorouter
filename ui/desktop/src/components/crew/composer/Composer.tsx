@@ -186,17 +186,22 @@ export function Composer({ note, inputRef }: ComposerProps) {
   );
   const enclosed = useCrewDropTarget(dropTarget);
 
-  if (!channel && verified) return null;
-
   const composerError = ownsError && error?.source === 'composer' ? error : null;
-  const notes = (
-    <ComposerNote
-      error={composerError?.message ?? null}
-      uploadError={upload.error}
-      dropHint={dropHint}
-      note={note}
-    />
-  );
+  const notes = composerNote({
+    error: composerError?.message ?? null,
+    uploadError: upload.error,
+    dropHint,
+    note,
+  });
+
+  // Verified, but no channel to write in: no card. A failure this surface owns still shows,
+  // because an error registered to the composer must render somewhere, exactly once.
+  if (!channel && verified)
+    return notes ? (
+      <div className="crew-composer" data-state="no-channel">
+        <div className="crew-composer-column">{notes}</div>
+      </div>
+    ) : null;
 
   let body: ReactNode;
   if (!verified) {
@@ -255,7 +260,7 @@ export function Composer({ note, inputRef }: ComposerProps) {
  * failure, the picker a drop just opened, then the layout's standing note. One at a time, so
  * nothing stacks above the composer.
  */
-function ComposerNote({
+function composerNote({
   error,
   uploadError,
   dropHint,
@@ -265,7 +270,7 @@ function ComposerNote({
   uploadError: string;
   dropHint: string;
   note: ReactNode;
-}) {
+}): ReactNode {
   let content: ReactNode = null;
   if (error === crewActionCopy.sendTransferRecordKept) {
     content = (

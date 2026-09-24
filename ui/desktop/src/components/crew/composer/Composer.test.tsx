@@ -296,6 +296,14 @@ describe('Crew composer', () => {
       expect(screen.queryByText('Allow this chat?')).toBeNull();
     });
 
+    it('still shows its own failure when there is no channel to write in', () => {
+      const { rerenderWith } = renderComposer({ channel: null, channelId: '' });
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.queryByText(composerCopy.verifying)).toBeNull();
+      rerenderWith({ error: { message: 'send failed', source: 'composer' } });
+      expect(screen.getAllByText('send failed')).toHaveLength(1);
+    });
+
     it('registers as the composer error slot while mounted', () => {
       const unregister = vi.fn();
       const registerErrorSlot = vi.fn(() => unregister);
