@@ -63,25 +63,63 @@ function graphemes(text: string): string[] {
   return Array.from(text);
 }
 
+/** What a handle joins its parts with: `crew_alice`, `j.smith`, `lab-bob`. */
+const HANDLE_SEPARATOR = /[_.-]+/u;
+const WORD_SEPARATOR = /\s+/u;
+const LEADING_LETTER = /^\p{L}/u;
+
 /**
- * THE avatar fallback rule (L16 — the old view had two that disagreed): the
- * first letters of up to two words of the display name, else the first two
- * letters of the username. Upper-cased; '' when neither yields a letter.
+ * The letter a separated handle is known by, or `null` when the word is not one
+ * (fewer than two parts carry a letter or digit).
  *
- * "Alice Chen" → "AC" · "alice" → "A" · display name "🧬" with username
- * "bob" → "BO".
+ * It is read from the LAST part, because that is where a shared prefix is not:
+ * server accounts are often issued as `crew_alice`, `crew_bob`, `crew_carol`,
+ * and their first letters are all "C" — which is how every avatar in a
+ * workspace came to read "C". A part that starts with a letter wins over a
+ * trailing number, so `alice_2` is "a", not "2".
+ */
+function separatedHandleLetter(word: string): string | null {
+  const letters = word
+    .split(HANDLE_SEPARATOR)
+    .map(firstLetter)
+    .filter((letter) => letter.length > 0);
+  if (letters.length < 2) return null;
+  const alphabetic = letters.filter((letter) => LEADING_LETTER.test(letter));
+  const from = alphabetic.length > 0 ? alphabetic : letters;
+  return from[from.length - 1];
+}
+
+/**
+ * THE avatar fallback rule (L16 — the old view had two that disagreed).
+ *
+ * - A display name of two or more words gives the first letters of the first
+ *   two: "Alice Chen" → "AC", "Mary-Jane Watson" → "MW".
+ * - A display name of one word gives one letter. A handle joined by `_`, `.` or
+ *   `-` is read from its last part ("crew_alice" → "A", "lab.bob" → "B");
+ *   anything else from its start ("alice" → "A").
+ * - With no letter in the display name, the username is read the same way: a
+ *   separated one from its last part ("crew_bob" → "B"), anything else by its
+ *   first two letters ("bob" → "BO").
+ *
+ * Upper-cased; '' when neither yields a letter.
  */
 export function avatarInitials(name?: string | null, username?: string | null): string {
-  const words = (name ?? '').normalize('NFC').trim().split(/\s+/u);
-  const fromName = words
-    .map(firstLetter)
-    .filter((letter) => letter.length > 0)
-    .slice(0, 2)
-    .join('');
-  if (fromName) return fromName.toLocaleUpperCase();
-
-  const fromUsername = (username ?? '')
+  const words = (name ?? '')
     .normalize('NFC')
+    .trim()
+    .split(WORD_SEPARATOR)
+    .filter((word) => firstLetter(word).length > 0);
+  if (words.length >= 2) {
+    return (firstLetter(words[0]) + firstLetter(words[1])).toLocaleUpperCase();
+  }
+  if (words.length === 1) {
+    return (separatedHandleLetter(words[0]) ?? firstLetter(words[0])).toLocaleUpperCase();
+  }
+
+  const handle = (username ?? '').normalize('NFC').trim();
+  const separated = separatedHandleLetter(handle);
+  if (separated) return separated.toLocaleUpperCase();
+  const fromUsername = handle
     .match(/[\p{L}\p{N}]\p{M}*/gu)
     ?.slice(0, 2)
     .join('');

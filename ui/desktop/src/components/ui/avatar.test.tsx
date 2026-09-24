@@ -27,11 +27,54 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
     expect(avatarInitials('E\u0301lodie', 'e')).toBe('\u00c9');
   });
 
-  it('falls back to the first two letters of the username', () => {
+  /**
+   * T-31: server accounts issued as `crew_alice`, `crew_bob`, … all start with
+   * "c", so a rule that read only the start of a word gave every person in the
+   * workspace the same grey "C". With no display name set, the display name IS
+   * the username, so this is the path every new member takes.
+   */
+  it.each([
+    ['crew_alice', 'A'],
+    ['crew_bob', 'B'],
+    ['crew_carol', 'C'],
+    ['crew_dave', 'D'],
+    ['lab.erin', 'E'],
+    ['lab-frank', 'F'],
+    ['crew__grace_', 'G'],
+    ['alice_2', 'A'],
+    ['_alice', 'A'],
+  ])('reads a separated handle %j from its last part', (handle, expected) => {
+    expect(avatarInitials(handle, handle)).toBe(expected);
+  });
+
+  it('tells the people of a crew_ workspace apart', () => {
+    const people = ['crew_alice', 'crew_bob', 'crew_carol', 'crew_dave', 'crew_erin'];
+    const initials = people.map((handle) => avatarInitials(handle, handle));
+    expect(initials).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(new Set(initials).size).toBe(people.length);
+  });
+
+  it('still gives a real display name two initials, separators and all', () => {
+    expect(avatarInitials('Alice Chen', 'crew_alice')).toBe('AC');
+    expect(avatarInitials('Carol Nguyen', 'crew_carol')).toBe('CN');
+    expect(avatarInitials('Mary-Jane Watson', 'mjw')).toBe('MW');
+    expect(avatarInitials('J.R.R. Tolkien', 'jrrt')).toBe('JT');
+  });
+
+  it('falls back to the first two letters of an unseparated username', () => {
     expect(avatarInitials('', 'bob')).toBe('BO');
     expect(avatarInitials(null, 'bob')).toBe('BO');
     expect(avatarInitials('🧬 🔬', 'alice')).toBe('AL');
     expect(avatarInitials(undefined, '@x9')).toBe('X9');
+    // One lettered part is not a separated handle.
+    expect(avatarInitials(null, 'crew_')).toBe('CR');
+  });
+
+  it('reads a separated username the same way as a separated display name', () => {
+    expect(avatarInitials(null, 'crew_bob')).toBe('B');
+    expect(avatarInitials('🧬', 'crew_bob')).toBe('B');
+    expect(avatarInitials('', 'lab.erin')).toBe('E');
+    expect(avatarInitials(null, 'crew_bob')).toBe(avatarInitials('crew_bob', 'crew_bob'));
   });
 
   it('yields nothing rather than an ID-like placeholder when there is nothing to read', () => {
@@ -46,6 +89,11 @@ describe('Avatar', () => {
     expect(tile(container)).toHaveTextContent('AC');
     expect(tile(container)).toHaveAttribute('aria-hidden', 'true');
     expect(screen.queryByRole('img')).toBeNull();
+  });
+
+  it('draws a member with no display name by the last part of their handle', () => {
+    const { container } = render(<Avatar name="crew_alice" username="crew_alice" />);
+    expect(tile(container)).toHaveTextContent(/^A$/);
   });
 
   it('prefers the chosen avatar text, clamped to two characters', () => {
