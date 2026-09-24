@@ -262,7 +262,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
       subtitle={subtitle}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={approving}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={approving}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={approving || !complete}>

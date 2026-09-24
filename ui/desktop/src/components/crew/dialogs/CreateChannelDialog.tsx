@@ -98,7 +98,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
       subtitle={team ? copy.inTeam(teamName(team)) : undefined}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={creating}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={creating}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={creating}>

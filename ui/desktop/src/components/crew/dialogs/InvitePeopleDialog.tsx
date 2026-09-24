@@ -130,7 +130,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
         footer={
           <>
             {/* One at a time is the broker's shape; this keeps the host in the dialog for the next. */}
-            <Button key="another" type="button" variant="outline" onClick={inviteAnother}>
+            <Button key="another" type="button" variant="secondary" onClick={inviteAnother}>
               {copy.inviteAnother}
             </Button>
             {/* The form that had focus is gone; land on the result's main action, not the dialog
@@ -198,7 +198,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
       title={copy.title(workspace)}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={inviting}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={inviting}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={inviting}>

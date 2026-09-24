@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +12,7 @@ import {
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
 import { addPeopleCopy } from './copy';
-import { CrewDialogs, dialogKey, HOSTED_DIALOG_KINDS } from './CrewDialogs';
+import { CREW_DIALOG_DEFAULTS, CrewDialogs, dialogKey, HOSTED_DIALOG_KINDS } from './CrewDialogs';
 import {
   alice,
   installResizeObserverStub,
@@ -232,5 +234,61 @@ describe('CrewDialogs', () => {
         'workspace-settings',
       ].sort()
     );
+  });
+});
+
+/** A stylesheet's rules as `selector → declarations`, comments removed; enough for these files. */
+function rulesOf(path: string): Map<string, string> {
+  const text = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const rules = new Map<string, string>();
+  for (const match of text.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    rules.set(match[1].trim().replace(/\s+/g, ' '), match[2].replace(/\s+/g, ' ').trim());
+  }
+  return rules;
+}
+
+describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
+  const FOCUS_EDGE = ":read-write:focus-visible:not([aria-invalid='true'])";
+
+  /**
+   * jsdom loads no stylesheet and evaluates no `:focus-visible`, so a component test that focuses
+   * a field and reads its border sees the resting edge whether the rule exists or not. The rule is
+   * asserted at the source, next to the Crew area's own, which it must match.
+   */
+  it('gives a dialog’s text fields the Crew area’s focus edge, through the dialog’s own class', () => {
+    const inArea = rulesOf(join(__dirname, '../crew-app.css')).get(`.crew-app ${FOCUS_EDGE}`);
+    const inDialog = rulesOf(join(__dirname, 'dialogs.css')).get(`.crew-dialog ${FOCUS_EDGE}`);
+    expect(inArea).toBe('border-color: var(--border-accent);');
+    expect(inDialog).toBe(inArea);
+    expect(CREW_DIALOG_DEFAULTS.className).toBe('crew-dialog');
+    // The class is the one the stylesheet is loaded with.
+    expect(readFileSync(join(__dirname, 'CrewDialogs.tsx'), 'utf8')).toContain(
+      "import './dialogs.css';"
+    );
+  });
+
+  it('puts the class and the header hairline on every dialog it hosts', async () => {
+    renderWithCrew(<CrewDialogs />, { dialog: { kind: 'edit-profile' } });
+    const dialog = await screen.findByRole('dialog', { name: 'Edit profile' });
+    expect(dialog).toHaveClass('crew-dialog');
+    expect(dialog.firstElementChild).toHaveClass('border-b', 'border-border-subtle');
+  });
+
+  it.each<[DialogIntent, string]>([
+    [{ kind: 'connection-settings', connectionId: 'conn-1' }, 'Cancel'],
+    [{ kind: 'invite-people' }, 'Cancel'],
+    [{ kind: 'let-in', username: 'eve' }, 'Cancel'],
+    [{ kind: 'create-channel', teamId: 'team-1' }, 'Cancel'],
+    [{ kind: 'add-people', target: 'channel', targetId: 'channel-general' }, 'Cancel'],
+    [{ kind: 'edit-profile' }, 'Cancel'],
+    [{ kind: 'share-path' }, 'Cancel'],
+  ])('draws %j’s Cancel as a secondary button', async (intent, name) => {
+    renderWithCrew(<CrewDialogs />, {
+      dialog: intent,
+      snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }),
+    });
+    const cancel = await screen.findByRole('button', { name });
+    expect(cancel).toHaveClass('bg-background-medium');
+    expect(cancel).not.toHaveClass('border-border-emphasized');
   });
 });

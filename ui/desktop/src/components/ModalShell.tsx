@@ -87,6 +87,14 @@ export const MODAL_ANCHOR_TOP_STYLE: React.CSSProperties = {
 export interface ModalShellDefaults {
   anchor?: ModalAnchor;
   onCloseAutoFocus?: (event: Event) => void;
+  /**
+   * Added to every content's class list, before the shell's own `className`. A dialog portals to
+   * `<body>`, outside the surface that mounts it, so an area's stylesheet reaches its dialogs only
+   * through a class on the dialog itself (Crew: `crew-dialog`, QA Q2-25).
+   */
+  className?: string;
+  /** Draw the header's hairline even where the body does not scroll (QA Q2-26). */
+  headerRule?: boolean;
 }
 
 export const ModalShellDefaultsContext = React.createContext<ModalShellDefaults>({});
@@ -118,6 +126,13 @@ export interface ModalShellProps {
    * itself: call `event.preventDefault()` to keep Radix from moving focus.
    */
   onCloseAutoFocus?: (event: Event) => void;
+  /**
+   * The id of the body node that describes the dialog, for a dialog whose body is a message rather
+   * than a form (QA Q2-28). Used only without a `subtitle`, which is the description when present.
+   */
+  describedBy?: string;
+  /** The header's hairline without a scrolling body; a `ModalShellDefaultsContext` may set it. */
+  headerRule?: boolean;
 }
 
 export function ModalShell({
@@ -135,11 +150,17 @@ export function ModalShell({
   bodyClassName,
   anchor,
   onCloseAutoFocus,
+  describedBy,
+  headerRule,
 }: ModalShellProps) {
   const dismissible = purpose !== 'required';
   const defaults = React.useContext(ModalShellDefaultsContext);
   const placement = anchor ?? defaults.anchor ?? 'center';
   const closeAutoFocus = onCloseAutoFocus ?? defaults.onCloseAutoFocus;
+  const rule = scrollBody || (headerRule ?? defaults.headerRule ?? false);
+  // A subtitle is the description (Radix links it). Without one, a message body can name its own
+  // node; otherwise the attribute is dropped rather than dangled at nothing.
+  const bodyDescribes = !subtitle && Boolean(describedBy);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -154,13 +175,14 @@ export function ModalShell({
         // Radix warns when a dialog has no description. A subtitle supplies one
         // (and must NOT be overridden, or the aria linkage breaks); without a
         // subtitle we opt out explicitly rather than leave a console warning.
-        {...(subtitle ? {} : { 'aria-describedby': undefined })}
+        {...(subtitle ? {} : { 'aria-describedby': bodyDescribes ? describedBy : undefined })}
         {...(closeAutoFocus ? { onCloseAutoFocus: closeAutoFocus } : {})}
         data-anchor={placement === 'top' ? 'top' : undefined}
         style={placement === 'top' ? MODAL_ANCHOR_TOP_STYLE : undefined}
         className={cn(
           'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0',
           MODAL_SIZE[size],
+          defaults.className,
           className
         )}
       >
@@ -170,7 +192,7 @@ export function ModalShell({
             // a long title can never slide under it.
             'flex-none px-4 pt-4 pb-3',
             dismissible && 'pr-12',
-            scrollBody && 'border-b border-border-subtle'
+            rule && 'border-b border-border-subtle'
           )}
         >
           <DialogTitle className={cn('min-w-0 [overflow-wrap:anywhere]', titleClassName)}>
@@ -178,6 +200,11 @@ export function ModalShell({
           </DialogTitle>
           {subtitle ? (
             <DialogDescription className="mt-1 text-supporting">{subtitle}</DialogDescription>
+          ) : bodyDescribes ? (
+            // Radix checks that ITS description id exists whenever `aria-describedby` is set, and
+            // warns otherwise. The body's node is the description; this empty, hidden anchor only
+            // answers that check and is referenced by nothing.
+            <DialogDescription hidden />
           ) : null}
         </div>
 
@@ -189,6 +216,8 @@ export function ModalShell({
               // gutters; the body adds none of its own, so a scrolled body runs
               // to the hairline instead of stranding a dead band above it.
               scrollBody ? 'min-h-0 flex-1 overflow-y-auto' : 'flex-none',
+              // Under a hairline the body needs its own top gutter; a scrolling body owns its own.
+              rule && !scrollBody && 'pt-3',
               bodyClassName
             )}
           >

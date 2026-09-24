@@ -258,7 +258,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             </Button>
           </div>
           <div className="flex flex-nowrap items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+            <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
               {copy.cancel}
             </Button>
             <Button type="submit" form={formId} disabled={saving}>

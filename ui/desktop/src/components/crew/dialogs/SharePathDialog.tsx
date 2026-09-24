@@ -71,7 +71,7 @@ export function SharePathDialog({ onClose }: SharePathDialogProps) {
       title={copy.title(server)}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={pending || !crew.channelId}>

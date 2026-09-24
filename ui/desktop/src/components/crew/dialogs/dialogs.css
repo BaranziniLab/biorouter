@@ -27,3 +27,14 @@
 .crew-settings-panel[data-state='inactive'] {
   visibility: hidden;
 }
+
+/* A focused text field in a Crew dialog firms its edge to the accent, exactly as it does inside the
+   Crew area (`crew-app.css`, T-16). A dialog portals to <body>, outside `.crew-app`, so that rule
+   never reached it and a keyboard user saw no change at all (QA Q2-25); `CrewDialogs` gives every
+   dialog it mounts the `crew-dialog` class instead. `:read-write` is exactly the editable fields —
+   never a checkbox, radio or read-only field — so no element selector is needed, and an invalid
+   field keeps its danger edge. The accent is safe on a dialog's ground for the same reason it is in
+   the Crew area: the shared `Input` paints `--background-default`. */
+.crew-dialog :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}

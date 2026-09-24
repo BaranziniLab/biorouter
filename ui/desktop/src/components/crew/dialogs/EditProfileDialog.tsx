@@ -88,7 +88,7 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
       title={copy.title}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={saving || !me}>

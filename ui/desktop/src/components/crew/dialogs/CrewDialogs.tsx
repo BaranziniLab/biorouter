@@ -15,6 +15,7 @@ import { RenameDialog } from './RenameDialog';
 import { SharePathDialog } from './SharePathDialog';
 import { TransferOwnershipDialog } from './TransferOwnershipDialog';
 import { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog';
+import './dialogs.css';
 
 /**
  * The dialog kinds this area renders. `join` and `host` belong to onboarding and `sign-in` to the
@@ -56,11 +57,18 @@ export interface CrewDialogsProps {
  *   instead of re-centring under the pointer (QA T-30);
  * - a close handler that keeps Radix from moving focus. These dialogs have no `Dialog.Trigger`
  *   (they open from `openDialog`), so Radix would focus nothing and focus would fall to `<body>`;
- *   the controller's surfaces return it to the recorded opener instead (`state/focusReturn.ts`).
+ *   the controller's surfaces return it to the recorded opener instead (`state/focusReturn.ts`);
+ * - the `crew-dialog` class. A dialog portals to `<body>`, outside `.crew-app`, so Crew's own
+ *   field-focus edge (`crew-app.css`) never reached a dialog's fields; `dialogs.css` carries it
+ *   for them under this class (QA Q2-25);
+ * - the header hairline, so every Crew dialog has the same chrome, not only the scrolling four
+ *   (QA Q2-26).
  */
-const CREW_DIALOG_DEFAULTS: ModalShellDefaults = {
+export const CREW_DIALOG_DEFAULTS: ModalShellDefaults = {
   anchor: 'top',
   onCloseAutoFocus: (event) => event.preventDefault(),
+  className: 'crew-dialog',
+  headerRule: true,
 };
 
 /**
