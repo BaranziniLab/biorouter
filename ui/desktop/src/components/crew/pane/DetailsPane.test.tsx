@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +43,16 @@ vi.mock('../../ConfigContext', () => ({
   usePrivacyTiersEnabled: () => true,
 }));
 
+/** An Access-tab control that switches the pane's mode from inside it. */
+function OpenChatAccess() {
+  const crew = useCrew();
+  return (
+    <button type="button" onClick={() => crew.openPane({ mode: 'chat-access' })}>
+      Open chat access
+    </button>
+  );
+}
+
 function Layout() {
   const crew = useCrew();
   return (
@@ -61,7 +73,12 @@ function Layout() {
       <DetailsPane
         tabs={{
           files: <p>Files slot</p>,
-          access: <p>Access slot</p>,
+          access: (
+            <>
+              <p>Access slot</p>
+              <OpenChatAccess />
+            </>
+          ),
         }}
         chatAccess={<p>Chat access slot</p>}
       />
@@ -149,7 +166,9 @@ describe('DetailsPane', () => {
     const user = userEvent.setup();
     renderCrew(Layout);
     await ready();
-    const trigger = screen.getByRole('button', { name: channelCopy.menuName('general') });
+    // The header's own words for its menu belong to the channel area; match the part every
+    // version of them has kept.
+    const trigger = screen.getByRole('button', { name: /channel menu$/ });
     await user.click(trigger);
     await user.click(await screen.findByRole('menuitem', { name: channelCopy.menu.members }));
     expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'members' });
@@ -225,5 +244,136 @@ describe('DetailsPane', () => {
     expect(back).toHaveClass('crew-cover-only');
     await user.click(back);
     expect(currentCrew().ui.pane).toBeNull();
+  });
+
+  // jsdom evaluates no container query, so both titles are in the document here; the classes are
+  // what `crew-app.css` shows and hides at the cover threshold.
+  it('titles the details mode "Details" while covering, so the header never reads "#general #general" (T-46)', async () => {
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    await user.click(await ready());
+    const heading = within(pane()).getByRole('heading', { level: 2 });
+    expect(within(heading).getByText('#general')).toHaveClass('crew-push-only');
+    expect(within(heading).getByText(paneCopy.coverTitle)).toHaveClass('crew-cover-only');
+    expect(paneCopy.coverTitle).toBe('Details');
+
+    // The other modes are titled by what they are, which Back to #name does not repeat.
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    const agentHeading = within(pane()).getByRole('heading', { level: 2 });
+    expect(agentHeading).toHaveTextContent(agentCopy.title);
+    expect(agentHeading.querySelector('.crew-cover-only, .crew-push-only')).toBeNull();
+  });
+
+  it('returns focus to the control that switched its mode, not the one that first opened it', async () => {
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    const toggle = await ready();
+    await user.click(toggle);
+    await waitFor(() => expect(within(pane()).getByRole('tab', { name: 'About' })).toHaveFocus());
+    const ask = screen.getByRole('button', { name: 'Ask my agent' });
+    await user.click(ask);
+    await waitFor(() => expect(screen.getByLabelText(agentCopy.task)).toHaveFocus());
+    await user.keyboard('{Escape}');
+    expect(currentCrew().ui.pane).toBeNull();
+    await waitFor(() => expect(ask).toHaveFocus());
+    expect(toggle).not.toHaveFocus();
+  });
+
+  it('keeps the opener when the mode is switched from inside the pane', async () => {
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    const toggle = await ready();
+    await user.click(toggle);
+    await user.click(within(pane()).getByRole('tab', { name: 'Access' }));
+    await user.click(within(pane()).getByRole('button', { name: 'Open chat access' }));
+    expect(currentCrew().ui.pane).toEqual({ mode: 'chat-access' });
+    await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+    await waitFor(() => expect(toggle).toHaveFocus());
+  });
+
+  describe('an error Ask my agent reported (T-48)', () => {
+    it('goes when the pane closes, instead of falling back to the connection bar', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      await ready();
+      await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+      await screen.findByLabelText(agentCopy.task);
+      act(() => currentCrew().reportError('refused here', 'pane:agent'));
+      expect(within(pane()).getByRole('alert')).toHaveTextContent('refused here');
+
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      await waitFor(() => expect(currentCrew().error).toBeNull());
+      expect(screen.queryByText('refused here')).toBeNull();
+    });
+
+    it('goes when the pane switches to another mode', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const toggle = await ready();
+      await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+      await screen.findByLabelText(agentCopy.task);
+      act(() => currentCrew().reportError('refused here', 'pane:agent'));
+      await user.click(toggle);
+      await waitFor(() => expect(currentCrew().ui.pane?.mode).toBe('details'));
+      await waitFor(() => expect(currentCrew().error).toBeNull());
+    });
+
+    it('stays when it arrives after the pane closed, and so is news', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      await ready();
+      await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+      await screen.findByLabelText(agentCopy.task);
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      act(() => currentCrew().reportError('late refusal', 'pane:agent'));
+      await waitFor(() => expect(currentCrew().error?.message).toBe('late refusal'));
+    });
+
+    it('leaves every other source’s error alone', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      await ready();
+      await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+      await screen.findByLabelText(agentCopy.task);
+      act(() => currentCrew().reportError('connection trouble', 'global'));
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.close }));
+      await waitFor(() => expect(currentCrew().ui.pane).toBeNull());
+      expect(currentCrew().error?.message).toBe('connection trouble');
+    });
+  });
+
+  describe('one inset and a ground a step up (T-62)', () => {
+    const css = readFileSync(join(__dirname, 'pane.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string) => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    };
+
+    it('declares one 16px inset that the header, body and footer all reach', () => {
+      expect(rule('.crew-pane-content')).toMatch(/--crew-pane-inset:\s*16px;/);
+      expect(rule('.crew-pane-header')).toMatch(
+        /padding-inline:\s*calc\(var\(--crew-pane-inset\) - 8px\);/
+      );
+      expect(rule('.crew-pane-body')).toMatch(/padding-inline:\s*var\(--crew-pane-inset\);/);
+      expect(rule('.crew-pane-footer')).toMatch(/padding-inline:\s*var\(--crew-pane-inset\);/);
+    });
+
+    it('paints the pane and its footer on --background-default, not the canvas', () => {
+      expect(rule('.crew-pane[data-state]')).toMatch(
+        /background-color:\s*var\(--background-default\);/
+      );
+      expect(rule('.crew-pane-footer')).toMatch(/background-color:\s*var\(--background-default\);/);
+      expect(css).not.toMatch(/--background-canvas/);
+    });
+
+    it('leaves the inset to the stylesheet rather than a second utility on the body', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      await user.click(await ready());
+      const bodies = pane().querySelectorAll('.crew-pane-body');
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const body of bodies) expect(body.className).not.toMatch(/\bpx-\d/);
+      expect(within(pane()).getByRole('tablist')).toHaveClass('bg-background-default');
+    });
   });
 });

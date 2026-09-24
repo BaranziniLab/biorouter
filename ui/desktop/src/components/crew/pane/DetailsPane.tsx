@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { cn } from '../../../utils';
 import { channelName } from '../identity';
-import type { DetailsTab, PaneIntent } from '../state/types';
+import type { DetailsTab, PaneIntent, PaneMode as PaneModeName } from '../state/types';
 import { AboutTab } from './AboutTab';
 import { AgentTaskPane } from './AgentTaskPane';
 import { agentCopy, paneCopy } from './copy';
@@ -103,7 +103,12 @@ function PaneMode({ animate, children }: { animate: boolean; children: ReactNode
  * only when focus was in the pane, so a click elsewhere keeps its focus.
  *
  * In cover mode (a narrow window; a container query in `crew-app.css`) the header gains
- * "← Back to #name".
+ * "← Back to #name", and the details mode's title becomes "Details" so the channel is not named
+ * twice in one row (T-46).
+ *
+ * Leaving Ask my agent — closing the pane or switching its mode — dismisses an error that mode
+ * reported (`pane:agent`), so it does not fall back to the connection bar for a drawer that is
+ * gone (T-48). One reported after the pane left is news, and still reaches the bar.
  */
 export function DetailsPane({ tabs = {}, agent, chatAccess, className }: DetailsPaneProps) {
   const { crew, channel } = usePanePresentation();
@@ -120,20 +125,35 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
   const tab: DetailsTab = intent?.mode === 'details' ? (intent.tab ?? 'about') : 'about';
   const focusKey = intent ? `${intent.mode}:${intent.mode === 'details' ? tab : ''}` : null;
 
-  // Open: remember the opener. Close: keep the last content while an exit animation runs (a
-  // pushed pane narrows over it); with no animation (reduced motion, or no stylesheet) it goes
-  // at once.
+  // Open: remember the opener, and again when a control outside the pane switches its mode
+  // (Members → Ask my agent from the composer), so Escape returns to that control rather than to
+  // the one that first opened it. A switch made from inside the pane keeps the opener. Close:
+  // keep the last content while an exit animation runs (a pushed pane narrows over it); with no
+  // animation (reduced motion, or no stylesheet) it goes at once.
   useLayoutEffect(() => {
     const was = previousIntent.current;
     previousIntent.current = intent;
     if (!was && intent) {
       opener.current = openerOf(document.activeElement, aside.current);
       setLeaving(null);
+    } else if (was && intent && was.mode !== intent.mode) {
+      const next = openerOf(document.activeElement, aside.current);
+      if (next) opener.current = next;
     } else if (was && !intent) {
       const name = aside.current ? getComputedStyle(aside.current).animationName : '';
       if (name && name !== 'none') setLeaving(was);
     }
   }, [intent]);
+
+  // T-48: leaving Ask my agent takes its error with it.
+  const { error, dismissError } = crew;
+  const previousMode = useRef<PaneModeName | null>(null);
+  useEffect(() => {
+    const was = previousMode.current;
+    const now = intent?.mode ?? null;
+    previousMode.current = now;
+    if (was === 'agent' && now !== 'agent' && error?.source === 'pane:agent') dismissError();
+  }, [intent?.mode, error, dismissError]);
 
   useEffect(() => {
     if (!leaving) return;
@@ -205,11 +225,11 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
         <Tabs
           value={tab}
           onValueChange={(value) => crew.openPane({ mode: 'details', tab: value as DetailsTab })}
-          className="crew-pane-body min-h-0 px-4 pb-4 text-text-default"
+          className="crew-pane-body min-h-0 pb-4 text-text-default"
         >
           <TabsList
             aria-label={paneCopy.tabsLabel}
-            className="sticky top-0 z-10 bg-background-canvas"
+            className="sticky top-0 z-10 bg-background-default"
           >
             {TABS.map((value) => (
               <TabsTrigger key={value} value={value}>
@@ -227,11 +247,11 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
       ) : shown.mode === 'agent' ? (
         (agent ?? <AgentTaskPane />)
       ) : (
-        <div className="crew-pane-body px-4 py-3">{chatAccess ?? null}</div>
+        <div className="crew-pane-body py-3">{chatAccess ?? null}</div>
       );
     content = (
       <PaneMode key={shown.mode} animate={modeChanged}>
-        <div className="crew-pane-header flex shrink-0 items-center gap-1 border-b border-border-subtle bg-sidebar px-2">
+        <div className="crew-pane-header flex shrink-0 items-center gap-1 border-b border-border-subtle bg-sidebar">
           {title && (
             <Button
               type="button"
@@ -249,7 +269,14 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
             tabIndex={-1}
             className="min-w-0 flex-1 truncate px-2 text-label text-text-default"
           >
-            {titleOf(shown, title)}
+            {shown.mode === 'details' && title ? (
+              <>
+                <span className="crew-push-only">{title}</span>
+                <span className="crew-cover-only">{paneCopy.coverTitle}</span>
+              </>
+            ) : (
+              titleOf(shown, title)
+            )}
           </h2>
           <Tooltip>
             <TooltipTrigger asChild>

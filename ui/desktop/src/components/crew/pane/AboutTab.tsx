@@ -32,10 +32,12 @@ function Row({
 }
 
 /**
- * The details pane's About tab (ui-redesign-spec, "The details pane"): the channel's name, what
- * its classification means, who owns it (and to whom ownership is offered), who made it, its
- * team, the owner's danger zone, and Copy channel ID — the one place this tab holds an ID, behind
- * a copy. The owner's actions open the same dialog intents as the channel menu; the broker decides.
+ * The details pane's About tab (ui-redesign-spec, "The details pane"): the channel's name, who can
+ * read it ("Private models only" for a Restricted channel, T-67), who owns it (and to whom
+ * ownership is offered), who made it, its team, Copy channel ID — the one place this tab holds an
+ * ID, behind a copy — and the owner's danger zone. Copy channel ID sits above the danger zone,
+ * never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). The owner's
+ * actions open the same dialog intents as the channel menu; the broker decides.
  */
 export function AboutTab({ canRename = false, className }: AboutTabProps) {
   const { crew, channel, team, dir, isOwner } = usePanePresentation();
@@ -46,7 +48,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
 
   return (
     <div className={cn('flex flex-col gap-4', className)}>
-      <div className="biorouter-settings-list">
+      <div className="biorouter-settings-list crew-pane-rows">
         <Row
           label={aboutCopy.name}
           action={
@@ -67,7 +69,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         >
           {channelName(channel)}
         </Row>
-        <Row label={aboutCopy.content}>
+        <Row label={aboutCopy.whoCanRead}>
           <span>{restricted ? aboutCopy.restricted : aboutCopy.publicSafe}</span>
           <span className="block text-supporting text-text-muted">
             {restricted ? aboutCopy.restrictedHint : aboutCopy.publicSafeHint}
@@ -106,6 +108,18 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         <Row label={aboutCopy.team}>{teamName(team)}</Row>
       </div>
 
+      <div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="crew-pane-flush text-text-muted"
+          onClick={() => void copyText(channel.id)}
+        >
+          {aboutCopy.copyId}
+        </Button>
+      </div>
+
       {ownerTools && (
         <section aria-labelledby={dangerId} className="flex flex-col gap-2">
           <h3 id={dangerId} className="text-caps text-text-muted">
@@ -128,18 +142,6 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
           </div>
         </section>
       )}
-
-      <div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="text-text-muted"
-          onClick={() => void copyText(channel.id)}
-        >
-          {aboutCopy.copyId}
-        </Button>
-      </div>
     </div>
   );
 }

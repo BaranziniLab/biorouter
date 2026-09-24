@@ -103,21 +103,81 @@ describe('MembersTab', () => {
     });
   });
 
-  it('keeps the owner’s own row to Copy person ID, the only place the ID appears', async () => {
+  it('offers Copy username before Copy person ID on the owner’s own row (T-33)', async () => {
     const user = userEvent.setup();
     renderCrew(Members);
     const tab = await shown();
-    await user.click(
-      within(tab).getByRole('button', { name: membersCopy.more('Alice Chen (@alice)') })
-    );
+    const more = within(tab).getByRole('button', { name: membersCopy.more('Alice Chen (@alice)') });
+    await user.click(more);
     const menu = await screen.findByRole('menu');
     expect(
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual([membersCopy.copyPersonId]);
-    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyPersonId }));
+    ).toEqual([membersCopy.copyUsername, membersCopy.copyPersonId]);
+    // The username goes without its `@`, as Workspace settings copies it.
+    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyUsername }));
+    await waitFor(async () => expect(await navigator.clipboard.readText()).toBe('alice'));
+
+    await user.click(more);
+    await user.click(await screen.findByRole('menuitem', { name: membersCopy.copyPersonId }));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(alice.id));
+  });
+
+  it('puts the owner’s actions on someone else after the copies', async () => {
+    const user = userEvent.setup();
+    renderCrew(Members);
+    const tab = await shown();
+    await user.click(within(tab).getByRole('button', { name: membersCopy.more('Bob Lee (@bob)') }));
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([
+      membersCopy.copyUsername,
+      membersCopy.copyPersonId,
+      membersCopy.makeOwner,
+      membersCopy.remove('#general'),
+    ]);
+  });
+
+  it('never draws a ⋯ that holds only Copy person ID (T-33)', async () => {
+    const user = userEvent.setup();
+    // A member who is not the owner, looking at a named member, a former one and an unknown one.
+    installObserver({
+      snapshot: makeSnapshot({
+        actor: bob,
+        principals: [alice, bob],
+        former_principals: [{ id: carol.id, username: 'carol', display_name: 'Carol Diaz' }],
+        channels: [{ ...general, members: [alice.id, bob.id, carol.id, ghost] }, methods],
+      }),
+    });
+    renderCrew(Members);
+    const tab = await shown();
+    const list = within(tab).getByRole('list', { name: membersCopy.listLabel('#general') });
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(4);
+
+    // The unknown member has nothing to copy but an ID, so the row has no menu at all.
+    const unknown = items.find((item) => item.textContent?.includes('Unknown member'));
+    expect(unknown).toBeDefined();
+    expect(within(unknown as HTMLElement).queryByRole('button')).toBeNull();
+
+    // Every menu that is drawn holds something besides the ID.
+    const triggers = within(list).getAllByRole('button', { name: /^More actions for/ });
+    expect(triggers).toHaveLength(3);
+    for (const trigger of triggers) {
+      await user.click(trigger);
+      const menu = await screen.findByRole('menu');
+      const entries = within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent);
+      expect(entries).not.toEqual([membersCopy.copyPersonId]);
+      expect(entries[0]).toBe(membersCopy.copyUsername);
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    }
   });
 
   it('tells a member who cannot add people who can, instead of showing nothing', async () => {
@@ -153,7 +213,8 @@ describe('MembersTab', () => {
     expect(list).toContain('Carol Diaz (@carol) · former member');
     expect(list).toContain('Unknown member');
     expect(tab.textContent).not.toMatch(UUID);
-    // A former member is not offered Make owner or Remove; their ID stays behind Copy.
+    // A former member is not offered Make owner or Remove; their ID stays behind Copy, after the
+    // username, so the menu never holds the ID alone.
     await user.click(
       within(tab).getByRole('button', {
         name: membersCopy.more('Carol Diaz (@carol) · former member'),
@@ -164,7 +225,7 @@ describe('MembersTab', () => {
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual([membersCopy.copyPersonId]);
+    ).toEqual([membersCopy.copyUsername, membersCopy.copyPersonId]);
   });
 
   it('shows channel invitations the viewer sent as muted invited rows', async () => {

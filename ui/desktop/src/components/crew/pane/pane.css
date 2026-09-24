@@ -1,16 +1,36 @@
 /* Crew — the details pane's inside: its header band, scrolling body and the
-   Ask my agent footer. The pane's geometry, ground, hairline and push/cover
-   motion live in `crew/crew-app.css` (`.crew-pane`, `.crew-pane-content`);
+   Ask my agent footer. The pane's geometry, hairline and push/cover motion
+   live in `crew/crew-app.css` (`.crew-pane`, `.crew-pane-content`);
    `DetailsPane` renders those hooks.
 
    Bound by the contract in `crew/crew-app.css` and enforced by
    `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and data/aria hooks
    only, tokens only, a reduced-motion rest for anything that moves. */
 
+/* The pane's ground is one step up from the conversation's (T-62): in dark
+   `--background-default` sits a step above the canvas the timeline paints,
+   and in light the two are the same white. On `.crew-pane` itself, never a
+   child: a child's ground would paint over the pane's inset-shadow hairline.
+   `[data-state]` outranks `crew-app.css`'s `.crew-pane` whatever order the two
+   stylesheets load in. */
+.crew-pane[data-state] {
+  background-color: var(--background-default);
+}
+
+/* One left edge for everything in the pane (T-62). Carol measured five — the
+   header title, the tabs, About's rows, a ghost button's words and the Files
+   empty state each sat on its own x — so the inset is one custom property,
+   and each part says how it reaches it. */
+.crew-pane-content {
+  --crew-pane-inset: 16px;
+}
+
 /* The pane header meets the channel header and the sidebar's band at one top
-   edge: a 44px band while the pane is pushed beside the channel. */
+   edge: a 44px band while the pane is pushed beside the channel. Its title
+   carries 8px of its own padding, so the band supplies the rest of the inset. */
 .crew-pane-header {
   height: var(--chrome-height);
+  padding-inline: calc(var(--crew-pane-inset) - 8px);
 }
 
 /* Covering, the pane sits BELOW the channel header, so its own header is a
@@ -35,12 +55,44 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding-inline: var(--crew-pane-inset);
 }
 
 .crew-pane-footer {
   flex: 0 0 auto;
+  padding-inline: var(--crew-pane-inset);
   border-top: 1px solid var(--border-subtle);
-  background-color: var(--background-canvas);
+  background-color: var(--background-default);
+}
+
+/* A list of settings rows keeps each row's 4px hover inset, and steps out by
+   it so the rows' words sit on the pane inset. */
+.crew-pane-rows {
+  margin-inline: -4px;
+}
+
+/* A ghost `sm` button whose words start a line: step out by its own 12px
+   padding, as `.biorouter-disclosure-trigger` does, so the words sit on the
+   inset and only its hover wash reaches past it. */
+.crew-pane-flush {
+  margin-inline-start: -12px;
+}
+
+/* Ask my agent's Task: at least six lines, growing with what is written, up
+   to a height where it scrolls inside itself (T-47). 14px is its padding and
+   border (`py-1.5`, a 1px border), which `border-box` counts in the height. */
+.crew-agent-task {
+  field-sizing: content;
+  min-height: calc(6lh + 14px);
+  max-height: calc(20lh + 14px);
+}
+
+/* Focus turns the Task's border to the accent edge, the chat composer's
+   (`.biorouter-composer-card:has(textarea:focus)` in `main.css`). The field
+   used to REMOVE its hover ring on focus, which left focus invisible (T-16).
+   Authored here, not as a Tailwind variant, so it cannot fail to generate. */
+.crew-agent-task:focus-visible {
+  border-color: var(--border-accent);
 }
 
 /* The model picker's list: tall enough for three provider groups, then it

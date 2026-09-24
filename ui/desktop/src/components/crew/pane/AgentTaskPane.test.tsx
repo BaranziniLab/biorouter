@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   connection,
   currentCrew,
@@ -9,10 +11,13 @@ import {
   installObserver,
   makeSnapshot,
   methods,
+  oldNotes,
   renderCrew,
+  stateFrame,
+  type FixtureSnapshot,
 } from '../channel/crewTestHarness';
 import { useCrew } from '../state/CrewControllerContext';
-import { agentCopy } from './copy';
+import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
 
 const mocks = vi.hoisted(() => ({
@@ -61,6 +66,75 @@ const openRouter = {
   resolved_tier: 'public',
   metadata: { display_name: 'OpenRouter', known_models: [{ name: 'free-model' }] },
 };
+const ollama = {
+  name: 'ollama',
+  is_configured: true,
+  resolved_tier: 'private',
+  affiliation: { kind: 'local', institutions: [] },
+  metadata: { display_name: 'Ollama', known_models: [{ name: 'qwen3.6' }] },
+};
+const labGateway = {
+  name: 'lab_gateway',
+  is_configured: true,
+  resolved_tier: 'private',
+  affiliation: { kind: 'unstated', institutions: [] },
+  metadata: { display_name: 'Lab gateway', known_models: [{ name: 'lab-model' }] },
+};
+
+/** The daemon's refusal, word for word (`crew/institution.rs` `check_provider`). */
+const DAEMON_REFUSAL =
+  "Daemon returned 400: Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution";
+
+/**
+ * A workspace whose institution is not the Versa model's: `foreign-synthetic`, as the security
+ * critic's `foreign-lab` was. Both the workspace and the connection name it, as a verified
+ * observation reports them.
+ */
+function installForeignWorkspace(
+  overrides: Partial<FixtureSnapshot> = {},
+  connectionInstitution: string | null = 'foreign-synthetic'
+) {
+  const base = makeSnapshot();
+  const snapshot = makeSnapshot({
+    workspace: { ...base.workspace, institution_id: 'foreign-synthetic', name: 'foreign-lab' },
+    ...overrides,
+  });
+  mocks.observeCrew.mockImplementation(
+    async (
+      _connectionId: string,
+      channelId: string | undefined,
+      _after: string | null,
+      signal: AbortSignal,
+      receive: (frame: unknown) => void
+    ) => {
+      if (signal.aborted) return 'terminal';
+      receive({ ...stateFrame({ snapshot }), connection_institution_id: connectionInstitution });
+      if (channelId) {
+        receive({
+          type: 'messages',
+          channel_id: channelId,
+          messages: [],
+          cursor: null,
+          reset: true,
+        });
+      }
+      return 'terminal';
+    }
+  );
+}
+
+function defaultModel(provider: string, model: string) {
+  mocks.read.mockImplementation(async (key: string) =>
+    key === 'BIOROUTER_PROVIDER' ? provider : key === 'BIOROUTER_MODEL' ? model : ''
+  );
+}
+
+/** `pane.css` without its comments, for the rules jsdom never applies. */
+const paneCss = readFileSync(join(__dirname, 'pane.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+function cssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(paneCss)?.[2] ?? '';
+}
 
 function Layout() {
   const crew = useCrew();
@@ -112,6 +186,10 @@ beforeEach(() => {
   vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(
     () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`
   );
+});
+
+afterEach(() => {
+  delete (window as unknown as { appConfig?: unknown }).appConfig;
 });
 
 describe('AgentTaskPane', () => {
@@ -221,6 +299,53 @@ describe('AgentTaskPane', () => {
     expect(runPosts()).toHaveLength(0);
   });
 
+  describe('Task', () => {
+    it('says the task itself is posted in the channel, on the field (T-24)', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
+      expect(agentCopy.taskPosted('#general')).toBe(
+        'Your task is posted in #general so everyone there can see what your agent was asked.'
+      );
+    });
+
+    it('adds that long pasted data will be visible, once the task reads as pasted data', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      const rows = (count: number) =>
+        Array.from({ length: count }, (_, index) => `sample_${index},0.4${index}`).join('\n');
+
+      fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES) } });
+      expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
+
+      fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES + 1) } });
+      expect(task).toHaveAccessibleDescription(
+        `${agentCopy.taskPosted('#general')} ${agentCopy.taskLong}`
+      );
+    });
+
+    it('is at least six lines, grows with its text, and shows focus with the accent edge (T-16)', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      expect(task).toHaveAttribute('rows', '6');
+      expect(task).toHaveClass('crew-agent-task');
+      // Focus used to REMOVE the hover ring and leave nothing (`focus:inset-ring-0`).
+      expect(task.className).not.toMatch(/focus:inset-ring-0/);
+      expect(task.className).not.toMatch(/(^|\s)focus(-visible)?:/);
+
+      // jsdom applies no stylesheet, so the authored rules are held at the source.
+      expect(cssRule('.crew-agent-task:focus-visible')).toMatch(
+        /border-color:\s*var\(--border-accent\);/
+      );
+      const sizing = cssRule('.crew-agent-task');
+      expect(sizing).toMatch(/field-sizing:\s*content;/);
+      expect(sizing).toMatch(/min-height:\s*calc\(6lh \+ 14px\);/);
+    });
+  });
+
   it('leaves an empty Task to native validation', async () => {
     const user = userEvent.setup();
     renderCrew(Layout);
@@ -246,6 +371,8 @@ describe('AgentTaskPane', () => {
         'gpt-5.5 · Versa'
       );
       expect(screen.queryByRole('button', { name: /^Model/ })).toBeNull();
+      // It wraps rather than ellipsizing: the provider was the part a truncation cut (T-47).
+      expect(screen.getByText('gpt-5.5 · Versa')).not.toHaveClass('truncate');
 
       fireEvent.change(task, { target: { value: 'use the default' } });
       await user.click(startButton());
@@ -306,6 +433,33 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByText(agentCopy.noModels)).toBeNull();
     });
 
+    it('names the model as the chat composer’s model chip does (T-47)', async () => {
+      const user = userEvent.setup();
+      // The composer's helper reads the predefined list the host provides.
+      (window as unknown as { appConfig: unknown }).appConfig = {
+        get: (key: string) =>
+          key === 'BIOROUTER_PREDEFINED_MODELS'
+            ? JSON.stringify([
+                {
+                  id: 1,
+                  name: 'gpt-5.5-2026-04-24',
+                  provider: 'versa_azure',
+                  alias: 'GPT-5.5',
+                  subtext: 'Versa',
+                },
+              ])
+            : undefined,
+      };
+      mocks.getProviders.mockResolvedValue([
+        { ...versa, metadata: { display_name: 'Versa API Azure', known_models: [] } },
+      ]);
+      defaultModel('versa_azure', 'gpt-5.5-2026-04-24');
+      renderCrew(Layout);
+      await openAgent(user);
+      expect(await screen.findByText('GPT-5.5 · Versa')).toBeInTheDocument();
+      expect(screen.queryByText(/gpt-5\.5-2026-04-24/)).toBeNull();
+    });
+
     it('warns when a Public model is chosen for a Restricted channel', async () => {
       const user = userEvent.setup();
       mocks.getProviders.mockResolvedValue([versa, openRouter]);
@@ -319,7 +473,161 @@ describe('AgentTaskPane', () => {
     });
   });
 
+  describe('Institution (T-47)', () => {
+    const mismatch = agentCopy.institutionMismatch(
+      'gpt-5.5',
+      'UCSF',
+      'foreign-lab',
+      'foreign-synthetic'
+    );
+
+    it('says before Start that the model is not approved here, and disables Start', async () => {
+      const user = userEvent.setup();
+      installForeignWorkspace();
+      mocks.getProviders.mockResolvedValue([versa, ollama]);
+      defaultModel('versa_azure', 'gpt-5.5');
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      expect(await screen.findByText(mismatch)).toBeInTheDocument();
+      expect(mismatch).toBe(
+        'gpt-5.5 is approved for UCSF. foreign-lab uses foreign-synthetic. Choose a model approved for foreign-synthetic, or a local model.'
+      );
+      expect(startButton()).toBeDisabled();
+      expect(startButton()).toHaveAccessibleDescription(mismatch);
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      fireEvent.click(startButton());
+      expect(runPosts()).toHaveLength(0);
+      expect(screen.queryByText(/resolved affiliation/)).toBeNull();
+    });
+
+    it('marks such models in the picker, and a local model starts', async () => {
+      const user = userEvent.setup();
+      installForeignWorkspace();
+      mocks.getProviders.mockResolvedValue([versa, ollama]);
+      defaultModel('versa_azure', 'gpt-5.5');
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await user.click(await screen.findByRole('button', { name: agentCopy.modelChangeName }));
+      const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
+      const notHere = agentCopy.notApproved('foreign-synthetic');
+      expect(within(list).getByRole('group', { name: /Versa/ })).toHaveTextContent(notHere);
+      expect(within(list).getByRole('option', { name: /^gpt-5\.5/ })).toHaveTextContent(notHere);
+      expect(within(list).getByRole('group', { name: /Ollama/ })).not.toHaveTextContent(notHere);
+
+      await user.click(within(list).getByRole('option', { name: /^qwen3\.6/ }));
+      expect(screen.queryByText(mismatch)).toBeNull();
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      expect(startButton()).toBeEnabled();
+      await user.click(startButton());
+      await waitFor(() => expect(runPosts()).toHaveLength(1));
+      expect(runPosts()[0][2]).toMatchObject({ provider: 'ollama', model: 'qwen3.6' });
+    });
+
+    it('explains a private model that states no institution the same way', async () => {
+      const user = userEvent.setup();
+      installForeignWorkspace();
+      mocks.getProviders.mockResolvedValue([labGateway]);
+      defaultModel('lab_gateway', 'lab-model');
+      renderCrew(Layout);
+      await openAgent(user);
+      expect(
+        await screen.findByText(
+          agentCopy.institutionUnstated('lab-model', 'foreign-lab', 'foreign-synthetic')
+        )
+      ).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+    });
+
+    it('leaves Start to the daemon where it would not ask about the institution', async () => {
+      const user = userEvent.setup();
+      // A public workspace, a public connection and a public-safe channel: nothing is protected, so
+      // the daemon holds no model to the institution, and neither does the pane.
+      const base = makeSnapshot();
+      installForeignWorkspace({
+        workspace: {
+          ...base.workspace,
+          mode: 'public',
+          institution_id: 'foreign-synthetic',
+          name: 'foreign-lab',
+        },
+        channels: [{ ...general, classification: 'public_safe' }, oldNotes],
+      });
+      installDaemon([{ ...connection, mode: 'public' }]);
+      mocks.getProviders.mockResolvedValue([versa]);
+      defaultModel('versa_azure', 'gpt-5.5');
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await screen.findByText('gpt-5.5 · Versa');
+      expect(screen.queryByText(mismatch)).toBeNull();
+      fireEvent.change(task, { target: { value: 'public work' } });
+      expect(startButton()).toBeEnabled();
+      await user.click(startButton());
+      await waitFor(() => expect(runPosts()).toHaveLength(1));
+    });
+
+    it('rewords the daemon’s "resolved affiliation" refusal, and drops it for a new choice', async () => {
+      const user = userEvent.setup();
+      // The pane thinks Versa is fine here (a UCSF workspace); the daemon decides otherwise.
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST') {
+          throw new Error(DAEMON_REFUSAL);
+        }
+        return {};
+      });
+      mocks.getProviders.mockResolvedValue([versa, ollama]);
+      defaultModel('versa_azure', 'gpt-5.5');
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await screen.findByText('gpt-5.5 · Versa');
+      fireEvent.change(task, { target: { value: 'try it' } });
+      await user.click(startButton());
+      await waitFor(() => expect(runPosts()).toHaveLength(1));
+      const pane = screen.getByRole('complementary', { name: agentCopy.title });
+      expect(await within(pane).findByRole('alert')).toHaveTextContent(
+        agentCopy.institutionRefused('gpt-5.5', 'UCSF')
+      );
+      expect(screen.queryByText(/resolved affiliation/)).toBeNull();
+
+      await user.click(screen.getByRole('button', { name: agentCopy.modelChangeName }));
+      await user.click(await screen.findByRole('option', { name: /^qwen3\.6/ }));
+      await waitFor(() => expect(within(pane).queryByRole('alert')).toBeNull());
+      expect(currentCrew().error).toBeNull();
+    });
+
+    it('still asks the daemon for a model whose institution it cannot see', async () => {
+      const user = userEvent.setup();
+      installForeignWorkspace();
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST') {
+          throw new Error(DAEMON_REFUSAL);
+        }
+        return {};
+      });
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'try it' } });
+      await chooseModel(user, 'fixture-model');
+      expect(startButton()).toBeEnabled();
+      await user.click(startButton());
+      await waitFor(() => expect(runPosts()).toHaveLength(1));
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        agentCopy.institutionRefused('fixture-model', 'foreign-synthetic')
+      );
+    });
+  });
+
   describe('Advanced', () => {
+    it('is not offered when it has nothing to add', async () => {
+      const user = userEvent.setup();
+      installObserver({ snapshot: makeSnapshot({ channels: [general, oldNotes] }) });
+      renderCrew(Layout);
+      await openAgent(user);
+      expect(screen.queryByRole('button', { name: 'Advanced' })).toBeNull();
+      expect(screen.queryByText(agentCopy.advancedSummary(0))).toBeNull();
+    });
+
     it('keeps Also read unmounted while closed and summarizes what it adds', async () => {
       const user = userEvent.setup();
       renderCrew(Layout);

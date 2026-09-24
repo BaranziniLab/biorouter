@@ -39,9 +39,11 @@ function byDisplayName(a: MemberRow, b: MemberRow): number {
  * the same set, and the same count, as the header's member stack — never the team's people.
  *
  * Every row names the person at an authority point, "Display name (@username)", with Owner, you
- * and former-member markers. The row's `⋯` holds Copy person ID (the only place a person's ID
- * appears) and, for the owner acting on someone else, Make owner… and Remove from #name…, which
- * open the transfer dialog and the removal confirmation. Channel invitations the viewer sent and
+ * and former-member markers. The row's `⋯` holds Copy username and Copy person ID (the only place
+ * a person's ID appears) and, for the owner acting on someone else, Make owner… and Remove from
+ * #name…, which open the transfer dialog and the removal confirmation. A `⋯` is never drawn for
+ * Copy person ID alone (T-33): a machine string is not worth a menu of its own, so a row with
+ * nothing else to offer (an unknown member) has no `⋯`. Channel invitations the viewer sent and
  * nobody has accepted yet appear as muted "invited" rows.
  *
  * The owner adds people from here; anyone else is told who can, instead of being shown nothing.
@@ -98,6 +100,9 @@ export function MembersTab({ className }: MembersTabProps) {
         {members.map(({ id, person, isOwner: rowIsOwner }) => {
           const label = personLabel(person ?? id, 'authority', dir);
           const canManage = ownerTools && id !== actorId && !(person?.isFormer ?? false);
+          const username = person?.username ?? '';
+          // Copy person ID never stands alone in a menu (T-33).
+          const hasMenu = canManage || username !== '';
           return (
             <li
               key={id}
@@ -118,55 +123,62 @@ export function MembersTab({ className }: MembersTabProps) {
                 />
               </span>
               {rowIsOwner && <Badge tone="neutral">{membersCopy.owner}</Badge>}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    shape="round"
-                    size="sm"
-                    aria-label={membersCopy.more(label)}
-                  >
-                    <MoreHorizontal aria-hidden="true" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  {canManage && (
-                    <>
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          crew.openDialog({
-                            kind: 'transfer-ownership',
-                            channelId: channel.id,
-                            successorId: id,
-                          })
-                        }
-                      >
-                        {membersCopy.makeOwner}
+              {hasMenu && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      shape="round"
+                      size="sm"
+                      aria-label={membersCopy.more(label)}
+                    >
+                      <MoreHorizontal aria-hidden="true" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    {username !== '' && (
+                      <DropdownMenuItem onSelect={() => void copyText(username)}>
+                        {membersCopy.copyUsername}
                       </DropdownMenuItem>
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onSelect={() =>
-                          crew.openDialog({
-                            kind: 'confirm',
-                            confirm: {
-                              action: 'remove-channel-member',
+                    )}
+                    <DropdownMenuItem onSelect={() => void copyText(id)}>
+                      {membersCopy.copyPersonId}
+                    </DropdownMenuItem>
+                    {canManage && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            crew.openDialog({
+                              kind: 'transfer-ownership',
                               channelId: channel.id,
-                              principalId: id,
-                            },
-                          })
-                        }
-                      >
-                        {membersCopy.remove(name)}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                    </>
-                  )}
-                  <DropdownMenuItem onSelect={() => void copyText(id)}>
-                    {membersCopy.copyPersonId}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                              successorId: id,
+                            })
+                          }
+                        >
+                          {membersCopy.makeOwner}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() =>
+                            crew.openDialog({
+                              kind: 'confirm',
+                              confirm: {
+                                action: 'remove-channel-member',
+                                channelId: channel.id,
+                                principalId: id,
+                              },
+                            })
+                          }
+                        >
+                          {membersCopy.remove(name)}
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </li>
           );
         })}

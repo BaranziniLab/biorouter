@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { cn } from '../../../utils';
 import { agentCopy } from './copy';
+import { modelDisplay } from './presentation';
 import { providerLabel, type ModelChoice } from './useConfiguredModels';
 import './pane.css';
 
@@ -71,6 +72,12 @@ export interface CrewModelPickerProps {
   onOpenChange?(open: boolean): void;
   /** The id of a visible "Model" label; without one the trigger labels itself "Model". */
   labelledBy?: string;
+  /**
+   * Why a provider's models cannot start a task here ("Not approved for foreign-synthetic"), or
+   * `null`. Its models stay choosable — the pane explains the choice and the daemon still decides —
+   * but each is marked, so a person sees it before choosing (T-47).
+   */
+  unavailableReason?(provider: ProviderDetails): string | null;
   /** Field validation: the choice is missing. */
   invalid?: boolean;
   describedBy?: string;
@@ -83,7 +90,8 @@ export interface CrewModelPickerProps {
  * `Command` whose trigger is named "Model" followed by its value ("Choose a model" when empty).
  * Models are grouped by configured provider, each heading carrying the provider's tier and
  * affiliation marks, and typing a name that is not listed offers "Use “{text}” with {provider}",
- * which keeps the free text the old field allowed.
+ * which keeps the free text the old field allowed. A provider the workspace's institution has not
+ * approved is marked on its heading and on each of its models (`unavailableReason`).
  *
  * It chooses; it does not authorize. The daemon checks the provider's tier and institution against
  * the workspace when the task starts.
@@ -98,6 +106,7 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
       open: openProp,
       onOpenChange,
       labelledBy,
+      unavailableReason,
       invalid = false,
       describedBy,
       disabled = false,
@@ -137,6 +146,8 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
 
     const selectedProvider = providers.find((item) => item.name === provider);
     const hasValue = provider !== '' && model !== '';
+    const shown = modelDisplay({ provider, model }, selectedProvider);
+    const triggerValue = agentCopy.modelChoice(shown.model, shown.provider);
     const needle = query.trim().toLowerCase();
     const groups = useMemo(
       () =>
@@ -153,9 +164,15 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
             needle !== '' && !all.some((name) => name.toLowerCase() === needle)
               ? query.trim()
               : null;
-          return { provider: item, label, listed, freeText };
+          return {
+            provider: item,
+            label,
+            listed,
+            freeText,
+            unavailable: unavailableReason?.(item) ?? null,
+          };
         }),
-      [providers, models, needle, query]
+      [providers, models, needle, query, unavailableReason]
     );
     const anyRows = groups.some((group) => group.listed.length > 0 || group.freeText);
 
@@ -182,7 +199,7 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
             aria-invalid={invalid || undefined}
             aria-describedby={describedBy}
             className={cn(
-              'crew-model-trigger biorouter-focus-surface flex h-control-md w-full min-w-0 items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-2 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 aria-invalid:border-border-danger disabled:cursor-not-allowed disabled:opacity-50',
+              'crew-model-trigger biorouter-focus-surface flex min-h-control-md w-full min-w-0 items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-2 py-1 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 aria-invalid:border-border-danger disabled:cursor-not-allowed disabled:opacity-50',
               className
             )}
           >
@@ -191,16 +208,15 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
                 {agentCopy.model}
               </span>
             )}
+            {/* Wraps rather than ellipsizing: the provider is the part a truncation cut (T-47). */}
             <span
               id={valueId}
               className={cn(
-                'min-w-0 flex-1 truncate',
+                'min-w-0 flex-1 break-words',
                 hasValue ? 'text-text-default' : 'text-text-muted'
               )}
             >
-              {hasValue
-                ? `${model} · ${providerLabel(selectedProvider, provider)}`
-                : agentCopy.modelEmpty}
+              {hasValue ? triggerValue : agentCopy.modelEmpty}
             </span>
             {hasValue && <ModelTierMarks provider={selectedProvider} />}
             <ChevronDown
@@ -241,9 +257,14 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
                     <CommandGroup
                       key={group.provider.name}
                       heading={
-                        <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-flex flex-wrap items-center gap-1.5">
                           <span>{group.label}</span>
                           <ModelTierMarks provider={group.provider} />
+                          {group.unavailable && (
+                            <span className="text-supporting text-text-muted">
+                              {group.unavailable}
+                            </span>
+                          )}
                         </span>
                       }
                     >
@@ -255,7 +276,14 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
                             selected={selected}
                             onSelect={() => choose({ provider: group.provider.name, model: name })}
                           >
-                            <span className="min-w-0 flex-1 truncate">{name}</span>
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate">{name}</span>
+                              {group.unavailable && (
+                                <span className="text-supporting text-text-muted">
+                                  {group.unavailable}
+                                </span>
+                              )}
+                            </span>
                             {selected && (
                               <Check
                                 aria-hidden="true"
@@ -271,8 +299,15 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
                             choose({ provider: group.provider.name, model: group.freeText ?? '' })
                           }
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            {agentCopy.modelUse(group.freeText, group.label)}
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate">
+                              {agentCopy.modelUse(group.freeText, group.label)}
+                            </span>
+                            {group.unavailable && (
+                              <span className="text-supporting text-text-muted">
+                                {group.unavailable}
+                              </span>
+                            )}
                           </span>
                         </CommandItem>
                       )}

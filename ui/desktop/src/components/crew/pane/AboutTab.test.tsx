@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 describe('AboutTab', () => {
-  it('names the channel, its content rule, owner, creator and team without an ID', async () => {
+  it('names the channel, who can read it, owner, creator and team without an ID', async () => {
     renderCrew(() => <About />);
     const about = await shown();
     expect(within(about).getByText('#general')).toBeInTheDocument();
@@ -61,6 +61,32 @@ describe('AboutTab', () => {
     expect(within(about).getAllByText('Alice Chen')).toHaveLength(2);
     expect(within(about).getByText('Analysis Lab')).toBeInTheDocument();
     expect(about.textContent).not.toMatch(UUID);
+  });
+
+  it('says who can read a Restricted channel in words, not "Content: Restricted" (T-67)', async () => {
+    renderCrew(() => <About />);
+    const about = await shown();
+    const label = within(about).getByText(aboutCopy.whoCanRead);
+    expect(label.tagName).toBe('DT');
+    expect(label.nextElementSibling).toHaveTextContent(
+      `${aboutCopy.restricted}${aboutCopy.restrictedHint}`
+    );
+    expect(aboutCopy.restricted).toBe('Private models only');
+    expect(within(about).queryByText('Content')).toBeNull();
+    expect(within(about).queryByText('Restricted')).toBeNull();
+  });
+
+  it('keeps Copy channel ID out of the danger zone, above it (T-67)', async () => {
+    renderCrew(() => <About />);
+    const about = await shown();
+    const zone = within(about)
+      .getByRole('heading', { name: aboutCopy.dangerZone })
+      .closest('section') as HTMLElement;
+    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    expect(zone).not.toContainElement(copy);
+    expect(copy.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Its words sit on the pane's one inset, not 12px inside it (T-62).
+    expect(copy).toHaveClass('crew-pane-flush');
   });
 
   it('gives the owner Transfer ownership…, the danger zone and Copy channel ID', async () => {

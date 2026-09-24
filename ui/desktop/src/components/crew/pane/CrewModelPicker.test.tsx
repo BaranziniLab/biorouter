@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../api';
 import { agentCopy } from './copy';
 import { CrewModelPicker } from './CrewModelPicker';
@@ -42,10 +42,12 @@ function Picker({
   providers = [versa, ollama, openRouter],
   initial = null,
   onChange = () => undefined,
+  unavailableReason,
 }: {
   providers?: ProviderDetails[] | null;
   initial?: ModelChoice | null;
   onChange?: (choice: ModelChoice) => void;
+  unavailableReason?: (provider: ProviderDetails) => string | null;
 }) {
   const [value, setValue] = useState<ModelChoice | null>(initial);
   return (
@@ -53,6 +55,7 @@ function Picker({
       providers={providers}
       provider={value?.provider ?? ''}
       model={value?.model ?? ''}
+      unavailableReason={unavailableReason}
       onChange={(choice) => {
         setValue(choice);
         onChange(choice);
@@ -68,6 +71,10 @@ beforeEach(() => {
   mocks.getProviderModels.mockImplementation(async (name: string) =>
     name === 'ollama' ? ['qwen3.6', 'gemma4'] : []
   );
+});
+
+afterEach(() => {
+  delete (window as unknown as { appConfig?: unknown }).appConfig;
 });
 
 describe('CrewModelPicker', () => {
@@ -162,6 +169,54 @@ describe('CrewModelPicker', () => {
     await user.click(trigger());
     await user.click(await screen.findByRole('option', { name: /^fixture-model/ }));
     expect(trigger()).toHaveAccessibleName('Model fixture-model · fixture-provider');
+  });
+
+  it('marks the models this workspace’s institution has not approved, and still lets them be chosen (T-47)', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const reason = agentCopy.notApproved('foreign-synthetic');
+    render(
+      <Picker
+        onChange={onChange}
+        unavailableReason={(provider) => (provider.name === 'versa_azure' ? reason : null)}
+      />
+    );
+    await user.click(trigger());
+    const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
+    const versaGroup = await within(list).findByRole('group', { name: /Versa/ });
+    expect(versaGroup).toHaveAccessibleName(new RegExp(reason));
+    for (const option of within(versaGroup).getAllByRole('option')) {
+      expect(option).toHaveTextContent(reason);
+    }
+    const ollamaGroup = within(list).getByRole('group', { name: /Ollama/ });
+    expect(ollamaGroup).not.toHaveTextContent(reason);
+
+    // The pane explains the choice and the daemon decides; the picker only marks it.
+    await user.click(within(versaGroup).getByRole('option', { name: /^gpt-5\.5-mini/ }));
+    expect(onChange).toHaveBeenCalledWith({ provider: 'versa_azure', model: 'gpt-5.5-mini' });
+  });
+
+  it('names the choice as the chat composer does, and wraps it rather than cutting it (T-47)', async () => {
+    (window as unknown as { appConfig: unknown }).appConfig = {
+      get: (key: string) =>
+        key === 'BIOROUTER_PREDEFINED_MODELS'
+          ? JSON.stringify([
+              {
+                id: 1,
+                name: 'gpt-5.5-2026-04-24',
+                provider: 'versa_azure',
+                alias: 'GPT-5.5',
+                subtext: 'Versa',
+              },
+            ])
+          : undefined,
+    };
+    render(<Picker initial={{ provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' }} />);
+    expect(trigger()).toHaveAccessibleName('Model GPT-5.5 · Versa');
+    const value = within(trigger()).getByText('GPT-5.5 · Versa');
+    expect(value).not.toHaveClass('truncate');
+    expect(trigger()).toHaveClass('min-h-control-md');
+    expect(trigger()).not.toHaveClass('h-control-md');
   });
 
   it('says so while providers are loading', async () => {
