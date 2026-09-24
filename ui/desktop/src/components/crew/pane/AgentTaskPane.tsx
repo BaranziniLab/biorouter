@@ -6,38 +6,26 @@ import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
+import type { ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import { agentCopy, unknownOutcomeCopy } from './copy';
 import { CrewModelPicker, ModelTierMarks } from './CrewModelPicker';
+import { newestTaskIn } from './newestTask';
 import { usePanePresentation } from './presentation';
 import { providerLabel, useConfiguredModels, type ModelChoice } from './useConfiguredModels';
 import './pane.css';
 
 export interface AgentTaskPaneProps {
+  /**
+   * Scroll to and highlight a task's row in the timeline ("Show task in channel"). The pane
+   * passes the viewer's newest task in this channel and closes itself. The highlight belongs to
+   * whoever renders the timeline (its `highlightRunId`), so the layout wires it here through
+   * `DetailsPane`'s `agent` slot, as it does for the sidebar's Agents section.
+   */
+  onShowTask?(run: ObservedRun): void;
+  /** Layout only. */
   className?: string;
-}
-
-/**
- * Bring the viewer's newest task row in this channel into view and wash it once. The row is the
- * timeline's; it is found by its `data-crew-run-id`, and nothing happens when it is not on screen.
- */
-function showTaskRow(runId: string) {
-  window.requestAnimationFrame(() => {
-    const row = Array.from(document.querySelectorAll<HTMLElement>('[data-crew-run-id]')).find(
-      (element) => element.getAttribute('data-crew-run-id') === runId
-    );
-    if (!row) return;
-    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    row.scrollIntoView?.({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
-    row.classList.remove('crew-highlight');
-    window.requestAnimationFrame(() => {
-      row.classList.add('crew-highlight');
-      row.addEventListener('animationend', () => row.classList.remove('crew-highlight'), {
-        once: true,
-      });
-    });
-  });
 }
 
 /**
@@ -58,12 +46,14 @@ function showTaskRow(runId: string) {
  * - After `crew_start_outcome_unknown` the gate asks the person to inspect the previous task
  *   first. Start stays rendered and disabled (C12); **Start a new task** is enabled by the one
  *   checkbox and runs `form.reportValidity()` before a deliberate restart, which rotates the
- *   request id. The lock itself is module-scoped in the controller (C10).
+ *   request id. The lock itself is module-scoped in the controller (C10). **Show task in channel**
+ *   closes the pane and hands the viewer's newest task here to `onShowTask`, which the timeline
+ *   answers by scrolling to and washing that task's row.
  *
  * React authorizes nothing here: the daemon checks privacy, the model's tier and institution, and
  * the posting grant when the task starts.
  */
-export function AgentTaskPane({ className }: AgentTaskPaneProps) {
+export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const { crew, snapshot, channel, team, verified, workspace } = usePanePresentation();
   const navigate = useNavigate();
   const [seed] = useState(() => crew.draft.body);
@@ -149,9 +139,9 @@ export function AgentTaskPane({ className }: AgentTaskPaneProps) {
   };
   const showTask = () => {
     crew.setInspectedPriorRun(false);
-    const run = [...crew.runs].reverse().find((item) => item.channel_id === channel.id);
+    const run = newestTaskIn(crew.runs, crew.messages, channel.id);
     crew.closePane();
-    if (run) showTaskRow(run.run_id);
+    if (run) onShowTask?.(run);
   };
 
   const startDisabled = pending || Boolean(unknown) || !verified || channel.archived || noModels;

@@ -2,15 +2,19 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  alice,
   connection,
   currentCrew,
   general,
   installDaemon,
   installObserver,
+  message,
+  methods,
   renderCrew,
 } from '../channel/crewTestHarness';
-import { CrewHttpError } from '../crewApi';
+import { CrewHttpError, type ObservedRun } from '../crewApi';
 import { useCrew } from '../state/CrewControllerContext';
+import { AgentTaskPane } from './AgentTaskPane';
 import { agentCopy, unknownOutcomeCopy } from './copy';
 import { DetailsPane } from './DetailsPane';
 
@@ -22,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   getProviderModels: vi.fn(),
   navigate: vi.fn(),
+  onShowTask: vi.fn(),
 }));
 
 vi.mock('../crewApi', async () => {
@@ -61,7 +66,9 @@ function Layout() {
           Ask my agent
         </button>
       </section>
-      <DetailsPane />
+      <DetailsPane
+        agent={<AgentTaskPane onShowTask={(run: ObservedRun) => mocks.onShowTask(run)} />}
+      />
     </div>
   );
 }
@@ -166,30 +173,47 @@ describe('AgentTaskPane: the unknown-outcome gate', () => {
         throw new CrewHttpError('outcome unknown', 502, 'crew_start_outcome_unknown');
       return {};
     });
+    // The daemon lists runs from a map, so their order says nothing about age: the oldest task is
+    // listed last here, where "the last one listed" would pick it. The messages are the clock.
+    const runs: ObservedRun[] = [
+      { run_id: 'run-new', channel_id: general.id, session_id: 's-new', status: 'running' },
+      { run_id: 'run-setup', channel_id: general.id, session_id: 's-setup', status: 'starting' },
+      { run_id: 'run-methods', channel_id: methods.id, session_id: 's-m', status: 'running' },
+      { run_id: 'run-old', channel_id: general.id, session_id: 's-old', status: 'completed' },
+    ];
+    const byAgent = (sequence: string, runId: string) => ({
+      ...message(sequence),
+      actor_id: alice.id,
+      run_id: runId,
+    });
     installObserver({
-      runs: [{ run_id: 'run-9', channel_id: general.id, session_id: 's-9', status: 'running' }],
+      runs,
+      messages: [
+        byAgent('1', 'run-old'),
+        message('2'),
+        byAgent('3', 'run-new'),
+        // A later post from the older task does not make it the newer one.
+        byAgent('4', 'run-old'),
+      ],
     });
     renderCrew(Layout);
-    const row = document.createElement('div');
-    row.setAttribute('data-crew-run-id', 'run-9');
-    document.body.appendChild(row);
-    try {
-      const task = await openAgent(user);
-      fireEvent.change(task, { target: { value: 'uncertain' } });
-      await chooseModel(user, 'fixture-model');
-      await user.click(startButton());
-      await screen.findByText(unknownOutcomeCopy.title);
+    await waitFor(() => expect(currentCrew().messages).toHaveLength(4));
+    const task = await openAgent(user);
+    fireEvent.change(task, { target: { value: 'uncertain' } });
+    await chooseModel(user, 'fixture-model');
+    await user.click(startButton());
+    await screen.findByText(unknownOutcomeCopy.title);
 
-      await user.click(screen.getByRole('checkbox'));
-      await user.click(screen.getByRole('button', { name: unknownOutcomeCopy.openHistory }));
-      expect(mocks.navigate).toHaveBeenCalledWith('/sessions');
-      expect(screen.getByRole('checkbox')).not.toBeChecked();
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: unknownOutcomeCopy.openHistory }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/sessions');
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
 
-      await user.click(screen.getByRole('button', { name: unknownOutcomeCopy.showTask }));
-      expect(currentCrew().ui.pane).toBeNull();
-      await waitFor(() => expect(row).toHaveClass('crew-highlight'));
-    } finally {
-      row.remove();
-    }
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: unknownOutcomeCopy.showTask }));
+    expect(currentCrew().ui.pane).toBeNull();
+    expect(currentCrew().inspectedPriorRun).toBe(false);
+    expect(mocks.onShowTask).toHaveBeenCalledTimes(1);
+    expect(mocks.onShowTask).toHaveBeenCalledWith(runs[0]);
   });
 });

@@ -32,7 +32,11 @@ export interface DetailsPaneProps {
    * the files and access areas.
    */
   tabs?: Partial<Record<DetailsTab, ReactNode>>;
-  /** Ask my agent. Defaults to this area's `AgentTaskPane`. */
+  /**
+   * Ask my agent. Defaults to this area's `AgentTaskPane`, which has no way to reach the timeline.
+   * The layout passes `<AgentTaskPane onShowTask={…} />` so "Show task in channel" highlights the
+   * task's row.
+   */
   agent?: ReactNode;
   /** Chat access (grant and revoke), from the access area. */
   chatAccess?: ReactNode;
