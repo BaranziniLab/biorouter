@@ -52,6 +52,13 @@ describe('CrewSidebar', () => {
     expect(scroll).not.toContainElement(within(nav).getByText('alice@hpc.ucsf.edu'));
   });
 
+  it('explains the arrow keys on the landmark, since Tab reaches only one row (T-64)', () => {
+    renderWithCrew(<CrewSidebar />);
+    const nav = screen.getByRole('navigation', { name: sidebarCopy.navLabel });
+    expect(nav).toHaveAttribute('aria-description', sidebarCopy.navDescription);
+    expect(sidebarCopy.navDescription).toMatch(/Up and Down arrow keys/);
+  });
+
   it('shows the pinned verified sentence exactly once at rest', () => {
     renderWithCrew(<CrewSidebar />);
     expect(screen.getAllByText(crewStatusCopy.verified)).toHaveLength(1);
@@ -122,10 +129,17 @@ describe('CrewSidebar', () => {
  * sidebar's stylesheet declares a drag region.
  */
 describe('crew-sidebar.css', () => {
-  const css = readFileSync(join(__dirname, 'crew-sidebar.css'), 'utf8').replace(
-    /\/\*[\s\S]*?\*\//g,
-    ' '
-  );
+  const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const css = stripComments(readFileSync(join(__dirname, 'crew-sidebar.css'), 'utf8'));
+  const appCss = stripComments(readFileSync(join(__dirname, '..', 'crew-app.css'), 'utf8'));
+
+  /** The declarations of every rule whose selector list is exactly `selector`. */
+  function bodiesOf(source: string, selector: string): string[] {
+    const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
+    return Array.from(source.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+      .filter(([, found]) => normalize(found) === normalize(selector))
+      .map(([, , body]) => body);
+  }
 
   it('reserves the titlebar controls with a margin when the app sidebar is collapsed', () => {
     const rule = /([^{}]*\.crew-sidebar-switcher)\s*\{([^}]*)\}/g;
@@ -143,5 +157,77 @@ describe('crew-sidebar.css', () => {
 
   it('declares no -webkit-app-region at all', () => {
     expect(css).not.toMatch(/app-region/);
+  });
+
+  /**
+   * T-21: inside a fixed 240px column the 172px macOS reserve left the switcher 51px ("c.").
+   * The column grows by the reserve under the SAME collapsed state, and the name keeps 10ch.
+   */
+  it('widens the Crew column by the titlebar reserve while the app sidebar is collapsed', () => {
+    const [body] = bodiesOf(
+      appCss,
+      "[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-app"
+    );
+    expect(body).toBeDefined();
+    expect(body).toMatch(
+      /--crew-sidebar-width\s*:\s*calc\(240px \+ var\(--biorouter-titlebar-control-reserve\) - 16px\)/
+    );
+    // The column is sized by that property, and 240px stays the resting width.
+    expect(bodiesOf(appCss, '.crew-app')[0]).toMatch(/--crew-sidebar-width:\s*240px/);
+    expect(bodiesOf(appCss, '.crew-app')[0]).toMatch(
+      /grid-template-columns:\s*var\(--crew-sidebar-width\)/
+    );
+    expect(bodiesOf(css, '.crew-sidebar-switcher-name')[0]).toMatch(/min-width:\s*10ch/);
+  });
+
+  /**
+   * T-16: the focus fill alone is 1.10–1.44:1 against what it sits on. Every focusable row
+   * also draws the inset accent edge, and keeps the fill for hover.
+   */
+  it.each([
+    '.crew-sidebar-row',
+    '.crew-sidebar-switcher',
+    '.crew-sidebar-team-toggle',
+    '.crew-sidebar-you-trigger',
+  ])('gives %s:focus-visible the inset accent edge', (selector) => {
+    const [focus] = bodiesOf(css, `${selector}:focus-visible`);
+    expect(focus).toMatch(/box-shadow:\s*inset 0 0 0 2px var\(--border-accent\)/);
+    expect(focus).toMatch(/outline:\s*none/);
+    const [hover] = bodiesOf(css, `${selector}:hover`);
+    if (selector !== '.crew-sidebar-team-toggle') {
+      expect(hover).toMatch(/background-color/);
+      expect(hover).not.toMatch(/box-shadow/);
+    }
+  });
+
+  it('gives a focused text field in Crew the accent edge, never over a danger edge', () => {
+    const [body] = bodiesOf(
+      appCss,
+      ".crew-app :read-write:focus-visible:not([aria-invalid='true'])"
+    );
+    expect(body).toMatch(/border-color:\s*var\(--border-accent\)/);
+  });
+
+  it('keeps the selected channel’s bar in forced colours (T-58)', () => {
+    const block = /@media \(forced-colors: active\)\s*\{([\s\S]*?)\}\s*\}/.exec(css)?.[1] ?? '';
+    expect(block).toMatch(/\.crew-sidebar-row\[aria-current='page'\]::before\s*\{/);
+    expect(block).toMatch(/background-color:\s*Highlight/);
+    expect(block).toMatch(/forced-color-adjust:\s*none/);
+  });
+
+  it('matches the app sidebar’s rhythm and tints the whole team header (T-62)', () => {
+    const [row] = bodiesOf(css, '.crew-sidebar-row');
+    expect(row).toMatch(/font-size:\s*var\(--text-body\)/);
+    expect(bodiesOf(css, ".crew-sidebar-row[aria-current='page']")[0]).toMatch(
+      /font-weight:\s*500/
+    );
+    const [list] = bodiesOf(css, '.crew-sidebar-list');
+    expect(list).toMatch(/padding:\s*0 8px/);
+    expect(list).toMatch(/gap:\s*2px/);
+    expect(bodiesOf(css, '.crew-sidebar-team-header:hover')[0]).toMatch(/background-color/);
+    expect(bodiesOf(css, '.crew-sidebar-team-toggle:hover')).toEqual([]);
+    expect(bodiesOf(css, '.crew-sidebar-you-trigger')[0]).toMatch(
+      /transition:\s*background-color var\(--dur-fast-min\) var\(--ease-out\)/
+    );
   });
 });

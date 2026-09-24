@@ -28,6 +28,9 @@ export interface CrewSidebarProps {
  * sections with "+ Add team", and the Agents slot. The column's 240px width belongs to the
  * layout (`.crew-sidebar` in `crew-app.css`); this component fills it.
  *
+ * The team and channel rows are one roving-focus list, so Tab alone reaches only one of them;
+ * the landmark's `aria-description` says how the arrow keys move through it (T-64).
+ *
  * Unmounted until the layout composes it. It reads everything through `useCrew()`, and opens
  * other areas' dialogs and panes through the controller's intents.
  */
@@ -37,6 +40,7 @@ export function CrewSidebar({ agentsSection, renameEnabled = false }: CrewSideba
     <SidebarAnnouncer>
       <nav
         aria-label={sidebarCopy.navLabel}
+        aria-description={sidebarCopy.navDescription}
         className="crew-sidebar-nav"
         aria-busy={crew.connection ? undefined : true}
         data-crew-sidebar-nav=""

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
+import { COPY_FEEDBACK_MS } from './YouMenu';
 import { YouRow } from './YouRow';
 import { connection, makeController, renderWithCrew } from './sidebarTestUtils';
 
@@ -61,16 +62,28 @@ describe('YouRow', () => {
     expect(avatar).toHaveTextContent('');
   });
 
-  it('adds a neutral "Profile: {name}" badge in a dev profile', () => {
+  it('keeps a dev profile’s badge off the row and in the You menu’s header (T-71)', async () => {
+    const user = userEvent.setup();
     stubAppConfig({ BIOROUTER_DEV_PROFILE_NAME: 'alice' });
     renderYou();
-    const badge = screen.getByText(copy.devProfile('alice')).parentElement as HTMLElement;
+    const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
+    // The row keeps its width for the name, and its name carries no development detail.
+    expect(screen.queryByText(copy.devProfile('alice'))).toBeNull();
+    expect(trigger).not.toHaveAccessibleName(/Profile:/);
+
+    await user.click(trigger);
+    const menu = await screen.findByRole('menu');
+    const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
+    const badge = within(header).getByText(copy.devProfile('alice')).parentElement as HTMLElement;
     expect(badge.className).toContain('bg-background-medium');
   });
 
-  it('shows no profile badge outside a dev profile', () => {
+  it('shows no profile badge outside a dev profile', async () => {
+    const user = userEvent.setup();
     stubAppConfig({});
     renderYou();
+    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await screen.findByRole('menu');
     expect(screen.queryByText(/^Profile:/)).toBeNull();
   });
 
@@ -117,23 +130,79 @@ describe('YouRow', () => {
       'aria-disabled',
       'true'
     );
+    // A disabled item says why, above the items and in the menu's description (T-71).
+    const note = menu.querySelector('[data-crew-menu-note]') as HTMLElement;
+    expect(note).toHaveTextContent(sidebarCopy.unavailable.notConnected);
+    expect(menu).toHaveAttribute('aria-describedby', note.id);
+    expect(
+      within(menu).getByRole('menuitem', { name: copy.editProfile })
+    ).toHaveAccessibleDescription(sidebarCopy.unavailable.notConnected);
     await user.click(within(menu).getByRole('menuitem', { name: copy.keys }));
     expect(controller.openDialog).toHaveBeenCalledWith({ kind: 'keys' });
   });
 
-  it('Copy my username copies the bare username and confirms without a toast', async () => {
+  it('tells a joiner the profile items open once they join', async () => {
+    const user = userEvent.setup();
+    renderYou(makeController({ snapshot: null, observedPrivacy: null, status: 'not-joined' }));
+    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    const menu = await screen.findByRole('menu');
+    expect(menu.querySelector('[data-crew-menu-note]')).toHaveTextContent(
+      'Available after you join'
+    );
+  });
+
+  it('gives no reason while every item is available', async () => {
+    const user = userEvent.setup();
+    renderYou();
+    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    const menu = await screen.findByRole('menu');
+    expect(menu.querySelector('[data-crew-menu-note]')).toBeNull();
+    expect(menu).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('Copy my username copies the bare username and confirms on the item, without a toast', async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
-    renderYou();
+    const controller = makeController();
+    renderYou(controller);
     await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
     const menu = await screen.findByRole('menu');
     await user.click(within(menu).getByRole('menuitem', { name: copy.copyUsername }));
     expect(writeText).toHaveBeenCalledWith('alice');
+    // The menu stays open and the item itself says so…
+    expect(await within(menu).findByRole('menuitem', { name: copy.copiedUsername })).toBeVisible();
+    expect(screen.getByRole('menu')).toBe(menu);
+    // …and the same result is spoken.
     await waitFor(() =>
       expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
-        sidebarCopy.clipboard.copied
+        copy.announceCopiedUsername('alice')
       )
     );
+    expect(controller.reportError).not.toHaveBeenCalled();
+    // The label comes back.
+    await waitFor(
+      () => expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).toBeVisible(),
+      { timeout: COPY_FEEDBACK_MS + 1000 }
+    );
+  });
+
+  it('shows a refused copy on the item, never in the channel’s connection bar', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
+    const controller = makeController();
+    renderYou(controller);
+    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    const menu = await screen.findByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: copy.copyUsername }));
+    expect(
+      await within(menu).findByRole('menuitem', { name: copy.copyUsernameFailed })
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
+        copy.announceCopyUsernameFailed('alice')
+      )
+    );
+    expect(controller.reportError).not.toHaveBeenCalled();
   });
 
   it('renders nothing until a connection is selected', () => {

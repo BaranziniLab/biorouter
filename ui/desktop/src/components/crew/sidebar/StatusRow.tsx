@@ -18,6 +18,10 @@ import './crew-sidebar.css';
  *
  * Right, the privacy chip. Nothing here animates a change of state: security state swaps
  * instantly, so no frame shows a stale status mid-tween.
+ *
+ * The status word keeps its width before the chip does, and both carry a `title` with their full
+ * words: in a 240px column "Updates unavailable" beside "Checking privacy…" was cut to
+ * "Updates unavail…" with nothing to read it back from (T-68).
  */
 export function StatusRow() {
   const crew = useCrew();
@@ -39,11 +43,15 @@ export function StatusRow() {
           </button>
         ) : presentation.srText ? (
           <>
-            <span aria-hidden="true">{presentation.word}</span>
+            <span className="crew-sidebar-truncate" aria-hidden="true" title={presentation.srText}>
+              {presentation.word}
+            </span>
             <span className="sr-only">{presentation.srText}</span>
           </>
         ) : (
-          <span className="crew-sidebar-truncate">{presentation.word}</span>
+          <span className="crew-sidebar-truncate" title={presentation.word}>
+            {presentation.word}
+          </span>
         )}
       </div>
       <PrivacyChip />

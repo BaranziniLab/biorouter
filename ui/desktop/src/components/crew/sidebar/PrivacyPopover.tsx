@@ -21,10 +21,15 @@ export const PRIVACY_UPDATE_KEY = 'connection.update';
  * always shown, so a joiner who sets Public in a Private-for-everyone workspace sees why nothing
  * changed.
  *
+ * It is named by its title row — `Privacy: Private · ucsf`, the chip's own name — which stays
+ * at the top through the institution step, so the popover never loses its name (T-38).
+ *
  * The two changes it offers are deliberately asymmetric ("Privacy and institution"):
  *
- * - **Make public…** exposes data, so it only opens the typed confirmation (the workspace name as
- *   the phrase). The dialog, not this popover, sends the change.
+ * - **Make my connection public…** exposes data, so it only opens the typed confirmation (the
+ *   workspace name as the phrase), and says under it what it changes — only this connection,
+ *   and whether that changes what models can read here (T-38). The dialog, not this popover,
+ *   sends the change.
  * - **Make private** is one click: the full-body PATCH (L18) and a refresh. A connection with no
  *   institution cannot be Private (the daemon refuses the save), so the popover first asks for
  *   one, in place, as a required field.
@@ -34,9 +39,12 @@ export const PRIVACY_UPDATE_KEY = 'connection.update';
  */
 export function PrivacyPopover({
   privacy,
+  titleId,
   onClose,
 }: {
   privacy: VerifiedPrivacy;
+  /** The id the popover's `aria-labelledby` names: this component renders that title. */
+  titleId: string;
   onClose(): void;
 }) {
   const crew = useCrew();
@@ -78,25 +86,36 @@ export function PrivacyPopover({
     crew.openDialog({ kind: 'workspace-settings', tab: 'privacy' });
   };
 
+  const heading = (
+    <div id={titleId} className="flex min-w-0 items-center gap-1" data-crew-privacy-title="">
+      <span className="sr-only">{copy.titlePrefix}</span>{' '}
+      <PrivacyBadge tier={privacy.effective} enforcementOff={false} />
+      {institution && (
+        <span className="crew-sidebar-chip-text">
+          {' · '}
+          <bdi translate="no" className="crew-sidebar-truncate">
+            {institution}
+          </bdi>
+        </span>
+      )}
+    </div>
+  );
+
   if (askInstitution) {
-    return <InstitutionStep onCancel={() => setAskInstitution(false)} onSubmit={makePrivate} />;
+    return (
+      <div className="flex flex-col gap-2 p-1" data-crew-privacy-popover="">
+        {heading}
+        <InstitutionStep onCancel={() => setAskInstitution(false)} onSubmit={makePrivate} />
+      </div>
+    );
   }
 
   const showHostOnly = !crew.isHost && (privacy.why === 'workspace' || privacy.why === 'both');
+  const effectId = `${titleId}-make-public`;
 
   return (
     <div className="flex flex-col gap-3 p-1" data-crew-privacy-popover="">
-      <div className="flex min-w-0 items-center gap-1">
-        <PrivacyBadge tier={privacy.effective} enforcementOff={false} />
-        {institution && (
-          <span className="crew-sidebar-chip-text">
-            {' · '}
-            <bdi translate="no" className="crew-sidebar-truncate">
-              {institution}
-            </bdi>
-          </span>
-        )}
-      </div>
+      {heading}
       <p className="text-secondary text-text-default">
         {privacy.effective === 'private' ? copy.private(title, institution) : copy.public(title)}
       </p>
@@ -124,9 +143,20 @@ export function PrivacyPopover({
         {copy.why[privacy.why]}
       </p>
       {showHostOnly && <p className="text-supporting text-text-muted">{copy.hostOnly}</p>}
-      <div className="flex items-center justify-between gap-2">
+      {privacy.connectionMode === 'private' && (
+        <p id={effectId} className="text-supporting text-text-muted" data-crew-privacy-effect="">
+          {copy.makePublicEffect(title, privacy.workspaceMode)}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         {privacy.connectionMode === 'private' ? (
-          <Button variant="outline" size="sm" disabled={pending} onClick={onMakePublic}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            aria-describedby={effectId}
+            onClick={onMakePublic}
+          >
             {copy.makePublic}
           </Button>
         ) : (
@@ -163,7 +193,7 @@ function InstitutionStep({
     if (trimmed) onSubmit(trimmed);
   };
   return (
-    <form className="flex flex-col gap-2 p-1" onSubmit={submit}>
+    <form className="flex flex-col gap-2" onSubmit={submit}>
       <label className="text-label" htmlFor={id}>
         {copy.institutionField}
       </label>

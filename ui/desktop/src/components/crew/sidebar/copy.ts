@@ -17,6 +17,12 @@ export { crewStatusCopy };
 export const sidebarCopy = {
   /** The Crew sidebar's `<nav>` accessible name. */
   navLabel: 'Crew',
+  /**
+   * The `<nav>`'s `aria-description` (T-64): the rows are ONE roving-focus list, so Tab alone
+   * skips most of them. Said once, when the landmark is entered.
+   */
+  navDescription:
+    'Use the Up and Down arrow keys to move between teams and channels. Left and Right collapse and expand a team.',
   /** The status row's `role="status"` name. */
   statusLabel: 'Connection status',
 
@@ -33,8 +39,21 @@ export const sidebarCopy = {
         : institution
           ? `Privacy: Private · ${institution}`
           : 'Privacy: Private',
-    /** Shown, with no padlock, until the observer verifies this connection's privacy. */
+    /**
+     * Shown, with no padlock, while the observer (re-)verifies this connection's privacy. It
+     * resolves: a member's connection is verified on the next snapshot.
+     */
     checking: 'Checking privacy…',
+    /** The tooltip that says what "Checking privacy…" is waiting for (T-06, T-68). */
+    checkingHint:
+      'Checking privacy: Crew is confirming this connection’s privacy with the workspace. It shows here once confirmed.',
+    /**
+     * A joiner the host has not let in yet (T-06): the workspace cannot report their privacy
+     * until they are a member, so "Checking…" would never resolve. Plain text, no padlock.
+     */
+    notJoined: 'Privacy shown after you join',
+    notJoinedHint:
+      'Privacy shown after you join: the workspace reports your connection’s privacy once the host lets you in.',
   },
 
   section: {
@@ -51,18 +70,39 @@ export const sidebarCopy = {
     from: 'from',
     /** Before the broker names the target (S1a): never an ID. */
     untitled: 'Invitation',
-    accept: 'Accept',
-    acceptLabel: (target: string) => `Accept invitation to ${target}`,
+    /**
+     * One verb for one action (T-41): the invitation's button and the main area's
+     * "Join {team}" both say Join.
+     */
+    accept: 'Join',
+    acceptLabel: (target: string) => `Join ${target}`,
     /** `inviter` is `personLabel(…, 'inline')`. */
-    acceptFromLabel: (inviter: string) => `Accept invitation from ${inviter}`,
+    acceptFromLabel: (inviter: string) => `Join, invited by ${inviter}`,
   },
 
   waiting: {
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
-    approved: 'Approved',
+    /**
+     * The host entered a code (T-13). Not "Approved": the broker compares the code only when the
+     * joiner's computer checks in, so a code entered here may still turn out not to match.
+     */
+    approved: 'Code entered',
+    /**
+     * A claim was refused because its code did not match (T-13). The same words as the Let-in
+     * dialog and the CLI: the host's own typo and a different computer look the same from here,
+     * so the sentence covers both and says what to do about each.
+     */
     otherDevice: (username: string) =>
-      `A device with a different code tried to join as @${username}.`,
+      `A computer trying to join as @${username} showed a different code. Check the code @${username} sent you; if you typed it wrong, let them in again with the right code. Don’t approve a code you didn’t get from @${username}.`,
+    /** Spoken, never shown (T-17): the Waiting to join list changed. */
+    announceWaiting: (username: string, workspace: string) =>
+      `@${username} is waiting to join ${workspace}.`,
+    announceCodeEntered: (username: string) =>
+      `Code entered for @${username}; joins when their computer confirms.`,
+    /** The mismatch, as a one-time `role="alert"`: the visible sentence, with a lead word. */
+    alertOtherDevice: (username: string) =>
+      `Warning: a computer trying to join as @${username} showed a different code.`,
     /** A join whose invitation ran out: it can no longer be let in, only invited again. */
     expired: 'Invitation expired',
     /** Between `expired` and `inviteAgain`, read as one line. */
@@ -75,6 +115,17 @@ export const sidebarCopy = {
     /** The team header's accessible name. */
     toggleLabel: (team: string, count: number) =>
       `${team}, ${count} ${count === 1 ? 'channel' : 'channels'}`,
+    /**
+     * The team owner's pending team invitations (P0-2): the people who have been invited and
+     * have not accepted yet, so "Invited" is never read as "added".
+     */
+    invited: (count: number) => `${count} invited`,
+    invitedNames: (names: readonly string[]) => `Invited, not accepted yet: ${names.join(', ')}`,
+    /**
+     * For a member (T-28): the snapshot holds only the channels they are in, so the rest of a
+     * team's channels are invisible until someone adds them.
+     */
+    memberHint: (team: string) => `Other channels in ${team} appear once someone adds you.`,
     options: (team: string) => `${team} options`,
     addChannel: (team: string) => `Create channel in ${team}`,
     add: 'Add team',
@@ -105,11 +156,16 @@ export const sidebarCopy = {
 
   workspaceMenu: {
     hostedBy: 'Hosted by',
+    /** `Signed in as @alice on hpc.ucsf.edu`: the person, then the server (T-40). */
     signedInAs: 'Signed in as',
+    signedInOn: 'on',
+    /** Before this connection's identity is verified there is no person to name, only a server. */
+    server: 'Server',
     invite: (workspace: string) => `Invite people to ${workspace}…`,
     people: 'People…',
     privacy: 'Privacy…',
-    access: 'Chats with access…',
+    /** The same name as Workspace settings' tab and the pane's Access heading. */
+    access: 'Agent access…',
     createTeam: 'Create team…',
     /** Pinned. */
     reconnect: 'Reconnect',
@@ -122,12 +178,29 @@ export const sidebarCopy = {
     addHost: 'Host a new workspace…',
   },
 
+  /**
+   * Why a menu item is disabled (T-40, T-71). A disabled item says so, never silently greys out.
+   */
+  unavailable: {
+    notJoined: 'Available after you join',
+    notConnected: 'Available once you’re connected',
+  },
+
   you: {
-    /** A dev profile's badge. */
+    /** A dev profile's badge, in the You menu's header (T-71): the row keeps its width for names. */
     devProfile: (name: string) => `Profile: ${name}`,
     editProfile: 'Edit profile…',
     keys: 'Keys and security…',
     copyUsername: 'Copy my username',
+    /**
+     * The item itself confirms the copy for a moment, and the menu stays open: a copy result is
+     * shown where it was asked for, never in the channel's connection bar.
+     */
+    copiedUsername: 'Copied',
+    copyUsernameFailed: 'Couldn’t copy',
+    announceCopiedUsername: (username: string) => `Copied @${username}`,
+    announceCopyUsernameFailed: (username: string) =>
+      `Couldn’t copy. Your username is @${username}.`,
   },
 
   privacy: {
@@ -156,10 +229,18 @@ export const sidebarCopy = {
       both: 'Private because your connection and the workspace are both Private.',
       public: 'Public because your connection is Public and the workspace allows it.',
     },
-    makePublic: 'Make public…',
+    /** Names what it changes (T-38): only this person's connection, never the workspace. */
+    makePublic: 'Make my connection public…',
+    /** The one line under it, saying what changes. `workspace` is the switcher's name. */
+    makePublicEffect: (workspace: string, workspaceMode: 'private' | 'public') =>
+      workspaceMode === 'private'
+        ? `Changes only your connection. ${workspace} stays Private for everyone, so the models that can read it stay the same.`
+        : `Changes only your connection: public models could then read public-safe channels in ${workspace}. You’ll confirm first.`,
     makePrivate: 'Make private',
     more: 'Privacy…',
     hostOnly: 'Only the host can change the workspace setting.',
+    /** The popover's name is its title: `Privacy: Private · ucsf` (T-38). */
+    titlePrefix: 'Privacy:',
     /** The inline step "Make private" takes when the connection has no institution yet. */
     institutionField: 'Institution',
     /** Pinned (the same placeholder Connection settings uses). */

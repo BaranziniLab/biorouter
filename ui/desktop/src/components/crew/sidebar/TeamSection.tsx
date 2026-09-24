@@ -47,8 +47,19 @@ export function visibleTeamRows(
   return { channels: section.channels, archived: opts.archivedOpen ? section.archived : [] };
 }
 
+/** The viewer's standing in a team (see `teamRoles`). */
+export type TeamRole =
+  | {
+      kind: 'owner';
+      /** People invited who have not accepted yet, as `personLabel`s. */
+      invited: string[];
+    }
+  | { kind: 'member' };
+
 export interface TeamSectionProps {
   section: TeamSectionView;
+  /** Whether the viewer owns the team (and whom it invited), or is a member. */
+  role: TeamRole;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
   archivedOpen: boolean;
@@ -69,9 +80,15 @@ export interface TeamSectionProps {
  *
  * The header is `button[aria-expanded][aria-controls]` named "{team}, {n} channels"; ← collapses
  * and → expands it. The team's name renders as typed, never upper-cased.
+ *
+ * To the team's owner the header adds "· N invited" while people it invited have not accepted
+ * yet, with their names in a tooltip and in the header's description (P0-2). To a member the
+ * section ends in a quiet line saying other channels appear once someone adds them (T-28): the
+ * snapshot holds only the channels they are in, so nothing else would tell them.
  */
 export function TeamSection({
   section,
+  role,
   collapsed,
   onCollapsedChange,
   archivedOpen,
@@ -86,8 +103,10 @@ export function TeamSection({
   const listId = useId();
   const headerKey = rowKeys.team(section.id);
   const headerTabIndex = tabIndexFor(headerKey);
+  const invitedId = useId();
   const rows = visibleTeamRows(section, { collapsed, archivedOpen, channelId: crew.channelId });
   const channelCount = section.channels.length + section.archived.length;
+  const invited = role.kind === 'owner' ? role.invited : [];
 
   const onHeaderKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -112,7 +131,12 @@ export function TeamSection({
           data-crew-team-toggle=""
           aria-expanded={!collapsed}
           aria-controls={listId}
-          aria-label={copy.team.toggleLabel(section.name, channelCount)}
+          aria-label={
+            invited.length > 0
+              ? `${copy.team.toggleLabel(section.name, channelCount)}, ${copy.team.invited(invited.length)}`
+              : copy.team.toggleLabel(section.name, channelCount)
+          }
+          aria-describedby={invited.length > 0 ? invitedId : undefined}
           tabIndex={headerTabIndex}
           onFocus={() => onRowFocus(headerKey)}
           onClick={() => onCollapsedChange(!collapsed)}
@@ -120,7 +144,23 @@ export function TeamSection({
         >
           <ChevronRight className="crew-sidebar-chevron" data-turn="quarter" aria-hidden="true" />
           <bdi className="crew-sidebar-truncate">{section.name}</bdi>
+          {invited.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="crew-sidebar-team-invited" data-crew-team-invited="">
+                  <span aria-hidden="true">{' · '}</span>
+                  {copy.team.invited(invited.length)}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{copy.team.invitedNames(invited)}</TooltipContent>
+            </Tooltip>
+          )}
         </button>
+        {invited.length > 0 && (
+          <span id={invitedId} className="sr-only">
+            {copy.team.invitedNames(invited)}
+          </span>
+        )}
         <div className="crew-sidebar-team-actions">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -250,6 +290,11 @@ export function TeamSection({
               <Plus className="crew-sidebar-row-icon" aria-hidden="true" />
               <span className="crew-sidebar-row-name">{copy.channel.add}</span>
             </button>
+          </li>
+        )}
+        {!collapsed && role.kind === 'member' && (
+          <li className="crew-sidebar-hint text-supporting" data-crew-member-hint="">
+            {copy.team.memberHint(section.name)}
           </li>
         )}
       </ul>

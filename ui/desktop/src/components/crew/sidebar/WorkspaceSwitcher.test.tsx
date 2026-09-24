@@ -50,6 +50,15 @@ describe('WorkspaceSwitcher', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('shows the full name in a tooltip, since the band can truncate it (T-21)', () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const trigger = screen.getByRole('button', { name: /^Fixture/ });
+    expect(trigger.querySelector('.crew-sidebar-switcher-name')).toHaveAttribute(
+      'title',
+      'Fixture'
+    );
+  });
+
   it('names the workspace by its own name when the broker sends one', () => {
     const snapshot = makeSnapshot({
       workspace: {
@@ -72,8 +81,41 @@ describe('WorkspaceSwitcher', () => {
     const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
     expect(header).toHaveTextContent('Fixture');
     expect(header).toHaveTextContent('Hosted by Alice Chen (@alice)');
-    expect(header).toHaveTextContent('Signed in as alice@hpc.ucsf.edu');
+    // The PERSON, then the server — never the SSH login or an alias alone (T-40).
+    expect(header).toHaveTextContent('Signed in as @alice on hpc.ucsf.edu');
+    expect(header).not.toHaveTextContent('alice@hpc.ucsf.edu');
     expect(within(header).getByText(crewStatusCopy.verified)).toBeInTheDocument();
+  });
+
+  it('names the account by its username even when the login is an SSH alias', async () => {
+    const aliased = { ...connection, ssh_target: 'lab-server' };
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ connection: aliased, connections: [aliased] })
+    );
+    const { menu } = await openMenu();
+    const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
+    expect(line).toHaveTextContent('Signed in as @alice on lab-server');
+  });
+
+  it('states only the server before this connection’s identity is verified', async () => {
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ snapshot: null, observedPrivacy: null, status: 'sign-in-needed' })
+    );
+    const { menu } = await openMenu();
+    const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
+    expect(line).toHaveTextContent('Server hpc.ucsf.edu');
+    expect(line).not.toHaveTextContent(/Signed in/);
+  });
+
+  it('describes the menu by its header, which menu navigation would otherwise skip', async () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const { menu } = await openMenu();
+    const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
+    expect(header.id).not.toBe('');
+    expect(menu.getAttribute('aria-describedby')?.split(' ')).toContain(header.id);
+    expect(menu).toHaveAccessibleDescription(expect.stringContaining('Signed in as @alice'));
   });
 
   it('shows the last connection error in the header when the connection is not healthy', async () => {
@@ -95,6 +137,7 @@ describe('WorkspaceSwitcher', () => {
     const names = within(menu)
       .getAllByRole('menuitem')
       .map((item) => item.textContent);
+    // Signed in: no "Sign in…" under "Signed in as @alice" (T-40).
     expect(names).toEqual([
       copy.invite('Fixture'),
       copy.people,
@@ -102,11 +145,11 @@ describe('WorkspaceSwitcher', () => {
       copy.access,
       copy.createTeam,
       copy.reconnect,
-      copy.signIn,
       copy.disconnect,
       copy.settings,
       copy.add,
     ]);
+    expect(copy.access).toBe('Agent access…');
     // One saved connection: no Switch section.
     expect(within(menu).queryByRole('menuitemradio')).toBeNull();
     expect(within(menu).queryByText(copy.switchWorkspace)).toBeNull();
@@ -132,15 +175,33 @@ describe('WorkspaceSwitcher', () => {
     expect(controller.openDialog).toHaveBeenCalledWith(intent);
   });
 
-  it('Reconnect is a user-initiated connect; Sign in… and Disconnect call theirs', async () => {
+  it('Reconnect is a user-initiated connect; Disconnect calls its own', async () => {
     const controller = makeController();
     renderWithCrew(<WorkspaceSwitcher />, controller);
     await choose(copy.reconnect);
     expect(controller.connect).toHaveBeenCalledWith({ userInitiated: true });
-    await choose(copy.signIn);
-    expect(controller.openSignIn).toHaveBeenCalledTimes(1);
     await choose(copy.disconnect);
     expect(controller.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['connected', 'checking', 'offline', 'cant-connect', 'not-joined'] as const)(
+    'offers no Sign in… when the status is %s',
+    async (status) => {
+      renderWithCrew(<WorkspaceSwitcher />, makeController({ status }));
+      const { menu } = await openMenu();
+      expect(within(menu).queryByRole('menuitem', { name: copy.signIn })).toBeNull();
+    }
+  );
+
+  it('offers Sign in… while sign-in is needed, and it opens Sign in', async () => {
+    const controller = makeController({
+      status: 'sign-in-needed',
+      snapshot: null,
+      observedPrivacy: null,
+    });
+    renderWithCrew(<WorkspaceSwitcher />, controller);
+    await choose(copy.signIn);
+    expect(controller.openSignIn).toHaveBeenCalledTimes(1);
   });
 
   it('disables Reconnect while a connect or sign-in runs', async () => {
@@ -187,10 +248,31 @@ describe('WorkspaceSwitcher', () => {
         'true'
       );
     }
+    // …and says why, above them and in the menu's description (T-40).
+    const note = menu.querySelector('[data-crew-menu-note]') as HTMLElement;
+    expect(note).toHaveTextContent(sidebarCopy.unavailable.notConnected);
+    expect(menu.getAttribute('aria-describedby')?.split(' ')).toContain(note.id);
     // The connection tools stay available: they are how a person gets it verified again.
     expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).not.toHaveAttribute(
       'aria-disabled'
     );
+  });
+
+  it('tells a joiner the workspace’s items open once they join', async () => {
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ snapshot: null, observedPrivacy: null, status: 'not-joined' })
+    );
+    const { menu } = await openMenu();
+    expect(menu.querySelector('[data-crew-menu-note]')).toHaveTextContent(
+      'Available after you join'
+    );
+  });
+
+  it('shows no reason while nothing is disabled', async () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const { menu } = await openMenu();
+    expect(menu.querySelector('[data-crew-menu-note]')).toBeNull();
   });
 
   it('switches workspaces with a radio group when two or more are saved', async () => {

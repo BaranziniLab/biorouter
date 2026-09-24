@@ -24,6 +24,12 @@ import './crew-sidebar.css';
  * switcher needs no `SidebarProvider` (the regression tests render Crew without one). Nothing
  * here declares `-webkit-app-region: drag`; the trigger carries `no-drag`. jsdom sees neither
  * the rule nor drag rects: verify in the real app with the app sidebar open and collapsed.
+ *
+ * ⚠ **The reserve WIDENS the column; it never eats the name (T-21).** Inside a fixed 240px
+ * column a 172px macOS reserve left the switcher 51px, and the name read "c.". So while the app
+ * sidebar is collapsed `crew-app.css` widens `--crew-sidebar-width` by the reserve (less the
+ * band's own inset), and the name keeps at least 10ch before it truncates. The full name is in
+ * the `title`, for when it does.
  */
 export function WorkspaceSwitcher() {
   const crew = useCrew();
@@ -39,7 +45,7 @@ export function WorkspaceSwitcher() {
             className="crew-sidebar-switcher no-drag"
             disabled={!crew.connection}
           >
-            <span className="crew-sidebar-switcher-name">
+            <span className="crew-sidebar-switcher-name" title={name || undefined}>
               {name || sidebarCopy.switcher.loading}
             </span>
             <ChevronDown className="crew-sidebar-chevron" data-turn="half" aria-hidden="true" />

@@ -1,10 +1,8 @@
 import { ChevronDown } from '../../icons/app-icons';
 import { Avatar } from '../../ui/avatar';
-import { Badge } from '../../ui/badge';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
-import { sidebarCopy } from './copy';
 import { useSidebarView } from './sidebarView';
 import { YouMenu } from './YouMenu';
 import './crew-sidebar.css';
@@ -25,8 +23,12 @@ export function devProfileName(): string | null {
  *
  * A 20px avatar, my name (the identity `header` context), and on a second line the SSH login as
  * its own text node — the one the regression tests find (`fixture`, `alice@new-host`), rendered
- * with or without a verified snapshot. In a dev profile a neutral "Profile: {name}" badge follows.
- * Before a snapshot exists there is no person to name: a placeholder avatar and the login only.
+ * with or without a verified snapshot. Before a snapshot exists there is no person to name: a
+ * placeholder avatar and the login only.
+ *
+ * A dev profile's "Profile: {name}" badge is in the You MENU's header, not here (T-71): on the
+ * row it took about 90px and truncated both lines ("Carol Ng…", "crew_caro…"), and it put a
+ * development detail into the row's accessible name.
  *
  * The row is a real menu (`Alice Chen ▾`), so it ends in the same chevron the switcher carries:
  * a dropdown looks like a dropdown. It turns 180° while the menu is open, by the trigger's own
@@ -64,15 +66,10 @@ export function YouRow() {
                 {connection.ssh_target}
               </span>
             </span>
-            {profile && (
-              <Badge tone="neutral" className="max-w-20 min-w-0 shrink-0">
-                <span className="crew-sidebar-truncate">{sidebarCopy.you.devProfile(profile)}</span>
-              </Badge>
-            )}
             <ChevronDown className="crew-sidebar-chevron" data-turn="half" aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
-        <YouMenu />
+        <YouMenu profile={profile} />
       </DropdownMenu>
     </div>
   );

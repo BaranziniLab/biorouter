@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { LoaderCircle } from '../../icons/app-icons';
 import {
   DropdownMenuContent,
@@ -14,7 +14,7 @@ import {
 } from '../../ui/dropdown-menu';
 import { StatusDot, type StatusDotTone } from '../../ui/status-dot';
 import type { CrewConnection } from '../crewApi';
-import { connectionNames, PersonName } from '../identity';
+import { connectionNames, connectionServer, PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS } from '../state/crewStatus';
@@ -53,14 +53,34 @@ function savedStatusWord(status: CrewConnection['status']): string {
 }
 
 /**
+ * Why the workspace's own items are disabled, or `null` when they are not (T-40, T-71). A joiner
+ * the host has not let in yet waits for that; anyone else waits for a verified connection.
+ */
+export function unavailableReason(status: string | null, ready: boolean): string | null {
+  if (ready) return null;
+  return status === 'not-joined'
+    ? sidebarCopy.unavailable.notJoined
+    : sidebarCopy.unavailable.notConnected;
+}
+
+/**
  * The workspace menu (ui-redesign-spec, wireframe "Workspace menu"; "The workspace menu and the
  * You menu"). A header that is not focusable, then the workspace's own dialogs, then the manual
  * connection tools, then Switch workspace and Add a workspace.
  *
  * - Items that open a dialog end in "…" and open it through the controller's intents, so this
  *   area never imports another.
- * - Reconnect, Sign in… and Disconnect are always listed as manual tools; when the status needs
- *   one it is also the main area's one action.
+ * - Reconnect, Disconnect and Connection settings are always listed as manual tools. **Sign in…
+ *   is listed only while sign-in is needed** (T-40): offered under "Signed in as @alice", it
+ *   read as a second, unexplained Reconnect. When a Reconnect needs credentials, the sign-in
+ *   dialog opens by itself.
+ * - The header names the PERSON and the server — "Signed in as @alice on hpc.ucsf.edu" — never
+ *   the SSH alias alone, which is a machine name. Before this connection's identity is verified
+ *   there is no person to name, so it states the server only.
+ * - The header's text is the menu's `aria-describedby`: a screen reader's menu navigation skips
+ *   static text inside `role="menu"`, so without it the header was unreachable.
+ * - A disabled item says why: one note above the workspace's own items, which are disabled until
+ *   its snapshot is verified, also in the menu's description.
  * - Switching is a `menuitemradio` that does exactly what the old `<select>` did. With one saved
  *   connection the Switch section is omitted, but Add a workspace stays.
  * - The header's status line is the only other place "Connected · identity verified" is visible,
@@ -84,24 +104,52 @@ export function WorkspaceMenu({ title }: { title: string }) {
     lastConnectFailure,
   } = crew;
   const labels = useMemo(() => connectionNames(connections), [connections]);
+  const headerId = useId();
+  const reasonId = useId();
   if (!connection) return null;
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
   const connecting = isPending('connect') || isPending('sign-in') || signIn.open;
   const lastError = lastConnectFailure?.message || connection.last_error || '';
   const snapshotReady = verified && Boolean(crew.snapshot);
+  const reason = unavailableReason(status, snapshotReady);
+  const server = connectionServer(connection);
+  const me = verified ? dir.me : null;
 
   return (
-    <DropdownMenuContent align="start" className="w-72" data-crew-menu="workspace">
-      <div className="crew-sidebar-menu-header" data-crew-menu-header="">
+    <DropdownMenuContent
+      align="start"
+      className="w-72"
+      data-crew-menu="workspace"
+      aria-describedby={reason ? `${headerId} ${reasonId}` : headerId}
+    >
+      <div id={headerId} className="crew-sidebar-menu-header" data-crew-menu-header="">
         <span className="crew-sidebar-truncate text-label text-text-default">{title}</span>
         {dir.host && (
           <span className="crew-sidebar-truncate text-supporting text-text-muted">
             {copy.hostedBy} <PersonName person={dir.host} context="inline" dir={dir} />
           </span>
         )}
-        <span className="crew-sidebar-truncate text-supporting text-text-muted">
-          {copy.signedInAs} <span className="font-mono">{connection.ssh_target}</span>
+        <span
+          className="crew-sidebar-truncate text-supporting text-text-muted"
+          data-crew-signed-in=""
+        >
+          {me ? (
+            <>
+              {copy.signedInAs} <bdi className="font-mono" translate="no">{`@${me.username}`}</bdi>{' '}
+              {copy.signedInOn}{' '}
+              <bdi className="font-mono" translate="no">
+                {server}
+              </bdi>
+            </>
+          ) : (
+            <>
+              {copy.server}{' '}
+              <bdi className="font-mono" translate="no">
+                {server}
+              </bdi>
+            </>
+          )}
         </span>
         {presentation && (
           <span className="flex min-w-0 items-center gap-1.5 text-supporting text-text-muted">
@@ -120,7 +168,16 @@ export function WorkspaceMenu({ title }: { title: string }) {
         )}
       </div>
       <DropdownMenuSeparator />
-      <DropdownMenuGroup>
+      {reason && (
+        <p
+          id={reasonId}
+          className="crew-sidebar-menu-note text-supporting text-text-muted"
+          data-crew-menu-note=""
+        >
+          {reason}
+        </p>
+      )}
+      <DropdownMenuGroup aria-describedby={reason ? reasonId : undefined}>
         {isHost && (
           <DropdownMenuItem
             disabled={!snapshotReady}
@@ -162,7 +219,9 @@ export function WorkspaceMenu({ title }: { title: string }) {
         >
           {copy.reconnect}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => crew.openSignIn()}>{copy.signIn}</DropdownMenuItem>
+        {status === 'sign-in-needed' && (
+          <DropdownMenuItem onSelect={() => crew.openSignIn()}>{copy.signIn}</DropdownMenuItem>
+        )}
         <DropdownMenuItem
           disabled={isPending('connect') || isPending('disconnect')}
           onSelect={() => void crew.disconnect()}

@@ -1,14 +1,17 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CrewMessage } from '../crewApi';
+import type { CrewMessage, Invitation } from '../crewApi';
+import { buildPeopleDirectory } from '../identity';
 import { MARK_READ_KEY } from './ChannelRow';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import { unreadBadgeText } from './sidebarView';
-import { TeamSections } from './TeamSections';
+import { teamRoles, TeamSections } from './TeamSections';
 import { COLLAPSED_TEAMS_STORAGE_KEY } from './useCollapsedTeams';
 import {
+  alice,
+  bob,
   connection,
   makeController,
   makeSnapshot,
@@ -280,6 +283,103 @@ describe('team sections', () => {
   it('renders nothing without a verified or last verified snapshot', () => {
     const { container } = renderTeams({ snapshot: null, observedPrivacy: null });
     expect(container.querySelector('[data-crew-sidebar-teams]')).toBeNull();
+  });
+});
+
+describe('pending team invitations and what a member cannot see', () => {
+  const carol = { id: 'person-carol-0000', uid: 1002, username: 'carol', nickname: 'Carol Diaz' };
+  const dana = { id: 'person-dana-0000', uid: 1003, username: 'dana', nickname: 'Dana Wu' };
+
+  function teamInvitation(overrides: Partial<Invitation> = {}): Invitation {
+    return {
+      id: 'invitation-carol',
+      kind: 'team',
+      target_id: TEAM_LAB,
+      principal_id: carol.id,
+      inviter_id: alice.id,
+      expires_at: 4_000_000_000,
+      target_name: 'Analysis Lab',
+      ...overrides,
+    };
+  }
+
+  const ownerSnapshot = (invitations: Invitation[]) =>
+    makeSnapshot({ principals: [alice, bob, carol, dana], invitations });
+
+  it('shows the owner "· N invited", with the names in a tooltip and the header’s description (P0-2)', async () => {
+    const user = userEvent.setup();
+    renderTeams({
+      snapshot: ownerSnapshot([
+        teamInvitation(),
+        teamInvitation({ id: 'invitation-dana', principal_id: dana.id }),
+      ]),
+    });
+    const lab = header('Analysis Lab, 4 channels, 2 invited');
+    const count = lab.querySelector('[data-crew-team-invited]') as HTMLElement;
+    expect(count).toHaveTextContent('· 2 invited');
+    expect(lab).toHaveAccessibleDescription(
+      'Invited, not accepted yet: Carol Diaz (@carol), Dana Wu (@dana)'
+    );
+    await user.hover(count);
+    expect(
+      (
+        await screen.findAllByText(
+          'Invited, not accepted yet: Carol Diaz (@carol), Dana Wu (@dana)'
+        )
+      ).length
+    ).toBeGreaterThan(0);
+    // The other team has no pending invitation and says nothing.
+    expect(header('single-cell, 1 channel')).not.toHaveTextContent(/invited/);
+  });
+
+  it('counts only standing invitations to the team, made by its owner', () => {
+    renderTeams({
+      snapshot: ownerSnapshot([
+        teamInvitation({ id: 'expired', expired: true }),
+        teamInvitation({ id: 'ran-out', expires_at: 1 }),
+        teamInvitation({ id: 'channel', kind: 'channel', target_id: 'chan-general' }),
+        teamInvitation({ id: 'other-team', target_id: TEAM_SC, principal_id: dana.id }),
+      ]),
+    });
+    expect(header('Analysis Lab, 4 channels')).not.toHaveTextContent(/invited/);
+    expect(header('single-cell, 1 channel, 1 invited')).toBeInTheDocument();
+  });
+
+  it('never shows a member the count, and tells them other channels appear once added (T-28)', () => {
+    renderTeams({
+      snapshot: makeSnapshot({
+        actor: bob,
+        principals: [alice, bob, carol],
+        invitations: [teamInvitation({ principal_id: bob.id })],
+      }),
+      isHost: false,
+    });
+    expect(header('Analysis Lab, 4 channels')).not.toHaveTextContent(/invited/);
+    const lab = header('Analysis Lab, 4 channels').closest('[data-crew-team]') as HTMLElement;
+    const hint = lab.querySelector('[data-crew-member-hint]');
+    expect(hint).toHaveTextContent('Other channels in Analysis Lab appear once someone adds you.');
+    // A note, not a row: it is never a tab or arrow stop.
+    expect(hint?.querySelector('button, [tabindex]')).toBeNull();
+    expect(hint).not.toHaveAttribute('data-crew-row');
+
+    fireEvent.click(header('Analysis Lab, 4 channels'));
+    expect(lab.querySelector('[data-crew-member-hint]')).toBeNull();
+  });
+
+  it('shows the owner no member hint', () => {
+    renderTeams();
+    expect(document.querySelector('[data-crew-member-hint]')).toBeNull();
+  });
+
+  it('teamRoles names invitees through the directory, and an unknown one generically', () => {
+    const snapshot = ownerSnapshot([
+      teamInvitation({ principal_id: 'person-gone-0000' }),
+      teamInvitation({ id: 'to-me', principal_id: alice.id }),
+    ]);
+    const roles = teamRoles(snapshot, buildPeopleDirectory(snapshot, null));
+    expect(roles.get(TEAM_LAB)).toEqual({ kind: 'owner', invited: ['Unknown member'] });
+    expect(roles.get(TEAM_SC)).toEqual({ kind: 'owner', invited: [] });
+    expect(teamRoles(null, buildPeopleDirectory(null, null)).size).toBe(0);
   });
 });
 

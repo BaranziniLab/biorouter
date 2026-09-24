@@ -16,6 +16,14 @@
    rest therefore restates the focus fill for `:focus-visible` itself, or a
    keyboard user would lose focus on the active row.
 
+   ⚠ **A fill alone is not a focus indicator (T-16).** Measured, the focus fill
+   differs from the sidebar ground by 1.23:1 (light) and from the selected
+   row's ground by 1.10:1 — invisible in practice. So every focusable row here
+   also draws the same inset accent EDGE the timeline log and the composer
+   use, `inset 0 0 0 2px var(--border-accent)`, which clears 3:1 on every
+   ground. The fill stays the hover signal. Rings for Increase Contrast and
+   forced colours are `main.css`'s app-wide block, not restated here.
+
    ⚠ **No drag region.** Nothing here declares `-webkit-app-region: drag` (issue
    #74): the band's controls carry `no-drag`, and `/crew` is a chat route in
    `AppLayout.tsx`, so the 32px drag strip stops taking pointer events here. */
@@ -80,6 +88,11 @@
   margin-left: var(--biorouter-titlebar-control-reserve);
 }
 
+/* ⚠ The reserve is paid for by WIDENING the column (T-21), never by the name:
+   inside a fixed 240px column the 172px macOS reserve left the switcher 51px
+   and the name read "c.". `crew-app.css` widens `--crew-sidebar-width` under
+   the same collapsed state, and the name keeps 10ch before it truncates. */
+
 .crew-sidebar-switcher:hover {
   border-color: var(--border-subtle);
   background-color: var(--background-medium);
@@ -88,10 +101,11 @@
 .crew-sidebar-switcher:focus-visible {
   outline: none;
   background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-accent);
 }
 
 .crew-sidebar-switcher-name {
-  min-width: 0;
+  min-width: 10ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -132,11 +146,16 @@
   border-block-end: 1px solid var(--sidebar-border);
 }
 
+/* The status word keeps its width before the chip does (T-68): "Updates
+   unavailable" is the state; the chip truncates first, and both carry a
+   `title` with their full words. */
 .crew-sidebar-status-word {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 75%;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
@@ -173,10 +192,17 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
+  overflow: hidden;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Security state never animates (ui-redesign-spec, "Motion"): the chip takes
+   no press scale, so a click never shows the mode mid-tween. */
+.crew-sidebar-chip:active {
+  scale: none;
 }
 
 /* The privacy popover's facts: two columns, label and value. */
@@ -201,19 +227,28 @@
   margin-block-start: 12px;
 }
 
+/* The app sidebar's section label: 11px caps at 600 (T-62). */
 .crew-sidebar-section-label {
-  padding: 4px 12px;
+  padding: 4px 16px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
+/* The app sidebar's rhythm (T-62): an 8px inset and a 2px gap between rows.
+   The two sidebars sit side by side on one ground, so a different rhythm
+   reads as a bug. */
 .crew-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin: 0;
-  padding: 0 4px;
+  padding: 0 8px;
   list-style: none;
 }
 
-/* A sidebar row: 32px, the app sidebar's hover and active grounds, and the
-   2px accent bar on the active one. `aria-current` is the selection. */
+/* A sidebar row: 32px, the app sidebar's type (14px, 500 when selected), its
+   hover and active grounds, and the 2px accent bar on the active one.
+   `aria-current` is the selection. */
 .crew-sidebar-row {
   position: relative;
   display: flex;
@@ -224,8 +259,8 @@
   height: var(--row-height-rail);
   padding-inline: 8px;
   border-radius: var(--radius-element);
-  font-size: var(--text-secondary);
-  line-height: var(--text-secondary--line-height);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
   color: var(--text-muted);
   text-align: start;
   transition: background-color var(--dur-fast-min) var(--ease-out);
@@ -238,6 +273,7 @@
 .crew-sidebar-row[aria-current='page'] {
   background-color: var(--sidebar-active);
   color: var(--text-default);
+  font-weight: 500;
 }
 
 .crew-sidebar-row[aria-current='page']::before {
@@ -253,6 +289,17 @@
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-accent);
+}
+
+/* Forced colours drop the active ground and the bar's background (T-58), so
+   the selected channel read exactly like its neighbours. The bar is kept in
+   the system's own highlight colour. */
+@media (forced-colors: active) {
+  .crew-sidebar-row[aria-current='page']::before {
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
 }
 
 /* Unread is weight and ink, never a hue; the count is a neutral badge. */
@@ -285,6 +332,13 @@
   color: var(--sidebar-icon);
 }
 
+/* A member's quiet note at the end of a team (T-28): not a row, not
+   focusable, aligned with the row text. */
+.crew-sidebar-hint {
+  padding: 4px 8px 4px 32px;
+  color: var(--text-subtle);
+}
+
 /* ── Team sections ──────────────────────────────────────────────────────────
    Collapse is instant: the rows appear and disappear with no tween, and only
    the chevron turns. Team names render as typed, never upper-cased. */
@@ -292,12 +346,21 @@
   margin-block-start: 8px;
 }
 
+/* The hover tint covers the WHOLE header, its + and ⋯ included (T-62): on
+   the toggle alone it stopped short of them and read as broken. */
 .crew-sidebar-team-header {
   position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
-  padding-inline: 4px;
+  margin-inline: 8px;
+  padding-inline-end: 4px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-team-header:hover {
+  background-color: var(--sidebar-hover);
 }
 
 .crew-sidebar-team-toggle {
@@ -307,23 +370,31 @@
   gap: 4px;
   min-width: 0;
   height: var(--row-height-rail);
-  padding-inline: 4px;
+  padding-inline: 8px;
   border-radius: var(--radius-element);
-  font-size: var(--text-secondary);
-  line-height: var(--text-secondary--line-height);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
   font-weight: 500;
   color: var(--text-muted);
   text-align: start;
-}
-
-.crew-sidebar-team-toggle:hover {
-  background-color: var(--sidebar-hover);
 }
 
 .crew-sidebar-team-toggle:focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-accent);
+}
+
+/* "· 2 invited" beside the team's name, for its owner (P0-2). Quiet, and it
+   keeps its words while the name truncates. */
+.crew-sidebar-team-invited {
+  flex: none;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 /* The header's + and ⋯ appear on hover and on focus within, and stay while
@@ -361,6 +432,7 @@
   padding: 4px 8px;
   border-radius: var(--radius-element);
   text-align: start;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
 }
 
 .crew-sidebar-you-trigger:hover {
@@ -370,6 +442,7 @@
 .crew-sidebar-you-trigger:focus-visible {
   outline: none;
   background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-accent);
 }
 
 .crew-sidebar-you-text {
@@ -395,6 +468,12 @@
   min-width: 0;
 }
 
+/* Why a menu's items are disabled: one note above them, not a row. */
+.crew-sidebar-menu-note {
+  margin: 0;
+  padding: 4px 12px;
+}
+
 /* The last connection error, at most two lines. */
 .crew-sidebar-clamp {
   display: -webkit-box;
@@ -415,7 +494,9 @@
   .crew-sidebar-chevron,
   .crew-sidebar-switcher,
   .crew-sidebar-row,
-  .crew-sidebar-team-actions {
+  .crew-sidebar-team-header,
+  .crew-sidebar-team-actions,
+  .crew-sidebar-you-trigger {
     transition: none;
   }
 }

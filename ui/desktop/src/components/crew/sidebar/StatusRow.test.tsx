@@ -54,6 +54,16 @@ describe('StatusRow', () => {
     expect(screen.queryByText(crewStatusCopy.checking)).toBeNull();
   });
 
+  it.each(STATUS_KEYS.filter((key) => key !== 'sign-in-needed'))(
+    'carries the full words of %s in a tooltip, since the row can truncate them (T-68)',
+    (status) => {
+      const presentation = CONNECTION_STATUS[status];
+      renderWithCrew(<StatusRow />, makeController({ status }));
+      const word = within(statusRegion()).getByText(presentation.word);
+      expect(word).toHaveAttribute('title', presentation.srText ?? presentation.word);
+    }
+  );
+
   it('makes "Sign-in needed" a button that opens Sign in', () => {
     const controller = makeController({ status: 'sign-in-needed' });
     renderWithCrew(<StatusRow />, controller);

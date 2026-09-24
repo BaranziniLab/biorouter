@@ -1,12 +1,58 @@
 import { useMemo, useState } from 'react';
 import { Plus } from '../../icons/app-icons';
+import type { Snapshot } from '../crewApi';
+import { liveInvitations } from '../dialogs/people';
+import { personLabel, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { teamSections, useSidebarView } from './sidebarView';
-import { rowKeys, TeamSection, visibleTeamRows } from './TeamSection';
+import { rowKeys, TeamSection, visibleTeamRows, type TeamRole } from './TeamSection';
 import { useCollapsedTeams } from './useCollapsedTeams';
 import { useRovingRows } from './useRovingRows';
 import './crew-sidebar.css';
+
+/**
+ * The viewer's standing in each team, by team ID: the OWNER (who created it, and so the only one
+ * who can invite people to it) with the people it has invited who have not accepted yet, or a
+ * MEMBER.
+ *
+ * The invitees come from the snapshot's live team invitations (P0-2). "Add @x to Analysis Lab"
+ * sends an invitation the invitee must accept, and until they do they are in no list the owner
+ * can see — so "Invited" read as "added", and the channel pickers then said nobody was there.
+ * The broker shows an inviter every invitation they made; only those still standing count.
+ * Display only: the broker decides membership.
+ */
+export function teamRoles(
+  snapshot: Pick<Snapshot, 'actor' | 'teams' | 'invitations'> | null,
+  dir: PeopleDirectory,
+  nowSeconds?: number
+): Map<string, TeamRole> {
+  const roles = new Map<string, TeamRole>();
+  if (!snapshot || !Array.isArray(snapshot.teams)) return roles;
+  const me = snapshot.actor?.id;
+  const live = liveInvitations(
+    Array.isArray(snapshot.invitations) ? snapshot.invitations : [],
+    nowSeconds
+  );
+  for (const team of snapshot.teams) {
+    if (!team || typeof team.id !== 'string') continue;
+    if (!me || team.created_by !== me) {
+      roles.set(team.id, { kind: 'member' });
+      continue;
+    }
+    const invited = live
+      .filter(
+        (invitation) =>
+          invitation.kind === 'team' &&
+          invitation.target_id === team.id &&
+          invitation.inviter_id === me &&
+          invitation.principal_id !== me
+      )
+      .map((invitation) => personLabel(invitation.principal_id, 'inline', dir));
+    roles.set(team.id, { kind: 'owner', invited });
+  }
+  return roles;
+}
 
 /**
  * Every team section, then the quiet "+ Add team" row, as ONE roving-focus list: ↑/↓ move
@@ -16,8 +62,9 @@ import './crew-sidebar.css';
  */
 export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolean }) {
   const crew = useCrew();
-  const { snapshot, verified } = useSidebarView(crew);
+  const { snapshot, verified, dir } = useSidebarView(crew);
   const sections = useMemo(() => teamSections(snapshot), [snapshot]);
+  const roles = useMemo(() => teamRoles(snapshot, dir), [snapshot, dir]);
   const collapsedTeams = useCollapsedTeams(crew.connectionId);
   const [archivedOpen, setArchivedOpen] = useState<ReadonlySet<string>>(() => new Set());
   const actionable = verified;
@@ -64,6 +111,7 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
         <TeamSection
           key={section.id}
           section={section}
+          role={roles.get(section.id) ?? { kind: 'member' }}
           collapsed={collapsedTeams.isCollapsed(section.id)}
           onCollapsedChange={(collapsed) => collapsedTeams.setCollapsed(section.id, collapsed)}
           archivedOpen={archivedOpen.has(section.id)}
