@@ -57,12 +57,51 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
   return candidate === 'about:srcdoc' || candidate === 'about:blank';
 }
 
+/**
+ * The permissions Biorouter's own renderer may hold. Everything not named here
+ * is denied, including every permission Electron adds in a later release.
+ *
+ * `main.ts`'s `installSessionHooks` routes BOTH of the renderer partition's
+ * handlers through this one function: the check handler (what
+ * `navigator.permissions.query` and Chromium's own pre-checks see) and the
+ * request handler. `navigator.clipboard.writeText` consults both (measured:
+ * two checks, then one request), so a grant here is the whole grant and a
+ * denial here is the whole denial.
+ *
+ * Two grants, each only to a document that `isAppOrigin` recognises as the
+ * renderer itself:
+ *
+ * - **`clipboard-sanitized-write`**, the permission behind
+ *   `navigator.clipboard.writeText` and `write`. Every Copy control in the
+ *   renderer uses one of the two (chat, Crew's copy fields, the timeline, the
+ *   sidebar announcer). When these handlers moved onto the renderer's
+ *   partition, this permission fell under the audio-only rule below and every
+ *   Copy in the app failed with `NotAllowedError`. Chromium sanitises what the
+ *   write may put on the pasteboard, and a write reads nothing back.
+ * - **`media`, audio only**, for dictation.
+ *
+ * `clipboard-read` (and `deprecated-sync-clipboard-read`) stay DENIED. A read
+ * sees whatever the user last copied anywhere on the machine, and nothing in
+ * the renderer reads the clipboard.
+ *
+ * What `requestingUrl` is, measured on Electron 39.8.10 with a `persist:`
+ * partition: for `clipboard-sanitized-write`, the check handler receives
+ * `requestingOrigin` = `file:///` for every packaged document (all `file:`
+ * pages share that one origin) and `details.requestingUrl` = the document's full
+ * committed URL, hash included; the request handler receives the same full URL.
+ * `main.ts` passes `details.requestingUrl || requestingOrigin`, so this sees the
+ * full URL. ⚠ Do not "fix" a bare `file:///` into a grant: it names no path, so
+ * accepting it would grant every local file the renderer partition ever
+ * displays. It fails `isAppOrigin` (it resolves to `/`), which is the intended
+ * answer.
+ */
 export function isAllowedRendererPermission(
   permission: string,
   requestingUrl: string,
   appUrl: URL,
   mediaTypes: ReadonlyArray<string>
 ): boolean {
+  if (permission === 'clipboard-sanitized-write') return isAppOrigin(requestingUrl, appUrl);
   return (
     permission === 'media' &&
     mediaTypes.length > 0 &&
