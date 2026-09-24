@@ -3007,21 +3007,23 @@ done
             .unwrap_err();
         assert_eq!(refused(&error).api_code(), "crew_connection_exists");
         assert_eq!(refused(&error).connection_id(), Some(saved.id.as_str()));
-        assert_eq!(
-            CrewManager::new(profile.clone())
-                .unwrap()
-                .list()
-                .await
-                .len(),
-            1
-        );
+        let restarted = CrewManager::new(profile).unwrap();
+        assert_eq!(restarted.list().await.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
 
-        // A public workspace joined as Private needs an institution, and saves nothing without.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_private_choice_without_an_institution_saves_nothing() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("save-public");
+        let _env = isolated_env(&root);
+        let manager = CrewManager::new(root.join("crew")).unwrap();
         let public = crew_invitation::message(&WorkspaceInvitation {
-            workspace_id: "3f2a9c1e-77b0-4d4e-8a11-0000000000c3".into(),
             mode: Some(biorouter_crew::Mode::Public),
             institution_id: None,
-            ssh_host: Some("public.example.org".into()),
             ..lab_invitation()
         })
         .unwrap();
@@ -3037,7 +3039,8 @@ done
             refused(&error).reason(),
             InvitationRefusal::Missing(InvitationMissing::Institution)
         );
-        assert_eq!(manager.list().await.len(), 1);
+        assert!(manager.list().await.is_empty());
+        assert!(!root.join("crew").exists(), "a refused save writes nothing");
         let joined_public = saved_of(
             manager
                 .connection_from_invitation(&public, false, InvitationOverrides::default())
@@ -3051,24 +3054,29 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
+    /// Bob's computer, connected to a broker that announced `capabilities`, in this process's
+    /// own environment. The fake `ssh` is rewritten per case.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn join_status_maps_each_answer_and_computes_the_code_here() {
-        if !crate::test_sandbox::in_a_process_of_its_own() {
-            return;
-        }
-        let root = fixture_root("join-status");
-        let (connection, device) = joiner("4b4b4b4b-4b4b-44b4-84b4-4b4b4b4b4b4b");
+    async fn joiner_fixture(
+        label: &str,
+        id: &str,
+        capabilities: &[&str],
+    ) -> (
+        PathBuf,
+        env_lock::EnvGuard<'static>,
+        Connection,
+        Arc<CrewManager>,
+    ) {
+        let root = fixture_root(label);
+        let (connection, device) = joiner(id);
         write_fake_ssh(&root, &[], &[]);
-        let _env = isolated_env(&root);
-        let manager =
-            connected_manager(&root, &connection, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
-        let public = device.verifying_key().to_bytes();
-        let local = biorouter_crew::format_device_code(&biorouter_crew::device_code(
-            WORKSPACE_ID,
-            &workspace_key(),
-            &public,
-        ));
+        let env = isolated_env(&root);
+        let manager = connected_manager(&root, &connection, &device, capabilities).await;
+        (root, env, connection, manager)
+    }
+
+    /// Each `enrollment.pending` answer (with the membership probe's), and the state it means.
+    fn status_cases() -> Vec<(Value, Value, JoinState)> {
         let invited = json!({"invited": true, "join_id": "join-1", "workspace_name": "lab",
             "inviter": {"username": "alice", "display_name": "Alice Chen"},
             "approved": false, "expires_at": now_seconds() + 3600, "expired": false,
@@ -3080,10 +3088,10 @@ done
             }
             json!({"result": answer})
         };
-        let member = json!({"result": {"full_name": null}});
         let stranger =
             json!({"error": {"code": "unauthorized", "message": "unauthorized: unknown device"}});
-        let cases = [
+        let not_invited = json!({"result": {"invited": false}});
+        vec![
             (answer(json!({})), stranger.clone(), JoinState::Invited),
             (
                 answer(json!({"approved": true})),
@@ -3100,14 +3108,10 @@ done
                 stranger.clone(),
                 JoinState::Expired,
             ),
+            (not_invited.clone(), stranger.clone(), JoinState::NotInvited),
             (
-                json!({"result": {"invited": false}}),
-                stranger.clone(),
-                JoinState::NotInvited,
-            ),
-            (
-                json!({"result": {"invited": false}}),
-                member,
+                not_invited,
+                json!({"result": {"full_name": null}}),
                 JoinState::Joined,
             ),
             (
@@ -3115,7 +3119,29 @@ done
                 stranger,
                 JoinState::Unsupported,
             ),
-        ];
+        ]
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_status_maps_each_answer_and_computes_the_code_here() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "join-status",
+            "4b4b4b4b-4b4b-44b4-84b4-4b4b4b4b4b4b",
+            &[JOIN_BY_NAME_CAPABILITY],
+        )
+        .await;
+        let public = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
+        let local = biorouter_crew::format_device_code(&biorouter_crew::device_code(
+            WORKSPACE_ID,
+            &workspace_key(),
+            &public,
+        ));
+        let cases = status_cases();
+        let count = cases.len();
         for (pending, probe, expected) in cases {
             write_fake_ssh(
                 &root,
@@ -3145,7 +3171,7 @@ done
             assert_eq!(status.workspace_name.as_deref(), Some("lab"));
         }
         let pending = logged(&root, "enrollment.pending");
-        assert_eq!(pending.len(), 7);
+        assert_eq!(pending.len(), count);
         assert!(
             pending
                 .iter()
@@ -3156,12 +3182,32 @@ done
             logged(&root, "auth.join").is_empty(),
             "a status read never claims"
         );
+        let _ = fs::remove_dir_all(root);
+    }
 
-        // Without the capability nothing is sent; disconnected is an error, not a status.
-        fs::remove_file(root.join("requests.log")).unwrap();
-        remember_hello(&manager, &connection.id, 2, &["human_chat"]);
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_status_asks_nothing_without_the_capability_or_a_connection() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "join-status-unsupported",
+            "4c4c4c4c-4c4c-44c4-84c4-4c4c4c4c4c4c",
+            &["human_chat", "human_names_v1"],
+        )
+        .await;
         let status = manager.join_status(&connection.id).await.unwrap();
         assert_eq!((status.status, status.code), (JoinState::Unsupported, None));
+        assert!(
+            !root.join("requests.log").exists(),
+            "nothing is sent to a broker without the capability"
+        );
+        let error = manager.join(&connection.id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_unsupported"
+        );
         assert!(!root.join("requests.log").exists());
         manager.disconnect(&connection.id).await.unwrap();
         let error = manager.join_status(&connection.id).await.unwrap_err();
@@ -3169,18 +3215,11 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn join_claims_only_when_the_host_approved() {
-        if !crate::test_sandbox::in_a_process_of_its_own() {
-            return;
-        }
-        let root = fixture_root("join");
-        let (connection, device) = joiner("5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c");
-        write_fake_ssh(&root, &[], &[]);
-        let _env = isolated_env(&root);
-        let manager =
-            connected_manager(&root, &connection, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
+    /// One join: the status answer, the membership probe's, `auth.join`'s, the expected refusal
+    /// (`None`: joined) and how many claims reach the workspace.
+    type ClaimCase = (Value, Value, Value, Option<JoinRefusal>, usize);
+
+    fn claim_cases(device_id: &str) -> Vec<ClaimCase> {
         let pending = |approved: bool, refused: bool| {
             let mut answer = json!({"invited": true, "join_id": "join-1", "approved": approved,
                 "expires_at": now_seconds() + 3600});
@@ -3192,10 +3231,10 @@ done
         let stranger =
             json!({"error": {"code": "unauthorized", "message": "unauthorized: unknown device"}});
         let joined = json!({"result": {"principal": {"username": "bob", "display_name": "bob"},
-            "device_id": connection.device_id, "workspace": {"id": WORKSPACE_ID}}});
+            "device_id": device_id, "workspace": {"id": WORKSPACE_ID}}});
         let mismatch = json!({"error": {"code": "code_mismatch", "message": "code_mismatch: not this device"}});
-        let other_device = json!({"result": {"device_id": "cd".repeat(32)}});
-        let cases: [(Value, Value, Value, Option<JoinRefusal>, usize); 6] = [
+        let not_invited = json!({"result": {"invited": false}});
+        vec![
             (
                 pending(false, false),
                 stranger.clone(),
@@ -3211,19 +3250,13 @@ done
                 0,
             ),
             (
-                json!({"result": {"invited": false}}),
+                not_invited.clone(),
                 stranger.clone(),
                 joined.clone(),
                 Some(JoinRefusal::NotInvited),
                 0,
             ),
-            (
-                json!({"result": {"invited": false}}),
-                json!({"result": {}}),
-                joined.clone(),
-                None,
-                0,
-            ),
+            (not_invited, json!({"result": {}}), joined.clone(), None, 0),
             (
                 pending(true, false),
                 stranger.clone(),
@@ -3232,8 +3265,39 @@ done
                 1,
             ),
             (pending(true, false), stranger, joined, None, 1),
-        ];
-        for (index, (status, probe, claim, refusal, claims)) in cases.into_iter().enumerate() {
+        ]
+    }
+
+    /// Every `auth.join` sent carries this computer's key and the join's ID, signed.
+    #[cfg(unix)]
+    fn assert_claims(root: &Path, connection: &Connection, claims: usize, case: usize) {
+        let sent = logged(root, "auth.join");
+        assert_eq!(sent.len(), claims, "case {case}: claims sent");
+        for line in sent {
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["params"]["join_id"], "join-1");
+            assert_eq!(frame["params"]["public_key"], json!(connection.public_key));
+            assert_eq!(frame["auth"]["device_id"], json!(connection.device_id));
+            assert!(frame["auth"]["signature"]
+                .as_str()
+                .is_some_and(|s| s.len() == 128));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_claims_only_when_the_host_approved() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "join",
+            "5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c",
+            &[JOIN_BY_NAME_CAPABILITY],
+        )
+        .await;
+        let cases = claim_cases(&connection.device_id);
+        for (case, (status, probe, claim, refusal, claims)) in cases.into_iter().enumerate() {
             let _ = fs::remove_file(root.join("requests.log"));
             write_fake_ssh(
                 &root,
@@ -3247,51 +3311,34 @@ done
             attach_transport(&manager, &connection).await;
             let result = manager.join(&connection.id).await;
             match refusal {
-                None => assert_eq!(result.unwrap().status, JoinState::Joined, "case {index}"),
+                None => assert_eq!(result.unwrap().status, JoinState::Joined, "case {case}"),
                 Some(refusal) => {
                     let error = result.unwrap_err();
                     let typed = error
                         .downcast_ref::<JoinRefused>()
-                        .unwrap_or_else(|| panic!("case {index}: {error:#}"));
-                    assert_eq!(typed.refusal(), refusal, "case {index}");
+                        .unwrap_or_else(|| panic!("case {case}: {error:#}"));
+                    assert_eq!(typed.refusal(), refusal, "case {case}");
                     assert_eq!(error.to_string(), refusal.message());
                 }
             }
-            let sent = logged(&root, "auth.join");
-            assert_eq!(sent.len(), claims, "case {index}: claims sent");
-            for line in sent {
-                let frame: Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(frame["params"]["join_id"], "join-1");
-                assert_eq!(frame["params"]["public_key"], json!(connection.public_key));
-                assert_eq!(frame["auth"]["device_id"], json!(connection.device_id));
-                assert!(frame["auth"]["signature"]
-                    .as_str()
-                    .is_some_and(|s| s.len() == 128));
-            }
+            assert_claims(&root, &connection, claims, case);
         }
+        // An answer naming another device is not taken as joined.
+        let approved = json!({"result": {"invited": true, "join_id": "join-1", "approved": true}});
         write_fake_ssh(
             &root,
             &[],
             &[
-                ("enrollment.pending", pending(true, false)),
-                ("auth.join", other_device),
+                ("enrollment.pending", approved),
+                (
+                    "auth.join",
+                    json!({"result": {"device_id": "cd".repeat(32)}}),
+                ),
             ],
         );
         attach_transport(&manager, &connection).await;
         let error = manager.join(&connection.id).await.unwrap_err();
         assert!(error.to_string().contains("different device"), "{error}");
-
-        remember_hello(&manager, &connection.id, 2, &[]);
-        let _ = fs::remove_file(root.join("requests.log"));
-        let error = manager.join(&connection.id).await.unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
-            "crew_join_unsupported"
-        );
-        assert!(
-            !root.join("requests.log").exists(),
-            "nothing is sent to a broker without the capability"
-        );
         let _ = fs::remove_dir_all(root);
     }
 
