@@ -387,7 +387,10 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       {
         request: (method) => {
           if (method === 'channel.add_member')
-            throw new Error('forbidden: channel owner or host required');
+            // The broker's literal refusal (`mutate_channel_add_member`).
+            throw new Error(
+              "forbidden: Only the channel's owner or the workspace host can add people to it."
+            );
           return {};
         },
       }
@@ -396,8 +399,9 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     });
+    // Its sentence, without the code: written for a person, shown to one.
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'forbidden: channel owner or host required'
+      /^Only the channel's owner or the workspace host can add people to it\.$/
     );
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
   });

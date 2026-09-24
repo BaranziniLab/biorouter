@@ -18,6 +18,7 @@ import {
   type ChannelChoice,
 } from './people';
 import { PersonPicker } from './PersonPicker';
+import { directAddRefusalText, refusalText } from './refusals';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
 
@@ -240,7 +241,7 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
             {empty.text}
           </Note>
         )}
-        <DialogErrorNote source={SOURCE} />
+        <DialogErrorNote source={SOURCE} render={directAdd ? directAddRefusalText : refusalText} />
       </form>
     </ModalShell>
   );

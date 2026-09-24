@@ -78,8 +78,6 @@ const SENTENCE_CODES = new Set([
   'device_code_invalid',
   'rate_limited',
   'target_mismatch',
-  // `team.add_member` / `channel.add_member` (`direct_add_v1`): the person's username changed.
-  'name_mismatch',
   'not_invited',
   'identity_unavailable',
   'identity_ambiguous',
@@ -232,6 +230,31 @@ export function inviteRefusal(message: string, typed: string, workspace: string)
   )
     return { text: inviteCopy.refusal.canonical(canonical), alreadyMember: false };
   return { text: refusalText(message), alreadyMember: false };
+}
+
+/**
+ * Codes under which the broker's direct-add refusals (`team.add_member`, `channel.add_member`,
+ * `direct_add_v1`) are written for a person — "You can only add people to channels you own.
+ * Uncheck #methods and try again." — while the same codes elsewhere carry technical text
+ * (`forbidden: team unavailable`). So they are not `SENTENCE_CODES`, which the CLI mirrors: only a
+ * direct-add dialog drops the prefix, and only from a text that reads as a sentence.
+ */
+const DIRECT_ADD_SENTENCE_CODES = new Set(['forbidden', 'invalid_params', 'channel_archived']);
+
+/**
+ * A direct-add refusal: the broker's sentence where it wrote one for a person, else as usual. A
+ * sentence may open with the channel it is about (`#old is archived, …`).
+ */
+export function directAddRefusalText(message: string): string {
+  const refusal = parseRefusal(message);
+  const sentence = refusal.sentence;
+  if (
+    refusal.code !== null &&
+    DIRECT_ADD_SENTENCE_CODES.has(refusal.code) &&
+    (readsAsSentence(sentence) || (sentence.startsWith('#') && /[.!?]$/.test(sentence)))
+  )
+    return sentence;
+  return refusalText(message);
 }
 
 /** Whether an `enrollment.approve` refusal says a device was already let in for this person. */

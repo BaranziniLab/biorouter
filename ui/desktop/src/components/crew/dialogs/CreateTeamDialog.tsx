@@ -20,7 +20,7 @@ import {
 import { teamNameProblem } from './nameRules';
 import { directAddResultFrom, directAddSupported } from './people';
 import { PersonPicker } from './PersonPicker';
-import { isNameRefusal, nameRefusalText, refusalText } from './refusals';
+import { directAddRefusalText, isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useDialogView } from './workspace';
 
 const SOURCE: ErrorSource = 'dialog:create-team';
@@ -174,7 +174,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
               dir={dir}
             />
           </Field>
-          {error ? <ErrorNote text={refusalText(error)} /> : null}
+          {error ? (
+            <ErrorNote text={directAdd ? directAddRefusalText(error) : refusalText(error)} />
+          ) : null}
         </form>
       </ModalShell>
     );

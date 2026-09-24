@@ -5,6 +5,7 @@ import { inviteCopy, letInCopy, nameRuleCopy, refusalCopy } from './copy';
 import {
   approveRefusalText,
   canonicalHint,
+  directAddRefusalText,
   inviteRefusal,
   isAlreadyApproved,
   isNameRefusal,
@@ -374,5 +375,38 @@ describe('invite and approve', () => {
     expect(
       approveRefusalText('not_invited: @eve has no pending invitation. Invite them first.', 'eve')
     ).toBe('@eve has no pending invitation. Invite them first.');
+  });
+});
+
+describe('direct add', () => {
+  // Literal texts from `broker.rs` (`mutate_team_add_member`, `mutate_channel_add_member`,
+  // `DIRECT_ADD_UNKNOWN_CHANNEL`, `TARGET_MISMATCH`).
+  it('drops the code from the broker’s person-written direct-add refusals', () => {
+    expect(
+      directAddRefusalText(
+        'forbidden: You can only add people to channels you own. Uncheck #methods and try again.'
+      )
+    ).toBe('You can only add people to channels you own. Uncheck #methods and try again.');
+    expect(
+      directAddRefusalText(
+        "invalid_params: One of the chosen channels isn't in this team. Refresh and choose again."
+      )
+    ).toBe("One of the chosen channels isn't in this team. Refresh and choose again.");
+    expect(
+      directAddRefusalText('channel_archived: #old is archived, so no one can be added to it.')
+    ).toBe('#old is archived, so no one can be added to it.');
+    expect(
+      directAddRefusalText(
+        'target_mismatch: The person you chose no longer has that username. Refresh and choose again.'
+      )
+    ).toBe('The person you chose no longer has that username. Refresh and choose again.');
+  });
+
+  it('keeps a technical text under the same codes verbatim, and leaves the shared list alone', () => {
+    expect(directAddRefusalText('forbidden: team unavailable')).toBe('forbidden: team unavailable');
+    // Outside a direct-add dialog the CLI-mirrored rule still shows the code.
+    expect(
+      refusalText("forbidden: Only the channel's owner or the workspace host can add people to it.")
+    ).toBe("forbidden: Only the channel's owner or the workspace host can add people to it.");
   });
 });

@@ -20,7 +20,12 @@ import {
   firstName,
   type ChannelChoice,
 } from './people';
-import { approveRefusalText, isAlreadyApproved } from './refusals';
+import {
+  approveRefusalText,
+  directAddRefusalText,
+  isAlreadyApproved,
+  refusalText,
+} from './refusals';
 import { useDialogView } from './workspace';
 
 const SOURCE: ErrorSource = 'dialog:let-in';
@@ -210,7 +215,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
               ) : null}
             </div>
           ) : null}
-          <DialogErrorNote source={SOURCE} />
+          {/* Here only the team additions can fail. */}
+          <DialogErrorNote
+            source={SOURCE}
+            render={directAdd ? directAddRefusalText : refusalText}
+          />
         </div>
       </ModalShell>
     );
