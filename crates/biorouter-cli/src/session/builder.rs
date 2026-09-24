@@ -428,11 +428,21 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
 /// early-exit paths call [`close_ephemeral_store_with_manager`] before
 /// `process::exit` (which skips destructors) so the pool is closed and the
 /// directory removed; panics unwind and drop it normally.
+///
+/// ⚠ **`new_ephemeral`, never `new` — security-relevant (SCOPE-BIND).** A
+/// separate database is not separate identities. Built with `new`, this store
+/// was the first the process minted from, so it took the date and minted
+/// `<date>_1`: the id the desktop's first chat of the day already held. Crew's
+/// grants, the per-chat knowledge-base selection and checkpoint repositories
+/// are keyed by session id outside any `sessions.db`, and a run inherited that
+/// chat's expired Crew grant ("Crew run was revoked"); a live one would have
+/// let it act under a grant nobody gave it. An ephemeral store's ids carry a
+/// namespace of their own, so they can never name a saved chat.
 fn ephemeral_session_store() -> anyhow::Result<(tempfile::TempDir, Arc<SessionManager>)> {
     let dir = tempfile::Builder::new()
         .prefix("biorouter-no-session-")
         .tempdir()?;
-    let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    let manager = Arc::new(SessionManager::new_ephemeral(dir.path().to_path_buf()));
     Ok((dir, manager))
 }
 
@@ -1421,6 +1431,96 @@ mod tests {
             shared_mtime_before, shared_mtime_after,
             "a --no-session run must not touch the shared session store"
         );
+    }
+
+    /// SCOPE-BIND regression (a), security-relevant. A `--no-session` run minted
+    /// `<date>_1` in its private store — this binary links `biorouter` without
+    /// `cfg(test)`, so a first store here mints the date exactly as the shipped
+    /// CLI does — and inherited the Crew grant saved for the desktop's own
+    /// `<date>_1` ("Crew run was revoked"). A live grant would have let the run
+    /// act under a grant nobody gave it.
+    ///
+    /// The run's store is built first, the order that reproduced it, and live
+    /// grants are saved under the ids a desktop's first chats of the day hold.
+    /// The run's ids are in a namespace no saved chat can hold, so no grant
+    /// reaches them.
+    ///
+    /// ⚠ Nothing here may touch the shared store — not even a read, which opens
+    /// (and can create) `sessions.db` — or the mtime check in
+    /// `no_session_store_is_private_and_functional`, running beside it, fails
+    /// for a reason that is not its own. So the Crew calls below are only ever
+    /// asked about the run's own ids, which no grant is saved under: that
+    /// answer needs no lookup.
+    #[tokio::test]
+    async fn a_no_session_run_never_holds_a_saved_chats_crew_grant() {
+        let (dir, ephemeral) = ephemeral_session_store().expect("ephemeral store");
+        let mut run_ids = Vec::new();
+        for _ in 0..2 {
+            run_ids.push(
+                ephemeral
+                    .create_session(
+                        dir.path().to_path_buf(),
+                        "CLI Session".to_string(),
+                        SessionType::Hidden,
+                    )
+                    .await
+                    .expect("create session in the private store")
+                    .id,
+            );
+        }
+
+        let today = chrono::Utc::now().format("%Y%m%d").to_string();
+        let desktop_chats = [format!("{today}_1"), format!("{today}_2")];
+        let crew_root = tempfile::tempdir().unwrap();
+        let grant = |run: &str| {
+            serde_json::json!({
+                "connection_id": "connection-methods",
+                "run_id": run,
+                "channel_id": "channel-methods",
+                "source_channels": ["channel-methods"],
+                "epoch": 1,
+                "provider_binding": "versa_azure",
+                "public_provider": false,
+                "institution_policy": true,
+                "expired": false,
+                "session_incarnation": 7,
+            })
+        };
+        std::fs::write(
+            crew_root.path().join("connections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "connections": [],
+                "scopes": {
+                    desktop_chats[0].as_str(): grant("run-first"),
+                    desktop_chats[1].as_str(): grant("run-second"),
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let crew = biorouter::crew::CrewManager::new(crew_root.path().to_path_buf()).unwrap();
+
+        for id in &run_ids {
+            assert!(
+                SessionManager::is_ephemeral_session_id(id),
+                "a --no-session run minted `{id}`, which a saved chat could also hold"
+            );
+            assert!(
+                !id.starts_with(&today) && !desktop_chats.contains(id),
+                "a --no-session run took the date prefix: `{id}`"
+            );
+            assert!(
+                !crew.is_scoped_session(id).await,
+                "a --no-session run `{id}` was treated as holding a saved chat's Crew grant"
+            );
+            assert!(crew.run_metadata(id).await.is_none());
+            crew.authorize_session_tool(id, "developer__shell")
+                .await
+                .expect("a --no-session run's own tools must not be taken away");
+        }
+
+        ephemeral.close().await;
+        close_ephemeral_store(Some(dir)).await;
     }
 
     /// A run that cannot name a provider or a model is refused with something

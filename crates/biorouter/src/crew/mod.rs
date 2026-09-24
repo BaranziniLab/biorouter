@@ -6,6 +6,9 @@ mod institution;
 #[path = "institution_tests.rs"]
 mod institution_tests;
 pub mod observation;
+#[cfg(test)]
+#[path = "scope_binding_tests.rs"]
+mod scope_binding_tests;
 pub use credentials::CredentialStatus;
 mod ssh_policy;
 mod transport;
@@ -117,6 +120,11 @@ struct Scope {
     /// stale; captured from the admission snapshot because a worker may not read one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     labels: Option<AdmissionLabels>,
+    /// Which chat the grant was made to: the `sessions.incarnation` of the row that held the
+    /// session id at grant time (SCOPE-BIND). The id alone is not one chat — see
+    /// [`CrewManager::standing`]. `None` only for a grant recorded before this was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_incarnation: Option<i64>,
 }
 
 /// The display names of a run's identifiers, captured under the person's action when the
@@ -261,6 +269,30 @@ const GRANT_POLICY_CHANGED: &str =
 const NO_GRANT: &str = "This chat doesn't have Crew access. Grant it access from Crew first.";
 /// A task whose grant was replaced by a newer one.
 const REPLACED_RUN: &str = "This task was replaced by a newer explicitly granted run; cancel it from its current conversation";
+/// A grant whose chat is no longer on this device: it keeps restricting, never acts.
+const GRANT_GONE: &str =
+    "This chat's Crew access is no longer available. Start a new chat, or grant access again from Crew.";
+/// The chat's identity could not be read, so its grant can be neither trusted nor dropped.
+const GRANT_UNCONFIRMED: &str =
+    "Couldn't confirm this chat's Crew access on this device. Try again in a moment.";
+/// A grant asked for a chat that is not saved on this device (`--no-session`, or gone).
+const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
+/// The grant changed between two reads of one check.
+const ACCESS_CHANGED: &str = "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again.";
+
+/// Whether a grant stored under a session id is the grant of the chat that holds that id now
+/// (SCOPE-BIND). See [`CrewManager::standing`].
+enum Standing {
+    /// No grant is this chat's: none was made, or the one stored under its id was made to an
+    /// earlier chat that has since been replaced under the same id (and has been pruned).
+    None,
+    /// The chat's own grant: bound to its incarnation, or recorded before grants were bound.
+    Own(Scope),
+    /// A grant sits under the id, but this chat cannot be confirmed as the one it was made
+    /// to: that chat is gone from this device, or its identity could not be read. It keeps
+    /// every restriction and authorizes nothing; the text says why.
+    Unconfirmed(Scope, &'static str),
+}
 
 /// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
 /// so no route, tool or pass-through can.
@@ -317,6 +349,9 @@ pub struct CrewManager {
     lifecycle: StdMutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// What each connected broker's `hello` said, keyed by connection ID. Memory only (D12).
     brokers: StdMutex<HashMap<String, BrokerHello>>,
+    /// The store a test resolves chats against in place of the shared one (SCOPE-BIND).
+    #[cfg(test)]
+    session_store: StdMutex<Option<Arc<crate::session::SessionManager>>>,
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -388,6 +423,7 @@ pub(crate) async fn install_test_scope(
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         },
     );
     drop(registry);
@@ -730,6 +766,8 @@ impl CrewManager {
             transports: Mutex::new(HashMap::new()),
             lifecycle: StdMutex::new(HashMap::new()),
             brokers: StdMutex::new(HashMap::new()),
+            #[cfg(test)]
+            session_store: StdMutex::new(None),
         })
     }
     /// The capabilities the connected broker announced in its last verified `hello`, or
@@ -775,12 +813,32 @@ impl CrewManager {
         let vault = self.credential_vault.clone();
         tokio::task::spawn_blocking(move || vault.lock()).await?
     }
+    /// The grants on `connection_id`, one per chat. A grant stored under an id now held by
+    /// another chat is not listed, and is pruned (SCOPE-BIND); one whose chat is gone is,
+    /// so the person can still revoke it at the workspace.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
         self.connection(connection_id).await?;
-        let registry = self.registry.lock().await;
-        Ok(
-            json!({"grants": registry.scopes.iter().filter(|(_, scope)| scope.connection_id == connection_id).map(|(session, scope)| json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels})).collect::<Vec<_>>()}),
-        )
+        let sessions: Vec<String> = self
+            .registry
+            .lock()
+            .await
+            .scopes
+            .iter()
+            .filter(|(_, scope)| scope.connection_id == connection_id)
+            .map(|(session, _)| session.clone())
+            .collect();
+        let mut grants = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            let (Standing::Own(scope) | Standing::Unconfirmed(scope, _)) =
+                self.standing(&session).await
+            else {
+                continue;
+            };
+            if scope.connection_id == connection_id {
+                grants.push(json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels}));
+            }
+        }
+        Ok(json!({ "grants": grants }))
     }
     fn persist(&self, registry: &Registry) -> Result<()> {
         #[cfg(unix)]
@@ -1651,20 +1709,30 @@ impl CrewManager {
         .await
     }
 
+    /// The run of the chat's grant, including one that is [`Standing::Unconfirmed`] — it is
+    /// still the grant to show and to revoke — but never one made to an earlier chat under
+    /// the same id.
     pub async fn run_metadata(&self, session: &str) -> Option<RunMetadata> {
-        self.registry
-            .lock()
-            .await
-            .scopes
-            .get(session)
-            .map(|scope| RunMetadata {
-                run_id: scope.run_id.clone(),
-                connection_id: scope.connection_id.clone(),
-                channel_id: scope.channel_id.clone(),
-            })
+        match self.standing(session).await {
+            Standing::None => None,
+            Standing::Own(scope) | Standing::Unconfirmed(scope, _) => Some(RunMetadata {
+                run_id: scope.run_id,
+                connection_id: scope.connection_id,
+                channel_id: scope.channel_id,
+            }),
+        }
     }
+    /// Every chat a grant restricts: each id whose grant is its chat's own or cannot be
+    /// confirmed, and none whose grant was made to an earlier chat under the same id.
     pub async fn scoped_session_ids(&self) -> std::collections::HashSet<String> {
-        self.registry.lock().await.scopes.keys().cloned().collect()
+        let sessions: Vec<String> = self.registry.lock().await.scopes.keys().cloned().collect();
+        let mut scoped = std::collections::HashSet::with_capacity(sessions.len());
+        for session in sessions {
+            if self.is_scoped(&session).await {
+                scoped.insert(session);
+            }
+        }
+        scoped
     }
     pub async fn is_scoped_session(&self, session: &str) -> bool {
         self.is_scoped(session).await
@@ -1683,17 +1751,45 @@ impl CrewManager {
             json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":"labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.","context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
+    /// Whether a grant restricts this chat: its own, or one it cannot be confirmed not to
+    /// hold. Never a grant made to an earlier chat under the same id (SCOPE-BIND).
     pub async fn is_scoped(&self, session: &str) -> bool {
-        self.registry.lock().await.scopes.contains_key(session)
+        !matches!(self.standing(session).await, Standing::None)
     }
+    /// The chat's own grant, for acting under it. An unconfirmed grant is refused here: it
+    /// restricts, but it never authorizes.
     async fn scope(&self, session: &str) -> Result<Scope> {
-        self.registry
-            .lock()
-            .await
+        match self.standing(session).await {
+            Standing::Own(scope) => Ok(scope),
+            Standing::Unconfirmed(_, reason) => Err(anyhow::anyhow!(reason)),
+            Standing::None => Err(anyhow::anyhow!(NO_GRANT)),
+        }
+    }
+    /// The chat's own grant as the registry holds it now, with its connection (if it still
+    /// exists), read under one lock so a check sees one snapshot. `None` when no grant is
+    /// the chat's.
+    async fn checked_scope(&self, session: &str) -> Result<Option<(Scope, Option<Connection>)>> {
+        let own = match self.standing(session).await {
+            Standing::None => return Ok(None),
+            Standing::Unconfirmed(_, reason) => anyhow::bail!(reason),
+            Standing::Own(scope) => scope,
+        };
+        let registry = self.registry.lock().await;
+        let scope = registry
             .scopes
             .get(session)
+            .filter(|current| {
+                current.run_id == own.run_id
+                    && current.session_incarnation == own.session_incarnation
+            })
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!(NO_GRANT))
+            .ok_or_else(|| anyhow::anyhow!(ACCESS_CHANGED))?;
+        let connection = registry
+            .connections
+            .iter()
+            .find(|c| c.id == scope.connection_id)
+            .cloned();
+        Ok(Some((scope, connection)))
     }
     pub async fn check_dispatch(&self, session: &str, cap: &CallCapability) -> Result<()> {
         self.check_tier(session, cap.tier(), cap.affiliation())
@@ -1705,18 +1801,13 @@ impl CrewManager {
         tier: ProviderTier,
         affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
     ) -> Result<()> {
-        let r = self.registry.lock().await;
-        let Some(s) = r.scopes.get(session) else {
+        let Some((s, c)) = self.checked_scope(session).await? else {
             return Ok(());
         };
         ensure!(!s.expired, GRANT_REVOKED);
         // A scope granted before institution policy existed never passed today's admission.
         ensure!(s.institution_policy, GRANT_POLICY_CHANGED);
-        let c = r
-            .connections
-            .iter()
-            .find(|c| c.id == s.connection_id)
-            .ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
+        let c = c.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
         ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
         ensure!(
             tier != ProviderTier::Public
@@ -1731,8 +1822,7 @@ impl CrewManager {
         session: &str,
         provider: &dyn Provider,
     ) -> Result<()> {
-        let registry = self.registry.lock().await;
-        let Some(scope) = registry.scopes.get(session) else {
+        let Some((scope, connection)) = self.checked_scope(session).await? else {
             return Ok(());
         };
         ensure!(
@@ -1740,11 +1830,8 @@ impl CrewManager {
             "Crew cannot bind a provider with unscoped external tools"
         );
         ensure!(scope.provider_binding==provider_binding(provider),"Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary");
-        let connection = registry
-            .connections
-            .iter()
-            .find(|connection| connection.id == scope.connection_id)
-            .ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
+        let connection =
+            connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
         ensure!(
             provider.tier() != ProviderTier::Public
                 || (connection.mode == ClusterMode::Public
@@ -1863,22 +1950,8 @@ impl CrewManager {
         mut policy: RunPolicy,
     ) -> Result<RunAdmission> {
         let public = provider.tier() == ProviderTier::Public;
-        if let Some(previous) = self.registry.lock().await.scopes.get(session).cloned() {
-            policy.origin_restricted |= previous.origin_restricted;
-            policy
-                .origin_institution_ids
-                .extend(previous.institution_ids);
-            ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
-            ensure!(
-                !public || previous.public_provider,
-                "Private-origin Crew conversation cannot be rebound to a public model"
-            );
-            for source in previous.source_channels {
-                if !sources.contains(&source) {
-                    sources.push(source);
-                }
-            }
-        }
+        self.carry_previous_grant(session, id, channel, &mut sources, provider, &mut policy)
+            .await?;
         let origin_restricted = policy.origin_restricted;
         let (admission, labels) = self
             .checked_run_admission(id, channel, &sources, provider, &policy)
@@ -1897,6 +1970,9 @@ impl CrewManager {
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
+        // Bound before anything is created at the workspace, so a chat that is not saved
+        // here (`--no-session`, or deleted meanwhile) never leaves a live run behind.
+        let session_incarnation = self.grantable_chat(session).await?;
         let result=self.signed_request(id,"run.create",json!({"expected_mode":c.mode,"expected_policy_epoch":c.policy_epoch,"expected_workspace_policy_epoch":admission.workspace_policy_epoch,"expected_protected_context":admission.protected_context,"workspace_institution_id":admission.workspace_institution_id,"connection_institution_id":c.institution_id,"provider_affiliation":institution::provider_affiliation(provider),"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
         ensure!(
             result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
@@ -1930,6 +2006,7 @@ impl CrewManager {
                     expired: false,
                     expires_at,
                     labels: Some(labels.clone()),
+                    session_incarnation: Some(session_incarnation),
                 },
             );
             self.persist(&r)?;
@@ -1959,6 +2036,40 @@ impl CrewManager {
             }))?,
             labels,
         })
+    }
+    /// A re-grant keeps every restriction the chat's current grant carries: its boundary,
+    /// its private origin, its institutions and its sources. Only the chat's own grant (or
+    /// one it cannot be confirmed not to hold) counts; a grant made to an earlier chat under
+    /// the same id is pruned instead, and never constrains this one (SCOPE-BIND).
+    async fn carry_previous_grant(
+        &self,
+        session: &str,
+        id: &str,
+        channel: &str,
+        sources: &mut Vec<String>,
+        provider: &dyn Provider,
+        policy: &mut RunPolicy,
+    ) -> Result<()> {
+        let (Standing::Own(previous) | Standing::Unconfirmed(previous, _)) =
+            self.standing(session).await
+        else {
+            return Ok(());
+        };
+        policy.origin_restricted |= previous.origin_restricted;
+        policy
+            .origin_institution_ids
+            .extend(previous.institution_ids);
+        ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
+        ensure!(
+            provider.tier() != ProviderTier::Public || previous.public_provider,
+            "Private-origin Crew conversation cannot be rebound to a public model"
+        );
+        for source in previous.source_channels {
+            if !sources.contains(&source) {
+                sources.push(source);
+            }
+        }
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn grant_session(
@@ -2079,7 +2190,7 @@ impl CrewManager {
                 && connection.workspace_public_key == expected_connection.workspace_public_key
                 && (!scope.public_provider
                     || (connection.mode == ClusterMode::Public && !scope.origin_restricted)),
-            "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again."
+            ACCESS_CHANGED
         );
         Ok(())
     }
@@ -2121,6 +2232,13 @@ impl CrewManager {
         session: &str,
         expected_run_id: Option<&str>,
     ) -> Result<RevokeOutcome> {
+        // A grant made to an earlier chat under this id is not this chat's to revoke; the
+        // lookup prunes it (SCOPE-BIND). One that cannot be confirmed still can be: revoking
+        // only ever takes authority away.
+        ensure!(
+            !matches!(self.standing(session).await, Standing::None),
+            NO_GRANT
+        );
         let (connection_id, run_id) = {
             let mut r = self.registry.lock().await;
             let current = r
@@ -2225,6 +2343,214 @@ impl CrewManager {
     }
 }
 
+/// SCOPE-BIND: a grant belongs to one chat, not to a session id.
+///
+/// ⚠ **Security-relevant; needs human review.** Grants are stored by session id, and an id
+/// is not one chat. `biorouter run --no-session` minted `<date>_1` in a private store and
+/// inherited the desktop's first chat of the day's expired grant; a restored backup, a reset
+/// database or an older build sharing the file can hand a granted chat's id to a new chat,
+/// which then either lost its tools to someone else's grant or — with the grant live —
+/// acted under a grant nobody gave it. So each grant records the incarnation of the chat it
+/// was made to (a random token minted with the session row, never reused under the id), and
+/// every read of a grant asks [`CrewManager::standing`] whether the chat holding the id now
+/// is that chat. Ephemeral stores mint ids no saved chat can hold
+/// ([`crate::session::SessionManager::new_ephemeral`]), and deleting a chat clears its grant
+/// ([`CrewManager::forget_deleted_sessions`]).
+///
+/// The directions are deliberate. A grant made to an earlier chat under the id restricts
+/// nothing and is pruned. A grant whose chat cannot be confirmed — gone from this device, or
+/// its identity unreadable — keeps every restriction and authorizes nothing, because the
+/// chat's history may hold Crew context and a lookup failure must never lift a restriction.
+impl CrewManager {
+    /// Resolve chats against `store` in place of the shared one, for a test.
+    #[cfg(test)]
+    pub(crate) fn use_session_store(&self, store: Arc<crate::session::SessionManager>) {
+        *self
+            .session_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+    }
+
+    #[cfg(test)]
+    fn test_session_store(&self) -> Option<Arc<crate::session::SessionManager>> {
+        self.session_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The incarnation of the chat holding `session` in the store grants are made in: the
+    /// process's shared store, where the daemon's chats live.
+    async fn chat_incarnation(&self, session: &str) -> Result<Option<i64>> {
+        #[cfg(test)]
+        if let Some(store) = self.test_session_store() {
+            return store.session_incarnation(session).await;
+        }
+        crate::session::SessionManager::instance()
+            .session_incarnation(session)
+            .await
+    }
+
+    /// The directory of the store grants name, when this process has opened it; `None`
+    /// otherwise, which no deleting store can match.
+    fn own_store_dir(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        if let Some(store) = self.test_session_store() {
+            return Some(store.storage().session_dir().to_path_buf());
+        }
+        crate::session::SessionManager::shared_store_root_if_resolved()
+            .map(|root| root.join(crate::session::session_manager::SESSIONS_FOLDER))
+    }
+
+    /// Whether the grant stored under `session` is the grant of the chat holding that id
+    /// now:
+    ///
+    /// - bound to that chat's incarnation: its own;
+    /// - bound to another incarnation: made to an earlier chat under the id, so none — and
+    ///   pruned;
+    /// - bound, with no chat under the id: [`Standing::Unconfirmed`], since the chat it was
+    ///   made to is gone (a turn still unwinding may yet hold its context);
+    /// - the chat's identity unreadable: [`Standing::Unconfirmed`];
+    /// - recorded before grants were bound: its own, as it always was, and bound in memory
+    ///   to the chat holding the id when there is one.
+    async fn standing(&self, session: &str) -> Standing {
+        let Some(scope) = self.registry.lock().await.scopes.get(session).cloned() else {
+            return Standing::None;
+        };
+        let current = match self.chat_incarnation(session).await {
+            Ok(current) => current,
+            Err(error) => {
+                tracing::warn!(
+                    session,
+                    %error,
+                    "could not confirm which chat holds a Crew grant; keeping it restricted"
+                );
+                return Standing::Unconfirmed(scope, GRANT_UNCONFIRMED);
+            }
+        };
+        match (scope.session_incarnation, current) {
+            (Some(bound), Some(current)) if bound == current => Standing::Own(scope),
+            (Some(_), Some(_)) => {
+                self.prune_stale_grant(session, &scope).await;
+                Standing::None
+            }
+            (Some(_), None) => Standing::Unconfirmed(scope, GRANT_GONE),
+            (None, Some(current)) => {
+                Standing::Own(self.adopt_binding(session, scope, current).await)
+            }
+            (None, None) => Standing::Own(scope),
+        }
+    }
+
+    /// Bind a grant recorded before grants were bound to the chat holding its id — the chat
+    /// it was made to, since the store mints an id once — so a later chat under the id can
+    /// never inherit it. In memory only: every process derives the same binding from the
+    /// same row, and writing it back from here could overwrite a grant another process saved
+    /// since this one loaded the registry.
+    async fn adopt_binding(&self, session: &str, legacy: Scope, current: i64) -> Scope {
+        let mut registry = self.registry.lock().await;
+        match registry.scopes.get_mut(session) {
+            Some(scope) if scope.run_id == legacy.run_id => {
+                scope.session_incarnation.get_or_insert(current);
+                scope.clone()
+            }
+            _ => Scope {
+                session_incarnation: Some(current),
+                ..legacy
+            },
+        }
+    }
+
+    /// Drop a grant made to an earlier chat under `session`'s id, from memory and from the
+    /// saved registry. Matched by its run, which the workspace mints once per grant, so a
+    /// newer grant under the same id — made here or saved by another process — never goes
+    /// with it.
+    async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
+        let is_stale = |id: &str, scope: &Scope| id == session && scope.run_id == stale.run_id;
+        let mut registry = self.registry.lock().await;
+        registry.scopes.retain(|id, scope| !is_stale(id, scope));
+        if let Err(error) = self.remove_saved_scopes(is_stale) {
+            tracing::warn!(
+                session,
+                %error,
+                "could not remove a Crew grant made to an earlier chat under this id from the \
+                 saved registry; it stays inert there"
+            );
+        }
+        drop(registry);
+        tracing::info!(
+            session,
+            run_id = %stale.run_id,
+            "ignored a Crew grant that was made to an earlier chat under this id"
+        );
+    }
+
+    /// Remove the scopes `pick` names from the saved registry only, reading it back instead
+    /// of writing this process's whole registry, so a grant another process saved after
+    /// this one loaded is never written away. The caller holds the registry lock, which
+    /// orders this with every other write this process makes.
+    fn remove_saved_scopes(&self, pick: impl Fn(&str, &Scope) -> bool) -> Result<()> {
+        let mut saved: Registry = match std::fs::read(self.root.join("connections.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let before = saved.scopes.len();
+        saved.scopes.retain(|session, scope| !pick(session, scope));
+        if saved.scopes.len() != before {
+            self.persist(&saved)?;
+        }
+        Ok(())
+    }
+
+    /// The identity a new grant is bound to: the incarnation of the chat holding `session`
+    /// in the store grants name. A chat that is not saved there cannot be granted.
+    async fn grantable_chat(&self, session: &str) -> Result<i64> {
+        match self.chat_incarnation(session).await {
+            Ok(Some(incarnation)) => Ok(incarnation),
+            Ok(None) => Err(anyhow::anyhow!(UNSAVED_CHAT)),
+            Err(error) => Err(error.context(GRANT_UNCONFIRMED)),
+        }
+    }
+
+    /// Clear the grants of chats just deleted from the store at `store_dir`, each named with
+    /// the incarnation its row carried.
+    ///
+    /// A grant is the deleted chat's when it is bound to that incarnation, or — recorded
+    /// before grants were bound — when it sits under the id in the very store grants name.
+    /// Any other grant under one of these ids was made to a chat in another store, and
+    /// stays. Memory first, then the saved registry, read back so that a grant another
+    /// process saved since this one loaded is never written away; that also clears a grant
+    /// this process never loaded.
+    ///
+    /// The run's credential stays in the vault until a later grant under the id replaces it:
+    /// with no grant, nothing reads it.
+    pub(crate) async fn forget_deleted_sessions(
+        &self,
+        deleted: &[(String, i64)],
+        store_dir: &Path,
+    ) -> Result<()> {
+        let from_own_store = self.own_store_dir().is_some_and(|own| own == store_dir);
+        let deleted: HashMap<&str, i64> = deleted
+            .iter()
+            .map(|(session, incarnation)| (session.as_str(), *incarnation))
+            .collect();
+        let was_deleted = |session: &str, scope: &Scope| {
+            deleted
+                .get(session)
+                .is_some_and(|&incarnation| match scope.session_incarnation {
+                    Some(bound) => bound == incarnation,
+                    None => from_own_store,
+                })
+        };
+        let mut registry = self.registry.lock().await;
+        registry
+            .scopes
+            .retain(|session, scope| !was_deleted(session, scope));
+        self.remove_saved_scopes(was_deleted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2247,6 +2573,20 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio_util::sync::CancellationToken;
+
+    /// A chat saved in this process's shared store: the only kind a grant can be made to
+    /// (SCOPE-BIND). Call it only in a process of the test's own.
+    async fn saved_chat(root: &Path) -> String {
+        SessionManager::instance()
+            .create_session(
+                root.to_path_buf(),
+                "granted chat".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id
+    }
 
     fn fixture_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -2566,6 +2906,7 @@ mod tests {
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         };
         let manager = CrewManager::new(root.clone())?;
         {
@@ -2731,9 +3072,10 @@ done
         let provider = crate::providers::testprovider::TestProvider::new_replaying(
             root.join("provider-cassette.json").to_string_lossy(),
         )?;
+        let session = saved_chat(&root).await;
         let admission = manager
             .begin_run(
-                "admission-session",
+                &session,
                 &connection.id,
                 "destination-channel",
                 vec!["source-a".into(), "source-b".into()],
@@ -2760,7 +3102,7 @@ done
         assert!(!history_request.contains("source-a"));
         assert!(!history_request.contains("source-b"));
 
-        let discovery = manager.agent_connections("admission-session").await?;
+        let discovery = manager.agent_connections(&session).await?;
         assert_eq!(
             discovery["connections"][0]["source_channel_ids"],
             json!(["source-a", "source-b", "destination-channel"])
@@ -2818,6 +3160,7 @@ done
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         };
         (connection, scope)
     }
@@ -3106,6 +3449,7 @@ done
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -3200,6 +3544,7 @@ done
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         };
         let registry = Registry {
             connections: vec![connection.clone()],
@@ -3373,6 +3718,7 @@ done
             expired: false,
             expires_at: None,
             labels: None,
+            session_incarnation: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -3559,6 +3905,7 @@ done
                     expired: false,
                     expires_at: None,
                     labels: None,
+                    session_incarnation: None,
                 },
             )]),
             pending_device: None,
@@ -4460,9 +4807,10 @@ done
             root.join("provider-cassette.json").to_string_lossy(),
         )?;
 
+        let session = saved_chat(&root).await;
         let admission = manager
             .begin_run(
-                "labelled-session",
+                &session,
                 connection_id,
                 "destination-channel",
                 vec!["source-a".into(), "source-b".into()],
@@ -4514,7 +4862,7 @@ done
         // agent_connections is on the worker path: it reads the stored labels and sends
         // nothing, least of all a human-signed snapshot.
         let before = fs::read_to_string(&log)?;
-        let discovery = manager.agent_connections("labelled-session").await?;
+        let discovery = manager.agent_connections(&session).await?;
         let entry = &discovery["connections"][0];
         labelled_everywhere(entry);
         assert_eq!(entry["labels"]["workspace"], "lab");
@@ -4528,13 +4876,43 @@ done
         let persisted: Value =
             serde_json::from_slice(&fs::read(root.join("manager").join("connections.json"))?)?;
         assert_eq!(
-            persisted["scopes"]["labelled-session"]["expires_at"],
+            persisted["scopes"][&session]["expires_at"],
             json!(1_790_000_000u64)
         );
         assert_eq!(
-            persisted["scopes"]["labelled-session"]["labels"]["you"],
+            persisted["scopes"][&session]["labels"]["you"],
             "Alice Chen (@alice)"
         );
+        // The grant is bound to the chat it was made to (SCOPE-BIND).
+        assert_eq!(
+            persisted["scopes"][&session]["session_incarnation"],
+            json!(SessionManager::instance()
+                .session_incarnation(&session)
+                .await?
+                .expect("the granted chat is saved"))
+        );
+
+        // A chat that is not saved on this device — a `--no-session` run's — is refused
+        // before any run exists at the workspace.
+        let unsaved = manager
+            .begin_run(
+                "e0000000_1",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+            )
+            .await
+            .err()
+            .expect("a chat that is not saved here must not be granted");
+        assert_eq!(unsaved.to_string(), UNSAVED_CHAT);
+        assert_eq!(logged_methods(&log, "run.create"), 1);
+        assert!(!manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .contains_key("e0000000_1"));
 
         manager.disconnect(connection_id).await?;
         let _ = fs::remove_dir_all(root);
