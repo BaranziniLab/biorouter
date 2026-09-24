@@ -14,7 +14,12 @@ ed25519-dalek = "2.2.0"
 hex = "0.4.3"
 libc = "=0.2.186"
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json.workspace = true
+# `preserve_order` is load-bearing: a journal record's checksum is verified by re-serializing the
+# parsed record, so the parse must keep the key order the writer produced. The shipped broker used
+# to get this feature only through workspace feature unification (biorouter-server builds in the
+# same cargo invocation), so a broker built on its own rejected every existing journal as
+# `journal_corrupt: checksum mismatch`. See tests/journal_key_order.rs.
+serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = "0.10.9"
 unicode-normalization = "=0.1.25"
 unicode-properties = "=0.1.4"
