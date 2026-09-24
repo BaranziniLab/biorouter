@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { nextOpener, restoreFocusSoon } from './focusReturn';
 import type {
   CrewUi,
   DialogIntent,
@@ -70,11 +71,32 @@ export interface CrewSurfaces {
   closeSignIn(): void;
 }
 
-/** Dialog and pane intents, the sign-in dialog, and the surface-reset listeners. */
+/**
+ * Dialog and pane intents, the sign-in dialog, and the surface-reset listeners.
+ *
+ * Opening a dialog records its opener (`focusReturn.ts`) — the control that had focus, or the
+ * trigger of the menu it sat in — and once the dialog is gone, however it closed (Cancel, Escape, a
+ * finished mutation, a reset), focus goes back there. Crew dialogs have no Radix trigger, so
+ * without this focus fell to `<body>` after every one of them (QA T-15). Sign in keeps its own
+ * opener in `SignInDialog`, because it closes with an exit animation.
+ */
 export function useCrewSurfaces(): CrewSurfaces {
   const [ui, setUi] = useState<CrewUi>({ dialog: null, pane: null });
   const [signIn, setSignIn] = useState<SignInState>({ open: false, reason: null });
   const listeners = useRef(new Set<SurfaceResetListener>());
+  const dialogOpener = useRef<HTMLElement | null>(null);
+  const hadDialog = useRef(false);
+
+  // A dialog that closed, by any route, hands focus back to its opener once it has unmounted. A
+  // dialog replaced by another is not a close: the opener carries over (`nextOpener`).
+  useEffect(() => {
+    const open = ui.dialog !== null;
+    if (hadDialog.current && !open) {
+      restoreFocusSoon(dialogOpener.current);
+      dialogOpener.current = null;
+    }
+    hadDialog.current = open;
+  }, [ui.dialog]);
 
   const openSignIn = useCallback((reason: 'user' | 'auto' = 'user') => {
     setSignIn((current) => (current.open ? current : { open: true, reason }));
@@ -88,8 +110,13 @@ export function useCrewSurfaces(): CrewSurfaces {
   );
   const openDialog = useCallback(
     (intent: DialogIntent) => {
-      if (intent.kind === 'sign-in') openSignIn('user');
-      else setUi((current) => ({ ...current, dialog: intent }));
+      if (intent.kind === 'sign-in') {
+        openSignIn('user');
+        return;
+      }
+      // Recorded now, from the event that opens it, while the opener still has focus.
+      dialogOpener.current = nextOpener(dialogOpener.current);
+      setUi((current) => ({ ...current, dialog: intent }));
     },
     [openSignIn]
   );

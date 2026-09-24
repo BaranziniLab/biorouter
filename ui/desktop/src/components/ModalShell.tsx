@@ -56,6 +56,41 @@ export type ModalSize = keyof typeof MODAL_SIZE;
  */
 export type ModalPurpose = 'info' | 'form' | 'required';
 
+/**
+ * Where the dialog sits vertically.
+ *
+ * - `center` (the default, and every caller outside Crew): centred on the window by the
+ *   primitive's `top: 50%` plus a -50% Y translate, so it re-centres whenever its height changes.
+ * - `top`: its top edge is pinned at `max(10vh, 48px)` and it grows downward only. For a dialog
+ *   whose height changes while it is open — a tab switch, a result replacing a form, an error
+ *   appearing — which otherwise jumps up and down under the pointer (QA T-30).
+ *
+ * Authored as an inline style rather than utilities: an inline declaration always beats the
+ * primitive's `top-[50%] translate-y-[-50%]`, and a newly written arbitrary utility can silently
+ * fail to generate (see `CLAUDE.md`, "Desktop shell geometry").
+ */
+export type ModalAnchor = 'center' | 'top';
+
+/** The `top` anchor's geometry. The max-height keeps the bottom edge inside the window. */
+export const MODAL_ANCHOR_TOP_STYLE: React.CSSProperties = {
+  top: 'max(10vh, 48px)',
+  translate: '-50% 0',
+  maxHeight: 'min(85vh, calc(100vh - max(10vh, 48px) - 16px))',
+};
+
+/**
+ * Defaults a surface that mounts many dialogs gives every `ModalShell` inside it, so the dialogs
+ * need not each repeat them — and so a dialog that area does not own still gets them. A prop on
+ * the shell wins over the default. Crew's `CrewDialogs` provides `anchor: 'top'` and a close
+ * handler that keeps Radix from moving focus, because Crew returns focus to the opener itself.
+ */
+export interface ModalShellDefaults {
+  anchor?: ModalAnchor;
+  onCloseAutoFocus?: (event: Event) => void;
+}
+
+export const ModalShellDefaultsContext = React.createContext<ModalShellDefaults>({});
+
 export interface ModalShellProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -76,6 +111,13 @@ export interface ModalShellProps {
   scrollBody?: boolean;
   className?: string;
   bodyClassName?: string;
+  /** Vertical placement; `center` unless a `ModalShellDefaultsContext` says otherwise. */
+  anchor?: ModalAnchor;
+  /**
+   * Radix's close-focus hook, for a dialog opened without a `Dialog.Trigger` that returns focus
+   * itself: call `event.preventDefault()` to keep Radix from moving focus.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export function ModalShell({
@@ -91,8 +133,13 @@ export function ModalShell({
   scrollBody = false,
   className,
   bodyClassName,
+  anchor,
+  onCloseAutoFocus,
 }: ModalShellProps) {
   const dismissible = purpose !== 'required';
+  const defaults = React.useContext(ModalShellDefaultsContext);
+  const placement = anchor ?? defaults.anchor ?? 'center';
+  const closeAutoFocus = onCloseAutoFocus ?? defaults.onCloseAutoFocus;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -108,6 +155,9 @@ export function ModalShell({
         // (and must NOT be overridden, or the aria linkage breaks); without a
         // subtitle we opt out explicitly rather than leave a console warning.
         {...(subtitle ? {} : { 'aria-describedby': undefined })}
+        {...(closeAutoFocus ? { onCloseAutoFocus: closeAutoFocus } : {})}
+        data-anchor={placement === 'top' ? 'top' : undefined}
+        style={placement === 'top' ? MODAL_ANCHOR_TOP_STYLE : undefined}
         className={cn(
           'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0',
           MODAL_SIZE[size],

@@ -1,7 +1,13 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { MODAL_SIZE, ModalShell, type ModalPurpose } from './ModalShell';
+import {
+  MODAL_ANCHOR_TOP_STYLE,
+  MODAL_SIZE,
+  ModalShell,
+  ModalShellDefaultsContext,
+  type ModalPurpose,
+} from './ModalShell';
 
 afterEach(cleanup);
 
@@ -133,5 +139,64 @@ describe('ModalShell — the description contract', () => {
     // and it is what Radix warns about.
     expect(surface().hasAttribute('aria-describedby')).toBe(false);
     expect(warned()).toBe(false);
+  });
+});
+
+/**
+ * The anchor axis (QA T-30). The primitive centres a dialog with `top: 50%` and a -50% Y translate,
+ * so a dialog whose height changes while it is open re-centres and jumps under the pointer. `top`
+ * pins the top edge instead. The default stays `center`, so no caller outside Crew moves.
+ *
+ * jsdom drops `max()` from an inline `top`, so the geometry is asserted on the one exported style
+ * (what a real browser receives) and the rendered surface is asserted by its marker and translate.
+ */
+describe('ModalShell — the anchor axis', () => {
+  it('stays centred by default, with no inline geometry', () => {
+    open();
+    expect(surface()).not.toHaveAttribute('data-anchor');
+    expect(surface().getAttribute('style') ?? '').not.toContain('translate');
+    expect(surface()).toHaveClass('top-[50%]', 'translate-y-[-50%]');
+  });
+
+  it('pins the top edge and drops the Y translate for `top`', () => {
+    open({ anchor: 'top' });
+    expect(surface()).toHaveAttribute('data-anchor', 'top');
+    expect((surface() as HTMLElement).style.getPropertyValue('translate')).toBe('-50% 0');
+    expect(MODAL_ANCHOR_TOP_STYLE).toEqual({
+      top: 'max(10vh, 48px)',
+      translate: '-50% 0',
+      maxHeight: 'min(85vh, calc(100vh - max(10vh, 48px) - 16px))',
+    });
+  });
+
+  it('takes the anchor and close handler from a surrounding default, a prop winning', async () => {
+    const user = userEvent.setup();
+    const onCloseAutoFocus = vi.fn((event: Event) => event.preventDefault());
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top', onCloseAutoFocus }}>
+        <ModalShell open onOpenChange={onOpenChange} title="Inside Crew">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).toHaveAttribute('data-anchor', 'top');
+    await user.keyboard('{Escape}');
+    rerender(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top', onCloseAutoFocus }}>
+        <ModalShell open={false} onOpenChange={onOpenChange} title="Inside Crew">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    await vi.waitFor(() => expect(onCloseAutoFocus).toHaveBeenCalled());
+    cleanup();
+
+    render(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top' }}>
+        <ModalShell open onOpenChange={vi.fn()} anchor="center" title="Its own choice" />
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).not.toHaveAttribute('data-anchor');
   });
 });

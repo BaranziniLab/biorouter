@@ -1,6 +1,7 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { fakeConnection, makeCrew, renderWithCrew } from '../onboarding/testCrew';
+import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { signInCopy } from './copy';
 import { SignInDialog } from './SignInDialog';
@@ -72,5 +73,62 @@ describe('SignInDialog', () => {
     renderSignIn({ signIn: { open: false, reason: null } });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByTestId('crew-authentication')).toBeNull();
+  });
+});
+
+describe('SignInDialog focus return (QA T-15)', () => {
+  it('gives focus back to whatever opened it once it has closed', async () => {
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: fakeConnection(),
+      signIn: { open: false, reason: null },
+    });
+    const view = renderWithCrew(
+      <>
+        <button type="button">Sign in…</button>
+        <SignInDialog />
+      </>,
+      crew
+    );
+    const opener = screen.getByRole('button', { name: 'Sign in…' });
+    opener.focus();
+    view.update({ signIn: { open: true, reason: 'user' } });
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+
+    view.update({ signIn: { open: false, reason: null } });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it('falls back to the workspace switcher when its opener is gone', async () => {
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: fakeConnection(),
+      signIn: { open: false, reason: null },
+    });
+    // The connect screen that held the button is replaced while the terminal is open.
+    const state = { withOpener: true };
+    function Screen() {
+      // Reads the controller, so it re-renders with it as a real screen does.
+      useCrew();
+      return (
+        <div className="crew-app">
+          <button type="button" className="crew-sidebar-switcher">
+            lab
+          </button>
+          {state.withOpener ? <button type="button">Connect</button> : null}
+          <SignInDialog />
+        </div>
+      );
+    }
+    const view = renderWithCrew(<Screen />, crew);
+    screen.getByRole('button', { name: 'Connect' }).focus();
+    view.update({ signIn: { open: true, reason: 'auto' } });
+    await screen.findByRole('dialog');
+    state.withOpener = false;
+    view.update({ signIn: { open: false, reason: null } });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'lab' })).toHaveFocus());
   });
 });

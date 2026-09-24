@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 import { resolveErrorSlot } from './crewActions';
-import { isSnapshotBoundDialog, nextUiAfterReset } from './crewSurfaces';
+import { isSnapshotBoundDialog, nextUiAfterReset, useCrewSurfaces } from './crewSurfaces';
 import { DRAFT_CLEARING_OBSERVATION_CODES, observationFailureOutcome } from './observationFailure';
 import type { CrewUi, DialogIntent, ErrorSource } from './types';
 
@@ -113,4 +114,59 @@ describe('observation failures', () => {
       expect(outcome.text).toContain('unsent draft is retained');
     }
   );
+});
+
+describe('focus return (QA T-15)', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  /** A button with focus, as a person leaves it when they activate it. */
+  function focusedButton(label: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.textContent = label;
+    document.body.append(button);
+    button.focus();
+    return button;
+  }
+
+  /** What unmounting the dialog does to focus: the control that had it is gone. */
+  function dropFocus() {
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  it('returns focus to the control that opened a dialog, when the dialog closes', async () => {
+    const { result } = renderHook(() => useCrewSurfaces());
+    const opener = focusedButton('Add people');
+    act(() => result.current.openDialog({ kind: 'create-team' }));
+    dropFocus();
+    act(() => result.current.closeDialog());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it('returns focus after a finished mutation closes the dialog too', async () => {
+    const { result } = renderHook(() => useCrewSurfaces());
+    const opener = focusedButton('Create channel');
+    act(() => result.current.openDialog({ kind: 'create-channel', teamId: 'team-1' }));
+    dropFocus();
+    act(() => result.current.resetSurfaces('mutated'));
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it('keeps the first opener across a dialog replaced by another', async () => {
+    const { result } = renderHook(() => useCrewSurfaces());
+    const opener = focusedButton('Members');
+    act(() => result.current.openDialog({ kind: 'add-people', target: 'team', targetId: 't' }));
+    // Focus is now inside the first dialog, on the control that opens the second.
+    const frame = document.createElement('div');
+    frame.setAttribute('role', 'dialog');
+    const inner = document.createElement('button');
+    frame.append(inner);
+    document.body.append(frame);
+    inner.focus();
+    act(() => result.current.openDialog({ kind: 'invite-people' }));
+    frame.remove();
+    act(() => result.current.closeDialog());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
 });
