@@ -113,8 +113,12 @@ function messagesFrame(id: string, extra: Record<string, unknown> = {}, author =
 
 interface Observation {
   channelId: string | undefined;
+  /** The cursor the observer resumed after, or null for a fresh opening. */
+  after: string | null;
   signal: AbortSignal;
   receive: (frame: unknown) => void;
+  /** End this observer session the way the daemon does: at its lifetime, or for good. */
+  end: (outcome: 'reconnect' | 'terminal') => void;
 }
 
 let sessions: Observation[] = [];
@@ -165,12 +169,12 @@ beforeEach(() => {
     (
       _connectionId: string,
       channelId: string | undefined,
-      _after: string | null,
+      after: string | null,
       signal: AbortSignal,
       receive: (frame: unknown) => void
     ) =>
       new Promise((resolve) => {
-        sessions.push({ channelId, signal, receive });
+        sessions.push({ channelId, after, signal, receive, end: resolve });
         signal.addEventListener('abort', () => resolve('terminal'));
       })
   );
@@ -220,6 +224,50 @@ describe('the page size', () => {
     const session = await observeChannel();
     expect(crew.pageSize).toBe(200);
     send(session, messagesFrame('a', { reset: true, remaining: 0, page_size: 50 }));
+    expect(crew.pageSize).toBe(50);
+  });
+
+  it('keeps the smaller opening size when a reconnected observer starts at the full page', async () => {
+    const first = await observeChannel();
+    send(first, messagesFrame('a', { reset: true, remaining: 0, page_size: 100 }));
+    expect(crew.pageSize).toBe(100);
+
+    // The daemon ends an observer at its lifetime; the renderer resumes after the cursor.
+    send(first, { type: 'reconnect', cursor: 'sequence-a' });
+    act(() => first.end('reconnect'));
+    let second: Observation | undefined;
+    await waitFor(() => {
+      second = sessions.find(
+        (item) => item !== first && item.channelId === channel.id && !item.signal.aborted
+      );
+      expect(second).toBeDefined();
+    });
+    expect(second!.after).toBe('sequence-a');
+
+    // Its first frame extends the tail and names the full page it now asks for: the tail it
+    // extends was still loaded at 100, so "Older messages" and the channel start stay right.
+    send(second!, {
+      type: 'messages',
+      channel_id: channel.id,
+      messages: [],
+      cursor: 'sequence-a',
+      reset: false,
+      remaining: 0,
+      page_size: 200,
+    });
+    expect(crew.pageSize).toBe(100);
+    expect(crew.messages.map((item) => item.id)).toEqual(['a']);
+
+    // A new opening is loaded at the size it names.
+    send(second!, messagesFrame('b', { reset: true, remaining: 0, page_size: 200 }));
+    expect(crew.pageSize).toBe(200);
+  });
+
+  it('shrinks when a frame that extends the tail was loaded at a smaller size', async () => {
+    const session = await observeChannel();
+    send(session, messagesFrame('a', { reset: true, remaining: 0, page_size: 100 }));
+    expect(crew.pageSize).toBe(100);
+    send(session, messagesFrame('b', { page_size: 50 }));
     expect(crew.pageSize).toBe(50);
   });
 });

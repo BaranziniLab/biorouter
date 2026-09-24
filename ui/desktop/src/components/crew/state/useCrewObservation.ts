@@ -329,6 +329,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setMessagesLoaded(false);
     setPeople(null);
     setBacklog(undefined);
+    setLivePageSize(HISTORY_PAGE_SIZE);
     setBody('');
     setAttachments([]);
     setReferences([]);
@@ -429,7 +430,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             } else if (frame.type === 'messages' && frame.channel_id === channelId) {
               cursor = frame.cursor ?? null;
               const pageSize = frame.page_size;
-              if (pageSize !== undefined) setLivePageSize(pageSize);
+              // Exact only on a reset. A reconnected observer restarts at the full page, but the
+              // tail it extends was loaded at the smaller size, so keep the smallest since then.
+              if (pageSize !== undefined)
+                setLivePageSize((previous) =>
+                  frame.reset ? pageSize : Math.min(previous, pageSize)
+                );
               if (historyPage.current !== null) return;
               setMessages((previous) => {
                 const next = frame.reset ? [] : [...previous];
