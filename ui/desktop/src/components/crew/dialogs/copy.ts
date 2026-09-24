@@ -189,18 +189,23 @@ export const letInCopy = {
    * sidebar (`sidebar/copy.ts`) and the CLI (`enroll pending`) say the same (QA T-13).
    */
   mismatch: (username: string) =>
-    `A computer trying to join as @${username} showed a different code. Check the code @${username} sent you. If you typed it wrong, enter it again and choose Replace. Don’t approve a code you didn’t get from @${username}.`,
+    `A computer trying to join as @${username} showed a different code. Check the code @${username} sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @${username}.`,
   /** Back from the saved-code view to the field, when a mismatch shows the code was wrong. */
   enterAgain: 'Enter the code again',
-  /** `already_approved`: a device was let in already. Same words as the CLI (`enroll approve`). */
-  alreadyApproved: (username: string) => `You already let a device in for @${username}.`,
+  /**
+   * `already_approved`: a code is saved for them already. Never "let a device in", which was false
+   * after a mismatch (QA Q2-23); names the control that exists, Replace code.
+   */
+  alreadyApproved: (username: string) =>
+    `You already entered a code for @${username}, and it didn’t match their computer. Enter the code they sent and choose Replace code.`,
   replaceHelp: 'Replace the code only if they sent you a new one.',
   replace: 'Replace code',
   /**
    * The broker only records the code: it cannot tell yet whether it is the right one, so this
-   * never says "Approved" (QA T-13). Same words as the CLI (`enroll approve`).
+   * never says "Approved" (QA T-13), and says the host need not wait (QA Q2-23).
    */
-  approved: (who: string) => `Code saved. ${who} joins when their computer confirms the same code.`,
+  approved: (who: string) =>
+    `Code saved. ${who} is in as soon as their Crew checks in; you can close this.`,
   /** Replaces `approved` once the directory shows the person as a member. */
   joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
   /** An older broker: the team is an invitation the person accepts in Crew. */
@@ -208,7 +213,21 @@ export const letInCopy = {
   addedToTeam: (who: string) => `Invited. ${who} will see it in Crew and needs to accept.`,
   /** A broker that adds members directly (`direct_add_v1`). */
   directAddToTeam: (who: string, team: string) => `Add ${who} to ${team}`,
+  /** The footer's primary action when there is one team to add them to (QA Q2-03). */
+  footerAdd: (team: string) => `Add to ${team}`,
+  /** The same, for an older broker that invites. */
+  footerInvite: (team: string) => `Invite to ${team}`,
+  /** A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23). */
+  directAdded: (who: string, team: string, channels: string) =>
+    `Added ${who} to ${team}. They can now see ${channels}.`,
+  /** One team's channel choices, where several teams are offered. */
+  channelsIn: (team: string) => `Also add to, in ${team}`,
+  /** Closes with the team additions still undone. */
+  notNow: 'Not now',
   addAfterJoin: (first: string) => `You can add ${first} to a team once they’ve joined.`,
+  /** The workspace key's fingerprint, for the host to read out if asked (QA Q2-04). */
+  fingerprintFor: (who: string) => `Fingerprint ${who} should see:`,
+  fingerprintHelper: 'If they ask, read this to them. It should match what their Crew shows.',
   done: 'Done',
   cancel: 'Cancel',
 } as const;

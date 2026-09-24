@@ -1,10 +1,19 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError, type PendingJoin, type Snapshot } from '../crewApi';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { addPeopleCopy, letInCopy } from './copy';
-import { alice, bob, makeSnapshot, renderWithCrew, requestsFor } from './dialogsTestHarness';
+import {
+  alice,
+  bob,
+  connection,
+  makeSnapshot,
+  renderWithCrew,
+  requestsFor,
+} from './dialogsTestHarness';
+import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { LetInDialog } from './LetInDialog';
 import { DIRECT_ADD_CAPABILITY } from './people';
 
@@ -37,6 +46,7 @@ function renderLive(
   options: {
     capabilities?: string[];
     request?: (method: string, params: Record<string, unknown>) => unknown;
+    onClose?: () => void;
   } = {}
 ) {
   const live: { set: (snapshot: Snapshot) => void } = { set: () => {} };
@@ -55,7 +65,7 @@ function renderLive(
   }
   const view = renderWithCrew(
     <Live>
-      <LetInDialog username="eve" onClose={vi.fn()} />
+      <LetInDialog username="eve" onClose={options.onClose ?? vi.fn()} />
     </Live>,
     { snapshot: initial, request: options.request }
   );
@@ -86,8 +96,9 @@ function withMethods(overrides: Partial<Snapshot> & { methodsMembers?: string[] 
 }
 
 /** A broker that adds members directly, and answers `team.add_member` for eve into #methods. */
-function renderDirectAdd(snapshot: Snapshot) {
+function renderDirectAdd(snapshot: Snapshot, onClose?: () => void) {
   return renderLive(snapshot, {
+    onClose,
     capabilities: ['unique_names_v1', DIRECT_ADD_CAPABILITY],
     request: (method) =>
       method === 'team.add_member'
@@ -161,7 +172,13 @@ describe('LetInDialog', () => {
     renderLetIn({ username: 'eve', full_name: 'Eve Park', mismatched_attempts: 2 });
     // The host's own typo reads as a check to make, not as an impostor (QA T-13).
     const warning = await screen.findByText(letInCopy.mismatch('eve'));
-    expect(warning).toHaveTextContent('If you typed it wrong, enter it again and choose Replace.');
+    // It names the control that exists (QA Q2-23): the form's own submit is Replace code.
+    expect(warning).toHaveTextContent('then enter it and choose Replace code.');
+    expect(screen.getByRole('button', { name: letInCopy.replace })).toHaveAttribute(
+      'type',
+      'submit'
+    );
+    expect(screen.queryByRole('button', { name: 'Let Eve in' })).toBeNull();
     expect(code()).toHaveValue('');
     // The warning comes before the field in reading order.
     expect(warning.compareDocumentPosition(code()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -228,7 +245,10 @@ describe('LetInDialog', () => {
     const { update } = renderLive(pending);
     await approveWith(CODE);
     expect(await screen.findByText(letInCopy.approved('@eve'))).toBeInTheDocument();
-    expect(document.body.textContent).not.toMatch(/Approved|checks in/);
+    expect(document.body.textContent).not.toMatch(/Approved/);
+    expect(letInCopy.approved('@eve')).toBe(
+      'Code saved. @eve is in as soon as their Crew checks in; you can close this.'
+    );
 
     update(makeSnapshot({ principals: [...pending.principals, eve], pending_joins: [] }));
     expect(await screen.findByText(letInCopy.joined('@eve', 'lab'))).toBeInTheDocument();
@@ -330,10 +350,9 @@ describe('LetInDialog', () => {
   });
 
   it('adds the person straight into the team and the channels chosen, when the broker can', async () => {
-    const { crew } = renderDirectAdd(
-      withMethods({ principals: [...makeSnapshot().principals, eve] })
-    );
+    const { crew, update } = renderDirectAdd(withMethods());
     await approveWith(CODE);
+    update(withMethods({ principals: [...makeSnapshot().principals, eve], pending_joins: [] }));
     const dialog = await screen.findByRole('dialog');
     const channels = within(dialog).getByRole('group', { name: addPeopleCopy.channels });
     const general = within(channels).getByRole('checkbox', { name: /#general/ });
@@ -342,7 +361,7 @@ describe('LetInDialog', () => {
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
 
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
     await waitFor(() =>
       expect(requestsFor(crew, 'team.add_member')).toEqual([
@@ -355,9 +374,13 @@ describe('LetInDialog', () => {
       ])
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+    // The result names the team (QA Q2-23).
     expect(
-      await screen.findByText('Added. @eve can now see #general and #methods.')
+      await screen.findByText('Added @eve to Analysis Lab. They can now see #general and #methods.')
     ).toBeInTheDocument();
+    // Nothing is left to add, so Done is the primary action, and takes the focus.
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
+    expect(within(dialog).queryByRole('button', { name: letInCopy.notNow })).toBeNull();
   });
 
   it('keeps the "Added." line once the next state frame shows the person in the team', async () => {
@@ -365,7 +388,10 @@ describe('LetInDialog', () => {
     const { update } = renderDirectAdd(withMethods());
     await approveWith(CODE);
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
 
     // They join; the observer's frame names them, and the team control comes alive.
     const joined = withMethods({
@@ -375,9 +401,9 @@ describe('LetInDialog', () => {
     update(joined);
     expect(await screen.findByText(letInCopy.joined('@eve', 'lab'))).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
-    const added = 'Added. @eve can now see #general and #methods.';
+    const added = 'Added @eve to Analysis Lab. They can now see #general and #methods.';
     expect(await screen.findByText(added)).toBeInTheDocument();
 
     // The broker put them in the team, and the next frame (at most 2 s later) says so. The
@@ -400,7 +426,7 @@ describe('LetInDialog', () => {
   });
 
   it('keeps Add to team waiting until the person has joined', async () => {
-    renderLetIn({ username: 'eve', full_name: 'Eve Park' });
+    const { crew } = renderLetIn({ username: 'eve', full_name: 'Eve Park' });
     fireEvent.change(await screen.findByLabelText(letInCopy.code('Eve')), {
       target: { value: CODE },
     });
@@ -408,10 +434,13 @@ describe('LetInDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Let Eve in' }));
     });
     const dialog = await screen.findByRole('dialog');
-    expect(
-      within(dialog).getByRole('button', { name: 'Invite @eve to Analysis Lab' })
-    ).toBeDisabled();
+    const invite = within(dialog).getByRole('button', { name: 'Invite to Analysis Lab' });
+    // Waiting, but holding the focus the form had, for the frame that brings them in.
+    expect(invite).toHaveAttribute('aria-disabled', 'true');
+    await waitFor(() => expect(invite).toHaveFocus());
     expect(within(dialog).getByText(letInCopy.addAfterJoin('Eve'))).toBeInTheDocument();
+    fireEvent.click(invite);
+    expect(requestsFor(crew, 'invitation.create')).toEqual([]);
   });
 
   it('offers no team the person is already in', async () => {
@@ -426,5 +455,192 @@ describe('LetInDialog', () => {
     await screen.findByText(letInCopy.approved('@bob'));
     expect(screen.queryByRole('button', { name: /to Analysis Lab$/ })).toBeNull();
     expect(bob.id).toBe('person-bob');
+  });
+});
+
+describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
+  const joinedFrame = () =>
+    withMethods({ principals: [...makeSnapshot().principals, eve], pending_joins: [] });
+
+  it('makes Return after the joined frame add them to the team with the ticked channels', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const { crew, update } = renderDirectAdd(withMethods(), onClose);
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog');
+    const add = within(dialog).getByRole('button', { name: 'Add to Analysis Lab' });
+    // The primary, focused action; Done — which dropped the ticked channels — is not offered.
+    await waitFor(() => expect(add).toHaveFocus());
+    expect(add).not.toHaveClass('bg-background-medium');
+    expect(within(dialog).queryByRole('button', { name: 'Done' })).toBeNull();
+
+    update(joinedFrame());
+    expect(add).not.toHaveAttribute('aria-disabled');
+    expect(add).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await waitFor(() =>
+      expect(requestsFor(crew, 'team.add_member')).toEqual([
+        {
+          team_id: 'team-1',
+          principal_id: eve.id,
+          expected_username: 'eve',
+          channel_ids: ['channel-methods'],
+        },
+      ])
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('closes on Not now with no mutation', async () => {
+    const onClose = vi.fn();
+    const { crew, update } = renderDirectAdd(withMethods(), onClose);
+    await approveWith(CODE);
+    update(joinedFrame());
+    const dialog = await screen.findByRole('dialog');
+    const notNow = within(dialog).getByRole('button', { name: letInCopy.notNow });
+    expect(notNow).toHaveClass('bg-background-medium');
+    expect(notNow).not.toHaveFocus();
+    fireEvent.click(notNow);
+    expect(onClose).toHaveBeenCalled();
+    expect(requestsFor(crew, 'team.add_member')).toEqual([]);
+    expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+  });
+
+  it('with several teams, makes each team’s button primary and the footer Not now', async () => {
+    const second = {
+      id: 'team-2',
+      name: 'Imaging',
+      created_by: alice.id,
+      members: [alice.id],
+      general_channel_id: 'channel-imaging',
+    };
+    const imaging = {
+      id: 'channel-imaging',
+      team_id: 'team-2',
+      name: 'general',
+      created_by: alice.id,
+      owner_id: alice.id,
+      members: [alice.id],
+      archived: false,
+      classification: 'restricted' as const,
+    };
+    const withTwo = (overrides: Partial<Snapshot> = {}) => {
+      const base = withMethods(overrides);
+      return { ...base, teams: [...base.teams, second], channels: [...base.channels, imaging] };
+    };
+    const { crew, update } = renderDirectAdd(withTwo());
+    await approveWith(CODE);
+    update(withTwo({ principals: [...makeSnapshot().principals, eve], pending_joins: [] }));
+    const dialog = await screen.findByRole('dialog');
+    const lab = within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' });
+    const img = within(dialog).getByRole('button', { name: 'Add @eve to Imaging' });
+    for (const button of [lab, img]) expect(button).not.toHaveClass('bg-background-medium');
+    const notNow = within(dialog).getByRole('button', { name: letInCopy.notNow });
+    expect(notNow).toHaveClass('bg-background-medium');
+    expect(notNow).not.toHaveFocus();
+    // Each team's channels are labelled by their team.
+    expect(
+      within(dialog).getByRole('group', { name: letInCopy.channelsIn('Analysis Lab') })
+    ).toBeInTheDocument();
+
+    await waitFor(() => expect(lab).toHaveFocus());
+    await act(async () => {
+      fireEvent.click(lab);
+    });
+    // The next team still to do takes the focus the added one's button had.
+    const next = await within(dialog).findByRole('button', { name: 'Add @eve to Imaging' });
+    await waitFor(() => expect(next).toHaveFocus());
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveClass(
+      'bg-background-medium'
+    );
+    await act(async () => {
+      fireEvent.click(next);
+    });
+    await waitFor(() => expect(requestsFor(crew, 'team.add_member')).toHaveLength(2));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
+  });
+
+  it('keeps Done primary for a device of an existing member, with no optional channel ticked', async () => {
+    const { crew } = renderDirectAdd(
+      withMethods({ principals: [...makeSnapshot().principals, eve] })
+    );
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
+    const channels = within(dialog).getByRole('group', {
+      name: letInCopy.channelsIn('Analysis Lab'),
+    });
+    expect(within(channels).getByRole('checkbox', { name: /#general/ })).toBeChecked();
+    expect(within(channels).getByRole('checkbox', { name: /#methods/ })).not.toBeChecked();
+    const add = within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' });
+    expect(add).toHaveClass('bg-background-medium');
+    await act(async () => {
+      fireEvent.click(add);
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'team.add_member')).toEqual([
+        { team_id: 'team-1', principal_id: eve.id, expected_username: 'eve' },
+      ])
+    );
+  });
+});
+
+describe('LetInDialog, the wording (QA Q2-23)', () => {
+  it('replaces the saved code from the form itself after a mismatch', async () => {
+    const pending = makeSnapshot({ pending_joins: [{ username: 'eve', full_name: 'Eve Park' }] });
+    const { crew, update } = renderLive(pending);
+    await approveWith(CODE);
+    await screen.findByText(letInCopy.approved('@eve'));
+    update(
+      makeSnapshot({
+        pending_joins: [{ username: 'eve', full_name: 'Eve Park', mismatched_attempts: 1 }],
+      })
+    );
+    const warning = await screen.findByRole('alert');
+    fireEvent.click(within(warning).getByRole('button', { name: letInCopy.enterAgain }));
+    fireEvent.change(await screen.findByLabelText(letInCopy.code('Eve')), {
+      target: { value: '1000-1000-0000-0000' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: letInCopy.replace }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'enrollment.approve')).toEqual([
+        { username: 'eve', code: CODE },
+        { username: 'eve', code: '1000100000000000', replace: true },
+      ])
+    );
+  });
+
+  it('says an already-saved code did not match, naming the control that exists', () => {
+    expect(letInCopy.alreadyApproved('eve')).toBe(
+      'You already entered a code for @eve, and it didn’t match their computer. Enter the code they sent and choose Replace code.'
+    );
+    expect(letInCopy.mismatch('eve')).toBe(
+      'A computer trying to join as @eve showed a different code. Check the code @eve sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @eve.'
+    );
+  });
+});
+
+describe('LetInDialog, the fingerprint the joiner checks (QA Q2-04)', () => {
+  it('shows it above the code and with the result, to read out, with nothing to copy', async () => {
+    const fingerprint = groupedFingerprint(
+      (await workspaceKeyFingerprint(connection.workspace_public_key))!
+    );
+    renderLive(makeSnapshot({ pending_joins: [{ username: 'eve', full_name: 'Eve Park' }] }));
+    const line = await screen.findByText(letInCopy.fingerprintFor('@eve'));
+    expect(line).toHaveTextContent(`Fingerprint @eve should see: ${fingerprint}`);
+    expect(screen.getByText(letInCopy.fingerprintHelper)).toBeInTheDocument();
+    // Before the code field, in reading order.
+    expect(
+      line.compareDocumentPosition(screen.getByLabelText(letInCopy.code('Eve'))) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /fingerprint/i })).toBeNull();
+
+    await approveWith(CODE);
+    await screen.findByText(letInCopy.approved('@eve'));
+    expect(screen.getByText(letInCopy.fingerprintFor('@eve'))).toHaveTextContent(fingerprint);
+    expect(screen.queryByRole('button', { name: /Copy/ })).toBeNull();
   });
 });

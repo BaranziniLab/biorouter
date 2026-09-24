@@ -3,15 +3,15 @@ import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
-import type { Snapshot } from '../crewApi';
-import { identityCopy, joinerPerson, teamName, type PeopleDirectory } from '../identity';
-import { useCrew } from '../state/CrewControllerContext';
+import type { Team } from '../crewApi';
+import { identityCopy, joinerPerson, teamName } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { ChannelChoices } from './AddPeopleDialog';
 import { addPeopleCopy, deviceCodeCopy, letInCopy as copy } from './copy';
 import { DeviceCodeInput } from './DeviceCodeInput';
 import { deviceCodeProblem } from './deviceCode';
 import { DialogErrorNote, Field, helpId, useDialogError, useDismissOwnError } from './fields';
+import { groupedFingerprint, useWorkspaceKeyFingerprint } from './fingerprint';
 import {
   channelsSeenAfterTeamAdd,
   directAddChannels,
@@ -27,9 +27,14 @@ import {
   refusalText,
 } from './refusals';
 import { useDialogView } from './workspace';
+import './dialogs.css';
 
 const SOURCE: ErrorSource = 'dialog:let-in';
 const APPROVE_KEY = 'mutate:enrollment.approve';
+
+/** The pending key of one team's addition. */
+const teamKey = (teamId: string, directAdd: boolean) =>
+  `mutate:${directAdd ? 'team.add_member' : 'invitation.create'}:${teamId}` as const;
 
 export interface LetInDialogProps {
   /** The pending joiner's canonical username, from the host's `pending_joins`. */
@@ -70,9 +75,16 @@ interface Approval {
  * - Success is worded as what it is: the broker only saved the code, and cannot yet tell whether it
  *   is the right one (QA T-13). The line becomes "@x joined {workspace}" once the directory shows
  *   them, and a mismatch reported after saving brings the warning back with a way to re-enter it.
- * - Then one control per team the host may add them to, available once they have joined: a broker
- *   that adds members directly (`direct_add_v1`) adds them — with the team's channels to choose
- *   from — and an older one invites them, which they accept in Crew. Each says which it did.
+ * - Then the teams the host may add them to, available once they have joined: a broker that adds
+ *   members directly (`direct_add_v1`) adds them — with the team's channels to choose from — and an
+ *   older one invites them, which they accept in Crew. Each says which it did. The dialog's primary,
+ *   focused action is that addition while it is still to do: "Add to {team}" in the footer for one
+ *   team, or each team's own button for several, with "Not now" beside it. Done — which ignored the
+ *   ticked channels and left the joiner in no team at all (QA Q2-03) — becomes the primary only
+ *   once nothing is left to add. A person adding a device is already a member, so there Done stays
+ *   primary and no optional channel starts ticked.
+ * - Both views show the workspace key's fingerprint the joiner's Crew shows, to read to them if
+ *   they ask (QA Q2-04), with nothing to copy: it is compared by eye, never sent.
  */
 export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const { crew, snapshot, dir, workspace } = useDialogView();
@@ -83,6 +95,13 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const [approval, setApproval] = React.useState<Approval | null>(null);
   // The code the last approval sent, so Replace code re-sends exactly that code and no other.
   const [sentCode, setSentCode] = React.useState<string | null>(null);
+  // Per team: the outcome of adding them (which replaces the team's controls), and the channel
+  // boxes the host changed from their starting state.
+  const [outcomes, setOutcomes] = React.useState<Record<string, string>>({});
+  const [checks, setChecks] = React.useState<Record<string, Record<string, boolean>>>({});
+  const saved = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
+  const fingerprintHex = useWorkspaceKeyFingerprint(saved?.workspace_public_key);
+  const fingerprint = fingerprintHex ? groupedFingerprint(fingerprintHex) : null;
   const join = snapshot?.pending_joins?.find((item) => item.username === username) ?? null;
   const person = joinerPerson(username, join?.full_name);
   // Once the person is a member (or is adding a device), the directory knows their chosen name.
@@ -128,13 +147,17 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
       });
   };
 
+  // A computer with a different code has tried already, so a code is saved: a plain approval
+  // would only be refused as already approved. The form's own submit replaces it (QA Q2-23).
+  const replacing = mismatches > 0;
+
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (deviceCodeProblem(code)) {
       setAttempted(true);
       return;
     }
-    approve(code, false);
+    approve(code, replacing);
   };
 
   const title = (
@@ -151,6 +174,10 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
       <bdi>{person.serverName}</bdi> ({identityCopy.serverAccountName})
     </>
   ) : undefined;
+
+  const fingerprintCheck = fingerprint ? (
+    <FingerprintCheck who={handle} fingerprint={fingerprint} />
+  ) : null;
 
   if (approval) {
     const joined = !approval.memberBefore && member !== null;
@@ -178,6 +205,102 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         (team.created_by === dir.me?.id || (directAdd && dir.viewerIsHost)) &&
         !alreadyIn?.has(team.id)
     );
+    // Someone adding a device is a member already: the team offers stay, but are not the point.
+    const promote = !approval.memberBefore;
+    const toDo = teams.filter((team) => outcomes[team.id] === undefined);
+    const single = promote && teams.length === 1 && toDo.length === 1 ? toDo[0] : null;
+    const several = promote && teams.length > 1 && toDo.length > 0;
+
+    const choicesFor = (team: Team) => {
+      const choices = directAdd ? directAddChannels(snapshot, team.id, dir) : [];
+      // Never tick a box that the primary action ignores: where Done is the primary, an optional
+      // channel starts unticked.
+      return promote ? choices : choices.map((choice) => ({ ...choice, checked: choice.always }));
+    };
+    const isChecked = (team: Team, choice: ChannelChoice) =>
+      choice.always || (checks[team.id]?.[choice.id] ?? choice.checked);
+    const pendingFor = (team: Team) => crew.isPending(teamKey(team.id, directAdd));
+
+    const addToTeam = (team: Team) => {
+      if (!memberId || pendingFor(team)) return;
+      const channelIds = choicesFor(team)
+        .filter((choice) => !choice.always && isChecked(team, choice))
+        .map((choice) => choice.id);
+      const label = teamName(team);
+      void crew
+        .act(SOURCE, teamKey(team.id, directAdd), async () => {
+          if (!directAdd) {
+            await crew.request(
+              'invitation.create',
+              {
+                kind: 'team',
+                target_id: team.id,
+                principal_id: memberId,
+                expected_username: username,
+              },
+              { mutation: true }
+            );
+            return copy.addedToTeam(handle);
+          }
+          const result = directAddResultFrom(
+            await crew.request(
+              'team.add_member',
+              {
+                team_id: team.id,
+                principal_id: memberId,
+                expected_username: username,
+                ...(channelIds.length > 0 ? { channel_ids: channelIds } : {}),
+              },
+              { mutation: true }
+            )
+          );
+          return result.alreadyMember && result.addedChannels.length === 0
+            ? addPeopleCopy.alreadyIn(handle, label)
+            : copy.directAdded(
+                handle,
+                label,
+                channelsSeenAfterTeamAdd(snapshot, team.id, result.addedChannels)
+              );
+        })
+        .then((said) => {
+          if (said !== undefined) setOutcomes((current) => ({ ...current, [team.id]: said }));
+        });
+    };
+
+    const teamLabel = (team: Team) =>
+      directAdd
+        ? copy.directAddToTeam(handle, teamName(team))
+        : copy.addToTeam(handle, teamName(team));
+    const waitingToJoin = !memberId;
+    // Each footer layout is its own set of keyed elements: reconciled in place of the form's
+    // Cancel (or of the add it replaces), React would reuse that node and never apply `autoFocus`.
+    // The addition is `aria-disabled` rather than `disabled` while they have not joined yet, so it
+    // can hold focus: the next state frame enables it where the host is already waiting.
+    const footer = single ? (
+      <>
+        <Button key="not-now" type="button" variant="secondary" onClick={onClose}>
+          {copy.notNow}
+        </Button>
+        <Button
+          key={`add-${single.id}`}
+          autoFocus
+          className="crew-waiting-action"
+          aria-disabled={waitingToJoin || pendingFor(single) || undefined}
+          onClick={() => addToTeam(single)}
+        >
+          {directAdd ? copy.footerAdd(teamName(single)) : copy.footerInvite(teamName(single))}
+        </Button>
+      </>
+    ) : several ? (
+      <Button key="not-now" type="button" variant="secondary" onClick={onClose}>
+        {toDo.length === teams.length ? copy.notNow : copy.done}
+      </Button>
+    ) : (
+      <Button key="done" autoFocus onClick={onClose}>
+        {copy.done}
+      </Button>
+    );
+
     return (
       <ModalShell
         open
@@ -186,14 +309,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         purpose="info"
         title={title}
         subtitle={subtitle}
-        footer={
-          // The form that had focus is gone; land on the result's one action, not the dialog frame.
-          // The key makes it a new element: reconciled in place of the form's Cancel, React would
-          // reuse that node and never apply `autoFocus`.
-          <Button key="done" autoFocus onClick={onClose}>
-            {copy.done}
-          </Button>
-        }
+        footer={footer}
       >
         <div className="flex flex-col gap-3 pb-1">
           {newMismatch ? (
@@ -222,22 +338,50 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
               <span>{joined ? copy.joined(handle, workspace) : copy.approved(handle)}</span>
             </Note>
           )}
+          {!joined ? fingerprintCheck : null}
           {teams.length > 0 ? (
             <div className="flex flex-col items-start gap-3">
-              {teams.map((team) => (
-                <AddToTeam
-                  key={team.id}
-                  teamId={team.id}
-                  teamLabel={teamName(team)}
-                  who={handle}
-                  principalId={memberId}
-                  username={username}
-                  directAdd={directAdd}
-                  snapshot={snapshot}
-                  dir={dir}
-                />
-              ))}
-              {!member ? (
+              {teams.map((team) => {
+                const outcome = outcomes[team.id];
+                if (outcome !== undefined) return <TeamOutcome key={team.id} text={outcome} />;
+                const choices = choicesFor(team);
+                const pending = pendingFor(team);
+                return (
+                  <div key={team.id} className="flex min-w-0 flex-col items-start gap-2">
+                    {choices.length > 1 ? (
+                      <ChannelChoices
+                        label={single ? addPeopleCopy.channels : copy.channelsIn(teamName(team))}
+                        choices={choices}
+                        isChecked={(choice) => isChecked(team, choice)}
+                        disabled={pending || waitingToJoin}
+                        onChange={(id, next) =>
+                          setChecks((current) => ({
+                            ...current,
+                            [team.id]: { ...current[team.id], [id]: next },
+                          }))
+                        }
+                      />
+                    ) : null}
+                    {single ? null : (
+                      <Button
+                        // With several, the first still to do takes the focus: the form's at first,
+                        // then that of the team just added, whose button its outcome replaced. The
+                        // key remounts the button as it becomes first, so `autoFocus` applies.
+                        key={several && team.id === toDo[0]?.id ? 'first' : 'rest'}
+                        variant={several ? 'default' : 'secondary'}
+                        size="sm"
+                        className="crew-waiting-action"
+                        autoFocus={several && team.id === toDo[0]?.id}
+                        aria-disabled={waitingToJoin || pending || undefined}
+                        onClick={() => addToTeam(team)}
+                      >
+                        {teamLabel(team)}
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+              {waitingToJoin ? (
                 <p className="text-supporting text-text-muted">{copy.addAfterJoin(first)}</p>
               ) : null}
             </div>
@@ -266,7 +410,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={approving || !complete}>
-            {copy.submit(first)}
+            {replacing ? copy.replace : copy.submit(first)}
           </Button>
         </>
       }
@@ -277,6 +421,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             <span>{copy.mismatch(username)}</span>
           </Note>
         ) : null}
+        {fingerprintCheck}
         <Field
           id={codeId}
           label={copy.code(first)}
@@ -324,107 +469,31 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   );
 }
 
-/**
- * One team the admitted person can be put in. A broker that adds directly gets `team.add_member`
- * with the checked channels; an older one gets a team invitation the person accepts in Crew. The
- * control is replaced by the outcome in words — added (and to which channels), or invited and
- * waiting for them — never a bare check mark.
- */
-function AddToTeam({
-  teamId,
-  teamLabel,
-  who,
-  principalId,
-  username,
-  directAdd,
-  snapshot,
-  dir,
-}: {
-  teamId: string;
-  teamLabel: string;
-  who: string;
-  principalId: string | null;
-  username: string;
-  directAdd: boolean;
-  snapshot: Snapshot | null;
-  dir: PeopleDirectory;
-}) {
-  const crew = useCrew();
-  const [outcome, setOutcome] = React.useState<string | null>(null);
-  const [checked, setChecked] = React.useState<Record<string, boolean>>({});
-  const key = `mutate:${directAdd ? 'team.add_member' : 'invitation.create'}:${teamId}`;
-  const pending = crew.isPending(key);
-  const choices = directAdd ? directAddChannels(snapshot, teamId, dir) : [];
-  const isChecked = (choice: ChannelChoice) =>
-    choice.always || (checked[choice.id] ?? choice.checked);
-
-  if (outcome) {
-    return (
-      <p role="status" className="flex items-start gap-1.5 text-supporting text-text-default">
-        <Check aria-hidden className="mt-0.5 h-icon-row w-icon-row shrink-0 text-text-muted" />
-        <span>{outcome}</span>
-      </p>
-    );
-  }
-
-  const add = () => {
-    if (!principalId) return;
-    const channelIds = choices
-      .filter((choice) => !choice.always && isChecked(choice))
-      .map((choice) => choice.id);
-    void crew
-      .act(SOURCE, key, async () => {
-        if (!directAdd) {
-          await crew.request(
-            'invitation.create',
-            {
-              kind: 'team',
-              target_id: teamId,
-              principal_id: principalId,
-              expected_username: username,
-            },
-            { mutation: true }
-          );
-          return copy.addedToTeam(who);
-        }
-        const result = directAddResultFrom(
-          await crew.request(
-            'team.add_member',
-            {
-              team_id: teamId,
-              principal_id: principalId,
-              expected_username: username,
-              ...(channelIds.length > 0 ? { channel_ids: channelIds } : {}),
-            },
-            { mutation: true }
-          )
-        );
-        return result.alreadyMember && result.addedChannels.length === 0
-          ? addPeopleCopy.alreadyIn(who, teamLabel)
-          : addPeopleCopy.added(
-              who,
-              channelsSeenAfterTeamAdd(snapshot, teamId, result.addedChannels)
-            );
-      })
-      .then((said) => {
-        if (said !== undefined) setOutcome(said);
-      });
-  };
-
+/** A team's addition, in words, where its controls were: added (and to what), or invited. */
+function TeamOutcome({ text }: { text: string }) {
   return (
-    <div className="flex min-w-0 flex-col items-start gap-2">
-      {choices.length > 1 ? (
-        <ChannelChoices
-          label={addPeopleCopy.channels}
-          choices={choices}
-          isChecked={isChecked}
-          disabled={pending || !principalId}
-          onChange={(id, next) => setChecked((current) => ({ ...current, [id]: next }))}
-        />
-      ) : null}
-      <Button variant="secondary" size="sm" disabled={!principalId || pending} onClick={add}>
-        {directAdd ? copy.directAddToTeam(who, teamLabel) : copy.addToTeam(who, teamLabel)}
-      </Button>
+    <p role="status" className="flex items-start gap-1.5 text-supporting text-text-default">
+      <Check aria-hidden className="mt-0.5 h-icon-row w-icon-row shrink-0 text-text-muted" />
+      <span>{text}</span>
+    </p>
+  );
+}
+
+/**
+ * The workspace key's fingerprint as the joiner's Crew shows it, for the host to read to them if
+ * they ask (QA Q2-04). Read-only and never a Copy button: it is compared by eye, not sent — the
+ * code is what the joiner sends.
+ */
+function FingerprintCheck({ who, fingerprint }: { who: string; fingerprint: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <p className="text-supporting text-text-default">
+        {copy.fingerprintFor(who)}{' '}
+        <span className="whitespace-nowrap font-mono" translate="no">
+          {fingerprint}
+        </span>
+      </p>
+      <p className="text-supporting text-text-muted">{copy.fingerprintHelper}</p>
     </div>
   );
 }

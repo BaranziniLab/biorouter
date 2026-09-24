@@ -55,3 +55,11 @@
 .crew-settings-panel[data-crew-tab='agent-access'] > [aria-labelledby] > :first-child {
   display: none;
 }
+
+/* An action that holds focus while it cannot act yet (Let in's "Add to {team}" before the joiner's
+   Crew checks in): `aria-disabled` rather than `disabled`, so the next state frame enables it where
+   focus already is (QA Q2-03). It reads as disabled all the same. */
+.crew-waiting-action[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

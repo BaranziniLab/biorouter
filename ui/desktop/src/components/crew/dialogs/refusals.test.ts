@@ -361,14 +361,17 @@ describe('invite and approve', () => {
     ).toEqual({ text: inviteCopy.refusal.noAccount('zed'), alreadyMember: false });
   });
 
-  it('says a device was already let in, and never matches another code', () => {
+  it('says a code is already saved and did not match, and never matches another code', () => {
     const approved =
       'already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.';
     for (const text of [approved, legacy(approved)]) {
       expect(isAlreadyApproved(text)).toBe(true);
       expect(approveRefusalText(text, 'eve')).toBe(letInCopy.alreadyApproved('eve'));
     }
-    expect(letInCopy.alreadyApproved('eve')).toBe('You already let a device in for @eve.');
+    // Never "let a device in", which was false after a mismatch (QA Q2-23).
+    expect(letInCopy.alreadyApproved('eve')).toBe(
+      'You already entered a code for @eve, and it didn’t match their computer. Enter the code they sent and choose Replace code.'
+    );
     expect(
       isAlreadyApproved('not_invited: @eve has no pending invitation. Invite them first.')
     ).toBe(false);
