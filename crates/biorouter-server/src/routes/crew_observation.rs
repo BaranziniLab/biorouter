@@ -1,5 +1,5 @@
 //! Human room observation shared by native CLI and desktop clients.
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path},
@@ -15,7 +15,7 @@ use biorouter_server::auth::{user_action_proof, UserActionProof};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     convert::Infallible,
     sync::{Arc, LazyLock},
     time::Duration,
@@ -27,9 +27,15 @@ const MAX_FRAME: usize = 1_048_576;
 /// Finished runs a `state` frame lists per channel, newest first. Live runs are always listed.
 const FINISHED_RUNS_PER_CHANNEL: usize = 20;
 /// Where a queued message keeps the display names its page gave it (see `annotate_page`). The
-/// NUL makes it a key no broker message field can have; `next_frame` removes it before the
+/// NUL makes it a key no broker message field can have; `next_page_frame` removes it before the
 /// message leaves.
 const PAGE_NAMES: &str = "\u{0}page_names";
+/// The most messages one `messages` frame carries: the clients' own limit, and the broker's
+/// largest page.
+const MAX_MESSAGES_PER_FRAME: usize = 200;
+/// The encoded messages (with their names) one `messages` frame carries, well under
+/// `MAX_FRAME`. A single larger message still travels, alone.
+const FRAME_BUDGET: usize = 256 * 1024;
 static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
 
 fn person(headers: &HeaderMap) -> Result<()> {
@@ -55,12 +61,192 @@ fn observation_error_code(error: &anyhow::Error) -> String {
     match error.to_string().as_str() {
         "policy_changed" => "policy_changed",
         "channel_access_changed" => "channel_access_changed",
+        "scope_changed" => "scope_changed",
         "human_authority_required" => "human_authority_required",
         "observer_capacity_reached" => "observer_capacity_reached",
         _ => "observation_refused",
     }
     .into()
 }
+
+/// The plain sentence an error frame carries beside its code. The desktop app words each code
+/// itself; this is what a terminal (`crew watch`) prints, so it names what happened and never
+/// the observer's internals.
+fn observation_error_text(code: &str) -> &'static str {
+    match code {
+        "policy_changed" => {
+            "The workspace's privacy settings, or this computer's connection to it, changed"
+        }
+        "scope_changed" => "You can no longer read a channel that messages here come from",
+        "channel_access_changed" => "You no longer have access to this channel",
+        "stale_cursor" => "A message in this view is no longer available to you",
+        "human_authority_required" => {
+            "Watching a channel needs you to confirm it's you in Biorouter"
+        }
+        "observer_capacity_reached" => "Too many channels are being watched at once",
+        "response_too_large" => "An update was too large to show",
+        "unauthorized" | "unknown_device" => "This computer isn't signed in to the workspace",
+        "forbidden" | "access_denied" => "You no longer have access to what this view shows",
+        "principal_revoked" => "You're no longer a member of this workspace",
+        "privacy_denied" => "The workspace's privacy rules don't allow this view",
+        _ => "Live updates stopped",
+    }
+}
+
+/// Where an observer reads the saved connection and the broker: the daemon's Crew manager, or a
+/// scripted broker in tests.
+#[async_trait::async_trait]
+trait ObservationSource: Send + Sync {
+    /// The saved connection's privacy binding (see `connection_binding`).
+    async fn binding(&self, connection: &str) -> Result<Value>;
+    /// One read the person's own device signs.
+    async fn read(&self, connection: &str, method: &str, params: Value) -> Result<Value>;
+    /// The runs this device owns on the connection.
+    async fn runs(&self, connection: &str) -> Result<Vec<super::crew::RunView>>;
+    /// What the broker's last verified `hello` said it supports.
+    fn capabilities(&self, connection: &str) -> Result<Vec<String>>;
+}
+
+/// The daemon's own Crew manager.
+struct Daemon;
+#[async_trait::async_trait]
+impl ObservationSource for Daemon {
+    async fn binding(&self, connection: &str) -> Result<Value> {
+        connection_binding(&manager()?.connection(connection).await?)
+    }
+    async fn read(&self, connection: &str, method: &str, params: Value) -> Result<Value> {
+        manager()?
+            .human_request(connection, method, params, None)
+            .await
+    }
+    async fn runs(&self, connection: &str) -> Result<Vec<super::crew::RunView>> {
+        super::crew::owned_run_views(connection).await
+    }
+    fn capabilities(&self, connection: &str) -> Result<Vec<String>> {
+        Ok(manager()?.capabilities(connection).unwrap_or_default())
+    }
+}
+
+/// What an observer last verified against a fresh snapshot: the workspace policy epoch, the
+/// privacy and institution the view was opened under, and every channel the person could read.
+#[derive(Debug)]
+struct Verified {
+    epoch: Value,
+    privacy: Value,
+    readable: BTreeSet<String>,
+}
+impl Verified {
+    fn from_snapshot(snapshot: &Value) -> Result<Self> {
+        let workspace = &snapshot["workspace"];
+        let epoch = workspace["policy_epoch"].clone();
+        ensure!(!epoch.is_null(), "Invalid workspace policy");
+        Ok(Self {
+            epoch,
+            privacy: json!([workspace["mode"], workspace["institution_id"]]),
+            readable: snapshot["channels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|channel| channel["id"].as_str().map(str::to_owned))
+                .collect(),
+        })
+    }
+
+    /// Moves to a newer verification.
+    ///
+    /// SECURITY-SENSITIVE (human review): a moved workspace policy epoch is not a reason to end.
+    /// Every accepted invitation, added member or archived channel moves it, and ending there
+    /// collapsed every member's open channel (P0-1). A person reads a message when they can read
+    /// its channel and every channel it was derived from (`visible` in `biorouter-crew`'s
+    /// broker), so someone who can still read every channel they could read can still read
+    /// everything this observer already delivered. The view is re-authorized on that basis and
+    /// continues. A privacy or institution change (`policy_changed`), or losing any channel
+    /// (`scope_changed`), ends it instead: what is on screen may no longer be theirs to see.
+    fn advance(&mut self, next: Self) -> Result<()> {
+        ensure!(next.privacy == self.privacy, "policy_changed");
+        ensure!(next.readable.is_superset(&self.readable), "scope_changed");
+        if next.epoch != self.epoch {
+            tracing::debug!(from = %self.epoch, to = %next.epoch,
+                "Room observation re-authorized under a new workspace policy epoch");
+        }
+        *self = next;
+        Ok(())
+    }
+}
+
+/// What the broker's read check for a person looks at in a message: its channel and the
+/// channels it was derived from. Messages that share a key share the broker's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ReadKey {
+    Channels {
+        channel: String,
+        sources: BTreeSet<String>,
+    },
+    /// A message whose channel or sources do not parse is decided on its own, by the broker.
+    Message(String),
+}
+impl ReadKey {
+    fn of(message: &Value) -> Self {
+        let sources = message["source_channels"].as_array().and_then(|sources| {
+            sources
+                .iter()
+                .map(|source| source.as_str().map(str::to_owned))
+                .collect::<Option<BTreeSet<_>>>()
+        });
+        match (message["channel_id"].as_str(), sources) {
+            (Some(channel), Some(sources)) => Self::Channels {
+                channel: channel.to_owned(),
+                sources,
+            },
+            _ => Self::Message(message["sequence"].as_str().unwrap_or_default().to_owned()),
+        }
+    }
+
+    /// Whether a snapshot's readable channels allow the key. A key that did not parse has only
+    /// the broker's answer.
+    fn readable_in(&self, readable: &BTreeSet<String>) -> bool {
+        match self {
+            Self::Channels { channel, sources } => {
+                readable.contains(channel) && sources.is_subset(readable)
+            }
+            Self::Message(_) => true,
+        }
+    }
+}
+
+fn message_cursor(message: &Value) -> Result<String> {
+    Ok(message["sequence"]
+        .as_str()
+        .context("Invalid message cursor")?
+        .to_owned())
+}
+
+/// Each message's key and the cursor the broker resolves for it.
+fn read_keys<'a>(messages: impl IntoIterator<Item = &'a Value>) -> Result<Vec<(ReadKey, String)>> {
+    messages
+        .into_iter()
+        .map(|message| Ok((ReadKey::of(message), message_cursor(message)?)))
+        .collect()
+}
+
+/// How many of the pending messages the next frame carries: every one that fits
+/// `FRAME_BUDGET` and `MAX_MESSAGES_PER_FRAME`, and always at least one.
+fn frame_batch_len(pending: &VecDeque<Value>) -> usize {
+    let mut size = 0usize;
+    let mut count = 0;
+    for message in pending.iter().take(MAX_MESSAGES_PER_FRAME) {
+        let length = serde_json::to_vec(message).map_or(usize::MAX, |encoded| encoded.len());
+        if count > 0 && size.saturating_add(length) > FRAME_BUDGET {
+            break;
+        }
+        size = size.saturating_add(length);
+        count += 1;
+    }
+    count.max(1)
+}
+
+type Decisions = HashMap<ReadKey, std::result::Result<(), String>>;
+
 struct Observer {
     headers: HeaderMap,
     connection: String,
@@ -68,7 +254,7 @@ struct Observer {
     cursor: Option<String>,
     pending: VecDeque<Value>,
     binding: Value,
-    epoch: Option<Value>,
+    verified: Option<Verified>,
     first: bool,
     state_due: bool,
     sleep_due: bool,
@@ -77,49 +263,127 @@ struct Observer {
     deadline: tokio::time::Instant,
     done: bool,
     _permit: Option<OwnedSemaphorePermit>,
+    source: Arc<dyn ObservationSource>,
 }
 impl Observer {
-    async fn authorize(&mut self, cancel: &CancellationToken) -> Result<Value> {
+    fn new(
+        headers: HeaderMap,
+        connection: String,
+        request: ObserveRequest,
+        binding: Value,
+        source: Arc<dyn ObservationSource>,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> Self {
+        Self {
+            headers,
+            connection,
+            cursor: request.after.clone(),
+            request,
+            pending: VecDeque::new(),
+            binding,
+            verified: None,
+            first: true,
+            state_due: true,
+            sleep_due: false,
+            last_state: None,
+            limit: 200,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+            done: false,
+            _permit: permit,
+            source,
+        }
+    }
+
+    /// The checks that need no broker: cancellation, the person's proof, and that the saved
+    /// connection still has the privacy binding the observation was opened under.
+    async fn check_local(&self, cancel: &CancellationToken) -> Result<()> {
         ensure!(!cancel.is_cancelled(), "observation_cancelled");
         person(&self.headers)?;
-        let crew = manager()?;
         ensure!(
-            connection_binding(&crew.connection(&self.connection).await?)? == self.binding,
+            self.source.binding(&self.connection).await? == self.binding,
             "policy_changed"
         );
-        let snapshot = crew
-            .human_request(&self.connection, "workspace.snapshot", json!({}), None)
+        Ok(())
+    }
+
+    /// Verifies the observation against a fresh snapshot, and returns that snapshot. A policy
+    /// epoch that moved is re-authorized under the new one (see [`Verified::advance`]).
+    async fn authorize(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        self.check_local(cancel).await?;
+        let snapshot = self
+            .source
+            .read(&self.connection, "workspace.snapshot", json!({}))
             .await?;
         ensure!(!cancel.is_cancelled(), "observation_cancelled");
+        let next = Verified::from_snapshot(&snapshot)?;
         if let Some(channel) = &self.request.channel_id {
-            ensure!(
-                snapshot["channels"]
-                    .as_array()
-                    .is_some_and(|channels| channels
-                        .iter()
-                        .any(|entry| entry["id"].as_str() == Some(channel))),
-                "channel_access_changed"
-            );
+            ensure!(next.readable.contains(channel), "channel_access_changed");
         }
-        let epoch = snapshot["workspace"]["policy_epoch"].clone();
-        ensure!(!epoch.is_null(), "Invalid workspace policy");
-        ensure!(
-            self.epoch
-                .as_ref()
-                .is_none_or(|previous| previous == &epoch),
-            "policy_changed"
-        );
-        self.epoch = Some(epoch);
-        ensure!(
-            connection_binding(&crew.connection(&self.connection).await?)? == self.binding,
-            "policy_changed"
-        );
-        person(&self.headers)?;
+        match &mut self.verified {
+            Some(verified) => verified.advance(next)?,
+            None => self.verified = Some(next),
+        }
+        self.check_local(cancel).await?;
         Ok(snapshot)
     }
+
+    /// Resolves a message cursor in the observed channel. The broker refuses one the person can
+    /// no longer read (`stale_cursor`), including after a revocation that moved no epoch.
+    async fn resolve(&self, cursor: &str) -> Result<Value> {
+        self.source
+            .read(
+                &self.connection,
+                "messages.history",
+                json!({"channel_id":self.request.channel_id,"after":cursor,"limit":0}),
+            )
+            .await
+    }
+
+    /// The broker's decision for each distinct key among `messages`, taken between two
+    /// snapshots.
+    ///
+    /// SECURITY-SENSITIVE (human review): this replaces one cursor check per message, which kept
+    /// a busy channel on its skeleton for seconds. The broker decides a person's read from the
+    /// message's channel and source channels alone (`visible` in `biorouter-crew`'s broker), so
+    /// it resolves one message per distinct key and that answer is every such message's answer.
+    /// An allowed key must also be readable in the second snapshot, so a revocation that lands
+    /// while the broker answers still withholds what it covers.
+    async fn decide(
+        &mut self,
+        messages: &[(ReadKey, String)],
+        cancel: &CancellationToken,
+    ) -> Result<Decisions> {
+        self.authorize(cancel).await?;
+        let mut decisions = Decisions::new();
+        for (key, cursor) in messages {
+            if decisions.contains_key(key) {
+                continue;
+            }
+            ensure!(!cancel.is_cancelled(), "observation_cancelled");
+            let decision = self
+                .resolve(cursor)
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string());
+            decisions.insert(key.clone(), decision);
+        }
+        self.authorize(cancel).await?;
+        let readable = &self
+            .verified
+            .as_ref()
+            .context("The view was not verified")?
+            .readable;
+        for (key, decision) in &mut decisions {
+            if decision.is_ok() && !key.readable_in(readable) {
+                *decision = Err("scope_changed".into());
+            }
+        }
+        Ok(decisions)
+    }
+
     async fn state_frame(&mut self, cancel: &CancellationToken) -> Result<Value> {
         self.authorize(cancel).await?;
-        let mut runs = super::crew::owned_run_views(&self.connection).await?;
+        let mut runs = self.source.runs(&self.connection).await?;
         let snapshot = self.authorize(cancel).await?;
         runs.retain(|run| {
             snapshot["channels"].as_array().is_some_and(|channels| {
@@ -128,9 +392,7 @@ impl Observer {
                     .any(|channel| channel["id"] == run.channel_id)
             })
         });
-        let capabilities = manager()?
-            .capabilities(&self.connection)
-            .unwrap_or_default();
+        let capabilities = self.source.capabilities(&self.connection)?;
         person(&self.headers)?;
         Ok(state_frame_json(
             &self.connection,
@@ -148,28 +410,55 @@ impl Observer {
             self.last_state = Some(tokio::time::Instant::now());
             return Ok(frame);
         }
+        if frame["type"] == "messages" {
+            if let Some(messages) = frame["messages"].as_array().filter(|m| !m.is_empty()) {
+                self.admit_messages(messages, &frame["cursor"], cancel)
+                    .await?;
+                return Ok(frame);
+            }
+        }
         self.authorize(cancel).await?;
         if frame["type"] == "messages" {
             if let Some(cursor) = frame["cursor"].as_str() {
-                manager()?
-                    .human_request(
-                        &self.connection,
-                        "messages.history",
-                        json!({"channel_id":self.request.channel_id,"after":cursor,"limit":0}),
-                        None,
-                    )
-                    .await?;
+                self.resolve(cursor).await?;
             }
         }
         self.authorize(cancel).await?;
         Ok(frame)
     }
 
+    /// A queued frame's messages, decided again now: the frame may have waited in the queue
+    /// across a revocation. Nothing decided when it was made is reused.
+    async fn admit_messages(
+        &mut self,
+        messages: &[Value],
+        cursor: &Value,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.check_local(cancel).await?;
+        let mut keys = read_keys(messages)?;
+        // The frame's resume cursor is its last message's; one that is not is decided alone.
+        if let Some(cursor) = cursor.as_str() {
+            if !keys.iter().any(|(_, known)| known == cursor) {
+                keys.push((ReadKey::Message(cursor.to_owned()), cursor.to_owned()));
+            }
+        }
+        let decisions = self.decide(&keys, cancel).await?;
+        for (key, _) in &keys {
+            match decisions.get(key) {
+                Some(Ok(())) => {}
+                Some(Err(refusal)) => bail!("{refusal}"),
+                None => bail!("observation_refused"),
+            }
+        }
+        Ok(())
+    }
+
     async fn history(&mut self, cancel: &CancellationToken) -> Result<VecDeque<Value>> {
         let channel = self
             .request
             .channel_id
-            .as_ref()
+            .clone()
             .context("No channel selected")?;
         loop {
             ensure!(!cancel.is_cancelled(), "observation_cancelled");
@@ -178,8 +467,9 @@ impl Observer {
             if let Some(cursor) = &self.cursor {
                 params["after"] = json!(cursor);
             }
-            match manager()?
-                .human_request(&self.connection, "messages.history", params, None)
+            match self
+                .source
+                .read(&self.connection, "messages.history", params)
                 .await
             {
                 Ok(page) => {
@@ -199,11 +489,76 @@ impl Observer {
             }
         }
     }
+
+    /// The next frame of the current page: as many of its messages as fit one frame, each
+    /// decided by the broker now (see [`Self::decide`]). A message the broker refuses is never
+    /// sent: the frame stops before it, and it ends the observation when it is the next to go,
+    /// as when each message was checked alone, so nothing after it is sent either.
+    async fn next_page_frame(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        let count = frame_batch_len(&self.pending);
+        let keys = read_keys(self.pending.iter().take(count))?;
+        let decisions = self.decide(&keys, cancel).await?;
+        let allowed = keys
+            .iter()
+            .take_while(|(key, _)| matches!(decisions.get(key), Some(Ok(()))))
+            .count();
+        if allowed == 0 {
+            match decisions.get(&keys[0].0) {
+                Some(Err(refusal)) => bail!("{refusal}"),
+                _ => bail!("observation_refused"),
+            }
+        }
+        let mut messages = Vec::with_capacity(allowed);
+        let mut names = Vec::new();
+        for (_, cursor) in &keys[..allowed] {
+            ensure!(
+                self.cursor.as_ref() != Some(cursor),
+                "History cursor did not advance"
+            );
+            let mut message = self.pending.pop_front().context("Invalid history page")?;
+            if let Some(page_names) = message
+                .as_object_mut()
+                .and_then(|fields| fields.remove(PAGE_NAMES))
+            {
+                names.push(page_names);
+            }
+            messages.push(message);
+            self.cursor = Some(cursor.clone());
+        }
+        let reset = self.first && self.request.after.is_none();
+        self.first = false;
+        Ok(messages_frame(
+            &self.request.channel_id,
+            messages,
+            &self.cursor,
+            reset,
+            self.pending.len(),
+            self.limit,
+            names,
+        ))
+    }
+
+    /// The next frame, after the pause between two state frames when one is due. `produce`
+    /// steps itself, so it can wait out the pause without holding this observer.
+    #[cfg(test)]
     async fn next_frame(&mut self, cancel: &CancellationToken) -> Result<Value> {
+        loop {
+            match self.step(cancel).await? {
+                Step::Frame(frame) => return Ok(frame),
+                Step::Idle => idle_wait(cancel).await?,
+            }
+        }
+    }
+
+    /// The next frame, or `Idle` when nothing changed and the next state frame waits out the
+    /// pause. The pause is the caller's, so it can wait without holding this observer.
+    async fn step(&mut self, cancel: &CancellationToken) -> Result<Step> {
         loop {
             if tokio::time::Instant::now() >= self.deadline {
                 self.done = true;
-                return Ok(json!({"type":"reconnect","cursor":self.cursor}));
+                return Ok(Step::Frame(
+                    json!({"type":"reconnect","cursor":self.cursor}),
+                ));
             }
             ensure!(!cancel.is_cancelled(), "observation_cancelled");
             if self.state_due
@@ -212,54 +567,17 @@ impl Observer {
                     .is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
             {
                 if self.state_due && self.sleep_due {
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_secs(2)) => (),
-                        () = cancel.cancelled() => anyhow::bail!("observation_cancelled"),
-                    }
+                    self.sleep_due = false;
+                    return Ok(Step::Idle);
                 }
                 let frame = self.state_frame(cancel).await?;
                 self.last_state = Some(tokio::time::Instant::now());
                 self.state_due = false;
                 self.sleep_due = true;
-                return Ok(frame);
+                return Ok(Step::Frame(frame));
             }
             if !self.pending.is_empty() {
-                self.authorize(cancel).await?;
-                let mut message = self.pending.pop_front().unwrap();
-                let names = message
-                    .as_object_mut()
-                    .and_then(|fields| fields.remove(PAGE_NAMES));
-                let cursor = message["sequence"]
-                    .as_str()
-                    .context("Invalid message cursor")?
-                    .to_owned();
-                ensure!(
-                    self.cursor.as_ref() != Some(&cursor),
-                    "History cursor did not advance"
-                );
-                // Resolving the cursor rechecks every inherited source-channel ACL,
-                // including revocations that do not change the workspace epoch.
-                manager()?
-                    .human_request(
-                        &self.connection,
-                        "messages.history",
-                        json!({"channel_id":self.request.channel_id,"after":cursor,"limit":0}),
-                        None,
-                    )
-                    .await?;
-                self.authorize(cancel).await?;
-                self.cursor = Some(cursor);
-                let reset = self.first && self.request.after.is_none();
-                self.first = false;
-                return Ok(messages_frame(
-                    &self.request.channel_id,
-                    Some(message),
-                    &self.cursor,
-                    reset,
-                    self.pending.len(),
-                    self.limit,
-                    names,
-                ));
+                return self.next_page_frame(cancel).await.map(Step::Frame);
             }
             if self.request.channel_id.is_none() {
                 self.state_due = true;
@@ -271,18 +589,33 @@ impl Observer {
                 self.state_due = true;
                 if self.first {
                     self.first = false;
-                    return Ok(messages_frame(
+                    return Ok(Step::Frame(messages_frame(
                         &self.request.channel_id,
-                        None,
+                        Vec::new(),
                         &self.cursor,
                         self.request.after.is_none(),
                         0,
                         self.limit,
-                        None,
-                    ));
+                        Vec::new(),
+                    )));
                 }
             }
         }
+    }
+}
+
+/// What an observer's producer does next.
+enum Step {
+    Frame(Value),
+    /// Wait out the pause between two state frames, then step again.
+    Idle,
+}
+
+/// The pause between two state frames when nothing else is due.
+async fn idle_wait(cancel: &CancellationToken) -> Result<()> {
+    tokio::select! {
+        () = tokio::time::sleep(Duration::from_secs(2)) => Ok(()),
+        () = cancel.cancelled() => bail!("observation_cancelled"),
     }
 }
 
@@ -335,23 +668,14 @@ pub async fn observe(
             )
         })?;
     let binding = connection_binding(&connection).unwrap();
-    let observer = Observer {
+    let observer = Observer::new(
         headers,
-        connection: id,
-        cursor: request.after.clone(),
+        id,
         request,
-        pending: VecDeque::new(),
         binding,
-        epoch: None,
-        first: true,
-        state_due: true,
-        sleep_due: false,
-        last_state: None,
-        limit: 200,
-        deadline: tokio::time::Instant::now() + Duration::from_secs(600),
-        done: false,
-        _permit: Some(permit),
-    };
+        Arc::new(Daemon),
+        Some(permit),
+    );
     let stream = observation_stream(observer);
     Ok(Response::builder()
         .header("Content-Type", "application/x-ndjson")
@@ -360,28 +684,32 @@ pub async fn observe(
         .unwrap())
 }
 
-/// A `messages` frame: at most one message, how many of its page are still to come (`0` ends
-/// the page, and so the opening backlog), the page size the observer asks for now, and the
-/// display names the message's page gave it (`annotate_page`), limited to `people` and
-/// `channel_names`.
+/// A `messages` frame: the messages it carries (one or more of a page, see `frame_batch_len`),
+/// how many of that page are still to come (`0` ends the page, and so the opening backlog), the
+/// page size the observer asks for now, and the display names the messages' page gave them
+/// (`annotate_page`), limited to `people` and `channel_names`.
 fn messages_frame(
     channel_id: &Option<String>,
-    message: Option<Value>,
+    messages: Vec<Value>,
     cursor: &Option<String>,
     reset: bool,
     remaining: usize,
     page_size: usize,
-    names: Option<Value>,
+    names: Vec<Value>,
 ) -> Value {
     let mut frame = json!({"type":"messages","channel_id":channel_id,
-        "messages":message.into_iter().collect::<Vec<_>>(),"cursor":cursor,"reset":reset,
+        "messages":messages,"cursor":cursor,"reset":reset,
         "remaining":u32::try_from(remaining).unwrap_or(u32::MAX),
         "page_size":u32::try_from(page_size).unwrap_or(u32::MAX)});
-    if let Some(Value::Object(mut names)) = names {
-        for key in ["people", "channel_names"] {
-            if let Some(value) = names.remove(key) {
-                frame[key] = value;
-            }
+    for key in ["people", "channel_names"] {
+        let merged: serde_json::Map<String, Value> = names
+            .iter()
+            .filter_map(|entry| entry.get(key)?.as_object())
+            .flatten()
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
+        if !merged.is_empty() {
+            frame[key] = Value::Object(merged);
         }
     }
     frame
@@ -577,7 +905,7 @@ impl ObservationReceiver {
             Ok(frame) => frame,
             Err(_) => {
                 self.finish();
-                return Some(Bytes::from_static(b"{\"type\":\"error\",\"code\":\"observation_refused\",\"error\":\"Room observation admission failed. Clear cached room content and refresh authorized access.\",\"clear\":true}\n"));
+                return Some(Bytes::from_static(b"{\"type\":\"error\",\"code\":\"observation_refused\",\"error\":\"Live updates stopped\",\"clear\":true}\n"));
             }
         };
         if let Some(terminal) = &mut self.terminal {
@@ -619,13 +947,14 @@ fn encode_frame(observer: &mut Observer, result: Result<Value>) -> Bytes {
         Err(error) => {
             observer.done = true;
             let code = observation_error_code(&error);
-            json!({"type":"error","code":code,"error":"Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.","clear":true})
+            // `clear`: whatever this observation showed must leave the screen with it.
+            json!({"type":"error","code":code,"error":observation_error_text(&code),"clear":true})
         }
     };
     let mut encoded = serde_json::to_vec(&frame).unwrap();
     if encoded.len() >= MAX_FRAME {
         observer.done = true;
-        encoded = br#"{"type":"error","code":"response_too_large","error":"Room update exceeds the bounded frame limit","clear":true}"#.to_vec();
+        encoded = br#"{"type":"error","code":"response_too_large","error":"An update was too large to show","clear":true}"#.to_vec();
     }
     encoded.push(b'\n');
     Bytes::from(encoded)
@@ -683,12 +1012,28 @@ async fn produce(
         // Never cancel a broker future mid-exchange: late JSONL replies must be
         // drained before another caller uses this shared SSH transport. The
         // observer permit stays owned until that bounded operation finishes.
-        let mut observer = observer.lock().await;
-        if observer.done {
+        let mut guard = observer.lock().await;
+        if guard.done {
             break;
         }
-        let delivered_cursor = observer.cursor.clone();
-        let result = observer.next_frame(&cancel).await;
+        let delivered_cursor = guard.cursor.clone();
+        let result = match guard.step(&cancel).await {
+            Ok(Step::Frame(frame)) => Ok(frame),
+            Ok(Step::Idle) => {
+                // The pause holds nothing: a queued frame's admission, which takes this same
+                // observer, must not wait behind it (it held every channel open for 2 s).
+                drop(guard);
+                match idle_wait(&cancel).await {
+                    Ok(()) => continue,
+                    Err(error) => {
+                        guard = observer.lock().await;
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
+        let mut observer = guard;
         let expired = tokio::time::Instant::now() >= observer.deadline;
         if cancel.is_cancelled() && !expired {
             break;
@@ -768,29 +1113,16 @@ pub fn routes() -> Router {
 
 #[cfg(test)]
 mod tests {
+    use super::reauthorize::plain_observer;
     use super::*;
 
     fn test_observer() -> Arc<Mutex<Observer>> {
-        Arc::new(Mutex::new(Observer {
-            headers: HeaderMap::new(),
-            connection: "revoked-derived-source".into(),
-            request: ObserveRequest {
-                channel_id: Some("channel".into()),
-                after: Some("cursor".into()),
-                initial: Initial::Latest,
-            },
-            cursor: Some("cursor".into()),
-            pending: VecDeque::new(),
-            binding: json!({}),
-            epoch: None,
-            first: false,
-            state_due: false,
-            sleep_due: false,
-            last_state: None,
-            limit: 200,
-            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
-            done: false,
-            _permit: None,
+        Arc::new(Mutex::new({
+            let mut observer = plain_observer(Some("channel"), Some("cursor"), None);
+            observer.connection = "revoked-derived-source".into();
+            observer.first = false;
+            observer.state_due = false;
+            observer
         }))
     }
 
@@ -834,26 +1166,10 @@ mod tests {
     #[test]
     fn oversized_encoded_frame_is_replaced_by_bounded_error_frame() {
         let permit = SLOTS.clone().try_acquire_owned().unwrap();
-        let mut observer = Observer {
-            headers: HeaderMap::new(),
-            connection: "connection".into(),
-            request: ObserveRequest {
-                channel_id: None,
-                after: None,
-                initial: Initial::Latest,
-            },
-            cursor: None,
-            pending: VecDeque::new(),
-            binding: json!({}),
-            epoch: None,
-            first: true,
-            state_due: false,
-            sleep_due: false,
-            last_state: None,
-            limit: 200,
-            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
-            done: false,
-            _permit: Some(permit),
+        let mut observer = {
+            let mut observer = plain_observer(None, None, Some(permit));
+            observer.state_due = false;
+            observer
         };
         let frame = encode_frame(&mut observer, Ok(json!({"payload": "x".repeat(MAX_FRAME)})));
         let value: Value = serde_json::from_slice(&frame).unwrap();
@@ -1027,12 +1343,12 @@ mod tests {
         let names = message.as_object_mut().unwrap().remove(PAGE_NAMES);
         let frame = messages_frame(
             &Some("c-general".into()),
-            Some(message),
+            vec![message],
             &Some("m1".into()),
             true,
             pending.len(),
             100,
-            names,
+            names.into_iter().collect(),
         );
         assert_eq!(frame["remaining"], 2);
         assert_eq!(frame["page_size"], 100);
@@ -1060,12 +1376,12 @@ mod tests {
         // Only `people` and `channel_names` ever leave the queued key.
         let forged = messages_frame(
             &Some("c-general".into()),
-            None,
+            Vec::new(),
             &None,
             false,
             0,
             200,
-            Some(json!({"type": "state", "messages": [{"id": "x"}], "cursor": "forged"})),
+            vec![json!({"type": "state", "messages": [{"id": "x"}], "cursor": "forged"})],
         );
         assert_eq!(forged["type"], "messages");
         assert_eq!(forged["messages"], json!([]));
@@ -1074,7 +1390,15 @@ mod tests {
 
     #[test]
     fn an_empty_opening_frame_ends_the_backlog_and_old_frames_still_parse() {
-        let frame = messages_frame(&Some("c".into()), None, &None, true, 0, 200, None);
+        let frame = messages_frame(
+            &Some("c".into()),
+            Vec::new(),
+            &None,
+            true,
+            0,
+            200,
+            Vec::new(),
+        );
         assert_eq!(frame["remaining"], 0);
         assert!(frame.get("people").is_none());
         assert!(matches!(
@@ -1202,26 +1526,11 @@ mod tests {
     #[tokio::test]
     async fn expired_observer_emits_one_reconnect_frame_and_releases_the_stream() {
         let permit = SLOTS.clone().try_acquire_owned().unwrap();
-        let observer = Observer {
-            headers: HeaderMap::new(),
-            connection: "connection".into(),
-            request: ObserveRequest {
-                channel_id: Some("channel".into()),
-                after: Some("cursor".into()),
-                initial: Initial::Latest,
-            },
-            cursor: Some("cursor".into()),
-            pending: VecDeque::new(),
-            binding: json!({}),
-            epoch: None,
-            first: true,
-            state_due: false,
-            sleep_due: false,
-            last_state: None,
-            limit: 200,
-            deadline: tokio::time::Instant::now() - Duration::from_secs(1),
-            done: false,
-            _permit: Some(permit),
+        let observer = {
+            let mut observer = plain_observer(Some("channel"), Some("cursor"), Some(permit));
+            observer.state_due = false;
+            observer.deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+            observer
         };
         let observer = Arc::new(Mutex::new(observer));
         let (sender, mut receiver) = mpsc::channel(1);
@@ -1297,26 +1606,16 @@ mod tests {
 "#,
             ))
             .unwrap();
-        let observer = Arc::new(Mutex::new(Observer {
-            headers: HeaderMap::new(),
-            connection: "revoked-derived-source".into(),
-            request: ObserveRequest {
-                channel_id: Some("channel".into()),
-                after: Some("cursor".into()),
-                initial: Initial::Latest,
-            },
-            cursor: Some("cursor".into()),
-            pending: VecDeque::new(),
-            binding: json!({}),
-            epoch: None,
-            first: false,
-            state_due: false,
-            sleep_due: false,
-            last_state: None,
-            limit: 200,
-            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
-            done: false,
-            _permit: Some(SLOTS.clone().try_acquire_owned().unwrap()),
+        let observer = Arc::new(Mutex::new({
+            let mut observer = plain_observer(
+                Some("channel"),
+                Some("cursor"),
+                Some(SLOTS.clone().try_acquire_owned().unwrap()),
+            );
+            observer.connection = "revoked-derived-source".into();
+            observer.first = false;
+            observer.state_due = false;
+            observer
         }));
         let mut receiver = ObservationReceiver {
             receiver,
@@ -1415,26 +1714,11 @@ mod tests {
             receiver,
             terminal: Some(terminal_receiver),
             deferred_terminal: None,
-            observer: Arc::new(Mutex::new(Observer {
-                headers: HeaderMap::new(),
-                connection: "connection".into(),
-                request: ObserveRequest {
-                    channel_id: None,
-                    after: None,
-                    initial: Initial::Latest,
-                },
-                cursor: None,
-                pending: VecDeque::new(),
-                binding: json!({}),
-                epoch: None,
-                first: false,
-                state_due: false,
-                sleep_due: false,
-                last_state: None,
-                limit: 200,
-                deadline: tokio::time::Instant::now() + Duration::from_secs(600),
-                done: false,
-                _permit: None,
+            observer: Arc::new(Mutex::new({
+                let mut observer = plain_observer(None, None, None);
+                observer.first = false;
+                observer.state_due = false;
+                observer
             })),
             cancel: CancellationToken::new(),
             finished: false,
@@ -1471,26 +1755,12 @@ mod tests {
     async fn dropping_the_receiver_releases_the_producer_permit() {
         let slots = Arc::new(Semaphore::new(1));
         let permit = slots.clone().acquire_owned().await.unwrap();
-        let observer = Arc::new(Mutex::new(Observer {
-            headers: HeaderMap::new(),
-            connection: "connection".into(),
-            request: ObserveRequest {
-                channel_id: None,
-                after: None,
-                initial: Initial::Latest,
-            },
-            cursor: Some("cursor".into()),
-            pending: VecDeque::new(),
-            binding: json!({}),
-            epoch: None,
-            first: true,
-            state_due: false,
-            sleep_due: false,
-            last_state: None,
-            limit: 200,
-            deadline: tokio::time::Instant::now() - Duration::from_secs(1),
-            done: false,
-            _permit: Some(permit),
+        let observer = Arc::new(Mutex::new({
+            let mut observer = plain_observer(None, None, Some(permit));
+            observer.cursor = Some("cursor".into());
+            observer.state_due = false;
+            observer.deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+            observer
         }));
         let (sender, receiver) = mpsc::channel(1);
         let (terminal_sender, _terminal_receiver) = oneshot::channel();
@@ -1546,6 +1816,10 @@ mod tests {
         assert!(body["error"].as_str().unwrap().contains("human"));
     }
 }
+
+#[cfg(test)]
+#[path = "crew_observation_reauthorize_tests.rs"]
+mod reauthorize;
 
 #[cfg(test)]
 #[path = "crew_observation_live_acceptance_tests.rs"]

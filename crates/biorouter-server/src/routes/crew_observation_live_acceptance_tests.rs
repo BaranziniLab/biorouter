@@ -32,27 +32,22 @@ fn observer_for(
     cursor: String,
     permit: Option<OwnedSemaphorePermit>,
 ) -> Observer {
-    Observer {
-        headers: proven_headers(),
-        connection: connection.id.clone(),
-        request: ObserveRequest {
+    let mut observer = Observer::new(
+        proven_headers(),
+        connection.id.clone(),
+        ObserveRequest {
             channel_id: Some(channel),
-            after: Some(cursor.clone()),
+            after: Some(cursor),
             initial: Initial::Latest,
         },
-        cursor: Some(cursor),
-        pending: VecDeque::new(),
-        binding: connection_binding(connection).expect("saved connection serializes"),
-        epoch: None,
-        first: false,
-        state_due: false,
-        sleep_due: false,
-        last_state: None,
-        limit: 200,
-        deadline: tokio::time::Instant::now() + Duration::from_secs(60),
-        done: false,
-        _permit: permit,
-    }
+        connection_binding(connection).expect("saved connection serializes"),
+        Arc::new(Daemon),
+        permit,
+    );
+    observer.first = false;
+    observer.state_due = false;
+    observer.deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    observer
 }
 
 async fn revoke_source() {
