@@ -9,13 +9,29 @@ description.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = "=0.22.1"
 ed25519-dalek = "2.2.0"
 hex = "0.4.3"
 libc = "=0.2.186"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json.workspace = true
 sha2 = "0.10.9"
+unicode-normalization = "=0.1.25"
+unicode-properties = "=0.1.4"
+unicode-script = "=0.5.8"
+unicode-security = "=0.1.2"
 uuid = { version = "=1.19.0", features = ["v4", "serde"] }
+
+[features]
+# Test-only seams (the broker's injectable account directory). Never enabled by the shipped
+# binary; integration tests get it through the dev-dependency self-reference below.
+test-seams = []
+# Join a workspace by invitation and device code (S3a). Off until its adversarial review and
+# the live three-account run pass.
+join-by-name = []
+
+[dev-dependencies]
+biorouter-crew = { path = ".", features = ["test-seams"] }
 
 [lints]
 workspace = true

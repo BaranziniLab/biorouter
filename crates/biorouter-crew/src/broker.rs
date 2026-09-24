@@ -513,6 +513,7 @@ fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Re
                     mode: Mode::Private,
                     institution_id: None,
                     policy_epoch: 1,
+                    name: None,
                 },
                 bootstrap_key: bootstrap_key.into(),
                 workspace_signing_key: digest(token().as_bytes()),
