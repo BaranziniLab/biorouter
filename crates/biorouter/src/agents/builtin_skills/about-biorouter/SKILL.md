@@ -57,7 +57,7 @@ process), `streamable_http` (remote), or `inline_python`. Manage them from the
 
 ## Biorouter Copilot
 
-Biorouter Copilot (`computercontroller`) is the sole built-in capability for observing or controlling
+Biorouter Copilot is the sole built-in capability for observing or controlling
 applications and the desktop. Its native tools are `list_apps`, `get_app_state`, `click`,
 `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`, and
 `screen_capture`. Use the exact tools and argument schemas currently advertised. Developer does

@@ -1,0 +1,76 @@
+diff --git a/apps/OpenComputerUseWindows/console_other.go b/apps/OpenComputerUseWindows/console_other.go
+new file mode 100644
+index 0000000..922ce8e
+--- /dev/null
++++ b/apps/OpenComputerUseWindows/console_other.go
+@@ -0,0 +1,7 @@
++//go:build !windows
++
++package main
++
++import "os/exec"
++
++func configurePowerShellChild(_ *exec.Cmd) {}
+diff --git a/apps/OpenComputerUseWindows/console_windows.go b/apps/OpenComputerUseWindows/console_windows.go
+new file mode 100644
+index 0000000..33aaeb2
+--- /dev/null
++++ b/apps/OpenComputerUseWindows/console_windows.go
+@@ -0,0 +1,18 @@
++//go:build windows
++
++package main
++
++import (
++	"os/exec"
++	"syscall"
++)
++
++const createNoWindow = 0x08000000
++
++// The Rust launcher hides the Go helper, but its children need their own flags.
++func configurePowerShellChild(cmd *exec.Cmd) {
++	cmd.SysProcAttr = &syscall.SysProcAttr{
++		CreationFlags: createNoWindow,
++		HideWindow:    true,
++	}
++}
+diff --git a/apps/OpenComputerUseWindows/console_windows_test.go b/apps/OpenComputerUseWindows/console_windows_test.go
+new file mode 100644
+index 0000000..db74ab3
+--- /dev/null
++++ b/apps/OpenComputerUseWindows/console_windows_test.go
+@@ -0,0 +1,21 @@
++//go:build windows
++
++package main
++
++import (
++	"os/exec"
++	"strings"
++	"testing"
++)
++
++func TestPowerShellChildSetsNoWindowFlagsAndKeepsOutput(t *testing.T) {
++	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Write-Output ready")
++	configurePowerShellChild(cmd)
++	if cmd.SysProcAttr == nil || cmd.SysProcAttr.CreationFlags&createNoWindow == 0 || !cmd.SysProcAttr.HideWindow {
++		t.Fatalf("PowerShell child must use CREATE_NO_WINDOW and SW_HIDE: %#v", cmd.SysProcAttr)
++	}
++	output, err := cmd.Output()
++	if err != nil || strings.TrimSpace(string(output)) != "ready" {
++		t.Fatalf("PowerShell output must still reach the helper: output=%q, error=%v", output, err)
++	}
++}
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index 691435d..efba13e 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -585,6 +585,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
+ 	defer cancel()
+ 
+ 	cmd := exec.CommandContext(ctx, "powershell.exe", "-MTA", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, operationPath)
++	configurePowerShellChild(cmd)
+ 	output, err := cmd.CombinedOutput()
+ 	if ctx.Err() == context.DeadlineExceeded {
+ 		return nil, errors.New("Windows runtime timed out after 30s")

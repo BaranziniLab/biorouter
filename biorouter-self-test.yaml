@@ -128,7 +128,7 @@ instructions: |
   - Test extension interactions
   - Verify isolation between extensions
   - In a disposable chat, browse `/` and `/ext:` and confirm current capability labels including Biorouter Copilot. Select a session-only extension and verify its exact reference identity.
-  - Submit `/extend computer controller` and verify actionable `/ext:` guidance without model execution or a permission grant.
+  - Submit `/extend Biorouter Copilot` and verify guidance names `/ext:BiorouterCopilot` without model execution or a permission grant.
   - Verify `/effort` and a harmless configured workflow in the desktop, TUI, and classic CLI. A missing workflow must report its problem instead of falling through to the model.
   - In a new desktop chat, verify `/diverge` is not suggested; typing it must preserve the draft and explain that an existing conversation is required.
 
@@ -482,7 +482,12 @@ prompt: |
      Private and public chats must retain separate snapshots, trees, elements, results and
      grants. Verify a private-to-public handoff pauses before capture; do not transfer real
      private observations into the test report or a public model.
-  6. Repeat through native direct calls, code execution and a coding-agent provider where
+  6. On Windows, verify a packaged Copilot fixture call such as list_apps or get_app_state
+     does not show a console window for the Go helper's powershell.exe child. Pair the
+     measurement with a visible-console control and preserve the child-to-helper PID
+     relationship. A Node or Electron spawn probe does not exercise this path. If the
+     observer or packaged Windows runtime is unavailable, mark this NOT OBSERVABLE.
+  7. Repeat through native direct calls, code execution and a coding-agent provider where
      available. Test Biorouter Copilot with Developer and Web & Documents disabled in an isolated
      profile. Missing GUI/provider evidence is NOT OBSERVABLE, never PASS. Record target host,
      helper version, exact fixture, tool results and remaining gaps in

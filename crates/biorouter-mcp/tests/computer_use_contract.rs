@@ -85,7 +85,7 @@ async fn tools_over_mcp<S: rmcp::ServerHandler + Send + 'static>(
 fn fixture(root: &Path) {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("ocu"), b"fixture native bytes").unwrap();
-    let manifest = json!({"schema_version":1,"upstream_version":manifest::UPSTREAM_VERSION,"upstream_commit":manifest::UPSTREAM_COMMIT,"patch_revision":"biorouter-1","target":manifest::target(),"executable":"ocu","files":[{"path":"ocu","sha256":format!("{:x}", Sha256::digest(b"fixture native bytes"))}]});
+    let manifest = json!({"schema_version":1,"upstream_version":manifest::UPSTREAM_VERSION,"upstream_commit":manifest::UPSTREAM_COMMIT,"patch_revision":manifest::patch_revision(),"target":manifest::target(),"executable":"ocu","files":[{"path":"ocu","sha256":format!("{:x}", Sha256::digest(b"fixture native bytes"))}]});
     std::fs::write(
         root.join("manifest.json"),
         serde_json::to_vec(&manifest).unwrap(),
@@ -216,6 +216,7 @@ fn payload_rejects_corruption_wrong_pin_and_escaping_paths() {
     for (field, value) in [
         ("upstream_version", "999"),
         ("upstream_commit", "unreviewed"),
+        ("patch_revision", "outdated"),
         ("target", "foreign"),
         ("executable", "../ocu"),
     ] {

@@ -733,6 +733,8 @@ fn extension_reference_key(name: &str) -> String {
         .collect()
 }
 
+pub const COPILOT_REFERENCE_ALIAS: &str = "BiorouterCopilot";
+
 /// Resolve a `/ext:<name>` target to the bundled extension it names, **by id and
 /// owning registry** rather than by display name.
 ///
@@ -794,6 +796,13 @@ pub(crate) fn exact_custom_reference_key(
     target: Option<&BundledExtensionTarget>,
     active: &[ExtensionConfig],
 ) -> Option<String> {
+    // The compact slash alias must retain the bundled target. A custom
+    // extension with the exact spaced display name keeps its existing routing.
+    if requested.eq_ignore_ascii_case(COPILOT_REFERENCE_ALIAS)
+        && target.is_some_and(|target| target.key() == "computercontroller")
+    {
+        return None;
+    }
     active
         .iter()
         .find(|config| {
@@ -1231,7 +1240,7 @@ impl ExtensionManager {
             return Ok(None);
         }
         anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
-            "This legacy Computer Controller tool was removed. Use the Biorouter Copilot tools or Web & Documents capability.");
+            "This former tool is unavailable. Use Biorouter Copilot's current tools or the Web & Documents capability.");
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
@@ -1350,7 +1359,7 @@ impl ExtensionManager {
             && !matches!(&config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller")
         {
             return Err(ExtensionError::ConfigError(
-                "The computercontroller name is reserved for the Biorouter Copilot built-in".into(),
+                "This extension name is reserved for the Biorouter Copilot built-in. Rename the custom extension.".into(),
             ));
         }
 
@@ -5526,7 +5535,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_active_custom_alias_is_not_redirected_to_a_builtin() {
+    fn copilot_slash_alias_is_reserved_without_redirecting_exact_custom_names() {
         let custom = |name: &str| ExtensionConfig::Frontend {
             name: name.to_string(),
             description: String::new(),
@@ -5537,16 +5546,33 @@ mod tests {
         };
         let target = resolve_bundled_extension("Biorouter Copilot").unwrap();
         let entry = custom("Biorouter Copilot");
+        let custom_key = entry.key();
         assert_eq!(
             exact_custom_reference_key(
                 "Biorouter Copilot",
                 Some(&target),
                 std::slice::from_ref(&entry)
             ),
-            Some(entry.key())
+            Some(custom_key)
         );
         assert_eq!(
             exact_custom_reference_key("computercontroller", Some(&target), &[entry]),
+            None
+        );
+        assert_eq!(
+            exact_custom_reference_key(
+                COPILOT_REFERENCE_ALIAS,
+                Some(&target),
+                &[custom(COPILOT_REFERENCE_ALIAS)]
+            ),
+            None
+        );
+        assert_eq!(
+            exact_custom_reference_key(
+                "bioroutercopilot",
+                Some(&target),
+                &[custom("bioroutercopilot")]
+            ),
             None
         );
         let target = resolve_bundled_extension("developer").unwrap();
@@ -5571,6 +5597,17 @@ mod tests {
             assert_eq!(target.key(), id);
             assert_eq!(target.display_name(), label);
         }
+    }
+
+    #[test]
+    fn copilot_slash_alias_keeps_the_builtin_registry_identity() {
+        let target = resolve_bundled_extension(COPILOT_REFERENCE_ALIAS).unwrap();
+        assert_eq!(target.key(), "computercontroller");
+        assert_eq!(target.display_name(), "Biorouter Copilot");
+        assert!(matches!(
+            target.into_config(String::new()),
+            ExtensionConfig::Builtin { name, .. } if name == "computercontroller"
+        ));
     }
 
     // ---- issue #48: `/ext:` resolution by id + owning registry ----

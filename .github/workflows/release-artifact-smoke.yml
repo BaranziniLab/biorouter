@@ -17,6 +17,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Download Windows artifact from the release
         shell: pwsh
         env:
@@ -83,6 +87,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged native helper protocol check failed" }
           python scripts/test-computer-use-windows-fixture.py $helper --report artifact/windows-fixture.json
           if ($LASTEXITCODE -ne 0) { throw "Packaged native helper fixture check failed" }
+          python scripts/test-computer-use-packaged-windows-console.py --cli $cli --report artifact/windows-packaged-console.json
+          if ($LASTEXITCODE -ne 0) { throw "Packaged Rust-to-Go console check failed" }
           $cliVersion = & $cli --version
           if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {
             throw "Packaged CLI did not report $env:VERSION"
@@ -112,6 +118,13 @@ jobs:
           if ($process.HasExited) { throw "Packaged desktop exited during startup" }
           Stop-Process -Id $process.Id -Force
           Write-Host "Windows packaged runtime smoke passed for v$env:VERSION"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-windows-copilot-console
+          path: artifact/windows-packaged-console.json
+          if-no-files-found: warn
 
       # ⚠ Proven able to fail, and repeatable: dispatch this workflow at a
       # version whose daemon HAS the defect and the step below must fail with

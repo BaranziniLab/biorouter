@@ -2,9 +2,30 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 pub const UPSTREAM_VERSION: &str = "0.3.5";
 pub const UPSTREAM_COMMIT: &str = "547b4ffb8ed731a8f16486e6d8a3b215484267d3";
+
+#[derive(Deserialize)]
+struct RuntimePin {
+    schema_version: u32,
+    upstream_version: String,
+    upstream_commit: String,
+    patch_revision: String,
+}
+
+static RUNTIME_PIN: LazyLock<RuntimePin> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../vendor/computer-use/pin.json"
+    )))
+    .expect("bundled Biorouter Copilot pin must be valid")
+});
+
+pub fn patch_revision() -> &'static str {
+    &RUNTIME_PIN.patch_revision
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -69,10 +90,10 @@ fn inspect(root: &Path, development_override: bool, verify_hashes: bool) -> Resu
         .context("computer_use_missing_runtime: manifest.json is unavailable")?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .context("computer_use_incompatible_runtime: invalid manifest")?;
-    if manifest.schema_version != 1
-        || manifest.upstream_version != UPSTREAM_VERSION
-        || manifest.upstream_commit != UPSTREAM_COMMIT
-        || manifest.patch_revision != "biorouter-1"
+    if manifest.schema_version != RUNTIME_PIN.schema_version
+        || manifest.upstream_version != RUNTIME_PIN.upstream_version
+        || manifest.upstream_commit != RUNTIME_PIN.upstream_commit
+        || manifest.patch_revision != RUNTIME_PIN.patch_revision
         || manifest.target != target()
     {
         bail!("computer_use_incompatible_runtime: runtime pin, patch or platform does not match BioRouter");
@@ -178,6 +199,40 @@ fn install_origin(bin: &Path) -> Option<PathBuf> {
         .then(|| dunce::simplified(path).to_path_buf())
 }
 
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn current_bundled_pin_is_accepted_and_other_patch_revisions_are_refused() {
+        assert_eq!(RUNTIME_PIN.upstream_version, UPSTREAM_VERSION);
+        assert_eq!(RUNTIME_PIN.upstream_commit, UPSTREAM_COMMIT);
+
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("ocu");
+        std::fs::write(&executable, b"fixture helper").unwrap();
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&executable).unwrap()));
+        let mut manifest = serde_json::json!({
+            "schema_version": RUNTIME_PIN.schema_version,
+            "upstream_version": RUNTIME_PIN.upstream_version,
+            "upstream_commit": RUNTIME_PIN.upstream_commit,
+            "patch_revision": patch_revision(),
+            "target": target(),
+            "executable": "ocu",
+            "files": [{ "path": "ocu", "sha256": digest }],
+        });
+        std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+        inspect(dir.path(), false, true).expect("the bundled pin must be accepted");
+
+        manifest["patch_revision"] = serde_json::json!("outdated-patch");
+        std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+        assert!(inspect(dir.path(), false, true)
+            .unwrap_err()
+            .to_string()
+            .contains("computer_use_incompatible_runtime"));
+    }
+}
+
 #[cfg(all(test, windows))]
 mod windows_path_spelling_tests {
     use super::*;
@@ -193,7 +248,7 @@ mod windows_path_spelling_tests {
             "schema_version": 1,
             "upstream_version": UPSTREAM_VERSION,
             "upstream_commit": UPSTREAM_COMMIT,
-            "patch_revision": "biorouter-1",
+            "patch_revision": patch_revision(),
             "target": target(),
             "executable": "ocu.exe",
             "files": [{ "path": "ocu.exe", "sha256": digest }],

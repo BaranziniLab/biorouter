@@ -4,6 +4,8 @@ use rmcp::model::CallToolResult;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::process::Stdio;
+#[cfg(windows)]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -34,7 +36,7 @@ impl Drop for Runtime {
 
 /// Pass through the desktop/session prerequisites the helper needs, and nothing
 /// else: model credentials and daemon secrets never reach it.
-fn inherit_session_env(command: &mut Command) {
+fn inherit_session_env(command: &mut Command) -> Result<()> {
     const SESSION: &[&str] = &[
         "PATH",
         "HOME",
@@ -64,13 +66,10 @@ fn inherit_session_env(command: &mut Command) {
     // own PATHEXT or ComSpec is strictly safer than clearing it: a cleared
     // variable falls back to a default the agent equally cannot influence.
     //
-    // Measured differential that motivated this: the SAME helper binary on the
-    // SAME runner image answers `doctor --json` in 2.17 s with the full
-    // inherited environment, and exceeds its 30 s timeout under this allowlist.
-    //
-    // PSModulePath is deliberately NOT here: it steers module autoloading,
-    // which is an execution-hijack surface, and Windows PowerShell recomputes a
-    // default when it is absent.
+    // On the same Windows runner, the pinned helper took 26.8 s to answer
+    // `doctor --json` without PSModulePath. System32 modules alone were also
+    // slow; System32 plus Program Files modules answered in 2.6 s. The inherited
+    // path was fast but may contain user-writable directories.
     #[cfg(windows)]
     const PLATFORM: &[&str] = &[
         "ComSpec",
@@ -101,6 +100,95 @@ fn inherit_session_env(command: &mut Command) {
             command.env(name, value);
         }
     }
+    #[cfg(windows)]
+    command.env("PSModulePath", trusted_powershell_module_path()?);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn trusted_powershell_module_path() -> Result<OsString> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    use windows_sys::Win32::UI::Shell::{SHGetFolderPathW, CSIDL_PROGRAM_FILES};
+
+    let mut system = [0u16; 260];
+    let length = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
+    if length == 0 || length >= system.len() {
+        bail!("computer_use_missing_dependency: Windows system directory unavailable");
+    }
+    let system_modules = PathBuf::from(OsString::from_wide(&system[..length]))
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("Modules");
+
+    let mut program_files = [0u16; 260];
+    let status = unsafe {
+        SHGetFolderPathW(
+            std::ptr::null_mut(),
+            CSIDL_PROGRAM_FILES as i32,
+            std::ptr::null_mut(),
+            0,
+            program_files.as_mut_ptr(),
+        )
+    };
+    if status != 0 {
+        bail!("computer_use_missing_dependency: Windows Program Files directory unavailable");
+    }
+    let length = program_files
+        .iter()
+        .position(|&unit| unit == 0)
+        .filter(|&length| length > 0)
+        .context("computer_use_missing_dependency: Windows Program Files directory invalid")?;
+    let all_users_modules = PathBuf::from(OsString::from_wide(&program_files[..length]))
+        .join("WindowsPowerShell")
+        .join("Modules");
+    std::env::join_paths([system_modules, all_users_modules])
+        .context("computer_use_missing_dependency: Windows PowerShell module path invalid")
+}
+
+#[cfg(all(test, windows))]
+mod windows_environment_tests {
+    use super::*;
+
+    #[test]
+    fn helper_receives_only_machine_powershell_module_directories() {
+        let trusted = trusted_powershell_module_path().unwrap();
+        let directories: Vec<_> = std::env::split_paths(&trusted).collect();
+        assert_eq!(directories.len(), 2);
+        let system_modules = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("Modules");
+        let all_users_modules = PathBuf::from(std::env::var_os("ProgramFiles").unwrap())
+            .join("WindowsPowerShell")
+            .join("Modules");
+        assert!(directories[0]
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&system_modules.to_string_lossy()));
+        assert!(directories[1]
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&all_users_modules.to_string_lossy()));
+        let profile = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        assert!(directories.iter().all(|path| !path.starts_with(&profile)));
+
+        let mut command = Command::new("powershell.exe");
+        command.env_clear();
+        inherit_session_env(&mut command).unwrap();
+        let env = command.as_std().get_envs().collect::<Vec<_>>();
+        let module_path = env
+            .iter()
+            .find(|(name, _)| name.to_string_lossy().eq_ignore_ascii_case("PSModulePath"))
+            .and_then(|(_, value)| *value)
+            .unwrap();
+        assert_eq!(module_path, trusted.as_os_str());
+        let path = env
+            .iter()
+            .find(|(name, _)| name.to_string_lossy().eq_ignore_ascii_case("PATH"))
+            .and_then(|(_, value)| *value)
+            .unwrap();
+        let expected_path = std::env::var_os("PATH").unwrap();
+        assert_eq!(path, expected_path.as_os_str());
+    }
 }
 
 impl Runtime {
@@ -123,7 +211,7 @@ impl Runtime {
             .args(arguments)
             .current_dir(&payload.root)
             .env_clear();
-        inherit_session_env(&mut command);
+        inherit_session_env(&mut command)?;
         for name in ["TMPDIR", "TMP", "TEMP"] {
             command.env(name, temporary_files.path());
         }
