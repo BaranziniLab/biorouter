@@ -56,7 +56,7 @@ export function MakePrivateDialog({ connection, onClose }: MakePrivateDialogProp
       title={makePrivateCopy.title(workspace)}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
             {confirmCopy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={saving}>

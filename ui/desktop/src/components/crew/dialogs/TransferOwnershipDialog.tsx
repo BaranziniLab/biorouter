@@ -73,7 +73,7 @@ export function TransferOwnershipDialog({
       title={copy.title(channelName(channel))}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={sending}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={sending || !principalId}>

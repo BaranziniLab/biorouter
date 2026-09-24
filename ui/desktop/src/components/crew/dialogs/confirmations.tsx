@@ -9,6 +9,7 @@ import { confirmCopy, dialogErrorCopy } from './copy';
 import { DialogErrorNote } from './fields';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
+import './dialogs.css';
 
 /**
  * Every confirmation of the copy deck's confirmation table that is a dialog (the two inline
@@ -35,12 +36,17 @@ const SOURCE: ErrorSource = 'dialog:confirm';
  * of their own, and they belong to every privacy surface in the app, so the role is set here, on
  * the one element Radix names the dialog by. React never rewrites an attribute whose prop did not
  * change, so it holds for the dialog's life.
+ *
+ * Its `crew-confirmation` class is also how Crew's stylesheet finds a confirmation: the primitives
+ * take no class, and `CrewDialogs`' `crew-dialog` reaches only a `ModalShell`. `dialogs.css` gives
+ * the typed-name field of a dialog that holds this mark the same focus edge every other Crew
+ * dialog field has (QA Q2-25), with `:has()` rather than by writing a class onto a node React owns.
  */
 function AlertDialogRole() {
   const mark = useCallback((node: HTMLSpanElement | null) => {
     node?.closest('[role="dialog"]')?.setAttribute('role', 'alertdialog');
   }, []);
-  return <span ref={mark} hidden />;
+  return <span ref={mark} className="crew-confirmation" hidden />;
 }
 
 /** The body every confirmation renders between its words and its buttons. */

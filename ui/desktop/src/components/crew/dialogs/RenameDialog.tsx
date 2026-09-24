@@ -139,7 +139,7 @@ export function RenameDialog({ target, targetId, onClose }: RenameDialogProps) {
       title={title}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={pending}>

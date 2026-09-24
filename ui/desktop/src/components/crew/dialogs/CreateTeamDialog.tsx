@@ -148,7 +148,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
           <>
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               disabled={inviting}
               onClick={() => finish(team)}
             >
@@ -193,7 +193,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
       title={copy.title}
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={creating}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={creating}>
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={creating}>

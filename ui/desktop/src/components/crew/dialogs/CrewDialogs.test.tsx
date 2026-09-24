@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -189,7 +189,11 @@ describe('CrewDialogs', () => {
   });
 
   // QA Q2-27: a pointer, not only the keyboard — Workspace settings opened from the workspace menu
-  // by pointer returned focus to <body>.
+  // by pointer was reported to return focus to <body>. This is a guard, not the fix: the menu rule
+  // already covered this path. Checked in the running round-2 app with real CDP pointer events
+  // (move, press, release): People…, Privacy… and Connection settings… each returned focus to the
+  // switcher, closed by Done, Cancel, × or Escape. What could still end on <body> was an opener
+  // gone with no channel showing, which the switcher fallback in `focusReturn.ts` now covers.
   it('returns focus to the switcher when a pointer chose the workspace-menu item and closed the dialog', async () => {
     const user = userEvent.setup();
     function WorkspaceMenu() {
@@ -343,6 +347,38 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
     );
   });
 
+  /**
+   * A confirmation renders the shared `DangerousConfirmDialog`, whose content takes no class, so
+   * `crew-dialog` never reaches its typed-name field and the review found it still showed no focus
+   * (QA Q2-25). Its rule finds the confirmation by the mark `confirmations.tsx` renders inside it.
+   */
+  it('gives a confirmation’s typed-name field the same edge, through the confirmation’s mark', async () => {
+    const inArea = rulesOf(join(__dirname, '../crew-app.css')).get(`.crew-app ${FOCUS_EDGE}`);
+    const inConfirm = rulesOf(join(__dirname, 'dialogs.css')).get(
+      `[data-slot='dialog-content']:has(.crew-confirmation) ${FOCUS_EDGE}`
+    );
+    expect(inConfirm).toBe(inArea);
+    // Wherever a confirmation mounts, it brings the stylesheet with it.
+    expect(readFileSync(join(__dirname, 'confirmations.tsx'), 'utf8')).toContain(
+      "import './dialogs.css';"
+    );
+
+    renderWithCrew(<CrewDialogs />, {
+      dialog: {
+        kind: 'confirm',
+        confirm: { action: 'make-connection-public', connectionId: 'conn-1' },
+      },
+    });
+    const dialog = await screen.findByRole('alertdialog');
+    const field = within(dialog).getByRole('textbox');
+    // The relation the selector needs: the field and the mark share one dialog content node.
+    const content = field.closest('[data-slot="dialog-content"]');
+    expect(content).toBe(dialog);
+    expect(content?.querySelector('.crew-confirmation')).not.toBeNull();
+    // And the mark is not the ModalShell class, which this primitive never gets.
+    expect(dialog).not.toHaveClass('crew-dialog');
+  });
+
   it('puts the class and the header hairline on every dialog it hosts', async () => {
     renderWithCrew(<CrewDialogs />, { dialog: { kind: 'edit-profile' } });
     const dialog = await screen.findByRole('dialog', { name: 'Edit profile' });
@@ -358,6 +394,9 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
     [{ kind: 'add-people', target: 'channel', targetId: 'channel-general' }, 'Cancel'],
     [{ kind: 'edit-profile' }, 'Cancel'],
     [{ kind: 'share-path' }, 'Cancel'],
+    [{ kind: 'create-team' }, 'Cancel'],
+    [{ kind: 'rename', target: 'team', targetId: 'team-1' }, 'Cancel'],
+    [{ kind: 'transfer-ownership', channelId: 'channel-general' }, 'Cancel'],
   ])('draws %j’s Cancel as a secondary button', async (intent, name) => {
     renderWithCrew(<CrewDialogs />, {
       dialog: intent,
@@ -366,5 +405,20 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
     const cancel = await screen.findByRole('button', { name });
     expect(cancel).toHaveClass('bg-background-medium');
     expect(cancel).not.toHaveClass('border-border-emphasized');
+  });
+
+  /**
+   * The review found four dialogs the list above did not reach still drawing an outlined Cancel
+   * (Create team and its "Skip for now", Rename, Transfer ownership, Make private), so one team
+   * menu opened two Cancel styles (QA Q2-26). Every button a dialog in this folder writes is
+   * checked at the source, so a dialog added later cannot bring the outline back. The
+   * confirmations are not in this claim: they render the app's shared `ConfirmationModal` and
+   * `DangerousConfirmDialog`, whose Cancel is the same on every privacy surface in the app.
+   */
+  it('draws no outlined button in any dialog in this folder', () => {
+    const offenders = readdirSync(__dirname)
+      .filter((file) => file.endsWith('.tsx') && !file.includes('.test.'))
+      .filter((file) => /variant=["{']+outline/.test(readFileSync(join(__dirname, file), 'utf8')));
+    expect(offenders).toEqual([]);
   });
 });

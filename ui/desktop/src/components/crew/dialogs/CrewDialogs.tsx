@@ -61,8 +61,13 @@ export interface CrewDialogsProps {
  * - the `crew-dialog` class. A dialog portals to `<body>`, outside `.crew-app`, so Crew's own
  *   field-focus edge (`crew-app.css`) never reached a dialog's fields; `dialogs.css` carries it
  *   for them under this class (QA Q2-25);
- * - the header hairline, so every Crew dialog has the same chrome, not only the scrolling four
- *   (QA Q2-26).
+ * - the header hairline, so every dialog that renders through `ModalShell` has the same chrome, not
+ *   only the scrolling four (QA Q2-26).
+ *
+ * The confirmations (`kind: 'confirm'`) take none of these: they render the app's shared
+ * `ConfirmationModal` and `DangerousConfirmDialog`, which compose the dialog primitive directly and
+ * keep the header and outlined Cancel they have on every privacy surface in the app. Their
+ * typed-name field gets the focus edge through `confirmations.tsx`'s own mark instead.
  */
 export const CREW_DIALOG_DEFAULTS: ModalShellDefaults = {
   anchor: 'top',
