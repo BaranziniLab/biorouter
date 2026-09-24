@@ -798,7 +798,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(crew_authentication::routes())
         .merge(crew_observation::routes())
         .merge(crew_transfers::routes())
-        .merge(crew_profile::routes())
+        .merge(crew_profile::routes(state.clone()))
         .merge(biorouter_server::daemon_service::routes())
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
