@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Snapshot } from '../crewApi';
 import { personLabel } from './personLabel';
+import { sanitizeAvatarText } from './displayText';
 import { buildPeopleDirectory, usePeopleDirectory } from './usePeopleDirectory';
 import type { CrewPeopleMap, DaemonPersonLabels } from './types';
 
@@ -69,5 +70,33 @@ describe('usePeopleDirectory', () => {
     );
     // The verified snapshot wins over a people-map entry for the same principal.
     expect(personLabel(BOB, 'inline', directory)).toBe('Bob Lee (@bob)');
+  });
+});
+
+describe('avatars', () => {
+  const cp = (...points: number[]) => String.fromCodePoint(...points);
+  // A family emoji is three emoji joined by U+200D; a heart takes U+FE0F.
+  const family = cp(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467);
+  const heart = cp(0x2764, 0xfe0f);
+
+  it('keep emoji sequences intact', () => {
+    expect(sanitizeAvatarText(family)).toBe(family);
+    expect(sanitizeAvatarText(heart)).toBe(heart);
+    expect(sanitizeAvatarText(' AC ')).toBe('AC');
+  });
+
+  it('lose direction controls and control characters', () => {
+    expect(sanitizeAvatarText(`A${cp(0x202e)}C${cp(0x2066)}${cp(0x7)}`)).toBe('AC');
+    expect(sanitizeAvatarText(null)).toBe('');
+  });
+
+  it('reach the directory sanitized', () => {
+    const directory = buildPeopleDirectory({
+      ...wireSnapshot,
+      principals: [
+        { id: BOB, uid: 1001, username: 'bob', nickname: 'Bob', avatar: `${cp(0x202e)}${heart}` },
+      ],
+    });
+    expect(directory.byId(BOB)?.avatar).toBe(heart);
   });
 });

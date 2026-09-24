@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { personDisplayName, sanitizeDisplayText, sanitizeUsername } from './displayText';
+import { personDisplayName, sanitizeAvatarText, sanitizeUsername } from './displayText';
 import { displayNameKey, nameKey } from './nameKey';
 import type {
   CrewPeopleMap,
@@ -161,7 +161,7 @@ export function buildPeopleDirectory(
   entries.forEach((entry) => {
     const displayName = displayNames.get(entry.id) ?? entry.username;
     const daemonCollides = daemonCollision(labels, entry.id);
-    const avatar = sanitizeDisplayText(entry.avatar);
+    const avatar = sanitizeAvatarText(entry.avatar);
     byId.set(
       entry.id,
       Object.freeze({

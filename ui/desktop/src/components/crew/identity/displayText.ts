@@ -54,6 +54,22 @@ function stripHandleMarks(value: string): string {
     .trim();
 }
 
+/**
+ * What an avatar may not contain. Lighter than {@link REJECTED}: an avatar is a
+ * few characters of decoration and may be an emoji, whose sequences need the
+ * zero-width joiner and variation selectors. Controls, bidi embeddings,
+ * overrides, isolates and marks, private use, surrogates and unassigned code
+ * points still go.
+ */
+const AVATAR_REJECTED =
+  /[\p{Cc}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
+
+/** A self-set avatar as displayed, or `''`. Emoji sequences survive; direction controls do not. */
+export function sanitizeAvatarText(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.normalize('NFC').replace(AVATAR_REJECTED, '').replace(/\s+/g, ' ').trim();
+}
+
 /** A username as displayed: sanitized, and with no whitespace at all. `''` when unusable. */
 export function sanitizeUsername(raw: unknown): string {
   return sanitizeDisplayText(raw).replace(/ /g, '');

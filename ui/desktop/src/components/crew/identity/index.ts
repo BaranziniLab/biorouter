@@ -27,6 +27,7 @@ export {
   displayNameIsUsername,
   isolate,
   personDisplayName,
+  sanitizeAvatarText,
   sanitizeDisplayText,
   sanitizeUsername,
   usableName,

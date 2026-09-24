@@ -3,7 +3,7 @@ import {
   displayNameIsUsername,
   isolate,
   personDisplayName,
-  sanitizeDisplayText,
+  sanitizeAvatarText,
   sanitizeUsername,
   usableName,
 } from './displayText';
@@ -237,7 +237,7 @@ export function personFromProjection(
     username,
     displayName: personDisplayName(name, username),
     serverName: null,
-    avatar: sanitizeDisplayText(projection.avatar) || null,
+    avatar: sanitizeAvatarText(projection.avatar) || null,
     isFormer: projection.active === false,
     isHost: flags.isHost === true,
     isYou: flags.isYou === true,
