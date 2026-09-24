@@ -356,7 +356,7 @@ describe('the channel context menu', () => {
     attachments: [],
   };
 
-  it('opens on right-click (and so on Shift+F10 and the Menu key) with the copy items', async () => {
+  it('opens on right-click with the copy items', async () => {
     const writeText = spyClipboard();
     renderTeams();
     fireEvent.contextMenu(channelRow('general'));
@@ -368,6 +368,68 @@ describe('the channel context menu', () => {
     ).toEqual([sidebarCopy.channelMenu.copyName, sidebarCopy.channelMenu.copyId]);
     fireEvent.click(within(menu).getByRole('menuitem', { name: sidebarCopy.channelMenu.copyName }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('#general'));
+  });
+
+  // Chromium sends no `contextmenu` for these keys on macOS, so a test that only fires
+  // `contextmenu` says nothing about the keyboard: fire the keys themselves.
+  it.each([
+    ['Shift+F10', { key: 'F10', shiftKey: true }],
+    ['the Menu key', { key: 'ContextMenu' }],
+  ])('opens from the keyboard with %s, and Escape returns focus to the row', async (_, keys) => {
+    const user = userEvent.setup();
+    const writeText = spyClipboard();
+    renderTeams();
+    const row = channelRow('general');
+    act(() => row.focus());
+    // A prevented keydown is what keeps Chromium's own dispatch (Linux, Windows) from opening
+    // the menu a second time.
+    expect(fireEvent.keyDown(row, keys)).toBe(false);
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([sidebarCopy.channelMenu.copyName, sidebarCopy.channelMenu.copyId]);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(row).toHaveFocus();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('reaches Copy channel name with the keyboard alone', async () => {
+    const user = userEvent.setup();
+    const writeText = spyClipboard();
+    renderTeams();
+    const row = channelRow('general');
+    act(() => row.focus());
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    const menu = await screen.findByRole('menu');
+    // Opened from the keyboard, the menu lands on its first item, as a native menu does.
+    const copyName = within(menu).getByRole('menuitem', {
+      name: sidebarCopy.channelMenu.copyName,
+    });
+    await waitFor(() => expect(copyName).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    expect(
+      within(menu).getByRole('menuitem', { name: sidebarCopy.channelMenu.copyId })
+    ).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(copyName).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('#general'));
+  });
+
+  it.each([
+    ['unmodified F10', { key: 'F10' }],
+    ['Ctrl+Shift+F10', { key: 'F10', shiftKey: true, ctrlKey: true }],
+    ['Shift with the Menu key', { key: 'ContextMenu', shiftKey: true }],
+    ['Cmd with the Menu key', { key: 'ContextMenu', metaKey: true }],
+  ])('leaves %s alone', (_, keys) => {
+    renderTeams();
+    const row = channelRow('general');
+    act(() => row.focus());
+    expect(fireEvent.keyDown(row, keys)).toBe(true);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('copies the channel ID only from the menu', async () => {

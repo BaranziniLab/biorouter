@@ -9,6 +9,7 @@ import {
 } from '../../ui/context-menu';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
+import { isContextMenuKey, openContextMenuFromKeyboard } from './keyboardContextMenu';
 import { useSidebarCopy } from './SidebarAnnouncer';
 import { unreadBadgeText, type ChannelRowView } from './sidebarView';
 import './crew-sidebar.css';
@@ -30,10 +31,10 @@ export interface ChannelRowProps {
  * hue, and never animated; the selected channel is `aria-current="page"` on the sidebar-active
  * ground with the 2px accent bar.
  *
- * Right-click, Shift+F10 or the Menu key opens its context menu: Chromium dispatches a
- * `contextmenu` event on the focused row for both keys, so the keyboard reaches the same menu as
- * the pointer with no app-specific shortcut. The channel's ID appears only behind "Copy channel
- * ID" (naming rule 8).
+ * Right-click, Shift+F10 or the Menu key opens its context menu. The two keys are handled HERE,
+ * not left to the browser: Chromium sends no `contextmenu` for them on macOS, so without this the
+ * menu was pointer-only on the platform this app ships first (see `keyboardContextMenu.ts`). The
+ * channel's ID appears only behind "Copy channel ID" (naming rule 8).
  */
 export function ChannelRow({ row, rowKey, tabIndex, onRowFocus }: ChannelRowProps) {
   const crew = useCrew();
@@ -46,8 +47,16 @@ export function ChannelRow({ row, rowKey, tabIndex, onRowFocus }: ChannelRowProp
     crew.selectChannel(row.id);
   };
 
-  // ← from a channel returns to its team's header, the way a tree's parent is reached.
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    // Shift+F10 / the Menu key open the row's context menu. Preventing the keydown is what
+    // stops Chromium's own dispatch on Linux and Windows, so the menu opens once.
+    if (isContextMenuKey(event)) {
+      event.preventDefault();
+      const row = event.currentTarget;
+      openContextMenuFromKeyboard(row, row.querySelector('.crew-sidebar-row-name') ?? row);
+      return;
+    }
+    // ← from a channel returns to its team's header, the way a tree's parent is reached.
     if (event.key !== 'ArrowLeft' || event.altKey || event.ctrlKey || event.metaKey) return;
     const header = event.currentTarget
       .closest('[data-crew-team]')
