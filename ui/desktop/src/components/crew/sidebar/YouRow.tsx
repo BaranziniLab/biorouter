@@ -1,3 +1,4 @@
+import { ChevronDown } from '../../icons/app-icons';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
@@ -26,6 +27,10 @@ export function devProfileName(): string | null {
  * its own text node — the one the regression tests find (`fixture`, `alice@new-host`), rendered
  * with or without a verified snapshot. In a dev profile a neutral "Profile: {name}" badge follows.
  * Before a snapshot exists there is no person to name: a placeholder avatar and the login only.
+ *
+ * The row is a real menu (`Alice Chen ▾`), so it ends in the same chevron the switcher carries:
+ * a dropdown looks like a dropdown. It turns 180° while the menu is open, by the trigger's own
+ * `data-state`, through the shared `.crew-sidebar-chevron[data-turn='half']` rule.
  */
 export function YouRow() {
   const crew = useCrew();
@@ -64,6 +69,7 @@ export function YouRow() {
                 <span className="crew-sidebar-truncate">{sidebarCopy.you.devProfile(profile)}</span>
               </Badge>
             )}
+            <ChevronDown className="crew-sidebar-chevron" data-turn="half" aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
         <YouMenu />

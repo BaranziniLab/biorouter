@@ -81,8 +81,17 @@ describe('YouRow', () => {
     const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
     expect(trigger).toHaveClass('no-drag');
+    // A real menu looks like one: a trailing chevron, hidden from assistive technology, that the
+    // shared rule turns 180° by the trigger's own open state.
+    const chevron = trigger.querySelector(':scope > .crew-sidebar-chevron');
+    expect(chevron).not.toBeNull();
+    expect(chevron).toHaveAttribute('data-turn', 'half');
+    expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    expect(trigger.lastElementChild).toBe(chevron);
+    expect(trigger).toHaveAttribute('data-state', 'closed');
     await user.click(trigger);
     const menu = await screen.findByRole('menu');
+    expect(trigger).toHaveAttribute('data-state', 'open');
     expect(menu).toHaveAttribute('data-side', 'top');
     expect(
       within(menu)
