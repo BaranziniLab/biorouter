@@ -82,6 +82,35 @@ fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     resolved.starts_with(base).then_some(resolved)
 }
 
+/// The text a live `shell_output` notification carries for one line of
+/// output, or `None` when the line is not worth streaming.
+///
+/// Only the line terminator comes off — `\n`, or `\r\n` — so indentation and
+/// any trailing spaces reach the client as the command printed them. This
+/// used to be a full `trim()`, which flattened every indented line (a `--help`
+/// listing, a stack trace, YAML) in the live view while the recorded tool
+/// result kept it. A line that is nothing but whitespace is still skipped: it
+/// carries nothing to watch, and the complete output, blank lines included,
+/// arrives with the tool result.
+fn streamed_shell_line(line: &str) -> Option<&str> {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    (!line.trim().is_empty()).then_some(line)
+}
+
+/// The `data` of one live `shell_output` logging notification.
+///
+/// `type`, `stream` and `output` are the shape every client already reads;
+/// `seq` is additive (see `DeveloperServer::stream_shell_output`).
+fn shell_output_notification_data(stream: &str, output: &str, seq: u64) -> serde_json::Value {
+    serde_json::json!({
+        "type": "shell_output",
+        "stream": stream,
+        "output": output,
+        "seq": seq,
+    })
+}
+
 /// Build a git context + version-control policy block for the extension
 /// instructions. If `cwd` is inside a git work tree, the agent is told the
 /// current branch and how many files are uncommitted, plus a concise policy
@@ -1575,6 +1604,15 @@ impl DeveloperServer {
     /// Stream shell output in real-time and return the combined output.
     ///
     /// Merges stdout and stderr streams and sends each line as a logging notification.
+    ///
+    /// Each notification carries the line as the command printed it — leading
+    /// whitespace intact, only the line terminator removed (see
+    /// [`streamed_shell_line`]) — and a `seq` that counts this command's
+    /// streamed lines from 0. The `seq` exists because rmcp hands every
+    /// incoming notification to its own tokio task on the client side, so
+    /// adjacent lines reach a client in nondeterministic order; a client that
+    /// wants the command's own order puts them back by `seq`. It is additive:
+    /// a client that ignores it sees exactly the shape it always did.
     async fn stream_shell_output(
         &self,
         stdout: tokio::process::ChildStdout,
@@ -1586,6 +1624,11 @@ impl DeveloperServer {
 
         let output_task = tokio::spawn(async move {
             let mut combined_output = String::new();
+            // Counts the lines this command streamed, so it is contiguous over
+            // exactly the notifications a client can receive. Advanced for a
+            // send that fails too: that only happens once the transport is
+            // gone, when no later line reaches the client either.
+            let mut seq: u64 = 0;
 
             // Merge stdout and stderr streams
             // ref https://blog.yoshuawuyts.com/futures-concurrency-3
@@ -1603,17 +1646,14 @@ impl DeveloperServer {
                 combined_output.push_str(&line_str);
 
                 // Stream each line back to the client in real-time
-                let trimmed_line = line_str.trim();
-                if !trimmed_line.is_empty() {
+                if let Some(output) = streamed_shell_line(&line_str) {
+                    let data = shell_output_notification_data(stream_type, output, seq);
+                    seq += 1;
                     // Send the output line as a structured logging message
                     if let Err(e) = peer
                         .notify_logging_message(LoggingMessageNotificationParam {
                             level: LoggingLevel::Info,
-                            data: serde_json::json!({
-                                "type": "shell_output",
-                                "stream": stream_type,
-                                "output": trimmed_line
-                            }),
+                            data,
                             logger: Some("shell_tool".to_string()),
                         })
                         .await
@@ -5899,6 +5939,175 @@ mod tests {
                 !processes.contains_key("789"),
                 "Process should be cleaned up after completion"
             );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// The live line keeps the command's indentation: only the terminator comes
+    /// off, and a whitespace-only line is still not streamed.
+    #[test]
+    fn streamed_shell_line_removes_only_the_line_terminator() {
+        assert_eq!(streamed_shell_line("plain\n"), Some("plain"));
+        assert_eq!(
+            streamed_shell_line("  daemon         \n"),
+            Some("  daemon         "),
+            "leading and trailing spaces are the command's, not ours to remove"
+        );
+        assert_eq!(streamed_shell_line("\tTabbed\n"), Some("\tTabbed"));
+        assert_eq!(streamed_shell_line("crlf line\r\n"), Some("crlf line"));
+        assert_eq!(
+            streamed_shell_line("    no terminator"),
+            Some("    no terminator")
+        );
+        // Only ONE terminator: a `\r` that is not part of the final `\r\n`
+        // belongs to the line (a progress bar's carriage return, say).
+        assert_eq!(streamed_shell_line("a\r\r\n"), Some("a\r"));
+        assert_eq!(streamed_shell_line("\n"), None);
+        assert_eq!(streamed_shell_line("\r\n"), None);
+        assert_eq!(streamed_shell_line("   \t  \n"), None);
+        assert_eq!(streamed_shell_line(""), None);
+    }
+
+    /// `seq` is additive: the three fields a client already reads keep their
+    /// names and values.
+    #[test]
+    fn shell_output_notification_data_is_the_old_shape_plus_seq() {
+        let data = shell_output_notification_data("stderr", "  warning: x", 7);
+        assert_eq!(
+            data,
+            serde_json::json!({
+                "type": "shell_output",
+                "stream": "stderr",
+                "output": "  warning: x",
+                "seq": 7,
+            })
+        );
+    }
+
+    /// A transport whose client half is read line by line, handing every
+    /// JSON-RPC frame the server writes to the returned receiver.
+    fn capturing_test_transport() -> (
+        tokio::io::DuplexStream,
+        tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    ) {
+        use tokio::io::AsyncBufReadExt;
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(client).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(frame) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if tx.send(frame).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        (server, rx)
+    }
+
+    /// The e11 self-test's live view flattened `crew --help`: every indented
+    /// line reached the terminal trimmed. Drive the real tool over a real
+    /// transport and read what a client receives: indentation intact, blank and
+    /// whitespace-only lines not streamed, and `seq` counting exactly the
+    /// streamed lines, 0..n-1, in the order the command printed them.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn shell_streams_lines_with_indentation_and_contiguous_seq() {
+        run_shell_test(|| async {
+            let tmp = tempfile::tempdir().unwrap();
+            let server = DeveloperServer::new().with_working_dir(tmp.path().to_path_buf());
+            let (transport, mut frames) = capturing_test_transport();
+            let running_service = serve_directly(server.clone(), transport, None);
+            let peer = running_service.peer().clone();
+
+            let command = r"printf 'Usage: tool\n\nCommands:\n  daemon         \n  status         Show state\n\n    deeper\n\tTabbed\n   \ncrlf line\r\nlast\n'";
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: command.to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(5151),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await;
+            assert!(result.is_ok(), "printf should succeed: {result:?}");
+
+            let expected = [
+                "Usage: tool",
+                "Commands:",
+                "  daemon         ",
+                "  status         Show state",
+                "    deeper",
+                "\tTabbed",
+                "crlf line",
+                "last",
+            ];
+
+            // The tool returning means every notification was handed to the
+            // peer, not that the reader has seen it yet.
+            let mut streamed: Vec<(u64, String, String)> = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while streamed.len() < expected.len() {
+                let frame = tokio::time::timeout_at(deadline, frames.recv())
+                    .await
+                    .expect("every streamed line should reach the client")
+                    .expect("the capture task ended early");
+                if frame["method"] != "notifications/message" {
+                    continue;
+                }
+                let data = &frame["params"]["data"];
+                if data["type"] != "shell_output" {
+                    continue;
+                }
+                streamed.push((
+                    data["seq"].as_u64().expect("seq is an unsigned integer"),
+                    data["stream"].as_str().unwrap_or_default().to_string(),
+                    data["output"].as_str().unwrap_or_default().to_string(),
+                ));
+            }
+
+            // Nothing beyond the expected lines (no blank line slipped through).
+            let extra = tokio::time::timeout(Duration::from_millis(200), async {
+                loop {
+                    match frames.recv().await {
+                        Some(frame)
+                            if frame["method"] == "notifications/message"
+                                && frame["params"]["data"]["type"] == "shell_output" =>
+                        {
+                            return Some(frame)
+                        }
+                        Some(_) => continue,
+                        None => return None,
+                    }
+                }
+            })
+            .await;
+            assert!(
+                !matches!(extra, Ok(Some(_))),
+                "no line beyond the non-blank ones may be streamed, got {extra:?}"
+            );
+
+            let outputs: Vec<&str> = streamed.iter().map(|(_, _, o)| o.as_str()).collect();
+            assert_eq!(outputs, expected, "each line exactly as printed");
+            let seqs: Vec<u64> = streamed.iter().map(|(s, _, _)| *s).collect();
+            assert_eq!(
+                seqs,
+                (0..expected.len() as u64).collect::<Vec<_>>(),
+                "seq counts the streamed lines from 0, in order"
+            );
+            assert!(streamed.iter().all(|(_, stream, _)| stream == "stdout"));
 
             cleanup_test_service(running_service, peer);
         });
