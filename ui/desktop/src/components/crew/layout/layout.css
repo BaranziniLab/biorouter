@@ -11,8 +11,10 @@
    Names here are `crew-frame-*`, a family no area and no legacy stylesheet
    uses, so nothing styles these elements twice. */
 
-/* ── The channel body's middle: the timeline's slot ─────────────────────────
-   Between the connection bar and the composer, taking the rest of the height.
+/* ── The channel body's top: the timeline's slot ────────────────────────────
+   Above the composer, taking the rest of the height. (The connection bar is
+   not in the body: it has its own row above it, which a covering pane never
+   covers — see `crew-app.css`.)
    While Crew re-verifies it carries `inert`: the last verified view is shown,
    dimmed by the timeline itself, and nothing in it acts. */
 .crew-frame-timeline {

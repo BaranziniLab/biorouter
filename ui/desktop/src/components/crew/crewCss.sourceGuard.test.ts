@@ -323,23 +323,58 @@ describe('the Crew stylesheet contract', () => {
   /**
    * Measured in a real browser, not reasoned: an absolutely positioned grid item
    * takes its GRID AREA as its containing block, so a covering pane left in the
-   * `auto` column 2 rendered 0px wide. jsdom evaluates neither the container
-   * query nor grid, so only the source can hold this.
+   * `auto` column 2 rendered 0px wide. And a pane covering everything below the
+   * header covered the connection bar, where every error whose own surface is
+   * not on screen renders — so the stage's rows are the band, the bar and the
+   * body, and a covering pane takes the body's row alone. jsdom evaluates
+   * neither the container query nor grid, so only the source (and
+   * `integration/paneCover.browser.test.ts`, which measures it) can hold this.
    */
-  it('lets a covering pane span the whole stage below the channel header', () => {
-    const cover = parseCss(readFileSync(CREW_APP_CSS, 'utf8')).rules.find(
-      (rule) =>
-        normalizeSelector(rule.selector) === '.crew-pane' &&
-        rule.atRules.some((prelude) => /^@container\s+crew-main\s*\(width\s*</.test(prelude)) &&
-        !isReduced(rule)
-    );
-    expect(cover, 'no .crew-pane rule inside the cover container query').toBeDefined();
-    const value = (property: string) =>
-      cover?.declarations.find((declaration) => declaration.property === property)?.value;
-    expect(value('position')).toBe('absolute');
-    expect(value('grid-column')).toBe('1 / -1');
-    expect(value('grid-row')).toBe('1 / -1');
-    expect(value('inset')).toBe('var(--chrome-height) 0 0 0');
+  it('lets a covering pane span the stage below the channel header and the connection bar', () => {
+    const rules = parseCss(readFileSync(CREW_APP_CSS, 'utf8')).rules;
+    const isCover = (rule: StyleRule) =>
+      rule.atRules.some((prelude) => /^@container\s+crew-main\s*\(width\s*</.test(prelude));
+    const find = (selector: string, cover: boolean) =>
+      rules.find(
+        (rule) =>
+          normalizeSelector(rule.selector) === selector &&
+          isCover(rule) === cover &&
+          !isReduced(rule)
+      );
+    const valueOf = (selector: string, cover: boolean, property: string) => {
+      const rule = find(selector, cover);
+      expect(
+        rule,
+        `no ${selector} rule${cover ? ' inside the cover container query' : ''}`
+      ).toBeDefined();
+      return rule?.declarations.find((declaration) => declaration.property === property)?.value;
+    };
+
+    expect(valueOf('.crew-stage', false, 'grid-template-rows')).toBe('auto auto minmax(0, 1fr)');
+    expect(valueOf('.crew-channel', false, 'grid-row')).toBe('1 / -1');
+    expect(valueOf('.crew-channel', false, 'grid-template-rows')).toBe('subgrid');
+    expect(valueOf('.crew-channel-bar', false, 'grid-row')).toBe('2');
+    expect(valueOf('.crew-channel-body', false, 'grid-row')).toBe('3');
+    expect(valueOf('.crew-pane', false, 'grid-row')).toBe('1 / -1');
+
+    expect(valueOf('.crew-pane', true, 'position')).toBe('absolute');
+    expect(valueOf('.crew-pane', true, 'grid-column')).toBe('1 / -1');
+    expect(valueOf('.crew-pane', true, 'grid-row')).toBe('3 / -1');
+    expect(valueOf('.crew-pane', true, 'inset')).toBe('0');
+
+    // What the covering pane hides is the body, and only the body.
+    const hidden = rules
+      .filter(
+        (rule) =>
+          isCover(rule) &&
+          rule.declarations.some(
+            ({ property, value }) => property === 'visibility' && value === 'hidden'
+          )
+      )
+      .map((rule) => normalizeSelector(rule.selector));
+    expect(hidden.filter((selector) => !selector.startsWith('.crew-pane'))).toEqual([
+      ".crew-stage:has(>.crew-pane[data-state='open']) .crew-channel-body",
+    ]);
   });
 
   it('keeps load-bearing styles out of newly written arbitrary-value utilities', () => {

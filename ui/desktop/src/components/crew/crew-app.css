@@ -27,7 +27,8 @@
        .crew-sidebar                          the Crew sidebar column (geometry)
        .crew-main                             container `crew-main`: channel + pane
          .crew-stage                          the grid the pane pushes into
-           .crew-channel                      header band + body
+           .crew-channel                      header band, bar and body (subgrid)
+             .crew-channel-bar                the connection bar's row: never covered
              .crew-channel-body               what a covering pane covers
            .crew-pane[data-state=open|closed] the details pane slot
              .crew-pane-content               fixed-width inner content
@@ -84,11 +85,23 @@
    the pane width and fades in, so its text never reflows mid-tween.
 
    COVER (region < 800px): the pane covers the channel body BELOW the channel
-   header, so the channel name stays visible. The covered body takes
-   `visibility: hidden`, which takes the timeline and composer out of the tab
-   order while unseen and keeps the draft. This is deliberately not the
-   artifact panel's stack rung: the pane holds forms, and stacking one above
-   the conversation would push the composer below the fold.
+   header AND the connection bar, so the channel name stays visible and so does
+   every error the bar holds. The covered body takes `visibility: hidden`,
+   which takes the timeline and composer out of the tab order while unseen and
+   keeps the draft. This is deliberately not the artifact panel's stack rung:
+   the pane holds forms, and stacking one above the conversation would push the
+   composer below the fold.
+
+   ⚠ The bar's row is load-bearing, not tidiness. The bar is where an error
+   renders when the surface that caused it is not on screen — the sidebar, a
+   menu, the observer, Stop in the pane's Access tab — so a covering pane that
+   hid it (it once sat inside `.crew-channel-body`, under a pane inset by the
+   header's height) made those errors reach no one while the pane was open.
+   The stage's three rows are the band, the bar and the body; `.crew-channel`
+   subgrids them, so the header and the bar size the rows and a covering pane
+   takes the body's row alone. An absolutely positioned grid item takes its
+   grid area as its containing block, which is what places the pane there with
+   no measured offset.
 
    ⚠ A container query cannot read a custom property, so `800px` below is a
    literal. The source guard pins it — and `--crew-pane-width` /
@@ -105,39 +118,51 @@
   min-height: 0;
 }
 
+/* Rows: the 44px channel band, the connection bar (0 when it holds nothing),
+   the channel body. */
 .crew-stage {
   position: relative;
   isolation: isolate;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
 
+/* The header is auto-placed into the first row; the bar and the body are
+   placed by row, so an empty (`display: none`) bar leaves its row at 0 rather
+   than pulling the body up into it. */
 .crew-channel {
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: subgrid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.crew-channel-bar {
+  grid-row: 2;
+  min-width: 0;
+}
+
+/* Isolated so a floating control inside (the Jump to latest pill) can never
+   paint above a covering pane. */
+.crew-channel-body {
+  grid-row: 3;
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
 }
 
-/* Isolated so a floating control inside (the Jump to latest pill) can never
-   paint above a covering pane. */
-.crew-channel-body {
-  position: relative;
-  isolation: isolate;
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-}
-
 .crew-pane {
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 1 / -1;
   width: var(--crew-pane-width);
   min-height: 0;
   overflow: hidden;
@@ -173,12 +198,13 @@
   /* ⚠ The grid placement is load-bearing. An absolutely positioned GRID ITEM
      takes its grid area as its containing block, so a covering pane left in
      column 2 — an `auto` track it no longer contributes to — measured 0px
-     wide. Spanning every line makes the containing block the whole stage. */
+     wide. Spanning every column and only the body's row makes the containing
+     block exactly what it covers: below the band and the connection bar. */
   .crew-pane {
     grid-column: 1 / -1;
-    grid-row: 1 / -1;
+    grid-row: 3 / -1;
     position: absolute;
-    inset: var(--chrome-height) 0 0 0;
+    inset: 0;
     z-index: 1;
     width: auto;
     box-shadow: none;

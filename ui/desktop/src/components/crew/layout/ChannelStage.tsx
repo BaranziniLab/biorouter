@@ -46,10 +46,15 @@ function useChannelAgentAccess(crew: CrewController) {
 }
 
 /**
- * One channel (ui-redesign-spec, "Layout" and the wireframes): the 44px channel band, then the
- * channel body — the connection bar, the timeline and the composer in the 760px chat column — and
- * the one non-modal details pane beside it (push) or over the body below the band (cover). The
+ * One channel (ui-redesign-spec, "Layout" and the wireframes): the 44px channel band, the connection
+ * bar, then the channel body — the timeline and the composer in the 760px chat column — and the one
+ * non-modal details pane beside it (push) or over the body below the band and the bar (cover). The
  * container query in `crew-app.css` decides push or cover; nothing here measures.
+ *
+ * The connection bar is its own row, outside `.crew-channel-body`, and that placement is the point:
+ * it is where an error lands when the surface that caused it is not on screen (the sidebar, a menu,
+ * the observer, Stop in the pane's Access tab), and a covering pane hides the body it covers. Inside
+ * the body, those errors were rendered once and seen by no one while the pane was open.
  *
  * While a refresh re-verifies, everything draws from the controller's last verified view: the
  * header and the sidebar keep their names, the timeline shows the last messages dimmed and inert,
@@ -82,8 +87,8 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
           canRename={canRename}
           titleId={titleId}
         />
+        <ConnectionBar className="crew-channel-bar" />
         <div className="crew-channel-body">
-          <ConnectionBar />
           <div
             className="crew-frame-timeline"
             inert={verifying}
