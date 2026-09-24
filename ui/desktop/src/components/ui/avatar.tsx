@@ -10,17 +10,29 @@ export interface AvatarProps {
   /**
    * What the person chose to be shown as — an emoji or their own initials
    * (`profile.update {avatar}`). Wins over derived initials when non-blank, and
-   * is clamped to two characters so a long choice cannot overflow the tile.
+   * is clamped to what the tile holds ({@link avatarTextLimit}: two characters,
+   * one at 20px) so a long choice cannot overflow it.
    */
   fallback?: string | null;
   /** The display name the initials are taken from. */
   name?: string | null;
-  /** The username, used when the display name yields no initials. */
+  /**
+   * The canonical username. It picks a person's hue ({@link avatarHue}) and is
+   * read for initials when the display name yields none.
+   */
   username?: string | null;
   /** An image, when one exists. The fallback shows until it loads, and if it fails. */
   src?: string;
+  /**
+   * 20, 24 or 32px. At 20 the tile holds ONE character — the first initial, or
+   * the first of a chosen pair — because two do not fit a 20px circle, and a
+   * stack overlaps its right edge besides (Q2-70: "CN" read as "Cɴ").
+   */
   size?: AvatarSize;
-  /** `circle` for people; `square` for agents and objects. */
+  /**
+   * `circle` for people; `square` for agents and objects. Only a circle with a
+   * username takes a person's hue; a square keeps the neutral tile.
+   */
   shape?: AvatarShape;
   /** A glyph in place of letters — an agent's `Bot`. Sized by the avatar. */
   icon?: React.ReactNode;
@@ -168,12 +180,74 @@ export function avatarInitials(name?: string | null, username?: string | null): 
 }
 
 /**
+ * How many person hues there are (D-AVATAR). Every theme family declares the
+ * pairs `--avatar-hue-{1..8}-bg` / `-fg`, and `main.css` paints them on
+ * `.biorouter-avatar[data-hue='N']`; `scripts/lib/theme-contract.mjs` carries
+ * the same count (`AVATAR_HUE_COUNT`), and a test holds the two equal.
+ */
+export const AVATAR_HUE_COUNT = 8;
+
+/**
+ * The form of a username the hue is computed from: NFC, trimmed, without a
+ * leading `@` in any compatibility form, and case-folded. Folding makes an
+ * account a case-insensitive directory (SSSD) reports as `Bob@AD.UCSF.EDU` in
+ * one place and `bob@ad.ucsf.edu` in another keep one colour; `toLowerCase` is
+ * the locale-independent Unicode mapping, so every device folds alike. The
+ * realm is kept: it is part of who the account is.
+ */
+function canonicalUsername(username: string): string {
+  return username.normalize('NFC').trim().replace(LEADING_AT_SIGNS, '').toLowerCase();
+}
+
+/**
+ * A person's hue, 1–8, or `null` with no usable username (D-AVATAR, carol F4:
+ * a row of identical grey tiles made every "who is this" a read).
+ *
+ * - **From the canonical `@username`, never the display name.** A username is
+ *   the one name nobody chooses, so a self-chosen display name cannot borrow
+ *   another person's colour. The hue is a recognition aid, not a proof: the
+ *   `@username` stays on screen beside it.
+ * - **Stable across sessions, devices and builds.** A pure function of the
+ *   username's UTF-8 bytes — no directory, no order, no seed — so a person has
+ *   one colour for every viewer. Two people can share a hue (eight hues); the
+ *   initials and the `@username` still tell them apart.
+ * - **Every byte reaches the result.** 32-bit FNV-1a, XOR-folded down to three
+ *   bits. Taking `hash % 8` instead would read only the low three bits of each
+ *   byte (FNV's multiplier is odd), so `crew_alice` and `crew_ilice` — `a` and
+ *   `i` share them — would always match.
+ */
+export function avatarHue(username?: string | null): number | null {
+  const canonical = canonicalUsername(username ?? '');
+  if (!canonical) return null;
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(canonical)) {
+    hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  }
+  hash = (hash >>> 16) ^ (hash & 0xffff);
+  hash = (hash >>> 8) ^ (hash & 0xff);
+  hash = (hash >>> 4) ^ (hash & 0xf);
+  hash = (hash >>> 3) ^ (hash & 0x7);
+  return (hash & 0x7) + 1;
+}
+
+/**
+ * How many characters a tile of this size holds: one at 20px and below, two
+ * above. Two 11px capitals are ~15px wide, which a 20px circle cuts at its
+ * edges, and a member stack lays the next tile over the last 4px (Q2-70).
+ */
+export function avatarTextLimit(size: number): 1 | 2 {
+  return size <= 20 ? 1 : 2;
+}
+
+/**
  * The one identity tile, on `@radix-ui/react-avatar`: 20, 24 or 32px, a circle
- * for people and a square for agents and objects, `--background-medium` ground
- * with `--text-muted` ink. Geometry, ground, ring and type are authored CSS
- * (`.biorouter-avatar` in `main.css`) keyed on `data-size` / `data-shape` /
- * `data-ring`, because a newly written utility can silently fail to generate
- * under `BIOROUTER_NO_HMR`.
+ * for people and a square for agents and objects. A person with a username
+ * wears their hue pair (`data-hue`, {@link avatarHue}); anything else keeps the
+ * neutral `--background-medium` ground with `--text-muted` ink. Geometry,
+ * ground, hue, ring and type are authored CSS (`.biorouter-avatar` in
+ * `main.css`) keyed on `data-size` / `data-shape` / `data-hue` / `data-ring`,
+ * because a newly written utility can silently fail to generate under
+ * `BIOROUTER_NO_HMR`.
  */
 export function Avatar({
   fallback,
@@ -188,7 +262,10 @@ export function Avatar({
   className,
 }: AvatarProps) {
   const chosen = (fallback ?? '').trim();
-  const text = chosen ? graphemes(chosen).slice(0, 2).join('') : avatarInitials(name, username);
+  const text = graphemes(chosen || avatarInitials(name, username))
+    .slice(0, avatarTextLimit(size))
+    .join('');
+  const hue = shape === 'circle' && !icon ? avatarHue(username) : null;
   const named = typeof label === 'string' && label.trim().length > 0;
 
   return (
@@ -196,6 +273,7 @@ export function Avatar({
       data-slot="avatar"
       data-size={size}
       data-shape={shape}
+      data-hue={hue ?? undefined}
       data-ring={ring ? 'true' : undefined}
       className={cn('biorouter-avatar', className)}
       {...(named ? { role: 'img', 'aria-label': label } : { 'aria-hidden': true })}

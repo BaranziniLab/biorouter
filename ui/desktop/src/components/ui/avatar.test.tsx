@@ -3,9 +3,13 @@ import { join } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { Bot } from '../icons/app-icons';
-import { Avatar, avatarInitials } from './avatar';
+import { AVATAR_HUE_COUNT, Avatar, avatarHue, avatarInitials, avatarTextLimit } from './avatar';
 
 const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+const THEME_CONTRACT = readFileSync(
+  join(__dirname, '../../../scripts/lib/theme-contract.mjs'),
+  'utf8'
+);
 
 const tile = (container: HTMLElement) =>
   container.querySelector('[data-slot="avatar"]') as HTMLElement;
@@ -214,6 +218,204 @@ describe('Avatar', () => {
     const base = MAIN_CSS.slice(MAIN_CSS.indexOf('.biorouter-avatar {'));
     expect(base.slice(0, base.indexOf('}'))).toMatch(
       /background-color: var\(--background-medium\);[\s\S]*color: var\(--text-muted\);/
+    );
+  });
+});
+
+/**
+ * Q2-70: Carol's "CN" sat in a 20px circle in the header's member stack, where
+ * two 11px capitals meet the circle's edge and the next tile overlaps the last
+ * 4px, so it read "Cɴ". A 20px tile holds one character; 24 and 32 keep two.
+ */
+describe('Avatar at 20px', () => {
+  it('holds one character at 20px and below, two above', () => {
+    expect(avatarTextLimit(20)).toBe(1);
+    expect(avatarTextLimit(16)).toBe(1);
+    expect(avatarTextLimit(24)).toBe(2);
+    expect(avatarTextLimit(32)).toBe(2);
+  });
+
+  it('draws the first initial alone at 20px and both at 24 and 32', () => {
+    const { container, rerender } = render(
+      <Avatar size={20} name="Carol Nguyen" username="crew_carol" />
+    );
+    expect(tile(container)).toHaveTextContent(/^C$/);
+    for (const size of [24, 32] as const) {
+      rerender(<Avatar size={size} name="Carol Nguyen" username="crew_carol" />);
+      expect(tile(container)).toHaveTextContent(/^CN$/);
+    }
+  });
+
+  it('draws one letter at 20px for every shape of name', () => {
+    for (const [name, username, expected] of [
+      ['Alice Chen', 'crew_alice', 'A'],
+      ['crew_bob', 'crew_bob', 'B'],
+      [null, 'bob', 'B'],
+      ['bobad.ucsf.edu', 'bob@ad.ucsf.edu', 'B'],
+      ['élodie durand', 'edurand', 'É'],
+      ['李 小龙', 'xli', '李'],
+      ['E\u0301lodie Durand', 'ed', '\u00c9'],
+    ] as const) {
+      const { container, unmount } = render(<Avatar size={20} name={name} username={username} />);
+      expect(tile(container).textContent).toBe(expected);
+      unmount();
+    }
+  });
+
+  it('clamps a chosen avatar to its first character at 20px, keeping an emoji whole', () => {
+    const { container, rerender } = render(<Avatar size={20} fallback="CN" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('C');
+    rerender(<Avatar size={20} fallback="🧑‍🔬🧬" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('🧑‍🔬');
+    rerender(<Avatar size={24} fallback="CN" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('CN');
+  });
+
+  it('still draws an agent’s glyph at 20px', () => {
+    const { container } = render(
+      <Avatar size={20} shape="square" icon={<Bot data-testid="bot" />} name="Alice Chen" />
+    );
+    expect(screen.getByTestId('bot')).toBeInTheDocument();
+    expect(tile(container).textContent).toBe('');
+  });
+});
+
+/**
+ * D-AVATAR (carol F4): every tile was the same grey, so telling people apart
+ * meant reading every name. A person wears one of eight hue pairs, picked from
+ * the canonical `@username` — never the display name, which the person chooses
+ * — and stable for every viewer on every device.
+ */
+describe('avatarHue — a person’s colour', () => {
+  /**
+   * Pinned: the hue is a pure function of the username, so these values are
+   * what every device, and every later build, shows. Changing the function
+   * recolours every person at once; if that is ever deliberate, change this
+   * table with it.
+   */
+  it.each<[string, number]>([
+    ['crew_alice', 7],
+    ['crew_bob', 6],
+    ['crew_carol', 7],
+    ['crew_dave', 5],
+    ['crew_erin', 3],
+    ['crew_frank', 8],
+    ['bob', 8],
+    ['bob@ad.ucsf.edu', 8],
+    ['李小龙', 7],
+  ])('gives %j hue %i', (username, hue) => {
+    expect(avatarHue(username)).toBe(hue);
+  });
+
+  it('is always one of the eight hues', () => {
+    for (let i = 0; i < 2000; i++) {
+      const hue = avatarHue(`member${i}`);
+      expect(Number.isInteger(hue)).toBe(true);
+      expect(hue).toBeGreaterThanOrEqual(1);
+      expect(hue).toBeLessThanOrEqual(AVATAR_HUE_COUNT);
+    }
+  });
+
+  it('spreads people across all eight hues', () => {
+    const counts = new Array<number>(AVATAR_HUE_COUNT + 1).fill(0);
+    const people = 8000;
+    for (let i = 0; i < people; i++) counts[avatarHue(`member${i}`)!] += 1;
+    for (let hue = 1; hue <= AVATAR_HUE_COUNT; hue++) {
+      expect(counts[hue] / people).toBeGreaterThan(0.1);
+      expect(counts[hue] / people).toBeLessThan(0.15);
+    }
+  });
+
+  /**
+   * `hash % 8` of an FNV hash reads only the low three bits of each byte, so
+   * usernames whose letters differ by a multiple of eight (`a`, `i`, `q`, `y`)
+   * would always share a colour. The fold lets every byte reach the hue.
+   */
+  it('lets every byte of the username reach the hue', () => {
+    const hues = ['a', 'i', 'q', 'y'].map((letter) => avatarHue(`crew_${letter}lice`));
+    expect(new Set(hues).size).toBeGreaterThan(1);
+  });
+
+  it('reads one account one way: case, a leading @, spaces and Unicode form aside', () => {
+    const hue = avatarHue('crew_alice');
+    for (const spelling of ['Crew_Alice', '@crew_alice', '\uFF20crew_alice', '  crew_alice ']) {
+      expect(avatarHue(spelling)).toBe(hue);
+    }
+    expect(avatarHue('e\u0301lodie')).toBe(avatarHue('\u00e9lodie'));
+    expect(avatarHue('Bob@AD.UCSF.EDU')).toBe(avatarHue('bob@ad.ucsf.edu'));
+  });
+
+  it('has no hue without a usable username', () => {
+    for (const username of [undefined, null, '', '   ', '@', '\uFF20']) {
+      expect(avatarHue(username)).toBeNull();
+    }
+  });
+});
+
+describe('Avatar hue', () => {
+  const hueOf = (container: HTMLElement) => tile(container).getAttribute('data-hue');
+
+  it('paints a person with the hue of their username, at every size', () => {
+    for (const size of [20, 24, 32] as const) {
+      const { container, unmount } = render(
+        <Avatar size={size} name="Carol Nguyen" username="crew_carol" />
+      );
+      expect(hueOf(container)).toBe(String(avatarHue('crew_carol')));
+      unmount();
+    }
+  });
+
+  it('takes the hue from the username alone, never the display name or chosen avatar', () => {
+    const { container, rerender } = render(<Avatar name="Carol Nguyen" username="crew_carol" />);
+    const carol = hueOf(container);
+    for (const [name, fallback] of [
+      ['Alice Chen', null],
+      ['crew_alice', null],
+      ['Carol Nguyen', '🧬'],
+      [null, 'AC'],
+    ] as const) {
+      rerender(<Avatar name={name} fallback={fallback} username="crew_carol" />);
+      expect(hueOf(container)).toBe(carol);
+    }
+    // A display name copied from someone else does not bring their colour.
+    const erin = String(avatarHue('crew_erin'));
+    expect(erin).not.toBe(carol);
+    rerender(<Avatar name="Carol Nguyen" username="crew_erin" />);
+    expect(hueOf(container)).toBe(erin);
+  });
+
+  it('keeps the neutral tile for an agent, an object and a person not known yet', () => {
+    const { container, rerender } = render(
+      <Avatar shape="square" icon={<Bot />} username="crew_carol" />
+    );
+    expect(tile(container)).not.toHaveAttribute('data-hue');
+    rerender(<Avatar shape="square" name="Analysis Lab" username="crew_carol" />);
+    expect(tile(container)).not.toHaveAttribute('data-hue');
+    rerender(<Avatar fallback="?" />);
+    expect(tile(container)).not.toHaveAttribute('data-hue');
+    rerender(<Avatar name="Carol Nguyen" />);
+    expect(tile(container)).not.toHaveAttribute('data-hue');
+  });
+
+  /**
+   * The component's count, the theme contract's and main.css's rules must be
+   * one number: a ninth hue with no rule would paint nothing, and a rule the
+   * component never names is dead. Every rule paints one token pair, the pair
+   * `check-contrast.mjs` measures.
+   */
+  it('names exactly the hues the theme contract declares and main.css paints', () => {
+    expect(THEME_CONTRACT).toMatch(
+      new RegExp(`export const AVATAR_HUE_COUNT = ${AVATAR_HUE_COUNT};`)
+    );
+    for (let hue = 1; hue <= AVATAR_HUE_COUNT; hue++) {
+      expect(MAIN_CSS).toMatch(
+        new RegExp(
+          `\\.biorouter-avatar\\[data-hue='${hue}'\\] \\{\\s*background-color: var\\(--avatar-hue-${hue}-bg\\);\\s*color: var\\(--avatar-hue-${hue}-fg\\);`
+        )
+      );
+    }
+    expect(MAIN_CSS).not.toMatch(
+      new RegExp(`\\.biorouter-avatar\\[data-hue='${AVATAR_HUE_COUNT + 1}'\\]`)
     );
   });
 });
