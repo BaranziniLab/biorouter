@@ -291,10 +291,11 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
    * The invitation route saves `{username}@{server}`, named for the workspace, with no work
    * folder. What the person chose instead (an SSH alias from their own config, a connection name,
    * a work folder) is applied through the ordinary full-body update every daemon accepts, so the
-   * join never depends on the invitation route knowing a field its contract does not name. If
-   * that update fails, a connection this submit created (`createdHere`) is removed again: a retry
-   * starts clean instead of leaving a connection that would sign in as someone the person did not
-   * choose. A connection that was already on this computer is never removed, and never updated.
+   * join never depends on the invitation route knowing a field its contract does not name. It is
+   * applied only to a connection this submit certainly created (`createdHere`), and if the update
+   * fails that connection is removed again: a retry starts clean instead of leaving a connection
+   * that would sign in as someone the person did not choose. A connection that was already on
+   * this computer, or may have been, is never updated and never removed.
    */
   const applyLocalSettings = async (
     connection: CrewConnection,
@@ -383,8 +384,10 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       if (extra) overrides.advanced = extra;
       // What was saved before this submit. Saving an invitation for a workspace this computer
       // already has returns THAT connection, so only an id missing from this list was created
-      // here. When the list can't be read, nothing counts as created: a leftover connection is
-      // removable, a removed joined one is not.
+      // here. When the list can't be read (`before` is null), nothing counts as created here, so
+      // nothing is updated or removed: the saved connection is opened as it is, and its settings
+      // are changed in Connection settings. A leftover connection is removable; a joined one that
+      // was rewritten (an update disconnects it) or removed is not recoverable.
       const before = await savedConnectionIds().then(
         (ids) => new Set([...ids, ...crew.connections.map((item) => item.id)]),
         () => null
@@ -397,14 +400,17 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           setSaveConflictId(refusalConnectionId(failure, preview?.existing_connection_id));
         throw failure;
       }
+      // Without the daemon's list, the controller's own list still says which ones it knew.
+      const known = before ?? new Set(crew.connections.map((item) => item.id));
       const preexisting =
-        connection.id === preview?.existing_connection_id || Boolean(before?.has(connection.id));
+        connection.id === preview?.existing_connection_id || known.has(connection.id);
       isNew = !preexisting;
       createdHere = before !== null && isNew;
-      // A connection that was already here is opened as it is: its settings are changed in
-      // Connection settings, never by re-pasting an invitation (an update disconnects it).
+      // Only a connection this submit certainly created is updated. One that was already here,
+      // or may have been, is opened as it is: its settings are changed in Connection settings,
+      // never by re-pasting an invitation (an update disconnects it).
       const settings = localSettings();
-      if (isNew && settingsDiffer(connection, settings))
+      if (createdHere && settingsDiffer(connection, settings))
         connection = await applyLocalSettings(connection, settings, createdHere);
       // Reload the list before selecting, so the controller knows the connection it connects.
       await crew.refresh();

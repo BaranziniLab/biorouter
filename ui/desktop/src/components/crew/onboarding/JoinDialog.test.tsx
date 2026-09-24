@@ -378,25 +378,44 @@ describe('JoinDialog', () => {
     expect(readJoinContext('conn-old')).not.toMatchObject({ joining: true });
   });
 
-  it('removes nothing when it cannot tell whether the save created the connection', async () => {
-    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+  it('neither updates nor removes a connection it cannot tell the save created', async () => {
+    // The saved list can't be read, and the preview named no connection: the one the save returns
+    // may have been saved by another window (or the CLI) meanwhile, possibly already joined.
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, existing_connection_id: null });
     mocks.savedConnectionIds.mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
-    mocks.saveFromInvitation.mockResolvedValue(fakeConnection({ id: 'conn-maybe' }));
-    const updateConnection = vi
-      .fn()
-      .mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    const saved = fakeConnection({ id: 'conn-maybe', status: 'connected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const updateConnection = vi.fn(async (_id: string, body: object) => ({ ...saved, ...body }));
     const removeConnection = vi.fn().mockResolvedValue(undefined);
     const view = renderDialog({ updateConnection, removeConnection });
     await paste();
     await screen.findByTestId('crew-join-summary');
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    // A local choice that differs from what the save returned (`bob@hpc.ucsf.edu`).
     fireEvent.change(screen.getByLabelText(joinCopy.serverLogin), { target: { value: 'hpc' } });
     fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
 
-    await waitFor(() => expect(updateConnection).toHaveBeenCalledOnce());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Join lab' })).toBeEnabled());
+    const crew = view.crew();
+    // Opened as it is: an update would rewrite its server login and disconnect it.
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-maybe'));
+    expect(updateConnection).not.toHaveBeenCalled();
     expect(removeConnection).not.toHaveBeenCalled();
-    expect(view.crew().selectConnection).not.toHaveBeenCalled();
+  });
+
+  it('leaves the join record of a connection the controller already lists when the saved list can’t be read', async () => {
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, existing_connection_id: null });
+    mocks.savedConnectionIds.mockRejectedValue(new CrewHttpError('Crew request failed (500)', 500));
+    const known = fakeConnection({ id: 'conn-known', status: 'connected' });
+    mocks.saveFromInvitation.mockResolvedValue(known);
+    const view = renderDialog({ connections: [known] });
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: 'Join lab' }));
+
+    const crew = view.crew();
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-known'));
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+    expect(crew.removeConnection).not.toHaveBeenCalled();
+    expect(readJoinContext('conn-known')).not.toMatchObject({ joining: true });
   });
 
   it('offers the connection this computer already has instead of saving the invitation again', async () => {
