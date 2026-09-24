@@ -374,6 +374,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew::connect,
         super::routes::crew::disconnect,
         super::routes::crew::authentication_plan,
+        super::routes::crew::resolve,
         super::routes::crew::request,
         super::routes::crew::start_run,
         super::routes::crew::list_runs,
@@ -383,6 +384,10 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew_authentication::prepare,
         super::routes::crew_authentication::cancel,
         super::routes::crew_authentication::terminal,
+        super::routes::crew_authentication::from_invitation,
+        super::routes::crew_authentication::invitation,
+        super::routes::crew_authentication::join_status,
+        super::routes::crew_authentication::join,
         super::routes::crew_transfers::register_file,
         super::routes::crew_transfers::confirm_file,
         super::routes::crew_transfers::discard_file,
@@ -559,10 +564,33 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew::StartRunRequest,
         super::routes::crew::RunView,
         super::routes::crew::GrantSessionRequest,
+        // `/crew/resolve`. `SelectorInput`, `SelectorKind` and `Resolution` are
+        // `#[schema(inline)]` inside these two, so only the two are named here.
+        super::routes::crew::ResolveRequest,
+        super::routes::crew::ResolveResponse,
         super::routes::crew_observation::ObserveRequest,
         super::routes::crew_observation::ObserveEvent,
         super::routes::crew_observation::Initial,
         super::routes::crew_authentication::Prepare,
+        // Workspace admission (S3a). utoipa registers nothing transitively (see
+        // `ProviderAffiliation` below), so every core type these four routes'
+        // bodies reach by `$ref` is named too: `InvitationSummary` flattens
+        // `InvitationPreview`, which names `InvitationSourceKind`,
+        // `ClusterMode` and `InvitationMissing`; the join answers name
+        // `JoinState` and `JoinPerson`.
+        super::routes::crew_authentication::FromInvitationRequest,
+        super::routes::crew_authentication::FromInvitationResponse,
+        super::routes::crew_authentication::InvitationSummary,
+        super::routes::crew_authentication::JoinClaimed,
+        biorouter::crew::ClusterMode,
+        biorouter::crew::authentication::InvitationAdvanced,
+        biorouter::crew::authentication::InvitationPreview,
+        biorouter::crew::authentication::InvitationSourceKind,
+        biorouter::crew::authentication::InvitationMissing,
+        biorouter::crew::authentication::InvitationText,
+        biorouter::crew::authentication::JoinStatus,
+        biorouter::crew::authentication::JoinState,
+        biorouter::crew::authentication::JoinPerson,
         super::routes::crew_transfers::Resume,
         biorouter::security::computer_use::ComputerUseStatus,
         super::routes::computer_use::ComputerUseSessionRequest,
