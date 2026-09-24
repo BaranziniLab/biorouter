@@ -34,6 +34,8 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { ChatCrewAccessBar } from './crew/access/ChatCrewAccessBar';
+import { useChatCrewAccess } from './crew/access/chatCrewAccess';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
@@ -1563,6 +1565,10 @@ function BaseChatContent({
   // slot's own decision, never off "this is a subagent's chat": the two differ
   // for exactly the window this fix is about.
   const subagentTabReadOnly = composerSlotMode(subagentChatKind) !== 'composer';
+  // Crew access (ui-redesign-spec, "Revoke"): a chat whose grant was revoked or ran out is refused
+  // by the daemon on every turn. Say so above the composer and hold it, instead of letting the next
+  // message fail with a model error. Display only — the daemon decides either way.
+  const crewAccess = useChatCrewAccess(sessionId);
 
   const canDivergeSession = useMemo(
     () => messages.some((message) => message.role === 'assistant'),
@@ -2308,6 +2314,7 @@ function BaseChatContent({
         say, which is almost always.
       */}
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
+        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-2" />
         {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
         <ChatInput
           sessionId={sessionId}
@@ -2323,7 +2330,8 @@ function BaseChatContent({
           onAbandonContinuation={abandonContinuation}
           submissionBlocked={
             pendingContinuation?.ownership === 'foreign' ||
-            pendingContinuation?.ownership === 'settling'
+            pendingContinuation?.ownership === 'settling' ||
+            crewAccess.blocksComposer
           }
           onSteer={steer}
           commandHistory={commandHistory}
