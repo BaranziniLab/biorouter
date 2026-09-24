@@ -62,6 +62,45 @@ function renderLive(
   return { ...view, update: (next: Snapshot) => act(() => live.set(next)) };
 }
 
+/** The harness snapshot plus a #methods channel in team-1; `pending_joins` defaults to eve's. */
+function withMethods(overrides: Partial<Snapshot> & { methodsMembers?: string[] } = {}): Snapshot {
+  const { methodsMembers = [alice.id], ...rest } = overrides;
+  const base = makeSnapshot();
+  return makeSnapshot({
+    pending_joins: [{ username: 'eve', full_name: 'Eve Park' }],
+    ...rest,
+    channels: [
+      ...base.channels,
+      {
+        id: 'channel-methods',
+        team_id: 'team-1',
+        name: 'methods',
+        created_by: alice.id,
+        owner_id: alice.id,
+        members: methodsMembers,
+        archived: false,
+        classification: 'restricted',
+      },
+    ],
+  });
+}
+
+/** A broker that adds members directly, and answers `team.add_member` for eve into #methods. */
+function renderDirectAdd(snapshot: Snapshot) {
+  return renderLive(snapshot, {
+    capabilities: ['unique_names_v1', DIRECT_ADD_CAPABILITY],
+    request: (method) =>
+      method === 'team.add_member'
+        ? {
+            team_id: 'team-1',
+            principal_id: eve.id,
+            added_channels: ['channel-methods'],
+            already_member: false,
+          }
+        : {},
+  });
+}
+
 async function approveWith(code: string, who = 'Eve') {
   fireEvent.change(await screen.findByLabelText(letInCopy.code(who)), { target: { value: code } });
   await act(async () => {
@@ -291,36 +330,9 @@ describe('LetInDialog', () => {
   });
 
   it('adds the person straight into the team and the channels chosen, when the broker can', async () => {
-    const base = makeSnapshot();
-    const snapshot = makeSnapshot({
-      principals: [...base.principals, eve],
-      pending_joins: [{ username: 'eve', full_name: 'Eve Park' }],
-      channels: [
-        ...base.channels,
-        {
-          id: 'channel-methods',
-          team_id: 'team-1',
-          name: 'methods',
-          created_by: alice.id,
-          owner_id: alice.id,
-          members: [alice.id],
-          archived: false,
-          classification: 'restricted',
-        },
-      ],
-    });
-    const { crew } = renderLive(snapshot, {
-      capabilities: ['unique_names_v1', DIRECT_ADD_CAPABILITY],
-      request: (method) =>
-        method === 'team.add_member'
-          ? {
-              team_id: 'team-1',
-              principal_id: eve.id,
-              added_channels: ['channel-methods'],
-              already_member: false,
-            }
-          : {},
-    });
+    const { crew } = renderDirectAdd(
+      withMethods({ principals: [...makeSnapshot().principals, eve] })
+    );
     await approveWith(CODE);
     const dialog = await screen.findByRole('dialog');
     const channels = within(dialog).getByRole('group', { name: addPeopleCopy.channels });
@@ -346,6 +358,45 @@ describe('LetInDialog', () => {
     expect(
       await screen.findByText('Added. @eve can now see #general and #methods.')
     ).toBeInTheDocument();
+  });
+
+  it('keeps the "Added." line once the next state frame shows the person in the team', async () => {
+    // A fresh joiner: not a member when the code is saved, so the team waits for them.
+    const { update } = renderDirectAdd(withMethods());
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' })).toBeDisabled();
+
+    // They join; the observer's frame names them, and the team control comes alive.
+    const joined = withMethods({
+      principals: [...makeSnapshot().principals, eve],
+      pending_joins: [],
+    });
+    update(joined);
+    expect(await screen.findByText(letInCopy.joined('@eve', 'lab'))).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add @eve to Analysis Lab' }));
+    });
+    const added = 'Added. @eve can now see #general and #methods.';
+    expect(await screen.findByText(added)).toBeInTheDocument();
+
+    // The broker put them in the team, and the next frame (at most 2 s later) says so. The
+    // outcome is what the host needs to read, so it must not go with the team's button (P0-2).
+    const inTeam = () =>
+      withMethods({
+        principals: [...makeSnapshot().principals, eve],
+        pending_joins: [],
+        teams: makeSnapshot().teams.map((team) =>
+          team.id === 'team-1' ? { ...team, members: [...team.members, eve.id] } : team
+        ),
+        methodsMembers: [alice.id, eve.id],
+      });
+    update(inTeam());
+    expect(within(dialog).getByText(added).closest('[role="status"]')).not.toBeNull();
+    expect(within(dialog).getByText(letInCopy.joined('@eve', 'lab'))).toBeInTheDocument();
+    // Nor with any frame after it.
+    update(inTeam());
+    expect(within(dialog).getByText(added)).toBeInTheDocument();
   });
 
   it('keeps Add to team waiting until the person has joined', async () => {

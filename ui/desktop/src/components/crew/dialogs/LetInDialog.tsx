@@ -43,6 +43,13 @@ interface Approval {
   memberBefore: boolean;
   /** Mismatched attempts already counted, so only a NEW one warns. */
   mismatchesBefore: number;
+  /**
+   * The teams the person was already in when this view first knew them as a member — the teams it
+   * does not offer. Fixed at that moment, never re-read: a team this dialog adds them to must keep
+   * its row and the outcome that row says, not vanish on the next state frame because the person
+   * is now in it (QA P0-2 / T-22). `null` until they are a member.
+   */
+  teamsAlreadyIn: ReadonlySet<string> | null;
 }
 
 /**
@@ -97,7 +104,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
 
   const approve = (sent: string, replace: boolean) => {
     setSentCode(sent);
-    const before: Approval = { memberBefore: member !== null, mismatchesBefore: mismatches };
+    const before: Approval = {
+      memberBefore: member !== null,
+      mismatchesBefore: mismatches,
+      teamsAlreadyIn: null,
+    };
     void crew
       .act(SOURCE, APPROVE_KEY, async () => {
         await crew.request(
@@ -145,11 +156,27 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
     const joined = !approval.memberBefore && member !== null;
     const newMismatch = !joined && join !== null && mismatches > approval.mismatchesBefore;
     const directAdd = directAddSupported(crew.capabilities);
+    const memberId = member?.id ?? null;
+    const inTeamsNow =
+      memberId !== null
+        ? new Set(
+            (snapshot?.teams ?? [])
+              .filter((team) => team.members.includes(memberId))
+              .map((team) => team.id)
+          )
+        : null;
+    // Fixed the first time the member id is known, which is before any team control can act (they
+    // all wait for it), so nothing this dialog did can be in the set. Adjusting state during
+    // render, not in an effect, so no frame ever draws the list from live membership.
+    if (inTeamsNow && approval.teamsAlreadyIn === null) {
+      setApproval({ ...approval, teamsAlreadyIn: inTeamsNow });
+    }
+    const alreadyIn = approval.teamsAlreadyIn ?? inTeamsNow;
     const teams = (snapshot?.teams ?? []).filter(
       (team) =>
         // Adding directly, the team's owner or the host may add; inviting, only its creator can.
         (team.created_by === dir.me?.id || (directAdd && dir.viewerIsHost)) &&
-        !(member?.id && team.members.includes(member.id))
+        !alreadyIn?.has(team.id)
     );
     return (
       <ModalShell
@@ -203,7 +230,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                   teamId={team.id}
                   teamLabel={teamName(team)}
                   who={handle}
-                  principalId={member?.id ?? null}
+                  principalId={memberId}
                   username={username}
                   directAdd={directAdd}
                   snapshot={snapshot}
