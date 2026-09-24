@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildPeopleDirectory, joinerPerson } from '../identity';
-import { inviteCopy, letInCopy, nameRuleCopy } from './copy';
+import { inviteCopy, letInCopy, nameRuleCopy, refusalCopy } from './copy';
 import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { makeSnapshot, connection, bob } from './dialogsTestHarness';
 import { enrollmentInviteFrom, legacyTokenFrom, parseJoinRequest } from './joinRequest';
@@ -78,43 +78,83 @@ describe('name rules', () => {
 });
 
 describe('refusals', () => {
+  const TEAM_TAKEN =
+    'name_taken: A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.';
+  const CHANNEL_TAKEN =
+    'name_taken: A channel with this name, or one that looks like it, already exists in this team. Choose a different name.';
+  const envelope = (code: string, message: string) =>
+    `Crew broker refused request: ${JSON.stringify({ code, message })}`;
+
   it('splits the broker’s code from its sentence', () => {
     expect(parseRefusal('forbidden: team owner required')).toEqual({
       code: 'forbidden',
       sentence: 'team owner required',
+      text: 'forbidden: team owner required',
       raw: 'forbidden: team owner required',
     });
     expect(parseRefusal('Plain words.').code).toBeNull();
+  });
+
+  it('removes an older daemon’s envelope before reading the code', () => {
+    const wrapped = envelope('forbidden', 'forbidden: team owner required');
+    expect(parseRefusal(wrapped)).toEqual({
+      code: 'forbidden',
+      sentence: 'team owner required',
+      text: 'forbidden: team owner required',
+      raw: wrapped,
+    });
   });
 
   it('shows a person-written sentence without its code, and anything else verbatim', () => {
     expect(refusalText('name_invalid: Team name can’t be empty.')).toBe(
       'Team name can’t be empty.'
     );
+    expect(refusalText(envelope('name_invalid', 'name_invalid: Team name can’t be empty.'))).toBe(
+      'Team name can’t be empty.'
+    );
     expect(refusalText('forbidden: team owner required')).toBe('forbidden: team owner required');
+    expect(refusalText(envelope('forbidden', 'forbidden: team owner required'))).toBe(
+      'forbidden: team owner required'
+    );
     expect(refusalText('')).toBe('Crew couldn’t complete that action.');
   });
 
   it('words a taken name the same whether or not its holder is visible', () => {
-    expect(nameRefusalText('name_conflict: x', 'team')).toBe(nameRuleCopy.teamTaken);
-    expect(nameRefusalText('name_taken: y', 'channel')).toBe(nameRuleCopy.channelTaken);
-    expect(isNameRefusal('name_conflict: x')).toBe(true);
-    expect(isNameRefusal('name_invalid: x')).toBe(true);
-    expect(isNameRefusal('forbidden: x')).toBe(false);
+    expect(nameRefusalText(TEAM_TAKEN, 'team')).toBe(nameRuleCopy.teamTaken);
+    expect(nameRefusalText(CHANNEL_TAKEN, 'channel')).toBe(nameRuleCopy.channelTaken);
+    expect(nameRefusalText(envelope('name_taken', CHANNEL_TAKEN), 'channel')).toBe(
+      nameRuleCopy.channelTaken
+    );
+    expect(isNameRefusal(TEAM_TAKEN)).toBe(true);
+    expect(isNameRefusal(envelope('name_taken', TEAM_TAKEN))).toBe(true);
+    expect(isNameRefusal('name_invalid: Team name can’t be empty.')).toBe(true);
+    expect(isNameRefusal('forbidden: team owner required')).toBe(false);
   });
 
   it('maps the invite refusals the copy deck words, and nothing it does not recognize', () => {
-    expect(inviteRefusal('unknown_account: no', 'zed', 'lab')).toEqual({
+    expect(
+      inviteRefusal(
+        'unknown_account: There is no account @zed on this server. Check the spelling.',
+        'zed',
+        'lab'
+      )
+    ).toEqual({
       text: inviteCopy.refusal.noAccount('zed'),
       alreadyMember: false,
     });
-    expect(inviteRefusal('already_member: @bob is already a member', 'bob', 'lab')).toEqual({
+    expect(
+      inviteRefusal(
+        'already_member: @bob is already a member. Choose Add device to add another computer for them.',
+        'bob',
+        'lab'
+      )
+    ).toEqual({
       text: inviteCopy.refusal.alreadyMember('bob', 'lab'),
       alreadyMember: true,
     });
     expect(
       inviteRefusal(
-        'identity_ambiguous: @Bob is an alias on this server; invite @bob',
+        'identity_ambiguous: @Bob is an alias on this server. Invite @bob.',
         'Bob',
         'lab'
       ).text
@@ -125,13 +165,27 @@ describe('refusals', () => {
         'bob',
         'lab'
       ).text
-    ).toBe('identity_conflict: another active member is @bob; remove the old @bob first');
+    ).toBe(refusalCopy.identityConflict('bob'));
+    expect(
+      inviteRefusal(
+        'identity_conflict: Another account on this server is already invited as @bob. Cancel that invitation first.',
+        'bob',
+        'lab'
+      ).text
+    ).toBe(
+      'Another account on this server is already invited as @bob. Cancel that invitation first.'
+    );
   });
 
-  it('words a code mismatch at approval', () => {
-    expect(approveRefusalText('code_mismatch: nope', 'Eve')).toBe(letInCopy.mismatch('Eve'));
-    expect(approveRefusalText('forbidden: manager required', 'Eve')).toBe(
-      'forbidden: manager required'
+  it('says a device was already let in at approval', () => {
+    const approved =
+      'already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.';
+    expect(approveRefusalText(approved, 'eve')).toBe(letInCopy.alreadyApproved('eve'));
+    expect(approveRefusalText(envelope('already_approved', approved), 'eve')).toBe(
+      letInCopy.alreadyApproved('eve')
+    );
+    expect(approveRefusalText('forbidden: only a person can invite or admit people', 'eve')).toBe(
+      'forbidden: only a person can invite or admit people'
     );
   });
 });

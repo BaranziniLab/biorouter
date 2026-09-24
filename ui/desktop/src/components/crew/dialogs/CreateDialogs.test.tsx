@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CrewHttpError } from '../crewApi';
 import { createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { CreateTeamDialog } from './CreateTeamDialog';
@@ -20,6 +21,12 @@ vi.mock('../../../toasts', () => toasts);
 installResizeObserverStub();
 
 afterEach(() => vi.clearAllMocks());
+
+/** The broker's literal refusals (`broker.rs`, `TEAM_NAME_TAKEN` and `CHANNEL_NAME_TAKEN`). */
+const TEAM_TAKEN =
+  'name_taken: A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.';
+const CHANNEL_TAKEN =
+  'name_taken: A channel with this name, or one that looks like it, already exists in this team. Choose a different name.';
 
 describe('CreateChannelDialog', () => {
   it('previews the slug the broker will store, with Content visible and Restricted by default', async () => {
@@ -68,7 +75,7 @@ describe('CreateChannelDialog', () => {
   it('shows the S2 refusal on the name, in its exact words', async () => {
     renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />, {
       request: () => {
-        throw new Error('name_conflict: taken');
+        throw new CrewHttpError(CHANNEL_TAKEN, 400, 'crew_request_refused');
       },
     });
     const name = await screen.findByLabelText('Name');
@@ -161,10 +168,16 @@ describe('CreateTeamDialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
-  it('says a taken team name in the S2 wording', async () => {
+  it.each([
+    ['the daemon’s text', TEAM_TAKEN],
+    [
+      'an older daemon’s envelope',
+      `Crew broker refused request: ${JSON.stringify({ code: 'name_taken', message: TEAM_TAKEN })}`,
+    ],
+  ])('says a taken team name in the S2 wording, from %s', async (_from, refusal) => {
     renderWithCrew(<CreateTeamDialog onClose={vi.fn()} />, {
       request: () => {
-        throw new Error('name_conflict: a team with this name exists');
+        throw new CrewHttpError(refusal, 400, 'crew_request_refused');
       },
     });
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Analysis Lab' } });
@@ -172,6 +185,26 @@ describe('CreateTeamDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create team' }));
     });
     expect(await screen.findByText(nameRuleCopy.teamTaken)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Crew broker refused request');
+  });
+
+  it('says a rate limit in the broker’s sentence, not on the name field', async () => {
+    renderWithCrew(<CreateTeamDialog onClose={vi.fn()} />, {
+      request: () => {
+        throw new CrewHttpError(
+          'rate_limited: Too many name attempts. Try again later.',
+          400,
+          'crew_request_refused'
+        );
+      },
+    });
+    const name = await screen.findByLabelText('Name');
+    fireEvent.change(name, { target: { value: 'Analysis Lab' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create team' }));
+    });
+    expect(await screen.findByText('Too many name attempts. Try again later.')).toBeInTheDocument();
+    expect(name).not.toHaveAttribute('aria-invalid', 'true');
   });
 });
 

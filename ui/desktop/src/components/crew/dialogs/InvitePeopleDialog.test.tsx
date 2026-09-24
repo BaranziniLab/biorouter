@@ -22,7 +22,8 @@ function renderInvite(refuse?: string) {
   const view = renderWithCrew(<InvitePeopleDialog onClose={onClose} />, {
     request: (method, params) => {
       if (method !== 'enrollment.invite') return {};
-      if (refuse) throw new Error(refuse);
+      // What the daemon answers a broker refusal with: its text, as `CrewHttpError.message`.
+      if (refuse) throw new CrewHttpError(refuse, 400, 'crew_request_refused');
       if ('uid' in params) return { invitation: 'token-secret-value' };
       return {
         username: 'bob',
@@ -101,19 +102,51 @@ describe('InvitePeopleDialog', () => {
   });
 
   it('offers the account’s exact spelling rather than accepting a near miss', async () => {
-    renderInvite('identity_ambiguous: @Bob is an alias on this server; invite @bob');
+    renderInvite('identity_ambiguous: This server spells the account @bob. Invite @bob.');
     await invite('Bob');
     expect(await screen.findByText(inviteCopy.refusal.canonical('bob'))).toBeInTheDocument();
     expect(screen.getByLabelText('Username')).toHaveAttribute('aria-invalid', 'true');
   });
 
+  it('reads an older daemon’s refusal envelope the same way, and never shows its JSON', async () => {
+    const view = renderInvite(
+      `Crew broker refused request: ${JSON.stringify({
+        code: 'identity_ambiguous',
+        message: 'identity_ambiguous: @Al is an alias on this server. Invite @alice.',
+      })}`
+    );
+    await invite('Al');
+    expect(await screen.findByText(inviteCopy.refusal.canonical('alice'))).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Crew broker refused request');
+    view.unmount();
+
+    renderInvite(
+      `Crew broker refused request: ${JSON.stringify({
+        code: 'identity_conflict',
+        message:
+          'identity_conflict: Another account on this server is already invited as @bob. Cancel that invitation first.',
+      })}`
+    );
+    await invite('Bob');
+    expect(
+      await screen.findByText(
+        'Another account on this server is already invited as @bob. Cancel that invitation first.'
+      )
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('{');
+  });
+
   it('says there is no such account, and offers Add device for an existing member', async () => {
-    const missing = renderInvite('unknown_account: no such user');
+    const missing = renderInvite(
+      'unknown_account: There is no account @zed on this server. Check the spelling.'
+    );
     await invite('zed');
     expect(await screen.findByText(inviteCopy.refusal.noAccount('zed'))).toBeInTheDocument();
     missing.unmount();
 
-    const member = renderInvite('already_member: @bob is already a member; choose Add device');
+    const member = renderInvite(
+      'already_member: @bob is already a member. Choose Add device to add another computer for them.'
+    );
     await invite('bob');
     expect(
       await screen.findByText(inviteCopy.refusal.alreadyMember('bob', 'lab'))

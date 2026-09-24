@@ -160,7 +160,10 @@ export const letInCopy = {
   code: (first: string) => `Code from ${first}`,
   helper: (first: string) => `Paste the code ${first} sends you directly.`,
   submit: (first: string) => `Let ${first} in`,
-  mismatch: (first: string) => `That code doesn’t match. Check it with ${first}.`,
+  /** `already_approved`: a device was let in already. Same words as the CLI (`enroll approve`). */
+  alreadyApproved: (username: string) => `You already let a device in for @${username}.`,
+  replaceHelp: 'Replace the code only if they sent you a new one.',
+  replace: 'Replace code',
   approved: (first: string) => `Approved. ${first} joins as soon as their Crew checks in.`,
   addToTeam: (first: string, team: string) => `Add ${first} to ${team}`,
   addedToTeam: (first: string, team: string) => `Invited ${first} to ${team}`,
@@ -365,6 +368,30 @@ export const confirmCopy = {
     confirm: 'Stop task',
     cancel: 'Keep running',
   },
+} as const;
+
+/**
+ * Broker refusals whose own text is written for a program rather than a person, in words for a
+ * person (`refusals.ts`). The CLI prints the same sentences (`commands/crew/output.rs`,
+ * `broker_refusal_text`), so they avoid apostrophes and stay byte-identical across the two.
+ */
+export const refusalCopy = {
+  /** `identity_conflict: another active member is @x; remove the old @x first`. */
+  identityConflict: (username: string | null) =>
+    username
+      ? `Another active member is already @${username}. Remove the old @${username} first.`
+      : 'Another active member already has this username. Remove the old member first.',
+  /** `device_conflict: this device key is already enrolled in this workspace; …`. */
+  deviceConflict:
+    'This device key is already enrolled in this workspace. Join with a new device key.',
+  /** `identity_mismatch: enrollment principal changed; …` and `UID account name changed; …`. */
+  identityMismatch:
+    'This server account no longer matches the member it joined as. Remove the old member first, then invite them again.',
+  /** `quota_exceeded: journal exceeds …` and `quota_exceeded: workspace logical state exceeds …`. */
+  storageFull:
+    'This workspace has grown past the size Crew supports and cannot take more changes. Ask the host about starting a new workspace.',
+  /** `rate_limited: too many live challenges`. */
+  tooManyAttempts: 'Too many attempts at once. Wait a minute, then try again.',
 } as const;
 
 export const dialogErrorCopy = {

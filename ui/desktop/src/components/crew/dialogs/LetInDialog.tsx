@@ -9,9 +9,9 @@ import type { ErrorSource } from '../state/types';
 import { letInCopy as copy, workspaceSettingsCopy } from './copy';
 import { DeviceCodeInput } from './DeviceCodeInput';
 import { deviceCodeProblem } from './deviceCode';
-import { DialogErrorNote, Field, helpId, useDismissOwnError } from './fields';
+import { DialogErrorNote, Field, helpId, useDialogError, useDismissOwnError } from './fields';
 import { firstName } from './people';
-import { approveRefusalText } from './refusals';
+import { approveRefusalText, isAlreadyApproved } from './refusals';
 import { useDialogView } from './workspace';
 
 const SOURCE: ErrorSource = 'dialog:let-in';
@@ -33,6 +33,9 @@ export interface LetInDialogProps {
  *   the field holds only what the host typed or pasted.
  * - When a device with a different code has already tried to join as this person, that warning is
  *   shown before the field, so the host checks with the person before pasting anything.
+ * - When a device was already let in for this person (`already_approved`), the dialog says so and
+ *   offers **Replace code**, which sends the same `{username, code}` again with `replace: true`, as
+ *   `biorouter crew enroll approve --replace` does. Nothing replaces an approval unasked.
  * - Success offers one click per team the host created: **Add {first} to {team}**, available once
  *   the person has joined, since a team invitation names a member.
  */
@@ -43,6 +46,8 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const [code, setCode] = React.useState('');
   const [attempted, setAttempted] = React.useState(false);
   const [approved, setApproved] = React.useState(false);
+  // The code the last approval sent, so Replace code re-sends exactly that code and no other.
+  const [sentCode, setSentCode] = React.useState<string | null>(null);
   const join = snapshot?.pending_joins?.find((item) => item.username === username) ?? null;
   const person = joinerPerson(username, join?.full_name);
   // Once the person is a member (or is adding a device), the directory knows their chosen name.
@@ -53,6 +58,30 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const problem = code ? deviceCodeProblem(code) : null;
   const showProblem = attempted && problem !== null;
   const mismatched = (join?.mismatched_attempts ?? 0) > 0;
+  const error = useDialogError(SOURCE);
+  // Offered only while the dialog shows `already_approved` for the code it just sent.
+  const replaceCode =
+    sentCode !== null && error !== null && isAlreadyApproved(error) ? sentCode : null;
+
+  const approve = (sent: string, replace: boolean) => {
+    setSentCode(sent);
+    void crew
+      .act(SOURCE, APPROVE_KEY, async () => {
+        await crew.request(
+          'enrollment.approve',
+          replace ? { username, code: sent, replace: true } : { username, code: sent },
+          { mutation: true }
+        );
+        return true as const;
+      })
+      .then((done) => {
+        if (done !== true) return;
+        // The code has done its job; drop it rather than keep it on screen.
+        setCode('');
+        setSentCode(null);
+        setApproved(true);
+      });
+  };
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -60,17 +89,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
       setAttempted(true);
       return;
     }
-    void crew
-      .act(SOURCE, APPROVE_KEY, async () => {
-        await crew.request('enrollment.approve', { username, code }, { mutation: true });
-        return true as const;
-      })
-      .then((done) => {
-        if (done !== true) return;
-        // The code has done its job; drop it rather than keep it on screen.
-        setCode('');
-        setApproved(true);
-      });
+    approve(code, false);
   };
 
   const title = (
@@ -182,7 +201,24 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             }}
           />
         </Field>
-        <DialogErrorNote source={SOURCE} render={(message) => approveRefusalText(message, first)} />
+        <DialogErrorNote
+          source={SOURCE}
+          render={(message) => approveRefusalText(message, username)}
+        />
+        {replaceCode !== null ? (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-supporting text-text-muted">{copy.replaceHelp}</p>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={approving}
+              onClick={() => approve(replaceCode, true)}
+            >
+              {copy.replace}
+            </Button>
+          </div>
+        ) : null}
       </form>
     </ModalShell>
   );
