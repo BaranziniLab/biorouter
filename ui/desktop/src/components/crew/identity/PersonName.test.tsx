@@ -138,7 +138,52 @@ describe('PersonName, inline', () => {
   });
 });
 
+/**
+ * What a person SEES: the rendered text without the parentheses an authority
+ * point keeps in its text at zero size.
+ */
+function drawnText(element: Element): string {
+  const copy = element.cloneNode(true) as Element;
+  copy.querySelectorAll('[data-person-part="paren"]').forEach((paren) => paren.remove());
+  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
 describe('PersonName, authority', () => {
+  /**
+   * Q2-70: member lists and pickers (authority) read "Carol Nguyen
+   * (@crew_carol)" while the People tab and message heads (header) read "Carol
+   * Nguyen @crew_carol". An authority point now DRAWS the header's form, and its
+   * text — what a row-named checkbox, a screen reader and a copy read — keeps
+   * the parentheses `personLabel` gives.
+   */
+  it('draws the display name, then @username as its own muted element, with no visible parentheses', () => {
+    const { container } = render(<PersonName person={ID.bob} dir={dir} context="authority" />);
+    expect(drawnText(root(container))).toBe('Bob Lee @bob');
+    const name = screen.getByText('Bob Lee');
+    expect(name.tagName).toBe('BDI');
+    expect(name).toHaveAttribute('data-person-part', 'display-name');
+    const handle = screen.getByText('@bob');
+    expect(handle.tagName).toBe('BDI');
+    expect(handle).toHaveAttribute('data-person-part', 'username');
+    expect(handle).toHaveClass('text-supporting', 'text-text-muted');
+    expect(handle.closest('[data-person-part="name"]')).toBeNull();
+    // Every parenthesis is a zero-size run, and nothing else is.
+    const parens = Array.from(container.querySelectorAll('[data-person-part="paren"]'));
+    expect(parens.map((paren) => paren.textContent)).toEqual(['(', ')']);
+    for (const paren of parens) expect((paren as HTMLElement).style.fontSize).toBe('0px');
+  });
+
+  it('keeps "Name (@username)" as its text, and as the name of a control it labels', () => {
+    const { container } = render(
+      <label>
+        <input type="checkbox" />
+        <PersonName person={ID.bob} dir={dir} context="authority" />
+      </label>
+    );
+    expect(root(container).textContent).toBe(personLabel(ID.bob, 'authority', dir));
+    expect(screen.getByRole('checkbox', { name: 'Bob Lee (@bob)' })).toBeInTheDocument();
+  });
+
   it('shows both names, and @username once when the names are equal', () => {
     const { container, rerender } = render(
       <PersonName person={ID.bob} dir={dir} context="authority" />
@@ -148,6 +193,7 @@ describe('PersonName, authority', () => {
     expect(root(container)).toHaveTextContent(/^@carol$/);
     expect(screen.getByText('@carol')).toHaveAttribute('data-person-part', 'username');
     expect(screen.queryByText('Carol')).toBeNull();
+    expect(container.querySelector('[data-person-part="paren"]')).toBeNull();
   });
 
   /**
@@ -164,6 +210,7 @@ describe('PersonName, authority', () => {
         );
         const handle = container.querySelector('[data-person-part="username"]');
         expect(handle).toHaveTextContent(new RegExp(`^@${username}$`));
+        expect(drawnText(root(container))).toContain(`@${username}`);
         expect(personLabel(id, 'authority', dir, options)).toContain(`@${username}`);
         unmount();
       }
@@ -174,7 +221,67 @@ describe('PersonName, authority', () => {
     const { container } = render(
       <PersonName person={ID.alice} dir={dir} context="authority" agent you />
     );
-    expect(root(container)).toHaveTextContent("Alice Chen (@alice)'s agent");
+    expect(drawnText(root(container))).toBe("Alice Chen's agent @alice");
+    expect(root(container)).toHaveTextContent(/^Alice Chen's agent \(@alice\)$/);
+    expect(screen.getByText('@alice')).toHaveClass('text-text-muted');
+    expect(agentLabel(ID.alice, 'authority', dir, { you: true })).toBe(
+      "Alice Chen (@alice)'s agent"
+    );
+  });
+
+  it('spells the handle out beside a colliding name, and after a former member’s name', () => {
+    const { container, rerender } = render(
+      <PersonName person={ID.spark} dir={dir} context="authority" />
+    );
+    expect(drawnText(root(container))).toBe('Sam Park @spark');
+    expect(root(container)).toHaveTextContent(/^Sam Park \(@spark\)$/);
+    rerender(<PersonName person={ID.dan} dir={dir} context="authority" />);
+    expect(drawnText(root(container))).toBe('Dan Wu @dan · former member');
+    expect(root(container).textContent).toBe(personLabel(ID.dan, 'authority', dir));
+    rerender(<PersonName person={ID.alice} dir={dir} context="authority" you />);
+    expect(drawnText(root(container))).toBe('Alice Chen @alice · you');
+    expect(root(container).textContent).toBe(
+      personLabel(ID.alice, 'authority', dir, { you: true })
+    );
+  });
+
+  /**
+   * One person, one form, in every list: the Members tab and the pickers
+   * (authority) draw exactly what the People tab and a message head (header)
+   * draw — the same parts, the same muted handle — for every person and
+   * option. Only the header's own type size on the name differs.
+   */
+  it('draws what the header draws, for every person and option', () => {
+    const shape = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('[data-person-part]'))
+        .filter((part) => part.getAttribute('data-person-part') !== 'paren')
+        .map((part) => [
+          part.getAttribute('data-person-part'),
+          drawnText(part),
+          part.getAttribute('data-person-part') === 'username' ? part.className : '',
+        ]);
+    for (const id of [ID.alice, ID.bob, ID.carol, ID.spark, ID.sara, ID.dan]) {
+      for (const options of [{}, { agent: true }, { you: true }]) {
+        const authority = render(
+          <PersonName person={id} dir={dir} context="authority" {...options} />
+        );
+        const header = render(<PersonName person={id} dir={dir} context="header" {...options} />);
+        expect(drawnText(root(authority.container))).toBe(drawnText(root(header.container)));
+        expect(shape(authority.container)).toEqual(shape(header.container));
+        authority.unmount();
+        header.unmount();
+      }
+    }
+  });
+
+  it('keeps zero-size parentheses to the authority point', () => {
+    for (const context of ['header', 'inline', 'chip'] as const) {
+      const { container, unmount } = render(
+        <PersonName person={ID.spark} dir={dir} context={context} tooltip={false} />
+      );
+      expect(container.querySelector('[data-person-part="paren"]')).toBeNull();
+      unmount();
+    }
   });
 });
 

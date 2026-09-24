@@ -18,6 +18,24 @@ export interface PersonNameProps extends PersonLabelOptions {
 }
 
 /**
+ * A parenthesis that stays in the text but takes no space on screen. It is an
+ * inline run at `font-size: 0`, not `.sr-only`, and that is measured, not
+ * taste: `.sr-only` is `position: absolute`, which makes each paren its own box,
+ * and Chromium then joins a name computed from contents with spaces — a
+ * checkbox labelled by the row read "Bob Lee ( @bob )". An inline zero-size run
+ * reads "Bob Lee (@bob)" there, and as `textContent` and a copied selection.
+ * An inline style, because a newly written utility class can fail to generate
+ * (CLAUDE.md, "Desktop shell geometry").
+ */
+function HiddenParen({ paren }: { paren: '(' | ')' }) {
+  return (
+    <span data-person-part="paren" style={{ fontSize: 0 }}>
+      {paren}
+    </span>
+  );
+}
+
+/**
  * The one component that renders a person (ui-redesign-spec, "Identity and
  * naming display rules"). No other code formats a person; for a string (an
  * `aria-label`, a confirmation title, a toast) use `personLabel`, which makes
@@ -32,6 +50,16 @@ export interface PersonNameProps extends PersonLabelOptions {
  *   `bob (@bob)`, and never `bobad.ucsf.edu (@bob@ad.ucsf.edu)`.
  * - An unknown principal is "Unknown member"; an ID is never rendered.
  * - A former member is muted and followed by " · former member".
+ * - An authority point (`authority`) is DRAWN the way a member row is: the
+ *   display name, then `@username` as its own muted element, with no visible
+ *   parentheses — "Carol Nguyen @crew_carol" — so one person reads one way in
+ *   every list (Q2-70; naming-design: "people list, member rows"). What an
+ *   authority point owes is that `@username` is always shown in full, and it
+ *   is. Its TEXT keeps "Carol Nguyen (@crew_carol)", the string
+ *   `personLabel(…, 'authority')` gives: the parentheses are still in the
+ *   tree, drawn at zero size (see `HiddenParen`), so a checkbox or row named
+ *   by its contents, a screen reader and a copied selection all read the
+ *   canonical form.
  */
 export function PersonName({
   person,
@@ -76,6 +104,11 @@ export function PersonName({
     );
   }
 
+  // An authority point's `Name (@user)` is drawn as the header's muted handle,
+  // its parentheses kept in the text at zero size (see the rule above).
+  const drawnParen = context === 'authority' && layout.handlePlacement === 'paren';
+  const placement = drawnParen ? 'secondary' : layout.handlePlacement;
+
   const handle = (secondary: boolean) => (
     <bdi
       className={secondary ? 'text-supporting text-text-muted' : undefined}
@@ -98,7 +131,7 @@ export function PersonName({
   const nameGroup = (
     <span className={context === 'header' ? 'text-label' : undefined} data-person-part="name">
       {lead}
-      {layout.handlePlacement === 'paren' && <> ({handle(false)})</>}
+      {placement === 'paren' && <> ({handle(false)})</>}
       {layout.agentOf && identityCopy.agentSuffix}
     </span>
   );
@@ -110,8 +143,18 @@ export function PersonName({
       data-person-state={layout.former ? 'former' : 'active'}
     >
       {nameGroup}
-      {layout.handlePlacement === 'secondary' && <> {handle(true)}</>}
-      {layout.handlePlacement === 'tooltip' && (
+      {placement === 'secondary' &&
+        (drawnParen ? (
+          <>
+            {' '}
+            <HiddenParen paren="(" />
+            {handle(true)}
+            <HiddenParen paren=")" />
+          </>
+        ) : (
+          <> {handle(true)}</>
+        ))}
+      {placement === 'tooltip' && (
         <span className="sr-only">
           {' ('}
           {handle(false)}
@@ -135,7 +178,7 @@ export function PersonName({
     </span>
   );
 
-  if (layout.handlePlacement !== 'tooltip' || !tooltip) return body;
+  if (placement !== 'tooltip' || !tooltip) return body;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{body}</TooltipTrigger>
