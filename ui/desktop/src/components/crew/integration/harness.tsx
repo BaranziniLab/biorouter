@@ -7,7 +7,9 @@
  * The calling test file must mock, at its own top level (vi.mock is hoisted per file):
  *
  *   vi.mock('../crewApi', …)          crewHttp, crewRequest and observeCrew as vi.fn()s
- *   vi.mock('../../ConfigContext', …) useConfig for the model picker (keep the actual rest)
+ *   vi.mock('../../ConfigContext', …) useConfig for the model picker (keep the actual rest), with
+ *                                     callbacks that stay the same across renders (`vi.hoisted`),
+ *                                     as the real context's do; new ones each render never settle
  *   vi.mock('../CrewAuthentication')  the SSH terminal
  *
  * and call `installResizeObserverStub()`. This module then drives those mocks through the same

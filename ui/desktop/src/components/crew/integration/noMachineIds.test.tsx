@@ -16,16 +16,15 @@ vi.mock('../crewApi', async () => {
   const actual = await vi.importActual<typeof import('../crewApi')>('../crewApi');
   return { ...actual, crewHttp: vi.fn(), crewRequest: vi.fn(), observeCrew: vi.fn() };
 });
+// Stable across renders, as the real context's callbacks are.
+const config = vi.hoisted(() => ({
+  getProviders: async () => [],
+  read: async () => '',
+  getProviderModels: async () => [],
+}));
 vi.mock('../../ConfigContext', async () => {
   const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
-  return {
-    ...actual,
-    useConfig: () => ({
-      getProviders: async () => [],
-      read: async () => '',
-      getProviderModels: async () => [],
-    }),
-  };
+  return { ...actual, useConfig: () => config };
 });
 vi.mock('../CrewAuthentication', () => ({ default: () => <div /> }));
 
