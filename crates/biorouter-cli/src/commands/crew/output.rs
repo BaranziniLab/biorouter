@@ -382,6 +382,16 @@ impl Directory {
         directory
     }
 
+    /// A channel's `#name` for a sentence, or "a channel" when this directory can't name it
+    /// (never its ID).
+    pub fn channel_label(&self, id: &str) -> String {
+        self.channels
+            .get(id)
+            .and_then(|channel| channel.name.as_deref())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| "a channel".to_owned(), channel_name)
+    }
+
     /// Learn names from any daemon or broker value: a workspace snapshot, a message page's
     /// `people` and `channel_names` maps, or a bare list of principals, teams or channels.
     pub fn absorb(&mut self, value: &Value) {

@@ -528,11 +528,19 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         CrewCommand::Join(args) => join(api, args).await?,
         CrewCommand::Workspace(command) => workspace(api, command).await?,
         CrewCommand::Enroll(command) => enrollment(api, command).await?,
-        CrewCommand::Members => {
+        CrewCommand::Members(MembersArgs { command: None }) => {
             let snapshot = api.snapshot().await?;
             let people = snapshot_field(&snapshot, "principals")?;
             api.show_with(people, Directory::from_snapshot(&snapshot))
         }
+        CrewCommand::Members(MembersArgs {
+            command:
+                Some(MembersCommand::Add {
+                    person,
+                    team,
+                    channels,
+                }),
+        }) => add_member(api, &person, team.as_deref(), &channels).await?,
         CrewCommand::Teams(command) => teams(api, command).await?,
         CrewCommand::Channels(command) => channels(api, command).await?,
         CrewCommand::Invites(command) => invitations(api, command).await?,
@@ -730,6 +738,20 @@ impl Api {
             params["idempotency_key"] = json!(self.request_id);
         }
         let body = json!({"method":method,"params":params,"request_id":if mutation {Some(&self.request_id)} else {None}});
+        self.connection_action("request", body).await
+    }
+
+    /// Step `step` of a command that makes several mutations: each gets its own idempotency
+    /// key derived from the one request ID, so a retry with `--request-id` replays every step
+    /// that already landed instead of colliding with the first. Step 0 is [`Self::broker`].
+    async fn broker_step(&self, method: &str, mut params: Value, step: usize) -> Result<Value> {
+        if step == 0 {
+            return self.broker(method, params, true).await;
+        }
+        add_personal_mode(method, &mut params, self.expected_mode);
+        let key = format!("{}:{step}", self.request_id);
+        params["idempotency_key"] = json!(key);
+        let body = json!({"method":method,"params":params,"request_id":key});
         self.connection_action("request", body).await
     }
 
@@ -1184,6 +1206,20 @@ fn invitation_summary(preview: &Value) -> Vec<String> {
     }
     let choice = privacy_badge(field("mode"), field("institution_id"));
     lines.push(format!("  You'll join as {choice}."));
+    if let (Some(workspace_institution), Some(chosen)) =
+        (field("workspace_institution_id"), field("institution_id"))
+    {
+        if workspace_institution != chosen {
+            lines.push(format!(
+                "  {workspace} uses {}; you chose {}.",
+                safe_text(workspace_institution),
+                safe_text(chosen)
+            ));
+        }
+    }
+    if let Some(conflict) = field("institution_conflict") {
+        lines.push(format!("  {}", safe_text(conflict)));
+    }
     if preview["mode_differs"].as_bool() == Some(true) {
         lines.push(format!(
             "  {workspace} is {workspace_privacy}. Your connection will be {choice}."
@@ -1226,6 +1262,8 @@ fn missing_choices(preview: &Value) -> Vec<&'static str> {
 async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
     let path = api.path("/join").await?;
     let mut shown: Option<(String, Option<String>)> = None;
+    // Whether the status is being read again right after a claim was refused.
+    let mut rechecking = false;
     loop {
         let status = join_status(api, &path).await?;
         let state = status["status"].as_str().unwrap_or_default().to_owned();
@@ -1237,12 +1275,20 @@ async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
                 return Ok(Reply::Streamed);
             }
             "approved" => {
+                // Claim first and speak after (T-13): "approved" only means the host saved a
+                // code, and a claim refused because it isn't this computer's must never have
+                // been announced as "Joining…". The status the refusal leaves (usually
+                // `code_mismatch`) is read once more, straight away, and that is what is said.
+                if !rechecking {
+                    if let Some(joined) = claim(api, &path).await? {
+                        api.stream(&joined, &joined_lines(&joined))?;
+                        return Ok(Reply::Streamed);
+                    }
+                    rechecking = true;
+                    continue;
+                }
                 if changed {
                     api.stream(&status, &join_lines(&status, !args.no_wait))?;
-                }
-                if let Some(joined) = claim(api, &path).await? {
-                    api.stream(&joined, &joined_lines(&joined))?;
-                    return Ok(Reply::Streamed);
                 }
             }
             "invited" | "code_mismatch" | "not_invited" => {
@@ -1272,6 +1318,7 @@ async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
                 "Biorouter reported a join status this version of the command doesn't know. Update Biorouter and try again."
             ),
         }
+        rechecking = false;
         if args.no_wait {
             return Ok(Reply::Streamed);
         }
@@ -1360,7 +1407,10 @@ fn join_lines(status: &Value, waiting: bool) -> Vec<String> {
             "You're not in {workspace} yet. Ask {} to invite your account on the server.",
             person.as_deref().unwrap_or("the host")
         )],
-        Some("approved") => vec![format!("Joining {workspace}…")],
+        Some("approved") if waiting => vec![format!("Joining {workspace}…")],
+        Some("approved") => vec![format!(
+            "{first} saved a code for you, but this computer hasn't joined {workspace} yet. Run biorouter crew join to finish."
+        )],
         _ => Vec::new(),
     };
     if waiting && matches!(status["status"].as_str(), Some("invited" | "code_mismatch")) {
@@ -1445,7 +1495,7 @@ async fn enrollment(api: &Api, command: EnrollmentCommand) -> Result<Reply> {
             api.say(
                 result,
                 vec![format!(
-                    "Approved. @{} joins as soon as their Crew checks in.",
+                    "Code saved. @{} joins when their computer confirms the same code.",
                     safe_text(&who)
                 )],
             )
@@ -1580,7 +1630,7 @@ fn pending_lines(joins: &Value, now: i64) -> Vec<String> {
             row.push_str(" · another computer");
         }
         row.push_str(if join["approved"].as_bool() == Some(true) {
-            " · approved; joins when their Crew checks in"
+            " · code saved; joins when their computer confirms the same code"
         } else {
             " · waiting for their code"
         });
@@ -1594,7 +1644,7 @@ fn pending_lines(joins: &Value, now: i64) -> Vec<String> {
         lines.push(row);
         if join["mismatched_attempts"].as_u64().is_some_and(|n| n > 0) {
             lines.push(format!(
-                "    A device with a different code tried to join as @{username}."
+                "    A computer trying to join as @{username} showed a different code. Check the code @{username} sent you; if you typed it wrong, run enroll approve again with --replace. Don't approve a code you didn't get from @{username}."
             ));
         }
     }
@@ -2115,6 +2165,176 @@ async fn ownership(api: &Api, command: OwnershipCommand) -> Result<Reply> {
             )
         }
     })
+}
+
+/// A channel selector confined to `team` when both are given by name: `methods` with `--team
+/// Lab` is `Lab/methods`, so a same-named channel of another team is never chosen. A qualified
+/// selector, or either one given as an ID, is kept as it is (the broker refuses a channel
+/// outside the team anyway).
+fn channel_in_team(team: Option<&str>, channel: &str) -> String {
+    match team.map(str::trim) {
+        Some(team)
+            if !team.is_empty()
+                && !team.contains('/')
+                && !channel.contains('/')
+                && Kind::Team.literal_id(team).is_none()
+                && Kind::Channel.literal_id(channel).is_none() =>
+        {
+            format!("{team}/{}", channel.trim())
+        }
+        _ => channel.to_owned(),
+    }
+}
+
+/// `#general`, `#general and #methods`, `#a, #b and #c`.
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// `members add @bob --team T [--channel C …]` and `members add @bob --channel C …`: direct add
+/// (`team.add_member` and `channel.add_member`, the broker's `direct_add_v1`). The person
+/// already joined the workspace, so nothing waits for them to accept; the broker checks that
+/// the caller owns the team (or channel) or hosts the workspace, and that `@bob` is still the
+/// member who was named.
+async fn add_member(
+    api: &Api,
+    person: &str,
+    team: Option<&str>,
+    channels: &[String],
+) -> Result<Reply> {
+    ensure!(
+        team.is_some() || !channels.is_empty(),
+        "Choose where to add them: --team for a team you own, or --channel for a channel you own."
+    );
+    let mut selectors = vec![(Kind::Person, person.to_owned())];
+    if let Some(team) = team {
+        selectors.push((Kind::Team, team.to_owned()));
+    }
+    selectors.extend(
+        channels
+            .iter()
+            .map(|channel| (Kind::Channel, channel_in_team(team, channel))),
+    );
+    let borrowed: Vec<(Kind, &str)> = selectors
+        .iter()
+        .map(|(kind, text)| (*kind, text.as_str()))
+        .collect();
+    let targets = api.resolve(&borrowed).await?;
+    let who = &targets[0];
+    let username = match &who.username {
+        Some(username) => username.clone(),
+        None => {
+            // An ID given as it is was never looked up: the broker needs the username the
+            // person is known by, so it is read from the workspace, never guessed.
+            let snapshot = api.snapshot().await?;
+            snapshot["principals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|principal| principal["id"].as_str() == Some(who.id.as_str()))
+                .and_then(|principal| principal["username"].as_str())
+                .map(str::to_owned)
+                .context(
+                    "Name the person as @username; that ID isn't a member of this workspace.",
+                )?
+        }
+    };
+    let handle = format!("@{}", safe_text(&username));
+    let unsupported = |error: anyhow::Error| {
+        if error_code(&error).as_deref() == Some("unsupported")
+            || format!("{error:#}").contains("unsupported: operation is not supported")
+        {
+            error.context(format!(
+                "This workspace's server can't add people directly yet. Invite them instead: biorouter crew invites create {handle} --team <team>"
+            ))
+        } else {
+            error
+        }
+    };
+    let (result, added) = if team.is_some() {
+        let team_target = &targets[1];
+        let channel_ids: Vec<&str> = targets[2..].iter().map(|c| c.id.as_str()).collect();
+        let result = api
+            .broker(
+                "team.add_member",
+                json!({
+                    "team_id": team_target.id,
+                    "principal_id": who.id,
+                    "expected_username": username,
+                    "channel_ids": channel_ids,
+                }),
+                true,
+            )
+            .await
+            .map_err(unsupported)?;
+        let added: Vec<String> = result["added_channels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        (result, added)
+    } else {
+        let mut results = Vec::new();
+        let mut added = Vec::new();
+        for (step, channel) in targets[1..].iter().enumerate() {
+            let result = api
+                .broker_step(
+                    "channel.add_member",
+                    json!({
+                        "channel_id": channel.id,
+                        "principal_id": who.id,
+                        "expected_username": username,
+                    }),
+                    step,
+                )
+                .await
+                .map_err(unsupported);
+            let result = match result {
+                Ok(result) => result,
+                Err(error) if !added.is_empty() => {
+                    return Err(error.context(format!(
+                        "{handle} was added to some of the channels before this one failed; run the same command again with --request-id {} to finish.",
+                        api.request_id
+                    )))
+                }
+                Err(error) => return Err(error),
+            };
+            if result["already_member"].as_bool() == Some(false) {
+                added.push(channel.id.clone());
+            }
+            results.push(result);
+        }
+        (Value::Array(results), added)
+    };
+    let lines = if api.text() {
+        let names = api.names().await;
+        let label = |id: &str| {
+            let known = names.channel_label(id);
+            if known.starts_with('#') {
+                return known;
+            }
+            targets[1..]
+                .iter()
+                .find(|target| target.id == id)
+                .and_then(|target| target.label.as_deref())
+                .map_or(known, name_text)
+        };
+        if added.is_empty() {
+            vec![format!("{handle} is already in everything you chose.")]
+        } else {
+            let seen: Vec<String> = added.iter().map(|id| label(id)).collect();
+            vec![format!("Added. {handle} can now see {}.", and_list(&seen))]
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(api.say(result, lines))
 }
 
 async fn remove_member(api: &Api, channel: &str, member: &str, former: bool) -> Result<Reply> {
@@ -2701,7 +2921,10 @@ mod tests {
             ("person", "Bob") => {
                 json!({"status": "unknown_name", "kind": kind, "text": text, "did_you_mean": "@bob"})
             }
-            ("channel", "methods" | "analysis-lab/methods") => resolved(METHODS, "#methods", None),
+            ("channel", "methods" | "analysis-lab/methods" | "Analysis Lab/#methods") => {
+                resolved(METHODS, "#methods", None)
+            }
+            ("channel", "analysis-lab/general") => resolved(GENERAL, "#general", None),
             ("channel", "general") => json!({
                 "status": "ambiguous_name", "kind": kind, "text": text,
                 "candidates": ["Analysis Lab / #general", "Methods Team / #general"]
@@ -3618,6 +3841,228 @@ mod tests {
         );
     }
 
+    /// T-13: a host who saves a code is told only that: the broker can't compare it with the
+    /// joiner's until their computer claims, so "Approved." promised too much.
+    #[tokio::test]
+    async fn approving_says_the_code_is_saved_not_that_they_joined() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("enrollment.approve") => Ok(json!({"approved": true, "username": "bob"})),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Enroll(EnrollmentCommand::Approve {
+                    person: "@bob".into(),
+                    code: "7QK2-M9XA-3JTP-WZ4D".into(),
+                    replace: false,
+                }),
+            )
+            .await
+            .expect("approved"),
+        );
+        assert_eq!(
+            lines,
+            ["Code saved. @bob joins when their computer confirms the same code."]
+        );
+    }
+
+    /// T-13/T-14: `join --no-wait` claims as soon as the host saved a code, and when the claim
+    /// is refused it reads the status again and reports that (the code doesn't match), never
+    /// "Joining…". No second claim is made in the same run.
+    #[tokio::test]
+    async fn join_no_wait_reports_a_refused_code_and_never_says_joining() {
+        let statuses = Mutex::new(vec![
+            json!({"status": "code_mismatch", "code": "7QK2-M9XA-3JTP-WZ4D", "workspace_name": "lab",
+                   "inviter": {"username": "alice", "display_name": "Alice Chen"}}),
+            json!({"status": "approved", "code": "7QK2-M9XA-3JTP-WZ4D", "workspace_name": "lab",
+                   "inviter": {"username": "alice", "display_name": "Alice Chen"}}),
+        ]);
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match (method, path.ends_with("/join")) {
+                ("GET", true) => Ok(statuses.lock().expect("statuses").pop().expect("a status")),
+                ("POST", true) => Err(refuse(
+                    409,
+                    Some("crew_join_code_mismatch"),
+                    "The host hasn't let this device in.",
+                )),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::StreamJson, handler);
+        run(&api, CrewCommand::Join(JoinArgs { no_wait: true }))
+            .await
+            .expect("a refused code is a status, not an error");
+        let joins: Vec<&str> = fake
+            .sent()
+            .iter()
+            .filter(|sent| sent.path.ends_with("/join"))
+            .map(|sent| {
+                if sent.method == "GET" {
+                    "status"
+                } else {
+                    "claim"
+                }
+            })
+            .collect();
+        assert_eq!(joins, ["status", "claim", "status"]);
+
+        // What a status still reading `approved` says when the command is not waiting.
+        let approved = json!({"status": "approved", "workspace_name": "lab",
+                              "inviter": {"username": "alice", "display_name": "Alice Chen"}});
+        let lines = join_lines(&approved, false);
+        assert!(
+            lines.iter().all(|line| !line.contains("Joining")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines,
+            ["Alice saved a code for you, but this computer hasn't joined lab yet. Run biorouter crew join to finish."]
+        );
+        assert_eq!(join_lines(&approved, true), ["Joining lab…"]);
+    }
+
+    fn add_member_command(team: Option<&str>, channels: &[&str]) -> CrewCommand {
+        CrewCommand::Members(MembersArgs {
+            command: Some(MembersCommand::Add {
+                person: "@bob".into(),
+                team: team.map(str::to_owned),
+                channels: channels.iter().map(|c| (*c).to_owned()).collect(),
+            }),
+        })
+    }
+
+    /// Direct add: `members add @bob --team T --channel C` sends one `team.add_member` with the
+    /// confirmed username and the team's channel, the channel confined to that team, and says
+    /// what Bob can now see.
+    #[tokio::test]
+    async fn members_add_puts_a_member_straight_into_a_team_and_its_channels() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("team.add_member") => Ok(json!({
+                    "team_id": TEAM, "principal_id": BOB,
+                    "added_channels": [GENERAL, METHODS], "already_member": false
+                })),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                add_member_command(Some("Analysis Lab"), &["#methods"]),
+            )
+            .await
+            .expect("added"),
+        );
+        assert_eq!(
+            fake.broker_call("team.add_member")
+                .expect("team.add_member"),
+            json!({"team_id": TEAM, "principal_id": BOB, "expected_username": "bob",
+                   "channel_ids": [METHODS], "idempotency_key": "req-1"})
+        );
+        assert_eq!(lines, ["Added. @bob can now see #general and #methods."]);
+        let selectors = &fake.resolve_bodies()[0]["selectors"];
+        assert!(
+            selectors
+                .as_array()
+                .unwrap()
+                .contains(&json!({"kind": "channel", "text": "Analysis Lab/#methods"})),
+            "{selectors}"
+        );
+
+        // Already in everything: a success that says so.
+        let already = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("team.add_member") => Ok(json!({
+                    "team_id": TEAM, "principal_id": BOB, "added_channels": [], "already_member": true
+                })),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, already);
+        let lines = said(
+            run(&api, add_member_command(Some("Analysis Lab"), &[]))
+                .await
+                .expect("a no-op add"),
+        );
+        assert_eq!(lines, ["@bob is already in everything you chose."]);
+    }
+
+    /// Without `--team`, each channel is its own `channel.add_member`, each with its own
+    /// idempotency key derived from the one request ID, so a retry replays them all.
+    #[tokio::test]
+    async fn members_add_to_channels_gives_each_step_its_own_retry_key() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            let body_value = body.cloned().unwrap_or_default();
+            match body_value["method"].as_str() {
+                Some("channel.add_member") => Ok(json!({
+                    "channel_id": body_value["params"]["channel_id"],
+                    "principal_id": BOB,
+                    "already_member": body_value["params"]["channel_id"] == GENERAL,
+                })),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                add_member_command(None, &["#methods", "analysis-lab/general"]),
+            )
+            .await
+            .expect("added"),
+        );
+        let calls: Vec<Value> = fake
+            .sent()
+            .into_iter()
+            .filter(|sent| sent.path.ends_with("/request"))
+            .filter_map(|sent| sent.body)
+            .filter(|body| body["method"] == "channel.add_member")
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["params"]["channel_id"], METHODS);
+        assert_eq!(calls[0]["params"]["idempotency_key"], "req-1");
+        assert_eq!(calls[0]["params"]["expected_username"], "bob");
+        assert_eq!(calls[1]["params"]["channel_id"], GENERAL);
+        assert_eq!(calls[1]["params"]["idempotency_key"], "req-1:1");
+        assert_eq!(calls[1]["request_id"], "req-1:1");
+        assert_eq!(lines, ["Added. @bob can now see #methods."]);
+
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let error = run(&api, add_member_command(None, &[]))
+            .await
+            .expect_err("nowhere to add them");
+        assert!(message(&error).starts_with("Choose where to add them"));
+        assert!(fake.broker_calls().is_empty());
+    }
+
+    /// A broker that predates direct add says so, and points at the invitation that works.
+    #[tokio::test]
+    async fn members_add_on_an_older_broker_points_to_an_invitation() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("team.add_member") => Err(refuse_broker(
+                    "unsupported",
+                    "unsupported: operation is not supported by this broker",
+                )),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let error = run(&api, add_member_command(Some("Analysis Lab"), &[]))
+            .await
+            .expect_err("unsupported");
+        assert!(
+            message(&error).contains("can't add people directly yet"),
+            "{}",
+            message(&error)
+        );
+    }
+
     #[tokio::test]
     async fn approve_and_cancel_send_the_username_and_check_the_code_shape() {
         let (api, fake) = api_with(OutputFormat::Text, standard);
@@ -3756,8 +4201,8 @@ mod tests {
             [
                 "Waiting to join (2):",
                 "  @bob · Bob Lee (name on the server account) · waiting for their code · expires in 2 hours",
-                "    A device with a different code tried to join as @bob.",
-                "  @carol · another computer · approved; joins when their Crew checks in · expired",
+                "    A computer trying to join as @bob showed a different code. Check the code @bob sent you; if you typed it wrong, run enroll approve again with --replace. Don't approve a code you didn't get from @bob.",
+                "  @carol · another computer · code saved; joins when their computer confirms the same code · expired",
                 "Let someone in with: biorouter crew enroll approve @USERNAME CODE"
             ]
         );

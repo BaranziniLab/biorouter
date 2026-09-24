@@ -77,7 +77,7 @@ Commands take names. The shared daemon looks each name up in your own view of th
 
 - **A person is always `@username`**, the account name on the server. A display name never selects anyone, so a nickname that looks like someone else's cannot redirect a command. A username that differs only in letter case is refused with `Did you mean @bob?`, never corrected silently.
 - **Nothing is guessed.** An unknown name prints one line saying so and lists nothing. An ambiguous name lists only candidates you can see and says how to narrow it (for a channel, name its team: `analysis-lab/general`). Either way the command sends nothing and exits with status 1. When several names are wrong, each gets its own line.
-- **Person-targeted changes are checked twice.** `invites create`, `remove-member`, `ownership offer` and `enroll revoke` send the `@username` you typed along with the ID it resolved to, and the broker refuses the change (`target_mismatch`) if that account is no longer the one you named.
+- **Person-targeted changes are checked twice.** `invites create`, `members add`, `remove-member`, `ownership offer` and `enroll revoke` send the `@username` you typed along with the ID it resolved to, and the broker refuses the change (`target_mismatch`) if that account is no longer the one you named.
 - **Quote a `#`.** In bash, and in zsh with `interactivecomments`, an unquoted `#methods` starts a comment and the command loses its argument. Write `'#methods'` or leave the `#` out: `methods` works everywhere. `@bob` needs no quotes.
 - **There is no current team.** A channel name that exists in two of your teams (every team has a `general`) is ambiguous until you qualify it.
 - **An older daemon** answers names with `Restart the shared Biorouter daemon to use names; IDs still work.` Restart it, or pass IDs.
@@ -136,7 +136,7 @@ The institution label is permanent. Confirm it after `workspace bootstrap` and b
 biorouter crew --connection lab enroll invite @bob
 ```
 
-The host's broker checks that `bob` is an account on the server, looking up that one name and never listing accounts. The command prints `Invited @bob · "Bob Lee" (name on the server account).` and then the invitation message to send Bob:
+The host's broker checks that `bob` is an account on the server, looking up that one name and never listing accounts. The server's own accounts can't be invited: `root`, any account below the server's `UID_MIN` (from `/etc/login.defs`, 1000 when it doesn't say), `nobody`, and any account whose login shell is `nologin` or `false` are refused with `@root is a system account on this server and can't join a workspace.` The command prints `Invited @bob · "Bob Lee" (name on the server account).` and then the invitation message to send Bob:
 
 ```text
 Join lab on Crew.
@@ -153,7 +153,8 @@ biorouter crew --connection lab enroll pending
 biorouter crew --connection lab enroll approve @bob 7QK2-M9XA-3JTP-WZ4D
 ```
 
-- **Approve only a code the person sent you themselves.** If `enroll pending` says `A device with a different code tried to join as @bob.`, something other than Bob's computer tried to join; do not approve any code you did not get from Bob.
+- **Saving a code is not letting someone in yet.** `enroll approve` answers `Code saved. @bob joins when their computer confirms the same code.` The broker compares the code only when Bob's computer claims it, so a code you mistyped is caught then, not here.
+- **Approve only a code the person sent you themselves.** If `enroll pending` says `A computer trying to join as @bob showed a different code. Check the code @bob sent you; if you typed it wrong, run enroll approve again with --replace. Don't approve a code you didn't get from @bob.`, either you typed Bob's code wrong or something other than Bob's computer tried to join. Compare with the code Bob sent you; never approve one you did not get from him.
 - `--replace` replaces a code you already approved. `enroll cancel @bob` withdraws the invitation. An invitation expires after 24 hours; inviting again replaces it, and Bob's screen then shows a new status.
 - `enroll invite @bob --add-device` invites an existing member to add another computer.
 
@@ -168,10 +169,10 @@ biorouter crew --connection lab auth
 biorouter crew --connection lab join
 ```
 
-- **The preview is the privacy decision.** It names the workspace, the host and the server, shows the fingerprint and the workspace's privacy (`Workspace privacy: Private · ucsf`), and says how this computer will treat it (`You'll join as Private · ucsf.`). Without `--yes` the command asks `Save this connection? [y/N]` before saving anything. `--mode` and `--institution` change your own choice; `--username` sets your username on the server (default: the one the host invited); `--name` names the connection on this computer (default: the workspace's name). `--ssh-target`, `--port`, `--identity-file` and `--proxy-jump` (empty for none) override the server hints.
+- **The preview is the privacy decision.** It names the workspace, the host and the server, shows the fingerprint and the workspace's privacy (`Workspace privacy: Private · ucsf`), and says how this computer will treat it (`You'll join as Private · ucsf.`). If you choose another institution than the workspace's, it says so (`lab uses ucsf; you chose foreign-lab.`). One computer can't use one server for two institutions, so when another saved connection already reaches the same server under a different institution, the preview warns before you save: `You already use this server for foreign-lab (foreign-synthetic). lab uses ucsf; one computer can't mix institutions on the same server.` Connecting such a connection is refused in the same words. Without `--yes` the command asks `Save this connection? [y/N]` before saving anything. `--mode` and `--institution` change your own choice; `--username` sets your username on the server (default: the one the host invited); `--name` names the connection on this computer (default: the workspace's name). `--ssh-target`, `--port`, `--identity-file` and `--proxy-jump` (empty for none) override the server hints.
 - **Pasting instead of a file:** `connections join-invitation -` reads the message from stdin (end it with Ctrl-D). Because there is then no terminal to ask in, it saves only with `--yes`; check it with `--preview` first.
 - **`crew join` prints your code and waits:** `"Alice Chen" (@alice) invited you to lab.` and `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D`. Your computer computes the code from its own device key and the workspace key in the invitation; nothing the server sends can change it. When Alice approves it, `join` finishes with `You're in lab.` Ctrl-C stops waiting and leaves the invitation open; run `join` again to continue. `--no-wait` prints the current state and returns, for scripts.
-- If Alice typed a different code, `join` shows your code again. If you were not invited, it says so and waits for an invitation; an expired invitation ends the command with status 1 and asks you to request a new one. Sign in with `auth` before the first `join`.
+- If Alice typed a different code, `join` says `The code @alice entered doesn't match this computer. Send it again: …` with your code. It never prints `Joining lab…` for a code that doesn't match: once Alice saves a code, `join` claims first and then reports what the claim found, and with `--no-wait` it says `Alice saved a code for you, but this computer hasn't joined lab yet. Run biorouter crew join to finish.` when the claim hasn't completed. If you were not invited, it says so and waits for an invitation; an expired invitation ends the command with status 1 and asks you to request a new one. Sign in with `auth` before the first `join`.
 
 An older shared daemon answers these commands with `Restart the shared Biorouter daemon to invite or join with an invitation.`
 
@@ -261,6 +262,17 @@ biorouter crew --connection lab invites accept analysis-lab
 ```
 
 A channel invitation's recipient must already belong to the team. `invites accept` needs no argument when you have one pending invitation; otherwise name the team or `team/channel` it is for. Users can belong to multiple teams.
+
+On a broker that advertises `direct_add_v1`, a team's owner (or the workspace host) can add a member of the workspace straight into the team, its `#general` and any channels of it they own, with nothing for the member to accept: they agreed to take part when they joined the workspace.
+
+```bash
+biorouter crew --connection lab members add @bob --team analysis-lab --channel '#methods'
+biorouter crew --connection lab members add @bob --channel analysis-lab/methods
+```
+
+- The first form answers `Added. @bob can now see #general and #methods.` Without `--team`, each `--channel` adds Bob to a channel you own in a team he already belongs to.
+- Only a person's own device can do this, never an agent's grant. The broker checks that you own the team (or each channel) or host the workspace, that `@bob` is still the member you named on this server, and that every channel is in that team; one wrong channel refuses the whole add. Adding someone who is already there is a success that changes nothing, and `--request-id` retries are safe.
+- An older broker answers `This workspace's server can't add people directly yet.`; use `invites create` there.
 
 The current channel owner can run `remove-member analysis-lab/methods @bob` (add `--former` for someone who has already left the workspace) or `channels archive analysis-lab/methods`. Ownership transfers require `ownership offer methods @carol` followed by Carol's `ownership accept methods`. **Acceptance removes the previous owner from that channel.**
 

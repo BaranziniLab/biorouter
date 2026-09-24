@@ -110,8 +110,8 @@ pub enum CrewCommand {
     Workspace(WorkspaceCommand),
     #[command(subcommand)]
     Enroll(EnrollmentCommand),
-    /// List the people in the selected workspace.
-    Members,
+    /// List the people in the selected workspace, or add one to a team or channel.
+    Members(MembersArgs),
     #[command(subcommand)]
     Teams(TeamCommand),
     #[command(subcommand)]
@@ -338,6 +338,35 @@ pub struct EnrollInviteArgs {
     /// --add-device instead.
     #[arg(long, hide = true, requires = "uid", conflicts_with = "username")]
     pub existing_principal: Option<String>,
+}
+
+/// `members` alone lists the people in the workspace.
+#[derive(Args)]
+pub struct MembersArgs {
+    #[command(subcommand)]
+    pub command: Option<MembersCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum MembersCommand {
+    /// Add a workspace member to a team you own (with its #general and any channels of it you
+    /// own), or to channels you own. They already joined the workspace, so there is nothing
+    /// for them to accept.
+    #[command(
+        after_help = "Examples:\n  biorouter crew members add @bob --team \"Analysis Lab\" --channel '#methods'\n  biorouter crew members add @bob --channel analysis-lab/methods"
+    )]
+    Add {
+        /// The person, as @username. They must already be in the workspace.
+        person: String,
+        /// The team: its name or handle. They are added to it and to its #general.
+        #[arg(long)]
+        team: Option<String>,
+        /// A channel to add them to as well: methods, '#methods' or analysis-lab/methods.
+        /// Repeat for more. With --team, a channel of that team; without it, a channel of a
+        /// team they are already in.
+        #[arg(long = "channel", value_name = "CHANNEL")]
+        channels: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -654,7 +683,57 @@ mod tests {
         let options = parse(&["members", "--show-ids", "--connection", "UCSF HPC"]);
         assert!(options.show_ids);
         assert_eq!(options.connection.as_deref(), Some("UCSF HPC"));
+        assert!(matches!(
+            options.command,
+            CrewCommand::Members(MembersArgs { command: None })
+        ));
         assert!(!parse(&["members"]).show_ids);
+    }
+
+    #[test]
+    fn members_add_takes_a_person_a_team_and_repeated_channels() {
+        let CrewCommand::Members(MembersArgs {
+            command:
+                Some(MembersCommand::Add {
+                    person,
+                    team,
+                    channels,
+                }),
+        }) = parse(&[
+            "members",
+            "add",
+            "@bob",
+            "--team",
+            "Analysis Lab",
+            "--channel",
+            "#methods",
+            "--channel",
+            "data",
+        ])
+        .command
+        else {
+            panic!("members add")
+        };
+        assert_eq!(person, "@bob");
+        assert_eq!(team.as_deref(), Some("Analysis Lab"));
+        assert_eq!(channels, vec!["#methods", "data"]);
+
+        let CrewCommand::Members(MembersArgs {
+            command: Some(MembersCommand::Add { team, channels, .. }),
+        }) = parse(&[
+            "members",
+            "add",
+            "@bob",
+            "--channel",
+            "analysis-lab/methods",
+        ])
+        .command
+        else {
+            panic!("members add without a team")
+        };
+        assert!(team.is_none());
+        assert_eq!(channels, vec!["analysis-lab/methods"]);
+        assert!(refused(&["members", "add"]));
     }
 
     /// Every channel argument takes `methods`, `#methods`, `team/methods` or an ID, verbatim:
