@@ -231,8 +231,11 @@ async fn only_this_computers_own_unused_host_setup_can_start() {
     assert!(smuggled.is_err());
 }
 
-/// A scripted `ssh`: `-G` answers settings the preflight accepts; a run logs its arguments
-/// (one per line) and then behaves as `mode` says.
+/// A scripted `ssh`. `-G` behaves as OpenSSH's does about its host: with no host argument it
+/// prints its usage and exits 255 (a preflight that forgot the login would refuse every start
+/// here too, as it does against the real `ssh`); with one, it logs the host to
+/// `preflight.log` and answers settings the preflight accepts. A run logs its arguments
+/// (NUL-separated) and then behaves as `mode` says.
 #[cfg(unix)]
 fn write_fake_ssh(root: &Path, mode: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -247,6 +250,22 @@ fn write_fake_ssh(root: &Path, mode: &str) {
     let script = format!(
         r#"#!/bin/sh
 if [ "$1" = "-G" ]; then
+  shift
+  host=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -[bceilmopBDEFIJLOPQRSwW])
+        [ $# -ge 2 ] || break
+        shift 2 ;;
+      -*) shift ;;
+      *) host=$1; break ;;
+    esac
+  done
+  if [ -z "$host" ]; then
+    printf '%s\n' 'usage: ssh [-46AaCfGgKkMNnqsTtVvXxYy] [-B bind_interface] destination [command [argument ...]]' >&2
+    exit 255
+  fi
+  printf '%s\n' "$host" >> '{preflight}'
   printf '%s\n' 'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
     'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
     'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
@@ -258,7 +277,8 @@ fi
 for arg; do printf '%s\0' "$arg" >> '{log}'; done
 {behaviour}
 "#,
-        log = root.join("args.log").display()
+        log = root.join("args.log").display(),
+        preflight = root.join("preflight.log").display(),
     );
     fs::write(bin.join("ssh"), script).unwrap();
     fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -351,6 +371,12 @@ async fn a_start_runs_exactly_the_fixed_command_and_reads_its_result() {
         assert!(args.iter().any(|arg| arg == option), "{option}: {args:?}");
     }
     assert!(!args.iter().any(|arg| arg == "-S"), "no multiplexed master");
+    // The preflight inspected the login that ran, not an invocation with no host (which the
+    // real `ssh -G` refuses with its usage text).
+    assert_eq!(
+        fs::read_to_string(root.path().join("preflight.log")).unwrap(),
+        "crew_alice@lab-server\n"
+    );
 }
 
 #[cfg(unix)]

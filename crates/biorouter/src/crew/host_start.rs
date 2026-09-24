@@ -573,13 +573,16 @@ impl CrewManager {
             request.proxy_jump.as_deref(),
             None,
         );
-        super::ssh_policy::preflight(&args, &request.ssh_target).await?;
         args.extend([
             "-o".into(),
             "BatchMode=yes".into(),
             request.ssh_target.clone(),
             command.clone(),
         ]);
+        // The preflight reads the invocation that will run, login included, as
+        // `Transport::connect` does: `ssh -G` with options and no host prints its usage and
+        // exits 255, which would refuse every start.
+        super::ssh_policy::preflight(&args, &request.ssh_target).await?;
         let mut ssh = tokio::process::Command::new("ssh");
         ssh.args(&args)
             .stdin(Stdio::null())
