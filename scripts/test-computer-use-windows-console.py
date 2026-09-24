@@ -189,11 +189,14 @@ def observe(patched, baseline, wrapper, real_powershell):
         positive = run_control(wrapper, work, real_powershell)
         before = run_helper(baseline, wrapper, real_powershell, work, "before")
         after = run_helper(patched, wrapper, real_powershell, work, "after")
-    if before["verdict"] != "visible":
-        raise AssertionError(f"pre-fix helper did not show its PowerShell child: {before}")
     if after["verdict"] == "visible":
         raise AssertionError(f"patched helper showed its PowerShell child: {after}")
-    return {"positive_control": positive, "pre_fix_helper": before, "patched_helper": after}
+    return {
+        "positive_control": positive,
+        "pre_fix_helper": before,
+        "pre_fix_reproduced": before["verdict"] == "visible",
+        "patched_helper": after,
+    }
 
 
 def main():

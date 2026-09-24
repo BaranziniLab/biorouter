@@ -59,7 +59,7 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: target/computer-use/source.noindex/apps/OpenComputerUseWindows
         run: go test -p 2 ./...
-      - name: Measure the helper's PowerShell console with a pre-fix control
+      - name: Measure the helper's PowerShell console with a visible control
         if: runner.os == 'Windows'
         run: python scripts/test-computer-use-windows-console.py target/computer-use/source.noindex target/computer-use/win32-x64/ocu.exe --report target/computer-use/windows-console.json
       - name: Test Linux native runtime regressions
