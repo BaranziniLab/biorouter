@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { sessionGrantState, type CrewSessionGrant } from '../api/grants';
 import { AlertCircle } from '../../icons/app-icons';
@@ -133,20 +133,25 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     sameConnection
       ? (destinations.get(id) ?? accessCopy.unknownChannel)
       : accessCopy.unknownChannel;
-  const destination =
-    grant && !granted
-      ? sameConnection
-        ? destinationOf(grant.channel_id)
-        : (workspaces.get(grant.connection_id) ?? identityCopy.unnamedWorkspace)
-      : channel
-        ? channelName(channel)
-        : accessCopy.unknownChannel;
-  const sources = (
-    grant && !granted ? grant.source_channels : [channelId, ...contextChannels]
-  ).filter((id, index, all) => id && all.indexOf(id) === index);
-  const extraSources = sources.filter(
-    (id) => id !== (grant && !granted ? grant.channel_id : channelId)
+  // What the listed grant can do (its own destination), and what Allow would grant: always the
+  // selected channel plus the channels chosen under Advanced, whatever an old grant named.
+  const here = channel ? channelName(channel) : accessCopy.unknownChannel;
+  const consentExtras = contextChannels.filter(
+    (id, index, all) => id && id !== channelId && all.indexOf(id) === index
   );
+  const listed = grant && !granted;
+  const destination = listed
+    ? sameConnection
+      ? destinationOf(grant.channel_id)
+      : accessCopy.chatDestinationWorkspace(
+          workspaces.get(grant.connection_id) ?? identityCopy.unnamedWorkspace
+        )
+    : here;
+  const extraSources = listed
+    ? grant.source_channels.filter(
+        (id, index, all) => id && id !== grant.channel_id && all.indexOf(id) === index
+      )
+    : consentExtras;
 
   const openChat = () => navigate(chatRoute(sessionId));
 
@@ -238,22 +243,22 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     );
   }
 
-  const person =
-    sameConnection && dir.me ? <PersonName person={dir.me} context="authority" dir={dir} /> : null;
-  const summaryLines = (future: boolean) => (
+  // You, at the authority point: whom the chat posts as. Only for this connection's grants.
+  const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} /> : null;
+  const summaryLines = (future: boolean, where: string, extras: string[], who: ReactNode) => (
     <ul className="flex flex-col gap-1 text-secondary text-text-default">
       <li>
-        {future ? accessCopy.read(destination) : accessCopy.reads(destination)}
-        {extraSources.length > 0 && (
+        {future ? accessCopy.read(where) : accessCopy.reads(where)}
+        {extras.length > 0 && (
           <span className="text-text-muted">
             {', '}
-            {extraSources.map((id) => destinationOf(id)).join(', ')}
+            {extras.map((id) => destinationOf(id)).join(', ')}
           </span>
         )}
       </li>
       <li>
-        {future ? accessCopy.postAs(destination) : accessCopy.postsAs(destination)}
-        {person ? <> {person}</> : null}
+        {future ? accessCopy.postAs(where) : accessCopy.postsAs(where)}
+        {who ? <> {who}</> : null}
       </li>
     </ul>
   );
@@ -305,7 +310,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
               {accessCopy.connected}
             </p>
           ) : null}
-          {summaryLines(false)}
+          {summaryLines(false, destination, extraSources, sameConnection ? me : null)}
           <p className="text-supporting text-text-muted">{accessCopy.expiry}</p>
           {outcome ? (
             <RevokeResultNote
@@ -386,7 +391,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
       <form className="flex flex-col gap-3" onSubmit={(event) => void allow(event)}>
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
         <p className="text-label text-text-default">{accessCopy.willBeAble(chat)}</p>
-        {summaryLines(true)}
+        {summaryLines(true, here, consentExtras, me)}
         <p className="text-supporting text-text-muted">{accessCopy.expiry}</p>
         <AlsoRead
           contextChannels={contextChannels}

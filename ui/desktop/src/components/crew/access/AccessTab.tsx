@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { channelName } from '../identity';
+import { cn } from '../../../utils';
 import { useCrew } from '../state/CrewControllerContext';
 import { AccessList } from './AccessList';
 import { accessRows } from './accessRows';
@@ -21,6 +22,7 @@ export interface AccessTabProps {
 export function AccessTab({ className }: AccessTabProps) {
   const { snapshot, runs, channelId, channel } = useCrew();
   const grants = useWorkspaceGrants();
+  const headingId = useId();
   const { onOpen, onStop } = useAccessActions();
   const rows = useMemo(
     () =>
@@ -33,7 +35,14 @@ export function AccessTab({ className }: AccessTabProps) {
     [grants.grants, snapshot, runs, channelId]
   );
   return (
-    <section className={className} aria-label={accessCopy.tabTitle} data-testid="crew-access-tab">
+    <section
+      className={cn('flex flex-col gap-2', className)}
+      aria-labelledby={headingId}
+      data-testid="crew-access-tab"
+    >
+      <h3 id={headingId} className="text-label text-text-default">
+        {accessCopy.tabTitle}
+      </h3>
       <AccessList
         rows={rows}
         status={grants.status}

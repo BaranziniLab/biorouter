@@ -321,6 +321,20 @@ describe('chat access: other states of the note', () => {
     expect(within(paneNode).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
   });
 
+  it('asks consent for this channel when granting again after a grant elsewhere was revoked', async () => {
+    setup({
+      grants: () => [
+        grantRow({ channel_id: 'channel-2', source_channels: ['channel-2'], expired: true }),
+      ],
+    });
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked));
+    const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
+    expect(paneNode).toHaveTextContent(accessCopy.paneRevoked('Plot review'));
+    expect(paneNode).toHaveTextContent('Read #general');
+    expect(paneNode).toHaveTextContent('Post in #general as Alice Chen (@alice)');
+    expect(paneNode).not.toHaveTextContent('#methods');
+  });
+
   it('names the other channel when the chat already posts elsewhere', async () => {
     setup({
       grants: () => [grantRow({ channel_id: 'channel-2', source_channels: ['channel-2'] })],

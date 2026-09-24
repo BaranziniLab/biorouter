@@ -251,9 +251,7 @@ export function AccessList({
     body = (
       <>
         {current.length > 0 ? (
-          <ul className="biorouter-list-shell" aria-label={accessCopy.tabTitle}>
-            {current.map(renderRow)}
-          </ul>
+          <ul className="biorouter-list-shell">{current.map(renderRow)}</ul>
         ) : (
           <div className="flex flex-col gap-1 px-3 py-2">
             <p className="text-secondary text-text-default">{emptyText}</p>

@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { usePeopleDirectory, workspaceName, type DaemonPersonLabels } from '../identity';
+import { cn } from '../../../utils';
 import { useCrew } from '../state/CrewControllerContext';
 import { AccessList } from './AccessList';
 import { accessRows } from './accessRows';
@@ -21,6 +22,7 @@ export interface WorkspaceAgentAccessProps {
 export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
   const { snapshot, runs, labels, connection } = useCrew();
   const grants = useWorkspaceGrants();
+  const headingId = useId();
   const { onOpen, onStop } = useAccessActions();
   const dir = usePeopleDirectory(snapshot, labels as DaemonPersonLabels | null);
   const rows = useMemo(
@@ -32,10 +34,13 @@ export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
     : (connection?.name ?? accessCopy.chatDestinationUnknown);
   return (
     <section
-      className={className}
-      aria-label={accessCopy.tabTitle}
+      className={cn('flex flex-col gap-2', className)}
+      aria-labelledby={headingId}
       data-testid="crew-workspace-agent-access"
     >
+      <h3 id={headingId} className="text-label text-text-default">
+        {accessCopy.tabTitle}
+      </h3>
       <AccessList
         rows={rows}
         status={grants.status}
