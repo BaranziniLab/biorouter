@@ -7,8 +7,10 @@ import { Note } from '../../ui/note';
 import { Progress } from '../../ui/progress';
 import {
   claimJoin,
+  CREW_NOT_CONNECTED,
   groupDeviceCode,
   joinStatus as fetchJoinStatus,
+  type CrewJoinClaim,
   type CrewJoinStatus,
 } from '../api/join';
 import { CREW_JOIN_CODE_MISMATCH, crewErrorCode, isStaleDaemon } from '../api/errors';
@@ -42,6 +44,13 @@ type CardState =
   | { kind: 'legacy' }
   | { kind: 'status'; status: CrewJoinStatus };
 
+/**
+ * Whether the join route can reach the workspace. `reconnecting`: it answered
+ * `crew_not_connected` and the card is reconnecting once by itself; `lost`: that did not help, so
+ * the person reconnects (a user-initiated connect opens Sign in when the server asks).
+ */
+type Link = 'ok' | 'reconnecting' | 'lost';
+
 function visible(): boolean {
   return typeof document === 'undefined' || document.visibilityState !== 'hidden';
 }
@@ -72,12 +81,71 @@ export function JoinStatusCard() {
   const claimedFor = useRef<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
   const waitingId = useId();
+  const [link, setLink] = useState<Link>('ok');
+  // One automatic reconnect per loss of the connection; reset once the route answers again.
+  const reconnectTried = useRef(false);
+  // A connect is running: a second not-connected answer (the poll and a claim can both give one)
+  // waits for its outcome instead of counting as a failed attempt.
+  const connecting = useRef(false);
+  // The controller's `connect` is bound to the render it came from; read the newest one.
+  const connectRef = useRef(crew.connect);
+  useEffect(() => {
+    connectRef.current = crew.connect;
+  });
 
-  const finishJoined = useCallback(() => {
-    updateJoinContext(connectionId, { joining: false });
-    setJoinStatus('joined');
-    void refresh();
-  }, [connectionId, refresh, setJoinStatus]);
+  const finishJoined = useCallback(
+    (claimed?: CrewJoinClaim) => {
+      // The workspace named who invited this computer: remember it for the screens that follow.
+      const inviter = claimed?.inviter;
+      updateJoinContext(connectionId, {
+        joining: false,
+        ...(inviter
+          ? { hostUsername: inviter.username, hostDisplayName: inviter.display_name ?? null }
+          : {}),
+        ...(claimed?.workspace_name ? { workspaceName: claimed.workspace_name } : {}),
+      });
+      setJoinStatus('joined');
+      void refresh();
+    },
+    [connectionId, refresh, setJoinStatus]
+  );
+
+  /**
+   * The join route answered `crew_not_connected`: reconnect once by itself and ask again. If the
+   * route still can't reach the workspace, stop asking and offer Reconnect instead of repeating a
+   * poll error that can never clear by itself.
+   */
+  const recoverConnection = useCallback(() => {
+    setPollError(null);
+    if (connecting.current) return;
+    if (reconnectTried.current) {
+      setLink('lost');
+      return;
+    }
+    reconnectTried.current = true;
+    connecting.current = true;
+    setLink('reconnecting');
+    // `connect` records its own failure; the next answer says whether it helped.
+    const askAgain = () => {
+      connecting.current = false;
+      if (mounted.current) setPollNonce((value) => value + 1);
+    };
+    connectRef.current().then(askAgain, askAgain);
+  }, [mounted]);
+
+  const reconnect = () => {
+    if (connecting.current) return;
+    connecting.current = true;
+    setLink('reconnecting');
+    const askAgain = () => {
+      connecting.current = false;
+      if (!mounted.current) return;
+      claimedFor.current = null;
+      setClaim({ pending: false, error: null });
+      setPollNonce((value) => value + 1);
+    };
+    crew.connect({ userInitiated: true }).then(askAgain, askAgain);
+  };
 
   // Poll while visible; stop once the answer can no longer change by itself.
   useEffect(() => {
@@ -102,6 +170,8 @@ export function JoinStatusCard() {
         const result = await fetchJoinStatus(connectionId, controller.signal);
         if (controller.signal.aborted) return;
         setPollError(null);
+        reconnectTried.current = false;
+        setLink('ok');
         if (result.status === 'unsupported') {
           stopped = true;
           setState({ kind: 'legacy' });
@@ -123,6 +193,12 @@ export function JoinStatusCard() {
           setJoinStatus(LEGACY_JOIN_STATUS);
           return;
         }
+        if (crewErrorCode(failure) === CREW_NOT_CONNECTED) {
+          // Asking again cannot help until the connection is back.
+          stopped = true;
+          recoverConnection();
+          return;
+        }
         setPollError(failureMessage(failure, joinStateCopy.pollFailed));
       } finally {
         inFlight = false;
@@ -141,7 +217,7 @@ export function JoinStatusCard() {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [connectionId, pollNonce, finishJoined, setJoinStatus]);
+  }, [connectionId, pollNonce, finishJoined, setJoinStatus, recoverConnection]);
 
   // The host approved this computer's code: ask the daemon to finish the join, once per approval.
   const status = state.kind === 'status' ? state.status : null;
@@ -152,13 +228,20 @@ export function JoinStatusCard() {
     claimedFor.current = approval;
     setClaim({ pending: true, error: null });
     claimJoin(connectionId).then(
-      () => {
+      (claimed) => {
         if (!mounted.current) return;
         setClaim({ pending: false, error: null });
-        finishJoined();
+        finishJoined(claimed);
       },
       (failure: unknown) => {
         if (!mounted.current) return;
+        if (crewErrorCode(failure) === CREW_NOT_CONNECTED) {
+          // Claim again once the connection is back and the status still says approved.
+          claimedFor.current = null;
+          setClaim({ pending: false, error: null });
+          recoverConnection();
+          return;
+        }
         if (crewErrorCode(failure) === CREW_JOIN_CODE_MISMATCH) {
           // The server now expects a different code: read the status again at once.
           claimedFor.current = null;
@@ -172,7 +255,7 @@ export function JoinStatusCard() {
         });
       }
     );
-  }, [status, connectionId, finishJoined, mounted]);
+  }, [status, connectionId, finishJoined, mounted, recoverConnection]);
 
   const retryClaim = () => {
     claimedFor.current = null;
@@ -199,6 +282,8 @@ export function JoinStatusCard() {
     joinStateCopy.theWorkspace;
   const username = sshUsername(connection?.ssh_target) ?? sanitizeDisplayText(context.username);
   const code = status?.code ?? null;
+  // The invitation adds this computer to the person's existing account.
+  const addDevice = status?.add_device === true;
 
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
@@ -236,7 +321,11 @@ export function JoinStatusCard() {
       <SetupCard
         key={status.status}
         icon={Inbox}
-        title={joinStateCopy.invited(personSubject, workspace)}
+        title={
+          addDevice
+            ? joinStateCopy.invitedDevice(personSubject, workspace)
+            : joinStateCopy.invited(personSubject, workspace)
+        }
       >
         {status.status === 'code_mismatch' ? (
           <Note tone="warning">{joinStateCopy.mismatchCode(first)}</Note>
@@ -260,7 +349,13 @@ export function JoinStatusCard() {
     );
   } else if (status?.status === 'approved' || status?.status === 'joined') {
     card = (
-      <SetupCard key="approved" icon={Users} title={joinStateCopy.approved(workspace)}>
+      <SetupCard
+        key="approved"
+        icon={Users}
+        title={
+          addDevice ? joinStateCopy.approvedDevice(workspace) : joinStateCopy.approved(workspace)
+        }
+      >
         {claim.error ? (
           <Note
             tone="danger"
@@ -303,7 +398,28 @@ export function JoinStatusCard() {
   return (
     <SetupScreen>
       {card}
-      {pollError && !claim.error ? (
+      {link === 'reconnecting' ? (
+        <div className="crew-onboard-card">
+          <Note tone="neutral" role="status" testId="crew-join-reconnecting">
+            {joinStateCopy.reconnecting(workspace)}
+          </Note>
+        </div>
+      ) : link === 'lost' ? (
+        <div className="crew-onboard-card">
+          <Note
+            tone="warning"
+            role="status"
+            testId="crew-join-not-connected"
+            action={
+              <Button type="button" size="sm" variant="outline" onClick={reconnect}>
+                {joinStateCopy.reconnect}
+              </Button>
+            }
+          >
+            {joinStateCopy.notConnected(workspace)}
+          </Note>
+        </div>
+      ) : pollError && !claim.error ? (
         <div className="crew-onboard-card">
           <Note tone="warning" role="status">
             {joinStateCopy.pollFailed} {pollError}

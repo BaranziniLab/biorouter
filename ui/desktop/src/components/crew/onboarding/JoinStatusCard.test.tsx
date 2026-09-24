@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { joinStateCopy, legacyJoinCopy } from './copy';
-import { resetJoinContextForTests, updateJoinContext } from './joinContext';
+import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { JOIN_POLL_INTERVAL_MS, JoinStatusCard, LEGACY_JOIN_STATUS } from './JoinStatusCard';
 import { DEVICE_KEY, fakeConnection, makeCrew, renderWithCrew } from './testCrew';
 
@@ -207,6 +207,111 @@ describe('JoinStatusCard', () => {
       await vi.advanceTimersByTimeAsync(20);
     });
     expect(gets()).toBe(2);
+  });
+
+  it('reconnects once by itself when the join route says it is not connected', async () => {
+    let connected = false;
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET') {
+        if (!connected) throw new CrewHttpError('Connect first.', 409, 'crew_not_connected');
+        return { status: 'invited', code: LOCAL_CODE, inviter: ALICE, workspace_name: 'lab' };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const connect = vi.fn(async () => {
+      connected = true;
+    });
+    renderCard({ connect });
+
+    expect(await screen.findByText('Alice Chen (@alice) invited you to lab.')).toBeInTheDocument();
+    expect(connect).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId('crew-join-not-connected')).toBeNull();
+    expect(screen.queryByTestId('crew-join-reconnecting')).toBeNull();
+    expect(document.body.textContent).not.toContain(joinStateCopy.pollFailed);
+  });
+
+  it('offers Reconnect, instead of a poll error forever, when one reconnect did not help', async () => {
+    let connected = false;
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET') {
+        if (!connected) throw new CrewHttpError('Connect first.', 409, 'crew_not_connected');
+        return { status: 'invited', code: LOCAL_CODE, inviter: ALICE, workspace_name: 'lab' };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    // The automatic attempt fails (the controller records why; connect never throws).
+    const connect = vi.fn(async (opts?: { userInitiated?: boolean }) => {
+      if (opts?.userInitiated) connected = true;
+    });
+    updateJoinContext('conn-1', { workspaceName: 'lab' });
+    renderCard({ connect });
+
+    const lost = await screen.findByTestId('crew-join-not-connected');
+    expect(lost).toHaveTextContent(joinStateCopy.notConnected('lab'));
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith();
+    const gets = () => mocks.crewHttp.mock.calls.filter(([, method]) => method === 'GET').length;
+    expect(gets()).toBe(2);
+    expect(document.body.textContent).not.toContain(joinStateCopy.pollFailed);
+
+    // Polling stopped: nothing is asked again until the person reconnects.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(gets()).toBe(2);
+    expect(connect).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: joinStateCopy.reconnect }));
+    expect(connect).toHaveBeenLastCalledWith({ userInitiated: true });
+    expect(await screen.findByText('Alice Chen (@alice) invited you to lab.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('crew-join-not-connected')).toBeNull());
+  });
+
+  it('reconnects and claims again when finishing the join finds the connection dropped', async () => {
+    let claims = 0;
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET')
+        return { status: 'approved', inviter: ALICE, workspace_name: 'lab' };
+      if (path === '/connections/conn-1/join' && method === 'POST') {
+        claims += 1;
+        if (claims === 1) throw new CrewHttpError('Connect first.', 409, 'crew_not_connected');
+        return {
+          joined: true,
+          status: 'joined',
+          inviter: { username: 'carol', display_name: 'Carol Diaz' },
+          workspace_name: 'lab',
+          add_device: false,
+        };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const { crew } = renderCard();
+
+    await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('joined'));
+    expect(crew.connect).toHaveBeenCalledOnce();
+    expect(claims).toBe(2);
+    expect(screen.queryByText(joinStateCopy.claimFailed)).toBeNull();
+    // Who the workspace says invited this computer is what the next screens name.
+    expect(readJoinContext('conn-1')).toMatchObject({
+      hostUsername: 'carol',
+      hostDisplayName: 'Carol Diaz',
+      workspaceName: 'lab',
+      joining: false,
+    });
+  });
+
+  it('says so when the invitation adds this computer to the person’s account', async () => {
+    answerJoin({
+      status: 'invited',
+      code: LOCAL_CODE,
+      inviter: ALICE,
+      workspace_name: 'lab',
+      add_device: true,
+    });
+    renderCard();
+    expect(
+      await screen.findByText(joinStateCopy.invitedDevice('Alice Chen (@alice)', 'lab'))
+    ).toBeInTheDocument();
   });
 
   it('waits while the page is hidden', async () => {
