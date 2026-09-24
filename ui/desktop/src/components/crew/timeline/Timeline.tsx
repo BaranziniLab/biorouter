@@ -74,6 +74,18 @@ export interface TimelineProps {
 
 const NO_IDS: ReadonlySet<string> = new Set<string>();
 
+/**
+ * `ScrollAreaHandle.scrollToBottom`, where the element can scroll that way. A
+ * viewport without `Element.scrollTo` (jsdom) is set directly, so a test — and
+ * the integration tests that mount this layout — never trip over it.
+ */
+function scrollToBottom(handle: ScrollAreaHandle | null, behavior: 'auto' | 'smooth') {
+  const viewport = handle?.viewportRef.current;
+  if (!handle || !viewport) return;
+  if (typeof viewport.scrollTo === 'function') handle.scrollToBottom(behavior);
+  else viewport.scrollTop = viewport.scrollHeight;
+}
+
 function prefersReducedMotion(): boolean {
   return (
     typeof window.matchMedia === 'function' &&
@@ -224,7 +236,7 @@ function ChannelTimeline({
   useLayoutEffect(() => {
     if (!messagesLoaded) return;
     if (lastLoaded.current !== loadKey || emptied.current || followingRef.current) {
-      scroller.current?.scrollToBottom('auto');
+      scrollToBottom(scroller.current, 'auto');
     }
     lastLoaded.current = loadKey;
     emptied.current = false;
@@ -400,7 +412,8 @@ function ChannelTimeline({
                     ? crew.jumpToLatest
                     : () => {
                         setUnseenBelow(false);
-                        scroller.current?.scrollToBottom(
+                        scrollToBottom(
+                          scroller.current,
                           prefersReducedMotion() ? 'auto' : 'smooth'
                         );
                       }
