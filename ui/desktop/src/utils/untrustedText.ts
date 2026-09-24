@@ -20,9 +20,16 @@
  * {@link stripHiddenCharacters} is the ONE definition of that drop set in the
  * renderer. A surface that needs a stricter rule (a Crew display name also
  * refuses private use, unassigned code points and every default-ignorable)
- * calls it and removes its extra classes after, rather than restating these
- * two — `annotationChannel.test.ts` fails on a second copy, because a copy is
- * the one that drifts.
+ * removes its extra classes FIRST and then calls it, rather than restating
+ * these two — `annotationChannel.test.ts` fails on a second copy, because a
+ * copy is the one that drifts.
+ *
+ * ⚠ The order is not a matter of taste. Any lone-surrogate (`\p{Cs}`) removal
+ * in particular must run before this one: deleting a format character can
+ * leave a high and a low surrogate adjacent and fuse them into a real pair, so
+ * `\uD800⁦\uDC00` stripped here first becomes U+10000, which a `\p{Cs}`
+ * pass run afterwards can no longer see. The reference implementation is
+ * `components/crew/identity/displayText.ts`.
  *
  * Markup is deliberately left alone: callers frame these values into different
  * syntaxes and each owns the escaping its own syntax needs.

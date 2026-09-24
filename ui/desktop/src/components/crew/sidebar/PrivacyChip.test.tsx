@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
+import { INSTITUTION_ID_PATTERN } from '../identity';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
 import { PrivacyChip } from './PrivacyChip';
@@ -245,10 +246,18 @@ describe('the privacy popover', () => {
 
     const field = await screen.findByPlaceholderText(copy.institutionPlaceholder);
     expect(field).toBeRequired();
-    expect(field).toHaveAttribute('pattern', '[a-z0-9][a-z0-9_-]{0,63}');
+    // The rendered attribute is the one shared rule, and it compiles the way a browser compiles a
+    // `pattern` (the `v` flag). A pattern that fails to compile there is dropped silently, so the
+    // field would accept anything while this test still read the attribute back.
+    expect(field).toHaveAttribute('pattern', INSTITUTION_ID_PATTERN);
+    expect(() => new RegExp(`^(?:${field.getAttribute('pattern')})$`, 'v')).not.toThrow();
     expect(controller.updateConnection).not.toHaveBeenCalled();
 
+    fireEvent.change(field, { target: { value: 'UCSF' } });
+    expect((field as HTMLInputElement).validity.patternMismatch).toBe(true);
+
     fireEvent.change(field, { target: { value: 'sdsc' } });
+    expect((field as HTMLInputElement).validity.patternMismatch).toBe(false);
     fireEvent.submit(field.closest('form') as HTMLFormElement);
     await waitFor(() => expect(controller.refresh).toHaveBeenCalledTimes(1));
     expect(controller.updateConnection).toHaveBeenCalledWith(connection.id, {
