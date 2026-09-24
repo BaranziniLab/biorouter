@@ -13,7 +13,7 @@ import {
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import { ArrowUp, Bot, Loader2 } from '../../icons/app-icons';
+import { ArrowUp, Bot, Loader2, X } from '../../icons/app-icons';
 import { cn } from '../../../utils';
 import { channelSlug } from '../identity';
 import { crewActionCopy } from '../state/copy';
@@ -62,7 +62,9 @@ export interface ComposerProps {
   /**
    * The one standing note above the card, when nothing more urgent is showing: the chat-connect
    * note, an ownership offer, the host's institution note, the first-join name suggestion. The
-   * layout decides which; the composer's own send and upload failures outrank it.
+   * layout decides which. The composer's answers to what the person just did (a send or upload
+   * failure, the picker a drop opened) outrank it, and the upload ones never linger: see
+   * {@link composerNote}.
    */
   note?: ReactNode;
   /** The textarea, for a layout that moves focus here (after joining, after creating a channel). */
@@ -122,10 +124,41 @@ export function Composer({ note, inputRef }: ComposerProps) {
   const [dropHint, setDropHint] = useState('');
   const latestUpload = useRef(upload);
   latestUpload.current = upload;
+  const ownInput = useRef<HTMLTextAreaElement | null>(null);
+  const setInput = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      ownInput.current = node;
+      assignRef(inputRef, node);
+    },
+    [inputRef]
+  );
+
+  // An upload failure answers one action and stops being news when the person moves on: any
+  // edit to the draft (typing, removing a chip, a finished upload landing in it) clears it, so
+  // it cannot keep the layout's note (and its action) out of the slot. Keyed on the draft's
+  // content rather than its object, which a controller may rebuild without changing anything.
+  const draftKey = [
+    draft.body,
+    ...draft.attachments.map((file) => file.id),
+    ...draft.references.map((reference) => reference.id),
+  ].join('\u0000');
+  useEffect(() => {
+    latestUpload.current.dismissError();
+  }, [draftKey]);
+  const sendNow = () => {
+    latestUpload.current.dismissError();
+    void send();
+  };
+  const dismissUploadError = () => {
+    latestUpload.current.dismissError();
+    // The dismiss control leaves with its note: hand focus to the text rather than the page.
+    ownInput.current?.focus();
+  };
 
   // Losing the verified view (an observation failure, a disconnect) may clear the draft, so an
   // upload still on its way stops being headed for it: it waits under "Uploaded, not sent".
-  // Another channel or connection does the same inside `useCrewUpload`. A refresh keeps it.
+  // `forget()` also clears an upload failure, which described the view that is gone. Another
+  // channel or connection does the same inside `useCrewUpload`. A refresh keeps both.
   useCrewSurfaceReset((reason) => {
     if (reason === 'protected-cleared') {
       latestUpload.current.forget();
@@ -190,6 +223,7 @@ export function Composer({ note, inputRef }: ComposerProps) {
   const notes = composerNote({
     error: composerError?.message ?? null,
     uploadError: upload.error,
+    onDismissUpload: dismissUploadError,
     dropHint,
     note,
   });
@@ -226,12 +260,12 @@ export function Composer({ note, inputRef }: ComposerProps) {
         upload={upload}
         onRemoveAttachment={removeAttachment}
         onRemoveReference={removeReference}
-        onSend={() => void send()}
+        onSend={sendNow}
         posting={isPending('send')}
         onAskAgent={() => openPane({ mode: 'agent' })}
         onSharePath={() => openDialog({ kind: 'share-path' })}
         onPasteFiles={(files) => void takeFiles({ files, hasFolder: false })}
-        inputRef={inputRef}
+        inputRef={setInput}
       />
     );
   }
@@ -259,15 +293,27 @@ export function Composer({ note, inputRef }: ComposerProps) {
  * The one note directly above the card, in priority order: the send failure, an upload
  * failure, the picker a drop just opened, then the layout's standing note. One at a time, so
  * nothing stacks above the composer.
+ *
+ * The upload failure sits above the layout's note, beside the send failure, for the same
+ * reason the spec puts the send failure first: it is the answer to what the person just did.
+ * Below the note it would never show at all where it matters most, since the chat-connect note
+ * stands in every grant state for as long as the route carries `?sessionId=`: a refused
+ * folder, a pasted screenshot or the pinned privacy refusal would each look like a press that
+ * did nothing. What keeps it from hiding the note is that it never lingers. It has its own
+ * dismiss control, and it clears when the person edits the draft or sends, when the verified
+ * privacy mode or scope changes, on a protected-state reset, and on another channel. The drop
+ * hint lasts only while the picker it names is open.
  */
 function composerNote({
   error,
   uploadError,
+  onDismissUpload,
   dropHint,
   note,
 }: {
   error: string | null;
   uploadError: string;
+  onDismissUpload(): void;
   dropHint: string;
   note: ReactNode;
 }): ReactNode {
@@ -286,7 +332,28 @@ function composerNote({
     );
   } else if (uploadError) {
     content = (
-      <Note tone="danger" role="alert">
+      <Note
+        tone="danger"
+        role="alert"
+        action={
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                shape="round"
+                size="xs"
+                aria-label={composerCopy.dismissUploadError}
+                className="size-5"
+                onClick={onDismissUpload}
+              >
+                <X aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{composerCopy.dismissUploadError}</TooltipContent>
+          </Tooltip>
+        }
+      >
         {uploadError}
       </Note>
     );

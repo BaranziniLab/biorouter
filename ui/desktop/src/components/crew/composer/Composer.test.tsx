@@ -1,9 +1,10 @@
 import { act, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState, type ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { crewActionCopy } from '../state/copy';
-import type { CrewController, SurfaceResetListener } from '../state/types';
+import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/types';
+import { filesCopy } from '../files/copy';
 import { crewTestController, CrewTestProvider, testChannel } from '../files/crewTestController';
 import { Composer } from './Composer';
 import { composerCopy } from './copy';
@@ -41,6 +42,38 @@ function renderComposer(overrides: Partial<CrewController> = {}, note?: ReactNod
 }
 
 const withBody = (body: string) => ({ draft: { body, attachments: [], references: [] } });
+
+/**
+ * A composer over a controller that keeps its draft, like the real one: typing writes the
+ * body, and `send` runs the override (which may leave the draft alone, as a pending or refused
+ * send does) or else clears what was sent.
+ */
+function StatefulComposer({
+  overrides = {},
+  note,
+  initialBody = '',
+}: {
+  overrides?: Partial<CrewController>;
+  note?: ReactNode;
+  initialBody?: string;
+}) {
+  const [draft, setDraft] = useState<CrewDraft>({
+    body: initialBody,
+    attachments: [],
+    references: [],
+  });
+  const controller = crewTestController({
+    draft,
+    setBody: (body) => setDraft((current) => ({ ...current, body })),
+    send: async () => setDraft({ body: '', attachments: [], references: [] }),
+    ...overrides,
+  });
+  return (
+    <CrewTestProvider controller={controller}>
+      <Composer note={note} />
+    </CrewTestProvider>
+  );
+}
 
 describe('Crew composer', () => {
   beforeEach(() => {
@@ -311,6 +344,140 @@ describe('Crew composer', () => {
       expect(registerErrorSlot).toHaveBeenCalledWith('composer');
       unmount();
       expect(unregister).toHaveBeenCalled();
+    });
+  });
+
+  describe('an upload failure never lingers over the layout note', () => {
+    const originalElectron = (window as { electron?: unknown }).electron;
+    const note = <p>Connect this chat to #general?</p>;
+    const screenshot = () => new File(['x'], 'image.png', { type: 'image/png' });
+
+    beforeEach(() => {
+      // A desktop surface: the secure picker exists, and a pasted screenshot has no file.
+      (window as { electron?: unknown }).electron = {
+        crewSelectTransferFile: vi.fn(),
+        getPathForFile: () => '',
+      };
+    });
+    afterEach(() => {
+      (window as { electron?: unknown }).electron = originalElectron;
+    });
+
+    async function pasteScreenshot() {
+      // In `act`, so the dismiss control's tooltip settles inside the test that mounted it.
+      await act(async () => {
+        fireEvent.paste(screen.getByLabelText('Message #general'), {
+          clipboardData: { files: [screenshot()] },
+        });
+      });
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent(filesCopy.notSaved);
+      expect(screen.getAllByRole('alert')).toHaveLength(1);
+      // It answers what the person just did, so it has the slot for now.
+      expect(screen.queryByText('Connect this chat to #general?')).toBeNull();
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+    }
+
+    const expectNoteBack = () => {
+      expect(screen.queryByText(filesCopy.notSaved)).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByText('Connect this chat to #general?')).toBeInTheDocument();
+    };
+
+    it('clears a pasted screenshot’s refusal when the person types', async () => {
+      render(<StatefulComposer note={note} />);
+      await pasteScreenshot();
+      await userEvent.setup().type(screen.getByLabelText('Message #general'), 'h');
+      expect(screen.getByLabelText('Message #general')).toHaveValue('h');
+      expectNoteBack();
+    });
+
+    it('clears it when the person sends, even a send that leaves the draft in place', async () => {
+      const send = vi.fn(async () => undefined);
+      render(<StatefulComposer note={note} initialBody="hello" overrides={{ send }} />);
+      await pasteScreenshot();
+      fireEvent.keyDown(screen.getByLabelText('Message #general'), {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText('Message #general')).toHaveValue('hello');
+      expectNoteBack();
+    });
+
+    it('clears it after a successful send that empties the draft', async () => {
+      render(<StatefulComposer note={note} initialBody="hello" />);
+      await pasteScreenshot();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Send message' }));
+      expect(screen.getByLabelText('Message #general')).toHaveValue('');
+      expectNoteBack();
+    });
+
+    it('has a dismiss control that returns the note and puts focus back in the text', async () => {
+      render(<StatefulComposer note={note} />);
+      await pasteScreenshot();
+      const alert = screen.getByRole('alert');
+      await userEvent
+        .setup()
+        .click(within(alert).getByRole('button', { name: composerCopy.dismissUploadError }));
+      expectNoteBack();
+      expect(screen.getByLabelText('Message #general')).toHaveFocus();
+    });
+
+    it('clears it on a reset that cleared the protected state', async () => {
+      let listener: SurfaceResetListener | undefined;
+      render(
+        <StatefulComposer
+          note={note}
+          overrides={{
+            subscribeSurfaceReset: (next) => {
+              listener = next;
+              return () => undefined;
+            },
+          }}
+        />
+      );
+      await pasteScreenshot();
+      await act(async () => listener?.('protected-cleared'));
+      expectNoteBack();
+    });
+
+    it('drops the privacy refusal once the observer verifies the mode it asked for', async () => {
+      const unverified: Partial<CrewController> = {
+        observedPrivacy: {
+          connectionId: 'another-connection',
+          mode: 'private',
+          institutionId: null,
+          policyEpoch: 1,
+        },
+      };
+      const { rerender } = render(<StatefulComposer note={note} overrides={unverified} />);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Attach' }));
+      await user.click(await screen.findByRole('menuitem', { name: 'Upload a file…' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(filesCopy.privacyPending);
+      expect(screen.queryByText('Connect this chat to #general?')).toBeNull();
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+
+      // The observer verifies this connection's privacy: the advice is now wrong.
+      rerender(<StatefulComposer note={note} />);
+      expect(screen.queryByText(filesCopy.privacyPending)).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByText('Connect this chat to #general?')).toBeInTheDocument();
+    });
+
+    it('still gives way to a send failure', async () => {
+      const { rerender } = render(<StatefulComposer note={note} />);
+      await pasteScreenshot();
+      rerender(
+        <StatefulComposer
+          note={note}
+          overrides={{ error: { message: 'send failed', source: 'composer' } }}
+        />
+      );
+      expect(screen.getAllByRole('alert')).toHaveLength(1);
+      expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t send. send failed');
     });
   });
 

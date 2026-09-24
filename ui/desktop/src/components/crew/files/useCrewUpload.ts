@@ -21,10 +21,15 @@ export interface CrewUpload {
   upload(): Promise<void>;
   /** True while the picker is open or the upload is being registered. */
   choosing: boolean;
-  /** The last upload failure in words, for exactly one alert. Empty when there is none. */
+  /**
+   * The last upload failure in words, for exactly one alert. Empty when there is none. It
+   * lasts only while it is true: the next upload, pause or resume, another connection or
+   * channel, another verified privacy mode, `forget()` and `dismissError()` each clear it.
+   */
   error: string;
   /** Show a failure found before the picker opened (a folder, a file too large…). */
   reportError(message: string): void;
+  /** Clear the failure: the person dismissed it, or moved on (edited the draft, sent). */
   dismissError(): void;
   /**
    * The uploads to show as composer chips: every active upload to this channel, plus those
@@ -35,8 +40,9 @@ export interface CrewUpload {
   resume(transfer: CrewTransfer): Promise<void>;
   /**
    * Stop watching: an upload still on its way is no longer added to the draft when it
-   * finishes (it waits under "Uploaded, not sent" instead), and an answer still in flight is
-   * ignored. For a reset that cleared the draft's protected state.
+   * finishes (it waits under "Uploaded, not sent" instead), an answer still in flight is
+   * ignored, and the failure on screen is cleared, since it describes the view that was
+   * reset. For a reset that cleared the draft's protected state, or a new privacy scope.
    */
   forget(): void;
 }
@@ -81,6 +87,13 @@ export function useCrewUpload({
       generation.current += 1;
     };
   }, [connectionId, channelId]);
+
+  // A failure met under one privacy mode no longer describes another. Above all, the pinned
+  // "Refresh the workspace to verify connection privacy…" must not outlive the verification it
+  // asks for: once the observer verifies the mode, the advice is wrong.
+  useEffect(() => {
+    setError('');
+  }, [expectedMode]);
 
   const channelUploads = useMemo(
     () =>
@@ -166,6 +179,7 @@ export function useCrewUpload({
   const forget = useCallback(() => {
     generation.current += 1;
     setWatched(new Set());
+    setError('');
   }, []);
   const pause = useCallback(
     (transfer: CrewTransfer) => run(() => pauseTransfer(transfer.id)),
