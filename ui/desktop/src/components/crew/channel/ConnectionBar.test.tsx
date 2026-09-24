@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
-import { ConnectionBar } from './ConnectionBar';
+import { crewObservationCopy } from '../state/copy';
+import { ConnectionBar, actionErrorText } from './ConnectionBar';
 import { connectionBarCopy } from './copy';
 import {
   alice,
@@ -57,7 +58,11 @@ async function verified() {
   await waitFor(() => expect(currentCrew().status).toBe('connected'));
 }
 
-function observationFailure(message: string, code = 'temporary_observer_error') {
+/** The daemon's one sentence for every observer error: it must never reach the bar. */
+const DAEMON_SENTENCE =
+  'Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.';
+
+function observationFailure(message = DAEMON_SENTENCE, code = 'temporary_observer_error') {
   mocks.observeCrew.mockImplementation(
     async (
       _connection: string,
@@ -94,17 +99,18 @@ describe('ConnectionBar', () => {
     expect(bar()).toBeEmptyDOMElement();
   });
 
-  it('renders an observation error once, with Retry named "Retry Crew updates"', async () => {
+  it('renders an observation error once, in plain words, with Retry named "Retry Crew updates"', async () => {
     renderCrew(Layout);
     await verified();
-    observationFailure('observer temporarily unavailable');
+    observationFailure();
     await act(async () => {
       await currentCrew().refresh();
     });
-    await waitFor(() =>
-      expect(screen.getAllByText(/observer temporarily unavailable/)).toHaveLength(1)
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent('observer temporarily unavailable');
+    const stopped = crewObservationCopy.updatesStopped('lab');
+    await waitFor(() => expect(screen.getAllByText(stopped)).toHaveLength(1));
+    expect(screen.getByRole('alert')).toHaveTextContent(stopped);
+    // Nothing of the daemon's wording, and nothing about a draft the composer never held.
+    expect(bar()).not.toHaveTextContent(/observation|cursor|draft/i);
 
     installObserver();
     const before = mocks.observeCrew.mock.calls.length;
@@ -113,12 +119,50 @@ describe('ConnectionBar', () => {
     await waitFor(() => expect(bar()).toBeEmptyDOMElement());
   });
 
-  it('offers no Retry on a connection the daemon calls disconnected', async () => {
+  it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
+    // The offline screen offers Connect; a note here would repeat it with a Retry that can only
+    // fail the same way (T-09).
     installDaemon([{ ...connection, status: 'disconnected' }]);
-    observationFailure('Crew connection is not connected');
+    observationFailure('Crew connection is not connected', 'observation_refused');
     renderCrew(Layout);
-    await screen.findByText(/Crew connection is not connected/);
+    await waitFor(() => expect(currentCrew().refreshError).not.toBeNull());
+    expect(currentCrew().status).toBe('offline');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/Crew connection is not connected/)).toBeNull();
     expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+  });
+
+  it('shows no observation note, and no Retry, to a person not let in yet (T-06)', async () => {
+    renderCrew(Layout);
+    await verified();
+    observationFailure(DAEMON_SENTENCE, 'unauthorized');
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('unauthorized'));
+    // Until the join probe answers, the bar may say the workspace does not know this computer…
+    expect(screen.getByRole('alert')).toHaveTextContent(crewObservationCopy.unknownComputer('lab'));
+    // …and once it does, the join card speaks, and the bar says nothing.
+    act(() => currentCrew().setJoinStatus('invited'));
+    expect(currentCrew().status).toBe('not-joined');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    // The error stays in the controller, where the probe reads its code.
+    expect(currentCrew().refreshError).not.toBeNull();
+  });
+
+  it('shows a refusal without its code prefix once the dialog that caused it has closed (T-08)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const taken =
+      'A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.';
+    act(() => currentCrew().reportError(`name_taken: ${taken}`, 'dialog:create-team'));
+    expect(await screen.findByText(taken)).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent('name_taken');
+    // A refusal whose words are not a sentence still loses its code.
+    expect(actionErrorText('forbidden: team owner required')).toBe('Team owner required');
+    // A plain message is left as it is.
+    expect(actionErrorText('mark read failed')).toBe('mark read failed');
   });
 
   it('shows a global action error once, with Dismiss', async () => {
@@ -287,16 +331,17 @@ describe('ConnectionBar', () => {
     await screen.findByText(connectionBarCopy.vaultLocked);
     await screen.findByRole('button', { name: connectionBarCopy.reviewName });
     act(() => currentCrew().reportError('global failure', 'global'));
-    observationFailure('observation broke');
+    observationFailure();
     await act(async () => {
       await currentCrew().refresh();
     });
     act(() => currentCrew().reportError('global failure', 'global'));
 
-    await screen.findByText(/observation broke/);
+    const stopped = crewObservationCopy.updatesStopped('lab');
+    await screen.findByText(stopped);
     const text = bar().textContent ?? '';
-    const order = ['observation broke', 'global failure', connectionBarCopy.vaultLocked].map(
-      (part) => text.indexOf(part)
+    const order = [stopped, 'global failure', connectionBarCopy.vaultLocked].map((part) =>
+      text.indexOf(part)
     );
     expect(order.every((index) => index >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);

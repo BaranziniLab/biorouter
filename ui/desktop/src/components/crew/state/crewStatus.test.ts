@@ -59,6 +59,21 @@ describe('deriveConnectionStatus, row by row', () => {
 
   it('reads "Checking connection" for a saved-connected connection with no snapshot yet', () => {
     expect(status({})).toBe('checking');
+    expect(status({ reverifying: false })).toBe('checking');
+  });
+
+  it('reads a neutral "Updating…" while a verified view is observed again by itself', () => {
+    expect(status({ reverifying: true })).toBe('updating');
+    expect(CONNECTION_STATUS.updating).toMatchObject({
+      tone: 'neutral',
+      word: crewStatusCopy.updating,
+      spinner: false,
+    });
+    // Once it gave up, it says so; a verified view, a join or an offline connection still win.
+    expect(status({ reverifying: true, observationError: true })).toBe('updates-unavailable');
+    expect(status({ reverifying: true, verified: true })).toBe('connected');
+    expect(status({ reverifying: true, notJoined: true })).toBe('not-joined');
+    expect(status({ reverifying: true, connection: disconnected })).toBe('offline');
   });
 
   it('reads "Sign-in needed" after a connect that failed with crew_ssh_auth_required', () => {

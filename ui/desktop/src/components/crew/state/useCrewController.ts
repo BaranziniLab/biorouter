@@ -85,6 +85,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setTeamId,
     setChannelId,
     generation,
+    connections,
     loadConnections,
     setConnections,
     draft,
@@ -113,6 +114,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     people,
     capabilities,
     refreshError,
+    refreshErrorCode,
+    reverifying,
     lastVerified,
     setSnapshot,
     refresh,
@@ -173,12 +176,18 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     await request('channel.read', { channel_id: readChannel, sequence }, { mutation: true });
   };
 
+  // Each selection retires the running observer (the generation moves), so each must also make
+  // sure a new one starts. A different connection or channel restarts it through the observer's
+  // own dependencies; the same connection, or a team whose channel does not change (a team just
+  // created, absent from the verified view, leaves the channel empty), would otherwise leave no
+  // observer at all, and every later frame dropped until Crew is left (T-08).
   const selectConnection = (id: string) => {
     generation.current += 1;
     setSnapshot(null);
     setMessages([]);
     setMessagesLoaded(false);
     setConnectionId(id);
+    if (id === connectionId) restartObservation();
   };
   const selectTeam = (id: string) => {
     generation.current += 1;
@@ -189,6 +198,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft.setAttachments([]);
     draft.setContextChannels([]);
     setTeamId(id);
+    restartObservation();
   };
   const selectChannel = (id: string) => {
     if (id === channelId) return;
@@ -318,6 +328,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     people,
     capabilities,
     refreshError: refreshError || null,
+    refreshErrorCode,
+    reverifying,
     refresh,
     loadOlder: () => {
       historyPage.current = messages[0]?.sequence ?? null;
@@ -390,6 +402,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       verified,
       observationError: Boolean(refreshError),
       notJoined,
+      reverifying,
     }),
     screen: deriveCrewScreen({
       connectionsState,

@@ -20,14 +20,27 @@ import {
   type ObservedRun,
   type Snapshot,
 } from '../crewApi';
+import {
+  channelName,
+  connectionNames,
+  identityCopy,
+  isMachineIdShaped,
+  sanitizeDisplayText,
+} from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
 import type { CrewDraftState } from './crewSend';
 import {
   DRAFT_CLEARING_OBSERVATION_CODES,
+  draftScope,
+  draftScopeChanged,
   failureCode,
-  failureMessage,
+  isRecoverableObservationCode,
+  observationFailureCode,
   observationFailureOutcome,
+  observationFrameText,
+  type DraftScope,
+  type ObservationNames,
 } from './observationFailure';
 import type {
   CrewFrameLabels,
@@ -106,6 +119,70 @@ function sameList(a: readonly string[] | null, b: readonly string[] | null): boo
   return a.every((item, index) => item === b[index]);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Observing again by itself
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The waits before each automatic re-observation after a recoverable end (a policy epoch moved,
+ * a stale cursor…): 0.3 s, then 1 s, then 3 s. A verified `state` frame starts the count again.
+ */
+export const REOBSERVE_BACKOFF_MS: readonly number[] = [300, 1000, 3000];
+/** The window the attempts are counted in. */
+export const REOBSERVE_WINDOW_MS = 60_000;
+/**
+ * Every automatic re-observation in the window, verified or not. A stream that verifies and then
+ * ends at once would otherwise reset the count forever; past this, the person decides.
+ */
+export const REOBSERVE_CEILING = 10;
+
+export interface RecoveryBudget {
+  /** When each re-observation since the last verified frame started. */
+  attempts: number[];
+  /** When every re-observation in the window started. */
+  all: number[];
+}
+
+/**
+ * The wait before the next automatic re-observation, recorded as taken; null once three have been
+ * tried since the last verified frame, or the ceiling is reached, within the window.
+ */
+export function takeRecoveryDelay(budget: RecoveryBudget, now: number): number | null {
+  budget.attempts = budget.attempts.filter((at) => now - at < REOBSERVE_WINDOW_MS);
+  budget.all = budget.all.filter((at) => now - at < REOBSERVE_WINDOW_MS);
+  if (
+    budget.attempts.length >= REOBSERVE_BACKOFF_MS.length ||
+    budget.all.length >= REOBSERVE_CEILING
+  )
+    return null;
+  const delay = REOBSERVE_BACKOFF_MS[budget.attempts.length];
+  budget.attempts.push(now);
+  budget.all.push(now);
+  return delay;
+}
+
+/** Sentences the observer writes itself, shown as they are rather than mapped by code. */
+const OWN_FAILURES: readonly string[] = [
+  crewObservationCopy.wrongConnection,
+  crewObservationCopy.repeatedlyEnded,
+];
+
+/** The workspace's display name and the selected channel's `#name`, for the plain sentences. */
+function observationNames(
+  view: Pick<Snapshot, 'workspace' | 'channels'> | null,
+  connections: readonly CrewConnection[],
+  connectionId: string,
+  channelId: string
+): ObservationNames {
+  const named = sanitizeDisplayText(view?.workspace.name);
+  const workspace =
+    named && !isMachineIdShaped(named)
+      ? named
+      : (connectionNames(connections).get(connectionId) ?? identityCopy.unnamedWorkspace);
+  const channel = channelId ? view?.channels.find((item) => item.id === channelId) : undefined;
+  return { workspace, channel: channel ? channelName(channel) : null };
+}
+
 export interface CrewObservationContext {
   connectionId: string;
   channelId: string;
@@ -113,6 +190,12 @@ export interface CrewObservationContext {
   setTeamId: Dispatch<SetStateAction<string>>;
   setChannelId: Dispatch<SetStateAction<string>>;
   generation: MutableRefObject<number>;
+  /**
+   * The saved connections. The selected one's status decides whether a recoverable end is observed
+   * again by itself (only a connection the daemon calls connected), and its name is what the plain
+   * sentences call a workspace that has not told its own name.
+   */
+  connections: readonly CrewConnection[];
   loadConnections(signal?: AbortSignal, current?: number): Promise<void>;
   setConnections: Dispatch<SetStateAction<CrewConnection[]>>;
   draft: CrewDraftState;
@@ -147,6 +230,10 @@ export interface CrewObservation {
   /** The connected broker's capabilities, from the last `state` frame that carried any. */
   capabilities: readonly string[] | null;
   refreshError: string;
+  /** The code the observation ended with (the broker's, when it named one), beside `refreshError`. */
+  refreshErrorCode: string | null;
+  /** A verified view ended for a recoverable reason and is being observed again by itself. */
+  reverifying: boolean;
   lastVerified: VerifiedView | null;
   setSnapshot: Dispatch<SetStateAction<Snapshot | null>>;
   refresh(): Promise<void>;
@@ -160,9 +247,16 @@ export interface CrewObservation {
 /**
  * The verified view of the selected connection and channel, and the observer that keeps it.
  *
- * Moved from `CrewView` with its behavior unchanged: frame validation, the generation guard that
- * drops frames from a retired observer, `verifiedScope` (a privacy or source-channel change
- * clears the draft), the draft-clearing failure codes, and the throw after three fast reconnects.
+ * Frame validation, the generation guard that drops frames from a retired observer, and the throw
+ * after three fast reconnects are as they were. What an observation's end does changed after live
+ * QA round 1 (P0-1, T-07):
+ * - A terminal frame always clears the protected view (the daemon sends `clear: true`).
+ * - A recoverable end (`policy_changed`, `channel_access_changed`, `stale_cursor`, `scope_changed`)
+ *   on a connection the daemon calls connected is observed again by itself, after 0.3, 1 and 3 s,
+ *   keeping the draft and showing no error. Only when that fails does the bar say so, plainly.
+ * - The draft is cleared only when what it was written under changed materially
+ *   (`draftScopeChanged`) — never because the workspace policy epoch moved — or when access was
+ *   lost (`observationFailureOutcome`). Either says so only when the composer held something.
  * The effects keep their original order — connection reset, channel reset, observer, history —
  * because each increments or reads the same generation counter.
  */
@@ -174,6 +268,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setTeamId,
     setChannelId,
     generation,
+    connections,
     loadConnections,
     setConnections,
     draft,
@@ -186,9 +281,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     keepLastVerifiedView,
   } = context;
   const {
+    body,
     setBody,
+    attachments,
     setAttachments,
+    references,
     setReferences,
+    contextChannels,
     setContextChannels,
     pendingMessage,
     selectedSources,
@@ -212,6 +311,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const [people, setPeople] = useState<CrewMessagePeople | null>(null);
   const [capabilities, setCapabilities] = useState<readonly string[] | null>(null);
   const [refreshError, setRefreshError] = useState('');
+  const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
+  const [reverifying, setReverifying] = useState(false);
   const [lastVerified, setLastVerified] = useState<VerifiedView | null>(null);
   const observer = useRef<AbortController | null>(null);
   const [observationRevision, setObservationRevision] = useState(0);
@@ -220,38 +321,107 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     historyPage.current = historyBefore;
   }, [historyBefore]);
 
-  const verifiedScope = useRef<{
-    connection: string;
-    epoch: number;
-    connectionEpoch: number;
-    mode: string;
-  } | null>(null);
-  const clearProtectedState = useCallback(() => {
-    setSnapshot(null);
-    setObservedPrivacy(null);
-    setRuns([]);
-    setMessages([]);
-    setMessagesLoaded(false);
-    setLabels(null);
-    setPeople(null);
-    setBacklog(undefined);
-    setCapabilities(null);
-    setHistoryBefore(null);
-    setHistoryPageSize(null);
-    historyPage.current = null;
-    setLastVerified(null);
-    resetSurfaces('protected-cleared');
-  }, [resetSurfaces]);
+  // What async callbacks read: whether the composer holds anything, the saved connections, the
+  // error on show, and the last verified snapshot (for names in the plain sentences only).
+  const draftHasContent = useRef(false);
+  useEffect(() => {
+    draftHasContent.current = Boolean(
+      body.trim() || attachments.length || references.length || contextChannels.length
+    );
+  }, [body, attachments, references, contextChannels]);
+  const connectionsRef = useRef(connections);
+  useEffect(() => {
+    connectionsRef.current = connections;
+  }, [connections]);
+  const refreshErrorRef = useRef(refreshError);
+  useEffect(() => {
+    refreshErrorRef.current = refreshError;
+  }, [refreshError]);
+  const lastFrame = useRef<{ connectionId: string; snapshot: Snapshot } | null>(null);
+  const namesFor = useCallback((id: string, channel: string) => {
+    const view = lastFrame.current?.connectionId === id ? lastFrame.current.snapshot : null;
+    return observationNames(view, connectionsRef.current, id, channel);
+  }, []);
+
+  const verifiedScope = useRef<DraftScope | null>(null);
+  const clearProtectedState = useCallback(
+    (reason: SurfaceResetReason = 'protected-cleared') => {
+      setSnapshot(null);
+      setObservedPrivacy(null);
+      setRuns([]);
+      setMessages([]);
+      setMessagesLoaded(false);
+      setLabels(null);
+      setPeople(null);
+      setBacklog(undefined);
+      setCapabilities(null);
+      setHistoryBefore(null);
+      setHistoryPageSize(null);
+      historyPage.current = null;
+      setLastVerified(null);
+      resetSurfaces(reason);
+    },
+    [resetSurfaces]
+  );
+
+  const clearProtectedView = useCallback(() => clearProtectedState(), [clearProtectedState]);
+
+  // The automatic re-observation: its budget, the pending wait, and the connection reload before it.
+  const recovery = useRef<{
+    budget: RecoveryBudget;
+    timer: ReturnType<typeof setTimeout> | undefined;
+    load: AbortController | undefined;
+    token: number;
+  }>({ budget: { attempts: [], all: [] }, timer: undefined, load: undefined, token: 0 });
+  const cancelRecovery = useCallback(() => {
+    const pending = recovery.current;
+    if (pending.timer !== undefined) clearTimeout(pending.timer);
+    pending.timer = undefined;
+    pending.load?.abort();
+    pending.load = undefined;
+    pending.token += 1;
+  }, []);
+  const scheduleReobservation = useCallback(
+    (delay: number) => {
+      cancelRecovery();
+      const pending = recovery.current;
+      const token = pending.token;
+      pending.timer = setTimeout(() => {
+        pending.timer = undefined;
+        if (token !== pending.token) return;
+        // Reload the saved connection first: a policy end can mean its binding moved, and the
+        // reloaded status says whether observing again can help.
+        const load = new AbortController();
+        pending.load = load;
+        void loadConnections(load.signal)
+          .catch(() => undefined)
+          .then(() => {
+            if (token !== pending.token || load.signal.aborted) return;
+            pending.load = undefined;
+            setObservationRevision((revision) => revision + 1);
+          });
+      }, delay);
+    },
+    [cancelRecovery, loadConnections]
+  );
+
   const observationFailure = useCallback(
     (message: string, code?: string) => {
+      cancelRecovery();
       clearProtectedState();
-      const outcome = observationFailureOutcome(message, code);
+      const outcome = observationFailureOutcome(message, code, {
+        draftHasContent: draftHasContent.current,
+        deferRecoverableToReverification: true,
+      });
       if (outcome.clearDraft) clearDraft();
+      setReverifying(false);
+      setRefreshErrorCode(code ?? null);
       setRefreshError(outcome.text);
     },
-    [clearProtectedState, clearDraft]
+    [cancelRecovery, clearProtectedState, clearDraft]
   );
   const refresh = useCallback(async () => {
+    cancelRecovery();
     observer.current?.abort();
     const controller = new AbortController();
     observer.current = controller;
@@ -266,39 +436,45 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setBacklog(undefined);
     resetSurfaces('refresh');
     setRefreshError('');
+    setRefreshErrorCode(null);
+    setReverifying(false);
     try {
       await loadConnections(controller.signal, current);
       if (!controller.signal.aborted && generation.current === current)
         setObservationRevision((revision) => revision + 1);
     } catch (failure) {
       if (!controller.signal.aborted && generation.current === current)
-        observationFailure(
-          failureMessage(failure, crewObservationCopy.connectionsRefreshFailed),
-          failureCode(failure)
-        );
+        observationFailure(crewObservationCopy.connectionsRefreshFailed, failureCode(failure));
     }
-  }, [generation, loadConnections, observationFailure, resetSurfaces]);
+  }, [cancelRecovery, generation, loadConnections, observationFailure, resetSurfaces]);
   const restartObservation = useCallback(
     () => setObservationRevision((revision) => revision + 1),
     []
   );
   const stopObserving = useCallback(() => {
+    cancelRecovery();
     observer.current?.abort();
     generation.current += 1;
     clearProtectedState();
     setRefreshError('');
-  }, [generation, clearProtectedState]);
+    setRefreshErrorCode(null);
+    setReverifying(false);
+  }, [cancelRecovery, generation, clearProtectedState]);
   useEffect(
     () => () => {
+      cancelRecovery();
       observer.current?.abort();
       generation.current += 1;
     },
-    [generation]
+    [cancelRecovery, generation]
   );
 
   // A different connection: drop everything verified for the old one, and its draft.
   useEffect(() => {
     generation.current += 1;
+    cancelRecovery();
+    recovery.current.budget = { attempts: [], all: [] };
+    lastFrame.current = null;
     setSnapshot(null);
     setMessages([]);
     setMessagesLoaded(false);
@@ -317,6 +493,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     closeSignIn();
     dismissError();
     setRefreshError('');
+    setRefreshErrorCode(null);
+    setReverifying(false);
     setLastVerified(null);
     setJoinStatus(null);
     resetSurfaces('connection-changed');
@@ -337,14 +515,108 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     resetSurfaces('channel-changed');
   }, [channelId]); // eslint-disable-line react-hooks/exhaustive-deps -- runs per channel only; every callee is stable
 
+  // The daemon now calls the selected connection connected — a connect from a terminal, or a
+  // host's bootstrap — while an observation error is still on show: observe again at once, rather
+  // than leave the person to find Retry.
+  const savedStatus = connections.find((item) => item.id === connectionId)?.status;
+  const statusSeen = useRef<{ connectionId: string; status: string | undefined }>({
+    connectionId: '',
+    status: undefined,
+  });
+  useEffect(() => {
+    const seen = statusSeen.current;
+    statusSeen.current = { connectionId, status: savedStatus };
+    if (
+      seen.connectionId !== connectionId ||
+      seen.status === undefined ||
+      seen.status === 'connected' ||
+      savedStatus !== 'connected' ||
+      !refreshErrorRef.current
+    )
+      return;
+    cancelRecovery();
+    setRefreshError('');
+    setRefreshErrorCode(null);
+    setObservationRevision((revision) => revision + 1);
+  }, [connectionId, savedStatus, cancelRecovery]);
+
   useEffect(() => {
     if (!connectionId) return;
+    // Whatever started this observation, it is the re-observation a pending wait was for.
+    cancelRecovery();
     const controller = new AbortController();
     observer.current = controller;
     const current = ++generation.current;
     const active = () => !controller.signal.aborted && current === generation.current;
     let cursor: string | null = null;
     let immediateReconnects = 0;
+
+    /**
+     * The selected channel is gone for this person: close it, and its draft, and say so. `named`
+     * is its `#name` from the last view that still had it.
+     */
+    const loseChannel = (named: string | null) => {
+      const hadContent = draftHasContent.current;
+      historyPage.current = null;
+      pendingMessage.current = null;
+      setMessages([]);
+      setMessagesLoaded(false);
+      setBody('');
+      setAttachments([]);
+      setReferences([]);
+      setContextChannels([]);
+      setHistoryBefore(null);
+      setPeople(null);
+      setBacklog(undefined);
+      resetSurfaces('channel-revoked');
+      setChannelId('');
+      const lostText = named
+        ? crewObservationCopy.channelAccessLostNamed(named)
+        : crewObservationCopy.channelAccessLost;
+      reportError(
+        hadContent ? `${lostText} ${crewObservationCopy.draftDiscarded}` : lostText,
+        'observer'
+      );
+    };
+
+    /**
+     * The observation ended, by a terminal frame or a failure. A recoverable end on a connection
+     * the daemon calls connected is observed again by itself — the draft kept, no error shown —
+     * until the attempts run out; anything else, and running out, is shown in plain words.
+     */
+    const ended = (code: string | undefined, text: string) => {
+      generation.current += 1;
+      const status = connectionsRef.current.find((item) => item.id === connectionId)?.status;
+      if (isRecoverableObservationCode(code) && status === 'connected') {
+        if (code === 'channel_access_changed' && channelId) {
+          // The daemon checked the selected channel against a fresh snapshot and it was gone:
+          // observing it again would only end the same way. Close it and observe the workspace.
+          const named = namesFor(connectionId, channelId).channel;
+          clearProtectedState('channel-revoked');
+          loseChannel(named);
+          setReverifying(true);
+          return;
+        }
+        const delay = takeRecoveryDelay(recovery.current.budget, Date.now());
+        if (delay !== null) {
+          // `clear: true`: nothing verified stays on screen. The pane survives, as through a
+          // refresh; the draft stays, and cannot be sent until the next view verifies it.
+          clearProtectedState('refresh');
+          setRefreshError('');
+          setRefreshErrorCode(null);
+          setReverifying(true);
+          scheduleReobservation(delay);
+          return;
+        }
+        observationFailure(
+          crewObservationCopy.updatesStopped(namesFor(connectionId, channelId).workspace),
+          code
+        );
+        return;
+      }
+      observationFailure(text, code);
+    };
+
     void (async () => {
       while (active()) {
         const started = Date.now();
@@ -358,25 +630,25 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             if (frame.type === 'state') {
               if (frame.connection_id !== connectionId)
                 throw new Error(crewObservationCopy.wrongConnection);
-              const previousScope = verifiedScope.current;
+              // SECURITY-SENSITIVE (human review): the draft is cleared before this view is shown
+              // when what it was written under changed materially. A workspace policy epoch moving
+              // on its own is not such a change (see `DraftScope`).
               if (
-                previousScope?.connection === connectionId &&
-                (previousScope.epoch !== frame.snapshot.workspace.policy_epoch ||
-                  previousScope.mode !== frame.connection_mode ||
-                  previousScope.connectionEpoch !== frame.connection_policy_epoch ||
-                  selectedSources.current.some(
-                    (id) => !frame.snapshot.channels.some((item) => item.id === id)
-                  ))
+                draftScopeChanged(verifiedScope.current, frame, channelId, selectedSources.current)
               ) {
+                const hadContent = draftHasContent.current;
                 clearDraft();
-                reportError(crewObservationCopy.scopeChanged, 'observer');
+                if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
-              verifiedScope.current = {
-                connection: connectionId,
-                epoch: frame.snapshot.workspace.policy_epoch,
-                connectionEpoch: frame.connection_policy_epoch,
-                mode: frame.connection_mode,
-              };
+              verifiedScope.current = draftScope(frame, channelId, selectedSources.current);
+              const revoked =
+                Boolean(channelId) &&
+                !frame.snapshot.channels.some((item) => item.id === channelId);
+              // Named from the last view that still had it: this one no longer does.
+              const revokedName = revoked ? namesFor(connectionId, channelId).channel : null;
+              lastFrame.current = { connectionId, snapshot: frame.snapshot };
+              recovery.current.budget.attempts = [];
+              setReverifying(false);
               setObservedPrivacy({
                 connectionId,
                 mode: frame.connection_mode,
@@ -403,29 +675,17 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               );
               setRuns(frame.runs);
               setRefreshError('');
+              setRefreshErrorCode(null);
               onVerifiedFrame(connectionId);
               setTeamId((old) =>
                 frame.snapshot.teams.some((item) => item.id === old)
                   ? old
                   : (frame.snapshot.teams[0]?.id ?? '')
               );
-              if (channelId && !frame.snapshot.channels.some((item) => item.id === channelId)) {
+              if (revoked) {
                 controller.abort();
                 generation.current += 1;
-                setMessages([]);
-                setMessagesLoaded(false);
-                setBody('');
-                setAttachments([]);
-                setReferences([]);
-                setContextChannels([]);
-                setHistoryBefore(null);
-                setPeople(null);
-                setBacklog(undefined);
-                historyPage.current = null;
-                pendingMessage.current = null;
-                resetSurfaces('channel-revoked');
-                setChannelId('');
-                reportError(crewObservationCopy.channelAccessLost, 'observer');
+                loseChannel(revokedName);
               }
             } else if (frame.type === 'messages' && frame.channel_id === channelId) {
               cursor = frame.cursor ?? null;
@@ -457,8 +717,9 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             } else if (frame.type === 'reconnect') {
               cursor = frame.cursor ?? null;
             } else if (frame.type === 'error') {
-              observationFailure(frame.error, frame.code);
-              generation.current += 1;
+              // The daemon's own sentence is never shown: it is the same jargon for every end.
+              const code = typeof frame.code === 'string' ? frame.code : undefined;
+              ended(code, observationFrameText(code, namesFor(connectionId, channelId)));
             }
           }
         );
@@ -468,11 +729,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       }
     })().catch((failure: unknown) => {
       if (!active()) return;
-      observationFailure(
-        failureMessage(failure, crewObservationCopy.observationFailed),
-        failureCode(failure)
+      const code = observationFailureCode(failure);
+      ended(
+        code,
+        failure instanceof Error && OWN_FAILURES.includes(failure.message)
+          ? failure.message
+          : observationFrameText(code, namesFor(connectionId, channelId))
       );
-      generation.current += 1;
     });
     return () => {
       controller.abort();
@@ -485,6 +748,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     channelId,
     observationRevision,
     observationFailure,
+    cancelRecovery,
+    scheduleReobservation,
+    clearProtectedState,
+    namesFor,
     clearDraft,
     generation,
     selectedSources,
@@ -558,10 +825,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
           }
           observer.current?.abort();
           generation.current += 1;
-          observationFailure(
-            failureMessage(failure, crewObservationCopy.historyFailed),
-            failureCode(failure)
-          );
+          observationFailure(crewObservationCopy.historyFailed, observationFailureCode(failure));
           return;
         }
       }
@@ -627,12 +891,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     people,
     capabilities,
     refreshError,
+    refreshErrorCode,
+    reverifying,
     lastVerified,
     setSnapshot,
     refresh,
     stopObserving,
     restartObservation,
-    clearProtectedState,
+    clearProtectedState: clearProtectedView,
     observationFailure,
   };
 }

@@ -1,9 +1,22 @@
 import { act, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from './copy';
-import { isLocalHistoryFailure, mergePeople } from './useCrewObservation';
+import {
+  draftScope,
+  draftScopeChanged,
+  observationFailureOutcome,
+  observationFrameText,
+  type ScopeFrame,
+} from './observationFailure';
+import {
+  isLocalHistoryFailure,
+  mergePeople,
+  REOBSERVE_BACKOFF_MS,
+  REOBSERVE_CEILING,
+  takeRecoveryDelay,
+} from './useCrewObservation';
 import { useCrewController } from './useCrewController';
 import type { CrewController } from './types';
 
@@ -408,5 +421,308 @@ describe('an older page', () => {
       false
     );
     expect(isLocalHistoryFailure(new TypeError('Failed to fetch'))).toBe(false);
+  });
+});
+
+describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
+  const ended = (code: string) => ({
+    type: 'error',
+    clear: true,
+    code,
+    error: 'Room observation ended. Clear cached room content and refresh authorized access.',
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function nextChannelObserver(after: number): Promise<Observation> {
+    let next: Observation | undefined;
+    await waitFor(() => {
+      next = sessions
+        .slice(after)
+        .find((item) => item.channelId === channel.id && !item.signal.aborted);
+      expect(next).toBeDefined();
+    });
+    return next!;
+  }
+
+  it('clears the view, keeps the draft, and observes again by itself with no cursor', async () => {
+    const first = await observeChannel();
+    send(first, messagesFrame('a', { reset: true, remaining: 0 }));
+    act(() => crew.setBody('keep this'));
+    const before = sessions.length;
+
+    send(first, ended('stale_cursor'));
+    // `clear: true`: nothing verified stays; nothing is wrong yet either.
+    expect(crew.snapshot).toBeNull();
+    expect(crew.lastVerified).toBeNull();
+    expect(crew.messages).toEqual([]);
+    expect(crew.refreshError).toBeNull();
+    expect(crew.error).toBeNull();
+    expect(crew.status).toBe('updating');
+    expect(crew.draft.body).toBe('keep this');
+
+    const second = await nextChannelObserver(before);
+    expect(second.after).toBeNull();
+    send(second, stateFrame());
+    expect(crew.status).toBe('connected');
+    expect(crew.draft.body).toBe('keep this');
+    expect(crew.error).toBeNull();
+    // It reloaded the saved connection before observing again.
+    expect(mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections').length).toBe(2);
+  });
+
+  it('keeps the draft when only the workspace policy epoch moved (an invitation was accepted)', async () => {
+    const first = await observeChannel();
+    act(() => crew.setBody('still mine'));
+    const before = sessions.length;
+    send(first, ended('policy_changed'));
+    const second = await nextChannelObserver(before);
+    send(
+      second,
+      stateFrame({
+        snapshot: { ...snapshot, workspace: { ...snapshot.workspace, policy_epoch: 2 } },
+      })
+    );
+    expect(crew.draft.body).toBe('still mine');
+    expect(crew.error).toBeNull();
+    expect(crew.refreshError).toBeNull();
+  });
+
+  it('closes a channel the daemon says is gone, and says so plainly', async () => {
+    const first = await observeChannel();
+    act(() => crew.setBody('for #general'));
+    send(first, ended('channel_access_changed'));
+    expect(crew.channelId).toBe('');
+    expect(crew.draft.body).toBe('');
+    expect(crew.error?.message).toBe(
+      `${crewObservationCopy.channelAccessLostNamed('#general')} ${crewObservationCopy.draftDiscarded}`
+    );
+    expect(crew.refreshError).toBeNull();
+    // It observes the workspace again rather than the channel it just lost.
+    await waitFor(() =>
+      expect(sessions.some((item) => item.channelId === undefined && !item.signal.aborted)).toBe(
+        true
+      )
+    );
+  });
+
+  it('says plainly that updates stopped once three attempts in a minute have failed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const first = await observeChannel();
+    act(() => crew.setBody('keep me'));
+    send(first, ended('policy_changed'));
+    for (const wait of REOBSERVE_BACKOFF_MS) {
+      const before = sessions.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(wait);
+      });
+      const next = await nextChannelObserver(before);
+      expect(crew.refreshError).toBeNull();
+      send(next, ended('policy_changed'));
+    }
+    expect(crew.refreshError).toBe(
+      `${crewObservationCopy.updatesStopped('Fixture')} ${crewObservationCopy.draftRetained}`
+    );
+    expect(crew.refreshError).not.toMatch(/Room observation|cursor|policy/i);
+    expect(crew.refreshErrorCode).toBe('policy_changed');
+    expect(crew.status).toBe('updates-unavailable');
+    expect(crew.draft.body).toBe('keep me');
+  });
+
+  it('stops at once, in plain words, on a connection the daemon does not call connected', async () => {
+    const first = await observeChannel();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections')
+        return { connections: [{ ...connection, status: 'disconnected' }] };
+      return {};
+    });
+    await act(async () => {
+      await crew.refresh();
+    });
+    const open = sessions.filter((item) => !item.signal.aborted && item !== first);
+    send(open[open.length - 1]!, ended('policy_changed'));
+    expect(crew.refreshError).toBe(crewObservationCopy.updatesStopped('Fixture'));
+    expect(crew.status).toBe('offline');
+  });
+});
+
+describe('the recovery budget', () => {
+  it('waits 0.3, 1 and 3 s, then stops until a verified frame or the window passes', () => {
+    const budget = { attempts: [] as number[], all: [] as number[] };
+    expect([0, 1, 2, 3].map(() => takeRecoveryDelay(budget, 1_000))).toEqual([
+      300,
+      1000,
+      3000,
+      null,
+    ]);
+    // A verified frame starts the count again.
+    budget.attempts = [];
+    expect(takeRecoveryDelay(budget, 2_000)).toBe(300);
+    // So does a minute passing.
+    const later = { attempts: [0, 1, 2], all: [0, 1, 2] };
+    expect(takeRecoveryDelay(later, 61_000)).toBe(300);
+  });
+
+  it('has a ceiling a stream that verifies and ends at once cannot reset', () => {
+    const budget = { attempts: [] as number[], all: [] as number[] };
+    const delays: (number | null)[] = [];
+    for (let index = 0; index <= REOBSERVE_CEILING; index += 1) {
+      delays.push(takeRecoveryDelay(budget, 5_000 + index));
+      budget.attempts = []; // each one verified
+    }
+    expect(delays.slice(0, REOBSERVE_CEILING).every((delay) => delay === 300)).toBe(true);
+    expect(delays[REOBSERVE_CEILING]).toBeNull();
+  });
+});
+
+describe('when an unsent draft must go (SECURITY-SENSITIVE)', () => {
+  const base: ScopeFrame = {
+    connection_id: 'conn-1',
+    connection_mode: 'private',
+    connection_policy_epoch: 1,
+    connection_institution_id: 'ucsf',
+    snapshot: {
+      workspace: { mode: 'private', institution_id: 'ucsf' },
+      channels: [
+        { id: 'general', classification: 'restricted' },
+        { id: 'methods', classification: 'public_safe' },
+      ],
+    },
+  };
+  const scope = draftScope(base, 'general', ['methods']);
+  const changed = (frame: ScopeFrame, sources: string[] = ['methods'], channelId = 'general') =>
+    draftScopeChanged(scope, frame, channelId, sources);
+  const withWorkspace = (workspace: ScopeFrame['snapshot']['workspace']) => ({
+    ...base,
+    snapshot: { ...base.snapshot, workspace },
+  });
+  const withChannels = (channels: ScopeFrame['snapshot']['channels']) => ({
+    ...base,
+    snapshot: { ...base.snapshot, channels },
+  });
+
+  it('keeps it when nothing it was written under moved, whatever the workspace epoch did', () => {
+    expect(changed(base)).toBe(false);
+    // The broker's workspace policy epoch is not part of the scope at all.
+    expect(changed({ ...base, snapshot: { ...base.snapshot } })).toBe(false);
+    // Someone joined the channel: membership is not privacy.
+    expect(
+      changed(
+        withChannels([
+          { id: 'general', classification: 'restricted' },
+          { id: 'methods', classification: 'public_safe' },
+          { id: 'new-channel', classification: 'restricted' },
+        ])
+      )
+    ).toBe(false);
+  });
+
+  it.each([
+    ['the workspace mode', withWorkspace({ mode: 'public', institution_id: 'ucsf' })],
+    ['the workspace institution', withWorkspace({ mode: 'private', institution_id: 'other' })],
+    ['the connection mode', { ...base, connection_mode: 'public' }],
+    ['the connection policy epoch', { ...base, connection_policy_epoch: 2 }],
+    ['the connection institution', { ...base, connection_institution_id: null }],
+    [
+      'the selected channel’s classification',
+      withChannels([
+        { id: 'general', classification: 'public_safe' },
+        { id: 'methods', classification: 'public_safe' },
+      ]),
+    ],
+    [
+      'a source channel’s classification',
+      withChannels([
+        { id: 'general', classification: 'restricted' },
+        { id: 'methods', classification: 'restricted' },
+      ]),
+    ],
+    [
+      'a source channel disappearing',
+      withChannels([{ id: 'general', classification: 'restricted' }]),
+    ],
+  ])('clears it when %s changed', (_what, frame) => {
+    expect(changed(frame as ScopeFrame)).toBe(true);
+  });
+
+  it('checks a source chosen after the last view only for still being there', () => {
+    expect(changed(base, ['methods', 'general'])).toBe(false);
+    expect(changed(base, ['methods', 'gone'])).toBe(true);
+  });
+
+  it('compares nothing across connections, or before a first view', () => {
+    expect(draftScopeChanged(null, base, 'general', [])).toBe(false);
+    expect(changed({ ...base, connection_id: 'conn-2', connection_mode: 'public' })).toBe(false);
+  });
+
+  it('leaves the selected channel’s disappearance to the channel-revoked path', () => {
+    expect(changed(withChannels([{ id: 'methods', classification: 'public_safe' }]), [])).toBe(
+      false
+    );
+  });
+});
+
+describe('what the connection bar is told', () => {
+  const names = { workspace: 'lab', channel: '#general' };
+
+  it('never repeats the daemon’s sentence, whatever the code', () => {
+    for (const code of [
+      undefined,
+      'observation_refused',
+      'policy_changed',
+      'stale_cursor',
+      'scope_changed',
+      'channel_access_changed',
+      'forbidden',
+      'unauthorized',
+      'human_authority_required',
+      'observer_capacity_reached',
+      'response_too_large',
+      'something_new',
+    ]) {
+      const text = observationFrameText(code, names);
+      expect(text).not.toMatch(/observation|cursor|daemon|policy/i);
+      expect(text.length).toBeGreaterThan(0);
+    }
+    expect(observationFrameText('channel_access_changed', names)).toBe(
+      crewObservationCopy.channelAccessChanged('#general')
+    );
+    expect(observationFrameText('unauthorized', names)).toBe(
+      crewObservationCopy.unknownComputer('lab')
+    );
+  });
+
+  it('mentions the draft only when the composer held something', () => {
+    expect(observationFailureOutcome('Stopped.', 'forbidden', { draftHasContent: false })).toEqual({
+      clearDraft: true,
+      text: 'Stopped.',
+    });
+    expect(observationFailureOutcome('Stopped.', 'forbidden').text).toBe(
+      `Stopped. ${crewObservationCopy.draftCleared}`
+    );
+    expect(observationFailureOutcome('Stopped.', 'observation_refused').text).toBe(
+      `Stopped. ${crewObservationCopy.draftRetained}`
+    );
+  });
+
+  it('leaves a recoverable code’s draft to the next verified view, but not lost access', () => {
+    const defer = { deferRecoverableToReverification: true };
+    for (const code of [
+      'policy_changed',
+      'channel_access_changed',
+      'scope_changed',
+      'stale_cursor',
+    ])
+      expect(observationFailureOutcome('x', code, defer).clearDraft).toBe(false);
+    for (const code of [
+      'access_denied',
+      'principal_revoked',
+      'forbidden',
+      'privacy_denied',
+      'human_authority_required',
+    ])
+      expect(observationFailureOutcome('x', code, defer).clearDraft).toBe(true);
   });
 });

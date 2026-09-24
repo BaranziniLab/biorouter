@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { composerCopy } from '../composer/copy';
 import { welcomeCopy } from '../onboarding';
-import { crewStatusCopy } from '../state/copy';
+import { crewObservationCopy, crewStatusCopy } from '../state/copy';
 import { channelAction, installResizeObserverStub } from '../test/crewTestUtils';
 import {
   channelReady,
@@ -129,7 +129,9 @@ describe('re-verification never blanks the page (ui-redesign-spec, “Main-area 
     await waitFor(() => expect(currentCrew().lastVerified).toBeNull());
     expect(screen.queryByText('Counts are in.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'general channel menu' })).toBeNull();
-    expect(screen.getByText(/observation broke/)).toBeInTheDocument();
+    // In plain words; the daemon's own sentence is never shown.
+    expect(screen.getByText(crewObservationCopy.updatesStopped('lab'))).toBeInTheDocument();
+    expect(screen.queryByText(/observation broke/)).toBeNull();
     // Still never the first-run screen: the workspace is known, only its view is withheld.
     expect(screen.queryByText(welcomeCopy.title)).toBeNull();
     expect(screen.getByRole('navigation', { name: 'Crew' })).toBeInTheDocument();

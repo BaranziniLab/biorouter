@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
+import { crewObservationCopy } from './copy';
 import {
   CrewControllerProvider,
   useCrewErrorSlot,
@@ -368,7 +369,9 @@ describe('the last verified view', () => {
       })
     );
     await waitFor(() => expect(crew.lastVerified).toBeNull());
-    expect(crew.refreshError).toMatch(/^Room observation ended\. .*unsent draft is retained/);
+    // Plain words, never the daemon's sentence; nothing about a draft the composer never held.
+    expect(crew.refreshError).toBe(crewObservationCopy.updatesStopped('Fixture'));
+    expect(crew.refreshErrorCode).toBe('observation_refused');
     expect(crew.screen).toBe('updates-paused');
     expect(crew.status).toBe('updates-unavailable');
   });
@@ -731,6 +734,103 @@ describe('requests, intents and the composer seams', () => {
     expect(crew.status).toBe('not-joined');
     act(() => crew.setJoinStatus('unsupported'));
     expect(crew.screen).toBe('updates-paused');
+  });
+});
+
+describe('keeping one live observer', () => {
+  const imaging = {
+    id: 'team-2',
+    name: 'Imaging',
+    created_by: actor.id,
+    members: [actor.id],
+    general_channel_id: 'channel-2',
+  };
+  const imagingGeneral = { ...channel, id: 'channel-2', team_id: 'team-2' };
+
+  it('starts a new observer when a team is selected whose channel does not change (T-08)', async () => {
+    // A workspace with no team yet: the observer watches no channel.
+    const empty = { ...snapshot, teams: [], channels: [] };
+    const sessions = controllableObserver();
+    renderController();
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0]!.receive({ ...stateFrame, snapshot: empty }));
+    await waitFor(() => expect(crew.screen).toBe('no-team'));
+    expect(crew.channelId).toBe('');
+
+    // Create Team answers, then selects the team the verified view does not have yet.
+    act(() => crew.selectTeam(imaging.id));
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(1));
+    expect(sessions[0]!.signal.aborted).toBe(true);
+    const next = sessions[sessions.length - 1]!;
+    act(() =>
+      next.receive({
+        ...stateFrame,
+        snapshot: { ...snapshot, teams: [imaging], channels: [imagingGeneral] },
+      })
+    );
+    await waitFor(() => expect(crew.team?.name).toBe('Imaging'));
+    await waitFor(() => expect(crew.channelId).toBe(imagingGeneral.id));
+  });
+
+  it('observes again when the selected connection is selected again', async () => {
+    renderController();
+    await verifiedChannel();
+    const observed = mocks.observeCrew.mock.calls.length;
+    act(() => crew.selectConnection(connection.id));
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observed));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+  });
+
+  it('reads the list again when the window comes back, so a terminal’s connection shows (T-51)', async () => {
+    renderController();
+    await verifiedChannel();
+    const added = { ...connection, id: 'conn-2', name: 'From the terminal' };
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection, added] };
+      return {};
+    });
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() =>
+      expect(crew.connections.map((item) => item.id)).toEqual(['conn-1', 'conn-2'])
+    );
+    // Focus and visibility together are read once.
+    expect(mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections')).toHaveLength(2);
+    expect(crew.connectionId).toBe(connection.id);
+  });
+
+  it('reads "Updating…" while it observes again by itself, never "Updates unavailable"', async () => {
+    renderController({ keepLastVerifiedView: true });
+    await verifiedChannel();
+    const sessions = controllableObserver();
+    await act(async () => {
+      await crew.refresh();
+    });
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.status).toBe('connected'));
+    const ended = sessions.length;
+    act(() =>
+      sessions[sessions.length - 1]!.receive({
+        type: 'error',
+        clear: true,
+        code: 'policy_changed',
+        error: 'Room observation ended.',
+      })
+    );
+    expect(crew.status).toBe('updating');
+    expect(crew.reverifying).toBe(true);
+    expect(crew.refreshError).toBeNull();
+    expect(crew.snapshot).toBeNull();
+    expect(crew.lastVerified).toBeNull();
+    // It observes again by itself (after 0.3 s), with no Retry.
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(ended));
+    const again = sessions[sessions.length - 1]!;
+    act(() => again.receive(stateFrame));
+    await waitFor(() => expect(crew.status).toBe('connected'));
+    expect(crew.reverifying).toBe(false);
   });
 });
 

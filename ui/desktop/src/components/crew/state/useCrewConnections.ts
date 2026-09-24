@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useState,
   type Dispatch,
   type MutableRefObject,
@@ -57,7 +58,20 @@ export interface CrewConnections {
   prepareHostingDevice(): Promise<PreparedDevice>;
 }
 
-/** The saved connections and the selected one. Every call here throws on failure. */
+/**
+ * How long focus and visibility changes settle before the list is read again: switching windows
+ * fires `focus` and `visibilitychange` together, and one read answers both.
+ */
+export const CONNECTIONS_RELOAD_DEBOUNCE_MS = 250;
+
+/**
+ * The saved connections and the selected one. Every call here throws on failure.
+ *
+ * The list is read on mount and after every change made here, and again whenever the window comes
+ * back into view (focus, or the page becoming visible): a connection saved or connected from the
+ * terminal (`biorouter crew …`) shares the daemon but not this page, and used to stay invisible
+ * until a reload (T-51). A failed background read keeps the list it has.
+ */
 export function useCrewConnections(generation: MutableRefObject<number>): CrewConnections {
   const [connections, setConnections] = useState<CrewConnection[]>([]);
   const [connectionId, setConnectionId] = useState('');
@@ -82,6 +96,24 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
     },
     [generation]
   );
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reload = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void loadConnections().catch(() => undefined);
+      }, CONNECTIONS_RELOAD_DEBOUNCE_MS);
+    };
+    window.addEventListener('focus', reload);
+    document.addEventListener('visibilitychange', reload);
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener('focus', reload);
+      document.removeEventListener('visibilitychange', reload);
+    };
+  }, [loadConnections]);
   const markConnectionsFailed = useCallback(
     () => setConnectionsState((state) => (state === 'loaded' ? state : 'failed')),
     []

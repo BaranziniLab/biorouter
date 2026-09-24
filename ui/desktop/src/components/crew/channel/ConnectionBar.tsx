@@ -3,6 +3,7 @@ import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons'
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
+import { parseRefusal, refusalText } from '../dialogs/refusals';
 import { connectionServer } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { connectionBarCopy } from './copy';
@@ -25,6 +26,19 @@ function useHeldFor(active: boolean, delayMs: number): boolean {
   return active && held;
 }
 
+/**
+ * An action error in words: the copy deck's or the broker's own sentence for a refusal it knows,
+ * and never a bare `code: ` prefix (a `name_taken: …` reached this bar verbatim once the dialog that
+ * caused it had closed, T-08).
+ */
+export function actionErrorText(message: string): string {
+  const words = refusalText(message);
+  const refusal = parseRefusal(words);
+  if (!refusal.code) return words;
+  const sentence = refusal.sentence.trim();
+  return sentence ? sentence.charAt(0).toUpperCase() + sentence.slice(1) : words;
+}
+
 export interface ConnectionBarProps {
   /** Layout only. */
   className?: string;
@@ -34,7 +48,11 @@ export interface ConnectionBarProps {
  * The connection bar: the top of the channel column, under the header (ui-redesign-spec, "Where
  * errors render: exactly once"). At most one note of each kind, in this order:
  *
- * 1. the observation error, with **Retry** ("Retry Crew updates");
+ * 1. the observation error, with **Retry** ("Retry Crew updates") — but only for a member on a
+ *    connection the daemon calls connected. Before a person is let in (not joined yet, or the join
+ *    screen) the join card says what is happening, and on an offline connection the screen offers
+ *    Connect; a note there would repeat it with a Retry that can only fail the same way (T-06,
+ *    T-09). The error stays in the controller, where the join probe reads its code.
  * 2. an observer or global action error — or a connect failure whose own surface is not on
  *    screen — with Dismiss (Try again for a connect failure);
  * 3. the one highest-priority need: the vault is locked (Unlock), the server can't be reached
@@ -73,6 +91,9 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const host = connectionServer(connection) || connection?.name || '';
   const unreachable = failure?.kind === 'unreachable';
   const workspace = workspaceLabel(crew, crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
+  const notMember = crew.status === 'not-joined' || crew.screen === 'join';
+  const showObservationError =
+    Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected');
 
   const tryAgain = (
     <Button
@@ -112,14 +133,14 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
 
   return (
     <div className={cn('crew-connection-bar', className)} data-testid="crew-connection-bar">
-      {refreshError && (
+      {showObservationError && (
         <Note
           tone="warning"
           role="alert"
           icon={AlertTriangle}
           action={
-            // Retrying can only help a connection the daemon calls connected; a saved-offline
-            // one is answered with the same refusal, and its one action is Connect.
+            // Retrying can only help a connection the daemon calls connected. With no saved
+            // connection at all, the screen under the bar has its own Try again.
             connection?.status === 'connected' ? (
               <Button
                 type="button"
@@ -156,7 +177,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>{actionError.message}</p>
+          <p>{actionErrorText(actionError.message)}</p>
         </Note>
       )}
 

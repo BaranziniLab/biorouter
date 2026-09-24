@@ -20,8 +20,10 @@ function Probe() {
   return null;
 }
 
-const UNKNOWN_DEVICE =
-  'unauthorized: unknown device Your unsent draft is retained for this channel. Retry to verify access before sending.';
+/** An older daemon's words for a refused device: the probe still reads them as a fallback. */
+const UNKNOWN_DEVICE = 'unauthorized: unknown device Your unsent draft is retained.';
+/** What the bar says now: plain words, and the code beside them. */
+const PLAIN = 'Live updates for lab stopped.';
 
 function renderProbe(overrides: Partial<CrewController> = {}) {
   const connection = fakeConnection();
@@ -84,6 +86,65 @@ describe('useJoinProbe', () => {
       connection: fakeConnection({ status: 'disconnected' }),
     });
     renderProbe({ refreshError: UNKNOWN_DEVICE, joinStatus: 'invited' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.crewHttp).not.toHaveBeenCalled();
+  });
+
+  it.each(['unauthorized', 'unknown_device'])(
+    'asks when the observation ended with the broker’s unknown-device code %s, whatever it says',
+    async (code) => {
+      mocks.crewHttp.mockResolvedValue({ status: 'invited', code: '7QK2M9XA3JTPWZ4D' });
+      const { crew } = renderProbe({ refreshError: PLAIN, refreshErrorCode: code });
+      await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('invited'));
+    }
+  );
+
+  it('asks about a join started from a terminal: refused on a connection never verified here (T-14)', async () => {
+    // No "joining" flag (the CLI leaves none) and no device named in the words.
+    mocks.crewHttp.mockResolvedValue({ status: 'approved' });
+    const { crew } = renderProbe({ refreshError: PLAIN, refreshErrorCode: 'observation_refused' });
+    await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('approved'));
+  });
+
+  it('sends no one to the token path on that weaker evidence alone', async () => {
+    mocks.crewHttp.mockResolvedValue({ status: 'unsupported' });
+    const { crew } = renderProbe({ refreshError: PLAIN, refreshErrorCode: 'observation_refused' });
+    await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('unsupported'));
+    expect(crew.setJoinStatus).not.toHaveBeenCalledWith(LEGACY_JOIN_STATUS);
+
+    mocks.crewHttp.mockReset();
+    mocks.crewHttp.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
+    const stale = renderProbe({ refreshError: PLAIN, refreshErrorCode: 'observation_refused' });
+    await waitFor(() => expect(mocks.crewHttp).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stale.crew.setJoinStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not ask again about a connection this window has already seen verified', async () => {
+    const verified = {
+      snapshot: fakeSnapshot(),
+      observedPrivacy: {
+        connectionId: 'conn-1',
+        mode: 'private' as const,
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    };
+    const { view } = renderProbe(verified);
+    // The same member's updates then end: a dropped bridge, not a join.
+    view.update({
+      snapshot: null,
+      observedPrivacy: null,
+      refreshError: PLAIN,
+      refreshErrorCode: 'observation_refused',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.crewHttp).not.toHaveBeenCalled();
+  });
+
+  it('never asks for a member whose updates stopped for a reason that is not about the device', async () => {
+    renderProbe({ refreshError: PLAIN, refreshErrorCode: 'policy_changed' });
+    renderProbe({ refreshError: PLAIN, refreshErrorCode: null });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mocks.crewHttp).not.toHaveBeenCalled();
   });

@@ -11,6 +11,7 @@ export type ConnectionStatusKey =
   | 'connected'
   | 'not-joined'
   | 'updates-unavailable'
+  | 'updating'
   | 'checking'
   | 'sign-in-needed'
   | 'not-set-up'
@@ -45,6 +46,7 @@ export const CONNECTION_STATUS: Readonly<
     word: crewStatusCopy.updatesUnavailable,
     spinner: false,
   },
+  updating: { tone: 'neutral', word: crewStatusCopy.updating, spinner: false },
   checking: { tone: 'neutral', word: crewStatusCopy.checking, spinner: false },
   'sign-in-needed': { tone: 'warning', word: crewStatusCopy.signInNeeded, spinner: false },
   'not-set-up': { tone: 'danger', word: crewStatusCopy.notSetUp, spinner: false },
@@ -65,6 +67,11 @@ export interface ConnectionStatusInput {
   observationError: boolean;
   /** Connected but not a member yet (join status other than joined). */
   notJoined: boolean;
+  /**
+   * A verified view ended for a recoverable reason and is being observed again by itself: a
+   * neutral "Updating…", never "Updates unavailable". Absent: false.
+   */
+  reverifying?: boolean;
 }
 
 /**
@@ -76,6 +83,7 @@ export interface ConnectionStatusInput {
  */
 export function deriveConnectionStatus(input: ConnectionStatusInput): ConnectionStatusKey | null {
   const { connection, lastConnectFailure, inFlight, verified, observationError, notJoined } = input;
+  const reverifying = input.reverifying === true;
   if (!connection) return null;
   const failure = lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'cant-verify';
@@ -83,7 +91,8 @@ export function deriveConnectionStatus(input: ConnectionStatusInput): Connection
   if (verified) return 'connected';
   if (notJoined) return 'not-joined';
   if (connection.status === 'connected') {
-    return observationError ? 'updates-unavailable' : 'checking';
+    if (observationError) return 'updates-unavailable';
+    return reverifying ? 'updating' : 'checking';
   }
   if (failure === 'auth_required' || connection.status === 'authentication_required')
     return 'sign-in-needed';

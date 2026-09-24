@@ -302,6 +302,17 @@ export interface CrewController {
    */
   capabilities?: readonly string[] | null;
   refreshError: string | null;
+  /**
+   * The code the observation ended with, beside `refreshError`: the broker's own refusal code when
+   * the daemon passed one on (`unauthorized`, `stale_cursor`…), else the daemon's
+   * (`observation_refused`, `policy_changed`…). The join probe asks by it, not by the words.
+   */
+  refreshErrorCode?: string | null;
+  /**
+   * A verified view ended for a recoverable reason (a policy epoch moved, a stale cursor…) and is
+   * being observed again by itself: nothing is verified, nothing is wrong yet. Status "Updating…".
+   */
+  reverifying?: boolean;
   /** Unchanged order: connections before observe. */
   refresh(): Promise<void>;
   loadOlder(): void;

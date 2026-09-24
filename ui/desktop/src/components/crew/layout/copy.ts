@@ -20,7 +20,7 @@ export const layoutCopy = {
   loadingChannels: 'Loading your channels…',
 
   /** `updates-paused`: under the connection bar, which holds the one Retry. */
-  updatesPaused: 'Messages are hidden until Crew reconnects.',
+  updatesPaused: 'Messages will show here again once live updates are back.',
   /** `updates-paused` with no saved connection loaded at all: nothing in the bar can retry. */
   tryAgain: 'Try again',
 

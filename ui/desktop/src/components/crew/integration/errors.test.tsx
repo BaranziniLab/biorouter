@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { crewObservationCopy } from '../state/copy';
 import type { ErrorSource, PaneIntent } from '../state/types';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import { channelReady, currentCrew, installDaemon, renderCrew, richMessages } from './harness';
@@ -127,8 +128,10 @@ describe('every error renders exactly once (ui-redesign-spec, “Where errors re
 
     act(() => daemon.emit({ type: 'error', error: 'observation broke', code: 'temporary' }));
 
-    await waitFor(() => expect(screen.getAllByText(/observation broke/)).toHaveLength(1));
-    expect(within(region('bar')).getByText(/observation broke/)).toBeInTheDocument();
+    const stopped = crewObservationCopy.updatesStopped('lab');
+    await waitFor(() => expect(screen.getAllByText(stopped)).toHaveLength(1));
+    expect(within(region('bar')).getByText(stopped)).toBeInTheDocument();
+    expect(screen.queryByText(/observation broke/)).toBeNull();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     // Nothing verified is left to show: the pane's intent is dropped with the channel view.
     expect(currentCrew().ui.pane).toBeNull();

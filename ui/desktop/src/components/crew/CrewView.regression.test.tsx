@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import CrewApp from './CrewApp';
 import { CrewHttpError } from './crewApi';
 import { layoutCopy } from './layout/copy';
+import { crewObservationCopy } from './state/copy';
 import {
   chooseModel,
   channelAction,
@@ -214,6 +215,24 @@ function defaultHttp() {
   mocks.getProviderModels.mockResolvedValue(['fixture-model']);
   mocks.read.mockResolvedValue('');
   installObservation();
+}
+
+/**
+ * Open Sign in the way a connected workspace now offers it (T-40): the workspace menu lists
+ * "Sign in…" only while sign-in is needed, and a Reconnect whose server asks for credentials
+ * opens the dialog by itself. Connect answers normally again once the dialog is open.
+ */
+async function openSignInThroughReconnect() {
+  const normal = mocks.crewHttp.getMockImplementation();
+  mocks.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
+    if (path === '/connections/conn-1/connect' && method === 'POST')
+      throw new CrewHttpError('Crew SSH failure [ssh_eof]', 400, 'crew_ssh_auth_required');
+    return normal?.(path, method, body);
+  });
+  await workspaceAction('Reconnect');
+  const complete = await screen.findByRole('button', { name: 'Simulate authenticated completion' });
+  if (normal) mocks.crewHttp.mockImplementation(normal);
+  return complete;
 }
 
 describe('CrewView action and uncertain-start regressions', () => {
@@ -456,7 +475,13 @@ describe('CrewView action and uncertain-start regressions', () => {
     await act(async () => {
       failObserver?.();
     });
-    expect(await screen.findByText(/temporary observation failure/)).toBeInTheDocument();
+    // Plain words, and the draft (still in the composer while the post is in flight) is kept.
+    expect(
+      await screen.findByText(
+        `${crewObservationCopy.updatesStopped('Fixture')} ${crewObservationCopy.draftRetained}`
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/temporary observation failure/)).toBeNull();
     releasePost();
     await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
 
@@ -530,13 +555,11 @@ describe('CrewView action and uncertain-start regressions', () => {
   it('refreshes after authenticated completion without issuing a second manual connect request', async () => {
     renderCrew();
     await screen.findByText('Welcome to #general');
+    const complete = await openSignInThroughReconnect();
     mocks.crewHttp.mockClear();
     mocks.crewRequest.mockClear();
 
-    await workspaceAction('Sign in…');
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
-    );
+    fireEvent.click(complete);
 
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(1));
     expect(
@@ -646,8 +669,13 @@ describe('CrewView action and uncertain-start regressions', () => {
     const beforeFailure = mocks.observeCrew.mock.calls.length;
     await workspaceAction('Reconnect');
     await waitFor(() =>
-      expect(screen.getByText(/observer temporarily unavailable/)).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          `${crewObservationCopy.updatesStopped('Fixture')} ${crewObservationCopy.draftRetained}`
+        )
+      ).toBeInTheDocument()
     );
+    expect(screen.queryByText(/observer temporarily unavailable/)).toBeNull();
     expect(mocks.observeCrew.mock.calls.length).toBe(beforeFailure + 1);
 
     observerMode = 'success';
@@ -658,7 +686,10 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
   });
 
-  it('reloads changed connection metadata before retrying observation after a policy terminal', async () => {
+  it('recovers from a policy terminal by itself, reloading changed connection metadata first', async () => {
+    // Live QA round 1, P0-1: the broker moves the workspace policy epoch for every accepted
+    // invitation, and the daemon ends every member's observation with `policy_changed`. That
+    // used to wipe the view, clear the draft and wait for Retry; now it observes again by itself.
     const refreshedConnection = {
       ...connection,
       name: 'Renamed workspace',
@@ -696,7 +727,8 @@ describe('CrewView action and uncertain-start regressions', () => {
             type: 'error',
             clear: true,
             code: 'policy_changed',
-            error: 'Workspace policy changed while observing.',
+            error:
+              'Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.',
           });
           // A late frame from the retired observer must not restore the old metadata.
           receive(observerState());
@@ -707,15 +739,17 @@ describe('CrewView action and uncertain-start regressions', () => {
       }
     );
     renderCrew();
-    await screen.findByText(/Workspace policy changed while observing/);
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
 
     await waitFor(() => expect(screen.getByText('alice@new-host')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /^Renamed workspace/ })).toBeInTheDocument();
-    // The reload lands before the retried observation, and nothing reloads again after it. Once
-    // the retried observation verifies the workspace, the unchanged controller may restart it for
-    // the channel it just selected; how soon that lands against this assertion is timing, not
-    // order, so it is checked for what it is rather than counted.
+    // No banner, no Retry, and never the daemon's sentence.
+    expect(screen.queryByRole('button', { name: 'Retry Crew updates' })).toBeNull();
+    expect(screen.queryByText(/Room observation ended/)).toBeNull();
+    expect(screen.queryByText(/stopped/)).toBeNull();
+    // The reload lands before the observation that recovers, and nothing reloads again after it.
+    // Once it verifies the workspace, the unchanged controller may restart it for the channel it
+    // just selected; how soon that lands against this assertion is timing, not order, so it is
+    // checked for what it is rather than counted.
     expect(events.slice(0, 4)).toEqual([
       'connections:1',
       'observe:1',
@@ -752,10 +786,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.change(privateComposer, { target: { value: 'private draft to clear' } });
 
     observedMode = 'public';
-    await workspaceAction('Sign in…');
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
-    );
+    fireEvent.click(await openSignInThroughReconnect());
     // The status row's chip is the effective mode (it replaced the privacy select and its
     // "Effective: …" line); the payload assertions below still prove the wire.
     await waitFor(() =>
@@ -818,10 +849,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
 
     observedMode = 'private';
-    await workspaceAction('Sign in…');
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Simulate authenticated completion' })
-    );
+    fireEvent.click(await openSignInThroughReconnect());
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^Privacy: Private/ })).toBeInTheDocument()
     );
