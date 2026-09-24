@@ -17,9 +17,10 @@ const KEY = 'credentials';
 
 type CredentialAction = 'init' | 'unlock' | 'lock';
 /**
- * `file` is the plain-file store — a development profile (`BIOROUTER_DEV_PROFILE_ROOT` with the
- * keyring disabled), and the automatic fallback on a headless Linux with no keyring: said as such,
- * never as a keychain it is not using (QA T-49).
+ * `file` is the plain-file store, and only a development profile reports it: the daemon chooses it
+ * when the keyring is disabled AND `BIOROUTER_DEV_PROFILE_ROOT` is an absolute path
+ * (`file_credentials_enabled`, crew/mod.rs). It is no fallback for a machine without a keyring.
+ * Said as such, "(development profile)", never as a keychain it is not using (QA T-49).
  */
 type CredentialBackend = 'keyring' | 'encrypted_vault' | 'file';
 interface CredentialStatus {

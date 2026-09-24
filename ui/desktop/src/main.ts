@@ -4910,8 +4910,10 @@ function registerCliInstallHandlers() {
       });
       if (!response.ok) throw new Error('Crew credential status is unavailable.');
       const status = await response.json();
-      // `file` is the plain-file store: a development profile, and the automatic fallback on a
-      // headless Linux with no keyring (QA T-49). Refusing it left Keys and security unreadable.
+      // `file` is the plain-file store, and only a development profile reports it: the daemon
+      // chooses it when `BIOROUTER_DISABLE_KEYRING=true` AND `BIOROUTER_DEV_PROFILE_ROOT` is an
+      // absolute path (`file_credentials_enabled`, crew/mod.rs), never as a fallback for a machine
+      // with no keyring (QA T-49). Refusing it left Keys and security unreadable (QA Q2-02).
       if (
         !['keyring', 'encrypted_vault', 'file'].includes(status.backend) ||
         typeof status.initialized !== 'boolean' ||
