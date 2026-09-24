@@ -153,6 +153,21 @@ async fn real_source_acl_revocation_clears_enqueued_and_waiting_observer_frames(
             .unwrap(),
         frame_value
     );
+    positive.last_state = Some(tokio::time::Instant::now() - Duration::from_secs(3));
+    let state = positive
+        .admit_frame(
+            &Bytes::from_static(br#"{"type":"state"}"#),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("successful state admission");
+    assert_eq!(state["type"], "state");
+    positive.pending.push_back(message.clone());
+    let after_state = positive
+        .next_frame(&CancellationToken::new())
+        .await
+        .expect("queued message follows a successfully admitted state");
+    assert_eq!(after_state["type"], "messages");
 
     let (sender, receiver) = mpsc::channel(1);
     sender

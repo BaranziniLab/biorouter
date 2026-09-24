@@ -1563,7 +1563,7 @@ mod tests {
     async fn observer_parser_handles_split_frames_and_stops_on_reconnect() {
         let body = observer_body(vec![
             br#"{"type":"state""#.to_vec(),
-            br#","connection_id":"synthetic-connection","connection_mode":"private","snapshot":{},"runs":[]}
+            br#","connection_id":"synthetic-connection","connection_mode":"private","connection_policy_epoch":7,"connection_institution_id":"ucsf","snapshot":{},"runs":[]}
 {"type":"reconnect","cursor":"cursor-2"}
 "#
             .to_vec(),
@@ -1583,7 +1583,17 @@ mod tests {
         .expect("split NDJSON frames parse");
         assert_eq!(cursor.as_deref(), Some("cursor-2"));
         assert_eq!(frames.len(), 2);
-        assert!(matches!(frames[0], ObserveEvent::State { .. }));
+        match &frames[0] {
+            ObserveEvent::State {
+                connection_policy_epoch,
+                connection_institution_id,
+                ..
+            } => {
+                assert_eq!(*connection_policy_epoch, 7);
+                assert_eq!(connection_institution_id.as_deref(), Some("ucsf"));
+            }
+            _ => panic!("expected state frame"),
+        }
     }
 
     #[tokio::test]

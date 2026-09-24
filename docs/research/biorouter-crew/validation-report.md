@@ -2644,3 +2644,63 @@ A fourth isolated profile uses normal Settings for a dummy Versa provider and re
 ### Institution final local gate
 
 After the broker consent-parser refactor and staging the reviewed generated API contract, `source bin/activate-hermit && CARGO_BUILD_JOBS=2 just check-everything` completed with exit 0 at 23:12:36 UTC on 2026-09-23. The local receipt and complete log are named `crew-check-everything-institution-20260923T1650Z.receipt` and `.log`. Formatting, strict and baseline Clippy, socket inheritance, UI checks, fresh schema generation, version/brand/computer-use checks, registry and privacy registry all passed. Focused counts remain 62 core, 6 session, 36 broker and 37 UI tests. The preceding schema failures compared the intentional generated changes against an unstaged index; the final run regenerated them against the staged canonical files without drift. Native builds, hosted checks for the institution revision and live institution acceptance are still pending.
+
+### Published e53edfb1 native build checkpoint
+
+Published source `e53edfb1a485b74734decba149969c773b2e1ef4` is clean and remains on draft PR #366. Its source full `just check-everything` exited 0 at 23:12:36 UTC. Native manifest `/private/tmp/crew-institution-native-20260923T172000Z/manifest.json` records the clean source and command `source bin/activate-hermit && CARGO_TARGET_DIR=/private/tmp/biorouter-crew-target CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo build --locked -p biorouter-cli --bin biorouter -p biorouter-server --bin biorouterd`. CLI SHA-256 is `70cb5f24d584218e44b16283827edcbb02359911d1aaba9dc464190140aa8f02`; daemon is `e710f908f7fa055f6600c4a3a4345b0dd6c37ef6650f974956ca25165b453065`. Both are mode 0555/version 1.91.1, with Crew/privacy help output recorded in the manifest.
+
+All four supported e53 daemons are now upgraded, with exact owned old processes stopped. Automatic stdin proof launched all four GUI clients; CDP ports 9222–9225 are renderer-ready after normal reload. Installed renderer `/private/tmp/crew-renderer-institution-20260923T154500Z` has verified index SHA-256 `35abf47d2bb93167f801cb8c18ff5d2d22c9fcf1e30a3a38307c4eea9ed04971`. Alice and the fourth profile generated public bootstrap identities through normal UI; Add SSH forms await broker metadata. The fourth-profile recorder is reset to zero and idle. This qualifies installed artifacts and launch only, not AWS or live institution acceptance. Supported real-Versa self-test and official Linux workflow 35932706989 remain pending. Earlier failed/inconclusive attempts and platform/fault limits retain their original scope.
+
+### e53 Linux build, fresh fixture and pending resume correction
+
+Official backend workflow 35932706989 succeeds. `/private/tmp/crew-linux-e53edfb1-ci/verified/VERIFIED-MANIFEST.json` records mode-0555 x86-64 ELF artifacts with maximum GLIBC 2.30: CLI `b3627f82dbcdb2672882ae91b18c21c190970080cace9872580126ef2381564c`, daemon `b93f26a4d2bcdcec0b291b6d523c66eae24207d4c18098abceed28ff5adca4d5`, broker `ab0a4532a83166be7430b23ba472f79ebf49008556debb98bb03b97baf099319`. The actual new AWS receipt `/private/tmp/crew-three-user-e53-20260923T234040Z-luna/E53-BROKER-RECEIPT.json` records four ordinary UIDs 10001–10004 and two rootless brokers ready. Cleanup is due `2026-09-24T01:10:57Z`, not yet completed; GUI acceptance has just begun.
+
+Required e53 CI failed two stale fixtures: standalone test-module census classification and CLI observer missing epoch/label fields. Local corrections pass 1+1+6 selected tests. The current-diff gate encountered a duplicate-cfg failure and is held for the new correction. The earlier e53 source gate exit 0 remains valid for that checkpoint, not the current diff.
+
+Actual Versa GPT-5.5 self-test has a typed no-human-grant refusal pass. Its delegated help/version batch used stale PATH/repository binaries, so it does not qualify e53. Correct local resume of session `20260923_11` exposed a real saved-provider marker rejection. A trusted session-store restoration wrapper is implemented: matching provider/model identity is required, changed binding creates a fresh provider, and differing temperature is refused. Independent final source review found no issues; Luna tests and runtime replay are pending. No full self-test pass is claimed.
+
+### Bounded live institution mismatch refusal
+
+On the fresh e53 fixture, the fourth profile used normal GUI connection, initialization and host confirmation of `foreign-synthetic`/private. The selected provider was `versa_azure`, private/UCSF, model `gpt-5.5-2026-04-24`. Ask my agent refused the acknowledgement task with: “Crew institution does not match the model’s resolved affiliation; choose a local model or a model approved for this institution”. `/private/tmp/crew-fourth-connect-recorder.log` was zero bytes before and after; root independently verified its size. No run/context receipt was visible. Independent CLI no-run corroboration is still underway and is not claimed by this UI/recorder result. Alice’s normal GUI connection, initialization and `ucsf` confirmation also pass; positive collaboration is pending.
+
+### Fresh e53 membership and realtime subset
+
+Bob and Carol completed normal GUI connection/device enrollment and team-invitation acceptance; all three members appear in `E53UCSFAcceptanceTeam/#general`. Bob’s initial problem was fixture misinput (broker socket entered in Jump hosts), corrected through normal UI only; no product defect is established. All three human messages persist. Initial refresh-assisted visibility does not establish realtime delivery.
+
+A separate actual check did: Carol’s Enter marker `E53_REALTIME_ENTER_1719` appeared automatically in the untouched connected Bob view after 4,073 ms, without refresh/reconnect or join flicker. Bob’s Shift-Enter produced the exact two-line composer, followed by normal clear. Fresh three-owner Versa tasks/files remain pending. Fourth-profile independent CLI no-run corroboration was blocked by automatic review; root requested specific user approval without a password requirement. No approval receipt or CLI pass is claimed.
+
+### Fresh three-owner Versa computation and attachment passes
+
+All three fresh normal-UI Versa runs completed actual remote execution with exit 0, then read/write/attach, with three rows and the expected per-owner totals. These are new computation results, distinct from earlier read-only recoveries.
+
+| Owner / UID | Run / session | Result bytes / total / SHA-256 | Blob / attachment message |
+|---|---|---|---|
+| Alice / 10001 | `6055cd80-4225-4712-98b0-006c9c9b6c84` / `20260924_2` | 56 / 10 / `3367dd8fbc1b6991c772d84b0d2509e1a1b15ca3ad7e0dd3a70e7591970025b2` | `0bc9f11c-9bea-4892-80fa-663ea091c09a` / `7e610cff-dfe5-4bbb-a757-10fea5e39627` |
+| Bob / 10002 | `2276d3f2-d05e-4148-b423-ab2bf7f51cc8` / `20260924_1` | 55 / 22 / `f647613810ddaa1f9a372ac77d26526fbb636714a79bc8626bfa1a887cc427f8` | `690f15ce-b99e-4ada-930f-961e45d5987f` / `c5071a5b-72e2-46a7-8c63-f785dd2f1666` |
+| Carol / 10003 | `0571c1f4-5eab-4ae8-8eeb-492b2089fb5e` / `20260924_1` | 55 / 28 / `d7e4e1128601dbb380058a4b63e995d820c477e30429f05c034c29632f7786ec` | `c50a9f30-cb2a-485f-9678-f3ca3e1dbea1` / `b4a9fe29-1cc1-475e-8dcd-80cdfb38c5f5` |
+
+Correction: Bob/Carol’s three attachment IDs were visible in agent-session `crew_context`/history, not necessarily normal channel cards. Peer channel attachment visibility is UNVERIFIED: the actual refreshed Bob channel showed only older posts and Alice’s failed task, with a possible history-paging issue under investigation. Alice’s stale view and native Save remain unqualified. `/private/tmp/crew-three-user-e53-20260923T234040Z-luna/alice-synthetic-job-receipt.json` independently proves Alice’s file UID, size and hash, but its copied GUI job metadata is not independent job corroboration. Bob/Carol independent corroboration is running. Alice’s earlier missing-`calculate.py` attempt failed exit 2 and remains a separate failed attempt. Resume-fix tests/full gate and fourth-profile CLI-specific approval remain pending; no full acceptance claim follows from these bounded task passes.
+
+### Current resume/observer verification boundary
+
+The factory suite passes 18 tests, including one new marked-binding causal regression and preexisting cases; the privacy-order audit passes one. `/private/tmp/crew-check-everything-resume-final2-20260923T1830Z.receipt` records full-gate exit 0 at 00:26:01 UTC, before the latest decision-helper and observer changes. New helper behavioral tests are running. The independently reviewed observer starvation correction resets `last_state` after successful delivery-time state reauthorization; its test/runtime qualification is pending. The current gate is held for these changes, with new native artifacts and replay pending.
+
+Latest actual Alice Connect returned HTTP 200 with connected identity verified. The GUI alert is generic: no decoded code was available, so `stale_cursor` is not established; latest observer requests use `initial: latest`. Peer channel attachment visibility/native Save remain unqualified. Bob/Carol independent SSH receipt `/private/tmp/crew-three-user-e53-20260923T234040Z-luna/bob-carol-independent-ssh-receipt.json` proves file UID, bytes and hashes, not independent job exit. Together with Alice’s receipt, all three output files now have that corroboration.
+
+Cleanup watcher PID 8993 is scheduled to independently verify teardown at `2026-09-24T01:10:57Z`. No completed cleanup receipt exists yet.
+
+### Bounded e53 peer channel visibility and native Save
+
+Alice’s actual normal Reconnect retained the existing team/general selection and eventually caught up to 117 messages, rendering all three fresh attachment cards. The earlier missing cards were delayed projection, not lost records. Through the native Save dialog, Alice saved Carol’s 55-byte attachment to `/private/tmp/crew-institution-save-carol-20260924/carol-totals.json`; verified SHA-256 `d7e4e1128601dbb380058a4b63e995d820c477e30429f05c034c29632f7786ec` matches Carol’s independently checked remote output. This is an e53 peer-visibility/native-Save pass. It preserves the initial latency and does not qualify the newer observer fairness correction. No decoded Alice error established stale_cursor; ordinary-chat MCP remains pending.
+
+### Ordinary-chat MCP read/context: normal GUI pass
+
+Alice’s ordinary Versa GPT-5.5 session `20260924_3` used normal `/crew` navigation → `E53UCSFAliceFresh` → Review access and posting permission → Allow this conversation to read and post here. The user requested a read-only summary of the three human markers and selected workspace. Actual UI tool cards showed Connections followed by Request `context.manifest`; the assistant correctly returned all three markers and workspace `bcb3445f-884e-4136-9d7a-dac38c053cf1`. No remote execution or post occurred and no hidden API was used. This qualifies ordinary-chat MCP read/context under normal GUI consent, not the separate upcoming posting/revocation stage. G04/G11 remain partial.
+
+The earlier e53 channel catch-up to 117 items took approximately 75–90 seconds before all three attachment cards and native peer Save qualified. The observer fairness fix was not installed, so neither this catch-up nor the MCP pass qualifies that correction.
+
+### Final reviewed source gate before commit
+
+The new CLI helper behavioral test passes (one test covering same identity, fresh provider, fresh model, missing metadata, temperature identity and mismatch); the marked-binding factory suite passes 18 tests. The existing queued-derived-frame authority regression passes once in the server library and once in the daemon harness: these are duplicate compilation contexts, not two unique cases. The new live fairness case is added but ignored/unexecuted because it requires a disposable ACL fixture; no live fairness pass is claimed.
+
+All product diffs are independently reviewed without findings. Final `just check-everything` exits 0 at `2026-09-24T00:41:39Z`, receipt `/private/tmp/crew-check-everything-resume-observer-final-20260923T1845Z.receipt`. These uncommitted fixes are source-tested and ready for the root commit, with new native build and runtime replay still pending. Earlier e53 live results are not reassigned to them.

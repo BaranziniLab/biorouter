@@ -9506,6 +9506,12 @@ mod tests {
             scanned += 1;
             let src = std::fs::read_to_string(p)
                 .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
+            // A standalone module can be compiled only through a test-gated
+            // path. It is test fixture code even though it lives outside the
+            // enclosing production file's `#[cfg(test)]` module.
+            if src.trim_start().starts_with("#![cfg(test)]") {
+                continue;
+            }
             // Production only. Every `mod tests` in this tree sits below an
             // UNINDENTED `#[cfg(test)]`, and the recall / ingest gates are
             // asserted by setting the column directly from their own tests —

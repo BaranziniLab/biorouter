@@ -8,7 +8,7 @@ use biorouter::config::{
     extensions::get_extension_by_name, get_all_extensions, BioRouterMode, Config, ExtensionConfig,
     PermissionManager,
 };
-use biorouter::providers::create;
+use biorouter::providers::{create, create_from_saved_session};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, ExtensionState, SessionManager};
 use biorouter::workflow::Workflow;
@@ -688,6 +688,26 @@ fn agent_with_session_manager(session_manager: Arc<SessionManager>) -> Agent {
     ))
 }
 
+fn should_restore_saved_provider(
+    saved_provider: Option<&str>,
+    saved_model: Option<&biorouter::model::ModelConfig>,
+    provider_name: &str,
+    model_name: &str,
+    workflow_temperature: Option<f32>,
+) -> anyhow::Result<bool> {
+    let Some(saved_model) = saved_model else {
+        return Ok(false);
+    };
+    if saved_provider != Some(provider_name) || saved_model.model_name != model_name {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        !workflow_temperature.is_some_and(|temperature| saved_model.temperature != Some(temperature)),
+        "The workflow temperature differs from the saved provider configuration. Resume without that override to preserve the saved provider binding."
+    );
+    Ok(true)
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let config = Config::global();
@@ -736,16 +756,19 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // somebody mailed them, the global default — so "why will this chat not
     // start" has four answers and only one of them is obvious.
     let workflow_provider = workflow_settings.and_then(|s| s.biorouter_provider.clone());
-    let (resolved_provider, provider_source) =
-        match (session_config.provider, saved_provider, workflow_provider) {
-            (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
-            (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
-            (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
-            (None, None, None) => (
-                config.get_biorouter_provider().ok(),
-                ProviderSource::GlobalDefault,
-            ),
-        };
+    let (resolved_provider, provider_source) = match (
+        session_config.provider,
+        saved_provider.clone(),
+        workflow_provider,
+    ) {
+        (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
+        (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
+        (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
+        (None, None, None) => (
+            config.get_biorouter_provider().ok(),
+            ProviderSource::GlobalDefault,
+        ),
+    };
     let resolved_model = session_config
         .model
         .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
@@ -767,16 +790,26 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let provider_name = resolved_provider.expect("checked by unconfigured_precondition above");
     let model_name = resolved_model.expect("checked by unconfigured_precondition above");
 
-    let model_config = if session_config.resume
-        && saved_model_config
-            .as_ref()
-            .is_some_and(|mc| mc.model_name == model_name)
-    {
-        let mut config = saved_model_config.unwrap();
-        if let Some(temp) = workflow_settings.and_then(|s| s.temperature) {
-            config = config.with_temperature(Some(temp));
+    let restore_saved_provider = if session_config.resume {
+        match should_restore_saved_provider(
+            saved_provider.as_deref(),
+            saved_model_config.as_ref(),
+            &provider_name,
+            &model_name,
+            workflow_settings.and_then(|settings| settings.temperature),
+        ) {
+            Ok(restore) => restore,
+            Err(error) => {
+                output::render_error(&error.to_string());
+                close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+                process::exit(1);
+            }
         }
-        config
+    } else {
+        false
+    };
+    let model_config = if restore_saved_provider {
+        saved_model_config.unwrap()
     } else {
         let temperature = workflow_settings.and_then(|s| s.temperature);
         match biorouter::model::ModelConfig::new(&model_name) {
@@ -827,7 +860,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         process::exit(1);
     }
 
-    let new_provider = match create(&provider_name, model_config).await {
+    let provider_result = if restore_saved_provider {
+        create_from_saved_session(
+            &session_manager,
+            session_config
+                .session_id
+                .as_deref()
+                .expect("saved provider requires a session"),
+            &provider_name,
+            &model_name,
+        )
+        .await
+    } else {
+        create(&provider_name, model_config).await
+    };
+    let new_provider = match provider_result {
         Ok(provider) => provider,
         Err(e) => {
             // `render_error` already prints `error:`, and `end_sentence` already
@@ -2062,6 +2109,62 @@ mod tests {
         assert_eq!(error_message, "test error");
     }
 
+    #[test]
+    fn restore_decision_accepts_exact_identity_and_rejects_drift_or_temperature_change() {
+        let mut saved = biorouter::model::ModelConfig::new_or_fail("synthetic-resume-model");
+        saved.temperature = Some(0.4);
+
+        assert!(should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            None,
+        )
+        .unwrap());
+        assert!(should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.4),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("other-provider"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.9),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "different-model",
+            Some(0.9),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("versa"),
+            None,
+            "versa",
+            "synthetic-resume-model",
+            None,
+        )
+        .unwrap());
+        let error = should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.9),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("temperature differs"));
+    }
+
     /// Issue #56 Task 31, the half the plan writes as `assert_eq!(turns_started(),
     /// 0)`. There is no turn counter to read here — `build_session` calls
     /// `process::exit` and cannot be driven from a test at all — so what is
@@ -2086,10 +2189,13 @@ mod tests {
         let create = src
             .find("create(&provider_name, model_config)")
             .expect("`providers::create` is no longer called the way this audit looks for");
+        let saved_create = src
+            .find("create_from_saved_session(")
+            .expect("trusted saved-session provider construction is gone");
         assert!(
-            check < create,
-            "the privacy check moved BELOW `providers::create`; a refused chat now builds a \
-             provider (and, a few lines later, binds it) before saying no"
+            check < create && check < saved_create,
+            "the privacy check moved BELOW provider construction; a refused chat now builds a \
+             provider (fresh or trusted saved restore) before saying no"
         );
     }
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{SessionManager, SessionType};
 use crate::conversation::message::Message;
 use crate::privacy::affiliation::InstitutionId;

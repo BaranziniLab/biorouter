@@ -166,6 +166,29 @@ pub async fn create(name: &str, model: ModelConfig) -> Result<Arc<dyn Provider>>
     create_unpersisted(name, model).await
 }
 
+/// Restore only construction state loaded from the session store. Request-supplied
+/// model configurations must continue through `create`, which rejects restore markers.
+pub async fn create_from_saved_session(
+    manager: &crate::session::SessionManager,
+    session_id: &str,
+    expected_provider: &str,
+    expected_model: &str,
+) -> Result<Arc<dyn Provider>> {
+    let session = manager.get_session(session_id, false).await?;
+    anyhow::ensure!(
+        session.provider_name.as_deref() == Some(expected_provider),
+        "Saved session provider changed; resolve the session again before resuming"
+    );
+    let model = session
+        .model_config
+        .ok_or_else(|| anyhow::anyhow!("Saved session has no model configuration"))?;
+    anyhow::ensure!(
+        model.model_name == expected_model,
+        "Saved session model changed; resolve the session again before resuming"
+    );
+    create_from_persisted(expected_provider, model).await
+}
+
 pub(crate) async fn create_from_persisted(
     name: &str,
     model: ModelConfig,
@@ -1024,6 +1047,89 @@ pub(crate) mod tests {
             );
             assert_eq!(restored.get_settings(), (4, 3, 2));
         }
+    }
+
+    #[tokio::test]
+    async fn saved_session_restore_requires_matching_identity_and_model_data() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let session = manager
+            .create_session(
+                std::path::PathBuf::from("/tmp/provider-restore-test"),
+                "restore fixture".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let model = PersistedStandaloneProviderBinding::new(ProviderRestoreBinding::registry(
+            "ollama".into(),
+            restore_test_model("synthetic-resume-model"),
+        ))
+        .unwrap()
+        .to_model_config()
+        .unwrap();
+        let request_model = model.model_name.clone();
+        manager
+            .update(&session.id)
+            .provider_name("ollama")
+            .model_config(model.clone())
+            .apply()
+            .await
+            .unwrap();
+
+        let public_error = match create("ollama", model.clone()).await {
+            Ok(_) => panic!("request-supplied restore marker entered the provider factory"),
+            Err(error) => error,
+        };
+        assert!(public_error
+            .to_string()
+            .contains("reserved for trusted session state"));
+
+        let restored = create_from_saved_session(&manager, &session.id, "ollama", &request_model)
+            .await
+            .unwrap();
+        assert_eq!(restored.get_name(), "ollama");
+        assert_eq!(restored.get_model_config().model_name, request_model);
+
+        let provider_drift = match create_from_saved_session(
+            &manager,
+            &session.id,
+            "openai",
+            &request_model,
+        )
+        .await
+        {
+            Ok(_) => panic!("provider drift unexpectedly restored"),
+            Err(error) => error,
+        };
+        assert!(provider_drift.to_string().contains("provider changed"));
+        let model_drift =
+            match create_from_saved_session(&manager, &session.id, "ollama", "other-model").await {
+                Ok(_) => panic!("model drift unexpectedly restored"),
+                Err(error) => error,
+            };
+        assert!(model_drift.to_string().contains("model changed"));
+
+        let absent = manager
+            .create_session(
+                std::path::PathBuf::from("/tmp/provider-restore-test"),
+                "missing model".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&absent.id)
+            .provider_name("ollama")
+            .apply()
+            .await
+            .unwrap();
+        let missing_model =
+            match create_from_saved_session(&manager, &absent.id, "ollama", &request_model).await {
+                Ok(_) => panic!("session without model unexpectedly restored"),
+                Err(error) => error,
+            };
+        assert!(missing_model.to_string().contains("no model configuration"));
     }
 
     /// A delegated child starts from the parent's live routing snapshot but is

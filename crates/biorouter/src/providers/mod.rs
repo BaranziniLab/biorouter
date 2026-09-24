@@ -61,7 +61,8 @@ pub mod zai;
 pub(crate) use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;
 pub use factory::{
-    create, create_with_default_model, create_with_named_model, providers, refresh_custom_providers,
+    create, create_from_saved_session, create_with_default_model, create_with_named_model,
+    providers, refresh_custom_providers,
 };
 pub use retry::{retry_operation, RetryConfig};
 

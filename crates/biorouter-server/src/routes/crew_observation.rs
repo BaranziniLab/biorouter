@@ -130,7 +130,9 @@ impl Observer {
     async fn admit_frame(&mut self, frame: &Bytes, cancel: &CancellationToken) -> Result<Value> {
         let frame: Value = serde_json::from_slice(frame)?;
         if frame["type"] == "state" {
-            return self.state_frame(cancel).await;
+            let frame = self.state_frame(cancel).await?;
+            self.last_state = Some(tokio::time::Instant::now());
+            return Ok(frame);
         }
         self.authorize(cancel).await?;
         if frame["type"] == "messages" {

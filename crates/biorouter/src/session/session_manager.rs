@@ -9231,7 +9231,6 @@ mod blob_tests {
     }
 }
 
-#[cfg(test)]
 #[path = "session_manager_required_affiliation_tests.rs"]
 mod required_affiliation_tests;
 
