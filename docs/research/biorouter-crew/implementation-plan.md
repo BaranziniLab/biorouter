@@ -1,5 +1,9 @@
 # BioRouter Crew implementation plan
 
+> **What this is.** The plan for BioRouter Crew: SSH-reached, rootless lab collaboration with owned agents and mandatory Private/Public boundaries, covering architecture, identity, privacy enforcement, storage, transfers, UI and agent tools, packaging, testing, and the requirements and work packages added when work resumed (§16).
+> **Status:** Current. Implementation in progress on branch `codex/biorouter-crew`; §16 was last updated on 2026-09-24. A requirement written here is not evidence: measured results are in the [status ledger](implementation-status.md), and live package status and the dated decisions log are in the [resume handoff](handoff-2026-09-24.md).
+> **Audience:** Implementers, reviewers and testers of Crew, and the maintainers who decide its scope.
+
 Status: implementation in progress September 22, 2026 under the user's approved requirements. The rootless broker, saved SSH manager, native Crew view and built-in MCP capability are present in the development worktree; acceptance remains incomplete. See [the evidence ledger](implementation-status.md) for measured results rather than inferring readiness from this plan. This revision supersedes the earlier administrator-managed deployment recommendation. Research performed September 21, 2026 Pacific / September 22 UTC. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8` on `main`. Implementation branch: `codex/biorouter-crew` in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`.
 
 Resumed scope, 2026-09-23: the Crew GUI redesign and human-readable identity requirements are acceptance requirements in [§16](#16-resumed-scope-gui-redesign-and-human-readable-identity-2026-09-23). Live workstream status and standing instructions are in the [resume handoff](handoff-2026-09-24.md#resumed-2026-09-23--live-status).
@@ -113,6 +117,8 @@ One shared workspace can host the whole lab and several teams. Its ordinary host
 
 Save accepted descriptors in each member's home/local settings, so subsequent logins automatically rediscover the same workspace. Persist the chosen short runtime basename in the host manifest and invitation; reuse it on restart only after checking expected ownership/type. If a path is occupied by another UID or has been replaced, fail closed and require a verified descriptor update rather than unlinking someone else's files. Runtime relocation uses a signed generation update authenticated by the already pinned workspace key. A connection alone is not authority to scan other users' private homes or OS account lists. Optional cluster-wide discovery can publish minimal opt-in, account-owned announcements at a pre-existing mutually accessible location; validate filesystem owner and workspace identity and treat announcements only as discovery hints. No shared writable authoritative registry is required. If no suitable discovery location exists, joining once by invitation remains fully supported; do not create an insecure registry to imitate universal discovery.
 
+> **Note.** Naming decision D8 (§16, [naming design](naming-design.md#joining-a-workspace-s3a)) replaces the hand-copied descriptor as the designed primary way to join: the host sends one `brcrew1:` invitation line carrying the same verified fields plus the workspace's privacy mode and institution, and the joiner is admitted when the host approves a code the joiner's own desktop computed. Discovery, including the opt-in announcements above, is deferred to slice S4 pending its own review and a maintainer decision on where the workspace key's trust comes from (D10). The descriptor remains the path for scripted saves.
+
 All participating bridges must reach **one actual kernel/node** hosting the socket. Shared NFS homes do not make Unix sockets work across login nodes. Resolve generic aliases to an explicit reachable broker node and reuse the permitted SSH/jump route. If there is no mutually reachable node, report this deployment limitation. Do not silently substitute an unauthenticated TCP relay or multi-writer shared-file mailbox. A signed cross-node relay/mailbox could be a later protocol, with separate feasibility work.
 
 ### Process lifecycle and trust
@@ -207,6 +213,8 @@ Authoritative records live on the server. Use immutable opaque IDs; preserve use
 
 Enrollment happens only after authenticated connection and acceptance of workspace policy. A user can belong to several teams. User discovery returns enrolled, discoverable accounts permitted by institutional policy; never scrape or publish all OS accounts. An invitation grants no SSH login entitlement and does not create an OS account. It has an inviter, target principal, role, expiry, acceptance state and audit record.
 
+> **Note.** How a name resolves is settled by §16's naming criterion 4: team and channel invitations resolve `@username` against the workspace's enrolled principals, and a workspace invitation resolves it with one host-only account point lookup on the broker node. OS accounts are never enumerated. No searchable directory beyond the caller's own snapshot is built; discovery is deferred (D10).
+
 Require individual Unix accounts for individual attribution. If coworkers share one SSH login, the kernel cannot distinguish them; that deployment needs an institution-approved additional personal identity layer before Crew can promise per-person agent ownership.
 
 Distinguish **visibility** (`team-visible`, `invite-only`, DM) from **data classification** (`public-safe`, `restricted` plus institution/project/dataset restrictions). Avoid the ambiguous phrase “public channel” for a room that is merely visible to a team.
@@ -236,7 +244,7 @@ Use explicit composer actions: **Message channel** and **Ask my agent**. An admi
 
 Human authority needs a concrete second layer beyond the Unix account, without administrator enrollment. The desktop generates a device key in its local credential/signer service. Through the user's SSH-authenticated bridge, the broker issues a short-lived challenge bound to the actual peer UID, workspace, enrollment generation, device public key and live connection. The desktop displays the verified identity and signs after human enrollment. A signature proves possession of that device key, not human intent by itself.
 
-Avoid first-writer-wins enrollment: bind the invitation to the intended device-key fingerprint or have the hosting user/workspace manager confirm it through an already trusted interaction. This is ordinary application ownership. Additional devices and recovery require an existing enrolled device or an explicit, audited manager recovery using a verified recipient fingerprint. No privileged account or institution-provisioned identity service is required.
+Avoid first-writer-wins enrollment: bind the invitation to the intended device-key fingerprint or have the hosting user/workspace manager confirm it through an already trusted interaction. Joining by invitation (§16, D8) meets this rule the second way: the host approves a device code the joiner's own desktop computed from its key, and the broker binds only a key whose code matches. This is ordinary application ownership. Additional devices and recovery require an existing enrolled device or an explicit, audited manager recovery using a verified recipient fingerprint. No privileged account or institution-provisioned identity service is required.
 
 For sensitive approvals/authority changes, bind a nonce to exact operation, arguments/payload digest, workspace, run/channel, policy epoch and expiry. A trusted human UI invokes the signer; worker tools/PTY automation do not receive it. Hardware-backed keys are optional where supported. Workers get separate run-scoped credentials and cannot mint a human grant. All software under an already compromised host/user UID is outside this application's strong identity claim; an unrestricted remote process must not be treated as proof of a human approval.
 
@@ -737,7 +745,7 @@ Track G10–G15 in the [acceptance ledger](implementation-status.md#release-gate
 
 ## 16. Resumed scope: GUI redesign and human-readable identity (2026-09-23)
 
-Status: Accepted design, implementation in progress. The user added these requirements when work resumed on 2026-09-23 (US Pacific; UTC 2026-09-24). They are acceptance requirements. Their designs were accepted on 2026-09-23: the [UI redesign specification](ui-redesign-spec.md) and the [naming design](naming-design.md) (decisions D1–D17, slices S0–S4). No product change for either had landed when this section was updated (branch head `76b88555`); implementation follows the [work packages](#work-packages-and-order) below, and results land in the [status ledger](implementation-status.md) under their own scopes. A design is not evidence. Live workstream status and the dated decisions log are in the [resume handoff](handoff-2026-09-24.md#resumed-2026-09-23--live-status).
+Status: Accepted design, implementation in progress. The user added these requirements when work resumed on 2026-09-23 (US Pacific; UTC 2026-09-24). They are acceptance requirements. Their designs were accepted on 2026-09-23: the [UI redesign specification](ui-redesign-spec.md) and the [naming design](naming-design.md) (decisions D1–D17, slices S0–S4). Implementation follows the [work packages](#work-packages-and-order) below; by 2026-09-24 every product package had reported and LIVE-QA had not started; each package's outcome is recorded after the table, and results land in the [status ledger](implementation-status.md) under their own scopes. None of it has live acceptance yet. A design is not evidence. Live workstream status and the dated decisions log are in the [resume handoff](handoff-2026-09-24.md#resumed-2026-09-23--live-status).
 
 ### GUI redesign
 
@@ -773,7 +781,7 @@ D8 supersedes §3's descriptor-first joining, and the enrollment steps in the [p
 
 ### Work packages and order
 
-The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/workplan.json`) cuts both designs into 27 packages. Each package owns its files exclusively: a script checked that package IDs are unique, every dependency exists, there are no cycles, and no two packages own the same file or an overlapping glob. A package starts when everything it depends on is accepted, so the waves below are the earliest order, not a strict sequence. Every product package gets independent review before acceptance; ● marks the high-risk packages. Each package's files, tests and gates are in the workplan; the UI gates are the spec's [gates at each step](ui-redesign-spec.md#gates-at-each-step).
+The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/workplan-final.json`, earlier `workplan.json`) cuts both designs into 28 packages. SCOPE-BIND was added on 2026-09-24, after fixture testing found Crew grants keyed by session ID alone; it binds each grant to the chat it was made for. Each package owns its files exclusively: a script checked that package IDs are unique, every dependency exists, there are no cycles, and no two packages own the same file or an overlapping glob. A package starts when everything it depends on is accepted, so the waves below are the earliest order, not a strict sequence. Every product package gets independent review before acceptance; ● marks the high-risk packages. Each package's files, tests and gates are in the workplan; the UI gates are the spec's [gates at each step](ui-redesign-spec.md#gates-at-each-step).
 
 | Wave | Package | Scope | Depends on |
 |---|---|---|---|
@@ -800,10 +808,11 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 | 2 | N-CORE-S3 ● | Daemon core S3a: invitation to connection, host invitation, join status, device code and claim | BE-CORE, N-LIB |
 | 3 | BE-REVOKE-ROUTES | Revoke and grants routes (RV-D1–RV-D3) and model instructions (RV-D5) | BE-CORE, BE-ROUTES |
 | 3 | N-ROUTES-S3 ● | Daemon routes S3a: from-invitation, host invitation, join status and claim | N-CORE-S3 |
+| 3 | SCOPE-BIND ● | Bind Crew grants to the exact chat, keep a deleted chat's grant restricting and revocable, and give `--no-session` runs their own ID namespace | BE-CORE, N-CORE-S3 |
 | 4 | OPENAPI | Register the new routes; regenerate OpenAPI and the TypeScript client | BE-ROUTES, BE-REVOKE-ROUTES, N-ROUTES-S3 |
 | 4 | CLI-CMD | CLI selectors through the resolver (S1b), renames (S2a), join and approve (S3a), revoke exit codes | CLI-OUT, BE-ROUTES, BE-REVOKE-ROUTES, N-ROUTES-S3 |
-| 5 | DOCS | README index rows, name-first CLI guide, protocol contract, this section, status ledger | BE-REVOKE-ROUTES, CLI-CMD, N-BROKER-S3, N-ROUTES-S3 |
-| 6 | LIVE-QA | Real-app, novice-critic and three-account live acceptance, with an evidence report | UI-INTEGRATE, OPENAPI, CLI-CMD, CLI-STREAM, N-BROKER-S3, BE-REVOKE-ROUTES, DOCS |
+| 5 | DOCS | README index rows, name-first CLI guide, protocol contract, this section, status ledger | BE-REVOKE-ROUTES, CLI-CMD, N-BROKER-S3, N-ROUTES-S3, SCOPE-BIND |
+| 6 | LIVE-QA | Real-app, novice-critic and three-account live acceptance, with an evidence report | UI-INTEGRATE, OPENAPI, CLI-CMD, CLI-STREAM, N-BROKER-S3, BE-REVOKE-ROUTES, DOCS, SCOPE-BIND |
 
 **UI0 outcome (2026-09-23, `1b324a7d`, `556d5480`, `eff65ab7`, `78f8f356`).** UI packages build on `crew/state/` (`useCrew()` from `CrewControllerContext`); the old markup is `crew/legacy/LegacyCrewLayout.tsx`, and `CrewView({layout = LegacyCrewLayout, controllerOptions})` is the root.
 
@@ -1111,3 +1120,15 @@ Execution note: resumed work is coordinated by a Claude Code session orchestrati
 - Revokes: `enroll revoke @bob` needs typed or `--confirm @bob` confirmation (an ID never asks); `grants revoke` sends no body and succeeds only on 200 `revoked: true` confirmed; 503 `crew_revocation_unconfirmed` or an unconfirmed 2xx exits non-zero keeping the code.
 - Output: `--show-ids` and snapshot names reach every CLI-OUT formatter; `send` prints "Posted to #methods."; text errors drop the request-ID suffix (only `retry_hint` after an uncertain mutation); JSON errors keep `request_id` and add `code`.
 - Open: files, run and session IDs stay IDs (resolve refuses attachments); untested against a real daemon (LIVE-QA: join-invitation, crew join, enroll invite/approve/pending, grants revoke incl. 503); `crew join` does not open sign-in (`biorouter crew auth` first); DOCS records the forms above in `cli-guide.md`, including quoting `'#methods'`.
+
+<!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
+
+## Related documentation
+
+- [Implementation status](implementation-status.md) — measured results, release gates G01–G15, invariants I01–I24 and the naming decisions log
+- [Resume handoff](handoff-2026-09-24.md) — live package status, workstreams and the dated decisions log for §16
+- [Naming design](naming-design.md) — decisions D1–D17 behind §16's naming criteria
+- [UI redesign specification](ui-redesign-spec.md) — the design behind §16's GUI criteria
+- [Broker protocol](protocol-contract.md) — the wire contract this plan's broker implements
+- [Native CLI guide](cli-guide.md) — the §15 terminal interface, name-first
+- [Platform research](platform-research.md) — the alternatives §1 weighs against a small broker
