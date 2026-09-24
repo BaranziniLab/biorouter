@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { channelHeaderCopy } from '../channel/headerCopy';
 import { composerCopy } from '../composer/copy';
 import { welcomeCopy } from '../onboarding';
 import { crewObservationCopy, crewStatusCopy } from '../state/copy';
@@ -79,7 +80,9 @@ describe('re-verification never blanks the page (ui-redesign-spec, “Main-area 
     expect(within(nav).getByRole('button', { name: /^lab/ })).toBeInTheDocument();
     expect(within(nav).getByText('general')).toBeInTheDocument();
     expect(within(nav).getByText(crewStatusCopy.checking)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'general channel menu' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: channelHeaderCopy.menuName('general') })
+    ).toBeInTheDocument();
 
     // The timeline shows the last messages, dimmed and inert; nothing in it acts.
     expect(screen.getByText('Counts are in.')).toBeInTheDocument();
@@ -123,12 +126,15 @@ describe('re-verification never blanks the page (ui-redesign-spec, “Main-area 
     renderCrew();
     await channelReady();
     await screen.findByText('Counts are in.');
+    // Present before the failure, so its absence below is the failure's doing, not a stale name.
+    const menuName = channelHeaderCopy.menuName('general');
+    expect(screen.getByRole('button', { name: menuName })).toBeInTheDocument();
 
     act(() => daemon.emit({ type: 'error', error: 'observation broke', code: 'temporary' }));
 
     await waitFor(() => expect(currentCrew().lastVerified).toBeNull());
     expect(screen.queryByText('Counts are in.')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'general channel menu' })).toBeNull();
+    expect(screen.queryByRole('button', { name: menuName })).toBeNull();
     // In plain words; the daemon's own sentence is never shown.
     expect(screen.getByText(crewObservationCopy.updatesStopped('lab'))).toBeInTheDocument();
     expect(screen.queryByText(/observation broke/)).toBeNull();
