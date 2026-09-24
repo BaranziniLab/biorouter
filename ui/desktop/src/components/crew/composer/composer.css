@@ -11,13 +11,12 @@
    and never re-skins it. Nothing here animates: the spec lists composer
    auto-grow among what must not move.
 
-   ⚠ **The family is `crew-compose-*`, not `crew-composer-*`, on purpose.** The
-   legacy `crew/crew.css` stays global for as long as `CrewView.tsx` imports
-   the legacy layout, and it styles `.crew-composer` and every `textarea`
-   inside one (unlayered, 0,1,1): a 75–200px resizable box that beat this
-   file's one-row auto-grow, plus a margin, border and radius around the whole
-   bar. A name here must never be one that stylesheet defines;
-   `files/stylesheets.sourceGuard.test.ts` holds that. */
+   **The family is `crew-compose-*`.** It was chosen while the old layout's
+   global `crew/crew.css` still styled `.crew-composer` (and every `textarea`
+   inside one, as a resizable box that beat this file's one-row auto-grow).
+   That stylesheet is deleted, and `integration/legacyStylesheet.test.ts` keeps
+   it deleted. A class styled here must still not be one another Crew area's
+   stylesheet also styles; `files/stylesheets.sourceGuard.test.ts` holds that. */
 
 /* The bar the card sits in: the canvas, 12px above, 24px below, 16px gutters,
    and the 760px chat measure. */

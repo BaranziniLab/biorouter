@@ -7,12 +7,12 @@
    spinner is the app's one spinner, the progress bar is `ui/progress`; this
    file places them, and never re-skins a primitive.
 
-   ⚠ **Names.** The legacy `crew/crew.css` stays global while `CrewView.tsx`
-   imports the legacy layout, and it styles a card called `.crew-attachment`
-   (10px padding, a 10px top margin, 12px text: a 40px row came out ~62px).
-   The card here is therefore `.crew-attachment-card`, and no name in this
-   directory or in `composer/` may be one that stylesheet defines —
-   `stylesheets.sourceGuard.test.ts` holds that.
+   **Names.** The card is `.crew-attachment-card` because the old layout's
+   global `crew/crew.css` styled a card called `.crew-attachment`. That
+   stylesheet is deleted, and `integration/legacyStylesheet.test.ts` keeps it
+   deleted. A class styled here or in `composer/` must still not be one another
+   Crew area's stylesheet also styles — `stylesheets.sourceGuard.test.ts` holds
+   that.
 
    ⚠ **Focus.** These rules are unlayered, and the D-15 focus fill lives in
    `@layer base`, so any `color` or `background-color` set here on something

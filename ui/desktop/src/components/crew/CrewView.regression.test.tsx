@@ -57,6 +57,8 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mocks.navigate };
 });
+// The Sign in dialog's SSH terminal. `CrewHostTrust` is reached only through it, so it needs no
+// mock of its own.
 vi.mock('./CrewAuthentication', () => ({
   default: ({ onConnected, onClose }: { onConnected: () => void; onClose: () => void }) => (
     <div data-testid="crew-authentication-fixture">
@@ -64,13 +66,6 @@ vi.mock('./CrewAuthentication', () => ({
       <button onClick={onClose}>Simulate authentication close</button>
     </div>
   ),
-}));
-vi.mock('./CrewHostTrust', () => ({ default: () => <div /> }));
-// Legacy files stay mocked until they are deleted; the new layout never imports them.
-vi.mock('./CrewFiles', () => ({
-  CrewUpload: () => <div />,
-  CrewAttachment: () => <div />,
-  CrewRemoteReference: () => <div />,
 }));
 // Nothing here uploads; a picker must never open from a regression test.
 vi.mock('./files/useCrewUpload', async () => {

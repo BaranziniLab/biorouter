@@ -6,13 +6,12 @@ import { describe, expect, it } from 'vitest';
  * Two cascade hazards for the composer and files packages, held at the source because jsdom
  * loads no stylesheet and a component test passes whether or not either one bites.
  *
- * 1. **Names shared with the legacy stylesheet.** `crew/crew.css` stays global for as long as
- *    `CrewView.tsx` imports the legacy layout, and its rules are unlayered. It styled
- *    `.crew-composer` (and every `textarea` in one: a 75–200px resizable box that beat the
- *    composer's one-row auto-grow) and `.crew-attachment` (10px padding and a 10px margin on a
- *    40px row). So no class these packages write may be one it defines, no class these packages
- *    style may be one the legacy markup writes, and no class these packages style may be one
- *    another area's stylesheet also styles.
+ * 1. **Names shared with another area's stylesheet.** Every Crew stylesheet is global once the
+ *    route loads it, and its rules are unlayered, so a class two areas both style is decided by
+ *    specificity and load order rather than by either area. No class these packages style may be
+ *    one another area's stylesheet also styles. (The old layout's `crew/crew.css` is how this
+ *    bit: it styled `.crew-composer` and `.crew-attachment` under the new composer. It is
+ *    deleted, and `integration/legacyStylesheet.test.ts` keeps it deleted.)
  * 2. **Unlayered paint beating the D-15 focus fill.** The fill lives in `@layer base`; a
  *    `color` or `background-color` set here on a raw focusable element wins over it whatever
  *    the specificity, and the base rule's `outline: none` still applies — focus disappears. Every
@@ -24,8 +23,6 @@ import { describe, expect, it } from 'vitest';
 const FILES_DIR = __dirname;
 const CREW_DIR = dirname(FILES_DIR);
 const COMPOSER_DIR = join(CREW_DIR, 'composer');
-const LEGACY_CSS = join(CREW_DIR, 'crew.css');
-const LEGACY_DIR = join(CREW_DIR, 'legacy');
 const OWN_DIRS = [COMPOSER_DIR, FILES_DIR];
 
 function walk(dir: string): string[] {
@@ -48,11 +45,6 @@ function stripComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '))
     .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
-}
-
-/** Every `crew-*` token markup writes (a class, a test id): not part of `data-crew-*` or `--crew-*`. */
-function markupTokens(source: string): Set<string> {
-  return new Set(stripComments(source).match(/(?<![\w-])crew-[\w-]+/g) ?? []);
 }
 
 /** Every `.crew-*` class a stylesheet's selectors name. */
@@ -136,41 +128,22 @@ function focusFillViolations(css: string, focusable: Set<string>): string[] {
 const ALL = walk(CREW_DIR);
 const OWN_MARKUP = ALL.filter((path) => isOwn(path) && isMarkup(path) && !isTest(path));
 const OWN_CSS = ALL.filter((path) => isOwn(path) && path.endsWith('.css'));
-const LEGACY_MARKUP = ALL.filter(
-  (path) =>
-    isMarkup(path) &&
-    !isTest(path) &&
-    (path.startsWith(LEGACY_DIR + sep) || (dirname(path) === CREW_DIR && path.endsWith('.tsx')))
-);
-const OTHER_AREA_CSS = ALL.filter(
-  (path) => path.endsWith('.css') && !isOwn(path) && path !== LEGACY_CSS
-);
+const OTHER_AREA_CSS = ALL.filter((path) => path.endsWith('.css') && !isOwn(path));
 
 const union = (sets: Set<string>[]) => new Set(sets.flatMap((set) => [...set]));
 
 describe('the composer and files stylesheets', () => {
-  const legacyCss = stylesheetClasses(read(LEGACY_CSS));
-  const legacyMarkup = union(LEGACY_MARKUP.map((path) => markupTokens(read(path))));
-  const ownMarkup = union(OWN_MARKUP.map((path) => markupTokens(read(path))));
   const ownCss = union(OWN_CSS.map((path) => stylesheetClasses(read(path))));
 
   it('reads the files it guards', () => {
     expect(OWN_CSS.map(rel).sort()).toEqual(['composer/composer.css', 'files/files.css']);
     expect(OWN_MARKUP.map((path) => basename(path))).toContain('Composer.tsx');
     expect(OWN_MARKUP.map((path) => basename(path))).toContain('AttachmentCard.tsx');
-    // The two names that collided, still styled by the legacy sheet and written by its markup.
-    expect(legacyCss.has('crew-composer') && legacyCss.has('crew-attachment')).toBe(true);
-    expect(legacyMarkup.has('crew-composer') && legacyMarkup.has('crew-attachment')).toBe(true);
-    expect(ownMarkup.has('crew-compose-input')).toBe(true);
     expect(ownCss.has('crew-attachment-card')).toBe(true);
-  });
-
-  it('writes no class the legacy stylesheet styles', () => {
-    expect(intersect(ownMarkup, legacyCss)).toEqual([]);
-  });
-
-  it('styles no class the legacy markup writes', () => {
-    expect(intersect(ownCss, legacyMarkup)).toEqual([]);
+    // The other areas' stylesheets are really compared against.
+    expect(OTHER_AREA_CSS.map(rel)).toEqual(
+      expect.arrayContaining(['crew-app.css', 'layout/layout.css'])
+    );
   });
 
   it('styles no class another area stylesheet also styles', () => {
@@ -192,21 +165,20 @@ describe('the composer and files stylesheets', () => {
 });
 
 describe('the guard itself', () => {
-  it('finds a shared class in markup, and ignores comments and data/custom-property hooks', () => {
-    const markup = markupTokens(`
-      // <div className="crew-ignored-line" />
-      /* className="crew-ignored-block" */
-      <div className="crew-composer crew-compose-card" data-crew-menu="x" />
-      <span style={{ height: 'var(--crew-rest)' }} />
-    `);
-    expect([...markup].sort()).toEqual(['crew-compose-card', 'crew-composer']);
-    const legacy = stylesheetClasses(`
+  it('finds a class two stylesheets share, and ignores comments and custom properties', () => {
+    const own = stylesheetClasses(`
       /* .crew-in-a-comment { } */
+      .crew-compose-card { --crew-rest: 1px; }
       .crew-composer textarea { resize: vertical; }
+    `);
+    expect([...own].sort()).toEqual(['crew-compose-card', 'crew-composer']);
+    const other = stylesheetClasses(`
+      /* .crew-compose-card { } */
+      .crew-composer { margin: 0; }
       @media (max-width: 900px) { .crew-composer-footer { flex-wrap: wrap; } }
     `);
-    expect([...legacy].sort()).toEqual(['crew-composer', 'crew-composer-footer']);
-    expect(intersect(markup, legacy)).toEqual(['crew-composer']);
+    expect([...other].sort()).toEqual(['crew-composer', 'crew-composer-footer']);
+    expect(intersect(own, other)).toEqual(['crew-composer']);
   });
 
   it('finds focusable elements that paint without restating the fill', () => {

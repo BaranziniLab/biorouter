@@ -7,9 +7,8 @@ import { PREVIEW_MIN_WIDTH, PREVIEW_SIDE_WIDTH } from '../Layout/yieldLadder';
  * The Crew stylesheet contract, enforced at the source.
  *
  * `crew/crew-app.css` states the contract in its header; every
- * `crew/<area>/*.css` an area package adds is bound by it too. The legacy
- * `crew/crew.css` (and anything under `crew/legacy/`) is exempt: it is the old
- * layout's stylesheet, and it goes when the legacy layout does.
+ * `crew/<area>/*.css` an area package adds is bound by it too. Nothing under
+ * `crew/` is exempt: every stylesheet and every source file there is read.
  *
  * Why at the source: jsdom runs no Tailwind, evaluates no container query and
  * never loads these files, so a component test cannot see any of this. The
@@ -24,8 +23,6 @@ import { PREVIEW_MIN_WIDTH, PREVIEW_SIDE_WIDTH } from '../Layout/yieldLadder';
  */
 
 const CREW_DIR = __dirname;
-const LEGACY_CSS = join(CREW_DIR, 'crew.css');
-const LEGACY_DIR = join(CREW_DIR, 'legacy');
 const CREW_APP_CSS = join(CREW_DIR, 'crew-app.css');
 const THIS_FILE = join(CREW_DIR, 'crewCss.sourceGuard.test.ts');
 
@@ -37,13 +34,11 @@ function walk(dir: string): string[] {
   });
 }
 
-const isLegacy = (path: string) => path === LEGACY_CSS || path.startsWith(LEGACY_DIR + sep);
 const rel = (path: string) => relative(CREW_DIR, path).split(sep).join('/');
 
-const CSS_FILES = walk(CREW_DIR).filter((path) => path.endsWith('.css') && !isLegacy(path));
+const CSS_FILES = walk(CREW_DIR).filter((path) => path.endsWith('.css'));
 const SOURCE_FILES = walk(CREW_DIR).filter(
-  (path) =>
-    /\.(ts|tsx)$/.test(path) && !path.endsWith('.d.ts') && !isLegacy(path) && path !== THIS_FILE
+  (path) => /\.(ts|tsx)$/.test(path) && !path.endsWith('.d.ts') && path !== THIS_FILE
 );
 
 // ── A small CSS reader ──────────────────────────────────────────────────────
@@ -260,10 +255,16 @@ function arbitraryValueViolations(source: string): string[] {
 // ── The guard ───────────────────────────────────────────────────────────────
 
 describe('the Crew stylesheet contract', () => {
-  it('reads the redesigned stylesheets and skips the legacy one', () => {
+  it('reads every crew stylesheet and source file', () => {
     expect(CSS_FILES).toContain(CREW_APP_CSS);
-    expect(CSS_FILES).not.toContain(LEGACY_CSS);
-    expect(SOURCE_FILES.length).toBeGreaterThan(0);
+    // The area stylesheets, not only the root's: the walk reaches every directory.
+    expect(CSS_FILES.map(rel)).toEqual(
+      expect.arrayContaining(['composer/composer.css', 'files/files.css', 'layout/layout.css'])
+    );
+    // The top-level components the old layout left behind are read too.
+    expect(SOURCE_FILES.map(rel)).toEqual(
+      expect.arrayContaining(['CrewApp.tsx', 'CrewView.tsx', 'CrewAuthentication.tsx'])
+    );
   });
 
   it.each(CSS_FILES.map((path) => [rel(path), path]))(
