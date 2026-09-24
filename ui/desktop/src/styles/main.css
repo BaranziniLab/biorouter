@@ -811,6 +811,33 @@
   --sidebar-border: #e7e7e3;
   --sidebar-ring: var(--ring);
 
+  /* Person avatar hues (D-AVATAR, Crew live QA round 2). Eight tile-fill +
+     initials-ink pairs; an avatar picks one from the person's canonical
+     @username (`.biorouter-avatar[data-hue='N']`, below), so a self-chosen
+     display name cannot borrow another person's colour, and the @username
+     stays visible because the hue is a recognition aid, not a proof. SHARED
+     across the three families like the neutrals — one person, one colour on
+     every device — and mirrored in each `themes/*.theme.mjs`; the base
+     family's block is hand-authored here, so change the two together.
+     `check-contrast.mjs` holds each ink to 4.5:1 on its own fill (measured
+     6.7–7.0:1), each fill a step off the page, and the eight fills apart. */
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
+
   /* Elevation and the scrim are neutral scaffolding, so all three families
      share them and every alpha is cast in the same near-black #1f1e1c. They
      were tokenised so a family COULD tint them to its own ink — Alma Mater ran
@@ -937,6 +964,25 @@
   --sidebar-border: #2a2a27;
   --sidebar-ring: var(--ring);
 
+  /* Person avatar hues (D-AVATAR): the same hues as a deep fill under a pale
+     ink, 7.5–7.9:1. Mirrored in each `themes/*.theme.mjs`. */
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #65380a;
+  --avatar-hue-2-fg: #fee0c9;
+  --avatar-hue-3-bg: #524402;
+  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
+
   --scrim: rgba(0, 0, 0, 0.48);
   /* The micro tier needs its own dark weight — a 7%-alpha near-black is invisible
      on near-black. Same value the `.dark .br-tab[data-active]` override carried. */
@@ -1052,6 +1098,22 @@
   --sidebar-accent-foreground: #052049;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
   --scrim: rgba(31, 30, 28, 0.18);
   --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
   --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
@@ -1115,6 +1177,22 @@
   --sidebar-accent-foreground: #f2f3f4;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #65380a;
+  --avatar-hue-2-fg: #fee0c9;
+  --avatar-hue-3-bg: #524402;
+  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
   --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -1210,6 +1288,22 @@
   --sidebar-accent-foreground: #1f1e1c;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
   --scrim: rgba(31, 30, 28, 0.18);
   --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
   --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
@@ -1273,6 +1367,22 @@
   --sidebar-accent-foreground: #ededea;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #65380a;
+  --avatar-hue-2-fg: #fee0c9;
+  --avatar-hue-3-bg: #524402;
+  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
   --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -5706,6 +5816,53 @@ code [class~='token'] {
 
 .biorouter-avatar[data-ring='true'] {
   box-shadow: 0 0 0 2px var(--biorouter-avatar-ring, var(--background-canvas));
+}
+
+/* A person's hue (D-AVATAR). `data-hue` is 1–8, chosen by the component from
+   the canonical @username — never the display name, so a name cannot borrow a
+   colour — and it paints the fill and the initials ink as one pair, the pair
+   `check-contrast.mjs` measures. An avatar with no `data-hue` (an agent, an
+   object, a person whose username is not known yet) keeps the neutral tile
+   above. Forced colours replace both with the system pair, which is right: the
+   hue is a recognition aid and the @username beside it is the identity. */
+.biorouter-avatar[data-hue='1'] {
+  background-color: var(--avatar-hue-1-bg);
+  color: var(--avatar-hue-1-fg);
+}
+
+.biorouter-avatar[data-hue='2'] {
+  background-color: var(--avatar-hue-2-bg);
+  color: var(--avatar-hue-2-fg);
+}
+
+.biorouter-avatar[data-hue='3'] {
+  background-color: var(--avatar-hue-3-bg);
+  color: var(--avatar-hue-3-fg);
+}
+
+.biorouter-avatar[data-hue='4'] {
+  background-color: var(--avatar-hue-4-bg);
+  color: var(--avatar-hue-4-fg);
+}
+
+.biorouter-avatar[data-hue='5'] {
+  background-color: var(--avatar-hue-5-bg);
+  color: var(--avatar-hue-5-fg);
+}
+
+.biorouter-avatar[data-hue='6'] {
+  background-color: var(--avatar-hue-6-bg);
+  color: var(--avatar-hue-6-fg);
+}
+
+.biorouter-avatar[data-hue='7'] {
+  background-color: var(--avatar-hue-7-bg);
+  color: var(--avatar-hue-7-fg);
+}
+
+.biorouter-avatar[data-hue='8'] {
+  background-color: var(--avatar-hue-8-bg);
+  color: var(--avatar-hue-8-fg);
 }
 
 .biorouter-avatar-image {

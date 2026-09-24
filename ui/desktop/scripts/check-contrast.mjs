@@ -37,7 +37,9 @@ import {
   resolveHex,
   resolveRaw,
   contrast as ratioOf,
+  deltaE00,
 } from './lib/theme-tokens.mjs';
+import { AVATAR_HUE_COUNT } from './lib/theme-contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS_PATH = join(here, '..', 'src', 'styles', 'main.css');
@@ -393,7 +395,7 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // soft — measured 1.10–1.44:1 against the resting control — so it is not an
   // indicator on its own; every focused control also draws a 2px inset edge in
   // `--border-focus` (main.css: the D-15 base rule, `.biorouter-focus-surface`),
-  // a focused tab underlines its label in it, and a focused sidebar resize
+  // a focused tab rings its label in it (Q2-49), and a focused sidebar resize
   // handle paints its 8px target with it. SC 1.4.11 asks 3:1 against every
   // colour the edge touches: the focus fill inside it, and every ground and
   // row fill the control can sit on outside it — including the sidebar's
@@ -475,6 +477,50 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // trivially because its --sidebar-icon is a pass-through to the label ink.
   for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
     assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
+  }
+
+  // Person avatar hues (D-AVATAR). Three properties, each a way the set could
+  // quietly stop working:
+  //   - the initials are small text (11px at 20, 12 at 24, 13 at 32), so each
+  //     ink owes 4.5:1 on ITS OWN fill — never measured on a neutral, because
+  //     a pair is only ever painted together (`.biorouter-avatar[data-hue]`);
+  //   - a fill must be a step off every ground a tile sits on, or a coloured
+  //     avatar dissolves into the page. 1.1 flags a collapse, not a taste:
+  //     today's minimum is 1.24 in light and 1.57 in dark;
+  //   - the eight fills must stay apart, or two people read as one. ΔE00 8 is
+  //     well under the ~12 they measure, so a nudge passes and a copy-paste
+  //     (two slots with one value) fails. This is normal colour vision only;
+  //     under a dichromacy some pairs converge, which is accepted because the
+  //     initials and the @username beside the tile carry the identity.
+  {
+    const fills = [];
+    for (let n = 1; n <= AVATAR_HUE_COUNT; n++) {
+      const bg = `--avatar-hue-${n}-bg`;
+      assert(`${theme}: avatar ${n} initials on its fill`, `--avatar-hue-${n}-fg`, bg, 4.5, scope);
+      for (const g of TEXT_GROUNDS) assert(`${theme}: avatar ${n} fill vs ${g}`, bg, g, 1.1, scope);
+      fills.push([n, resolve(bg, scope)]);
+    }
+    let closest = null;
+    for (let i = 0; i < fills.length; i++) {
+      for (let j = i + 1; j < fills.length; j++) {
+        const [a, ha] = fills[i];
+        const [b, hb] = fills[j];
+        if (!ha || !hb) continue;
+        const d = deltaE00(ha, hb);
+        if (!closest || d < closest.d) closest = { a, b, d };
+      }
+    }
+    checks++;
+    const apart = closest !== null && closest.d >= 8;
+    if (!apart) failures++;
+    rows.push([
+      apart ? 'pass' : 'FAIL',
+      closest ? `ΔE ${closest.d.toFixed(1)}` : '',
+      `${theme}: the ${AVATAR_HUE_COUNT} avatar fills are distinguishable`,
+      closest
+        ? `closest pair: ${closest.a} and ${closest.b} (need ΔE00 >= 8)`
+        : 'no avatar fill resolved to a hex',
+    ]);
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to

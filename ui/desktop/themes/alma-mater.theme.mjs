@@ -92,6 +92,30 @@ export default {
       'sidebar-accent-foreground': '#052049',
       'sidebar-border': '#e7e7e3',
       'sidebar-ring': '#5c5a55',
+      // ── PERSON AVATAR HUES (D-AVATAR) ─────────────────────────────────────
+      // Eight fill + initials-ink pairs, chosen by the person's canonical
+      // @username so a display name cannot borrow a colour. SHARED across the
+      // three families, like the neutrals: one person keeps one colour on every
+      // device whatever family it runs, and `themeNeutrals.test.ts` holds the
+      // three copies together. OKLCH hues 25°–330°, about 45° apart, at one lightness
+      // (fills L 0.885, inks L 0.39) so no hue reads heavier than another; the ink
+      // measures 6.7–7.0:1 on its fill (`check-contrast.mjs` asserts 4.5).
+      'avatar-hue-1-bg': '#ffcbc5', // red
+      'avatar-hue-1-fg': '#752725',
+      'avatar-hue-2-bg': '#fccfab', // orange
+      'avatar-hue-2-fg': '#673702',
+      'avatar-hue-3-bg': '#e7d9a5', // amber
+      'avatar-hue-3-fg': '#534400',
+      'avatar-hue-4-bg': '#bde6bd', // green
+      'avatar-hue-4-fg': '#11531a',
+      'avatar-hue-5-bg': '#a3e9e3', // teal
+      'avatar-hue-5-fg': '#04504d',
+      'avatar-hue-6-bg': '#b5dfff', // blue
+      'avatar-hue-6-fg': '#034a6f',
+      'avatar-hue-7-bg': '#d4d5ff', // violet
+      'avatar-hue-7-fg': '#41397d',
+      'avatar-hue-8-bg': '#f4c9ef', // pink
+      'avatar-hue-8-fg': '#642b61',
       // Elevation and the scrim are neutral scaffolding and therefore shared.
       // Alma Mater used to cast every alpha in UCSF navy (rgba(5, 32, 73, …));
       // a full-screen navy scrim is a background, and backgrounds no longer
@@ -246,6 +270,24 @@ export default {
       'sidebar-accent-foreground': '#f2f3f4',
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
+      // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and
+      // ink L 0.925, a step off every dark ground; ink 7.5–7.9:1 on its fill.
+      'avatar-hue-1-bg': '#6b302d', // red
+      'avatar-hue-1-fg': '#feddda',
+      'avatar-hue-2-bg': '#65380a', // orange
+      'avatar-hue-2-fg': '#fee0c9',
+      'avatar-hue-3-bg': '#524402', // amber
+      'avatar-hue-3-fg': '#efe7c5',
+      'avatar-hue-4-bg': '#245127', // green
+      'avatar-hue-4-fg': '#d4efd4',
+      'avatar-hue-5-bg': '#01504d', // teal
+      'avatar-hue-5-fg': '#c5f0ed',
+      'avatar-hue-6-bg': '#084a6e', // blue
+      'avatar-hue-6-fg': '#d0eafe',
+      'avatar-hue-7-bg': '#413d70', // violet
+      'avatar-hue-7-fg': '#e3e3ff',
+      'avatar-hue-8-bg': '#5e335a', // pink
+      'avatar-hue-8-fg': '#f8dcf5',
       'shadow-default': '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       'shadow-composer':
         '0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3)',
