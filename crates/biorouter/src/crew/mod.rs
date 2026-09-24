@@ -1768,7 +1768,7 @@ impl CrewManager {
             .node_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Connect to this workspace first."))?;
-        let transport = self.transport(id).await?;
+        let transport = self.live_transport(id).await?;
         let (answer, usable) = self.hello_over(id, &c, &pinned, &transport).await;
         if !usable {
             self.retire_failed_transport(id, &transport).await?;
@@ -2811,7 +2811,9 @@ impl CrewManager {
                 params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
             }
         }
-        let transport = self.transport(&s.connection_id).await?;
+        // As every request: a bridge that ended, or sat idle long enough for the broker to drop
+        // it, is checked (and dialled again without a prompt) before anything is written.
+        let transport = self.live_transport(&s.connection_id).await?;
         let mut locked = transport.lock().await;
         self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;

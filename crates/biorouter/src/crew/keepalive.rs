@@ -26,6 +26,13 @@
 //!   final. A network failure is tried again at most [`KeepaliveTiming::retry_delays`] times,
 //!   with growing gaps, and the connection shows the real reason all the while.
 //!
+//! Only a bridge that is **gone** is dialled again. A heartbeat the bridge carried and whose
+//! answer was refused (a different node, a `hello` that lost the v2 signature it had, one that
+//! does not verify, the broker refusing it) says nothing about the network: a re-dial would only
+//! take a second answer from the same place, and `connect` accepts a v1-only `hello`, so a
+//! downgrade the refresh path refuses would be adopted without a word. That refusal is final
+//! instead: the bridge is retired with it, and it is left showing.
+//!
 //! Nothing here re-sends a request whose outcome is unknown: a heartbeat is only ever a
 //! `hello`, and a request re-dials only when nothing has been written to the old bridge.
 
@@ -75,6 +82,18 @@ pub(super) enum Redial {
     /// The connection is no longer this bridge's to repair: it was disconnected (by a person,
     /// an edit or a failure already recorded), or a sign-in is pending.
     NotOurs,
+}
+
+/// What one heartbeat found.
+#[derive(Debug)]
+pub(super) enum Heartbeat {
+    /// A `hello` that verified against the pinned workspace and node, over this bridge.
+    Alive,
+    /// The bridge could not carry the `hello` (it ended, timed out or broke): dialling again
+    /// may help.
+    Gone(anyhow::Error),
+    /// The bridge carried the `hello` and its answer was refused. Final: never re-dialled.
+    Refused(anyhow::Error),
 }
 
 /// The last-error text of a bridge the keepalive found gone, until the re-dial says more.
@@ -143,27 +162,55 @@ impl CrewManager {
     }
 
     /// One verified `hello` over `transport` (see [`CrewManager::hello_over`]). Retires
-    /// nothing; `Err` means the bridge can't be trusted to carry the next request.
+    /// nothing. Whether a failure is [`Heartbeat::Gone`] or [`Heartbeat::Refused`] is the
+    /// bridge's own word: it is gone when it can no longer carry a request, and an answer it
+    /// carried that was refused leaves it usable.
     pub(super) async fn heartbeat(
         &self,
         id: &str,
         transport: &Arc<Mutex<transport::Transport>>,
-    ) -> Result<()> {
-        let c = self.connection(id).await?;
-        let pinned = c
-            .node_id
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Connect to this workspace first."))?;
-        let (answer, usable) = self.hello_over(id, &c, &pinned, transport).await;
-        answer?;
-        anyhow::ensure!(usable, "Crew SSH transport is unusable");
-        Ok(())
+    ) -> Heartbeat {
+        let c = match self.connection(id).await {
+            Ok(c) => c,
+            Err(error) => return Heartbeat::Refused(error),
+        };
+        let Some(pinned) = c.node_id.clone() else {
+            return Heartbeat::Refused(anyhow::anyhow!("Connect to this workspace first."));
+        };
+        match self.hello_over(id, &c, &pinned, transport).await {
+            (Ok(_), true) => Heartbeat::Alive,
+            (Ok(_), false) => Heartbeat::Gone(anyhow::anyhow!("Crew SSH transport is unusable")),
+            (Err(error), false) => Heartbeat::Gone(error),
+            (Err(error), true) => Heartbeat::Refused(error),
+        }
+    }
+
+    /// A heartbeat over `refused` was answered and the answer refused: retire the bridge with
+    /// that reason, left showing, and dial nothing. `false` (and nothing changed) when it is no
+    /// longer `id`'s bridge: someone connected, disconnected, edited or removed it meanwhile.
+    pub(super) async fn retire_refused(
+        &self,
+        id: &str,
+        refused: &Arc<Mutex<transport::Transport>>,
+        error: &anyhow::Error,
+    ) -> Result<bool> {
+        let _lifecycle = self.connection_guard(id).await?;
+        if !self.is_current_transport(id, refused).await {
+            return Ok(false);
+        }
+        tracing::warn!(connection = id, error = %error, "Crew heartbeat answer refused; not dialling again");
+        self.retire_locked(id, refused, &error.to_string()).await;
+        Ok(true)
     }
 
     /// `id`'s bridge, checked first when it may have gone while nobody was looking: it has
     /// ended, or it sat idle past [`KeepaliveTiming::probe_before_use`]. A stale bridge gets a
-    /// heartbeat; one that fails it is dialled again (without a prompt) before the caller
-    /// writes anything, so a request never meets a bridge the broker already dropped.
+    /// heartbeat; one found gone is dialled again (without a prompt) before the caller writes
+    /// anything, so a request never meets a bridge the broker already dropped. One whose
+    /// heartbeat answer was refused is retired with that reason, and the request fails with it.
+    ///
+    /// Every request over a connection's bridge takes it from here, so a bridge that died
+    /// while this computer slept is re-dialled whichever request finds it first.
     pub(super) async fn live_transport(
         &self,
         id: &str,
@@ -176,8 +223,20 @@ impl CrewManager {
         if !ended && idle < self.keepalive_timing().probe_before_use {
             return Ok(transport);
         }
-        if !ended && self.heartbeat(id, &transport).await.is_ok() {
-            return Ok(transport);
+        if !ended {
+            match self.heartbeat(id, &transport).await {
+                Heartbeat::Alive => return Ok(transport),
+                Heartbeat::Refused(error) => {
+                    if self.retire_refused(id, &transport, &error).await? {
+                        return Err(error);
+                    }
+                    // Replaced meanwhile (a person's Connect): use theirs, if there is one.
+                    return self.transport(id).await;
+                }
+                Heartbeat::Gone(error) => {
+                    tracing::info!(connection = id, error = %error, "Crew bridge found gone before a request; dialling again");
+                }
+            }
         }
         self.redial_dropped(id, &transport).await?;
         self.transport(id).await
@@ -259,8 +318,8 @@ impl CrewManager {
         }
     }
 
-    /// After a heartbeat found `failed` gone: dial again now, and, for a network failure,
-    /// a few more times with growing gaps.
+    /// After a heartbeat found `failed` gone (never one whose answer was refused): dial again
+    /// now, and, for a network failure, a few more times with growing gaps.
     async fn recover_dropped(&self, id: &str, failed: &Arc<Mutex<transport::Transport>>) {
         let first = self.redial_dropped(id, failed).await;
         let error = match first {
@@ -313,8 +372,18 @@ async fn keepalive(
         if !ended && idle < timing.idle {
             continue;
         }
-        if !ended && manager.heartbeat(&id, &transport).await.is_ok() {
-            continue;
+        if !ended {
+            match manager.heartbeat(&id, &transport).await {
+                Heartbeat::Alive => continue,
+                // Not about the network: final, shown, and never dialled again.
+                Heartbeat::Refused(error) => {
+                    let _ = manager.retire_refused(&id, &transport, &error).await;
+                    return;
+                }
+                Heartbeat::Gone(error) => {
+                    tracing::info!(connection = %id, error = %error, "Crew bridge found gone while idle; dialling again");
+                }
+            }
         }
         manager.recover_dropped(&id, &transport).await;
         return;

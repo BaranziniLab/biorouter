@@ -2230,7 +2230,7 @@ impl CrewManager {
             method == "enrollment.pending",
             "Only the join status is read before authentication"
         );
-        let transport = self.transport(id).await?;
+        let transport = self.live_transport(id).await?;
         let mut locked = transport.lock().await;
         let result = locked.request(method, json!({}), None, None, None).await;
         let usable = locked.is_usable();

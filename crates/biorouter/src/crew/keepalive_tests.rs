@@ -52,31 +52,66 @@ fn connection() -> Connection {
 
 /// The broker's `hello` over [`NONCE`], signed (v1) by the pinned workspace key.
 fn hello() -> Value {
+    signed_hello(NODE, false, &["human_chat"])
+}
+
+/// A `hello` from `node` over [`NONCE`], v1-signed by the pinned workspace key and, with `v2`,
+/// also v2-signed over the workspace's name, mode, institution, epoch and `capabilities`.
+fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
     let c = connection();
-    let signature = hex(&workspace_key()
+    let key = workspace_key();
+    let signature = hex(&key
         .sign(&biorouter_crew::hello_v1_payload(
             &c.workspace_id,
             c.owner_uid,
             NONCE,
             &c.workspace_public_key,
-            NODE,
+            node,
         ))
         .to_bytes());
-    json!({
+    let mut hello = json!({
         "protocol": 1,
         "workspace_id": c.workspace_id,
         "host_uid": c.owner_uid,
         "workspace_public_key": c.workspace_public_key,
         "challenge_nonce": NONCE,
-        "node_id": NODE,
-        "capabilities": ["human_chat"],
+        "node_id": node,
+        "capabilities": capabilities,
         "signature": signature,
-    })
+    });
+    if v2 {
+        let signature_v2 = hex(&key
+            .sign(
+                &biorouter_crew::HelloV2 {
+                    workspace_id: &c.workspace_id,
+                    host_uid: c.owner_uid,
+                    challenge_nonce: NONCE,
+                    workspace_public_key: &c.workspace_public_key,
+                    node_id: node,
+                    mode: &biorouter_crew::Mode::Public,
+                    institution_id: None,
+                    policy_epoch: 1,
+                    name: Some("lab"),
+                    capabilities,
+                }
+                .signing_payload(),
+            )
+            .to_bytes());
+        hello["mode"] = json!("public");
+        hello["institution_id"] = Value::Null;
+        hello["policy_epoch"] = json!(1);
+        hello["name"] = json!("lab");
+        hello["signature_v2"] = json!(signature_v2);
+    }
+    hello
 }
 
 /// A scripted `ssh`. `-G` answers settings the preflight accepts. Each bridge spawn takes the
 /// next line of `plan`: `serve` answers everything; `drop-after-1` answers one request and
-/// then ends on the next without answering, as a bridge the broker dropped does; `auth` and
+/// then ends on the next without answering, as a bridge the broker dropped does
+/// (`join-drop-after-1` too, announcing `join_by_name_v1` first); `v2-then-v1` answers its
+/// first `hello` v2-signed and every later one v1 only, as a relay stripping the signature
+/// would; `other-node-after-1` answers later `hello`s from a different node; `auth` and
 /// `unreachable` fail before any request, as OpenSSH does. Every request line is logged as
 /// `<spawn> <line>` to `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
@@ -85,7 +120,12 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     fs::create_dir_all(&bin).unwrap();
     fs::write(root.join("plan"), format!("{}\n", plan.join("\n"))).unwrap();
     let hello = hello().to_string();
-    assert!(!hello.contains('\'') && !hello.contains('%'));
+    let hello_v2 = signed_hello(NODE, true, &["human_chat"]).to_string();
+    let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
+    let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
+    for text in [&hello, &hello_v2, &hello_other, &hello_join] {
+        assert!(!text.contains('\'') && !text.contains('%'));
+    }
     let challenge = json!({"workspace_id": WORKSPACE_ID, "nonce": "nonce", "uid": 10001});
     let script = format!(
         r#"#!/bin/sh
@@ -118,11 +158,21 @@ esac
 answered=0
 while IFS= read -r line; do
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
-  if [ "$plan" = "drop-after-1" ] && [ "$answered" -ge 1 ]; then exit 0; fi
+  case "$plan" in
+    *drop-after-1) [ "$answered" -ge 1 ] && exit 0 ;;
+  esac
   answered=$((answered+1))
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
   if printf '%s\n' "$line" | grep -q '"method":"hello"'; then
-    printf '{{"id":"%s","result":%s}}\n' "$id" '{hello}'
+    body='{hello}'
+    case "$plan" in
+      v2-then-v1) [ "$answered" -eq 1 ] && body='{hello_v2}' ;;
+      other-node-after-1) [ "$answered" -gt 1 ] && body='{hello_other}' ;;
+      join-drop-after-1) body='{hello_join}' ;;
+    esac
+    printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
+  elif printf '%s\n' "$line" | grep -q '"method":"enrollment.pending"'; then
+    printf '{{"id":"%s","result":{{"invited":false}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q '"method":"auth.challenge"'; then
     printf '{{"id":"%s","result":%s}}\n' "$id" '{challenge}'
   else
@@ -442,6 +492,201 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             .collect::<Vec<_>>(),
         ["hello", "auth.challenge", "workspace.snapshot"]
     );
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+}
+
+/// Methods bridge `spawn` received, in order.
+fn methods_on(root: &Path, spawn: usize) -> Vec<String> {
+    requests(root)
+        .into_iter()
+        .filter(|(n, _)| *n == spawn)
+        .map(|(_, method)| method)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_heartbeat_whose_answer_lost_its_signature_is_final_and_never_redialled() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // Connected over a v2-signed hello; the next heartbeat is answered v1 only (a relay that
+    // strips the signature covering the institution). A re-dial would take that v1 answer at
+    // connect, silently: the refusal is final instead, and shown.
+    let f = fixture(
+        "downgrade",
+        &["v2-then-v1", "serve"],
+        fast(Duration::from_millis(30)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    assert_eq!(
+        f.manager
+            .broker_hello(CONNECTION_ID)
+            .map(|hello| hello.signature_version),
+        Some(2)
+    );
+    let manager = Arc::clone(&f.manager);
+    until(async || status(&manager).await.0 == "disconnected").await;
+    // Several retry gaps later: still the one bridge, never a second dial.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1, "no re-dial took the v1 answer");
+    assert_eq!(
+        status(&f.manager).await,
+        (
+            "disconnected".into(),
+            Some("The workspace's answer lost its signature; reconnect to this workspace.".into())
+        )
+    );
+    assert!(f.manager.transport(CONNECTION_ID).await.is_err());
+    assert_eq!(
+        f.manager
+            .broker_hello(CONNECTION_ID)
+            .map(|hello| hello.signature_version),
+        Some(2),
+        "the v1 answer was never cached"
+    );
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_heartbeat_from_a_different_node_is_final_and_never_redialled() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "node-changed",
+        &["other-node-after-1", "serve"],
+        fast(Duration::from_millis(30)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || status(&manager).await.0 == "disconnected").await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1, "no re-dial");
+    let (_, error) = status(&f.manager).await;
+    assert_eq!(
+        error.as_deref(),
+        Some("Verified SSH node identity changed; create a newly verified connection")
+    );
+    let c = f.manager.connection(CONNECTION_ID).await.unwrap();
+    assert_eq!(c.node_id.as_deref(), Some(NODE), "the pinned node is kept");
+}
+
+#[tokio::test]
+async fn a_request_whose_probe_is_refused_fails_with_why_and_writes_nothing() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("probe-refused", &["v2-then-v1", "serve"], slept()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("lost its signature"), "{error}");
+    assert_eq!(methods_on(&f.root, 1), ["hello", "hello"]);
+    assert_eq!(spawns(&f.root), 1, "no re-dial");
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+}
+
+/// A long idle before use, with the heartbeat not running (this computer slept): the bridge
+/// is gone, and each of these requests finds it first.
+fn slept() -> KeepaliveTiming {
+    KeepaliveTiming {
+        tick: Duration::from_secs(600),
+        idle: Duration::from_secs(600),
+        probe_before_use: Duration::from_millis(50),
+        retry_delays: [Duration::from_secs(600); 3],
+    }
+}
+
+#[tokio::test]
+async fn a_scoped_worker_request_after_a_long_idle_dials_again_first() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("worker-probe", &["drop-after-1", "serve"], slept()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let epoch = f
+        .manager
+        .connection(CONNECTION_ID)
+        .await
+        .unwrap()
+        .policy_epoch;
+    f.manager.registry.lock().await.scopes.insert(
+        "keepalive-worker".into(),
+        Scope {
+            connection_id: CONNECTION_ID.into(),
+            run_id: "keepalive-run".into(),
+            channel_id: "keepalive-channel".into(),
+            source_channels: vec!["keepalive-channel".into()],
+            epoch,
+            provider_binding: "keepalive-provider".into(),
+            public_provider: false,
+            origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
+            expired: false,
+            expires_at: None,
+            labels: None,
+            session_incarnation: None,
+        },
+    );
+    f.manager
+        .write_credential("run:keepalive-worker", "run-credential")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let answer = f
+        .manager
+        .worker_request(
+            "keepalive-worker",
+            "messages.history",
+            json!({"channel_id": "keepalive-channel", "limit": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer["accepted_method"], "fixture");
+    // Nothing was written to the dropped bridge but the probe's hello; the request went once,
+    // over the new one.
+    assert_eq!(methods_on(&f.root, 1), ["hello", "hello"]);
+    assert_eq!(methods_on(&f.root, 2), ["hello", "messages.history"]);
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+}
+
+#[tokio::test]
+async fn a_hello_refresh_after_a_long_idle_dials_again_first() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("refresh-probe", &["drop-after-1", "serve"], slept()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    f.manager.refresh_broker_hello(CONNECTION_ID).await.unwrap();
+    assert_eq!(methods_on(&f.root, 1), ["hello", "hello"]);
+    assert_eq!(methods_on(&f.root, 2), ["hello", "hello"]);
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+}
+
+#[tokio::test]
+async fn a_join_status_read_after_a_long_idle_dials_again_first() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("pre-auth-probe", &["join-drop-after-1", "serve"], slept()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    f.manager.join_status(CONNECTION_ID).await.unwrap();
+    // The unsigned `enrollment.pending` never met the dropped bridge.
+    assert_eq!(methods_on(&f.root, 1), ["hello", "hello"]);
+    assert_eq!(
+        methods_on(&f.root, 2).first().map(String::as_str),
+        Some("hello")
+    );
+    assert!(methods_on(&f.root, 2).contains(&"enrollment.pending".to_owned()));
     assert_eq!(status(&f.manager).await, ("connected".into(), None));
 }
 
