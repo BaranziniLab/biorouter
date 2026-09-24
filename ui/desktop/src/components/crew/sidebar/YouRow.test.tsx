@@ -64,7 +64,7 @@ describe('YouRow', () => {
   it('adds a neutral "Profile: {name}" badge in a dev profile', () => {
     stubAppConfig({ BIOROUTER_DEV_PROFILE_NAME: 'alice' });
     renderYou();
-    const badge = screen.getByText(copy.devProfile('alice'));
+    const badge = screen.getByText(copy.devProfile('alice')).parentElement as HTMLElement;
     expect(badge.className).toContain('bg-background-medium');
   });
 

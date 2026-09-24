@@ -60,8 +60,8 @@ export function YouRow() {
               </span>
             </span>
             {profile && (
-              <Badge tone="neutral" className="max-w-20 shrink-0 truncate">
-                {sidebarCopy.you.devProfile(profile)}
+              <Badge tone="neutral" className="max-w-20 min-w-0 shrink-0">
+                <span className="crew-sidebar-truncate">{sidebarCopy.you.devProfile(profile)}</span>
               </Badge>
             )}
           </button>
