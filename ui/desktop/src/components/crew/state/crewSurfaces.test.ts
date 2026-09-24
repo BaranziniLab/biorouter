@@ -86,6 +86,11 @@ describe('error slots', () => {
     expect(resolveErrorSlot(error('composer'), new Map([['composer', 0]]))).toBe('global');
   });
 
+  it('renders a connect failure at the surface that explains it, else in the connection bar', () => {
+    expect(resolveErrorSlot(error('connect'), mounted('connect'))).toBe('connect');
+    expect(resolveErrorSlot(error('connect'), mounted('composer'))).toBe('global');
+  });
+
   it('always renders observer and global errors in the connection bar', () => {
     expect(resolveErrorSlot(error('observer'), mounted('observer'))).toBe('observer');
     expect(resolveErrorSlot(error('global'), mounted())).toBe('global');

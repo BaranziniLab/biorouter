@@ -2,21 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { crewHttp, crewRequest, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
-import { classifyConnectFailure } from './connectFailure';
 import { useCrewActions } from './crewActions';
 import { createSend, useCrewDraft } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { failureMessage } from './observationFailure';
-import { useCrewConnections } from './useCrewConnections';
+import {
+  createConnectionLifecycle,
+  useCrewConnectFailures,
+  useCrewConnections,
+} from './useCrewConnections';
 import { useCrewObservation } from './useCrewObservation';
-import type {
-  CrewController,
-  CrewControllerOptions,
-  CrewJoinStatus,
-  LastConnectFailure,
-} from './types';
+import type { CrewController, CrewControllerOptions, CrewJoinStatus } from './types';
 
 export type * from './types';
 
@@ -71,16 +69,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const surfaces = useCrewSurfaces();
   const { resetSurfaces, openSignIn, closeSignIn } = surfaces;
   const [joinStatus, setJoinStatus] = useState<CrewJoinStatus | null>(null);
-  const [lastConnectFailure, setLastConnectFailure] = useState<
-    (LastConnectFailure & { connectionId: string }) | null
-  >(null);
-  const onVerifiedFrame = useCallback(
-    (verifiedConnection: string) =>
-      setLastConnectFailure((failure) =>
-        failure?.connectionId === verifiedConnection ? null : failure
-      ),
-    []
-  );
+  const connectFailures = useCrewConnectFailures();
 
   useEffect(() => {
     void loadConnections().catch((failure: unknown) => {
@@ -104,7 +93,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     closeSignIn,
     setJoinStatus,
     resetSurfaces,
-    onVerifiedFrame,
+    onVerifiedFrame: connectFailures.clear,
     keepLastVerifiedView,
   });
   const {
@@ -122,10 +111,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     refreshError,
     lastVerified,
     setSnapshot,
-    observer,
     refresh,
+    stopObserving,
     restartObservation,
-    clearProtectedState,
   } = observation;
 
   const channels = snapshot?.channels.filter((item) => item.team_id === teamId) ?? [];
@@ -152,8 +140,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const channel = snapshot?.channels.find((item) => item.id === channelId) ?? null;
   const team = snapshot?.teams.find((item) => item.id === teamId) ?? null;
   const connectFailure =
-    lastConnectFailure?.connectionId === connectionId
-      ? (({ connectionId: _connection, ...failure }) => failure)(lastConnectFailure)
+    connectFailures.failure?.connectionId === connectionId
+      ? (({ connectionId: _connection, ...failure }) => failure)(connectFailures.failure)
       : null;
 
   const request = useCallback(
@@ -210,42 +198,19 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft.setContextChannels([]);
   };
 
-  const recordConnectFailure = useCallback((failedConnection: string, failure: unknown) => {
-    const classified = classifyConnectFailure(failure);
-    setLastConnectFailure({ connectionId: failedConnection, ...classified });
-    return classified;
-  }, []);
-  const connect = async (opts?: { userInitiated?: boolean }) => {
-    const target = connectionId;
-    await act('global', 'connect', async () => {
-      try {
-        await crewHttp(`/connections/${target}/connect`, 'POST', {});
-      } catch (failure) {
-        const classified = recordConnectFailure(target, failure);
-        if (autoOpenSignIn && opts?.userInitiated && classified.kind === 'auth_required')
-          openSignIn('auto');
-        throw failure;
-      }
-      setLastConnectFailure((failure) => (failure?.connectionId === target ? null : failure));
-      await loadConnections();
-      await refresh();
-    });
-  };
-  const disconnect = async () => {
-    const target = connectionId;
-    await act('global', 'disconnect', async () => {
-      await crewHttp(`/connections/${target}/disconnect`, 'POST', {});
-      observer.current?.abort();
-      generation.current += 1;
-      clearProtectedState();
-      setLastConnectFailure((failure) => (failure?.connectionId === target ? null : failure));
-      await loadConnections();
-    });
-  };
+  const { connect, disconnect } = createConnectionLifecycle({
+    connectionId,
+    failures: connectFailures,
+    autoOpenSignIn,
+    openSignIn,
+    loadConnections,
+    refresh,
+    stopObserving,
+    act,
+  });
   const onSignedIn = () => {
     closeSignIn();
-    const target = connectionId;
-    setLastConnectFailure((failure) => (failure?.connectionId === target ? null : failure));
+    connectFailures.clear(connectionId);
     void act('global', 'sign-in', async () => {
       await loadConnections();
       await refresh();
@@ -257,12 +222,18 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       await refresh();
     });
   };
-  const grantSession = async ({ contextChannels }: { contextChannels: string[] }) => {
-    if (!grantSessionId) return;
+  const grantSession = async ({
+    contextChannels,
+    sessionId = grantSessionId ?? undefined,
+  }: {
+    contextChannels: string[];
+    sessionId?: string;
+  }) => {
+    if (!sessionId) return;
     if (!snapshot || observedPrivacy?.connectionId !== connectionId)
       throw new Error(crewActionCopy.grantPrivacyUnverified);
     await crewHttp(
-      `/connections/${connectionId}/sessions/${encodeURIComponent(grantSessionId)}/grant`,
+      `/connections/${connectionId}/sessions/${encodeURIComponent(sessionId)}/grant`,
       'POST',
       {
         expected_mode: observedPrivacy.mode,
@@ -327,7 +298,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     disconnect,
     lastConnectFailure: connectFailure,
     reportConnectFailure: (failure: unknown) => {
-      recordConnectFailure(connectionId, failure);
+      connectFailures.record(connectionId, failure);
     },
 
     snapshot,

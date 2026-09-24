@@ -154,11 +154,17 @@ export interface CrewUi {
   pane: PaneIntent | null;
 }
 
-/** Where an action error came from. `errorSlotFor` renders it there, or in the connection bar. */
+/**
+ * Where an action error came from. `errorSlotFor` renders it there while that surface is mounted,
+ * otherwise in the connection bar. `connect` is a failed connect or sign-in: the surface that
+ * explains its classified cause (Sign in, a trust pane, "not set up") registers for it; a cause with
+ * no surface of its own (unreachable, unclassified) falls back to the bar.
+ */
 export type ErrorSource =
   | 'composer'
   | `pane:${PaneMode}`
   | `dialog:${DialogKind}`
+  | 'connect'
   | 'observer'
   | 'global';
 
@@ -238,7 +244,10 @@ export interface CrewController {
   removeConnection(id: string): Promise<void>;
   /** Prepare or recover the hosting identity. Throws on failure. */
   prepareHostingDevice(): Promise<PreparedDevice>;
-  /** POST connect, reload, refresh. Records a classified failure; never throws. */
+  /**
+   * POST connect, reload, refresh. A failure is recorded twice: classified in `lastConnectFailure`
+   * and as an error from the `connect` source. Never throws.
+   */
   connect(opts?: { userInitiated?: boolean }): Promise<void>;
   /** POST disconnect, stop observing and clear the protected view. Never throws. */
   disconnect(): Promise<void>;
@@ -281,7 +290,11 @@ export interface CrewController {
     options?: ActOptions
   ): Promise<T | undefined>;
   error: CrewActionError | null;
-  /** True when the current error belongs in the slot of `source` (see "Where errors render"). */
+  /**
+   * True when the current error renders in the slot of `source`: its own surface while that
+   * registered surface is mounted, otherwise the connection bar, which asks for `global` (and
+   * `observer`). Exactly one slot answers true for any error.
+   */
   errorSlotFor(source: ErrorSource): boolean;
   /** A surface that can show its own errors registers while mounted; returns the unregister. */
   registerErrorSlot(source: ErrorSource): () => void;
@@ -328,8 +341,12 @@ export interface CrewController {
 
   // Chat grants (from ?sessionId)
   grantSessionId: string | null;
-  /** POST the grant for `grantSessionId`. Throws; callers choose the error source. */
-  grantSession(input: { contextChannels: string[] }): Promise<void>;
+  /**
+   * POST a read-and-post grant for a chat (default: `grantSessionId`) in the selected channel,
+   * pinned to the verified privacy epochs. Does nothing without a chat. Throws; callers choose the
+   * error source.
+   */
+  grantSession(input: { contextChannels: string[]; sessionId?: string }): Promise<void>;
 
   // Sign in
   signIn: SignInState;

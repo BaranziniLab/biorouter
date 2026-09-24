@@ -6,7 +6,15 @@ import {
   type SetStateAction,
 } from 'react';
 import { crewHttp, type CrewConnection } from '../crewApi';
-import type { PreparedDevice, SaveConnectionInput } from './types';
+import { classifyConnectFailure } from './connectFailure';
+import type {
+  ActionKey,
+  ActOptions,
+  ErrorSource,
+  LastConnectFailure,
+  PreparedDevice,
+  SaveConnectionInput,
+} from './types';
 
 /**
  * The full connection body a privacy change PATCHes (L18: the daemon replaces the whole record,
@@ -120,4 +128,93 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
     removeConnection,
     prepareHostingDevice,
   };
+}
+
+/** The classified failure of the most recent connect or sign-in, remembered per connection. */
+export interface CrewConnectFailures {
+  failure: (LastConnectFailure & { connectionId: string }) | null;
+  /** Classify `failure` and remember it for `connectionId`. Returns the classification. */
+  record(connectionId: string, failure: unknown): LastConnectFailure;
+  /** Forget the failure of `connectionId` (it connected, verified, or was disconnected on purpose). */
+  clear(connectionId: string): void;
+}
+
+export function useCrewConnectFailures(): CrewConnectFailures {
+  const [failure, setFailure] = useState<(LastConnectFailure & { connectionId: string }) | null>(
+    null
+  );
+  const record = useCallback((connectionId: string, thrown: unknown) => {
+    const classified = classifyConnectFailure(thrown);
+    setFailure({ connectionId, ...classified });
+    return classified;
+  }, []);
+  const clear = useCallback(
+    (connectionId: string) =>
+      setFailure((current) => (current?.connectionId === connectionId ? null : current)),
+    []
+  );
+  return { failure, record, clear };
+}
+
+export interface CrewConnectionLifecycleContext {
+  connectionId: string;
+  failures: CrewConnectFailures;
+  autoOpenSignIn: boolean;
+  openSignIn(reason: 'user' | 'auto'): void;
+  loadConnections(): Promise<void>;
+  refresh(): Promise<void>;
+  stopObserving(): void;
+  act<T>(
+    source: ErrorSource,
+    key: ActionKey,
+    fn: () => Promise<T>,
+    options?: ActOptions
+  ): Promise<T | undefined>;
+}
+
+/**
+ * Connect and disconnect the selected connection.
+ *
+ * Connect is `POST …/connect`, then reload the list, then refresh (the order the old view used).
+ * A failure is classified and remembered for the connection, and also recorded as an error from
+ * the `connect` source. With `autoOpenSignIn`, a user-initiated connect that the server answered
+ * with a password or code prompt opens Sign in by itself, once per attempt.
+ */
+export function createConnectionLifecycle(context: CrewConnectionLifecycleContext) {
+  const {
+    connectionId,
+    failures,
+    autoOpenSignIn,
+    openSignIn,
+    loadConnections,
+    refresh,
+    stopObserving,
+    act,
+  } = context;
+  const connect = async (opts?: { userInitiated?: boolean }) => {
+    const target = connectionId;
+    await act('connect', 'connect', async () => {
+      try {
+        await crewHttp(`/connections/${target}/connect`, 'POST', {});
+      } catch (failure) {
+        const classified = failures.record(target, failure);
+        if (autoOpenSignIn && opts?.userInitiated && classified.kind === 'auth_required')
+          openSignIn('auto');
+        throw failure;
+      }
+      failures.clear(target);
+      await loadConnections();
+      await refresh();
+    });
+  };
+  const disconnect = async () => {
+    const target = connectionId;
+    await act('global', 'disconnect', async () => {
+      await crewHttp(`/connections/${target}/disconnect`, 'POST', {});
+      stopObserving();
+      failures.clear(target);
+      await loadConnections();
+    });
+  };
+  return { connect, disconnect };
 }

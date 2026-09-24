@@ -79,7 +79,13 @@ export function useCrewSurfaces(): CrewSurfaces {
   const openSignIn = useCallback((reason: 'user' | 'auto' = 'user') => {
     setSignIn((current) => (current.open ? current : { open: true, reason }));
   }, []);
-  const closeSignIn = useCallback(() => setSignIn({ open: false, reason: null }), []);
+  const closeSignIn = useCallback(
+    () =>
+      setSignIn((current) =>
+        current.open || current.reason ? { open: false, reason: null } : current
+      ),
+    []
+  );
   const openDialog = useCallback(
     (intent: DialogIntent) => {
       if (intent.kind === 'sign-in') openSignIn('user');

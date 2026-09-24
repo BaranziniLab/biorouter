@@ -429,7 +429,9 @@ describe('connect and sign in', () => {
       code: 'crew_ssh_auth_required',
       message: 'Crew SSH failure [ssh_eof]',
     });
-    expect(crew.error?.source).toBe('global');
+    // The raw text is kept for the surface that explains the cause, else the connection bar.
+    expect(crew.error).toMatchObject({ source: 'connect', code: 'crew_ssh_auth_required' });
+    expect(crew.errorSlotFor('global')).toBe(true);
   });
 
   it('does not open Sign in for a connect the person did not start', async () => {
@@ -545,6 +547,24 @@ describe('connect and sign in', () => {
     expect(crew.screen).toBe('offline');
     expect(mocks.observeCrew.mock.calls.length).toBe(observed);
   });
+
+  it('leaves no stale observation error behind a deliberate disconnect', async () => {
+    mocks.observeCrew.mockImplementation(async () => {
+      throw new CrewHttpError('Crew updates disconnected.', 400, 'observation_refused');
+    });
+    renderController();
+    await waitFor(() => expect(crew.screen).toBe('updates-paused'));
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections')
+        return { connections: [{ ...connection, status: 'disconnected' }] };
+      return {};
+    });
+    await act(async () => {
+      await crew.disconnect();
+    });
+    expect(crew.refreshError).toBeNull();
+    expect(crew.screen).toBe('offline');
+  });
 });
 
 describe('requests, intents and the composer seams', () => {
@@ -619,6 +639,29 @@ describe('requests, intents and the composer seams', () => {
       crew.closePane();
     });
     expect(crew.ui).toEqual({ dialog: null, pane: null });
+  });
+
+  it('grants a chat read-and-post access pinned to the verified epochs, and nothing without a chat', async () => {
+    renderController();
+    await verifiedChannel();
+    await act(async () => {
+      await crew.grantSession({ contextChannels: [] });
+    });
+    expect(mocks.crewHttp.mock.calls.some(([path]) => String(path).includes('/grant'))).toBe(false);
+    await act(async () => {
+      await crew.grantSession({ contextChannels: ['channel-9'], sessionId: 'chat 1' });
+    });
+    expect(mocks.crewHttp).toHaveBeenCalledWith(
+      '/connections/conn-1/sessions/chat%201/grant',
+      'POST',
+      {
+        expected_mode: 'private',
+        expected_policy_epoch: 1,
+        expected_workspace_policy_epoch: 1,
+        channel_id: channel.id,
+        context_channels: [channel.id, 'channel-9'],
+      }
+    );
   });
 
   it('clears the composer only when it still holds the seed', async () => {

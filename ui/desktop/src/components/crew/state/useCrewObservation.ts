@@ -71,8 +71,9 @@ export interface CrewObservation {
   refreshError: string;
   lastVerified: VerifiedView | null;
   setSnapshot: Dispatch<SetStateAction<Snapshot | null>>;
-  observer: MutableRefObject<AbortController | null>;
   refresh(): Promise<void>;
+  /** Stop observing on purpose (a disconnect): no error, nothing verified left. */
+  stopObserving(): void;
   restartObservation(): void;
   clearProtectedState(): void;
   observationFailure(message: string, code?: string): void;
@@ -188,6 +189,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     () => setObservationRevision((revision) => revision + 1),
     []
   );
+  const stopObserving = useCallback(() => {
+    observer.current?.abort();
+    generation.current += 1;
+    clearProtectedState();
+    setRefreshError('');
+  }, [generation, clearProtectedState]);
   useEffect(
     () => () => {
       observer.current?.abort();
@@ -456,8 +463,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     refreshError,
     lastVerified,
     setSnapshot,
-    observer,
     refresh,
+    stopObserving,
     restartObservation,
     clearProtectedState,
     observationFailure,
