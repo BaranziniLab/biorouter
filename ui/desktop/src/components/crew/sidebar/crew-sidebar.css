@@ -1,0 +1,421 @@
+/* The Crew sidebar (`crew/sidebar/`).
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and `[data-*]` /
+   `[aria-*]` hooks only, tokens only, and every `crew-*` keyframes restates a
+   rest under `prefers-reduced-motion`. `crew-app.css` owns the column's
+   geometry (`.crew-sidebar`, 240px); this file owns the skin inside it.
+
+   Why authored rather than utilities at the call sites: a newly written
+   Tailwind class can silently fail to generate under `BIOROUTER_NO_HMR`, and
+   several of these need a pseudo-element (the active bar), a descendant state
+   (hover-revealed team actions) or a rest under reduced motion.
+
+   ⚠ **Focus.** These rules are unlayered, so a background set here beats the
+   D-15 focus fill in `@layer base`. Every rule that paints a row's ground at
+   rest therefore restates the focus fill for `:focus-visible` itself, or a
+   keyboard user would lose focus on the active row.
+
+   ⚠ **No drag region.** Nothing here declares `-webkit-app-region: drag` (issue
+   #74): the band's controls carry `no-drag`, and `/crew` is a chat route in
+   `AppLayout.tsx`, so the 32px drag strip stops taking pointer events here. */
+
+.crew-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--sidebar);
+  color: var(--sidebar-foreground);
+  border-inline-end: 1px solid var(--sidebar-border);
+}
+
+/* ── The switcher band: one continuous top edge at y=44 ──────────────────── */
+.crew-sidebar-band {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--chrome-height);
+  min-width: 0;
+  padding-inline: 8px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+/* The `subject` look (the KBSelectorTrigger recipe): borderless at rest, the
+   band's label type, chrome on hover. Content-sized up to the band. */
+.crew-sidebar-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--control-md);
+  padding-inline: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  font-weight: 500;
+  color: var(--text-default);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* THE TITLEBAR RESERVE (issue #74). When the app sidebar is collapsed — the
+   default at a 1048px window — the floating titlebar controls (and on macOS
+   the traffic lights) sit over this band's left end, so the switcher clears
+   them by `AppLayout`'s own `--biorouter-titlebar-control-reserve`.
+
+   ⚠ **A MARGIN, never padding.** Padding stays inside the trigger's box, so
+   the box would still start under the controls and a click aimed at them
+   could land on the switcher; a margin moves the box itself. It is keyed on
+   the app sidebar's own `data-state`, the same peer relationship
+   `ui/sidebar.tsx`'s `SidebarInset` margins use, so it follows a collapse on
+   the same frame with no React read of the sidebar. A compact window with the
+   sidebar opened by hand needs none: the sidebar then overlays this band. */
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher {
+  margin-left: var(--biorouter-titlebar-control-reserve);
+}
+
+.crew-sidebar-switcher:hover {
+  border-color: var(--border-subtle);
+  background-color: var(--background-medium);
+}
+
+.crew-sidebar-switcher:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+}
+
+.crew-sidebar-switcher-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Chevrons: only real menus and disclosures carry one, and only it moves ──
+   A menu chevron turns 180°, a team or group chevron 90°. In over
+   `--dur-fast-max`, back over `--dur-fast`: a transition runs with the
+   duration of the state it is going TO. */
+.crew-sidebar-chevron {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[data-state='open'] > .crew-sidebar-chevron[data-turn='half'] {
+  transform: rotate(180deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+[aria-expanded='true'] > .crew-sidebar-chevron[data-turn='quarter'] {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+/* ── The status row: dot + word on the left, the privacy chip on the right ── */
+.crew-sidebar-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: var(--row-height-rail);
+  min-width: 0;
+  padding-inline: 12px;
+  border-block-end: 1px solid var(--sidebar-border);
+}
+
+.crew-sidebar-status-word {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.crew-sidebar-status-button {
+  min-width: 0;
+  padding: 0 4px;
+  margin-inline: -4px;
+  border-radius: var(--radius-inner);
+  font: inherit;
+  color: var(--text-default);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The one spinner: a 700ms linear turn, and a still arc under reduced motion. */
+.crew-sidebar-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  animation: crew-sidebar-spin 700ms linear infinite;
+}
+
+@keyframes crew-sidebar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.crew-sidebar-chip-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The privacy popover's facts: two columns, label and value. */
+.crew-sidebar-privacy-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 0;
+}
+
+/* ── The scrolling middle: sections and team lists ───────────────────────── */
+.crew-sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-block: 8px;
+}
+
+.crew-sidebar-section + .crew-sidebar-section {
+  margin-block-start: 12px;
+}
+
+.crew-sidebar-section-label {
+  padding: 4px 12px;
+  color: var(--text-muted);
+}
+
+.crew-sidebar-list {
+  margin: 0;
+  padding: 0 4px;
+  list-style: none;
+}
+
+/* A sidebar row: 32px, the app sidebar's hover and active grounds, and the
+   2px accent bar on the active one. `aria-current` is the selection. */
+.crew-sidebar-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--row-height-rail);
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-muted);
+  text-align: start;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-row:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-row[aria-current='page'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+}
+
+.crew-sidebar-row[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 8px;
+  inset-inline-start: 0;
+  width: 2px;
+  background-color: var(--accent-bar);
+}
+
+.crew-sidebar-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+/* Unread is weight and ink, never a hue; the count is a neutral badge. */
+.crew-sidebar-row[data-unread='true'] {
+  font-weight: 600;
+  color: var(--text-default);
+}
+
+.crew-sidebar-row[data-archived='true'] {
+  color: var(--text-subtle);
+}
+
+/* A quiet row: + Add channel, + Add team, Archived (n). */
+.crew-sidebar-row[data-quiet='true'] {
+  color: var(--text-subtle);
+}
+
+.crew-sidebar-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-sidebar-row-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+}
+
+/* ── Team sections ──────────────────────────────────────────────────────────
+   Collapse is instant: the rows appear and disappear with no tween, and only
+   the chevron turns. Team names render as typed, never upper-cased. */
+.crew-sidebar-team {
+  margin-block-start: 8px;
+}
+
+.crew-sidebar-team-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-inline: 4px;
+}
+
+.crew-sidebar-team-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--row-height-rail);
+  padding-inline: 4px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: start;
+}
+
+.crew-sidebar-team-toggle:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-team-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+/* The header's + and ⋯ appear on hover and on focus within, and stay while
+   their menu is open. Opacity only: they remain in the accessibility tree and
+   reachable with Tab from the header. */
+.crew-sidebar-team-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-team-header:hover .crew-sidebar-team-actions,
+.crew-sidebar-team-header:focus-within .crew-sidebar-team-actions,
+.crew-sidebar-team-actions:has([data-state='open']) {
+  opacity: 1;
+}
+
+/* ── The You row: the pinned 48px footer ────────────────────────────────── */
+.crew-sidebar-you {
+  flex: none;
+  padding: 4px;
+  border-block-start: 1px solid var(--sidebar-border);
+}
+
+.crew-sidebar-you-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--row-height);
+  padding: 4px 8px;
+  border-radius: var(--radius-element);
+  text-align: start;
+}
+
+.crew-sidebar-you-trigger:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-you-trigger:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+}
+
+.crew-sidebar-you-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.crew-sidebar-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The workspace menu's header: not a row, not focusable. */
+.crew-sidebar-menu-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+/* The last connection error, at most two lines. */
+.crew-sidebar-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────────
+   The spinner rests as a still arc; chevrons and hover tints change
+   instantly. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-sidebar-spinner {
+    animation: none;
+  }
+
+  .crew-sidebar-chevron,
+  .crew-sidebar-switcher,
+  .crew-sidebar-row,
+  .crew-sidebar-team-actions {
+    transition: none;
+  }
+}
