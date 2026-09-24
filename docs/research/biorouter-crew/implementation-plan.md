@@ -847,6 +847,28 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 - **ConnectionBar:** an observation error on a daemon-disconnected connection shows no Retry; a connect failure in the bar offers Try again, and unreachable reads "Can't reach {host}.".
 - **AgentTaskPane:** Start also disabled while re-verifying, on an archived channel, and with no models; the Start node always stays mounted (C11). Newest task picked by `pane/newestTask.ts` from loaded messages, because observation `runs` are `HashMap`-ordered with no timestamp (open daemon follow-up: `started_at` on `RunView` or sorted runs in `owned_run_views`).
 
+**UI-DIALOGS outcome (2026-09-23, `2a86331b`, `fc23a666`, `9c7bcfcc`, `836b69b0`, `cb08c175`).** Built and tested under `crew/dialogs/`; not mounted until UI-INTEGRATE. Decisions that change the spec's surface:
+
+- Dialog API: a dialog takes its intent fields plus `onClose` and mounts only while open (no `open` prop). `CrewDialogs` renders the controller's `ui.dialog` for every kind except join, host and sign-in, keyed per intent (guarantees L14); `HOSTED_DIALOG_KINDS` lists the hosted kinds.
+- Workspace settings' Agent access tab is a slot (`CrewDialogs agentAccess={…}` / `WorkspaceSettingsDialog agentAccess`); without it the tab is not offered.
+- Connection settings shows Workspace details read-only for every connection: `CrewConnection` has no marker for a manually entered connection. Fingerprint computed with WebCrypto from the pinned key (SHA-256, first 16 hex grouped, as `grouped_fingerprint`); a key that is not 64 hex shows raw.
+- Institution fields use the dialogs' own `INSTITUTION_FIELD_PATTERN` (`[a-z0-9][a-z0-9_\-]{0,63}`), not identity's `INSTITUTION_ID_PATTERN`, which is invalid under the `v` flag browsers use for `pattern`.
+- Typed confirmations ask for the workspace's own name (S2 name, else the saved connection's name), not the 'name — server' disambiguation label, so no em dash must be typed.
+- Create team, Create channel, Invite, Let in, cancel-invitation and Add {first} to {team} use `request` without `refresh()` so their result view or next step survives; the ~2 s observer frames bring the change. Add people, Transfer ownership, Rename, Edit profile and the confirmations use `mutate` (refresh and close), as legacy. After a create, the dialog selects the new team or channel.
+- Public→Private from the Privacy tab with no institution opens a small `MakePrivateDialog` ('Make your {workspace} connection private') asking for it; the spec did not name this dialog.
+- Rename… (workspace, General tab) is host-only and shown only when `uniqueNamesSupported(snapshot)` is true; that infers S2 support from projected team/channel `handle`s, because no `unique_names_v1` capability reaches the renderer.
+- Keys and security also lists `actor.devices` (fingerprint, date, how added), so the connection bar's 'A new device was added… Review' has something to review.
+- Share a server path puts Label under Advanced ('Label: the file name'); default label is the path's last segment (legacy used the whole path).
+- `PersonPicker` adds `labelledBy` (trigger named by field label plus choice, WCAG 2.5.3) and `autoFocus` to the spec's sketch.
+- The legacy token path offers 'Add another device for @{username}' when the typed UID matches an active principal and sends `existing_principal_id`, which the broker requires for an existing member.
+- Toasts fire only for results that happen off-screen: invitation sent (Add people, Create team's Add step), ownership offered, workspace made Private for everyone. Copy never toasts.
+- Open, outside the package: identity's `INSTITUTION_ID_PATTERN` should escape the hyphen (`[a-z0-9][a-z0-9_\-]{0,63}`); onboarding Join/Host institution fields will silently accept 'UCSF' if they use it.
+- Open: no broker capability (`unique_names_v1`, `join_by_name_v1`) is projected to the renderer; other areas' Rename… menus should gate on `uniqueNamesSupported()` until the daemon projects it.
+- Open: broker refusal codes for S3a invites and S2 names are not defined (N-BROKER-S3 / N-BROKER-S1S2). The dialogs map `unknown_account|account_not_found|no_such_account|unknown_user`, `already_member|identity_member`, `identity_ambiguous|invalid_params` (with 'invite @x'/'did you mean @x'), `name_conflict|name_taken`, `code_mismatch` to copy-deck wording; anything else verbatim. The broker should emit these codes or report back.
+- Open: the old-client join request has no pinned format; the dialogs accept pasted text with exactly one 64-hex device key and read `Username: @bob` or `@bob`. UI-ONBOARD's join-request CopyField should carry both (e.g. 'Crew join request\nUsername: @bob\nDevice key: <hex>').
+- Open: `useCrewController`'s channel-validation effect overrides selecting a team/channel not yet in the snapshot, so a new channel stays selected only once a frame containing it arrives; a pending-selection seam would make it deterministic.
+- UI-INTEGRATE: mount `<CrewDialogs agentAccess={<WorkspaceAgentAccess/>} />` once in CrewLayout; the migrated CVT's `../ConfigContext` mock must also export `usePrivacyTiersEnabled` (PrivacyBadge) or use importActual.
+
 **UI-PRIM outcome (2026-09-23, `1c068364`, `49c7eec3`, `7181a809`).** Consumers of the primitives and `crew/crew-app.css` should build on these:
 
 - **Avatar:** props add `name`, `username`, `src`, `label`; `fallback` (chosen avatar text, clamped to 2 characters) wins over derived initials; `avatarInitials(name, username)` is exported (first letters of the first two words). `ring` paints `--biorouter-avatar-ring` (default canvas); a member stack sets it to its band colour (`var(--sidebar)`).
