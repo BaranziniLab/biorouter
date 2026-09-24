@@ -33,10 +33,10 @@ function isNotJoined(status: CrewJoinStatus | null): boolean {
 }
 
 /**
- * Crew's state and actions, shared by every layout through `CrewControllerContext`.
+ * Crew's state and actions, shared by every Crew area through `CrewControllerContext`.
  *
  * Extracted from `CrewView` with its behavior unchanged — refresh order, draft rules, idempotency,
- * single flight, the unknown-outcome lock — plus seams the legacy layout ignores: controller
+ * single flight, the unknown-outcome lock — plus the seams the redesigned layout added: controller
  * options, the last verified view, the classified connect failure, dialog and pane intents,
  * `markRead` without a refresh, `clearBodyIfEquals`, per-action pending keys and error sources,
  * and the pure derived `status` and `screen`. React authorizes nothing here: every action is a

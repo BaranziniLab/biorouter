@@ -59,7 +59,7 @@ export interface CrewActions {
  *
  * `act` replaces the old single `busy` flag. It clears the error when an action starts (unless
  * asked to keep it), records the failure's message and source, and never throws. `busy` is the
- * legacy view: any action pending.
+ * coarse view: true while any action is pending.
  */
 export function useCrewActions(): CrewActions {
   const [error, setError] = useState<CrewActionError | null>(null);

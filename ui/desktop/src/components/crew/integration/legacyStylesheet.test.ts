@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
  * The old Crew layout stays deleted.
  *
  * `/crew` renders only `CrewApp`, so the old layout (`crew/legacy/LegacyCrewLayout.tsx`), its
- * stylesheet (`crew/crew.css`) and its file controls (`crew/CrewFiles.tsx`) were deleted rather
+ * stylesheet (`crew/crew.css`), its file controls (`crew/CrewFiles.tsx`) and its credential panel
+ * (`crew/CrewCredentials.tsx`, whose job `dialogs/KeysDialog.tsx` does now) were deleted rather
  * than left compiled. The stylesheet is the reason this is guarded. It was global: once any module
  * on the page imported it, its unlayered rules applied everywhere, and it styled `.crew-main`,
  * `.crew-channel`, `.crew-timeline`, `.crew-message-meta`, `.crew-message-body`, `.crew-composer`
@@ -30,9 +31,14 @@ const DELETED_FILES = [
   join(CREW_DIR, 'crew.css'),
   join(CREW_DIR, 'CrewFiles.tsx'),
   join(CREW_DIR, 'CrewFiles.regression.test.tsx'),
+  join(CREW_DIR, 'CrewCredentials.tsx'),
 ];
 /** Module paths as a specifier names them: without an extension, except for a stylesheet. */
-const DELETED_MODULES = [join(CREW_DIR, 'crew.css'), join(CREW_DIR, 'CrewFiles')];
+const DELETED_MODULES = [
+  join(CREW_DIR, 'crew.css'),
+  join(CREW_DIR, 'CrewFiles'),
+  join(CREW_DIR, 'CrewCredentials'),
+];
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|css)$/;
 /** Built bundles and staged binaries: never source, and far too large to read. */
@@ -92,7 +98,7 @@ const CONFIG_FILES = readdirSync(DESKTOP_DIR)
   .map((name) => join(DESKTOP_DIR, name));
 
 describe('the old Crew layout stays deleted', () => {
-  it('has no crew/legacy/ directory, no crew.css and no CrewFiles', () => {
+  it('has no crew/legacy/ directory, no crew.css, no CrewFiles and no CrewCredentials', () => {
     expect(existsSync(DELETED_DIR)).toBe(false);
     expect(DELETED_FILES.filter((path) => existsSync(path)).map(rel)).toEqual([]);
   });
@@ -145,6 +151,8 @@ describe('the guard itself', () => {
           "await vi.importActual<typeof import('./CrewFiles')>('./CrewFiles');",
           "import type { CrewUploadProps } from './CrewFiles';",
           "require('./crew.css');",
+          "import CrewCredentials from './CrewCredentials';",
+          "vi.mock('./CrewCredentials.tsx', () => ({ default: () => null }));",
         ].join('\n')
       )
     ).toEqual([
@@ -157,6 +165,8 @@ describe('the guard itself', () => {
       './CrewFiles',
       './CrewFiles',
       './crew.css',
+      './CrewCredentials',
+      './CrewCredentials.tsx',
     ]);
     expect(
       deletedReferences(areaCss, '@import \'../crew.css\';\n@import url("../crew.css");')
@@ -167,9 +177,14 @@ describe('the guard itself', () => {
         [
           "import Legacy from './components/crew/legacy/LegacyCrewLayout';",
           "import '@/components/crew/crew.css';",
+          "import Credentials from '@/components/crew/CrewCredentials';",
         ].join('\n')
       )
-    ).toEqual(['./components/crew/legacy/LegacyCrewLayout', '@/components/crew/crew.css']);
+    ).toEqual([
+      './components/crew/legacy/LegacyCrewLayout',
+      '@/components/crew/crew.css',
+      '@/components/crew/CrewCredentials',
+    ]);
   });
 
   it('ignores live modules, packages and prose', () => {
@@ -181,6 +196,8 @@ describe('the guard itself', () => {
           "import './crew-app.css';",
           "import { crewTransfers } from './crewTransfers';",
           "import { useCrewUpload } from './files/useCrewUpload';",
+          "import { KeysDialog } from './dialogs/KeysDialog';",
+          "// KeysDialog replaced `import CrewCredentials from './CrewCredentials'`.",
           "import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs';",
           "// The old layout imported './crew.css' and './legacy/LegacyCrewLayout'.",
           "/* vi.mock('./CrewFiles') was removed with it. */",
@@ -190,5 +207,7 @@ describe('the guard itself', () => {
     ).toEqual([]);
     // A path that only starts like the deleted directory is not in it.
     expect(deletedReferences(view, "import x from './legacyNotes';")).toEqual([]);
+    // Nor is a module whose name only starts like a deleted one.
+    expect(deletedReferences(view, "import y from './CrewCredentialsNotes';")).toEqual([]);
   });
 });

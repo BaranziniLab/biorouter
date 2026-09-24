@@ -445,7 +445,7 @@ describe('connect and sign in', () => {
     expect(crew.lastConnectFailure?.kind).toBe('auth_required');
   });
 
-  it('does not open Sign in without the option (the legacy layout)', async () => {
+  it('does not open Sign in without the option (no options given)', async () => {
     renderController();
     await verifiedChannel();
     failConnect(authRequired());

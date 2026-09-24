@@ -3,8 +3,9 @@
  *
  * Tests import these instead of retyping them. A string marked pinned is asserted by a regression
  * test or cited by acceptance evidence; change it only together with that test. The controller's
- * sentences keep today's wording so the legacy layout is unchanged; the copy deck's rewording of
- * them lands with the layout cutover.
+ * sentences still carry the wording they had before the redesign: the copy deck's rewording of them
+ * ("Error strings" in the ui-redesign spec) has not been adopted, and adopting it means editing
+ * this file together with the tests that pin them.
  */
 export const crewStatusCopy = {
   /** Pinned: the verified status (the status row's `sr-only` text in the new layout). */

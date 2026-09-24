@@ -8,7 +8,7 @@
    area owns its own skin. This file only fills the gaps between them: the
    timeline's slot, a main area outside a channel, and the loading skeleton.
 
-   Names here are `crew-frame-*`, a family no area and no legacy stylesheet
+   Names here are `crew-frame-*`, a family no area and no other stylesheet
    uses, so nothing styles these elements twice. */
 
 /* ── The channel body's top: the timeline's slot ────────────────────────────

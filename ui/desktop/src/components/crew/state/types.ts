@@ -10,14 +10,14 @@ import type {
 import type { ConnectFailureKind } from './connectFailure';
 import type { ConnectionStatusKey, CrewScreen } from './crewStatus';
 
-/** Options a layout passes to the controller. The legacy layout passes none. */
+/** Options a layout passes to the controller. Each defaults to off; `CrewApp` turns both on. */
 export interface CrewControllerOptions {
   /**
    * Open Sign in automatically after a user-initiated connect fails with
-   * `crew_ssh_auth_required`. Legacy: false.
+   * `crew_ssh_auth_required`. Default: false.
    */
   autoOpenSignIn?: boolean;
-  /** Keep a presentation-only copy of the last verified view during refresh. Legacy: false. */
+  /** Keep a presentation-only copy of the last verified view during refresh. Default: false. */
   keepLastVerifiedView?: boolean;
 }
 
@@ -203,7 +203,7 @@ export type ActionKey =
   | (string & {});
 
 export interface ActOptions {
-  /** Keep the current error while this action runs (legacy manual refresh). */
+  /** Keep the current error while this action runs (a manual refresh, such as Refresh channel). */
   preserveError?: boolean;
 }
 
@@ -231,8 +231,9 @@ export interface StartOwnedRunInput {
   contextChannels: string[];
   deliberateRestart?: boolean;
   /**
-   * Clear the composer body in the same update as a successful start (legacy, where the Task and
-   * the draft are one field). The new layout uses `clearBodyIfEquals(seed)` instead.
+   * Clear the composer body in the same update as a successful start, for a caller whose Task and
+   * draft are one field. No layout passes it: the agent pane keeps its own Task and calls
+   * `clearBodyIfEquals(seed)` after a start.
    */
   clearBody?: boolean;
 }
@@ -333,7 +334,7 @@ export interface CrewController {
   reportError(message: string, source?: ErrorSource, code?: string): void;
   dismissError(): void;
   isPending(key: ActionKey): boolean;
-  /** Legacy: any action pending. */
+  /** The coarse view: true while any action is pending. */
   busy: boolean;
   request<T = unknown>(
     method: string,
