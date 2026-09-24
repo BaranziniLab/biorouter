@@ -78,6 +78,20 @@ function isSidebarChoice(target: EventTarget | null, panel: HTMLElement): boolea
   return !control.matches(':disabled, [aria-disabled="true"]');
 }
 
+/** The panel's first keyboard stop, skipping the resize edge, which sits last anyway. */
+const SIDEBAR_FOCUSABLE =
+  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]';
+
+function firstFocusableIn(panel: HTMLElement): HTMLElement | null {
+  for (const element of panel.querySelectorAll<HTMLElement>(SIDEBAR_FOCUSABLE)) {
+    if (element.tabIndex < 0) continue;
+    if (element.closest('[inert], [hidden], [aria-hidden="true"]')) continue;
+    if (element.matches('[data-slot="sidebar-resize-handle"]')) continue;
+    return element;
+  }
+  return null;
+}
+
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed';
   open: boolean;
@@ -96,7 +110,16 @@ type SidebarContextProps = {
   nudgeWidth: (delta: number) => void;
   /** Restore the default width (the handle's double-click). */
   resetWidth: () => void;
+  /**
+   * Set by the ⌘B / Ctrl+B shortcut, for the one render its toggle causes: what had focus when
+   * it was pressed. The panel reads it to move focus into an overlay the shortcut opened, and to
+   * hand focus back when the shortcut closes it (Q2-51). `null` means no shortcut is pending.
+   */
+  shortcutToggleRef: React.RefObject<SidebarShortcutToggle | null>;
 };
+
+/** A ⌘B press, remembered long enough for the panel to act on the toggle it caused. */
+type SidebarShortcutToggle = { focusedBefore: Element | null };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
 
@@ -149,11 +172,21 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
   }, [isMobile, setOpen, setOpenMobile]);
 
+  const shortcutToggleRef = React.useRef<SidebarShortcutToggle | null>(null);
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        // The panel acts on this in the layout effect of the render the toggle causes, which
+        // React flushes before any timer; a toggle that changed nothing (the mobile sheet, a
+        // controlled parent that refused) must not leave it for a later, unrelated one.
+        const toggle: SidebarShortcutToggle = { focusedBefore: document.activeElement };
+        shortcutToggleRef.current = toggle;
+        window.setTimeout(() => {
+          if (shortcutToggleRef.current === toggle) shortcutToggleRef.current = null;
+        }, 0);
         toggleSidebar();
       }
     };
@@ -326,6 +359,7 @@ function SidebarProvider({
       startResize,
       nudgeWidth,
       resetWidth,
+      shortcutToggleRef,
     }),
     [
       state,
@@ -380,8 +414,11 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset';
   collapsible?: 'offcanvas' | 'icon' | 'none';
 }) {
-  const { isMobile, state, open, setOpen, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile, shortcutToggleRef } =
+    useSidebar();
   const panelRef = React.useRef<HTMLDivElement>(null);
+  /** What had focus before ⌘B opened the overlay, to hand focus back to when ⌘B closes it. */
+  const overlayReturnRef = React.useRef<Element | null>(null);
 
   /*
    * OFF-CANVAS MEANS OUT OF THE TAB ORDER (triage T-20). The collapsed panel is
@@ -399,13 +436,47 @@ function Sidebar({
   // it to the toggle that brings the panel back — the control the user would
   // reach for next. A route that focuses something itself (the composer) does
   // so in a later effect, and wins.
+  //
+  // ⌘B AND THE OVERLAY (live QA round 2, Q2-51). Below rung 1 an open sidebar
+  // floats OVER the page, and ⌘B used to open it with focus left underneath:
+  // erin's focus stayed on Crew's "Add channel", now hidden behind the panel,
+  // and her next Tabs walked controls she could not see. So when the SHORTCUT
+  // opens the overlay, focus moves to the panel's first stop; when the shortcut
+  // closes it again, focus goes back to where it was before the panel opened.
+  // A docked column covers nothing, so it takes no focus; a pointer toggle
+  // leaves focus on the toggle the person just used; a choice made in the
+  // overlay keeps handing focus to the toggle, because the page behind it may
+  // have been replaced.
   React.useLayoutEffect(() => {
-    if (!offCanvas) return;
     const panel = panelRef.current;
+    const shortcut = shortcutToggleRef.current;
+    shortcutToggleRef.current = null;
+    if (!panel) return;
+
+    if (!offCanvas) {
+      if (!shortcut || !sidebarIsOverlay()) return;
+      const first = firstFocusableIn(panel);
+      if (!first) return;
+      overlayReturnRef.current = shortcut.focusedBefore;
+      first.focus();
+      return;
+    }
+
+    const returnTo = shortcut ? overlayReturnRef.current : null;
+    overlayReturnRef.current = null;
     const focused = document.activeElement;
-    if (!panel || !(focused instanceof HTMLElement) || !panel.contains(focused)) return;
+    if (!(focused instanceof HTMLElement) || !panel.contains(focused)) return;
+    if (
+      returnTo instanceof HTMLElement &&
+      returnTo !== document.body &&
+      returnTo.isConnected &&
+      !panel.contains(returnTo)
+    ) {
+      returnTo.focus();
+      if (document.activeElement === returnTo) return;
+    }
     document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus();
-  }, [offCanvas]);
+  }, [offCanvas, shortcutToggleRef]);
 
   if (collapsible === 'none') {
     return (
@@ -585,7 +656,7 @@ function SidebarTrigger({
   size = 'sm',
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar();
 
   return (
     <Button
@@ -594,6 +665,8 @@ function SidebarTrigger({
       variant="ghost"
       size={size}
       className={cn(className)}
+      // A disclosure: it shows and hides the sidebar, so it says which (Q2-51).
+      aria-expanded={isMobile ? openMobile : open}
       onClick={(event) => {
         onClick?.(event);
         toggleSidebar();
@@ -607,13 +680,14 @@ function SidebarTrigger({
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar();
 
   return (
     <button
       data-sidebar="rail"
       data-slot="sidebar-rail"
       aria-label="Toggle sidebar"
+      aria-expanded={isMobile ? openMobile : open}
       tabIndex={-1}
       onClick={toggleSidebar}
       title="Toggle sidebar"

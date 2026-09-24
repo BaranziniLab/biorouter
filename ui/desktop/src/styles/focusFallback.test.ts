@@ -181,7 +181,8 @@ describe('the OS-requested focus ring (P0-5)', () => {
     // The known ones, so the list cannot silently be empty.
     const names = suppressors.map((r) => r.selector);
     expect(names).toContain('.biorouter-focus-surface:focus-visible');
-    expect(names).toContain(":where([role='tab']:not(.br-tab)):focus-visible");
+    // A Radix tab trigger trades its outline for a label-sized ring on ::before (Q2-49).
+    expect(names).toContain(":where([role='tab'][data-orientation]:not(.br-tab)):focus-visible");
     expect(names).toContain('.biorouter-sidebar-resize-handle:focus-visible');
     for (const rule of suppressors) {
       expect(rule.index, `${rule.selector} comes after the OS ring`).toBeLessThan(
@@ -318,16 +319,54 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
   /**
    * The selected tab is always the focused tab (activation follows focus), and
    * its bar is already painted — the audit's two captures were pixel-identical.
-   * The label underlines in the focus token; `::after` stays the selection bar.
+   * Round 1 underlined the label in the focus token; round 2 (Q2-49) read that
+   * grey underline over the accent bar as "a double underline". Focus is now a
+   * RING around the label in the focus token: a different shape from the
+   * selection bar, and `::after` stays the selection bar.
    */
-  it('underlines a focused tab’s label in the focus token', () => {
-    const label = onlyRule(":where([role='tab']:not(.br-tab)):focus-visible");
-    expect(isLayered(label)).toBe(false);
-    const body = label.body.replace(/\s+/g, ' ');
-    expect(body).toContain('text-decoration-line: underline');
-    expect(body).toMatch(/text-decoration-thickness: 2px/);
-    expect(body).toContain('text-decoration-color: var(--border-focus)');
-    expect(body).not.toMatch(/box-shadow|background/);
+  it('rings a focused tab’s label in the focus token, not an underline', () => {
+    const tab = onlyRule(":where([role='tab']:not(.br-tab)):focus-visible");
+    expect(isLayered(tab)).toBe(false);
+    const body = tab.body.replace(/\s+/g, ' ');
+    expect(body).toContain('outline: 2px solid var(--border-focus)');
+    expect(body).toContain('outline-offset: 2px');
+    expect(body).toContain('border-radius: var(--radius-element)');
+    expect(body).not.toMatch(/text-decoration|box-shadow|background/);
+  });
+
+  /**
+   * A Radix trigger is 36px tall for a 20px label, and Crew's details pane pins
+   * its tablist flush against the top of its scroller, which would clip an
+   * outset outline's top edge. The same ring is drawn on `::before`, sized to
+   * the label and inside the trigger's height.
+   */
+  it('draws a Radix trigger’s ring on ::before, sized to the label', () => {
+    const radix = ":where([role='tab'][data-orientation]:not(.br-tab))";
+    expect(onlyRule(`${radix}:focus-visible`).body).toMatch(/outline:\s*none/);
+    const ring = onlyRule(`${radix}:focus-visible::before`);
+    expect(isLayered(ring)).toBe(false);
+    const body = ring.body.replace(/\s+/g, ' ');
+    expect(body).toContain('border: 2px solid var(--border-focus)');
+    expect(body).toContain('border-radius: var(--radius-element)');
+    expect(body).toContain('position: absolute');
+    expect(body).toMatch(/inset-block: calc\(50% - 14px\)/);
+    // The trigger this relies on is positioned, and `::after` is its selection bar.
+    const tabs = readFileSync(join(HERE, '..', 'components', 'ui', 'tabs.tsx'), 'utf8');
+    expect(tabs).toMatch(/"relative inline-flex/);
+    expect(tabs).not.toMatch(/before:/);
+  });
+
+  it('insets a document tab’s ring inside its pill', () => {
+    expect(onlyRule(":where(.br-tab [role='tab']):focus-visible").body).toMatch(
+      /outline-offset:\s*-2px/
+    );
+  });
+
+  /** One ring when the OS asked for one: the outline, not the pseudo ring as well. */
+  it('stands the pseudo ring down under the OS-requested ring', () => {
+    const off = onlyRule("[role='tab'][data-orientation]:focus-visible::before");
+    expect(off.context.join(' ')).toBe(OS_MEDIA);
+    expect(off.body).toMatch(/content:\s*none/);
   });
 
   it('paints the focused sidebar resize handle, not a hover-grade hairline', () => {
@@ -340,6 +379,104 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
     // Focus no longer shares the hover hairline's `--border-strong`.
     const hover = RULES.find((r) => r.selector.includes('.biorouter-sidebar-resize-handle:hover'));
     expect(hover!.selector).not.toContain(':focus-visible');
+  });
+});
+
+/**
+ * Q2-11 and Q2-48 (live QA round 2). Forced colours repaint every background
+ * as Canvas, so any shape or state that was only a FILL vanished — the checked
+ * radio's dot, the selected tab's bar, a filled button's box, the tooltip's
+ * box, a menu separator. And the radio's focus was drawn on its sr-only input,
+ * a 1×1px clipped box. Asserted at the source: jsdom has neither forced colours
+ * nor `:focus-visible`.
+ */
+describe('painted shapes survive forced colours, and a radio shows focus (Q2-11, Q2-48)', () => {
+  const FORCED = '@media (forced-colors: active)';
+  const forced = (selector: string) => {
+    const found = RULES.filter(
+      (r) => r.context.join(' ') === FORCED && squash(r.selector) === squash(selector)
+    );
+    expect(found, `expected exactly one forced-colours rule for ${selector}`).toHaveLength(1);
+    expect(isLayered(found[0])).toBe(false);
+    return found[0].body.replace(/\s+/g, ' ');
+  };
+  const source = (...path: string[]) => readFileSync(join(HERE, '..', ...path), 'utf8');
+
+  it('rings the visible radio ring when its hidden input has keyboard focus', () => {
+    // Top level, in every mode: not layered and not inside a media query.
+    const rings = RULES.filter(
+      (r) =>
+        r.selector === "input[type='radio']:focus-visible ~ [data-radio-ring]" &&
+        r.context.length === 0
+    );
+    expect(rings).toHaveLength(1);
+    const ring = rings[0];
+    const body = ring.body.replace(/\s+/g, ' ');
+    expect(body).toContain('outline: 2px solid var(--ring)');
+    expect(body).toContain('outline-offset: 2px');
+  });
+
+  it('redraws the radio ring and its checked dot in system colours', () => {
+    expect(forced('[data-radio-ring]')).toMatch(
+      /forced-color-adjust: none;.*border-color: CanvasText/
+    );
+    expect(forced("input[type='radio']:checked ~ [data-radio-ring]")).toContain(
+      'border-color: Highlight'
+    );
+    expect(forced("input[type='radio']:disabled ~ [data-radio-ring]")).toContain(
+      'border-color: GrayText'
+    );
+    expect(forced("input[type='radio']:focus-visible ~ [data-radio-ring]")).toContain(
+      'outline-color: Highlight'
+    );
+    const dot = forced('[data-radio-dot]');
+    expect(dot).toContain('forced-color-adjust: none');
+    expect(dot).toContain('background-color: Highlight');
+    expect(forced("input[type='radio']:disabled ~ [data-radio-dot]")).toContain(
+      'background-color: GrayText'
+    );
+  });
+
+  it('keeps the hooks those rules key on in CustomRadio, input first', () => {
+    const radio = source('components', 'ui', 'CustomRadio.tsx');
+    const input = radio.indexOf('type="radio"');
+    expect(input).toBeGreaterThan(-1);
+    expect(radio.indexOf('data-radio-ring=""')).toBeGreaterThan(input);
+    expect(radio.indexOf('data-radio-dot=""')).toBeGreaterThan(radio.indexOf('data-radio-ring=""'));
+  });
+
+  it('paints the selected tab’s bar in Highlight, not a notch', () => {
+    const bar = forced("[role='tab'][data-state='active']:not(.br-tab)::after");
+    expect(bar).toContain('background-color: Highlight');
+    expect(bar).toContain('forced-color-adjust: none');
+  });
+
+  it('gives every button, and the tooltip, a system edge', () => {
+    expect(forced("[data-slot='button']")).toContain('border: 1px solid ButtonText');
+    expect(forced("[data-slot='tooltip-content']")).toContain('border: 1px solid CanvasText');
+    // The slots are the components' own; a rename would orphan the rule silently.
+    expect(source('components', 'ui', 'button.tsx')).toContain('data-slot="button"');
+    expect(source('components', 'ui', 'Tooltip.tsx')).toContain('data-slot="tooltip-content"');
+  });
+
+  it('paints menu and panel separators in CanvasText', () => {
+    const separators = RULES.filter(
+      (r) =>
+        r.context.join(' ') === FORCED &&
+        squash(r.selector).includes("[data-slot='dropdown-menu-separator']")
+    );
+    expect(separators).toHaveLength(1);
+    expect(isLayered(separators[0])).toBe(false);
+    const selector = squash(separators[0].selector);
+    for (const slot of ['context-menu-separator', 'separator-root', 'sidebar-separator']) {
+      expect(selector).toContain(`[data-slot='${slot}']`);
+    }
+    const body = separators[0].body.replace(/\s+/g, ' ');
+    expect(body).toContain('background-color: CanvasText');
+    expect(body).toContain('forced-color-adjust: none');
+    expect(source('components', 'ui', 'dropdown-menu.tsx')).toContain(
+      'data-slot="dropdown-menu-separator"'
+    );
   });
 });
 

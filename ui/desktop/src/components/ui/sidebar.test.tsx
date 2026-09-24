@@ -433,6 +433,134 @@ describe('the off-canvas panel leaves the tab order while it is away', () => {
 });
 
 /**
+ * Q2-51 (live QA round 2). The toggle is a disclosure and never said whether the
+ * sidebar was showing, and ⌘B opened the OVERLAY with focus left underneath it:
+ * erin's focus stayed on a control now hidden behind the panel, and her next
+ * Tabs walked controls she could not see.
+ */
+describe('the sidebar toggle and ⌘B, for a keyboard user', () => {
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+
+  const renderSidebar = (defaultOpen = false) =>
+    render(
+      <SidebarProvider defaultOpen={defaultOpen}>
+        <Sidebar>
+          <button type="button">New chat</button>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <button type="button">Add channel</button>
+      </SidebarProvider>
+    );
+
+  it('says whether the sidebar is expanded', () => {
+    renderSidebar(false);
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+
+    toggleWithShortcut();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('says whether the mobile drawer is open', () => {
+    isMobile.value = true;
+    renderSidebar(true);
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle());
+    expect(screen.getByRole('button', { name: 'Toggle sidebar', hidden: true })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+  });
+
+  it('moves focus into an overlay ⌘B opens, and back where it was when ⌘B closes it', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar(false);
+    const underneath = screen.getByRole('button', { name: 'Add channel' });
+    act(() => underneath.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+
+    // Moving around inside the overlay does not change where focus goes back to.
+    act(() => screen.getByRole('button', { name: 'Settings' }).focus());
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('collapsed');
+    expect(underneath).toHaveFocus();
+  });
+
+  it('falls back to the toggle when what had focus is gone by the time ⌘B closes it', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    const { container } = renderSidebar(false);
+    const transient = document.createElement('button');
+    transient.textContent = 'Transient';
+    container.appendChild(transient);
+    act(() => transient.focus());
+
+    toggleWithShortcut();
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+    transient.remove();
+
+    toggleWithShortcut();
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('leaves focus alone when ⌘B opens a docked column, which covers nothing', () => {
+    renderSidebar(false);
+    const composer = screen.getByRole('button', { name: 'Add channel' });
+    act(() => composer.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(composer).toHaveFocus();
+  });
+
+  it('leaves focus on the toggle when a pointer opens the overlay', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar(false);
+    act(() => toggle().focus());
+
+    fireEvent.click(toggle());
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // A shortcut that toggled nothing (here a controlled parent that refused it) must not steer a
+  // later open that something else caused.
+  it('forgets a ⌘B the panel never acted on', async () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    const Controlled = ({ open }: { open: boolean }) => (
+      <SidebarProvider open={open} onOpenChange={() => {}}>
+        <Sidebar>
+          <button type="button">New chat</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <button type="button">Add channel</button>
+      </SidebarProvider>
+    );
+    const { rerender } = render(<Controlled open={false} />);
+    const outside = screen.getByRole('button', { name: 'Add channel' });
+    act(() => outside.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('collapsed');
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    rerender(<Controlled open />);
+    expect(sidebarState()).toBe('expanded');
+    expect(outside).toHaveFocus();
+  });
+});
+
+/**
  * T-66. Below rung 1 an open sidebar floats OVER the page (AppLayout puts
  * SIDEBAR_OVERLAY_BODY_CLASS on <body> and main.css draws the overlay from it),
  * so an overlay left open after a choice kept covering the page the user had
@@ -566,10 +694,12 @@ describe('the app shell, as a keyboard and screen-reader user meets it', () => {
     expect(sidebarState()).toBe('collapsed');
     expect(panel()).toHaveAttribute('inert');
 
-    // ⌘B opens it as an overlay, and an overlay is operable.
+    // ⌘B opens it as an overlay, and an overlay is operable — and holds focus (Q2-51).
     toggleWithShortcut();
     expect(sidebarState()).toBe('expanded');
     expect(panel()).not.toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveFocus();
+    expect(screen.getByTestId('titlebar-sidebar-toggle')).toHaveAttribute('aria-expanded', 'true');
 
     // Opening the disclosure is not a choice: the overlay stays.
     fireEvent.click(screen.getByRole('button', { name: 'Components' }));

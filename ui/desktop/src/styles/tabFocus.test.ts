@@ -180,13 +180,21 @@ describe('a focused tab shows its underline firming instead', () => {
     expect(body(LABEL_SELECTOR)).toContain('var(--text-default)');
   });
 
-  /** D-15 forbids a ring; the ring comes back only under `prefers-contrast`. */
-  it('never draws a ring and never paints a fill', () => {
+  /**
+   * Never a fill. D-15 kept a tab's focus to the bar and an underline, but live
+   * QA round 2 (Q2-49) read the grey underline over the accent bar as "a double
+   * underline", so the label's focus mark is now a RING in the neutral focus
+   * token — a different shape from the selection bar. The bar itself draws no
+   * ring. `focusFallback.test.ts` pins the ring's geometry.
+   */
+  it('rings the label in the focus token, and never paints a fill', () => {
     for (const selector of [UNDERLINE_SELECTOR, LABEL_SELECTOR]) {
-      expect(body(selector)).not.toMatch(/box-shadow|outline:\s*\d/);
+      expect(body(selector)).not.toMatch(/box-shadow/);
       expect(body(selector)).not.toContain('--background-focus');
     }
-    expect(body(LABEL_SELECTOR)).toContain('outline: none');
+    expect(body(UNDERLINE_SELECTOR)).not.toMatch(/outline/);
+    expect(body(LABEL_SELECTOR)).toContain('outline: 2px solid var(--border-focus)');
+    expect(body(LABEL_SELECTOR)).not.toMatch(/text-decoration/);
   });
 
   /**

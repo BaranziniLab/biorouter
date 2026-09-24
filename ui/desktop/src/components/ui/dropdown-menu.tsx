@@ -6,11 +6,63 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
 
+/**
+ * What `DropdownMenuContent` needs from the menu around it to let Tab leave (Q2-50): a way to
+ * close the whole menu, and the trigger the Tab continues from.
+ */
+type DropdownMenuTabOut = {
+  close: () => void;
+  triggerRef: React.RefObject<HTMLElement | null>;
+  /** True while a Tab-out is closing the menu, so the focus-outside dismissal it provokes is not
+   * reported to the caller as a second close. */
+  closingRef: React.RefObject<boolean>;
+};
+
+const DropdownMenuTabOutContext = React.createContext<DropdownMenuTabOut | null>(null);
+
+/**
+ * The menu root. It holds the open state itself (controlled or not, as before) only so the
+ * content can close it on Tab: Radix exposes no close from inside a menu, and its own Tab
+ * handling just swallows the key.
+ */
 function DropdownMenu({
   modal = false,
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" modal={modal} {...props} />;
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : uncontrolledOpen;
+  const triggerRef = React.useRef<HTMLElement | null>(null);
+  const closingRef = React.useRef(false);
+
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      if (!next && closingRef.current) return;
+      if (!controlled) setUncontrolledOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlled, onOpenChange]
+  );
+
+  const tabOut = React.useMemo<DropdownMenuTabOut>(
+    () => ({ close: () => handleOpenChange(false), triggerRef, closingRef }),
+    [handleOpenChange]
+  );
+
+  return (
+    <DropdownMenuTabOutContext.Provider value={tabOut}>
+      <DropdownMenuPrimitive.Root
+        data-slot="dropdown-menu"
+        modal={modal}
+        open={open}
+        onOpenChange={handleOpenChange}
+        {...props}
+      />
+    </DropdownMenuTabOutContext.Provider>
+  );
 }
 
 function DropdownMenuPortal({
@@ -20,21 +72,173 @@ function DropdownMenuPortal({
 }
 
 function DropdownMenuTrigger({
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
-  return <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" {...props} />;
+  const tabOut = React.useContext(DropdownMenuTabOutContext);
+  // The trigger is where a Tab out of the open menu continues from, so the menu records it.
+  const setTrigger = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      if (tabOut) tabOut.triggerRef.current = node;
+      if (typeof ref === 'function') ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref, tabOut]
+  );
+  return (
+    <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" ref={setTrigger} {...props} />
+  );
 }
+
+/** What can take focus in sequential (Tab) order. */
+const TABBABLE_CANDIDATES =
+  'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
+
+function isTabbable(element: HTMLElement): boolean {
+  if (element.tabIndex < 0) return false;
+  if (element.matches(':disabled')) return false;
+  if (element instanceof HTMLInputElement && element.type === 'hidden') return false;
+  if (element.closest('[inert], [hidden]')) return false;
+  // Radix's focus guards bracket <body> while a layer is open; they are not places to land.
+  if (element.hasAttribute('data-radix-focus-guard')) return false;
+  const visible = (
+    element as HTMLElement & { checkVisibility?: (options?: object) => boolean }
+  ).checkVisibility?.({ visibilityProperty: true });
+  if (visible === false) return false;
+  // One stop per radio group: its checked radio, or every radio while none is checked.
+  if (element instanceof HTMLInputElement && element.type === 'radio' && element.name) {
+    if (!element.checked) {
+      const group = Array.from(
+        element.ownerDocument.querySelectorAll<HTMLInputElement>('input[type="radio"]')
+      ).filter((radio) => radio.name === element.name && radio.form === element.form);
+      if (group.some((radio) => radio.checked)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Where Tab (or Shift+Tab) goes from `from`, skipping anything `skip` rejects: the next stop in
+ * the document's sequential focus order, positive `tabindex` first as the browser orders it.
+ * `from` need not be a stop itself (a roving trigger carries `tabindex="-1"`), in which case the
+ * answer is the first stop after it, or the last before it.
+ */
+function sequentialNeighbour(
+  from: HTMLElement,
+  backward: boolean,
+  skip: (element: HTMLElement) => boolean
+): HTMLElement | null {
+  const candidates = Array.from(
+    from.ownerDocument.querySelectorAll<HTMLElement>(TABBABLE_CANDIDATES)
+  ).filter((element) => element === from || (!skip(element) && isTabbable(element)));
+  const order = [
+    ...candidates.filter((element) => element.tabIndex > 0).sort((a, b) => a.tabIndex - b.tabIndex),
+    ...candidates.filter((element) => element.tabIndex <= 0),
+  ];
+  const at = order.indexOf(from);
+  if (at !== -1 && from.tabIndex >= 0) {
+    return (backward ? order[at - 1] : order[at + 1]) ?? null;
+  }
+  const rest = order.filter((element) => element !== from);
+  const after = rest.findIndex(
+    (element) => from.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING
+  );
+  if (backward) return (after === -1 ? rest[rest.length - 1] : rest[after - 1]) ?? null;
+  return after === -1 ? null : rest[after];
+}
+
+/**
+ * Tab and Shift+Tab leave an open menu (Q2-50; WAI-ARIA APG menu button): the menu closes and
+ * focus goes where Tab would have gone from the TRIGGER — the next stop after it, or the one
+ * before it — so the keyboard user is never parked on a menu they meant to pass.
+ *
+ * Radix swallows Tab inside a menu (`MenuContentImpl`: `if (event.key === "Tab")
+ * event.preventDefault()`), so only Escape used to leave; three critics called that a trap. The
+ * browser cannot be asked to "carry on" a Tab that Radix has already cancelled, so the move is
+ * made here, from the trigger. A Tab bubbling up from a submenu closes the whole menu, as the
+ * APG asks; a Tab the caller's own `onKeyDown` cancelled is left alone.
+ *
+ * Returns the `onCloseAutoFocus` half: when the content finally unmounts (after its exit
+ * animation) Radix would put focus back on the trigger, which would undo the Tab. That is
+ * cancelled — and if focus was lost meanwhile (a modal menu's focus trap pulls a focus that
+ * leaves it back inside, and the item then unmounts), the destination is focused then.
+ */
+function useTabLeavesMenu(
+  onKeyDown: React.KeyboardEventHandler<HTMLDivElement> | undefined,
+  onCloseAutoFocus: ((event: Event) => void) | undefined
+) {
+  const tabOut = React.useContext(DropdownMenuTabOutContext);
+  const destinationRef = React.useRef<HTMLElement | null>(null);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const cancelledBefore = event.defaultPrevented;
+    onKeyDown?.(event);
+    if (!tabOut || event.key !== 'Tab') return;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.nativeEvent.isComposing) return;
+    if (!cancelledBefore && event.defaultPrevented) return;
+    event.preventDefault();
+
+    const content = event.currentTarget;
+    const labelledBy = content.getAttribute('aria-labelledby');
+    const trigger =
+      tabOut.triggerRef.current ??
+      (labelledBy ? content.ownerDocument.getElementById(labelledBy) : null);
+    const destination = trigger
+      ? (sequentialNeighbour(trigger, event.shiftKey, (element) =>
+          Boolean(element.closest('[data-radix-menu-content]'))
+        ) ?? trigger)
+      : null;
+
+    destinationRef.current = destination;
+    tabOut.closingRef.current = false;
+    tabOut.close();
+    // Focusing outside a non-modal menu makes Radix dismiss it again; that is this same close.
+    tabOut.closingRef.current = true;
+    try {
+      destination?.focus();
+    } finally {
+      tabOut.closingRef.current = false;
+    }
+  };
+
+  const handleCloseAutoFocus = (event: Event) => {
+    onCloseAutoFocus?.(event);
+    const destination = destinationRef.current;
+    if (!destination) return;
+    destinationRef.current = null;
+    event.preventDefault();
+    const active = destination.ownerDocument.activeElement;
+    if (destination.isConnected && (!active || active === destination.ownerDocument.body)) {
+      destination.focus();
+    }
+  };
+
+  return { handleKeyDown, handleCloseAutoFocus };
+}
+
+/**
+ * The menu's enter and exit use the app's `--ease-out` (Q2-50). `tw-animate-css`'s
+ * `animate-in`/`animate-out` read `--tw-ease` and fall back to the browser's `ease`, which is
+ * what every menu shipped with; `ease-[var(--ease-out)]` sets `--tw-ease`. It is the class the
+ * sidebar already carries, so it is known to be generated.
+ */
+const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
 
 function DropdownMenuContent({
   className,
   sideOffset = 6,
+  onKeyDown,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        onKeyDown={handleKeyDown}
+        onCloseAutoFocus={handleCloseAutoFocus}
         // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
         //
         // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
@@ -44,6 +248,7 @@ function DropdownMenuContent({
         // at 200 that menu would paint under the dialog that owns it.
         className={cn(
           'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
+          MENU_EASE_CLASS_NAME,
           className
         )}
         {...props}
@@ -240,6 +445,7 @@ function DropdownMenuSubContent({
       data-slot="dropdown-menu-sub-content"
       className={cn(
         'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-container p-1 space-y-0.5',
+        MENU_EASE_CLASS_NAME,
         className
       )}
       {...props}

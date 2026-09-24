@@ -61,13 +61,25 @@ const CustomRadio = ({
           />
           {/* `--border-emphasized` is the interactive-border token (§3.2) — ink at
               24%, derived per family — replacing a neutral that each family had to
-              author and that drifted against the surface it sat on. */}
+              author and that drifted against the surface it sat on.
+
+              `data-radio-ring` / `data-radio-dot` are selector hooks for main.css
+              (Q2-11): the input above is sr-only, so its focus was drawn on an
+              invisible pixel, and the dot is a fill that forced colours erase.
+              main.css rings the RING when the input is :focus-visible and redraws
+              ring and dot in system colours under forced colours. The rules key on
+              these attributes and on the input being a preceding sibling, so keep
+              the input first and all three in this one box. */}
           <span
+            data-radio-ring=""
+            aria-hidden="true"
             className="pointer-events-none absolute inset-[1px] rounded-full border-[1.5px] border-border-emphasized
                       transition-colors
                       peer-checked:border-border-accent"
           />
           <span
+            data-radio-dot=""
+            aria-hidden="true"
             className="pointer-events-none h-2.5 w-2.5 rounded-full bg-background-accent opacity-0
                       transition-opacity
                       peer-checked:opacity-100"
