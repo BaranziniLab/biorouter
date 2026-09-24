@@ -164,6 +164,11 @@ export const hostCopy = {
   installLabel: 'install commands',
   consequence: 'Anyone who can sign in to this server can see the workspace name.',
   bad: 'That isn’t what Crew prints. Copy everything after the command ran and paste again.',
+  /** A paste the daemon read, but whose preview lacks the details a new workspace pins. */
+  detailsMissing:
+    'Biorouter read the workspace but not every detail it needs. Enter the rest from what the commands printed.',
+  staleDaemon:
+    'This feature needs a newer Biorouter background service. Quit and reopen Biorouter, or enter the workspace details below.',
   reading: 'Reading…',
   back: 'Back',
   // Step 3

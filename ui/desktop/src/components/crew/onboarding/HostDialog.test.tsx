@@ -5,6 +5,7 @@ import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewController } from '../state/types';
 import { hostCopy, joinCopy } from './copy';
 import { HostDialog } from './HostDialog';
+import { WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
 import {
   DEVICE_KEY,
@@ -167,6 +168,122 @@ describe('HostDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
     expect(await screen.findByText(hostCopy.bad)).toBeInTheDocument();
     expect(mocks.previewInvitation).toHaveBeenCalledWith('oops');
+  });
+
+  it('asks for the details a preview lacks, prefilled with the ones it had, instead of refusing the paste', async () => {
+    // A daemon whose preview carries only the display fields: no socket path, no host user ID.
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, socket_path: null, owner_uid: null });
+    const saved = fakeConnection({ id: 'conn-host', status: 'disconnected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+
+    expect(await screen.findByText(hostCopy.detailsMissing)).toBeInTheDocument();
+    expect(screen.queryByText(hostCopy.bad)).toBeNull();
+    expect(screen.getByLabelText(hostCopy.pasted)).not.toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText(joinCopy.workspaceId)).toHaveValue(PREVIEW.workspace_id);
+    expect(screen.getByLabelText(joinCopy.workspaceKey)).toHaveValue(WORKSPACE_KEY);
+    const socket = screen.getByLabelText(joinCopy.socketPath);
+    const uid = screen.getByLabelText(joinCopy.hostUserId);
+    expect(socket).toHaveValue('');
+    expect(socket).toBeRequired();
+    expect(uid).toBeRequired();
+
+    // Still empty: the form refuses Continue and stays on Start.
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
+
+    fireEvent.change(socket, { target: { value: '/tmp/crew-1000-abc/broker.sock' } });
+    fireEvent.change(uid, { target: { value: '1000' } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    // The key is the one the daemon read, so its fingerprint still describes it.
+    expect(screen.getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
+    expect(mocks.previewInvitation).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() =>
+      expect(view.crew().saveConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          socket_path: '/tmp/crew-1000-abc/broker.sock',
+          owner_uid: 1000,
+          workspace_id: PREVIEW.workspace_id,
+          workspace_public_key: WORKSPACE_KEY,
+          preparation_id: 'prep-1',
+        })
+      )
+    );
+  });
+
+  it('reads a new paste again after asking for missing details', async () => {
+    mocks.previewInvitation
+      .mockResolvedValueOnce({ ...PREVIEW, socket_path: null, owner_uid: null })
+      .mockResolvedValueOnce(PREVIEW);
+    renderHost();
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.detailsMissing);
+
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), {
+      target: {
+        value: `${PASTE}
+`,
+      },
+    });
+    expect(screen.queryByText(hostCopy.detailsMissing)).toBeNull();
+    expect(screen.queryByLabelText(joinCopy.socketPath)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    expect(mocks.previewInvitation).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes the details by hand, with the restart hint, when the background service is older', async () => {
+    mocks.previewInvitation.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
+    const saved = fakeConnection({ id: 'conn-host', status: 'disconnected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await fillName();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+
+    expect(await screen.findByText(hostCopy.staleDaemon)).toBeInTheDocument();
+    expect(screen.getByLabelText(joinCopy.workspaceKey)).toHaveAttribute(
+      'pattern',
+      WORKSPACE_KEY_PATTERN
+    );
+    fireEvent.change(screen.getByLabelText(joinCopy.socketPath), {
+      target: { value: '/tmp/crew-1000-abc/broker.sock' },
+    });
+    fireEvent.change(screen.getByLabelText(joinCopy.workspaceId), {
+      target: { value: PREVIEW.workspace_id },
+    });
+    fireEvent.change(screen.getByLabelText(joinCopy.hostUserId), { target: { value: '1000' } });
+    fireEvent.change(screen.getByLabelText(joinCopy.workspaceKey), {
+      target: { value: WORKSPACE_KEY.toUpperCase() },
+    });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    // Typed by hand: no daemon read the key, so no fingerprint is claimed for it.
+    expect(screen.queryByText('3F2A 9C1E 77B0 D4E1')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() =>
+      expect(view.crew().saveConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          socket_path: '/tmp/crew-1000-abc/broker.sock',
+          owner_uid: 1000,
+          workspace_id: PREVIEW.workspace_id,
+          workspace_public_key: WORKSPACE_KEY,
+        })
+      )
+    );
   });
 
   it('creates the workspace: save with the prepared identity, connect, bootstrap, then label', async () => {

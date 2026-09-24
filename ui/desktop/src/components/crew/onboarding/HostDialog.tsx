@@ -7,7 +7,7 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
-import { previewInvitation } from '../api/join';
+import { previewInvitation, type CrewInvitationPreview } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
 import { connectionServer, isInstitutionId, sanitizeDisplayText } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
@@ -36,6 +36,39 @@ interface PinnedWorkspace {
   workspace_id: string;
   workspace_public_key: string;
   fingerprint: string | null;
+}
+
+/**
+ * How the Start step's paste stands. `stale`: the daemon cannot read one (404), so the person
+ * types the four details. `incomplete`: it read one, but its preview lacks a detail the workspace
+ * pins (the socket path, the host user ID or the key), so the person types what is missing —
+ * the paste itself was fine, so it is never called bad.
+ */
+type ParseState = 'idle' | 'reading' | 'bad' | 'stale' | 'incomplete';
+
+const WORKSPACE_KEY = new RegExp(`^${WORKSPACE_KEY_PATTERN}$`);
+
+/** The pinned details the person typed, or null while one would be refused. */
+function typedPinned(
+  values: { socketPath: string; workspaceId: string; ownerUid: string; workspaceKey: string },
+  preview: CrewInvitationPreview | null
+): PinnedWorkspace | null {
+  const socketPath = values.socketPath.trim();
+  const workspaceId = values.workspaceId.trim();
+  const ownerUid = values.ownerUid.trim();
+  const key = values.workspaceKey.trim().toLowerCase();
+  if (!socketPath.startsWith('/') || !workspaceId || !/^\d+$/.test(ownerUid)) return null;
+  if (!WORKSPACE_KEY.test(key)) return null;
+  // The daemon's fingerprint describes the key it read; a key typed differently has none.
+  const fingerprint =
+    preview?.workspace_public_key?.toLowerCase() === key ? preview.workspace_key_fingerprint : null;
+  return {
+    socket_path: socketPath,
+    owner_uid: Number(ownerUid),
+    workspace_id: workspaceId,
+    workspace_public_key: key,
+    fingerprint,
+  };
 }
 
 /**
@@ -146,7 +179,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   // Start
   const [pasted, setPasted] = useState('');
-  const [parse, setParse] = useState<'idle' | 'reading' | 'bad' | 'stale'>('idle');
+  const [parse, setParse] = useState<ParseState>('idle');
+  /** The preview an `incomplete` paste produced, whose details prefill the typed fields. */
+  const [partial, setPartial] = useState<CrewInvitationPreview | null>(null);
   const [terminal, setTerminal] = useState(false);
   const [socketPath, setSocketPath] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -308,14 +343,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   };
 
   const continueFromStart = async () => {
-    if (parse === 'stale') {
-      setPinned({
-        socket_path: socketPath.trim(),
-        owner_uid: Number(ownerUid.trim()),
-        workspace_id: workspaceId.trim(),
-        workspace_public_key: workspaceKey.trim().toLowerCase(),
-        fingerprint: null,
-      });
+    if (parse === 'stale' || parse === 'incomplete') {
+      // The fields are required and patterned, so the form refuses a bad value before this.
+      const typed = typedPinned(
+        { socketPath, workspaceId, ownerUid, workspaceKey },
+        parse === 'incomplete' ? partial : null
+      );
+      if (!typed) return;
+      setPinned(typed);
       setStep('create');
       return;
     }
@@ -324,7 +359,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       const preview = await previewInvitation(pasted);
       if (!mounted.current) return;
       if (!preview.workspace_public_key || !preview.socket_path || preview.owner_uid === null) {
-        setParse('bad');
+        // Read, but without every detail a new workspace pins (not every daemon's preview
+        // carries the socket path and host user ID): ask for the rest, prefilled with what it had.
+        setPartial(preview);
+        setSocketPath(preview.socket_path ?? '');
+        setWorkspaceId(preview.workspace_id);
+        setOwnerUid(preview.owner_uid === null ? '' : String(preview.owner_uid));
+        setWorkspaceKey(preview.workspace_public_key ?? '');
+        setParse('incomplete');
         return;
       }
       setPinned({
@@ -429,6 +471,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   };
 
   // ── Rendering ─────────────────────────────────────────────────────────────────────────────
+  const pinnedValues = { socketPath, workspaceId, ownerUid, workspaceKey };
+  const pinnedSetters = {
+    socketPath: setSocketPath,
+    workspaceId: setWorkspaceId,
+    ownerUid: setOwnerUid,
+    workspaceKey: setWorkspaceKey,
+  };
   const stepName = step === 'label' ? null : hostCopy.steps[STEP_NUMBER[step] - 1];
   const subtitle = stepName
     ? hostCopy.stepOf(STEP_NUMBER[step as Exclude<Step, 'label'>], 3, stepName)
@@ -686,84 +735,48 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                 {parse === 'stale' ? (
                   <>
                     <Note tone="warning" role="status">
-                      {joinCopy.staleDaemon}
+                      {hostCopy.staleDaemon}
                     </Note>
-                    <Field label={joinCopy.socketPath}>
-                      {(props) => (
-                        <Input
-                          {...props}
-                          required
-                          pattern="/.*"
-                          disabled={busy}
-                          value={socketPath}
-                          spellCheck={false}
-                          onChange={(event) => setSocketPath(event.target.value)}
-                        />
-                      )}
-                    </Field>
-                    <Field label={joinCopy.workspaceId}>
-                      {(props) => (
-                        <Input
-                          {...props}
-                          required
-                          disabled={busy}
-                          value={workspaceId}
-                          spellCheck={false}
-                          onChange={(event) => setWorkspaceId(event.target.value)}
-                        />
-                      )}
-                    </Field>
-                    <Field label={joinCopy.hostUserId}>
-                      {(props) => (
-                        <Input
-                          {...props}
-                          required
-                          type="number"
-                          min={0}
-                          disabled={busy}
-                          value={ownerUid}
-                          onChange={(event) => setOwnerUid(event.target.value)}
-                        />
-                      )}
-                    </Field>
-                    <Field label={joinCopy.workspaceKey} helper={joinCopy.workspaceKeyHelper}>
-                      {(props) => (
-                        <Input
-                          {...props}
-                          required
-                          pattern={WORKSPACE_KEY_PATTERN}
-                          disabled={busy}
-                          value={workspaceKey}
-                          spellCheck={false}
-                          autoComplete="off"
-                          onChange={(event) => setWorkspaceKey(event.target.value)}
-                        />
-                      )}
-                    </Field>
+                    <PinnedFields disabled={busy} values={pinnedValues} onChange={pinnedSetters} />
                   </>
                 ) : (
-                  <Field
-                    label={hostCopy.pasted}
-                    helper={parse === 'bad' ? hostCopy.bad : undefined}
-                    invalid={parse === 'bad'}
-                  >
-                    {(props) => (
-                      <textarea
-                        {...props}
-                        required
-                        rows={4}
-                        disabled={busy}
-                        value={pasted}
-                        placeholder={hostCopy.pastedPlaceholder}
-                        spellCheck={false}
-                        onChange={(event) => {
-                          setPasted(event.target.value);
-                          if (parse === 'bad') setParse('idle');
-                        }}
-                        className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
-                      />
-                    )}
-                  </Field>
+                  <>
+                    <Field
+                      label={hostCopy.pasted}
+                      helper={parse === 'bad' ? hostCopy.bad : undefined}
+                      invalid={parse === 'bad'}
+                    >
+                      {(props) => (
+                        <textarea
+                          {...props}
+                          required
+                          rows={4}
+                          disabled={busy}
+                          value={pasted}
+                          placeholder={hostCopy.pastedPlaceholder}
+                          spellCheck={false}
+                          onChange={(event) => {
+                            setPasted(event.target.value);
+                            // A new paste is read again on Continue.
+                            if (parse === 'bad' || parse === 'incomplete') setParse('idle');
+                          }}
+                          className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
+                        />
+                      )}
+                    </Field>
+                    {parse === 'incomplete' ? (
+                      <>
+                        <Note tone="warning" role="status">
+                          {hostCopy.detailsMissing}
+                        </Note>
+                        <PinnedFields
+                          disabled={busy}
+                          values={pinnedValues}
+                          onChange={pinnedSetters}
+                        />
+                      </>
+                    ) : null}
+                  </>
                 )}
                 <Disclosure label={hostCopy.notSignedIn}>
                   <div className="crew-onboard-stack">
@@ -819,6 +832,76 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         <ErrorSlot source="dialog:host" />
       </form>
     </ModalShell>
+  );
+}
+
+type PinnedKey = 'socketPath' | 'workspaceId' | 'ownerUid' | 'workspaceKey';
+
+/** The four details that pin a workspace, typed by the person (all required). */
+function PinnedFields({
+  disabled,
+  values,
+  onChange,
+}: {
+  disabled: boolean;
+  values: Record<PinnedKey, string>;
+  onChange: Record<PinnedKey, (value: string) => void>;
+}) {
+  return (
+    <>
+      <Field label={joinCopy.socketPath}>
+        {(props) => (
+          <Input
+            {...props}
+            required
+            pattern="/.*"
+            disabled={disabled}
+            value={values.socketPath}
+            spellCheck={false}
+            onChange={(event) => onChange.socketPath(event.target.value)}
+          />
+        )}
+      </Field>
+      <Field label={joinCopy.workspaceId}>
+        {(props) => (
+          <Input
+            {...props}
+            required
+            disabled={disabled}
+            value={values.workspaceId}
+            spellCheck={false}
+            onChange={(event) => onChange.workspaceId(event.target.value)}
+          />
+        )}
+      </Field>
+      <Field label={joinCopy.hostUserId}>
+        {(props) => (
+          <Input
+            {...props}
+            required
+            type="number"
+            min={0}
+            disabled={disabled}
+            value={values.ownerUid}
+            onChange={(event) => onChange.ownerUid(event.target.value)}
+          />
+        )}
+      </Field>
+      <Field label={joinCopy.workspaceKey} helper={joinCopy.workspaceKeyHelper}>
+        {(props) => (
+          <Input
+            {...props}
+            required
+            pattern={WORKSPACE_KEY_PATTERN}
+            disabled={disabled}
+            value={values.workspaceKey}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event) => onChange.workspaceKey(event.target.value)}
+          />
+        )}
+      </Field>
+    </>
   );
 }
 
