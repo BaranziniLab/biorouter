@@ -239,7 +239,9 @@ export const createChannelCopy = {
   title: 'Create channel',
   inTeam: (team: string) => `in ${team}`,
   name: 'Name',
-  placeholder: 'e.g. methods',
+  /** Never the name of a channel that exists (QA Q2-31): `placeholderTaken` when this one does. */
+  placeholder: 'e.g. journal-club',
+  placeholderTaken: 'e.g. new-channel',
   preview: (slug: string) => `Will be created as #${slug}`,
   content: 'Content',
   restricted: 'Restricted',
@@ -368,9 +370,14 @@ export const keysCopy = {
 } as const;
 
 export const sharePathCopy = {
-  title: (host: string) => `Share a path on ${host}`,
+  /** Says what it is for: a file already on the server, not one from this computer (QA Q2-32). */
+  title: (host: string) => `Share a file that’s already on ${host}`,
   path: 'Path',
-  placeholder: '/home/you/project/data.h5ad',
+  /** Under the path: when to use this rather than an upload. */
+  helper:
+    'For a file on the lab server, such as a large dataset. To share a file from this computer, use Upload a file.',
+  /** The person's own home on the server, from the connection's login; never someone else's. */
+  placeholder: (login: string | null) => (login ? `/home/${login}/…` : '/home/…'),
   pattern: 'Use an absolute path that starts with /.',
   label: 'Label (optional)',
   labelSummary: 'Label: the file name',

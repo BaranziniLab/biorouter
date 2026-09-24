@@ -274,6 +274,8 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             id={ids.name}
             required
             maxLength={255}
+            // A workspace name is not a word to correct: "chen-lab" drew a red squiggle (QA Q2-30).
+            spellCheck={false}
             value={form.name}
             onChange={(event) => update('name', event.target.value)}
           />

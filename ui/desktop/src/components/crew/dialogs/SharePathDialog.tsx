@@ -5,6 +5,7 @@ import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
+import { sanitizeDisplayText } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { sharePathCopy as copy } from './copy';
 import { DialogErrorNote, Field, helpId } from './fields';
@@ -21,6 +22,17 @@ export function pathLabel(path: string): string {
   return last || path.trim();
 }
 
+/**
+ * The account name before the `@` in a saved SSH target (`alice@hpc.example.edu` → `alice`), when
+ * it reads as one; null otherwise, so a placeholder never shows something that is not a login.
+ */
+export function sshLogin(sshTarget: string | null | undefined): string | null {
+  const target = sanitizeDisplayText(sshTarget);
+  const at = target.lastIndexOf('@');
+  const login = at > 0 ? target.slice(0, at) : '';
+  return /^[A-Za-z0-9._-]{1,64}$/.test(login) ? login : null;
+}
+
 export interface SharePathDialogProps {
   onClose(): void;
 }
@@ -29,9 +41,15 @@ export interface SharePathDialogProps {
  * Share a path on the server (ui-redesign-spec, "Composer and files"): a reference to a file that
  * stays where it is, added to the message being written. Crew shares the path only — it does not
  * check the file exists or grant anyone access to it (the reference chip's tooltip says so).
+ *
+ * The title and helper say when to use it — a file already on the server, such as a large dataset,
+ * rather than one from this computer — and the placeholder starts in the person's own home there
+ * (QA Q2-32).
  */
 export function SharePathDialog({ onClose }: SharePathDialogProps) {
   const { crew, server } = useDialogView();
+  const saved = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
+  const login = sshLogin(saved?.ssh_target);
   const formId = React.useId();
   const pathId = `${formId}-path`;
   const labelFieldId = `${formId}-label`;
@@ -81,7 +99,12 @@ export function SharePathDialog({ onClose }: SharePathDialogProps) {
       }
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-3 pb-1">
-        <Field id={pathId} label={copy.path} error={invalid ? copy.pattern : undefined}>
+        <Field
+          id={pathId}
+          label={copy.path}
+          helper={copy.helper}
+          error={invalid ? copy.pattern : undefined}
+        >
           <Input
             id={pathId}
             required
@@ -89,10 +112,11 @@ export function SharePathDialog({ onClose }: SharePathDialogProps) {
             autoComplete="off"
             spellCheck={false}
             translate="no"
-            placeholder={copy.placeholder}
+            placeholder={copy.placeholder(login)}
             className="font-mono"
             aria-invalid={invalid || undefined}
-            aria-describedby={invalid ? helpId(pathId) : undefined}
+            // The helper saying when to use this, or the error that replaces it.
+            aria-describedby={helpId(pathId)}
             value={path}
             onInvalid={(event) => setInvalid(event.currentTarget.validity.patternMismatch)}
             onChange={(event) => {

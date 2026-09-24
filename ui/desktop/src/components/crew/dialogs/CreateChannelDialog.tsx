@@ -26,6 +26,25 @@ const KEY = 'mutate:channel.create';
 
 type Classification = 'restricted' | 'public_safe';
 
+/**
+ * The name field's example: never the name of a channel this team already has, which read as a
+ * suggestion to make a duplicate ("e.g. methods" beside #methods, QA Q2-31).
+ */
+export function examplePlaceholder(
+  channels: readonly { team_id: string; name?: string | null; handle?: string | null }[],
+  teamId: string
+): string {
+  const example = copy.placeholder.replace(/^e\.g\. /, '');
+  const taken = channels.some(
+    (channel) =>
+      channel.team_id === teamId &&
+      [channel.name, channel.handle].some(
+        (name) => typeof name === 'string' && name.toLowerCase() === example
+      )
+  );
+  return taken ? copy.placeholderTaken : copy.placeholder;
+}
+
 export interface CreateChannelDialogProps {
   teamId: string;
   onClose(): void;
@@ -54,6 +73,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   const problem = name.trim() ? channelSlugProblem(slug) : null;
   const nameRef = useCustomValidity<HTMLInputElement>(problem);
   const creating = crew.isPending(KEY);
+  const placeholder = examplePlaceholder(snapshot?.channels ?? [], teamId);
   useCloseWhenMissing(snapshot !== null && team === null, onClose);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -116,7 +136,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
             required
             autoComplete="off"
             spellCheck={false}
-            placeholder={copy.placeholder}
+            placeholder={placeholder}
             aria-invalid={fieldError ? true : undefined}
             aria-describedby={describedBy}
             value={name}

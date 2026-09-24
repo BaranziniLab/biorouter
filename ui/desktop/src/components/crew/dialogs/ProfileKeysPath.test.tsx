@@ -13,7 +13,7 @@ import {
 import { EditProfileDialog } from './EditProfileDialog';
 import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { KeysDialog } from './KeysDialog';
-import { SharePathDialog } from './SharePathDialog';
+import { SharePathDialog, sshLogin } from './SharePathDialog';
 
 installResizeObserverStub();
 
@@ -28,6 +28,8 @@ describe('EditProfileDialog', () => {
     const name = await screen.findByLabelText('Display name');
     await waitFor(() => expect(name).toHaveFocus());
     expect(name).toHaveValue('Alice Chen');
+    // QA Q2-30: a name is not a word to correct.
+    expect(name).toHaveAttribute('spellcheck', 'false');
     expect(screen.getByText('Your username:')).toHaveTextContent('Your username: @alice');
 
     // She chose a name already, so the suggestion is one click away, not applied.
@@ -226,6 +228,32 @@ describe('SharePathDialog', () => {
     expect(crew.addReference).toHaveBeenCalledWith({ id: 'ref-1', label: 'run.h5ad' });
     expect(onClose).toHaveBeenCalled();
     expect(connection.id).toBe('conn-1');
+  });
+
+  // QA Q2-32: the title showed the server's IP and never said when to use this.
+  it('says it is for a file already on the server, and starts the path in the person’s home', async () => {
+    renderWithCrew(<SharePathDialog onClose={vi.fn()} />);
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Share a file that’s already on hpc.example.edu',
+    });
+    const path = within(dialog).getByLabelText('Path');
+    expect(path).toHaveAttribute('placeholder', '/home/alice/…');
+    expect(path).toHaveAccessibleDescription(sharePathCopy.helper);
+    expect(sharePathCopy.helper).toBe(
+      'For a file on the lab server, such as a large dataset. To share a file from this computer, use Upload a file.'
+    );
+    // An invalid path replaces the helper with why, and still describes the field.
+    fireEvent.change(path, { target: { value: 'data/run.h5ad' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add to message' }));
+    expect(path).toHaveAccessibleDescription(sharePathCopy.pattern);
+  });
+
+  it('never puts something that is not a login in the placeholder', () => {
+    expect(sshLogin('alice@hpc.example.edu')).toBe('alice');
+    expect(sshLogin('crew_dave@52.33.141.141')).toBe('crew_dave');
+    expect(sshLogin('hpc.example.edu')).toBeNull();
+    expect(sshLogin('a b@host')).toBeNull();
+    expect(sharePathCopy.placeholder(null)).toBe('/home/…');
   });
 
   it('keeps the label optional, behind Advanced', async () => {

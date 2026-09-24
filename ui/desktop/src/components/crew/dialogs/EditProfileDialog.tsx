@@ -104,6 +104,8 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
             ref={nameRef}
             required
             autoComplete="name"
+            // A name is not a word to correct: "crew_erin" drew a red squiggle (QA Q2-30).
+            spellCheck={false}
             aria-invalid={problem ? true : undefined}
             aria-describedby={problem ? helpId(nameId) : undefined}
             value={name}

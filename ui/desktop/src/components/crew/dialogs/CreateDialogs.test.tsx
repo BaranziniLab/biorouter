@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { addPeopleCopy, createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
-import { CreateChannelDialog } from './CreateChannelDialog';
+import { CreateChannelDialog, examplePlaceholder } from './CreateChannelDialog';
 import { CreateTeamDialog } from './CreateTeamDialog';
 import { CrewDialogs } from './CrewDialogs';
 import {
@@ -45,6 +45,28 @@ describe('CreateChannelDialog', () => {
 
     fireEvent.change(name, { target: { value: '  #Data Analysis.v2 ' } });
     expect(screen.getByText('Will be created as #data-analysis-v2')).toBeInTheDocument();
+  });
+
+  // QA Q2-31: "e.g. methods" sat beside an existing #methods, reading as a nudge to duplicate it.
+  it('gives an example name that is never one the team already has', async () => {
+    renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    expect(await screen.findByLabelText('Name')).toHaveAttribute(
+      'placeholder',
+      'e.g. journal-club'
+    );
+    const base = makeSnapshot().channels[0];
+    const journalClub = { ...base, id: 'channel-jc', name: 'journal-club' };
+    expect(examplePlaceholder([base, journalClub], 'team-1')).toBe('e.g. new-channel');
+    // Another team's #journal-club is no reason to change this team's example.
+    expect(examplePlaceholder([base, { ...journalClub, team_id: 'team-2' }], 'team-1')).toBe(
+      'e.g. journal-club'
+    );
+    expect(
+      examplePlaceholder(
+        [{ ...journalClub, name: 'Journal Club', handle: 'journal-club' }],
+        'team-1'
+      )
+    ).toBe('e.g. new-channel');
   });
 
   it('creates the channel with the previewed slug and selects it', async () => {

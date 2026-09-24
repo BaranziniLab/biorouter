@@ -35,6 +35,8 @@ describe('ConnectionSettingsDialog', () => {
       'submit'
     );
     await waitFor(() => expect(screen.getByLabelText('Connection name')).toHaveFocus());
+    // QA Q2-30: a workspace name is not a word to correct.
+    expect(screen.getByLabelText('Connection name')).toHaveAttribute('spellcheck', 'false');
   });
 
   it('is a real form: native required validation blocks the PATCH', async () => {
