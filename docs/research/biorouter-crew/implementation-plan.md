@@ -2,6 +2,8 @@
 
 Status: implementation in progress September 22, 2026 under the user's approved requirements. The rootless broker, saved SSH manager, native Crew view and built-in MCP capability are present in the development worktree; acceptance remains incomplete. See [the evidence ledger](implementation-status.md) for measured results rather than inferring readiness from this plan. This revision supersedes the earlier administrator-managed deployment recommendation. Research performed September 21, 2026 Pacific / September 22 UTC. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8` on `main`. Implementation branch: `codex/biorouter-crew` in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`.
 
+Resumed scope, 2026-09-23: the Crew GUI redesign and human-readable identity requirements are acceptance requirements in [§16](#16-resumed-scope-gui-redesign-and-human-readable-identity-2026-09-23). Live workstream status and standing instructions are in the [resume handoff](handoff-2026-09-24.md#resumed-2026-09-23--live-status).
+
 ## 1. Recommendation and scope
 
 Build **BioRouter Crew with functionally equivalent native `biorouter crew` and desktop interfaces, plus a policy-aware built-in agent extension**, backed by a small, ordinary-user Linux collaboration process reached through existing SSH access. Installation, persistent data, configuration and user preferences are based in users' home directories; no sudo, new Unix service account, group creation or elevated access is required. Use the existing BioRouter agent runtime through separate, owner-scoped workers. The shared service handles people, teams, rooms, messages, files, permissions, history and audit; it does not execute everyone's tools as the hosting member.
@@ -731,3 +733,40 @@ API credentials, same UID, terminal discovery, `isatty`, SSH authentication and 
 ### Parity completion evidence
 
 Track G10–G15 in the [acceptance ledger](implementation-status.md#release-gates) and P01–P10 in the [parity regression map](regression-coverage-map.md#daemon-owned-parity-regressions). They supplement G01–G09 and I01–I24. A feature is complete only when its shared service, native CLI adapter, GUI adapter and applicable CLI-only/mixed-interface/security evidence agree on the final revision. Existing GUI, broker/helper CLI and SSH-probe evidence remains useful under its original scope and cannot close native `biorouter crew` acceptance.
+
+
+## 16. Resumed scope: GUI redesign and human-readable identity (2026-09-23)
+
+Status: Proposed. The user added these requirements when work resumed on 2026-09-23 (US Pacific; UTC 2026-09-24). They are acceptance requirements; no design, implementation or evidence for them exists yet. Live workstream status is in the [resume handoff](handoff-2026-09-24.md#resumed-2026-09-23--live-status). Detailed designs will be linked here when written: `docs/research/biorouter-crew/ui-redesign-spec.md` and `docs/research/biorouter-crew/naming-design.md`.
+
+### GUI redesign
+
+The Crew GUI should be clean, minimal, elegant and Slack-like, consistent with BioRouter's design system (`design.md`, the theme tokens) and the rest of the chat UI, and usable by a complete novice. Acceptance criteria:
+
+1. Fresh agents that have not seen the source, these documents or earlier runs drive the real development app as novice critics and complete connect → join → post → attach → ask agent → revoke without help. A run that needed a hint is a failure recorded at the step where it stalled, and the design iterates until critics succeed unaided. Success is judged from observed effects (the post in a peer's channel, a downloadable attachment, a revoked grant followed by a refused request), not from the critic's own account.
+2. Navigation is layered: workspace, team and channel selection and secondary actions sit in dropdown menus or equivalent layered controls, not in flat rows of equal-weight buttons.
+3. Progressive disclosure: each form shows only required fields by default; optional and advanced options sit behind an Advanced disclosure that starts closed.
+4. Affordances are obvious: dropdowns look like dropdowns and lists like lists. Anything a user must share sits in a code-block-style box with a one-click Copy that confirms the copy.
+5. Explanatory text and disclaimers appear only where they carry an immediate consequence of the action at hand. Reduced copy does not remove required state: effective Public/Private mode, current destination, author and agent ownership, and connection/authentication state stay visible as §9 requires, and an authentication problem must still not look like an empty room.
+6. Visual styling comes from the theme tokens in every theme family, light and dark, with no hard-coded colors; the repository's theme, contrast and token checks pass. Menus, disclosures and panel changes animate with the app's existing motion conventions and honour the operating system's reduced-motion setting.
+7. The redesign changes presentation only. It does not move authorization into React, add a renderer-side decision path or bypass the human-action gate.
+
+### Human-readable identity and naming
+
+People and teams are addressed by names; machine IDs stay internal. Acceptance criteria:
+
+1. People appear by display name, with `@username` wherever disambiguation is needed. `@username` is the SSH username and is unique per SSH server. A display name or nickname still confers no authority, and two people with the same nickname remain distinct (§1, §13 step 2).
+2. No UUID, hex key or principal ID is visible in default UI paths. Machine IDs are reachable only through an explicit Copy ID or details affordance. The native CLI's default human output is held to the same rule under §15 parity; machine-readable output may carry IDs. A fingerprint the user must compare to make a trust decision (host key, device enrollment) is verification material rather than a name and stays visible at that decision point.
+3. Team names are unique per workspace, compared case-insensitively, and the broker enforces uniqueness authoritatively; a colliding create or rename is refused with a clear message. Normalization beyond case folding (Unicode forms, whitespace, confusable characters) and the treatment of archived teams are settled in the naming design. A collision refusal must not disclose more about teams the caller cannot see than that design explicitly accepts.
+4. Invitations are addressable by `@username`, so a user invites `@bob` instead of copying an opaque token. Resolution uses the broker's directory of enrolled, discoverable principals (§5), never OS account enumeration. An invitation issued to a name binds to the resolved principal, UID plus enrollment generation, so a recycled UID or a re-enrolled account reusing the username does not inherit it. An ambiguous, unknown or non-discoverable name produces an explicit result, not a guess. First-time joining still requires a verified workspace identity; the naming design states which setup steps names replace and which still need a verified descriptor.
+5. Names are display and lookup keys, never authority or primary keys (§5). Any protocol change preserves kernel-derived peer identity, UID-recycling protections, device-key human authority and opaque cursors. Adversarial regressions cover at least: a principal claiming another's `@username` or display name, case-variant team names, a recycled UID with a reused username, a rename or re-enrollment between invitation issue and acceptance, and name lookups that could reveal non-discoverable accounts or hidden teams.
+
+### Shared acceptance conditions
+
+1. All existing security invariants I01–I24 ([invariant ledger](implementation-status.md#requirement-invariants), [coverage map](regression-coverage-map.md#i01i24)) are unchanged.
+2. Existing behavioral regressions are preserved, or deliberately updated with the reason recorded beside the change (for example, a test that asserted a UUID in rendered output). No regression is deleted to make the redesign pass.
+3. §15 parity still applies: a naming change reaches the CLI and GUI through the same daemon services, and neither interface resolves names independently. G10–G15 and P01–P10 remain in force.
+4. Evidence follows §13's same-final-revision rule. Novice-critic runs record the task given, the steps taken and where a critic stalled. Screenshots stay local under the existing visual-evidence restriction; published evidence is text.
+5. Live agent QA uses the private Versa `versa_azure` / `gpt-5.5-2026-04-24` binding, not local models.
+
+Execution note: resumed work is coordinated by a Claude Code session orchestrating subagents with separate research/design, implementation (explicit file ownership), independent review, test execution/GUI critic and documentation roles. §14's Astra/Luna assignment identifies who produced the earlier work and evidence; the separation between authoring, independent review and test execution carries over.
