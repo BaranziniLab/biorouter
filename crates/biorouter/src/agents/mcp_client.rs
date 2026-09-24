@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{
-    mpsc::{self, Sender},
+    mpsc::{self, error::TrySendError, Sender},
     Mutex,
 };
 use tokio_util::sync::CancellationToken;
@@ -109,12 +109,126 @@ pub type Error = rmcp::ServiceError;
 /// See `h6_parallel_same_extension` in `extension_manager.rs`.
 pub type McpClientBox = Arc<dyn McpClientTrait>;
 
+/// How many notifications one dispatch's channel holds before a new one is
+/// dropped (D14).
+///
+/// Delivery is `try_send`, never a blocking send, and that stays: rmcp hands
+/// every notification to a task of its own, so a blocking send would park one
+/// task per line behind a consumer that has stopped reading (the tool stream
+/// stops polling the moment the call answers) and hold the route map while it
+/// waited. The bound is what a burst has to fit in. It was 16, and a shell
+/// command printing a screenful at once lost most of it from the live view.
+const DISPATCH_CHANNEL_CAPACITY: usize = 256;
+
+/// One dispatch's notification route: the sending half of its channel, and how
+/// many notifications it lost to a full channel. The count is reported once,
+/// when the route goes away, so a lossy burst is visible in the log without a
+/// line per dropped notification.
+struct DispatchRoute {
+    sender: Sender<ServerNotification>,
+    dropped: u64,
+}
+
+impl DispatchRoute {
+    fn new(sender: Sender<ServerNotification>) -> Self {
+        Self { sender, dropped: 0 }
+    }
+
+    /// Offer one notification without waiting. A full channel counts a drop;
+    /// a closed one (the consumer is gone) is not a loss anybody will miss.
+    fn offer(&mut self, notification: ServerNotification) {
+        if let Err(TrySendError::Full(_)) = self.sender.try_send(notification) {
+            self.dropped += 1;
+        }
+    }
+
+    fn report_drops(&self, token: &str) {
+        if self.dropped > 0 {
+            tracing::warn!(
+                progress_token = token,
+                dropped = self.dropped,
+                capacity = DISPATCH_CHANNEL_CAPACITY,
+                "a tool call's live notifications overflowed its channel; the dropped ones \
+                 are missing from the live view only, never from the tool result"
+            );
+        }
+    }
+}
+
 /// Per-dispatch notification routes, keyed by the MCP progress token assigned to
 /// a single tool call. Shared between the [`McpClient`] and its [`BioRouterClient`]
-/// handler so server progress notifications can be routed back to exactly the
-/// session that made the call, instead of broadcast to every session sharing the
-/// process (the isolation core of the SharedMcpPool).
-type ProgressRoutes = Arc<Mutex<HashMap<String, Sender<ServerNotification>>>>;
+/// handler so server notifications can be routed back to exactly the call that
+/// asked for them, instead of broadcast to every call on the connection — which
+/// on a pooled client means every session sharing the process (the isolation
+/// core of the SharedMcpPool), and on an unpooled one every call in a parallel
+/// batch (D14).
+///
+/// A `std::sync::Mutex`: it is never held across an `.await`, and that is what
+/// lets [`DispatchRouteGuard`] remove a route in `Drop` when a cancellation
+/// drops the `call_tool` future mid-await.
+type ProgressRoutes = Arc<std::sync::Mutex<HashMap<String, DispatchRoute>>>;
+
+fn lock_routes(
+    routes: &ProgressRoutes,
+) -> std::sync::MutexGuard<'_, HashMap<String, DispatchRoute>> {
+    routes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Install a route under `token` and return the receiver that gets ONLY what
+/// is routed to it. Routes whose receiver is gone (a dispatch dropped before
+/// its call ran) are pruned on the way, so the map cannot grow without bound.
+fn register_route(routes: &ProgressRoutes, token: &str) -> mpsc::Receiver<ServerNotification> {
+    let (tx, rx) = mpsc::channel(DISPATCH_CHANNEL_CAPACITY);
+    let mut routes = lock_routes(routes);
+    routes.retain(|token, route| {
+        let open = !route.sender.is_closed();
+        if !open {
+            route.report_drops(token);
+        }
+        open
+    });
+    routes.insert(token.to_string(), DispatchRoute::new(tx));
+    rx
+}
+
+/// Remove `token`'s route, reporting any drops it counted. Removing the route
+/// drops its sender, so the dispatch's receiver ends once drained.
+fn deregister_route(routes: &ProgressRoutes, token: &str) {
+    if let Some(route) = lock_routes(routes).remove(token) {
+        route.report_drops(token);
+    }
+}
+
+/// RAII deregistration of one call's route: removes it when `call_tool`
+/// returns AND when a cancellation drops the `call_tool` future mid-await.
+struct DispatchRouteGuard {
+    routes: ProgressRoutes,
+    token: Option<String>,
+}
+
+impl Drop for DispatchRouteGuard {
+    fn drop(&mut self) {
+        if let Some(token) = &self.token {
+            deregister_route(&self.routes, token);
+        }
+    }
+}
+
+/// The wire form of a progress token Biorouter minted or was handed.
+///
+/// [`McpClient`] mints decimal numbers, so they go out as JSON numbers — the
+/// form rmcp's own provider uses and the recorded MCP cassettes hold — and
+/// anything else goes out as the string it is. Only a canonical decimal is
+/// read as a number, so the route key ([`progress_token_key`] of the echo)
+/// always equals the string the route was registered under.
+fn wire_progress_token(token: &str) -> ProgressToken {
+    match token.parse::<i64>() {
+        Ok(number) if number.to_string() == token => ProgressToken(NumberOrString::Number(number)),
+        _ => ProgressToken(NumberOrString::String(token.to_string().into())),
+    }
+}
 
 /// The session ids with an in-flight `call_tool` on this client connection —
 /// a multiset, one entry per in-flight call. Shared between the [`McpClient`]
@@ -193,10 +307,13 @@ fn elicitation_session_scope(meta: &Meta, active: &ActiveCallSessions) -> Option
 pub struct McpMeta {
     pub session_id: String,
     pub computer_use_generation: Option<String>,
-    /// Per-dispatch MCP progress token. When set, it is written into the call's
-    /// `_meta.progressToken` so the server echoes it on progress notifications,
-    /// letting a pooled (shared) client route those notifications to exactly this
-    /// dispatch's session (BR-54). `None` on the unpooled path (legacy broadcast).
+    /// Per-dispatch MCP progress token. When set, it is sent as the call's
+    /// `_meta.progressToken` so the server echoes it — on progress
+    /// notifications, and in `data.progress_token` on the developer shell's
+    /// live lines — letting the client route those notifications to exactly
+    /// this dispatch (BR-54, D14). `McpClient::register_dispatch` mints one on
+    /// every client, pooled or not; `None` only where a caller built the meta
+    /// without a registered route.
     pub progress_token: Option<String>,
     /// Issue #56. The capability this call was ADMITTED on. Set from
     /// `dispatch_tool_call`'s parameter, never re-derived: an in-process
@@ -325,8 +442,15 @@ impl McpMeta {
             // Add the progressToken to the SAME `_meta` object the session id
             // rides in (rmcp serializes `extensions.get::<Meta>()` as params._meta),
             // so we never set the params.meta field and can't collide on the wire.
+            //
+            // ⚠ This alone does NOT put the token on the wire: rmcp's
+            // `send_request_with_option` overwrites `progressToken` in exactly
+            // this object with a number of its own. `McpClient::send_request`
+            // re-applies the token through `PeerRequestOptions::meta`, which
+            // rmcp merges AFTER its own (D14). Kept here so the extensions a
+            // caller inspects say the same thing the wire does.
             let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
-            meta.set_progress_token(ProgressToken(NumberOrString::String(token.clone().into())));
+            meta.set_progress_token(wire_progress_token(token));
             extensions.insert(meta);
         }
         extensions
@@ -410,9 +534,11 @@ pub trait McpClientTrait: Send + Sync {
 }
 
 pub struct BioRouterClient {
-    /// Legacy broadcast subscribers (the unpooled path). Empty on pooled clients.
+    /// Direct broadcast subscribers ([`McpClientTrait::subscribe`]). Dispatches
+    /// no longer subscribe here — every dispatch has a route — so on
+    /// `McpClient` this is empty unless something subscribes explicitly.
     notification_handlers: Arc<Mutex<Vec<Sender<ServerNotification>>>>,
-    /// Per-dispatch routes keyed by progress token (the pooled/isolated path).
+    /// Per-dispatch routes keyed by progress token, on every client (D14).
     progress_routes: ProgressRoutes,
     /// When true (a pooled client shared across sessions), a notification that
     /// cannot be attributed to a registered progress token is DROPPED rather than
@@ -431,14 +557,14 @@ impl BioRouterClient {
     ) -> Self {
         Self::with_routing(
             handlers,
-            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(std::sync::Mutex::new(HashMap::new())),
             false,
             Arc::new(std::sync::Mutex::new(Vec::new())),
             provider,
         )
     }
 
-    pub fn with_routing(
+    fn with_routing(
         handlers: Arc<Mutex<Vec<Sender<ServerNotification>>>>,
         progress_routes: ProgressRoutes,
         routed_only: bool,
@@ -454,25 +580,93 @@ impl BioRouterClient {
         }
     }
 
-    /// Deliver one notification, either to the single subscriber that owns
-    /// `token` (isolated routing) or, when there is no token match, to the legacy
-    /// broadcast set — unless this is a shared (`routed_only`) client, in which
-    /// case an unattributable notification is dropped. Factored out so the
-    /// routing decision is unit-testable without a live MCP server.
+    /// Deliver one notification. Factored out so the routing decision is
+    /// unit-testable without a live MCP server.
+    ///
+    /// - A notification that names a progress token belongs to exactly one
+    ///   dispatch: it goes to that dispatch's route and nowhere else. A token
+    ///   no route holds (a call that already answered, a request that was not
+    ///   a dispatch, a token the server made up) is DROPPED, never broadcast —
+    ///   broadcasting it is how one call's lines reached another (D14).
+    /// - A notification with no token cannot be attributed. A shared
+    ///   (`routed_only`) client drops it rather than bleed it across sessions;
+    ///   an unpooled one keeps the legacy broadcast to every call in flight,
+    ///   which is all a server that echoes nothing can be given.
     async fn deliver(&self, token: Option<&str>, notification: ServerNotification) {
         if let Some(token) = token {
-            if let Some(sender) = self.progress_routes.lock().await.get(token) {
-                let _ = sender.try_send(notification);
-                return;
+            if let Some(route) = lock_routes(&self.progress_routes).get_mut(token) {
+                route.offer(notification);
             }
+            return;
         }
         if self.routed_only {
             // Shared client, no owning session -> drop rather than bleed across sessions.
             return;
         }
+        {
+            let mut routes = lock_routes(&self.progress_routes);
+            for route in routes.values_mut() {
+                route.offer(notification.clone());
+            }
+        }
         for handler in self.notification_handlers.lock().await.iter() {
             let _ = handler.try_send(notification.clone());
         }
+    }
+
+    /// Route one logging notification by the progress token the server echoed
+    /// in its `data` (see [`logging_attribution`]).
+    async fn deliver_logging(
+        &self,
+        params: rmcp::model::LoggingMessageNotificationParam,
+        extensions: Extensions,
+    ) {
+        let token = match logging_attribution(&params.data) {
+            LoggingAttribution::Token(token) => Some(token),
+            LoggingAttribution::Unattributed => None,
+            LoggingAttribution::Malformed => {
+                tracing::debug!(
+                    "dropping a logging notification whose progress_token is malformed"
+                );
+                return;
+            }
+        };
+        let notification =
+            ServerNotification::LoggingMessageNotification(LoggingMessageNotification {
+                params,
+                method: LoggingMessageNotificationMethod,
+                extensions,
+            });
+        self.deliver(token.as_deref(), notification).await;
+    }
+}
+
+/// Who a logging notification belongs to, read from its `data`.
+#[derive(Debug, PartialEq, Eq)]
+enum LoggingAttribution {
+    /// `data.progress_token` names this route key.
+    Token(String),
+    /// No `progress_token` at all: a server that does not echo one.
+    Unattributed,
+    /// A `progress_token` that is neither a string nor an integer. It claims
+    /// an owner it cannot name, so it is dropped rather than broadcast.
+    Malformed,
+}
+
+/// MCP logging notifications carry no request linkage, so a server that
+/// streams per-call output (the developer shell) echoes the call's progress
+/// token in `data.progress_token`. The key is spelled exactly as
+/// [`progress_token_key`] spells the token on a progress notification, so one
+/// route serves both.
+fn logging_attribution(data: &Value) -> LoggingAttribution {
+    match data.get("progress_token") {
+        None => LoggingAttribution::Unattributed,
+        Some(Value::String(token)) => LoggingAttribution::Token(token.clone()),
+        Some(Value::Number(number)) => match number.as_i64() {
+            Some(n) => LoggingAttribution::Token(n.to_string()),
+            None => LoggingAttribution::Malformed,
+        },
+        Some(_) => LoggingAttribution::Malformed,
     }
 }
 
@@ -504,15 +698,12 @@ impl ClientHandler for BioRouterClient {
         params: rmcp::model::LoggingMessageNotificationParam,
         context: rmcp::service::NotificationContext<rmcp::RoleClient>,
     ) {
-        // Logging notifications carry no progress token, so a shared client cannot
-        // attribute them to a session -> `deliver` drops them when `routed_only`.
-        let notification =
-            ServerNotification::LoggingMessageNotification(LoggingMessageNotification {
-                params,
-                method: LoggingMessageNotificationMethod,
-                extensions: context.extensions.clone(),
-            });
-        self.deliver(None, notification).await;
+        // D14: a logging notification is routed by the progress token the
+        // server echoed in its `data`. Without one it cannot be attributed:
+        // `deliver` drops it on a shared client and broadcasts it on an
+        // unpooled one.
+        self.deliver_logging(params, context.extensions.clone())
+            .await;
     }
 
     async fn create_message(
@@ -697,10 +888,9 @@ pub struct McpClient {
     /// In-flight `call_tool` session ids (shared with the `BioRouterClient`),
     /// for attributing server-initiated elicitations to their session (#40).
     active_call_sessions: ActiveCallSessions,
-    /// When true, this client is shared across sessions (via a SharedMcpPool) and
-    /// notifications are routed per-dispatch instead of broadcast.
-    routed_only: bool,
-    /// Monotonic counter feeding unique per-dispatch progress tokens.
+    /// Monotonic counter feeding every progress token this connection sends —
+    /// per-dispatch route keys and every other request's alike, so a token a
+    /// route is keyed on can never also name some other request (D14).
     next_token: AtomicU64,
     /// Cleared when the transport is observed closed, so a pooled client can be
     /// evicted and respawned rather than handed to a new session (BR-54 recovery).
@@ -710,8 +900,10 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Connect an unpooled client: notifications broadcast to every subscriber
-    /// (legacy behavior). Kept as the entry point for per-session/per-app clients.
+    /// Connect an unpooled client: a notification that names no progress token
+    /// is broadcast to every call in flight (legacy behavior); one that names a
+    /// token goes to that call alone. Kept as the entry point for
+    /// per-session/per-app clients.
     pub async fn connect<T, E, A>(
         transport: T,
         timeout: std::time::Duration,
@@ -724,9 +916,11 @@ impl McpClient {
         Self::connect_routed(transport, timeout, provider, false).await
     }
 
-    /// Connect a client, choosing whether its notifications are isolated per
-    /// dispatch (`routed_only = true`, for SharedMcpPool clients shared across
-    /// sessions) or broadcast to all subscribers (`false`, legacy per-session).
+    /// Connect a client, choosing what happens to a notification that names no
+    /// progress token: dropped (`routed_only = true`, for SharedMcpPool clients
+    /// shared across sessions) or broadcast to every call in flight (`false`,
+    /// legacy per-session). A tokened notification is routed to its own call
+    /// either way.
     pub async fn connect_routed<T, E, A>(
         transport: T,
         timeout: std::time::Duration,
@@ -739,7 +933,7 @@ impl McpClient {
     {
         let notification_subscribers =
             Arc::new(Mutex::new(Vec::<mpsc::Sender<ServerNotification>>::new()));
-        let progress_routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
+        let progress_routes: ProgressRoutes = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let active_call_sessions: ActiveCallSessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let client = BioRouterClient::with_routing(
@@ -758,7 +952,6 @@ impl McpClient {
             notification_subscribers,
             progress_routes,
             active_call_sessions,
-            routed_only,
             next_token: AtomicU64::new(0),
             healthy: Arc::new(AtomicBool::new(true)),
             server_info,
@@ -771,16 +964,38 @@ impl McpClient {
         self.healthy.clone()
     }
 
+    /// Send one request carrying `progress_token`, or a freshly minted one.
+    ///
+    /// ⚠ The token has to go through `PeerRequestOptions::meta`. rmcp's
+    /// `send_request_with_option` writes a `progressToken` of its own into the
+    /// request's `_meta` and only THEN merges `options.meta`, so a token set on
+    /// the request itself never reaches the server. That is how the pooled
+    /// path's per-dispatch token was silently replaced by rmcp's counter, and
+    /// every notification the server echoed it on was dropped as unknown
+    /// (D14). Minting a token for every request, not only dispatches, keeps
+    /// all of this connection's tokens from one counter, so a route key can
+    /// never collide with a token rmcp chose for a listing.
     async fn send_request(
         &self,
         request: ClientRequest,
+        progress_token: Option<&str>,
         cancel_token: CancellationToken,
     ) -> Result<ServerResult, Error> {
+        let progress_token = match progress_token {
+            Some(token) => wire_progress_token(token),
+            None => wire_progress_token(&self.mint_progress_token()),
+        };
+        let mut meta = Meta::new();
+        meta.set_progress_token(progress_token);
+        let options = PeerRequestOptions {
+            meta: Some(meta),
+            ..PeerRequestOptions::no_options()
+        };
         let handle = self
             .client
             .lock()
             .await
-            .send_cancellable_request(request, PeerRequestOptions::no_options())
+            .send_cancellable_request(request, options)
             .await
             .inspect_err(|_| self.healthy.store(false, Ordering::Relaxed))?;
 
@@ -791,27 +1006,20 @@ impl McpClient {
         result
     }
 
-    /// Mint a unique progress token, register a bounded channel under it, and
-    /// return the token plus the receiver. Only used on shared (`routed_only`)
-    /// clients — the returned token is attached to the call so the server echoes
-    /// it, and `deregister_progress` removes the route when the call finishes.
-    async fn register_progress(&self) -> (String, mpsc::Receiver<ServerNotification>) {
-        let token = format!(
-            "bp-{:x}-{}",
-            self as *const _ as usize,
-            self.next_token.fetch_add(1, Ordering::Relaxed)
-        );
-        let (tx, rx) = mpsc::channel(16);
-        let mut routes = self.progress_routes.lock().await;
-        // Opportunistically drop routes whose receiver is gone (e.g. a dispatch
-        // cancelled before its call ran) so the map can't grow without bound.
-        routes.retain(|_, sender| !sender.is_closed());
-        routes.insert(token.clone(), tx);
-        (token, rx)
+    /// The next progress token for this connection: a decimal number, unique
+    /// per client. Route maps are per client, so it needs no other qualifier.
+    fn mint_progress_token(&self) -> String {
+        self.next_token.fetch_add(1, Ordering::Relaxed).to_string()
     }
 
-    async fn deregister_progress(&self, token: &str) {
-        self.progress_routes.lock().await.remove(token);
+    /// Mint a unique progress token, register a bounded channel under it, and
+    /// return the token plus the receiver. The token is attached to the call so
+    /// the server echoes it, and the call's [`DispatchRouteGuard`] removes the
+    /// route when the call finishes.
+    fn register_progress(&self) -> (String, mpsc::Receiver<ServerNotification>) {
+        let token = self.mint_progress_token();
+        let rx = register_route(&self.progress_routes, &token);
+        (token, rx)
     }
 }
 
@@ -872,6 +1080,7 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
+                None,
                 cancel_token,
             )
             .await?;
@@ -897,6 +1106,7 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
+                None,
                 cancel_token,
             )
             .await?;
@@ -919,6 +1129,7 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
+                None,
                 cancel_token,
             )
             .await?;
@@ -936,9 +1147,13 @@ impl McpClientTrait for McpClient {
         meta: McpMeta,
         cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
-        // Remember the per-dispatch progress route so we can clean it up after the
-        // call completes (or errors), regardless of outcome.
-        let progress_token = meta.progress_token.clone();
+        // The per-dispatch progress route is removed when the call completes
+        // (or errors) — and, RAII, when a cancellation drops this future
+        // mid-await — regardless of outcome.
+        let _route = DispatchRouteGuard {
+            routes: self.progress_routes.clone(),
+            token: meta.progress_token.clone(),
+        };
         // #40: record which session this call belongs to for the duration of
         // the dispatch, so an elicitation the server raises mid-call can be
         // attributed to it (see `elicitation_session_scope`). RAII: the guard
@@ -956,13 +1171,10 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: meta.inject_into_extensions(Default::default()),
                 }),
+                meta.progress_token.as_deref(),
                 cancel_token,
             )
             .await;
-
-        if let Some(token) = progress_token {
-            self.deregister_progress(&token).await;
-        }
 
         match res? {
             ServerResult::CallToolResult(result) => Ok(result),
@@ -982,6 +1194,7 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
+                None,
                 cancel_token,
             )
             .await?;
@@ -1013,6 +1226,7 @@ impl McpClientTrait for McpClient {
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
+                None,
                 cancel_token,
             )
             .await?;
@@ -1024,22 +1238,24 @@ impl McpClientTrait for McpClient {
     }
 
     async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
-        let (tx, rx) = mpsc::channel(16);
-        self.notification_subscribers.lock().await.push(tx);
+        let (tx, rx) = mpsc::channel(DISPATCH_CHANNEL_CAPACITY);
+        let mut subscribers = self.notification_subscribers.lock().await;
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(tx);
         rx
     }
 
     async fn register_dispatch(&self) -> (Option<String>, mpsc::Receiver<ServerNotification>) {
-        if self.routed_only {
-            // Shared client: mint a token and route ONLY this dispatch's
-            // notifications, so a concurrent call from another session cannot
-            // land in this receiver.
-            let (token, rx) = self.register_progress().await;
-            (Some(token), rx)
-        } else {
-            // Unpooled client: legacy broadcast subscription, no token.
-            (None, self.subscribe().await)
-        }
+        // Every client, pooled or not, mints a token and routes ONLY this
+        // dispatch's notifications to this receiver (D14). On a shared client
+        // that keeps a concurrent call from another session out of it; on an
+        // unpooled one it keeps a sibling call in the same batch out — both
+        // run on one server process, and a broadcast subscription handed each
+        // shell call the other's lines. A notification the server cannot
+        // attribute still reaches every in-flight dispatch here, through the
+        // routes, on an unpooled client (`BioRouterClient::deliver`).
+        let (token, rx) = self.register_progress();
+        (Some(token), rx)
     }
 
     fn is_running(&self) -> bool {
@@ -1084,6 +1300,10 @@ mod tests {
         Arc::new(Mutex::new(None))
     }
 
+    fn new_routes() -> ProgressRoutes {
+        Arc::new(std::sync::Mutex::new(HashMap::new()))
+    }
+
     fn progress_notif(token: &str) -> ServerNotification {
         ServerNotification::ProgressNotification(ProgressNotification {
             params: rmcp::model::ProgressNotificationParam {
@@ -1102,7 +1322,7 @@ mod tests {
     /// never session A's. A naive broadcast would fail this.
     #[tokio::test]
     async fn test_shared_client_routes_progress_to_owning_session_only() {
-        let routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
+        let routes = new_routes();
         let client = BioRouterClient::with_routing(
             Arc::new(Mutex::new(Vec::new())),
             routes.clone(),
@@ -1111,13 +1331,8 @@ mod tests {
             empty_provider(),
         );
 
-        let (tx_a, mut rx_a) = mpsc::channel(4);
-        let (tx_b, mut rx_b) = mpsc::channel(4);
-        {
-            let mut r = routes.lock().await;
-            r.insert("tok-A".to_string(), tx_a);
-            r.insert("tok-B".to_string(), tx_b);
-        }
+        let mut rx_a = register_route(&routes, "tok-A");
+        let mut rx_b = register_route(&routes, "tok-B");
 
         client.deliver(Some("tok-B"), progress_notif("tok-B")).await;
 
@@ -1135,9 +1350,8 @@ mod tests {
     /// (unknown token, or an untokened logging message) rather than bleeding it.
     #[tokio::test]
     async fn test_shared_client_drops_unattributable_notifications() {
-        let routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
-        let (tx_a, mut rx_a) = mpsc::channel(4);
-        routes.lock().await.insert("tok-A".to_string(), tx_a);
+        let routes = new_routes();
+        let mut rx_a = register_route(&routes, "tok-A");
 
         let client = BioRouterClient::with_routing(
             Arc::new(Mutex::new(Vec::new())),
@@ -1228,9 +1442,8 @@ mod tests {
     /// delivery to another session.
     #[tokio::test]
     async fn shared_client_does_not_trust_forged_server_session_metadata() {
-        let routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
-        let (tx_a, mut rx_a) = mpsc::channel(4);
-        routes.lock().await.insert("tok-A".to_string(), tx_a);
+        let routes = new_routes();
+        let mut rx_a = register_route(&routes, "tok-A");
         let client = BioRouterClient::with_routing(
             Arc::new(Mutex::new(Vec::new())),
             routes,
@@ -1265,7 +1478,7 @@ mod tests {
 
         let client = BioRouterClient::with_routing(
             subscribers,
-            Arc::new(Mutex::new(HashMap::new())),
+            new_routes(),
             false,
             Arc::new(std::sync::Mutex::new(Vec::new())),
             empty_provider(),
@@ -1277,6 +1490,442 @@ mod tests {
             rx.try_recv().is_ok(),
             "legacy (unpooled) client must still broadcast untokened notifications"
         );
+    }
+
+    // ---- D14: live shell output routing ----------------------------------
+
+    fn log_line(
+        output: &str,
+        token: Option<Value>,
+    ) -> rmcp::model::LoggingMessageNotificationParam {
+        let mut data = serde_json::json!({
+            "type": "shell_output",
+            "stream": "stdout",
+            "output": output,
+        });
+        if let Some(token) = token {
+            data["progress_token"] = token;
+        }
+        rmcp::model::LoggingMessageNotificationParam {
+            level: rmcp::model::LoggingLevel::Info,
+            logger: Some("shell_tool".to_string()),
+            data,
+        }
+    }
+
+    /// Every `output` waiting in `rx` right now, in arrival order.
+    fn drain_outputs(rx: &mut mpsc::Receiver<ServerNotification>) -> Vec<String> {
+        let mut outputs = Vec::new();
+        while let Ok(notification) = rx.try_recv() {
+            if let ServerNotification::LoggingMessageNotification(log) = notification {
+                outputs.push(log.params.data["output"].as_str().unwrap_or("").to_string());
+            }
+        }
+        outputs
+    }
+
+    fn client_with(routes: &ProgressRoutes, routed_only: bool) -> BioRouterClient {
+        BioRouterClient::with_routing(
+            Arc::new(Mutex::new(Vec::new())),
+            routes.clone(),
+            routed_only,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+            empty_provider(),
+        )
+    }
+
+    /// D14 (cross-talk): two calls in flight on ONE unpooled client — a
+    /// parallel batch, or two chats on one developer process — each receive
+    /// only the lines that echo their own token. The old unpooled path
+    /// subscribed every dispatch to a broadcast, so each got both.
+    #[tokio::test]
+    async fn unpooled_client_delivers_tokened_logging_to_its_own_dispatch_only() {
+        let routes = new_routes();
+        let client = client_with(&routes, false);
+        let mut rx_a = register_route(&routes, "4");
+        let mut rx_b = register_route(&routes, "5");
+
+        for (output, token) in [
+            ("a0", serde_json::json!(4)),
+            ("b0", serde_json::json!(5)),
+            ("a1", serde_json::json!("4")),
+            ("b1", serde_json::json!(5)),
+        ] {
+            client
+                .deliver_logging(log_line(output, Some(token)), Extensions::default())
+                .await;
+        }
+
+        assert_eq!(drain_outputs(&mut rx_a), ["a0", "a1"]);
+        assert_eq!(drain_outputs(&mut rx_b), ["b0", "b1"]);
+
+        // A server that echoes nothing still reaches every call in flight on
+        // an unpooled client: the legacy fallback, and only for that case.
+        client
+            .deliver_logging(log_line("legacy", None), Extensions::default())
+            .await;
+        assert_eq!(drain_outputs(&mut rx_a), ["legacy"]);
+        assert_eq!(drain_outputs(&mut rx_b), ["legacy"]);
+    }
+
+    /// D14 (pooled drop): a shared client used to drop EVERY logging
+    /// notification, because it had no token to route by, so a pooled
+    /// developer extension showed no live output at all. A tokened line now
+    /// reaches its own dispatch; an untokened one is still dropped.
+    #[tokio::test]
+    async fn routed_only_client_delivers_tokened_logging_to_the_right_route() {
+        let routes = new_routes();
+        let client = client_with(&routes, true);
+        let mut rx_a = register_route(&routes, "10");
+        let mut rx_b = register_route(&routes, "11");
+
+        client
+            .deliver_logging(
+                log_line("mine", Some(serde_json::json!(11))),
+                Extensions::default(),
+            )
+            .await;
+        client
+            .deliver_logging(log_line("nobody's", None), Extensions::default())
+            .await;
+
+        assert_eq!(drain_outputs(&mut rx_b), ["mine"]);
+        assert!(
+            drain_outputs(&mut rx_a).is_empty(),
+            "neither the other session's line nor an unattributable one may land here"
+        );
+    }
+
+    /// D14: a token no route holds names SOME call — one that already
+    /// answered, or one on another connection — so it is dropped, never
+    /// broadcast, on either kind of client. A malformed token is dropped too.
+    #[tokio::test]
+    async fn an_unknown_or_malformed_token_is_dropped_not_broadcast() {
+        for routed_only in [false, true] {
+            let routes = new_routes();
+            let subscribers = Arc::new(Mutex::new(Vec::new()));
+            let (tx, mut direct) = mpsc::channel(8);
+            subscribers.lock().await.push(tx);
+            let client = BioRouterClient::with_routing(
+                subscribers,
+                routes.clone(),
+                routed_only,
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+                empty_provider(),
+            );
+            let mut rx = register_route(&routes, "1");
+
+            for token in [
+                serde_json::json!(999),
+                serde_json::json!("999"),
+                serde_json::json!(true),
+                serde_json::json!(1.5),
+            ] {
+                client
+                    .deliver_logging(log_line("stray", Some(token)), Extensions::default())
+                    .await;
+            }
+            // The same rule for a progress notification whose token is
+            // unknown: on an unpooled client this used to broadcast.
+            client.deliver(Some("999"), progress_notif("999")).await;
+
+            assert!(
+                drain_outputs(&mut rx).is_empty() && rx.try_recv().is_err(),
+                "routed_only={routed_only}: a stray token reached an unrelated dispatch"
+            );
+            assert!(
+                direct.try_recv().is_err(),
+                "routed_only={routed_only}: a stray token was broadcast"
+            );
+        }
+    }
+
+    /// D14 (bounded channel): a burst of 200 lines — a screenful printed at
+    /// once — reaches its route complete and in order even when nothing reads
+    /// until the burst is over. At the old capacity of 16 it lost 184.
+    #[tokio::test]
+    async fn a_burst_of_200_lines_to_one_route_arrives_complete() {
+        let routes = new_routes();
+        let client = client_with(&routes, false);
+        let mut rx = register_route(&routes, "3");
+
+        let expected: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+        for output in &expected {
+            client
+                .deliver_logging(
+                    log_line(output, Some(serde_json::json!(3))),
+                    Extensions::default(),
+                )
+                .await;
+        }
+
+        assert_eq!(drain_outputs(&mut rx), expected);
+        assert_eq!(lock_routes(&routes)["3"].dropped, 0);
+    }
+
+    /// Past the bound, `try_send` still never waits — the MCP reader must not
+    /// stall behind a slow consumer — but every loss is counted on its route,
+    /// so it can be reported once when the dispatch ends.
+    #[tokio::test]
+    async fn an_overflowing_route_counts_what_it_dropped() {
+        let routes = new_routes();
+        let client = client_with(&routes, false);
+        let mut rx = register_route(&routes, "8");
+
+        let sent = DISPATCH_CHANNEL_CAPACITY + 10;
+        for i in 0..sent {
+            client
+                .deliver_logging(
+                    log_line(&format!("line {i}"), Some(serde_json::json!(8))),
+                    Extensions::default(),
+                )
+                .await;
+        }
+
+        assert_eq!(lock_routes(&routes)["8"].dropped, 10);
+        assert_eq!(drain_outputs(&mut rx).len(), DISPATCH_CHANNEL_CAPACITY);
+        deregister_route(&routes, "8");
+        assert!(lock_routes(&routes).is_empty());
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)),
+            "deregistering drops the sender, so the dispatch's stream ends"
+        );
+    }
+
+    #[test]
+    fn logging_attribution_reads_the_token_as_progress_token_key_spells_it() {
+        assert_eq!(
+            logging_attribution(&serde_json::json!({ "progress_token": 12 })),
+            LoggingAttribution::Token(progress_token_key(&ProgressToken(NumberOrString::Number(
+                12
+            ))))
+        );
+        assert_eq!(
+            logging_attribution(&serde_json::json!({ "progress_token": "tok" })),
+            LoggingAttribution::Token("tok".to_string())
+        );
+        assert_eq!(
+            logging_attribution(&serde_json::json!({ "type": "shell_output" })),
+            LoggingAttribution::Unattributed
+        );
+        assert_eq!(
+            logging_attribution(&serde_json::json!("a plain string log")),
+            LoggingAttribution::Unattributed
+        );
+        for malformed in [
+            serde_json::json!({ "progress_token": null }),
+            serde_json::json!({ "progress_token": 2.5 }),
+            serde_json::json!({ "progress_token": [1] }),
+        ] {
+            assert_eq!(
+                logging_attribution(&malformed),
+                LoggingAttribution::Malformed
+            );
+        }
+    }
+
+    /// A minted token goes out as a JSON number — rmcp's own form, and the
+    /// form the recorded MCP cassettes hold — and its echo keys back to the
+    /// same string. Anything else keeps its string form.
+    #[test]
+    fn wire_progress_token_round_trips_to_the_route_key() {
+        for token in ["0", "41", "-3", "tok-xyz", "007", "1e3"] {
+            assert_eq!(progress_token_key(&wire_progress_token(token)), token);
+        }
+        assert_eq!(
+            wire_progress_token("41"),
+            ProgressToken(NumberOrString::Number(41))
+        );
+        assert_eq!(
+            wire_progress_token("007"),
+            ProgressToken(NumberOrString::String("007".into()))
+        );
+    }
+
+    /// An MCP server whose one tool streams `count` lines labelled `label` as
+    /// logging notifications echoing the call's progress token — the shape the
+    /// developer shell emits — then waits for the test to release it.
+    #[derive(Clone)]
+    struct StreamingServer {
+        /// Every call is in flight before any of them streams a line.
+        start: Arc<tokio::sync::Barrier>,
+        /// Holds the calls open until the test has read what it needs, so
+        /// the routes are alive for the whole emission.
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl rmcp::ServerHandler for StreamingServer {
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            context: RequestContext<rmcp::RoleServer>,
+        ) -> Result<CallToolResult, ErrorData> {
+            let args = request.arguments.unwrap_or_default();
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0);
+            let token = context.meta.get_progress_token();
+            self.start.wait().await;
+            for seq in 0..count {
+                let mut data = serde_json::json!({
+                    "type": "shell_output",
+                    "stream": "stdout",
+                    "output": format!("{label}-{seq}"),
+                    "seq": seq,
+                });
+                if let Some(token) = &token {
+                    data["progress_token"] = serde_json::to_value(token).unwrap();
+                }
+                context
+                    .peer
+                    .notify_logging_message(rmcp::model::LoggingMessageNotificationParam {
+                        level: rmcp::model::LoggingLevel::Info,
+                        logger: Some("shell_tool".to_string()),
+                        data,
+                    })
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            }
+            self.release
+                .acquire()
+                .await
+                .expect("the release semaphore stays open")
+                .forget();
+            // Report the token the server actually received.
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&token).unwrap(),
+            )]))
+        }
+    }
+
+    async fn connect_streaming(server: StreamingServer, routed_only: bool) -> McpClient {
+        let (server_read, client_write) = tokio::io::duplex(1 << 16);
+        let (client_read, server_write) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            if let Ok(running) = server.serve((server_read, server_write)).await {
+                let _ = running.waiting().await;
+            }
+        });
+        McpClient::connect_routed(
+            (client_read, client_write),
+            Duration::from_secs(30),
+            empty_provider(),
+            routed_only,
+        )
+        .await
+        .expect("the in-process test server connects")
+    }
+
+    /// Wait for `n` logging lines on one dispatch's receiver.
+    async fn take_outputs(rx: &mut mpsc::Receiver<ServerNotification>, n: usize) -> Vec<String> {
+        let mut outputs = Vec::new();
+        while outputs.len() < n {
+            let notification = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .expect("the dispatch's lines should arrive")
+                .expect("the route closed before its lines arrived");
+            if let ServerNotification::LoggingMessageNotification(log) = notification {
+                outputs.push(log.params.data["output"].as_str().unwrap_or("").to_string());
+            }
+        }
+        outputs
+    }
+
+    /// D14 end to end, over a real MCP connection: two concurrent dispatches
+    /// on one client each receive exactly their own lines, the token each
+    /// was routed under is the token the server received, and each stream
+    /// ends when its call answers. Run for both kinds of client.
+    async fn concurrent_dispatches_receive_only_their_own_lines(routed_only: bool) {
+        const LINES: usize = 40;
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let client = connect_streaming(
+            StreamingServer {
+                start: Arc::new(tokio::sync::Barrier::new(2)),
+                release: release.clone(),
+            },
+            routed_only,
+        )
+        .await;
+
+        // Burn one of OUR tokens, so this client's counter and rmcp's own
+        // disagree: if the token did not survive to the wire, the server
+        // would report rmcp's number and the assertion below would see it.
+        drop(client.register_dispatch().await);
+        let (token_a, mut rx_a) = client.register_dispatch().await;
+        let (token_b, mut rx_b) = client.register_dispatch().await;
+        let token_a = token_a.expect("every dispatch is given a token");
+        let token_b = token_b.expect("every dispatch is given a token");
+
+        let call = |label: &'static str, token: String| {
+            let arguments = serde_json::json!({ "label": label, "count": LINES });
+            client.call_tool(
+                "stream",
+                arguments.as_object().cloned(),
+                McpMeta::new(
+                    format!("sess-{label}"),
+                    crate::privacy::CallCapability::for_test_restricted(),
+                )
+                .with_progress_token(token),
+                CancellationToken::new(),
+            )
+        };
+        let collect = async {
+            let a = take_outputs(&mut rx_a, LINES).await;
+            let b = take_outputs(&mut rx_b, LINES).await;
+            release.add_permits(2);
+            (a, b)
+        };
+        let (result_a, result_b, (mut lines_a, mut lines_b)) = tokio::join!(
+            call("A", token_a.clone()),
+            call("B", token_b.clone()),
+            collect
+        );
+
+        let expected = |label: &str| {
+            let mut lines: Vec<String> = (0..LINES).map(|i| format!("{label}-{i}")).collect();
+            lines.sort();
+            lines
+        };
+        // rmcp hands each notification to its own task, so arrival order is
+        // not the send order; the SET is what isolation is about.
+        lines_a.sort();
+        lines_b.sort();
+        assert_eq!(lines_a, expected("A"), "routed_only={routed_only}");
+        assert_eq!(lines_b, expected("B"), "routed_only={routed_only}");
+
+        for (result, token) in [(result_a, &token_a), (result_b, &token_b)] {
+            let result = result.expect("the call succeeds");
+            let echoed = result.content[0].as_text().expect("text").text.clone();
+            assert_eq!(
+                echoed,
+                serde_json::to_string(&wire_progress_token(token)).unwrap(),
+                "routed_only={routed_only}: the server must receive the token the route is keyed on"
+            );
+        }
+
+        // The call answered, so its route is gone and its stream ends — with
+        // nothing further in it, the other call's lines included.
+        for rx in [&mut rx_a, &mut rx_b] {
+            let end = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+            assert!(
+                matches!(end, Ok(None)),
+                "routed_only={routed_only}: expected the stream to end, got {end:?}"
+            );
+        }
+        assert!(lock_routes(&client.progress_routes).is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatches_on_one_unpooled_client_each_receive_only_their_own_lines() {
+        concurrent_dispatches_receive_only_their_own_lines(false).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatches_on_one_pooled_client_each_receive_only_their_own_lines() {
+        concurrent_dispatches_receive_only_their_own_lines(true).await;
     }
 
     #[test]

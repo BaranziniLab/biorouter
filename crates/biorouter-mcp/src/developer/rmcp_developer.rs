@@ -7,8 +7,8 @@ use rmcp::{
     model::{
         CallToolResult, CancelledNotificationParam, Content, ErrorCode, ErrorData,
         GetPromptRequestParams, GetPromptResult, Implementation, ListPromptsResult, LoggingLevel,
-        LoggingMessageNotificationParam, PaginatedRequestParams, Prompt, PromptArgument,
-        PromptMessage, PromptMessageRole, Role, ServerCapabilities, ServerInfo,
+        LoggingMessageNotificationParam, PaginatedRequestParams, ProgressToken, Prompt,
+        PromptArgument, PromptMessage, PromptMessageRole, Role, ServerCapabilities, ServerInfo,
     },
     schemars::JsonSchema,
     service::{NotificationContext, RequestContext},
@@ -101,14 +101,47 @@ fn streamed_shell_line(line: &str) -> Option<&str> {
 /// The `data` of one live `shell_output` logging notification.
 ///
 /// `type`, `stream` and `output` are the shape every client already reads;
-/// `seq` is additive (see `DeveloperServer::stream_shell_output`).
-fn shell_output_notification_data(stream: &str, output: &str, seq: u64) -> serde_json::Value {
-    serde_json::json!({
-        "type": "shell_output",
-        "stream": stream,
-        "output": output,
-        "seq": seq,
-    })
+/// `seq` is additive (see `DeveloperServer::stream_shell_output`), and so is
+/// `progress_token` (see [`with_progress_token`]).
+fn shell_output_notification_data(
+    stream: &str,
+    output: &str,
+    seq: u64,
+    progress_token: Option<&ProgressToken>,
+) -> serde_json::Value {
+    with_progress_token(
+        serde_json::json!({
+            "type": "shell_output",
+            "stream": stream,
+            "output": output,
+            "seq": seq,
+        }),
+        progress_token,
+    )
+}
+
+/// Stamp a shell logging notification's `data` with the progress token of the
+/// tool call it belongs to, when that call carried one.
+///
+/// MCP logging notifications have no request linkage of their own, so a
+/// client connection running several tool calls at once (two chats' shell
+/// commands on one developer process, or one chat's parallel batch) cannot
+/// tell whose line a notification is. The progress token is the one
+/// per-request identifier the client chose itself and the spec has us echo
+/// (on progress notifications), so echoing it here lets the client deliver
+/// each line to exactly the call that ran the command instead of to every
+/// call in flight. Additive: a client that ignores it sees the shape it always
+/// did, and a call without a token produces no key at all.
+fn with_progress_token(
+    mut data: serde_json::Value,
+    progress_token: Option<&ProgressToken>,
+) -> serde_json::Value {
+    if let (Some(token), Some(object)) = (progress_token, data.as_object_mut()) {
+        if let Ok(value) = serde_json::to_value(token) {
+            object.insert("progress_token".to_string(), value);
+        }
+    }
+    data
 }
 
 /// Build a git context + version-control policy block for the extension
@@ -1133,6 +1166,9 @@ impl DeveloperServer {
         let command = &params.command;
         // Read before `context` is taken apart below.
         let session_id = dispatching_session_id(&context);
+        // Echoed on every live line so the client can deliver it to this call
+        // alone (see `with_progress_token`).
+        let progress_token = context.meta.get_progress_token();
         let peer = context.peer;
         let request_id = context.id;
         // rmcp's own request-scoped token. It is a descendant of the serve
@@ -1189,7 +1225,14 @@ impl DeveloperServer {
             mirror_ct.cancel();
         }));
         let output_result = self
-            .execute_shell_command(command, working_dir, session_id, &peer, run_ct)
+            .execute_shell_command(
+                command,
+                working_dir,
+                session_id,
+                &peer,
+                progress_token,
+                run_ct,
+            )
             .await;
 
         // Clean up the process from tracking
@@ -1429,6 +1472,7 @@ impl DeveloperServer {
         working_dir: Option<PathBuf>,
         session_id: Option<String>,
         peer: &rmcp::service::Peer<RoleServer>,
+        progress_token: Option<ProgressToken>,
         cancellation_token: CancellationToken,
     ) -> Result<(String, Option<i32>), ErrorData> {
         let shell_config = self.shell_config_for_run();
@@ -1491,6 +1535,7 @@ impl DeveloperServer {
             peer.clone(),
             command_text.clone(),
             started,
+            progress_token.clone(),
         ));
 
         // Stream the output and wait for completion with cancellation support
@@ -1498,6 +1543,7 @@ impl DeveloperServer {
             child.stdout.take().unwrap(),
             child.stderr.take().unwrap(),
             peer.clone(),
+            progress_token,
         );
 
         let budget = self.foreground_timeout;
@@ -1567,10 +1613,16 @@ impl DeveloperServer {
     /// Report a still-running foreground command to the client every
     /// [`FOREGROUND_HEARTBEAT`] (issue #72). The returned handle is aborted the
     /// moment the command finishes, so a fast command emits nothing at all.
+    ///
+    /// The heartbeat names the command, so it carries the call's progress token
+    /// exactly as the output lines do: without it a client running two calls
+    /// on this connection cannot tell whose command it names, and hands it to
+    /// both.
     fn foreground_heartbeat(
         peer: rmcp::service::Peer<RoleServer>,
         command: String,
         started: std::time::Instant,
+        progress_token: Option<ProgressToken>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
@@ -1583,12 +1635,15 @@ impl DeveloperServer {
                 if peer
                     .notify_logging_message(LoggingMessageNotificationParam {
                         level: LoggingLevel::Info,
-                        data: serde_json::json!({
-                            "type": "shell_progress",
-                            "message": message,
-                            "elapsed_seconds": started.elapsed().as_secs(),
-                            "command": command,
-                        }),
+                        data: with_progress_token(
+                            serde_json::json!({
+                                "type": "shell_progress",
+                                "message": message,
+                                "elapsed_seconds": started.elapsed().as_secs(),
+                                "command": command,
+                            }),
+                            progress_token.as_ref(),
+                        ),
                         logger: Some("shell_tool".to_string()),
                     })
                     .await
@@ -1613,11 +1668,15 @@ impl DeveloperServer {
     /// adjacent lines reach a client in nondeterministic order; a client that
     /// wants the command's own order puts them back by `seq`. It is additive:
     /// a client that ignores it sees exactly the shape it always did.
+    ///
+    /// `progress_token` is the tool call's own, echoed on every line (see
+    /// [`with_progress_token`]) so the client routes the line to this call.
     async fn stream_shell_output(
         &self,
         stdout: tokio::process::ChildStdout,
         stderr: tokio::process::ChildStderr,
         peer: rmcp::service::Peer<RoleServer>,
+        progress_token: Option<ProgressToken>,
     ) -> Result<String, ErrorData> {
         let stdout = BufReader::new(stdout);
         let stderr = BufReader::new(stderr);
@@ -1647,7 +1706,12 @@ impl DeveloperServer {
 
                 // Stream each line back to the client in real-time
                 if let Some(output) = streamed_shell_line(&line_str) {
-                    let data = shell_output_notification_data(stream_type, output, seq);
+                    let data = shell_output_notification_data(
+                        stream_type,
+                        output,
+                        seq,
+                        progress_token.as_ref(),
+                    );
                     seq += 1;
                     // Send the output line as a structured logging message
                     if let Err(e) = peer
@@ -5973,7 +6037,7 @@ mod tests {
     /// names and values.
     #[test]
     fn shell_output_notification_data_is_the_old_shape_plus_seq() {
-        let data = shell_output_notification_data("stderr", "  warning: x", 7);
+        let data = shell_output_notification_data("stderr", "  warning: x", 7, None);
         assert_eq!(
             data,
             serde_json::json!({
@@ -5982,6 +6046,35 @@ mod tests {
                 "output": "  warning: x",
                 "seq": 7,
             })
+        );
+    }
+
+    /// `progress_token` is additive too: present exactly when the call had
+    /// one, in the JSON form the client sent it (a number stays a number), and
+    /// the old fields are untouched.
+    #[test]
+    fn shell_output_notification_data_echoes_the_progress_token() {
+        let numeric = ProgressToken(NumberOrString::Number(41));
+        assert_eq!(
+            shell_output_notification_data("stdout", "line", 0, Some(&numeric)),
+            serde_json::json!({
+                "type": "shell_output",
+                "stream": "stdout",
+                "output": "line",
+                "seq": 0,
+                "progress_token": 41,
+            })
+        );
+        let text = ProgressToken(NumberOrString::String("tok-7".into()));
+        assert_eq!(
+            shell_output_notification_data("stderr", "e", 3, Some(&text))["progress_token"],
+            serde_json::json!("tok-7")
+        );
+        assert!(
+            shell_output_notification_data("stdout", "line", 0, None)
+                .get("progress_token")
+                .is_none(),
+            "a call without a token must not grow the key"
         );
     }
 
@@ -6108,6 +6201,66 @@ mod tests {
                 "seq counts the streamed lines from 0, in order"
             );
             assert!(streamed.iter().all(|(_, stream, _)| stream == "stdout"));
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// D14: every live line names the tool call it belongs to. Drive the real
+    /// tool with a request that carries a progress token, as Biorouter's
+    /// client always sends one, and read what a client receives: every
+    /// `shell_output` line carries that token, so a client running two calls
+    /// on one connection can deliver each line to its own call.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn shell_lines_carry_the_calls_progress_token() {
+        run_shell_test(|| async {
+            let tmp = tempfile::tempdir().unwrap();
+            let server = DeveloperServer::new().with_working_dir(tmp.path().to_path_buf());
+            let (transport, mut frames) = capturing_test_transport();
+            let running_service = serve_directly(server.clone(), transport, None);
+            let peer = running_service.peer().clone();
+
+            let mut meta = rmcp::model::Meta::new();
+            meta.set_progress_token(ProgressToken(NumberOrString::Number(7031)));
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: "printf 'one\\ntwo\\nthree\\n'".to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(7030),
+                        meta,
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await;
+            assert!(result.is_ok(), "printf should succeed: {result:?}");
+
+            let mut tokens = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while tokens.len() < 3 {
+                let frame = tokio::time::timeout_at(deadline, frames.recv())
+                    .await
+                    .expect("every streamed line should reach the client")
+                    .expect("the capture task ended early");
+                if frame["method"] == "notifications/message"
+                    && frame["params"]["data"]["type"] == "shell_output"
+                {
+                    tokens.push(frame["params"]["data"]["progress_token"].clone());
+                }
+            }
+            assert_eq!(
+                tokens,
+                vec![serde_json::json!(7031); 3],
+                "each line echoes the call's own token, in the form it was sent"
+            );
 
             cleanup_test_service(running_service, peer);
         });
