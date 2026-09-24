@@ -254,7 +254,7 @@ fn a_changed_username_a_recycled_uid_or_a_former_member_is_refused() {
     let mut ws = Workspace::new("direct-add-identity");
     let bob = ws.enroll(BOB, "bob", 11);
     let carol = ws.enroll(CAROL, "carol", 12);
-    let (team, _) = ws.host_team("Lab");
+    let (team, general) = ws.host_team("Lab");
     let before = journal_lines(&ws);
 
     // The name the host confirmed is not this principal's.
@@ -287,20 +287,39 @@ fn a_changed_username_a_recycled_uid_or_a_former_member_is_refused() {
     let (code, _) = refused(ws.host_call("team.add_member", add(&bob, "bob", &team, &[])));
     assert_eq!(code, "target_mismatch");
 
-    // A former member is not a member.
+    // A former member is not a member, and is named by the username the workspace holds for
+    // them, never by the caller's text (Q2-78).
     ws.offboard(&carol.principal_id);
     let before = journal_lines(&ws).max(before);
     let (code, message) =
         refused(ws.host_call("team.add_member", add(&carol, "carol", &team, &[])));
     assert_eq!(code, "forbidden");
-    assert!(
-        message.contains("isn't a member of this workspace"),
-        "{message}"
+    assert_eq!(
+        message,
+        "forbidden: @carol isn't a member of this workspace any more. Invite them to the workspace first."
     );
-    // Someone who never joined (an unknown principal ID) reads the same.
-    let stranger = json!({"team_id": team, "principal_id": uuid(), "expected_username": "erin", "channel_ids": []});
-    let (code, _) = refused(ws.host_call("team.add_member", stranger));
+    let (code, message) =
+        refused(ws.host_call("team.add_member", add(&carol, "someone-else", &team, &[])));
     assert_eq!(code, "forbidden");
+    assert!(message.contains("@carol isn't a member"), "{message}");
+    assert!(!message.contains("someone-else"), "{message}");
+    // Someone who never joined (an unknown principal ID) is named by nothing: the caller's
+    // `expected_username` is never echoed back as if the workspace had confirmed it.
+    for method in ["team.add_member", "channel.add_member"] {
+        let target = if method == "team.add_member" {
+            json!({"team_id": team, "principal_id": uuid(), "expected_username": "erin", "channel_ids": []})
+        } else {
+            json!({"channel_id": general, "principal_id": uuid(), "expected_username": "erin"})
+        };
+        let (code, message) = refused(ws.host_call(method, target));
+        assert_eq!(code, "forbidden", "{method}");
+        assert_eq!(
+            message,
+            "forbidden: That person isn't a member of this workspace. Refresh and choose again.",
+            "{method}"
+        );
+        assert!(!message.contains("erin"), "{method}: {message}");
+    }
 
     assert_eq!(journal_lines(&ws), before);
     let snapshot = ws.host_snapshot();

@@ -153,6 +153,44 @@ pub trait Directory {
     }
 }
 
+/// The kernel's overflow UID, which NSS reports as `nobody`: never a person.
+const OVERFLOW_UID: u32 = 65534;
+
+/// Whether an account is a system account that can never join a workspace: UID 0, a UID below
+/// `uid_min` or the overflow UID, or a `nologin`/`false` login shell.
+fn is_system_account(account: &Account, uid_min: u32) -> bool {
+    let shell = account.shell.as_deref().map(|shell| {
+        shell
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(shell)
+    });
+    account.uid == 0
+        || account.uid < uid_min
+        || account.uid == OVERFLOW_UID
+        || account.uid == u32::MAX
+        || shell.is_some_and(|name| name.ends_with("nologin") || name == "false")
+}
+
+/// T-54: UID 0, a UID below the node's `UID_MIN` (or the overflow UID `nobody` holds), and an
+/// account whose login shell is `nologin` or `false` are the server's own, never a person's.
+/// Checked on the canonical account, through the [`Directory`] seam, before anything is
+/// recorded.
+///
+/// Every door that records an invitation asks this, whatever the build: the S3a invitation by
+/// name (`broker/join.rs`, feature `join-by-name`) and the legacy `enrollment.invite {uid,
+/// public_key}` token path (Q2-14), which used to skip it because the check lived only in the
+/// feature-gated module.
+fn refuse_system_account(broker: &Broker, account: &Account) -> Result<()> {
+    ensure!(
+        !is_system_account(account, broker.directory.uid_min()),
+        "name_invalid: @{} is a system account on this server and can't join a workspace.",
+        account.name
+    );
+    Ok(())
+}
+
 /// The node's NSS account database.
 struct SystemDirectory;
 
@@ -508,6 +546,9 @@ const GENERAL_RESERVED: &str =
     "name_invalid: Channel name general is reserved for the team's first channel.";
 const TARGET_MISMATCH: &str =
     "target_mismatch: The person you chose no longer has that username. Refresh and choose again.";
+/// Q2-78: a direct add naming a principal ID this workspace has never held.
+const DIRECT_ADD_UNKNOWN_PERSON: &str =
+    "forbidden: That person isn't a member of this workspace. Refresh and choose again.";
 /// A direct add (`team.add_member`, `channel.add_member`) through an agent's grant. The worker
 /// allowlist refuses it first; this is the second, method-level wall.
 const DIRECT_ADD_AGENT_REFUSED: &str = "forbidden: only a person can add people";
@@ -2258,7 +2299,11 @@ impl Broker {
         let who = &actor.id;
         self.manager(s, who)?;
         let uid: u32 = number(p, "uid")?.try_into()?;
-        let current_username = self.directory.by_uid(uid)?.name;
+        let account = self.directory.by_uid(uid)?;
+        // Q2-14: the legacy token path refuses the server's own accounts exactly as the
+        // invitation by name does, before anything is recorded.
+        refuse_system_account(self, &account)?;
+        let current_username = account.name;
         let existing_principal_id = match p.get("existing_principal_id") {
             None | Some(Value::Null) => None,
             Some(Value::String(value)) => Some(value.clone()),
@@ -2773,16 +2818,22 @@ impl Broker {
     /// (never a pending join or a former member), still holding exactly the `expected_username`
     /// the caller confirmed (required here, unlike the optional check elsewhere), and still the
     /// account of that name on this server (a renamed or recycled UID is refused).
+    ///
+    /// Q2-78: a refusal names only what this workspace itself records. A former member is
+    /// named by the username the workspace holds for them; an ID it has never held is named by
+    /// nothing, so the caller's own `expected_username` is never echoed back as if the
+    /// workspace had confirmed it.
     fn direct_add_target(&self, s: &State, p: &Value, principal_id: &str) -> Result<String> {
         let expected = text(p, "expected_username")?;
         let expected = expected.strip_prefix('@').unwrap_or(expected);
-        let target = s
-            .principals
-            .get(principal_id)
-            .filter(|principal| principal.active)
-            .ok_or_else(|| {
-                anyhow!("forbidden: @{expected} isn't a member of this workspace. Invite them to the workspace first.")
-            })?;
+        let target = match s.principals.get(principal_id) {
+            Some(principal) if principal.active => principal,
+            Some(former) => bail!(
+                "forbidden: @{} isn't a member of this workspace any more. Invite them to the workspace first.",
+                former.username
+            ),
+            None => bail!(DIRECT_ADD_UNKNOWN_PERSON),
+        };
         ensure!(target.username == expected, TARGET_MISMATCH);
         ensure!(
             self.directory
@@ -4309,5 +4360,54 @@ mod uid_min_tests {
         );
         assert_eq!(parse_uid_min("SYS_UID_MIN 100\nUID_MIN 2000\n"), Some(2000));
         assert_eq!(parse_uid_min("UID_MIN lots\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod system_account_tests {
+    use super::*;
+
+    fn account(uid: u32, shell: Option<&str>) -> Account {
+        Account {
+            uid,
+            name: "someone".into(),
+            full_name: None,
+            shell: shell.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn system_accounts_are_root_low_uids_nobody_and_accounts_without_a_login_shell() {
+        for (uid, shell) in [
+            (0, Some("/bin/bash")),
+            (1, Some("/usr/sbin/nologin")),
+            (999, Some("/bin/bash")),
+            (65_534, None),
+            (65_534, Some("/bin/sh")),
+            (u32::MAX, Some("/bin/bash")),
+            (1_001, Some("/usr/sbin/nologin")),
+            (1_001, Some("/sbin/nologin")),
+            (1_001, Some("/bin/false")),
+            (1_001, Some("/usr/bin/false")),
+        ] {
+            assert!(
+                is_system_account(&account(uid, shell), 1000),
+                "{uid} {shell:?}"
+            );
+        }
+        for (uid, shell) in [
+            (1_000, Some("/bin/bash")),
+            (1_001, None),
+            (71_001, Some("/usr/bin/zsh")),
+            (1_001, Some("/opt/false-positive/bin/bash")),
+        ] {
+            assert!(
+                !is_system_account(&account(uid, shell), 1000),
+                "{uid} {shell:?}"
+            );
+        }
+        // A node whose login.defs starts people at 500.
+        assert!(!is_system_account(&account(600, Some("/bin/bash")), 500));
+        assert!(is_system_account(&account(0, Some("/bin/bash")), 0));
     }
 }

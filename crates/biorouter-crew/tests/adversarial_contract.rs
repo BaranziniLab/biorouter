@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use biorouter_crew::{signing_payload, Broker, Connection, DeviceAuth, Request};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -15,12 +17,22 @@ fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// An ordinary person's UID for the guest these tests enroll by token. It used to be UID 0 (or
+/// 1 under root), which the token path now refuses like every other enrollment path (Q2-14,
+/// `legacy_invite_contract.rs`), so the guest lives in a fake account directory instead.
 fn guest_uid() -> u32 {
-    if uid() == 0 {
-        1
-    } else {
-        0
-    }
+    74_999
+}
+/// The broker at `root`, reading accounts from a fake directory that holds this process's own
+/// UID (the host) and the guest, both with a login shell. `UID_MIN` is lowered to the host's
+/// UID where a test machine's own account sits below 1000 (macOS starts people at 501), so the
+/// host may still add devices of its own.
+fn open_broker(root: &Path, bootstrap_key: &str) -> anyhow::Result<Broker> {
+    let directory = support::FakeDirectory::default();
+    directory.set_with_shell(uid(), "host", "/bin/bash");
+    directory.set_with_shell(guest_uid(), "guest", "/bin/bash");
+    directory.set_uid_min(uid().clamp(1, 1000));
+    Broker::open_with_directory(root, bootstrap_key, directory.boxed())
 }
 
 fn key_hex(key: &SigningKey) -> String {
@@ -111,7 +123,7 @@ fn signed(
 fn bootstrap(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
-    let mut broker = Broker::open(root, &public).expect("open broker");
+    let mut broker = open_broker(root, &public).expect("open broker");
     let mut connection = Connection::new();
     let device_id = digest(&key.verifying_key().to_bytes());
     let challenge = broker.handle(
@@ -564,14 +576,14 @@ fn broker_open_rejects_concurrent_writer_and_allows_reopen_after_release() {
     let root = temp_root("writer-lock");
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
-    let first = Broker::open(&root, &public).expect("first writer opens");
-    let second = match Broker::open(&root, &public) {
+    let first = open_broker(&root, &public).expect("first writer opens");
+    let second = match open_broker(&root, &public) {
         Ok(_) => panic!("second writer must be fenced"),
         Err(error) => error,
     };
     assert!(second.to_string().contains("writer_active"), "{second:#}");
     drop(first);
-    let reopened = Broker::open(&root, &public).expect("writer lock releases with broker");
+    let reopened = open_broker(&root, &public).expect("writer lock releases with broker");
     assert_eq!(reopened.workspace().host_uid, uid());
     drop(reopened);
     cleanup(&root);

@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use biorouter_crew::{signing_payload, Broker, Connection, DeviceAuth, Request};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -15,12 +17,22 @@ use uuid::Uuid;
 fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
+/// An ordinary person's UID for the guest these tests enroll by token. It used to be UID 0 (or
+/// 1 under root), which the token path now refuses like every other enrollment path (Q2-14,
+/// `legacy_invite_contract.rs`), so the guest lives in a fake account directory instead.
 fn guest_uid() -> u32 {
-    if uid() == 0 {
-        1
-    } else {
-        0
-    }
+    74_999
+}
+/// The broker at `root`, reading accounts from a fake directory that holds this process's own
+/// UID (the host) and the guest, both with a login shell. `UID_MIN` is lowered to the host's
+/// UID where a test machine's own account sits below 1000 (macOS starts people at 501), so the
+/// host may still add devices of its own.
+fn open_broker(root: &Path, bootstrap_key: &str) -> anyhow::Result<Broker> {
+    let directory = support::FakeDirectory::default();
+    directory.set_with_shell(uid(), "host", "/bin/bash");
+    directory.set_with_shell(guest_uid(), "guest", "/bin/bash");
+    directory.set_uid_min(uid().clamp(1, 1000));
+    Broker::open_with_directory(root, bootstrap_key, directory.boxed())
 }
 fn key_hex(key: &SigningKey) -> String {
     hex::encode(key.verifying_key().to_bytes())
@@ -139,7 +151,7 @@ fn signed_as_raw(
 fn bootstrap_unlabelled(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
-    let mut broker = Broker::open(root, &public).unwrap();
+    let mut broker = open_broker(root, &public).unwrap();
     let mut connection = Connection::new();
     let device_id = digest(&key.verifying_key().to_bytes());
     let challenge = broker.handle(
@@ -606,7 +618,7 @@ fn opaque_cursor_hides_global_order_and_survives_restart() {
         drop(host_connection);
         drop(broker);
         let public = key_hex(&host_key);
-        let mut reopened = Broker::open(&root, &public).unwrap();
+        let mut reopened = open_broker(&root, &public).unwrap();
         let mut reopened_guest = Connection::new();
         let resumed = signed_as(
             &mut reopened,
@@ -1107,7 +1119,7 @@ fn read_watermarks_are_opaque_monotonic_and_acl_safe_after_restart() {
         drop(host_connection);
         drop(broker);
         let public = key_hex(&host_key);
-        let mut reopened = Broker::open(&root, &public).unwrap();
+        let mut reopened = open_broker(&root, &public).unwrap();
         let mut reopened_guest = Connection::new();
         let snapshot = signed_as(
             &mut reopened,

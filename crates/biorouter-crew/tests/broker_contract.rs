@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use biorouter_crew::{signing_payload, Broker, Connection, DeviceAuth, Request};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -15,12 +17,22 @@ use std::{
 fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
+/// An ordinary person's UID for the guest these tests enroll by token. It used to be UID 0 (or
+/// 1 under root), which the token path now refuses like every other enrollment path (Q2-14,
+/// `legacy_invite_contract.rs`), so the guest lives in a fake account directory instead.
 fn guest_uid() -> u32 {
-    if uid() == 0 {
-        1
-    } else {
-        0
-    }
+    74_999
+}
+/// The broker at `root`, reading accounts from a fake directory that holds this process's own
+/// UID (the host) and the guest, both with a login shell. `UID_MIN` is lowered to the host's
+/// UID where a test machine's own account sits below 1000 (macOS starts people at 501), so the
+/// host may still add devices of its own.
+fn open_broker(root: &Path, bootstrap_key: &str) -> anyhow::Result<Broker> {
+    let directory = support::FakeDirectory::default();
+    directory.set_with_shell(uid(), "host", "/bin/bash");
+    directory.set_with_shell(guest_uid(), "guest", "/bin/bash");
+    directory.set_uid_min(uid().clamp(1, 1000));
+    Broker::open_with_directory(root, bootstrap_key, directory.boxed())
 }
 fn key_hex(key: &SigningKey) -> String {
     hex::encode(key.verifying_key().to_bytes())
@@ -140,7 +152,7 @@ fn signed_as_raw(
 fn bootstrap_unlabelled(root: &Path) -> (Broker, Connection, SigningKey) {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key_hex(&key);
-    let mut broker = Broker::open(root, &public).unwrap();
+    let mut broker = open_broker(root, &public).unwrap();
     let mut connection = Connection::new();
     let device_id = digest(&key.verifying_key().to_bytes());
     let challenge = broker.handle(
@@ -691,7 +703,7 @@ fn journal_replays_after_a_torn_final_record() {
             .unwrap()
             .write_all(b"{\"version\":1")
             .unwrap();
-        let reopened = Broker::open(&root, &public).unwrap();
+        let reopened = open_broker(&root, &public).unwrap();
         assert_eq!(reopened.workspace().mode, biorouter_crew::Mode::Private);
         assert!(fs::read_dir(&root).unwrap().any(|entry| entry
             .unwrap()
@@ -1695,7 +1707,7 @@ fn journal_v2_delta_replays_authoritative_state_after_restart() {
     }
     let journal = fs::read_to_string(root.join("journal.jsonl")).unwrap();
     assert!(journal.lines().all(|line| line.contains("\"version\":2")));
-    let (mut reopened, mut connection) = (Broker::open(&root, &public).unwrap(), Connection::new());
+    let (mut reopened, mut connection) = (open_broker(&root, &public).unwrap(), Connection::new());
     let snapshot = signed(
         &mut reopened,
         &mut connection,
@@ -1739,7 +1751,7 @@ fn journal_replay_rejects_complete_record_checksum_corruption() {
         + marker.len();
     bytes[offset] = if bytes[offset] == b'0' { b'1' } else { b'0' };
     fs::write(root.join("journal.jsonl"), bytes).unwrap();
-    match Broker::open(&root, &public) {
+    match open_broker(&root, &public) {
         Ok(_) => panic!("corrupted complete journal record was accepted"),
         Err(error) => assert!(error.to_string().starts_with("journal_corrupt:"), "{error}"),
     }
@@ -2046,7 +2058,7 @@ fn wrong_writer_node_refuses_before_torn_tail_repair() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect::<std::collections::BTreeSet<_>>();
-    match Broker::open(&root, &public) {
+    match open_broker(&root, &public) {
         Ok(_) => panic!("mismatched writer node was accepted"),
         Err(error) => assert!(
             error.to_string().starts_with("node_identity_changed:"),
