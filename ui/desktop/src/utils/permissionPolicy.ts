@@ -64,9 +64,11 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
  * `main.ts`'s `installSessionHooks` routes BOTH of the renderer partition's
  * handlers through this one function: the check handler (what
  * `navigator.permissions.query` and Chromium's own pre-checks see) and the
- * request handler. `navigator.clipboard.writeText` consults both (measured:
- * two checks, then one request), so a grant here is the whole grant and a
- * denial here is the whole denial.
+ * request handler, so a grant here is the whole grant and a denial here is the
+ * whole denial. Which handler hears what, measured on Electron 39.8.10:
+ * `navigator.permissions.query({ name: 'clipboard-write' })` calls the check
+ * handler (twice) and never the request handler, and `writeText` calls the
+ * request handler once and never the check handler.
  *
  * Two grants, each only to a document that `isAppOrigin` recognises as the
  * renderer itself:
@@ -77,17 +79,26 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
  *   sidebar announcer). When these handlers moved onto the renderer's
  *   partition, this permission fell under the audio-only rule below and every
  *   Copy in the app failed with `NotAllowedError`. Chromium sanitises what the
- *   write may put on the pasteboard, and a write reads nothing back. Chromium
- *   also refuses the write itself, before either handler hears of it, when
- *   the call carries no user activation. So a real click on Copy succeeds,
- *   while a bare DevTools or CDP `writeText` still throws even with this grant
- *   (measured on the live app). That refusal is Chromium's rule, not this
- *   policy's.
+ *   write may put on the pasteboard, and a write reads nothing back.
+ *
+ *   ⚠ This grant only covers a write that carries user activation (a real
+ *   click on Copy). A write WITHOUT activation, such as a bare DevTools or CDP
+ *   `writeText`, never asks for `clipboard-sanitized-write`. Chromium asks for
+ *   its unsanitised read-write permission instead, which Electron calls
+ *   `clipboard-read`, and THIS policy's denial of `clipboard-read` is what
+ *   refuses it. Measured on Electron 39.8.10 with a `persist:` partition wired
+ *   as `main.ts` wires it: no check-handler call, one request-handler call for
+ *   `clipboard-read` carrying the entry's full URL, denied, then
+ *   `NotAllowedError: Write permission denied`. With `clipboard-read` granted
+ *   to the app, the same bare write succeeded. So granting `clipboard-read`
+ *   (for a paste feature, say) also lets the renderer write the clipboard with
+ *   no click at all. Decide those two together.
  * - **`media`, audio only**, for dictation.
  *
  * `clipboard-read` (and `deprecated-sync-clipboard-read`) stay DENIED. A read
  * sees whatever the user last copied anywhere on the machine, and nothing in
- * the renderer reads the clipboard.
+ * the renderer reads the clipboard. The same denial is what refuses a write
+ * made without a click (see above).
  *
  * What `requestingUrl` is, measured on Electron 39.8.10 with a `persist:`
  * partition: for `clipboard-sanitized-write`, the check handler receives

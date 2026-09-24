@@ -213,6 +213,10 @@ describe('renderer clipboard permissions', () => {
   });
 
   it('keeps every clipboard READ denied, even to the app itself', () => {
+    // This denial does two jobs. Chromium asks for `clipboard-read` (not the
+    // sanitized write) when `writeText` carries no user activation, so it is
+    // also what refuses a copy made without a click. Measured on Electron
+    // 39.8.10: grant `clipboard-read` and a bare `writeText` succeeds.
     for (const permission of ['clipboard-read', 'deprecated-sync-clipboard-read']) {
       for (const [url, appUrl] of [
         ['http://localhost:5173/', devEntry],
