@@ -1240,7 +1240,7 @@ impl ExtensionManager {
             return Ok(None);
         }
         anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
-            "This legacy Computer Controller tool was removed. Use the Biorouter Copilot tools or Web & Documents capability.");
+            "This former tool is unavailable. Use Biorouter Copilot's current tools or the Web & Documents capability.");
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
@@ -1359,7 +1359,7 @@ impl ExtensionManager {
             && !matches!(&config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller")
         {
             return Err(ExtensionError::ConfigError(
-                "The computercontroller name is reserved for the Biorouter Copilot built-in".into(),
+                "This extension name is reserved for the Biorouter Copilot built-in. Rename the custom extension.".into(),
             ));
         }
 
