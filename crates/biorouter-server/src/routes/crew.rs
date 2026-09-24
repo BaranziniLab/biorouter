@@ -1537,10 +1537,6 @@ pub async fn cancel_run(
 }
 
 /// What stopping one of this device's owned tasks achieved.
-#[allow(
-    dead_code,
-    reason = "run_id and session_id are for the grants route's revoke answer (RV-D3)"
-)]
 pub(super) enum OwnedCancellation {
     /// The task had already finished, so nothing was revoked. A completed task's grant stays
     /// live until it expires; revoking it is the caller's to do.
@@ -1565,10 +1561,6 @@ pub(super) enum OwnedCancellation {
 ///
 /// `Ok(None)` when the session's current grant is not one of this device's ledger tasks on
 /// `connection_id` (an ordinary chat's grant, or a task session granted again since).
-#[allow(
-    dead_code,
-    reason = "the grants route's revoke delegates a task session here (RV-D3)"
-)]
 pub(super) async fn cancel_owned_session(
     connection_id: &str,
     session_id: &str,
