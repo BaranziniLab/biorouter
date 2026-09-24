@@ -10775,6 +10775,11 @@
             "type": "string",
             "nullable": true
           },
+          "institution_conflict": {
+            "type": "string",
+            "description": "Another saved connection reaches the same server under a different institution, in\npeople's words. Saving is still allowed; connecting would be refused, because one\ncomputer can't mix institutions on one server (T-52).",
+            "nullable": true
+          },
           "institution_id": {
             "type": "string",
             "nullable": true

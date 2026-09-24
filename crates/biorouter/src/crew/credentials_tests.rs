@@ -32,7 +32,13 @@ fn read_secret(vault: &CredentialVault, id: &str) -> String {
 #[serial(crew_credentials)]
 fn vault_initializes_unlocks_locks_and_restarts_without_keyring_fallback() {
     let (root, vault) = new_vault();
-    let before = vault.status().unwrap();
+    let before = {
+        let _keyring = env_lock::lock_env([
+            ("BIOROUTER_DISABLE_KEYRING", None::<&str>),
+            ("BIOROUTER_DEV_PROFILE_ROOT", None),
+        ]);
+        vault.status().unwrap()
+    };
     assert_eq!(before.backend, "keyring");
     assert!(!before.initialized);
     assert!(!before.locked);
@@ -237,4 +243,32 @@ fn profile_change_invalidates_an_unlocked_vault() {
     assert!(vault
         .read("id", || Ok(Zeroizing::new("fallback".into())))
         .is_err());
+}
+
+/// T-49: a development profile with the keyring disabled keeps keys as files, and status says
+/// so; it never claims the system keychain.
+#[test]
+#[serial(crew_credentials)]
+fn status_names_the_store_the_keys_are_really_in() {
+    let (_root, vault) = new_vault();
+    let profile = tempfile::tempdir().unwrap();
+    let profile_root = profile.path().to_str().unwrap().to_owned();
+    let file_mode = [
+        ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+        ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_root.as_str())),
+    ];
+    {
+        let _files = env_lock::lock_env(file_mode);
+        let status = vault.status().unwrap();
+        assert_eq!(status.backend, "file");
+        assert!(!status.initialized && !status.locked);
+    }
+    {
+        // Disabling the keyring without an absolute development profile is not file mode.
+        let _relative = env_lock::lock_env([
+            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+            ("BIOROUTER_DEV_PROFILE_ROOT", Some("relative/profile")),
+        ]);
+        assert_eq!(vault.status().unwrap().backend, "keyring");
+    }
 }

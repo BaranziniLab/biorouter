@@ -1070,3 +1070,64 @@ fn sanitize_and_fit_respect_character_boundaries() {
     assert!(fitted.contains("\n…\n"));
     assert_eq!(fit("short", SSH_FAILURE_DETAIL_LIMIT), "short");
 }
+
+/// T-53: a key the server refuses before this bridge ever answered reads as a sign-in refusal
+/// that names the server and login, never as an unknown outcome: SSH refuses a key before it
+/// runs the remote command, so no request reached the broker. The kind, and so the typed code
+/// and the sign-in flow, is unchanged, and OpenSSH's words stay in the detail. Once the bridge
+/// has answered, a later failure keeps the unknown-outcome wording.
+#[tokio::test]
+async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
+    let fixture = tempfile::NamedTempFile::new().unwrap();
+    fs::write(fixture.path(), PERMISSION_DENIED).unwrap();
+    for (login, expected) in [
+        (
+            "crew_dave@52.33.141.141",
+            "Couldn't sign in to 52.33.141.141 as crew_dave: the server refused this computer's SSH key.",
+        ),
+        (
+            "lab-server",
+            "Couldn't sign in to lab-server: the server refused this computer's SSH key.",
+        ),
+    ] {
+        let mut transport = spawn_peer(
+            r#"IFS= read -r line; cat "$1" >&2; exit 255"#,
+            Some(fixture.path()),
+        );
+        transport.sign_in = Some(super::SignInTarget::from_login(login));
+        let error = transport
+            .request("hello", request_params(), None, None, Some("hello".into()))
+            .await
+            .expect_err("a refused key fails the exchange");
+        transport.close().await;
+        let failure = error.downcast_ref::<SshFailure>().cloned().unwrap();
+        assert_eq!(failure.kind, SshFailureKind::AuthRequired);
+        assert_eq!(failure.api_code(), "crew_ssh_auth_required");
+        assert_eq!(failure.status, "exit_255");
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(format!("{error:#}"), expected);
+        assert!(failure
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("Permission denied")));
+    }
+
+    let mut answered = spawn_peer(
+        r#"IFS= read -r line; printf '%s\n' '{"id":"first","result":{}}'; IFS= read -r line; cat "$1" >&2; exit 255"#,
+        Some(fixture.path()),
+    );
+    answered.sign_in = Some(super::SignInTarget::from_login("crew_dave@52.33.141.141"));
+    answered
+        .request("hello", request_params(), None, None, Some("first".into()))
+        .await
+        .unwrap();
+    let error = answered
+        .request("hello", request_params(), None, None, Some("second".into()))
+        .await
+        .expect_err("the bridge went away");
+    answered.close().await;
+    assert_eq!(
+        error.to_string(),
+        legacy_message("ssh_eof", "exit_255", "SSH connection closed")
+    );
+}

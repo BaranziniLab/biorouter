@@ -758,6 +758,11 @@ pub struct InvitationPreview {
     pub existing_connection_id: Option<String>,
     /// What saving still needs; empty when it can save.
     pub missing: Vec<InvitationMissing>,
+    /// Another saved connection reaches the same server under a different institution, in
+    /// people's words. Saving is still allowed; connecting would be refused, because one
+    /// computer can't mix institutions on one server (T-52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub institution_conflict: Option<String>,
 }
 
 /// The result of [`CrewManager::connection_from_invitation`].
@@ -1349,6 +1354,7 @@ fn plan_invitation(
         name,
         existing_connection_id: existing.as_ref().map(|saved| saved.id.clone()),
         missing,
+        institution_conflict: None,
     };
     Ok(InvitationPlan {
         preview,
@@ -1619,6 +1625,55 @@ fn plain_host(host: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
+/// Whether a verified `hello` v2 no longer describes the workspace a fresh snapshot shows:
+/// another policy epoch, privacy mode, institution or name. The snapshot is unsigned, so it
+/// only decides whether to ask again; it never supplies the value.
+fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
+    let name = workspace["name"]
+        .as_str()
+        .filter(|name| biorouter_crew::workspace_name_valid(name));
+    let mode = serde_json::from_value::<biorouter_crew::Mode>(workspace["mode"].clone())
+        .ok()
+        .as_ref()
+        .map(cluster_mode);
+    hello.policy_epoch != workspace["policy_epoch"].as_u64()
+        || hello.mode != mode
+        || hello.institution_id.as_deref() != workspace["institution_id"].as_str()
+        || hello.workspace_name.as_deref() != name
+}
+
+/// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
+/// the same configuration the bridge reads, else the login's own host part and port. `None`
+/// for a login that can't safely be passed to `ssh`.
+async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
+    if !safe_atom(target) {
+        return None;
+    }
+    let mut args = Vec::new();
+    if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
+        args.extend([
+            "-F".to_owned(),
+            PathBuf::from(profile)
+                .join("home/.ssh/config")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    if let Some(port) = port {
+        args.extend(["-p".to_owned(), port.to_string()]);
+    }
+    args.push(target.to_owned());
+    if let Some((host, port)) = resolve_ssh(&args)
+        .await
+        .ok()
+        .and_then(|settings| resolved_endpoint(&settings).ok())
+    {
+        return Some((host.to_ascii_lowercase(), port));
+    }
+    let host = target.rsplit_once('@').map_or(target, |(_, host)| host);
+    Some((host.to_ascii_lowercase(), port.unwrap_or(22)))
+}
+
 /// `hostname` and `port` from `ssh -G` settings.
 fn resolved_endpoint(settings: &HashMap<String, String>) -> Result<(String, u16)> {
     let host = settings
@@ -1674,7 +1729,9 @@ impl CrewManager {
         })?;
         if preview {
             let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
-            return Ok(InvitationOutcome::Preview(Box::new(plan.preview)));
+            let mut preview = plan.preview;
+            preview.institution_conflict = self.institution_conflict(&preview).await;
+            return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
         let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
@@ -1698,6 +1755,43 @@ impl CrewManager {
         Ok(InvitationOutcome::Saved(Box::new(
             self.save(plan.save).await?,
         )))
+    }
+
+    /// T-52: whether a saved connection other than the one this invitation would reuse
+    /// reaches the same server (as `ssh -G` resolves each login, else by its host part) with a
+    /// different institution than the one saving would record. Best effort and advisory: the
+    /// connect-time refusal is what enforces the rule, and it stays.
+    async fn institution_conflict(&self, preview: &InvitationPreview) -> Option<String> {
+        let institution = preview.institution_id.as_deref()?;
+        let target = preview.ssh_target.as_deref()?;
+        let others: Vec<Connection> = self
+            .list()
+            .await
+            .into_iter()
+            .filter(|saved| Some(saved.id.as_str()) != preview.existing_connection_id.as_deref())
+            .filter(|saved| {
+                saved
+                    .institution_id
+                    .as_deref()
+                    .is_some_and(|other| !other.eq_ignore_ascii_case(institution))
+            })
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        let here = ssh_endpoint(target, preview.port).await?;
+        for other in others {
+            if ssh_endpoint(&other.ssh_target, other.port).await.as_ref() == Some(&here) {
+                return Some(format!(
+                    "You already use this server for {} ({}). {} uses {}; one computer can't mix institutions on the same server.",
+                    super::plain_label(&other.name),
+                    super::plain_label(other.institution_id.as_deref().unwrap_or_default()),
+                    super::plain_label(&preview.workspace_label),
+                    super::plain_label(institution),
+                ));
+            }
+        }
+        None
     }
 
     /// The invitation a host sends, for `invitee` when given (`@bob` or `bob`).
@@ -1724,7 +1818,7 @@ impl CrewManager {
             None => None,
         };
         let c = self.connection(connection_id).await?;
-        let hello = self
+        let cached = self
             .broker_hello(connection_id)
             .filter(|_| c.node_id.is_some())
             .context("Connect to this workspace before inviting people.")?;
@@ -1738,6 +1832,28 @@ impl CrewManager {
                 .is_some_and(|id| same_workspace_id(id, &c.workspace_id)),
             "The workspace's answer doesn't match this connection. Reconnect and try again."
         );
+        // T-10: the cached `hello` is the answer at connect time. When the workspace has
+        // changed since (a host set the institution, or renamed it), the invitation is built
+        // from a fresh, verified `hello`, never from the unsigned snapshot and never from the
+        // stale answer; if that can't be had, nothing is built.
+        let hello = if cached.signature_version >= 2 && hello_is_stale(&cached, workspace) {
+            let reconnect = format!(
+                "Reconnect to {}, then invite again.",
+                cached
+                    .workspace_name
+                    .as_deref()
+                    .map(super::plain_label)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| super::plain_label(&c.name))
+            );
+            match self.refresh_broker_hello(connection_id).await {
+                Ok(fresh) if fresh.signature_version >= 2 => fresh,
+                Ok(_) => anyhow::bail!(reconnect),
+                Err(error) => return Err(error.context(reconnect)),
+            }
+        } else {
+            cached
+        };
         let (workspace_name, mode, institution_id) = if hello.signature_version >= 2 {
             (
                 hello.workspace_name.clone(),
@@ -3720,6 +3836,304 @@ done
         assert!(error.to_string().contains("username"), "{error}");
         manager.disconnect(&connection.id).await.unwrap();
         assert!(manager.invitation_for(&connection.id, None).await.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A `hello` as a broker signs it over `nonce` (v1 and v2), for `connection`'s pinned
+    /// workspace key (`workspace_key()`'s secret) and node.
+    fn signed_hello(
+        connection: &Connection,
+        nonce: &str,
+        institution_id: Option<&str>,
+        policy_epoch: u64,
+    ) -> Value {
+        use ed25519_dalek::Signer;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let node = connection.node_id.clone().unwrap();
+        let capabilities = [JOIN_BY_NAME_CAPABILITY, "direct_add_v1"];
+        let v1 = hex(&key
+            .sign(&biorouter_crew::hello_v1_payload(
+                &connection.workspace_id,
+                connection.owner_uid,
+                nonce,
+                &connection.workspace_public_key,
+                &node,
+            ))
+            .to_bytes());
+        let v2 = hex(&key
+            .sign(
+                &biorouter_crew::HelloV2 {
+                    workspace_id: &connection.workspace_id,
+                    host_uid: connection.owner_uid,
+                    challenge_nonce: nonce,
+                    workspace_public_key: &connection.workspace_public_key,
+                    node_id: &node,
+                    mode: &biorouter_crew::Mode::Private,
+                    institution_id,
+                    policy_epoch,
+                    name: Some("lab"),
+                    capabilities: &capabilities,
+                }
+                .signing_payload(),
+            )
+            .to_bytes());
+        json!({
+            "protocol": 1,
+            "workspace_id": connection.workspace_id,
+            "host_uid": connection.owner_uid,
+            "workspace_public_key": connection.workspace_public_key,
+            "challenge_nonce": nonce,
+            "node_id": node,
+            "mode": "private",
+            "institution_id": institution_id,
+            "policy_epoch": policy_epoch,
+            "name": "lab",
+            "capabilities": capabilities,
+            "signature": v1,
+            "signature_v2": v2,
+        })
+    }
+
+    /// The host's own connection to the `lab` workspace, which a snapshot says is now Private
+    /// `ucsf` at policy epoch 2, and a manager whose cached `hello` is the one from connect
+    /// time, before the host set the institution.
+    #[cfg(unix)]
+    async fn stale_hello_fixture(
+        label: &str,
+        hello: Option<Value>,
+    ) -> (
+        PathBuf,
+        Connection,
+        Arc<CrewManager>,
+        env_lock::EnvGuard<'static>,
+    ) {
+        let root = fixture_root(label);
+        let host_key = SigningKey::from_bytes(&[5; 32]);
+        let host_public = host_key.verifying_key().to_bytes();
+        let connection = Connection {
+            name: "Alice lab".into(),
+            ssh_target: "alice@hpc.example.org".into(),
+            device_id: hex(&Sha256::digest(host_public)),
+            public_key: hex(&host_public),
+            ..saved_connection(
+                "6e6e6e6e-6e6e-46e6-86e6-6e6e6e6e6e6e",
+                "",
+                WORKSPACE_ID,
+                &hex(&workspace_key()),
+            )
+        };
+        let snapshot = json!({"result": {
+        "workspace": {"id": WORKSPACE_ID, "host_uid": 1000, "name": "lab", "mode": "private",
+            "institution_id": "ucsf", "policy_epoch": 2, "host_principal_id": "p-alice"},
+        "principals": [
+            {"id": "p-alice", "uid": 1000, "username": "alice", "display_name": "Alice Chen", "active": true}
+        ]}});
+        let mut answers = vec![("workspace.snapshot", snapshot)];
+        if let Some(hello) = hello {
+            answers.push(("hello", json!({ "result": hello })));
+        }
+        write_fake_ssh(
+            &root,
+            &[(
+                "alice@hpc.example.org",
+                &["hostname hpc.example.org", "port 22"],
+            )],
+            &answers,
+        );
+        let env = isolated_env(&root);
+        let manager =
+            connected_manager(&root, &connection, &host_key, &[JOIN_BY_NAME_CAPABILITY]).await;
+        manager.brokers.lock().unwrap().insert(
+            connection.id.clone(),
+            BrokerHello {
+                signature_version: 2,
+                capabilities: vec![JOIN_BY_NAME_CAPABILITY.into()],
+                workspace_name: Some("lab".into()),
+                mode: Some(ClusterMode::Private),
+                institution_id: None,
+                policy_epoch: Some(1),
+            },
+        );
+        (root, connection, manager, env)
+    }
+
+    /// T-10: an invitation minted after the host set the institution carries it. The stale
+    /// connect-time `hello` (institution null) disagrees with the snapshot (`ucsf`), so the
+    /// daemon asks the broker again over a fresh nonce; the invitation is built from that
+    /// signed answer, the cache is replaced, and the pinned node is left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stale_cached_hello_is_refreshed_before_an_invitation_is_built() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let nonce = "t10-refresh-nonce";
+        *crate::crew::TEST_HELLO_NONCE.lock().unwrap() = Some(nonce.into());
+        let connection_for_hello = saved_connection(
+            "6e6e6e6e-6e6e-46e6-86e6-6e6e6e6e6e6e",
+            "",
+            WORKSPACE_ID,
+            &hex(&workspace_key()),
+        );
+        let hello = signed_hello(&connection_for_hello, nonce, Some("ucsf"), 2);
+        let (root, connection, manager, _env) =
+            stale_hello_fixture("invitation-stale-hello", Some(hello)).await;
+
+        let text = manager
+            .invitation_for(&connection.id, Some("@bob"))
+            .await
+            .unwrap();
+        let parsed = crew_invitation::parse(&text.message).unwrap();
+        assert_eq!(parsed.invitation.institution_id.as_deref(), Some("ucsf"));
+        assert_eq!(parsed.invitation, lab_invitation());
+        assert_eq!(logged(&root, "hello").len(), 1, "asked the broker once");
+        let cached = manager.broker_hello(&connection.id).unwrap();
+        assert_eq!(cached.institution_id.as_deref(), Some("ucsf"));
+        assert_eq!(cached.policy_epoch, Some(2));
+        assert!(cached
+            .capabilities
+            .iter()
+            .any(|capability| capability == "direct_add_v1"));
+        assert_eq!(
+            manager.connection(&connection.id).await.unwrap().node_id,
+            connection.node_id
+        );
+
+        // The cache now agrees with the workspace, so the next invitation asks nothing more.
+        manager.invitation_for(&connection.id, None).await.unwrap();
+        assert_eq!(logged(&root, "hello").len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T-10: when the fresh `hello` can't be had or doesn't verify, no invitation is built,
+    /// neither from the stale answer nor from the unsigned snapshot.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_invitation_is_refused_when_a_stale_hello_cannot_be_refreshed() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let nonce = "t10-refused-nonce";
+        *crate::crew::TEST_HELLO_NONCE.lock().unwrap() = Some(nonce.into());
+        // The broker's answer is signed over another nonce: a replay, which never verifies.
+        let connection_for_hello = saved_connection(
+            "6e6e6e6e-6e6e-46e6-86e6-6e6e6e6e6e6e",
+            "",
+            WORKSPACE_ID,
+            &hex(&workspace_key()),
+        );
+        let replayed = signed_hello(&connection_for_hello, "an-earlier-nonce", Some("ucsf"), 2);
+        let (root, connection, manager, _env) =
+            stale_hello_fixture("invitation-stale-refused", Some(replayed)).await;
+
+        let error = manager
+            .invitation_for(&connection.id, Some("@bob"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Reconnect to lab, then invite again.");
+        assert_eq!(logged(&root, "hello").len(), 1);
+        let cached = manager.broker_hello(&connection.id).unwrap();
+        assert_eq!(
+            cached.institution_id, None,
+            "a refused answer is never cached"
+        );
+        assert_eq!(cached.policy_epoch, Some(1));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T-52: a preview warns, in people's words, when this computer already uses the same
+    /// server (as SSH resolves it, aliases included) under another institution. Saving is not
+    /// refused here; connecting still is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preview_warns_when_this_server_already_holds_another_institution() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("institution-conflict");
+        write_fake_ssh(
+            &root,
+            &[
+                (
+                    "bob@hpc.example.org",
+                    &["hostname hpc.example.org", "port 22"],
+                ),
+                ("bob@hpc-alias", &["hostname hpc.example.org", "port 22"]),
+                ("bob@elsewhere", &["hostname other.example.org", "port 22"]),
+            ],
+            &[],
+        );
+        let _env = isolated_env(&root);
+        let foreign = Connection {
+            name: "Foreign lab".into(),
+            ssh_target: "bob@hpc-alias".into(),
+            institution_id: Some("foreign-synthetic".into()),
+            ..saved_connection(
+                "7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a",
+                "",
+                "5b5b5b5b-5b5b-45b5-85b5-5b5b5b5b5b5b",
+                &"66".repeat(32),
+            )
+        };
+        let elsewhere = Connection {
+            id: "7b7b7b7b-7b7b-47b7-87b7-7b7b7b7b7b7b".into(),
+            name: "Other server".into(),
+            ssh_target: "bob@elsewhere".into(),
+            workspace_id: "5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c".into(),
+            institution_id: Some("stanford".into()),
+            ..foreign.clone()
+        };
+        let preview_with = |connections: Vec<Connection>, overrides: InvitationOverrides| {
+            let root = root.clone();
+            async move {
+                let registry = Registry {
+                    connections,
+                    ..Default::default()
+                };
+                fs::write(
+                    root.join("connections.json"),
+                    serde_json::to_vec(&registry).unwrap(),
+                )
+                .unwrap();
+                let manager = CrewManager::new(root.clone()).unwrap();
+                let text = crew_invitation::message(&lab_invitation()).unwrap();
+                preview_of(
+                    manager
+                        .connection_from_invitation(&text, true, overrides)
+                        .await
+                        .unwrap(),
+                )
+            }
+        };
+
+        let preview = preview_with(
+            vec![foreign.clone(), elsewhere.clone()],
+            InvitationOverrides::default(),
+        )
+        .await;
+        assert_eq!(
+            preview.institution_conflict.as_deref(),
+            Some("You already use this server for Foreign lab (foreign-synthetic). lab uses ucsf; one computer can't mix institutions on the same server.")
+        );
+        let json = serde_json::to_value(&preview).unwrap();
+        assert_eq!(
+            json["institution_conflict"],
+            json!(preview.institution_conflict)
+        );
+
+        // Another server, or the same institution, is no conflict; the field is then absent.
+        let preview = preview_with(vec![elsewhere], InvitationOverrides::default()).await;
+        assert_eq!(preview.institution_conflict, None);
+        assert!(serde_json::to_value(&preview)
+            .unwrap()
+            .get("institution_conflict")
+            .is_none());
+        let same = InvitationOverrides {
+            institution_id: Some("foreign-synthetic".into()),
+            ..Default::default()
+        };
+        let preview = preview_with(vec![foreign], same).await;
+        assert_eq!(preview.institution_conflict, None);
         let _ = fs::remove_dir_all(root);
     }
 }

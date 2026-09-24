@@ -159,8 +159,12 @@ impl CredentialVault {
             self.read_envelope()?;
         }
         Ok(CredentialStatus {
+            // Where keys really are (T-49): a development profile with the keyring disabled
+            // keeps them as files, and must never be reported as the system keychain.
             backend: if selected {
                 "encrypted_vault"
+            } else if super::file_credentials_enabled() {
+                "file"
             } else {
                 "keyring"
             },

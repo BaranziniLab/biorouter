@@ -131,6 +131,9 @@ impl SshFailure {
 
 impl fmt::Display for SshFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.code == SIGN_IN_REFUSED {
+            return f.write_str(&self.description);
+        }
         write!(
             f,
             "Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
@@ -240,7 +243,53 @@ pub struct Transport {
     stdout: BufReader<ChildStdout>,
     stderr: StderrCapture,
     unusable: bool,
+    /// Whether any complete answer has come back over this bridge. Until one has, the SSH
+    /// session may never have been established, so nothing can have reached the broker.
+    answered: bool,
+    /// The server and login this bridge signs in to, for a refusal a person can read.
+    sign_in: Option<SignInTarget>,
 }
+
+/// Who the bridge signs in as, and where, from the saved SSH login (`user@host` or an alias).
+#[derive(Clone)]
+struct SignInTarget {
+    server: String,
+    user: Option<String>,
+}
+
+impl SignInTarget {
+    fn from_login(login: &str) -> Self {
+        match login.rsplit_once('@') {
+            Some((user, server)) if !user.is_empty() && !server.is_empty() => Self {
+                server: server.to_owned(),
+                user: Some(user.to_owned()),
+            },
+            _ => Self {
+                server: login.to_owned(),
+                user: None,
+            },
+        }
+    }
+    /// T-53: the sentence for a sign-in the server refused before any request reached the
+    /// broker. Nothing was submitted, so it says nothing about an unknown outcome.
+    fn refused(&self) -> String {
+        match &self.user {
+            Some(user) => format!(
+                "Couldn't sign in to {} as {user}: the server refused this computer's SSH key.",
+                self.server
+            ),
+            None => format!(
+                "Couldn't sign in to {}: the server refused this computer's SSH key.",
+                self.server
+            ),
+        }
+    }
+}
+
+/// [`SshFailure::code`] for a sign-in the server refused before this bridge ever answered.
+/// Its `Display` is the description alone: no request was submitted, so there is no unknown
+/// outcome to warn about.
+const SIGN_IN_REFUSED: &str = "ssh_sign_in_refused";
 
 pub fn ssh_args(c: &Connection, control: &Path) -> Vec<String> {
     let mut args = vec![
@@ -307,7 +356,9 @@ impl Transport {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         crate::subprocess::prepare_agent_child_command(&mut command);
-        Self::from_child(command.spawn()?)
+        let mut transport = Self::from_child(command.spawn()?)?;
+        transport.sign_in = Some(SignInTarget::from_login(&c.ssh_target));
+        Ok(transport)
     }
     /// Adopt a spawned child whose three standard streams are all piped. Must
     /// run inside a Tokio runtime: stderr is drained by a task from here on.
@@ -334,6 +385,8 @@ impl Transport {
             stdout,
             stderr,
             unusable: false,
+            answered: false,
+            sign_in: None,
         })
     }
     pub async fn request(
@@ -364,6 +417,7 @@ impl Transport {
         match result {
             Ok(Ok(v)) => {
                 self.unusable = false;
+                self.answered = true;
                 if let Some(error) = v.get("error").filter(|v| !v.is_null()) {
                     bail!("Crew broker refused request: {}", error);
                 }
@@ -457,12 +511,16 @@ impl Transport {
         // reaches the message, which is persisted and shown verbatim.
         self.stderr.settle(STDERR_GRACE).await;
         let stderr = self.stderr.snapshot();
-        anyhow::Error::new(classify_failure(
-            failure.code,
-            failure.description,
-            state,
-            &stderr,
-        ))
+        let mut classified = classify_failure(failure.code, failure.description, state, &stderr);
+        if classified.kind == SshFailureKind::AuthRequired && !self.answered {
+            // SSH refuses a key before it runs the remote command, so this bridge never
+            // carried a request: say who could not sign in where, not "outcome may be unknown".
+            if let Some(target) = &self.sign_in {
+                classified.code = SIGN_IN_REFUSED.into();
+                classified.description = target.refused();
+            }
+        }
+        anyhow::Error::new(classified)
     }
     pub fn is_usable(&self) -> bool {
         !self.unusable

@@ -758,6 +758,21 @@ fn admission_labels(
         sources: sources.iter().map(|id| channel_label(id)).collect(),
     }
 }
+/// A fresh challenge nonce for a `hello` sent on a live connection. Tests pin it, because a
+/// scripted broker can only answer with a signature made in advance.
+fn hello_nonce() -> String {
+    #[cfg(test)]
+    if let Some(nonce) = TEST_HELLO_NONCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return nonce;
+    }
+    uuid::Uuid::new_v4().to_string()
+}
+#[cfg(test)]
+pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
 fn file_credentials_enabled() -> bool {
     std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref() == Ok("true")
         && std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT")
@@ -892,6 +907,15 @@ impl CrewManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
+    }
+    /// Remember what a verified `hello` announced for `id`. Connect pins the node first
+    /// ([`Self::adopt_verified_hello`]); a refresh ([`Self::refresh_broker_hello`]) pins
+    /// nothing and only replaces this.
+    fn remember_broker(&self, id: &str, broker: BrokerHello) {
+        self.brokers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), broker);
     }
     pub async fn credential_status(&self) -> Result<CredentialStatus> {
         let vault = self.credential_vault.clone();
@@ -1502,17 +1526,35 @@ impl CrewManager {
         }
         Ok(c)
     }
+    /// Remove a saved connection: disconnect it, drop it from the registry (its grants stay,
+    /// expired), then delete its device private key (T-50). The key goes last, so a registry
+    /// write that fails never leaves a saved connection without its key; a key that is already
+    /// gone is not an error.
     pub async fn remove(&self, id: &str) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
         self.disconnect_locked(id).await?;
-        self.update_registry_keeping(|r| {
-            r.connections.retain(|c| c.id != id);
-            for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
-                scope.expired = true;
-            }
-            Ok(())
-        })
-        .await?
+        let pending_preparation = self
+            .update_registry_keeping(|r| {
+                r.connections.retain(|c| c.id != id);
+                for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                    scope.expired = true;
+                }
+                // A prepared device not yet saved keeps its key under the same kind of ID; that
+                // one belongs to the next save, not to this removal.
+                Ok(r.pending_device
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.preparation_id == id))
+            })
+            .await??;
+        if pending_preparation {
+            return Ok(());
+        }
+        self.delete_credential(&format!("device:{id}"))
+            .map_err(|error| {
+                error.context(
+                    "The connection was removed, but its device key couldn't be deleted from this computer",
+                )
+            })
     }
     pub async fn authentication_plan(&self, id: &str) -> Result<AuthenticationPlan> {
         let c = self.connection(id).await?;
@@ -1659,11 +1701,66 @@ impl CrewManager {
         let connected = self
             .update_registry_keeping(|registry| Self::adopt_node(registry, id, c, node_id))
             .await??;
-        self.brokers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.into(), broker);
+        self.remember_broker(id, broker);
         Ok(connected)
+    }
+    /// Ask the connected broker for a fresh `hello` over a fresh challenge nonce, verify it
+    /// against the pinned workspace identity **and** the node this connection already pinned,
+    /// and replace the cached announcement with it. What `hello` says changes while a
+    /// connection stays up (a host sets the institution, renames the workspace), and the cache
+    /// is otherwise only written at connect (T-10).
+    ///
+    /// Never re-pins and never writes the saved connection: a different node is an identity
+    /// error, and a v1-only answer where v2 was cached (a relay stripping the signature that
+    /// covers the institution) is refused, not cached. The cache is written only while the
+    /// transport that answered is still this connection's live one, so a disconnect racing the
+    /// refresh never has a stale announcement written back.
+    pub(super) async fn refresh_broker_hello(&self, id: &str) -> Result<BrokerHello> {
+        let c = self.connection(id).await?;
+        let pinned = c
+            .node_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Connect to this workspace first."))?;
+        let cached = self.broker_hello(id);
+        let transport = self.transport(id).await?;
+        let challenge_nonce = hello_nonce();
+        let mut locked = transport.lock().await;
+        let answer = locked
+            .request(
+                "hello",
+                json!({"challenge_nonce": challenge_nonce}),
+                None,
+                None,
+                None,
+            )
+            .await;
+        let usable = locked.is_usable();
+        drop(locked);
+        if !usable {
+            self.retire_failed_transport(id, &transport).await?;
+        }
+        let verified = Self::verify_workspace_identity(&c, &answer?, &challenge_nonce)?;
+        if verified.node_id != pinned {
+            return Err(WorkspaceIdentityError::wrap(anyhow::anyhow!(
+                "Verified SSH node identity changed; create a newly verified connection"
+            )));
+        }
+        ensure!(
+            cached
+                .as_ref()
+                .is_none_or(|cached| verified.broker.signature_version >= cached.signature_version),
+            "The workspace's answer lost its signature; reconnect to this workspace."
+        );
+        let transports = self.transports.lock().await;
+        ensure!(
+            transports
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(current, &transport)),
+            "Crew connection changed while checking the workspace; reconnect and try again."
+        );
+        self.remember_broker(id, verified.broker.clone());
+        drop(transports);
+        Ok(verified.broker)
     }
     /// [`Self::adopt_verified_hello`]'s edit of the saved registry, as it is now.
     fn adopt_node(
@@ -1703,6 +1800,9 @@ impl CrewManager {
         } else {
             ClusterMode::Public
         };
+        if let Some(refusal) = Self::mixed_institutions(registry, &groups, c) {
+            return Err(anyhow::anyhow!(refusal));
+        }
         let institution_id = institution::merge(
             registry
                 .connections
@@ -1745,6 +1845,50 @@ impl CrewManager {
             .find(|entry| entry.id == id)
             .cloned()
             .expect("validated connection"))
+    }
+    /// T-52: connections on one server share one institution, because the server's node is
+    /// one privacy boundary. When joining `c` would mix two, the refusal (it stays a refusal)
+    /// says so in people's words: which saved connection already uses this server, and for
+    /// which institution.
+    fn mixed_institutions(
+        registry: &Registry,
+        groups: &std::collections::BTreeSet<String>,
+        c: &Connection,
+    ) -> Option<String> {
+        let normalized = |entry: &Connection| {
+            entry
+                .institution_id
+                .as_deref()
+                .map(|id| institution::normalize(id).unwrap_or_else(|_| id.to_owned()))
+        };
+        let on_server: Vec<&Connection> = registry
+            .connections
+            .iter()
+            .filter(|entry| groups.contains(&entry.cluster_connection_id))
+            .collect();
+        let joining = on_server
+            .iter()
+            .find(|entry| entry.id == c.id)
+            .copied()
+            .unwrap_or(c);
+        let (this, this_institution) = match normalized(joining) {
+            Some(institution) => (joining, institution),
+            None => on_server
+                .iter()
+                .find_map(|entry| normalized(entry).map(|institution| (*entry, institution)))?,
+        };
+        let (other, other_institution) = on_server.iter().find_map(|entry| {
+            normalized(entry)
+                .filter(|institution| *institution != this_institution)
+                .map(|institution| (*entry, institution))
+        })?;
+        Some(format!(
+            "You already use this server for {} ({}). {} uses {}; one computer can't mix institutions on the same server.",
+            plain_label(&other.name),
+            plain_label(&other_institution),
+            plain_label(&this.name),
+            plain_label(&this_institution),
+        ))
     }
     pub async fn disconnect(&self, id: &str) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
@@ -1833,7 +1977,22 @@ impl CrewManager {
             method != "run.create",
             "Agent grants must be created through the trusted provider-bound session action"
         );
-        self.signed_request(id, method, params, request_id).await
+        let result = self.signed_request(id, method, params, request_id).await?;
+        // A host's policy or name change is signed into the next `hello`; take it now, so
+        // what this connection shows and puts in invitations is never the connect-time answer
+        // (T-10). The change itself succeeded either way; a failed refresh only leaves the
+        // cache stale, and `invitation_for` refreshes (or refuses) again before it relies on it.
+        if matches!(method, "policy.set" | "workspace.rename") {
+            if let Err(error) = self.refresh_broker_hello(id).await {
+                tracing::warn!(
+                    connection = id,
+                    method,
+                    error = %error,
+                    "Couldn't refresh the workspace's signed hello after a change"
+                );
+            }
+        }
+        Ok(result)
     }
     async fn signed_request(
         &self,
@@ -5630,6 +5789,116 @@ done
             "other-credential"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// T-50: removing a saved connection deletes its device private key, so no key file is
+    /// left behind in development file mode; another connection's key stays, and a prepared
+    /// device not yet saved is never removed through the connection path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn removing_a_connection_deletes_its_device_key() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("remove-device-key");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let input = |workspace: &str, target: &str| SaveConnection {
+            preparation_id: None,
+            name: format!("saved {target}"),
+            ssh_target: target.into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-remove-key.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Public,
+            institution_id: None,
+        };
+        let doomed = manager
+            .save(input(
+                "11111111-1111-4111-8111-111111111111",
+                "bob@doomed.example.org",
+            ))
+            .await
+            .unwrap();
+        let kept = manager
+            .save(input(
+                "22222222-2222-4222-8222-222222222222",
+                "bob@kept.example.org",
+            ))
+            .await
+            .unwrap();
+        let key_file = manager.credential_path(&format!("device:{}", doomed.id));
+        assert!(key_file.exists(), "saving wrote the device key");
+
+        manager.remove(&doomed.id).await.unwrap();
+        assert!(
+            !key_file.exists(),
+            "the removed connection's key file is gone"
+        );
+        assert!(manager
+            .read_credential(&format!("device:{}", doomed.id))
+            .is_err());
+        assert!(manager
+            .read_credential(&format!("device:{}", kept.id))
+            .is_ok());
+        // Removing it again (or a connection another process already removed) is harmless.
+        manager.remove(&doomed.id).await.unwrap();
+
+        let prepared = manager.prepare_device().await.unwrap();
+        manager.remove(&prepared.preparation_id).await.unwrap();
+        assert!(manager
+            .read_credential(&format!("device:{}", prepared.preparation_id))
+            .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T-52: connecting a second workspace on the same server under another institution is
+    /// still refused (one node is one privacy boundary), in words a person can act on.
+    #[test]
+    fn mixing_institutions_on_one_server_is_refused_in_plain_words() {
+        let node = "ab".repeat(32);
+        let (mut foreign, _) =
+            worker_race_connection("mixed-foreign", ClusterMode::Private, 3, true);
+        foreign.name = "Foreign lab".into();
+        foreign.institution_id = Some("foreign-synthetic".into());
+        foreign.node_id = Some(node.clone());
+        let (mut joining, _) = worker_race_connection("mixed-lab", ClusterMode::Private, 1, true);
+        joining.id = "a9a9a9a9-a9a9-49a9-89a9-a9a9a9a9a9a9".into();
+        joining.name = "chen-lab".into();
+        joining.institution_id = Some("ucsf".into());
+        joining.node_id = None;
+        joining.cluster_connection_id = uuid::Uuid::new_v4().to_string();
+        let mut registry = Registry {
+            connections: vec![foreign.clone(), joining.clone()],
+            ..Default::default()
+        };
+        let error = CrewManager::adopt_node(&mut registry, &joining.id, &joining, node.clone())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "You already use this server for Foreign lab (foreign-synthetic). chen-lab uses ucsf; one computer can't mix institutions on the same server."
+        );
+        assert!(!error.to_string().contains("aliases"));
+        // Refused, not merged: nothing about either connection changed.
+        assert_eq!(
+            registry.connections[0].institution_id,
+            foreign.institution_id
+        );
+        assert_eq!(registry.connections[1].node_id, None);
+
+        // The same institution on the same server is one boundary, and connects.
+        registry.connections[1].institution_id = Some("foreign-synthetic".into());
+        let joining = registry.connections[1].clone();
+        let connected =
+            CrewManager::adopt_node(&mut registry, &joining.id, &joining, node.clone()).unwrap();
+        assert_eq!(connected.node_id, Some(node));
     }
 
     /// The same deletion from an encrypted vault: it leaves the vault, other entries stay, and

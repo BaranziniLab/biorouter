@@ -1722,6 +1722,12 @@ export type InvitationPreview = {
     fingerprint: string;
     host_display_name?: string | null;
     host_username?: string | null;
+    /**
+     * Another saved connection reaches the same server under a different institution, in
+     * people's words. Saving is still allowed; connecting would be refused, because one
+     * computer can't mix institutions on one server (T-52).
+     */
+    institution_conflict?: string | null;
     institution_id?: string | null;
     invitee_username?: string | null;
     /**
