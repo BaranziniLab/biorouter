@@ -1846,7 +1846,24 @@ impl CrewManager {
         )?;
         Ok(())
     }
+    /// Every check a provider call on `session` must pass: the binding, the tier, and — for a
+    /// scoped chat — a live `context.manifest` through the worker path.
+    ///
+    /// ⚠ The body runs **boxed**, and must stay that way. `Agent::provider` awaits this, and
+    /// `Agent::reply` reaches `Agent::provider` through the tool-surface preparation, so an
+    /// inline future here (binding + tier + standing + a worker request) is laid out inside
+    /// `Agent::reply`'s own frame — the known stack cliff. Inline, it overflowed the default
+    /// 2 MiB test-thread stack in `privacy_toggle`'s
+    /// `the_master_toggle_governs_every_gate_in_both_directions`. Boxing keeps this frame one
+    /// pointer wide for every caller, whatever the checks grow into.
     pub async fn check_provider_dispatch(
+        &self,
+        session: &str,
+        provider: &dyn Provider,
+    ) -> Result<()> {
+        Box::pin(self.check_provider_dispatch_inner(session, provider)).await
+    }
+    async fn check_provider_dispatch_inner(
         &self,
         session: &str,
         provider: &dyn Provider,
@@ -2421,7 +2438,14 @@ impl CrewManager {
     /// - the chat's identity unreadable: [`Standing::Unconfirmed`];
     /// - recorded before grants were bound: its own, as it always was, and bound in memory
     ///   to the chat holding the id when there is one.
+    ///
+    /// Boxed for the reason [`Self::check_provider_dispatch`] is: every tool gate and
+    /// `Agent::provider` reach this, and its store read and pruning write must not be laid
+    /// out in their callers' frames.
     async fn standing(&self, session: &str) -> Standing {
+        Box::pin(self.standing_inner(session)).await
+    }
+    async fn standing_inner(&self, session: &str) -> Standing {
         let Some(scope) = self.registry.lock().await.scopes.get(session).cloned() else {
             return Standing::None;
         };
