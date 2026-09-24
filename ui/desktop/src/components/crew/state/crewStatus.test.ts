@@ -216,8 +216,29 @@ describe('deriveCrewScreen, row by row', () => {
     expect(screen({ notJoined: true, observationError: true })).toBe('join');
   });
 
-  it('is updates-paused after an observation error with no view left', () => {
-    expect(screen({ observationError: true })).toBe('updates-paused');
+  it('is updates-paused after an observation error with no view left on a connected connection', () => {
+    expect(screen({ connection: connected, observationError: true })).toBe('updates-paused');
+  });
+
+  it('is offline, not updates-paused, when a saved-disconnected connection’s observer errors', () => {
+    expect(screen({ connection: disconnected, observationError: true })).toBe('offline');
+  });
+
+  it('agrees with the status row whenever an observation error is present', () => {
+    const cases: [{ status: string }, string, string][] = [
+      [connected, 'updates-unavailable', 'updates-paused'],
+      [disconnected, 'offline', 'offline'],
+    ];
+    for (const [connection, expectedStatus, expectedScreen] of cases) {
+      expect(status({ connection, observationError: true })).toBe(expectedStatus);
+      expect(screen({ connection, observationError: true })).toBe(expectedScreen);
+    }
+  });
+
+  it('is sign-in, not updates-paused, for a connection that needs authentication', () => {
+    expect(
+      screen({ connection: { status: 'authentication_required' }, observationError: true })
+    ).toBe('sign-in');
   });
 
   it('is checking, never welcome or join, while an enrolled connection waits for its first snapshot', () => {

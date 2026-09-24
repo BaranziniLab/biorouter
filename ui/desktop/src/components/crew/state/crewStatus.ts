@@ -160,8 +160,13 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
   if (failure === 'auth_required' && !input.signInOpen) return 'sign-in';
   if (isNotSetUpFailure(failure)) return 'not-set-up';
   if (input.notJoined) return 'join';
-  if (input.observationError) return 'updates-paused';
-  if (connection.status === 'connected') return 'checking';
+  // Mirrors the status table: an observation error pauses updates only on a connection the
+  // daemon calls connected. The observer also runs for a saved-disconnected connection (after an
+  // app restart or a dropped SSH bridge), and the daemon answers it with an error frame; showing
+  // Retry there would re-run the same refusal forever, when the one action that helps is Connect.
+  if (connection.status === 'connected') {
+    return input.observationError ? 'updates-paused' : 'checking';
+  }
   if (connection.status === 'authentication_required') return 'sign-in';
   return 'offline';
 }

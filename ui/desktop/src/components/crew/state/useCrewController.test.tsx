@@ -565,6 +565,40 @@ describe('connect and sign in', () => {
     expect(crew.refreshError).toBeNull();
     expect(crew.screen).toBe('offline');
   });
+
+  it('offers Connect, not Retry, when a saved-disconnected connection’s observer errors', async () => {
+    // After an app restart, or once the idle SSH bridge drops, the list says `disconnected` and
+    // the daemon answers the observer with an error frame. The person did not disconnect, so the
+    // error stays; the screen and the status row must still both read offline.
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections')
+        return { connections: [{ ...connection, status: 'disconnected' }] };
+      return {};
+    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        _channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive({
+          type: 'error',
+          error: 'Crew connection is disconnected; authenticate and connect in Crew',
+        });
+        return 'terminal';
+      }
+    );
+    renderController();
+    await waitFor(() => expect(crew.refreshError).not.toBeNull());
+    expect(crew.connection?.status).toBe('disconnected');
+    expect(crew.lastConnectFailure).toBeNull();
+    expect(crew.status).toBe('offline');
+    expect(crew.screen).toBe('offline');
+    expect(screens).not.toContain('updates-paused');
+  });
 });
 
 describe('requests, intents and the composer seams', () => {
