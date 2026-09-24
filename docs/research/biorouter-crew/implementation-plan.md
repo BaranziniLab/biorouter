@@ -869,6 +869,22 @@ The coordinator's workplan (local file `/private/tmp/crew-ui-redesign/design/wor
 - Open: `useCrewController`'s channel-validation effect overrides selecting a team/channel not yet in the snapshot, so a new channel stays selected only once a frame containing it arrives; a pending-selection seam would make it deterministic.
 - UI-INTEGRATE: mount `<CrewDialogs agentAccess={<WorkspaceAgentAccess/>} />` once in CrewLayout; the migrated CVT's `../ConfigContext` mock must also export `usePrivacyTiersEnabled` (PrivacyBadge) or use importActual.
 
+**UI-SHELL outcome (2026-09-23, `120f4ab0`, `71fe8789`, `b9816364`, `543bf5c3`, `d7d843cd`).** Built and tested under `crew/sidebar/`; not mounted until UI-INTEGRATE. Decisions that change the spec's surface:
+
+- Titlebar reserve is authored CSS, not React: `[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher { margin-left: var(--biorouter-titlebar-control-reserve) }` (SidebarInset's relationship); `useSidebar()` throws outside a SidebarProvider, which the tests render without. A source test in `CrewSidebar.test.tsx` pins margin (not padding) and no app-region.
+- Invitation rows name the inviter with `PersonName` in the `inline` context ('from Alice Chen (@alice)') instead of the copy deck's `{inviter first}`. An invitation with no named target reads 'Invitation', Accept named 'Accept invitation from {inviter}'; never an ID.
+- Make private on a connection with no institution asks for it in place inside the popover (required, daemon's pattern, pinned placeholder); no dialog intent exists for this step.
+- Chip and popover show the workspace's institution, else the connection's verified one, else 'Not set'; both only from verified privacy.
+- Channel context menu: Mark as read (only for the selected, unread channel on its live tail; never refreshes), Copy channel name, Copy channel ID. 'Channel details' left out: a channel switch closes the pane in an effect.
+- A collapsed team section still shows the selected channel's row (Slack behaviour); other rows disappear instantly.
+- Rename team… is behind a `renameEnabled` prop, off by default, until a broker capability map reaches the renderer.
+- Copy… items confirm through a visually hidden polite live region (no toast); clipboard failure goes to `reportError(…, 'global')`.
+- Extra files in `sidebar/`: TeamSections.tsx, SidebarAnnouncer.tsx, sidebarView.ts, useCollapsedTeams.ts, useRovingRows.ts, crew-sidebar.css, index.ts, sidebarTestUtils.tsx, keyboardContextMenu.ts (+ test).
+- `AppLayout.tsx` exports `isChatRoute` and `useChatRouteBodyClass`; `/crew` counts as a chat route. Prettier reformatted one pre-existing line in MentionPopover.tsx.
+- Shift+F10 / Menu key open the channel menu via `keyboardContextMenu.ts` (keydown prevented, synthetic `contextmenu` dispatched), because Chromium on macOS sends no `contextmenu` for them; verified on an Electron 39.8.10 test page, not the mounted app.
+- Open: LIVE-QA should confirm Shift+F10 opens the channel menu in the running app on macOS once UI-INTEGRATE mounts the sidebar.
+- Open: Windows Menu-key behaviour reasoned from Chromium source, not measured; the Windows smoke run is where it would show.
+
 **UI-PRIM outcome (2026-09-23, `1c068364`, `49c7eec3`, `7181a809`).** Consumers of the primitives and `crew/crew-app.css` should build on these:
 
 - **Avatar:** props add `name`, `username`, `src`, `label`; `fallback` (chosen avatar text, clamped to 2 characters) wins over derived initials; `avatarInitials(name, username)` is exported (first letters of the first two words). `ring` paints `--biorouter-avatar-ring` (default canvas); a member stack sets it to its band colour (`var(--sidebar)`).
