@@ -43,13 +43,25 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
             .and_then(|value| value.get("status").or_else(|| value.get("code")))
             .and_then(Value::as_str)
             .map(|kind| kind.chars().take(128).collect()),
-        message: message
-            .chars()
-            .take(1024)
-            .collect::<String>()
-            .escape_debug()
-            .to_string(),
+        message: terminal_safe(&message.chars().take(1024).collect::<String>()),
     }
+}
+
+/// The daemon's sentence exactly, quotes and apostrophes included, with only what a terminal
+/// would act on escaped: control characters and invisible formatting. `escape_debug` used to
+/// run here and printed `the model\'s` in text and `model\\'s` in JSON, so a script matching
+/// the daemon's canonical sentence missed it.
+#[cfg(unix)]
+fn terminal_safe(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for ch in message.chars() {
+        if ch.is_control() || biorouter::utils::is_invisible_formatting(ch) {
+            out.extend(ch.escape_default());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 impl CrewClient {
@@ -1207,8 +1219,8 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop, CrewClient,
-        DaemonRefusal, EventDecoder, MAX_SSE_FRAME,
+        daemon_refusal, open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop,
+        CrewClient, DaemonRefusal, EventDecoder, MAX_SSE_FRAME,
     };
     use biorouter::crew::observation::ObserveEvent;
     use biorouter::daemon_runtime::{self, Descriptor, Endpoint, Identity};
@@ -1757,6 +1769,84 @@ mod tests {
             .expect("HTTP refusal must retain its typed error");
         assert_eq!(refusal.status, 409);
         assert_eq!(refusal.kind.as_deref(), Some("unknown"));
+    }
+
+    const INSTITUTION_REFUSAL: &str = "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution";
+
+    #[test]
+    fn daemon_refusals_keep_the_daemons_exact_sentence() {
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "error": INSTITUTION_REFUSAL })),
+            "fallback",
+        );
+        assert_eq!(
+            refusal.to_string(),
+            format!("Daemon returned 400: {INSTITUTION_REFUSAL}")
+        );
+        let quoted = daemon_refusal(
+            409,
+            Some(&serde_json::json!({ "message": r#"Say "stop" \ then retry"# })),
+            "fallback",
+        );
+        assert_eq!(
+            quoted.to_string(),
+            r#"Daemon returned 409: Say "stop" \ then retry"#
+        );
+    }
+
+    #[test]
+    fn daemon_refusals_still_escape_terminal_controls_and_invisible_formatting() {
+        let hostile = "red\u{1b}[31m\nnext\u{202e}flip\u{2068}iso\u{200b}zero";
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "error": hostile })),
+            "fallback",
+        )
+        .to_string();
+        for raw in ['\u{1b}', '\n', '\u{202e}', '\u{2068}', '\u{200b}'] {
+            assert!(!refusal.contains(raw), "raw {raw:?} reached the terminal");
+        }
+        for escaped in ["\\u{1b}[31m", "\\n", "\\u{202e}", "\\u{2068}", "\\u{200b}"] {
+            assert!(
+                refusal.contains(escaped),
+                "{escaped} missing from {refusal}"
+            );
+        }
+        let fallback = daemon_refusal(502, None, "Gateway's answer was not JSON").to_string();
+        assert_eq!(
+            fallback,
+            "Daemon returned 502: Gateway's answer was not JSON"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn daemon_http_refusal_text_carries_the_apostrophe_unescaped() {
+        let expected = expected_descriptor(&runtime_dir());
+        let body = serde_json::to_vec(&serde_json::json!({
+            "status": "crew_institution_mismatch",
+            "error": INSTITUTION_REFUSAL,
+        }))
+        .expect("refusal serializes");
+        let (descriptor, _) = daemon_http_fixture(
+            Bytes::from(body),
+            "application/json",
+            expected.identity(),
+            hyper::StatusCode::BAD_REQUEST,
+        )
+        .await;
+        let client = CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        };
+        let error = client
+            .request("POST", "/crew/connections/c/runs", None)
+            .await
+            .expect_err("the daemon refused");
+        let text = format!("{error:#}");
+        assert!(text.contains("the model's resolved affiliation"), "{text}");
+        assert!(!text.contains("model\\'s"), "{text}");
     }
 
     fn decode_sse(input: &[u8]) -> anyhow::Result<(Vec<serde_json::Value>, EventDecoder)> {
