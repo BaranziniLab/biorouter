@@ -83,6 +83,12 @@
    no change at all. The same edge the composer card takes. `:read-write` is
    exactly the editable fields — never a checkbox, radio or read-only field —
    so no element selector is needed. An invalid field keeps its danger edge.
+   Accent is safe HERE and nowhere else in Crew's focus states: the shared
+   `Input` paints `bg-background-default`, which out-ranks the layered focus
+   fill, so this edge only ever touches `--background-default` / `-card` —
+   3.09:1 at worst (Roche Limit light). The sidebar's edges sit on the focus
+   fill and the sidebar grounds, where that same orange is 2.33–2.88:1, so
+   they draw `--border-focus` (`sidebar/crew-sidebar.css`).
    The forced-colours and Increase Contrast ring is `main.css`'s, app-wide. */
 .crew-app :read-write:focus-visible:not([aria-invalid='true']) {
   border-color: var(--border-accent);

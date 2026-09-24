@@ -182,21 +182,37 @@ describe('crew-sidebar.css', () => {
 
   /**
    * T-16: the focus fill alone is 1.10–1.44:1 against what it sits on. Every focusable row
-   * also draws the inset accent edge, and keeps the fill for hover.
+   * also draws the app's neutral inset focus edge (`--border-focus`, ≥4.15:1 on every
+   * sidebar ground in all six scopes, asserted by `check-contrast.mjs`), and keeps the fill
+   * for hover. `--border-accent` is what this used to draw, and Roche Limit light's measures
+   * 2.33:1 on the focus fill and 2.88:1 on `--sidebar` — under SC 1.4.11's 3:1.
    */
   it.each([
     '.crew-sidebar-row',
     '.crew-sidebar-switcher',
     '.crew-sidebar-team-toggle',
     '.crew-sidebar-you-trigger',
-  ])('gives %s:focus-visible the inset accent edge', (selector) => {
+  ])('gives %s:focus-visible the inset focus edge', (selector) => {
     const [focus] = bodiesOf(css, `${selector}:focus-visible`);
-    expect(focus).toMatch(/box-shadow:\s*inset 0 0 0 2px var\(--border-accent\)/);
+    expect(focus).toMatch(/box-shadow:\s*inset 0 0 0 2px var\(--border-focus\)/);
     expect(focus).toMatch(/outline:\s*none/);
     const [hover] = bodiesOf(css, `${selector}:hover`);
     if (selector !== '.crew-sidebar-team-toggle') {
       expect(hover).toMatch(/background-color/);
       expect(hover).not.toMatch(/box-shadow/);
+    }
+  });
+
+  it('never draws a sidebar focus state in the accent edge', () => {
+    const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    const focusRules = Array.from(uncommented.matchAll(/([^{}]+)\{([^{}]*)\}/g)).filter(
+      ([, selector]) => selector.includes(':focus-visible')
+    );
+    expect(focusRules.length).toBeGreaterThanOrEqual(4);
+    for (const [, selector, body] of focusRules) {
+      expect({ selector: selector.trim(), body }).not.toEqual(
+        expect.objectContaining({ body: expect.stringContaining('--border-accent') })
+      );
     }
   });
 

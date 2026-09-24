@@ -19,10 +19,17 @@
    ⚠ **A fill alone is not a focus indicator (T-16).** Measured, the focus fill
    differs from the sidebar ground by 1.23:1 (light) and from the selected
    row's ground by 1.10:1 — invisible in practice. So every focusable row here
-   also draws the same inset accent EDGE the timeline log and the composer
-   use, `inset 0 0 0 2px var(--border-accent)`, which clears 3:1 on every
-   ground. The fill stays the hover signal. Rings for Increase Contrast and
-   forced colours are `main.css`'s app-wide block, not restated here.
+   also draws the app's neutral focus EDGE, `inset 0 0 0 2px
+   var(--border-focus)` — the same edge `main.css`'s D-15 base rule and
+   `.biorouter-focus-surface` draw everywhere else. Measured against every
+   ground it touches here (`--background-focus`, `--sidebar`, `--sidebar-hover`,
+   `--sidebar-active`, `--background-medium`) it is 4.15:1 at its lowest, in
+   all six family/mode scopes; `check-contrast.mjs` asserts the same pairs.
+   ⚠ Never `--border-accent`: Roche Limit light's is `#ee6c1a`, 2.33:1 on the
+   focus fill and 2.88:1 on `--sidebar`, under SC 1.4.11's 3:1 — and this
+   block drew exactly that until the round-2 review measured it. The fill
+   stays the hover signal. Rings for Increase Contrast and forced colours are
+   `main.css`'s app-wide block, not restated here.
 
    ⚠ **No drag region.** Nothing here declares `-webkit-app-region: drag` (issue
    #74): the band's controls carry `no-drag`, and `/crew` is a chat route in
@@ -101,7 +108,7 @@
 .crew-sidebar-switcher:focus-visible {
   outline: none;
   background-color: var(--background-focus);
-  box-shadow: inset 0 0 0 2px var(--border-accent);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
 .crew-sidebar-switcher-name {
@@ -289,7 +296,7 @@
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
-  box-shadow: inset 0 0 0 2px var(--border-accent);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
 /* Forced colours drop the active ground and the bar's background (T-58), so
@@ -383,7 +390,7 @@
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
-  box-shadow: inset 0 0 0 2px var(--border-accent);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
 /* "· 2 invited" beside the team's name, for its owner (P0-2). Quiet, and it
@@ -442,7 +449,7 @@
 .crew-sidebar-you-trigger:focus-visible {
   outline: none;
   background-color: var(--background-focus);
-  box-shadow: inset 0 0 0 2px var(--border-accent);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
 .crew-sidebar-you-text {
