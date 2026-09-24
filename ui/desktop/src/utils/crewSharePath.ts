@@ -11,15 +11,21 @@
  *    limit, or a name that is not a file at all.
  * 2. The resolved real path, the name, the size and the destination go into a native
  *    `dialog.showMessageBox` parented to the window, with Cancel as the default button. The
- *    renderer can neither draw nor answer that dialog.
+ *    renderer can neither draw nor answer that dialog. The destination's names are the one
+ *    thing in it the renderer wrote, so they are flattened to a single line and placed below
+ *    the true path, never above it ({@link crewShareDialogOptions}).
  * 3. Only after Share does the file reach the daemon, through the same `POST /crew/files`
  *    registration the Attach picker uses, and the renderer gets back only the daemon's opaque
  *    capability. The file is inspected again after the click, and the daemon's own reading of
  *    it (name and size) must match what the dialog showed, so a file swapped while the dialog
  *    was open is refused rather than shared.
  *
- * So a compromised renderer can at most make the dialog appear; it cannot upload anything a
- * person has not read the path of and accepted.
+ * So through this channel a compromised renderer can at most make the dialog appear, and pick
+ * the destination names it prints below the true path; it cannot upload anything a person has
+ * not read the path of and accepted. This channel is not the only way to the daemon: the
+ * renderer already holds the daemon secret and the user-action key, so it can call
+ * `POST /crew/files` itself and skip both the Attach picker and this dialog. D-DROP does not
+ * widen that; closing it is a daemon-side change.
  *
  * The one exception is the development auto-confirm for automated QA
  * ({@link resolveDevAutoConfirmShare}): the gating of the development approval stdin
@@ -31,7 +37,8 @@ import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import type { MessageBoxOptions } from 'electron';
 import { formatBytes } from '../components/crew/files/formatBytes';
-import { sanitizeUntrustedLabel, stripHiddenCharacters } from './untrustedText';
+import { sanitizeDisplayText } from '../components/crew/identity/displayText';
+import { stripHiddenCharacters } from './untrustedText';
 import type { CrewShareDestination, CrewShareDroppedFileResult } from './crewSharePathBridge';
 
 /** The daemon's attachment limit, `local_files::MAX_SIZE`: 1 GiB. */
@@ -87,23 +94,47 @@ export interface CrewShareRequest extends CrewShareDestination {
   path: string;
 }
 
+/** U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR: neither a control nor a format character. */
+const LINE_OR_PARAGRAPH_SEPARATOR = /^[\p{Zl}\p{Zp}]$/u;
+/** What is left of `White_Space` once controls and separators are gone: the space separators. */
+const WHITE_SPACE_RUN = /\p{White_Space}{2,}/gu;
+
 /**
- * Renders text for a native dialog so nothing in it is invisible: every control and format
- * character (a newline, a bidi override, a zero-width space) becomes U+FFFD. A filename that
- * carries one then looks odd instead of looking like a different name.
+ * Renders text for a native dialog so nothing in it is invisible and it stays on one line.
+ *
+ * - Every control and format character (a newline, a bidi override, a zero-width space) and
+ *   every line or paragraph separator (U+2028, U+2029) becomes U+FFFD. The separators are the
+ *   ones that slip past a control-character rule: they are mandatory line breaks in the macOS
+ *   alert, GTK and every layout that follows Unicode line breaking, so left alone they write a
+ *   line of their own into the dialog. A filename that carries any of these then looks odd
+ *   instead of looking like a different name, or like two lines.
+ * - A run of spaces (of any width) becomes one space, which takes away the cheap way to steer
+ *   where a long line wraps. A single space, including the narrow no-break space in macOS
+ *   screenshot names, is kept as it is. Wrapping itself cannot be prevented, which is why
+ *   {@link crewShareDialogOptions} puts the renderer's text last.
  *
  * Built on {@link stripHiddenCharacters} one code point at a time, so the drop set keeps its
  * single definition in `untrustedText.ts`.
  */
 export function visibleText(value: string): string {
   return Array.from(value, (character) =>
-    stripHiddenCharacters(character) === '' ? '�' : character
-  ).join('');
+    stripHiddenCharacters(character) === '' || LINE_OR_PARAGRAPH_SEPARATOR.test(character)
+      ? '\uFFFD'
+      : character
+  )
+    .join('')
+    .replace(WHITE_SPACE_RUN, ' ');
 }
 
+/**
+ * A destination name as the dialog shows it. The renderer wrote it, so it gets the Crew display
+ * name rule (`sanitizeDisplayText`: every `White_Space` run, line separators included, to one
+ * space; hidden, private-use, unassigned and default-ignorable characters removed) and then
+ * {@link visibleText}.
+ */
 function destinationLabel(value: unknown, channel: boolean): string {
   if (typeof value !== 'string') return '';
-  let text = sanitizeUntrustedLabel(value, 1024);
+  let text = visibleText(sanitizeDisplayText(value)).trim();
   if (channel) text = text.replace(/^#+/, '').trim();
   const characters = Array.from(text);
   return characters.length > CREW_SHARE_LABEL_MAX_CHARS
@@ -311,8 +342,20 @@ export async function inspectDroppedFile(
 }
 
 /**
- * The native confirmation: `Share "<name>" (<size>) to #<channel> in <workspace>?`, the full
- * real path as the detail, and Share / Cancel with Cancel the default and the Escape answer.
+ * The native confirmation, and Share / Cancel with Cancel the default and the Escape answer:
+ *
+ * ```text
+ * Share "<name>" (<size>) to Crew?          (the message, shown bold)
+ * Full path: <real path>                    (the detail's first line)
+ * Destination: #<channel> in <workspace>    (its second and last)
+ * ```
+ *
+ * ⚠ The order is the security property, not a matter of taste. The channel and workspace names
+ * are the only text here the renderer writes, and they are not checked against the ids the
+ * capability is bound to. Everything above the true path is therefore the main process's own
+ * words or what it read from the file system, and the renderer's names come last, on one line:
+ * whatever a name spells, even `Full path: …`, can only appear after the real one, never above
+ * it. Every value also passes through {@link visibleText}, so none of them can start a line.
  */
 export function crewShareDialogOptions(
   file: { name: string; size: number; realPath: string },
@@ -321,8 +364,11 @@ export function crewShareDialogOptions(
   return {
     type: 'question',
     title: 'Share file to Crew',
-    message: `Share "${visibleText(file.name)}" (${formatBytes(file.size)}) to #${destination.channelName} in ${destination.workspaceName}?`,
-    detail: `Full path: ${visibleText(file.realPath)}`,
+    message: `Share "${visibleText(file.name)}" (${formatBytes(file.size)}) to Crew?`,
+    detail: [
+      `Full path: ${visibleText(file.realPath)}`,
+      `Destination: #${visibleText(destination.channelName)} in ${visibleText(destination.workspaceName)}`,
+    ].join('\n'),
     buttons: ['Share', 'Cancel'],
     defaultId: 1,
     cancelId: 1,

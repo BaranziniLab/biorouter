@@ -118,6 +118,8 @@ function createMainHarness(
     responses?: Array<{ ok: boolean; body: unknown }>;
     dialog?: (owner: unknown, options: { message: string; detail: string }) => Promise<number>;
     baseUrl?: string | null;
+    /** Closes the window while the daemon answers the registration. */
+    closeDuringRegistration?: boolean;
   } = {}
 ) {
   const handlers = new Map<string, Handler>();
@@ -129,7 +131,9 @@ function createMainHarness(
   }> = [];
   const dialogs: Array<{ owner: unknown; message: string; detail: string }> = [];
   const logs: string[] = [];
-  const owner = { id: 7, isDestroyed: () => false };
+  // One flag for the window and its document, both of which the handler asks about.
+  const window = { closed: false };
+  const owner = { id: 7, isDestroyed: () => window.closed };
   const responses = [...(options.responses ?? [])];
   const context = vm.createContext({
     AbortSignal,
@@ -160,6 +164,7 @@ function createMainHarness(
       });
       const next = responses.shift();
       if (!next) throw new Error('The share harness ran out of daemon responses.');
+      if (options.closeDuringRegistration && init.method === 'POST') window.closed = true;
       return { ok: next.ok, json: async () => next.body };
     },
     loadSettings: () => ({}),
@@ -179,9 +184,10 @@ function createMainHarness(
   exported.register();
   const handler = handlers.get(CREW_SHARE_DROPPED_FILE_CHANNEL);
   if (!handler) throw new Error('The share handler did not register.');
-  const sender = { id: 11, isDestroyed: () => false };
+  const sender = { id: 11, isDestroyed: () => window.closed };
   return {
     owner,
+    window,
     fetchCalls,
     dialogs,
     logs,
@@ -215,8 +221,8 @@ describe('the main.ts share handler', () => {
     expect(harness.dialogs).toEqual([
       {
         owner: harness.owner,
-        message: 'Share "growth.csv" (8 bytes) to #methods in chen-lab?',
-        detail: `Full path: ${file}`,
+        message: 'Share "growth.csv" (8 bytes) to Crew?',
+        detail: `Full path: ${file}\nDestination: #methods in chen-lab`,
       },
     ]);
     expect(harness.fetchCalls).toEqual([
@@ -300,6 +306,35 @@ describe('the main.ts share handler', () => {
       url: 'http://daemon.test/crew/files/cap-2',
       method: 'DELETE',
     });
+  });
+
+  it('gives the capability back with DELETE when the window closed during registration', async () => {
+    const harness = createMainHarness({
+      responses: [capability, { ok: true, body: { discarded: true } }],
+      closeDuringRegistration: true,
+    });
+    await expect(harness.invoke(request())).resolves.toEqual({ outcome: 'cancelled' });
+    expect(harness.fetchCalls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      'POST http://daemon.test/crew/files',
+      'DELETE http://daemon.test/crew/files/cap-1',
+    ]);
+    expect(harness.fetchCalls[1].headers).toEqual({
+      'Content-Type': 'application/json',
+      'X-Secret-Key': 'server-secret',
+      'X-User-Action': 'user-action',
+    });
+  });
+
+  it('reaches no daemon when the window closed while the dialog was open', async () => {
+    const harness = createMainHarness({
+      dialog: async () => {
+        harness.window.closed = true;
+        return 0;
+      },
+    });
+    await expect(harness.invoke(request())).resolves.toEqual({ outcome: 'cancelled' });
+    expect(harness.dialogs).toHaveLength(1);
+    expect(harness.fetchCalls).toEqual([]);
   });
 
   it('under the development auto-confirm, shows no dialog and logs the confirmed path', async () => {

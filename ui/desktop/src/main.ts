@@ -4759,9 +4759,8 @@ function registerCrewShareHandler() {
     const ownerId = event.sender.id;
     if (!crewSharePending.enter(ownerId))
       return { outcome: 'refused', message: crewShareCopy.busy };
+    const windowClosed = () => event.sender.isDestroyed() || owner.isDestroyed();
     const crewFiles = async (endpoint: string, method: 'POST' | 'DELETE', body: unknown) => {
-      if (event.sender.isDestroyed() || owner.isDestroyed())
-        throw new Error('The Crew window closed.');
       const settings = loadSettings();
       const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
         method,
@@ -4779,11 +4778,16 @@ function registerCrewShareHandler() {
       return await shareDroppedFile(request, {
         autoConfirm: crewShareAutoConfirm,
         confirm: async (options) => (await dialog.showMessageBox(owner, options)).response,
-        register: (body) => crewFiles('', 'POST', body),
+        register: async (body) => {
+          if (windowClosed()) throw new Error('The Crew window closed.');
+          return crewFiles('', 'POST', body);
+        },
+        // Deliberately no window check: a window that closed mid-share is exactly when a
+        // capability must go back, or the daemon holds it and its open file for 300 s.
         discard: async (capabilityId) => {
           await crewFiles(`/${encodeURIComponent(capabilityId)}`, 'DELETE', {});
         },
-        isClosed: () => event.sender.isDestroyed() || owner.isDestroyed(),
+        isClosed: windowClosed,
         log: (message) => log.warn(message),
       });
     } finally {

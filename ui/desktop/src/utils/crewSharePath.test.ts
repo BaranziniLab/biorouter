@@ -206,11 +206,11 @@ describe('inspectDroppedFile: what may be offered at all', () => {
   });
 
   it.skipIf(!posix)('makes hidden characters in a refused name visible', async () => {
-    const name = 'report‮vsc.exe';
+    const name = 'report\u202Evsc.exe';
     await fsp.mkdir(path.join(root, name));
     const message = await refusal(path.join(root, name));
     expect(message).toBe(crewShareCopy.folder('report�vsc.exe'));
-    expect(message).not.toContain('‮');
+    expect(message).not.toContain('\u202E');
   });
 
   it('notices a file replaced since the last look through its identity', async () => {
@@ -231,8 +231,10 @@ describe('the native confirmation', () => {
       channelName: 'methods',
       workspaceName: 'chen-lab',
     });
-    expect(options.message).toBe('Share "growth.csv" (2.4 MB) to #methods in chen-lab?');
-    expect(options.detail).toBe('Full path: /Users/frank/Desktop/growth.csv');
+    expect(options.message).toBe('Share "growth.csv" (2.4 MB) to Crew?');
+    expect(options.detail).toBe(
+      'Full path: /Users/frank/Desktop/growth.csv\nDestination: #methods in chen-lab'
+    );
   });
 
   it('offers Share and Cancel, with Cancel the default and the Escape answer', () => {
@@ -246,16 +248,95 @@ describe('the native confirmation', () => {
 
   it('shows hidden characters in the name and path instead of rendering them', () => {
     const options = crewShareDialogOptions(
-      { name: 'a‮gpj.exe', size: 1, realPath: '/x/a‮gpj.exe\n/etc/passwd' },
+      { name: 'a\u202Egpj.exe', size: 1, realPath: '/x/a\u202Egpj.exe\n/etc/passwd' },
       { channelName: 'm', workspaceName: 'w' }
     );
     expect(options.message).toContain('"a�gpj.exe" (1 byte)');
-    expect(options.detail).toBe('Full path: /x/a�gpj.exe�/etc/passwd');
+    expect(options.detail?.split('\n')[0]).toBe('Full path: /x/a�gpj.exe�/etc/passwd');
   });
 
   it('keeps ordinary non-Latin names, and turns only hidden characters into U+FFFD', () => {
     expect(visibleText('数据 données.csv')).toBe('数据 données.csv');
-    expect(visibleText('a​b\tc')).toBe('a�b�c');
+    expect(visibleText('a\u200Bb\tc')).toBe('a�b�c');
+  });
+
+  it('turns the line and paragraph separators into U+FFFD, which a control-character rule misses', () => {
+    // U+2028 and U+2029 are neither \p{Cc} nor \p{Cf}, and both are mandatory line breaks.
+    expect(visibleText('a\u2028b\u2029c')).toBe('a\uFFFDb\uFFFDc');
+    expect(visibleText('\u0085\u000B\u000C')).toBe('\uFFFD\uFFFD\uFFFD');
+  });
+
+  it('collapses a run of spaces of any width to one, and keeps a single space as it is', () => {
+    expect(visibleText('Chen Lab' + ' '.repeat(60) + 'Full path')).toBe('Chen Lab Full path');
+    expect(visibleText('a\u3000\u2003\u00A0 b')).toBe('a b');
+    // The narrow no-break space macOS writes into screenshot names.
+    const screenshot = 'Screenshot 2026-09-24 at 10.15.32\u202FAM.png';
+    expect(visibleText(screenshot)).toBe(screenshot);
+  });
+
+  it('keeps a line separator in a file name or path from breaking the dialog', () => {
+    const options = crewShareDialogOptions(
+      {
+        name: 'report\u2028Full path: x.csv',
+        size: 1,
+        realPath: '/x/report\u2028Full path: x.csv',
+      },
+      { channelName: 'm', workspaceName: 'w' }
+    );
+    for (const text of [options.message, options.detail])
+      expect(text).not.toMatch(/[\u2028\u2029]/);
+    expect(options.message).toBe('Share "report\uFFFDFull path: x.csv" (1 byte) to Crew?');
+    expect(options.detail?.split('\n')).toEqual([
+      'Full path: /x/report\uFFFDFull path: x.csv',
+      'Destination: #m in w',
+    ]);
+  });
+
+  describe('a destination name that tries to forge a line (renderer-written text)', () => {
+    const forged = `Chen Lab\u2028\u2028Full path: /Users/frank/Desktop/growth.csv\u2028`;
+    const real = { name: 'config', size: 412, realPath: '/Users/frank/.ssh/config' };
+    const lines = (options: ReturnType<typeof crewShareDialogOptions>) => ({
+      message: options.message,
+      detail: options.detail?.split('\n'),
+    });
+
+    it('cannot put a line above the true path, through the parsed request', () => {
+      const request = parseCrewShareRequest({
+        path: real.realPath,
+        connectionId: 'conn-1',
+        channelId: 'chan-1',
+        channelName: `general\u2029Full path: /tmp/a.csv`,
+        workspaceName: forged,
+      });
+      expect(request.workspaceName).toBe('Chen Lab Full path: /Users/frank/Desktop/growth.csv');
+      expect(lines(crewShareDialogOptions(real, request))).toEqual({
+        message: 'Share "config" (412 bytes) to Crew?',
+        detail: [
+          'Full path: /Users/frank/.ssh/config',
+          'Destination: #general Full path: /tmp/a.csv in Chen Lab Full path: /Users/frank/Desktop/growth.csv',
+        ],
+      });
+    });
+
+    it('cannot either when a caller hands the dialog raw names', () => {
+      const options = crewShareDialogOptions(real, {
+        channelName: 'general\n\u2028x',
+        workspaceName: forged,
+      });
+      expect(options.message).toBe('Share "config" (412 bytes) to Crew?');
+      expect(options.detail?.split('\n')).toHaveLength(2);
+      expect(options.detail?.split('\n')[0]).toBe('Full path: /Users/frank/.ssh/config');
+      expect(options.detail).not.toMatch(/[\u2028\u2029]/);
+    });
+
+    it('keeps the renderer-written names out of the bold message entirely', () => {
+      const options = crewShareDialogOptions(real, {
+        channelName: 'Full path: /a',
+        workspaceName: 'Full path: /b',
+      });
+      expect(options.message).not.toContain('Full path');
+      expect(options.detail?.indexOf('Full path: /Users/frank/.ssh/config')).toBe(0);
+    });
   });
 });
 
@@ -294,16 +375,27 @@ describe('parseCrewShareRequest', () => {
     ['an overlong id', { ...valid, channelId: 'a'.repeat(129) }],
     ['an unknown privacy', { ...valid, expectedMode: 'secret' }],
     ['a missing channel name', { ...valid, channelName: undefined }],
-    ['a channel name of only hidden characters', { ...valid, channelName: '#‮​' }],
+    ['a channel name of only hidden characters', { ...valid, channelName: '#\u202E\u200B' }],
     ['a missing workspace name', { ...valid, workspaceName: '' }],
   ])('throws on %s', (_label, raw) => {
     expect(() => parseCrewShareRequest(raw)).toThrow();
   });
 
+  it('flattens a destination name to one line and removes blank-looking padding', () => {
+    const parsed = parseCrewShareRequest({
+      ...valid,
+      channelName: '#gen\u2028eral',
+      // Hangul fillers render as blank space but are not White_Space.
+      workspaceName: 'chen\u3164\u3164\u3164\u2003\u2003-lab\u2029',
+    });
+    expect(parsed.channelName).toBe('gen eral');
+    expect(parsed.workspaceName).toBe('chen -lab');
+  });
+
   it('strips hidden characters from the destination names and shortens long ones', () => {
     const parsed = parseCrewShareRequest({
       ...valid,
-      channelName: '#gen‮eral\n',
+      channelName: '#gen\u202Eeral\n',
       workspaceName: 'w'.repeat(200),
     });
     expect(parsed.channelName).toBe('general');
@@ -390,8 +482,8 @@ describe('shareDroppedFile', () => {
     });
     expect(d.confirm).toHaveBeenCalledTimes(1);
     expect(d.confirm.mock.calls[0][0]).toMatchObject({
-      message: 'Share "growth.csv" (8 bytes) to #methods in chen-lab?',
-      detail: `Full path: ${file}`,
+      message: 'Share "growth.csv" (8 bytes) to Crew?',
+      detail: `Full path: ${file}\nDestination: #methods in chen-lab`,
     });
     expect(d.register).toHaveBeenCalledWith(crewShareRegistrationBody(request, file));
     expect(d.log).not.toHaveBeenCalled();
