@@ -1,0 +1,151 @@
+/**
+ * Chat access and revoke strings (ui-redesign-spec, copy deck "Chat access and revoke", the
+ * Agents rows of "Sidebar and menus", and "Error strings").
+ *
+ * Tests import these rather than retyping them. `Review access and posting permission` and
+ * `Allow this conversation to read and post here` are pinned: a regression test and the acceptance
+ * evidence find the controls by them, so change them only together with those tests.
+ *
+ * A `chat` argument is a conversation's title, already fit to display, or `null` when the daemon
+ * does not know it; every sentence that names a chat has a form for that case.
+ */
+
+const quoted = (chat: string) => `“${chat}”`;
+
+export const accessCopy = {
+  // ── The chat-connect note (above the Crew composer, only with ?sessionId=) ──────────────────
+  noteChecking: 'Checking this chat’s access…',
+  noteNone: (channel: string) => `Connect this chat to ${channel}?`,
+  noteReview: 'Review access',
+  /** Pinned: the Review access button's accessible name. */
+  noteReviewName: 'Review access and posting permission',
+  noteActive: (channel: string) => `This chat can read and post in ${channel}.`,
+  noteActiveElsewhere: (other: string) => `This chat already uses ${other}.`,
+  noteActiveOtherWorkspace: (workspace: string) =>
+    `This chat already uses a channel in ${workspace}.`,
+  noteManage: 'Manage access',
+  noteRevoked: 'This chat’s Crew access was revoked.',
+  noteExpired: 'This chat’s access expired.',
+  noteGrantAgain: 'Grant again',
+
+  // ── The Chat access pane ───────────────────────────────────────────────────────────────────
+  paneTitle: 'Chat access',
+  willBeAble: (chat: string | null) =>
+    chat ? `${quoted(chat)} will be able to` : 'This chat will be able to',
+  canNow: (chat: string | null) => (chat ? `${quoted(chat)} can` : 'This chat can'),
+  chatName: (chat: string | null) => (chat ? quoted(chat) : 'This chat'),
+  read: (channel: string) => `Read ${channel}`,
+  reads: (channel: string) => `Reads ${channel}`,
+  /** Followed by the person, rendered with `PersonName context="authority"`. */
+  postAs: (channel: string) => `Post in ${channel} as`,
+  postsAs: (channel: string) => `Posts in ${channel} as`,
+  expiry: 'Access ends when you revoke it, or after an hour.',
+  alsoRead: 'Also read',
+  alsoReadSummary: (count: number) =>
+    count === 0
+      ? 'Also reads nothing else'
+      : `Also reads ${count} ${count === 1 ? 'channel' : 'channels'}`,
+  /** Pinned. */
+  allow: 'Allow this conversation to read and post here',
+  connected: 'Connected.',
+  backToChat: 'Back to chat',
+  openChat: 'Open chat',
+  revokeButton: 'Revoke access',
+  confirm: (chat: string | null, channel: string) =>
+    chat
+      ? `Stop ${quoted(chat)} reading and posting in ${channel}?`
+      : `Stop this chat reading and posting in ${channel}?`,
+  confirmRevoke: 'Revoke',
+  confirmKeep: 'Keep access',
+  revoked: (chat: string | null) =>
+    chat
+      ? `Access revoked. ${quoted(chat)} can’t use Crew until you grant access again, or start a new chat.`
+      : 'Access revoked. This chat can’t use Crew until you grant access again, or start a new chat.',
+  unconfirmed: 'Stopped on this device. Reconnect to confirm with the workspace.',
+  notRevoked: 'Not revoked. This chat can still read and post.',
+  retry: 'Retry',
+  done: 'Done',
+  paneRevoked: (chat: string | null) =>
+    chat ? `${quoted(chat)}’s Crew access was revoked.` : 'This chat’s Crew access was revoked.',
+  paneExpired: (chat: string | null) =>
+    chat ? `${quoted(chat)}’s access expired.` : 'This chat’s access expired.',
+  /** A revoked chat that did not arrive here with /crew can only be connected from inside it. */
+  reconnectHow: 'To connect it again, type /crew in that chat.',
+
+  // ── Access rows (Access tab, Agent access tab, Agents section) ─────────────────────────────
+  tabTitle: 'Chats and agents with access',
+  status: {
+    active: 'Active',
+    expires: (time: string) => `Expires ${time}`,
+    expired: 'Expired',
+    revoked: 'Revoked',
+    unconfirmed: 'Stopped on this device',
+  },
+  showOld: (count: number) => `Show revoked and expired (${count})`,
+  oldListName: 'Revoked and expired',
+  listLoading: 'Loading chats and agents with access…',
+  empty: (channel: string) => `No chats or agents can post in ${channel}.`,
+  emptyWorkspace: (workspace: string) => `No chats or agents can post in ${workspace}.`,
+  emptyHow: 'To connect a chat, type /crew in it.',
+  untitled: 'Untitled chat',
+  yourTask: 'Your task',
+  unknownChannel: 'a channel you can’t see',
+  moreSources: (count: number) => `+${count}`,
+  moreSourcesName: (count: number) =>
+    `and ${count} more ${count === 1 ? 'channel' : 'channels'} it can read`,
+  open: 'Open',
+  openName: (title: string) => `Open ${title}`,
+  /** Pinned elsewhere (the timeline's task row): a task's Open names the conversation it opens. */
+  openTaskName: 'Open agent conversation',
+  revokeRow: 'Revoke',
+  revokeRowName: (title: string) => `Revoke access for ${title}`,
+  retryRowName: (title: string) => `Retry revoking ${title}`,
+  stopRow: 'Stop',
+  stopRowName: 'Stop task',
+  stopConfirm: 'Stop your agent?',
+  stopConfirmBody: 'It stops working on this task. Anything it already did stays done.',
+  stopKeep: 'Keep running',
+  stopConfirmAction: 'Stop task',
+  rowMore: (title: string) => `More actions for ${title}`,
+  copySessionId: 'Copy session ID',
+  copiedSessionId: 'Session ID copied',
+  copyFailed: 'Couldn’t copy the session ID.',
+  listFailed: 'Couldn’t load which chats have access.',
+  listRetryName: 'Retry loading chat access',
+
+  // ── The Agents sidebar section ─────────────────────────────────────────────────────────────
+  agents: 'Agents',
+  agentsOptions: 'Agents options',
+  agentsShowAll: 'Show revoked and finished',
+  /** Between a row's first and second part: `#methods · Working…`, `Plot review · #methods`. */
+  agentsSeparator: ' · ',
+  needsYou: 'Needs you',
+
+  // ── The header chip ────────────────────────────────────────────────────────────────────────
+  chipChats: (count: number) => `${count} ${count === 1 ? 'chat' : 'chats'}`,
+  chipTasks: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+  chipAgents: (count: number) => `${count} ${count === 1 ? 'agent' : 'agents'}`,
+  chipName: (count: number) =>
+    `${count} ${count === 1 ? 'chat or agent' : 'chats or agents'} can post here`,
+
+  // ── The ordinary chat (outside Crew) ───────────────────────────────────────────────────────
+  chatChip: (destination: string) => `Crew · ${destination}`,
+  /** Contains the visible text, so a voice command naming what is shown still reaches it. */
+  chatChipName: (destination: string) => `Crew · ${destination}, manage access`,
+  chatChipTip: (destination: string) => `This chat can read and post in ${destination}.`,
+  chatRevoked: (destination: string) =>
+    `Crew access to ${destination} was removed. This chat has team content, so it can’t continue.`,
+  chatExpired: (destination: string) =>
+    `Crew access to ${destination} expired. This chat has team content, so it can’t continue.`,
+  chatNewChat: 'Start a new chat',
+  chatGrantAgain: 'Grant access again',
+  chatBlockedReason: 'This chat can’t continue without Crew access.',
+  /** A destination whose channel name this computer has not seen: the workspace instead. */
+  chatDestinationWorkspace: (workspace: string) => `a channel in ${workspace}`,
+  chatDestinationUnknown: 'a Crew channel',
+  /** The Crew row of the chat's extension menu while a grant is active. */
+  extensionLocked: 'On while this chat has Crew access. Revoke access to turn it off.',
+
+  // ── Errors ─────────────────────────────────────────────────────────────────────────────────
+  revokeFallback: 'Crew couldn’t complete that action.',
+} as const;
