@@ -715,7 +715,8 @@ locally computed code and the host's paste field (S3a).
 ### Wire and version negotiation
 
 Every result gains fields; nothing is removed. `PROTOCOL_VERSION` stays 1 (`lib.rs:6`); bumping it would refuse every
-old client. New parameters are sent only after a capability check.
+old client. New methods are offered only after a capability check, but `expected_username` is sent regardless: a
+capability is unsigned without `hello` v2 and can be stripped (last row), and an older broker ignores the field.
 
 | Combination | What happens | Handling |
 |---|---|---|
