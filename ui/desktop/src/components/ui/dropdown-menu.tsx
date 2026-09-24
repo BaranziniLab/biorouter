@@ -118,39 +118,70 @@ function isTabbable(element: HTMLElement): boolean {
 }
 
 /**
+ * The dialog a trigger sits in — a modal or non-modal Radix `Dialog`, an `AlertDialog`, a `Sheet`,
+ * or a `Popover` (Radix renders its content as `role="dialog"` too).
+ */
+const FOCUS_CONTAINER = '[role="dialog"], [role="alertdialog"]';
+
+/**
  * Where Tab (or Shift+Tab) goes from `from`, skipping anything `skip` rejects: the next stop in
- * the document's sequential focus order, positive `tabindex` first as the browser orders it.
- * `from` need not be a stop itself (a roving trigger carries `tabindex="-1"`), in which case the
- * answer is the first stop after it, or the last before it.
+ * sequential focus order, positive `tabindex` first as the browser orders it. `from` need not be
+ * a stop itself (a roving trigger carries `tabindex="-1"`), in which case the answer is the first
+ * stop after it, or the last before it.
+ *
+ * Inside a dialog the search never leaves the dialog, and it wraps at the dialog's edges: that is
+ * what Tab does there with no menu open, because every Radix dialog and popover mounts its
+ * `FocusScope` with `loop`. The document-wide search this replaced sent a Shift+Tab from a
+ * dialog's FIRST control to the page behind it (PermissionModal: the first tool's permission
+ * menu, then Shift+Tab, landed on Settings). The dialog's trap could not stop that — an open menu
+ * pauses it — and does not pull focus back when it resumes. Two things it must not do instead:
+ * - skip `aria-hidden` elements. A modal menu hides the WHOLE page, the dialog included, so that
+ *   would skip every stop there is; the page behind a dialog is shut out by the scope, not by
+ *   `aria-hidden`.
+ * - return null at an edge. The caller falls back to the trigger, which is correct but strands
+ *   the Tab; a wrap is where Tab really goes.
+ * A hand-rolled `role="dialog"` panel that does not trap is scoped the same way: keeping focus in
+ * the panel is the safe failure, and none of those panels holds a menu today.
  */
 function sequentialNeighbour(
   from: HTMLElement,
   backward: boolean,
   skip: (element: HTMLElement) => boolean
 ): HTMLElement | null {
-  const candidates = Array.from(
-    from.ownerDocument.querySelectorAll<HTMLElement>(TABBABLE_CANDIDATES)
-  ).filter((element) => element === from || (!skip(element) && isTabbable(element)));
+  const scope = from.closest<HTMLElement>(FOCUS_CONTAINER);
+  const root: Document | HTMLElement = scope ?? from.ownerDocument;
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(TABBABLE_CANDIDATES)).filter(
+    (element) => element === from || (!skip(element) && isTabbable(element))
+  );
   const order = [
     ...candidates.filter((element) => element.tabIndex > 0).sort((a, b) => a.tabIndex - b.tabIndex),
     ...candidates.filter((element) => element.tabIndex <= 0),
   ];
   const at = order.indexOf(from);
+  let stops: HTMLElement[];
+  let next: HTMLElement | undefined;
   if (at !== -1 && from.tabIndex >= 0) {
-    return (backward ? order[at - 1] : order[at + 1]) ?? null;
+    stops = order;
+    next = backward ? order[at - 1] : order[at + 1];
+  } else {
+    stops = order.filter((element) => element !== from);
+    const after = stops.findIndex(
+      (element) => from.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    if (backward) next = after === -1 ? stops[stops.length - 1] : stops[after - 1];
+    else next = after === -1 ? undefined : stops[after];
   }
-  const rest = order.filter((element) => element !== from);
-  const after = rest.findIndex(
-    (element) => from.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING
-  );
-  if (backward) return (after === -1 ? rest[rest.length - 1] : rest[after - 1]) ?? null;
-  return after === -1 ? null : rest[after];
+  if (next) return next;
+  // Off the edge of a dialog: round to its other end, as its focus scope's `loop` does.
+  if (scope) return (backward ? stops[stops.length - 1] : stops[0]) ?? null;
+  return null;
 }
 
 /**
  * Tab and Shift+Tab leave an open menu (Q2-50; WAI-ARIA APG menu button): the menu closes and
  * focus goes where Tab would have gone from the TRIGGER — the next stop after it, or the one
- * before it — so the keyboard user is never parked on a menu they meant to pass.
+ * before it, never out of a dialog the trigger sits in (see `sequentialNeighbour`) — so the
+ * keyboard user is never parked on a menu they meant to pass.
  *
  * Radix swallows Tab inside a menu (`MenuContentImpl`: `if (event.key === "Tab")
  * event.preventDefault()`), so only Escape used to leave; three critics called that a trap. The

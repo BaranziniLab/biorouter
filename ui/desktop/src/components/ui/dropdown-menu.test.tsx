@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from './dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -231,6 +232,106 @@ describe('Tab leaves an open menu (APG menu button)', () => {
 
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'After' })).toHaveFocus();
+  });
+});
+
+/**
+ * Q2-50 round 2. The Tab-out search used to run over the whole document, so from a dialog's
+ * first control Shift+Tab went to the page BEHIND the dialog: the open menu pauses the dialog's
+ * focus trap, the page behind is only `aria-hidden` (still in the Tab order), and the trap does not
+ * pull focus back when it resumes. PermissionModal is the live case — the first tool's
+ * permission menu is the dialog's first stop, and its × comes after it.
+ */
+function MenuInDialog({
+  modalMenu = false,
+  menuLast = false,
+}: {
+  modalMenu?: boolean;
+  /** Put the menu after every other stop, with no ×, so forward Tab is the one off the edge. */
+  menuLast?: boolean;
+}) {
+  const menu = (
+    <DropdownMenu modal={modalMenu}>
+      <DropdownMenuTrigger asChild>
+        <button type="button">Options</button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent>
+        <DropdownMenuItem>Rename</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+  return (
+    <div>
+      <button type="button">Background</button>
+      <Dialog open>
+        <DialogContent showCloseButton={!menuLast}>
+          <DialogTitle>Permissions</DialogTitle>
+          <DialogDescription>Choose what each tool may do.</DialogDescription>
+          {!menuLast && menu}
+          <button type="button">Save</button>
+          {menuLast && menu}
+        </DialogContent>
+      </Dialog>
+      <button type="button">Background after</button>
+    </div>
+  );
+}
+
+describe('Tab out of a menu inside a dialog stays in the dialog', () => {
+  it('wraps Shift+Tab from the dialog’s first control to its last, not the page behind', async () => {
+    const user = userEvent.setup();
+    render(<MenuInDialog />);
+    await openWithKeyboard(user);
+
+    await user.tab({ shift: true });
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    // DialogContent renders its × after the children: it is the dialog's last stop.
+    const close = screen.getByRole('button', { name: 'Close' });
+    expect(close).toHaveFocus();
+    expect(screen.getByRole('dialog')).toContainElement(close);
+    // Past the unmount's focus return, too.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(close).toHaveFocus();
+  });
+
+  it('still moves forward to the next stop inside the dialog', async () => {
+    const user = userEvent.setup();
+    render(<MenuInDialog />);
+    await openWithKeyboard(user);
+
+    await user.tab();
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveFocus();
+  });
+
+  it('wraps Tab from the dialog’s last control to its first, not the page after it', async () => {
+    const user = userEvent.setup();
+    render(<MenuInDialog menuLast />);
+    await openWithKeyboard(user);
+
+    await user.tab();
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveFocus();
+  });
+
+  // A modal menu marks the whole page `aria-hidden`, the dialog it sits in included, so a search
+  // that skipped hidden elements would find nothing at all.
+  it('stays in the dialog from a modal menu, which hides the dialog itself', async () => {
+    const user = userEvent.setup();
+    render(<MenuInDialog modalMenu />);
+    await openWithKeyboard(user);
+    expect(
+      screen.getByRole('dialog', { hidden: true }).closest('[aria-hidden="true"]')
+    ).not.toBeNull();
+
+    await user.tab({ shift: true });
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus());
+    expect(screen.getByRole('button', { name: 'Background', hidden: true })).not.toHaveFocus();
   });
 });
 
