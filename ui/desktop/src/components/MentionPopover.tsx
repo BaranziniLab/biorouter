@@ -57,6 +57,30 @@ const CLIENT_INSERT_COMMANDS: Record<
 };
 
 const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
+
+// ── Crew in the palette (live QA round 2, Q2-71) ────────────────────────────────────────────────
+// "/cr" listed two rows that both read as "crew": the `/crew` command, which connects the chat, and
+// the Crew extension's reference, described as "Use saved Crew connections and human-approved
+// channel context…". People asked "which crew?". The command is the one a person means: it ranks
+// first for any query it starts with, and the extension's row says what it is — the tools, for
+// someone who knows they want them.
+
+/** The Crew extension's row, beside the `/crew` command. */
+export const CREW_EXTENSION_DESCRIPTION = 'Crew tools extension (advanced)';
+
+/** The Crew platform extension's key (as `isCrewExtensionName` in `crew/access` reads it). */
+const isCrewExtensionItem = (item: DisplayItem) =>
+  item.itemType === 'Extension' && item.relativePath.trim().toLowerCase() === 'crew';
+
+const withoutSlash = (value: string) => value.replace(/^\/+/, '').toLowerCase();
+
+/** A built-in command whose name the query starts: it outranks every fuzzy match. */
+const isBuiltinPrefixMatch = (item: DisplayItem, query: string) => {
+  const typed = withoutSlash(query.trim());
+  return (
+    item.itemType === 'Builtin' && typed.length > 0 && withoutSlash(item.name).startsWith(typed)
+  );
+};
 /** The resource a picked item refers to, for the composer's chip rail. */
 export interface MentionReference {
   kind: RefKind;
@@ -618,6 +642,8 @@ const MentionPopover = forwardRef<
             sessionId
               ? (sessionExtensions?.data?.extensions ?? [])
               : extensionsList.filter((extension) => extension.enabled)
+          ).map((item) =>
+            isCrewExtensionItem(item) ? { ...item, extra: CREW_EXTENSION_DESCRIPTION } : item
           )
         );
 
@@ -681,6 +707,12 @@ const MentionPopover = forwardRef<
         })
         .filter((file) => file.matchScore > 0)
         .sort((a, b) => {
+          // A built-in command the query starts ranks first: "/cr" means /crew (Q2-71).
+          if (isSlashCommand) {
+            const prefixDiff =
+              Number(isBuiltinPrefixMatch(b, query)) - Number(isBuiltinPrefixMatch(a, query));
+            if (prefixDiff) return prefixDiff;
+          }
           // Sort by score first, then prefer items over directories, then alphabetically
           const scoreDiff = b.matchScore - a.matchScore;
           if (Math.abs(scoreDiff) >= 1) return scoreDiff;
