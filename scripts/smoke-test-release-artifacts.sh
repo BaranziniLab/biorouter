@@ -111,12 +111,15 @@ smoke_rpm() {
       pid=$!
       sleep 12
       kill -0 "$pid"
-      kill "$pid" "$xvfb" || true
-      sleep 1
-      kill -KILL "$pid" "$xvfb" || true
-      wait "$pid" || true
+      kill "$pid"
+      if ! wait "$pid"; then
+        sed -n "1,160p" /tmp/biorouter.log >&2
+        exit 1
+      fi
+      kill "$xvfb" || true
+      wait "$xvfb" || true
     '
-  log "Linux desktop RPM, CLI, daemon, and Xvfb startup passed"
+  log "Linux desktop RPM, CLI, daemon, Xvfb startup, and desktop shutdown passed"
 }
 
 smoke_cli_packages() {
