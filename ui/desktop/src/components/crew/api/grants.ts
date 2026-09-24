@@ -8,6 +8,29 @@ import { isRecord, nullableNumber, nullableText, optionalText, stringArray } fro
 /** `chat` is a conversation connected with /crew; `task` is an agent task started from Crew. */
 export type CrewGrantKind = 'chat' | 'task';
 
+/** One channel's display label, as the person saw it when granting access. */
+export interface CrewGrantChannelLabel {
+  channel_id?: string;
+  /** `#methods`. */
+  label?: string;
+  /** The channel's team, when the snapshot showed it. */
+  team?: string;
+}
+
+/**
+ * The names of a grant's IDs, captured from the person's own snapshot when they granted access
+ * (D14) and never refreshed afterwards. Display text only: every field is optional, and one that
+ * is not a string is dropped rather than shown.
+ */
+export interface CrewGrantLabels {
+  /** The workspace's name, or this device's name for the connection when it has none. */
+  workspace?: string;
+  /** The channel the session posts in. */
+  destination?: CrewGrantChannelLabel;
+  /** Every channel the session may read, the destination included. */
+  sources?: CrewGrantChannelLabel[];
+}
+
 export interface CrewSessionGrant {
   session_id: string;
   run_id: string;
@@ -25,6 +48,8 @@ export interface CrewSessionGrant {
   session_name?: string | null;
   /** When the workspace ends the grant, in Unix seconds (RV-D2). */
   expires_at?: number | null;
+  /** The names the person saw when granting; absent when the daemon recorded none. */
+  labels?: CrewGrantLabels;
 }
 
 export interface CrewRevokeResult {
@@ -36,6 +61,36 @@ export interface CrewRevokeResult {
 }
 
 export type CrewGrantState = 'active' | 'expired' | 'revoked';
+
+function channelLabelFrom(value: unknown): CrewGrantChannelLabel | undefined {
+  if (!isRecord(value)) return undefined;
+  const label: CrewGrantChannelLabel = {};
+  const channelId = optionalText(value.channel_id);
+  if (channelId) label.channel_id = channelId;
+  const name = optionalText(value.label);
+  if (name) label.label = name;
+  const team = optionalText(value.team);
+  if (team) label.team = team;
+  return Object.keys(label).length ? label : undefined;
+}
+
+/** The grant's `labels`, keeping only the fields that are what they claim to be. */
+export function grantLabelsFrom(value: unknown): CrewGrantLabels | undefined {
+  if (!isRecord(value)) return undefined;
+  const labels: CrewGrantLabels = {};
+  const workspace = optionalText(value.workspace);
+  if (workspace) labels.workspace = workspace;
+  const destination = channelLabelFrom(value.destination);
+  if (destination) labels.destination = destination;
+  if (Array.isArray(value.sources)) {
+    const sources = value.sources.flatMap((source) => {
+      const label = channelLabelFrom(source);
+      return label ? [label] : [];
+    });
+    if (sources.length) labels.sources = sources;
+  }
+  return Object.keys(labels).length ? labels : undefined;
+}
 
 function grantFrom(row: unknown): CrewSessionGrant | null {
   if (!isRecord(row)) return null;
@@ -69,6 +124,8 @@ function grantFrom(row: unknown): CrewSessionGrant | null {
   if (sessionName !== undefined) grant.session_name = sessionName;
   const expiresAt = nullableNumber(row.expires_at);
   if (expiresAt !== undefined) grant.expires_at = expiresAt;
+  const labels = grantLabelsFrom(row.labels);
+  if (labels) grant.labels = labels;
   return grant;
 }
 
@@ -152,6 +209,20 @@ export async function revokeSessionGrant(
   const run = optionalText(result.run_id);
   if (run) revoked.run_id = run;
   return revoked;
+}
+
+/**
+ * The destination's name as the person saw it when granting (`#methods`), or null. A label that
+ * names a different channel than the grant posts in is not this grant's, so it is not used.
+ */
+export function grantDestinationLabel(
+  grant: Pick<CrewSessionGrant, 'channel_id' | 'labels'>
+): string | null {
+  const destination = grant.labels?.destination;
+  if (!destination?.label) return null;
+  if (destination.channel_id !== undefined && destination.channel_id !== grant.channel_id)
+    return null;
+  return destination.label;
 }
 
 /**

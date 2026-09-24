@@ -123,6 +123,38 @@ describe('rows', () => {
     }
   });
 
+  it('names a channel the snapshot does not show as the person saw it when granting', () => {
+    const rows = accessRows(
+      [
+        grant({
+          session_id: 'recorded',
+          channel_id: 'gone',
+          source_channels: ['gone'],
+          labels: { destination: { channel_id: 'gone', label: '#old-methods' } },
+        }),
+        grant({
+          session_id: 'shown',
+          session_name: 'Shown chat',
+          labels: { destination: { channel_id: 'channel-1', label: '#renamed-since' } },
+        }),
+        grant({
+          session_id: 'mislabelled',
+          session_name: 'Mislabelled chat',
+          channel_id: 'gone',
+          source_channels: ['gone'],
+          labels: { destination: { channel_id: 'channel-9', label: '#someone-else' } },
+        }),
+      ],
+      { snapshot, now: NOW }
+    );
+    const destination = (sessionId: string) =>
+      rows.find((row) => row.sessionId === sessionId)?.destination;
+    expect(destination('recorded')).toBe('#old-methods');
+    // The snapshot's current name wins over the name recorded at grant time.
+    expect(destination('shown')).toBe('Analysis Lab / #methods');
+    expect(destination('mislabelled')).toBe(accessCopy.unknownChannel);
+  });
+
   it('offers Revoke on active chats, Stop on running tasks, and Retry on an unconfirmed stop', () => {
     const rows = accessRows(
       [

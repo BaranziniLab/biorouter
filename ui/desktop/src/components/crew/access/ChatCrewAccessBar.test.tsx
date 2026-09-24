@@ -134,6 +134,66 @@ describe('the ordinary chat’s Crew access', () => {
     ).toBeInTheDocument();
   });
 
+  it('names the channel as the person saw it when granting, ahead of anything remembered', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#remembered']]), ['channel-1']);
+    installDaemon({
+      grants: () => [
+        grantRow({
+          session_id: 'chat-1',
+          labels: {
+            workspace: 'lab',
+            destination: { channel_id: 'channel-1', label: '#methods', team: 'Analysis Lab' },
+          },
+        }),
+      ],
+    });
+    renderChat();
+    expect(
+      await screen.findByRole('button', { name: accessCopy.chatChipName('#methods') })
+    ).toHaveTextContent('Crew · #methods');
+  });
+
+  it('falls back to the remembered name, then the recorded workspace, then the saved one', async () => {
+    const destinationFor = async (labels: unknown, remember: boolean) => {
+      forgetChannelLabels();
+      if (remember)
+        rememberChannelLabels('conn-1', new Map([['channel-1', '#remembered']]), ['channel-1']);
+      installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', labels })] });
+      const view = renderChat();
+      const chip = await screen.findByRole('button', { name: /^Crew · / });
+      const text = chip.textContent;
+      view.unmount();
+      return text;
+    };
+
+    // A label for another channel is not this grant's: the remembered name is used instead.
+    expect(
+      await destinationFor(
+        { workspace: 'lab', destination: { channel_id: 'channel-9', label: '#elsewhere' } },
+        true
+      )
+    ).toBe(accessCopy.chatChip('#remembered'));
+    expect(await destinationFor({ workspace: 'lab' }, false)).toBe(
+      accessCopy.chatChip(accessCopy.chatDestinationWorkspace('lab'))
+    );
+    expect(await destinationFor({ workspace: 42 }, false)).toBe(
+      accessCopy.chatChip(accessCopy.chatDestinationWorkspace('Fixture'))
+    );
+  });
+
+  it('says a Crew channel when nothing names the channel or the workspace', async () => {
+    installDaemon({
+      connections: [{ id: 'conn-1', name: '' }],
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+    });
+    renderChat();
+    expect(
+      await screen.findByRole('button', {
+        name: accessCopy.chatChipName(accessCopy.chatDestinationUnknown),
+      })
+    ).toBeInTheDocument();
+  });
+
   it('revokes after asking, then says the chat can’t continue and holds the composer', async () => {
     rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
     let revoked = false;

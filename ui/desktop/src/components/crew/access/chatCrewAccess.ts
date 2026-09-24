@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { findSessionGrant, sessionGrantState, type CrewSessionGrant } from '../api/grants';
+import {
+  findSessionGrant,
+  grantDestinationLabel,
+  sessionGrantState,
+  type CrewSessionGrant,
+} from '../api/grants';
 import { isRecord, optionalText } from '../api/parse';
 import { crewHttp } from '../crewApi';
 import { sanitizeDisplayText } from '../identity';
@@ -30,7 +35,10 @@ export interface ChatCrewAccess {
   sessionId: string | null;
   state: ChatCrewAccessState;
   grant: CrewSessionGrant | null;
-  /** Where the chat posts: `#general`, else "a channel in {workspace}", else "a Crew channel". */
+  /**
+   * Where the chat posts: the channel's name as the person saw it when granting, else as the Crew
+   * view last showed it, else "a channel in {workspace}", else "a Crew channel".
+   */
   destination: string;
   /** The grant was stopped on this device and the workspace has not confirmed it yet. */
   unconfirmed: boolean;
@@ -148,15 +156,23 @@ interface Lookup {
   grant: CrewSessionGrant | null;
 }
 
-/** Where a grant posts, as precisely as this computer can name it. */
+/**
+ * Where a grant posts, as precisely as this computer can name it: the label the daemon recorded
+ * when the person granted access, then the label the Crew view last showed for the channel, then
+ * the workspace (the recorded name first, then the saved connection's), then "a Crew channel".
+ */
 export function chatDestination(
   grant: CrewSessionGrant | null,
   connections: readonly SavedConnection[] = []
 ): string {
   if (!grant) return accessCopy.chatDestinationUnknown;
+  const recorded = sanitizeDisplayText(grantDestinationLabel(grant));
+  if (recorded) return recorded;
   const remembered = rememberedChannelLabel(grant.connection_id, grant.channel_id);
   if (remembered) return remembered;
-  const workspace = connections.find((connection) => connection.id === grant.connection_id)?.name;
+  const workspace =
+    sanitizeDisplayText(grant.labels?.workspace) ||
+    connections.find((connection) => connection.id === grant.connection_id)?.name;
   return workspace
     ? accessCopy.chatDestinationWorkspace(workspace)
     : accessCopy.chatDestinationUnknown;

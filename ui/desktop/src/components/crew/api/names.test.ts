@@ -117,6 +117,29 @@ describe('resolve', () => {
     expect(unknown).toEqual({ status: 'unknown_name', kind: 'person', text: '@carol' });
   });
 
+  it('keeps the one case-only suggestion the daemon offers, and never resolves it', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      results: [
+        { status: 'unknown_name', kind: 'person', text: '@Bob', did_you_mean: '@bob' },
+        { status: 'unknown_name', kind: 'person', text: '@Ann', did_you_mean: 7 },
+        { status: 'unknown_name', kind: 'person', text: '@Kim', did_you_mean: '  ' },
+      ],
+    });
+
+    const [bob, ann, kim] = (await resolve([{ text: '@Bob' }, { text: '@Ann' }, { text: '@Kim' }]))
+      .results;
+
+    expect(bob).toEqual({
+      status: 'unknown_name',
+      kind: 'person',
+      text: '@Bob',
+      did_you_mean: '@bob',
+    });
+    // A suggestion that is not a name is left out rather than shown.
+    expect(ann).toEqual({ status: 'unknown_name', kind: 'person', text: '@Ann' });
+    expect(kim).toEqual({ status: 'unknown_name', kind: 'person', text: '@Kim' });
+  });
+
   it.each([
     ['a missing results list', {}],
     ['fewer results than selectors', { results: [] }],
@@ -125,6 +148,11 @@ describe('resolve', () => {
       { results: [{ status: 'resolved', kind: 'person', text: '@bob' }] },
     ],
     ['an unknown kind', { results: [{ status: 'unknown_name', kind: 'robot', text: '@bob' }] }],
+    [
+      // Attachments are chosen from a channel's files; the daemon refuses to resolve them by name.
+      'an attachment, which is not resolvable by name',
+      { results: [{ status: 'resolved', kind: 'attachment', text: 'plot.png', id: 'file-1' }] },
+    ],
     ['an unknown status', { results: [{ status: 'guessed', kind: 'person', text: '@bob' }] }],
     [
       'candidates that are not labels',

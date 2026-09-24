@@ -8,6 +8,7 @@ import {
 } from './errors';
 import {
   findSessionGrant,
+  grantDestinationLabel,
   listSessionGrants,
   revokeSessionGrant,
   sessionGrantState,
@@ -117,6 +118,72 @@ describe('listSessionGrants', () => {
     expect(odd).not.toHaveProperty('session_name');
     expect(odd).not.toHaveProperty('expires_at');
     expect(old.source_channels).toEqual([]);
+  });
+
+  it('reads the names recorded at grant time, dropping any field that is not text', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      grants: [
+        row({
+          session_id: 'named',
+          labels: {
+            you: 'Alice Chen (@alice)',
+            workspace: 'lab',
+            destination: { channel_id: 'channel-1', label: '#methods', team: 'Analysis Lab' },
+            sources: [
+              { channel_id: 'channel-1', label: '#methods', team: 'Analysis Lab' },
+              { channel_id: 'channel-2', label: 7, team: null },
+              'not a label',
+              { label: '   ' },
+            ],
+          },
+        }),
+        row({
+          session_id: 'odd',
+          labels: { workspace: 3, destination: { label: ['#x'] }, sources: 'all' },
+        }),
+        row({ session_id: 'none', labels: null }),
+      ],
+    });
+
+    const [named, odd, none] = await listSessionGrants('conn-1');
+
+    expect(named.labels).toEqual({
+      workspace: 'lab',
+      destination: { channel_id: 'channel-1', label: '#methods', team: 'Analysis Lab' },
+      sources: [
+        { channel_id: 'channel-1', label: '#methods', team: 'Analysis Lab' },
+        { channel_id: 'channel-2' },
+      ],
+    });
+    expect(odd).not.toHaveProperty('labels');
+    expect(none).not.toHaveProperty('labels');
+  });
+});
+
+describe('grantDestinationLabel', () => {
+  const base = { channel_id: 'channel-1' };
+
+  it('names the channel the grant posts in', () => {
+    expect(
+      grantDestinationLabel({
+        ...base,
+        labels: { destination: { channel_id: 'channel-1', label: '#methods' } },
+      })
+    ).toBe('#methods');
+    expect(grantDestinationLabel({ ...base, labels: { destination: { label: '#methods' } } })).toBe(
+      '#methods'
+    );
+  });
+
+  it('never borrows the name of a different channel, and is null without one', () => {
+    expect(
+      grantDestinationLabel({
+        ...base,
+        labels: { destination: { channel_id: 'channel-9', label: '#elsewhere' } },
+      })
+    ).toBeNull();
+    expect(grantDestinationLabel({ ...base, labels: { workspace: 'lab' } })).toBeNull();
+    expect(grantDestinationLabel(base)).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { sessionGrantState, type CrewSessionGrant } from '../api/grants';
+import { grantDestinationLabel, sessionGrantState, type CrewSessionGrant } from '../api/grants';
 import type { ObservedRun } from '../crewApi';
 import {
   channelNamesAcrossTeams,
@@ -35,7 +35,10 @@ export interface AccessRow {
   chatTitle: string | null;
   /** The channel it posts in. */
   channelId: string;
-  /** `#slug`, or `{team} / #slug` when two teams share the slug. */
+  /**
+   * `#slug`, or `{team} / #slug` when two teams share the slug. When the snapshot does not show the
+   * channel, the name the person saw when granting access; otherwise "a channel you can't see".
+   */
   destination: string;
   /** Further channels it may read, beyond the destination. */
   extraSources: number;
@@ -169,7 +172,9 @@ export function accessRow(
     title: kind === 'task' ? accessCopy.yourTask : (chatTitle ?? accessCopy.untitled),
     chatTitle,
     channelId: grant.channel_id,
-    destination: channelLabelsById.get(grant.channel_id) ?? accessCopy.unknownChannel,
+    destination:
+      channelLabelsById.get(grant.channel_id) ??
+      (sanitizeDisplayText(grantDestinationLabel(grant)) || accessCopy.unknownChannel),
     extraSources,
     status,
     statusLabel: label,

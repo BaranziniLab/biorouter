@@ -9,14 +9,12 @@ import { isRecord, optionalText, stringArray } from './parse';
 /**
  * What a selector names. Authority-bearing inputs (invite, remove, transfer ownership, admit) must
  * send people as `@username` or an ID; the resolver never matches a display name for them.
+ *
+ * Attachments are not resolvable: they are chosen from a channel's files, and the daemon refuses a
+ * selector of that kind with 400 `crew_invalid_selector`. The kind is therefore neither sent nor
+ * accepted in an answer.
  */
-export type CrewSelectorKind =
-  | 'person'
-  | 'former_person'
-  | 'team'
-  | 'channel'
-  | 'connection'
-  | 'attachment';
+export type CrewSelectorKind = 'person' | 'former_person' | 'team' | 'channel' | 'connection';
 
 const SELECTOR_KINDS: readonly string[] = [
   'person',
@@ -24,7 +22,6 @@ const SELECTOR_KINDS: readonly string[] = [
   'team',
   'channel',
   'connection',
-  'attachment',
 ];
 
 export interface CrewSelector {
@@ -50,6 +47,11 @@ export interface CrewUnknownName {
   status: 'unknown_name';
   kind: CrewSelectorKind;
   text: string;
+  /**
+   * The one member whose username differs from the text only in letter case, as `@bob`. It is
+   * never resolved silently: show "Did you mean @bob?" and let the person type it as shown.
+   */
+  did_you_mean?: string;
 }
 
 /** More than one visible object matches. `candidates` are labels to choose from, never IDs. */
@@ -87,8 +89,12 @@ function resolutionFrom(value: unknown): CrewResolution | null {
       if (username) resolved.username = username;
       return resolved;
     }
-    case 'unknown_name':
-      return { status: 'unknown_name', ...selector };
+    case 'unknown_name': {
+      const unknown: CrewUnknownName = { status: 'unknown_name', ...selector };
+      const suggestion = optionalText(value.did_you_mean);
+      if (suggestion) unknown.did_you_mean = suggestion;
+      return unknown;
+    }
     case 'ambiguous_name': {
       const candidates = stringArray(value.candidates);
       return candidates ? { status: 'ambiguous_name', ...selector, candidates } : null;
