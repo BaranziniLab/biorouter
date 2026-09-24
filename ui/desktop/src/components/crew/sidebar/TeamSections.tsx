@@ -40,15 +40,20 @@ export function teamRoles(
       roles.set(team.id, { kind: 'member' });
       continue;
     }
-    const invited = live
-      .filter(
-        (invitation) =>
-          invitation.kind === 'team' &&
-          invitation.target_id === team.id &&
-          invitation.inviter_id === me &&
-          invitation.principal_id !== me
-      )
-      .map((invitation) => personLabel(invitation.principal_id, 'inline', dir));
+    // Counted by PERSON, not by invitation: the CLI can mint a second live invitation for someone
+    // already invited, and "2 invited" naming one person twice is wrong.
+    const invitees = new Set(
+      live
+        .filter(
+          (invitation) =>
+            invitation.kind === 'team' &&
+            invitation.target_id === team.id &&
+            invitation.inviter_id === me &&
+            invitation.principal_id !== me
+        )
+        .map((invitation) => invitation.principal_id)
+    );
+    const invited = Array.from(invitees, (id) => personLabel(id, 'inline', dir));
     roles.set(team.id, { kind: 'owner', invited });
   }
   return roles;

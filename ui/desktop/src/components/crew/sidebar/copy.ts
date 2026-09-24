@@ -184,6 +184,8 @@ export const sidebarCopy = {
   unavailable: {
     notJoined: 'Available after you join',
     notConnected: 'Available once you’re connected',
+    /** The connection is up (checking, updating, updates unavailable) but not verified yet. */
+    notVerified: 'Available once the connection is verified',
   },
 
   you: {

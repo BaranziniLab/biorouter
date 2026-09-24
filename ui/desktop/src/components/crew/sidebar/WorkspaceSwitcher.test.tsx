@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { crewStatusCopy } from '../state/copy';
 import { sidebarCopy } from './copy';
+import { unavailableReason } from './WorkspaceMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import {
   bob,
@@ -248,9 +249,10 @@ describe('WorkspaceSwitcher', () => {
         'true'
       );
     }
-    // …and says why, above them and in the menu's description (T-40).
+    // …and says why, above them and in the menu's description (T-40). The connection is up and
+    // only unverified, so the note does not tell this person to connect.
     const note = menu.querySelector('[data-crew-menu-note]') as HTMLElement;
-    expect(note).toHaveTextContent(sidebarCopy.unavailable.notConnected);
+    expect(note).toHaveTextContent(sidebarCopy.unavailable.notVerified);
     expect(menu.getAttribute('aria-describedby')?.split(' ')).toContain(note.id);
     // The connection tools stay available: they are how a person gets it verified again.
     expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).not.toHaveAttribute(
@@ -316,4 +318,28 @@ describe('WorkspaceSwitcher', () => {
     const { menu } = await openMenu();
     await waitFor(() => expect(menu.textContent).not.toMatch(/person-|workspace-1|conn-1/));
   });
+});
+
+describe('unavailableReason', () => {
+  it('gives no reason once the workspace is ready', () => {
+    expect(unavailableReason('connected', true)).toBeNull();
+  });
+
+  it('tells a joiner the items open once they join', () => {
+    expect(unavailableReason('not-joined', false)).toBe(sidebarCopy.unavailable.notJoined);
+  });
+
+  it.each(['connected', 'checking', 'updating', 'updates-unavailable'])(
+    'does not tell a person whose connection is up (%s) to connect',
+    (status) => {
+      expect(unavailableReason(status, false)).toBe(sidebarCopy.unavailable.notVerified);
+    }
+  );
+
+  it.each([null, 'offline', 'connecting', 'sign-in-needed', 'cant-connect', 'cant-verify'])(
+    'tells a person who is not connected (%s) that the items open once they are',
+    (status) => {
+      expect(unavailableReason(status, false)).toBe(sidebarCopy.unavailable.notConnected);
+    }
+  );
 });

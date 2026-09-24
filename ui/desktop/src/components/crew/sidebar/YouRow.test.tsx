@@ -132,11 +132,11 @@ describe('YouRow', () => {
     );
     // A disabled item says why, above the items and in the menu's description (T-71).
     const note = menu.querySelector('[data-crew-menu-note]') as HTMLElement;
-    expect(note).toHaveTextContent(sidebarCopy.unavailable.notConnected);
+    expect(note).toHaveTextContent(sidebarCopy.unavailable.notVerified);
     expect(menu).toHaveAttribute('aria-describedby', note.id);
     expect(
       within(menu).getByRole('menuitem', { name: copy.editProfile })
-    ).toHaveAccessibleDescription(sidebarCopy.unavailable.notConnected);
+    ).toHaveAccessibleDescription(sidebarCopy.unavailable.notVerified);
     await user.click(within(menu).getByRole('menuitem', { name: copy.keys }));
     expect(controller.openDialog).toHaveBeenCalledWith({ kind: 'keys' });
   });

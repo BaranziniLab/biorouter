@@ -17,7 +17,7 @@ import type { CrewConnection } from '../crewApi';
 import { connectionNames, connectionServer, PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
-import { CONNECTION_STATUS } from '../state/crewStatus';
+import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
 import { useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
@@ -53,13 +53,26 @@ function savedStatusWord(status: CrewConnection['status']): string {
 }
 
 /**
+ * Statuses in which the connection itself is up and only verification is outstanding. Telling
+ * that person "once you're connected" contradicts the status row beside it.
+ */
+const CONNECTION_UP: ReadonlySet<string> = new Set<ConnectionStatusKey>([
+  'connected',
+  'checking',
+  'updating',
+  'updates-unavailable',
+]);
+
+/**
  * Why the workspace's own items are disabled, or `null` when they are not (T-40, T-71). A joiner
- * the host has not let in yet waits for that; anyone else waits for a verified connection.
+ * the host has not let in yet waits for that; a person whose connection is up waits for it to be
+ * verified; anyone else waits to be connected.
  */
 export function unavailableReason(status: string | null, ready: boolean): string | null {
   if (ready) return null;
-  return status === 'not-joined'
-    ? sidebarCopy.unavailable.notJoined
+  if (status === 'not-joined') return sidebarCopy.unavailable.notJoined;
+  return status !== null && CONNECTION_UP.has(status)
+    ? sidebarCopy.unavailable.notVerified
     : sidebarCopy.unavailable.notConnected;
 }
 

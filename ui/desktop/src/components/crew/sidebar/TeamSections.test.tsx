@@ -381,6 +381,23 @@ describe('pending team invitations and what a member cannot see', () => {
     expect(roles.get(TEAM_SC)).toEqual({ kind: 'owner', invited: [] });
     expect(teamRoles(null, buildPeopleDirectory(null, null)).size).toBe(0);
   });
+
+  it('counts a person with two live invitations to the team once', () => {
+    const snapshot = ownerSnapshot([
+      teamInvitation(),
+      teamInvitation({ id: 'invitation-carol-again' }),
+      teamInvitation({ id: 'invitation-dana', principal_id: dana.id }),
+    ]);
+    const roles = teamRoles(snapshot, buildPeopleDirectory(snapshot, null));
+    expect(roles.get(TEAM_LAB)).toEqual({
+      kind: 'owner',
+      invited: ['Carol Diaz (@carol)', 'Dana Wu (@dana)'],
+    });
+    renderTeams({ snapshot });
+    expect(header('Analysis Lab, 4 channels, 2 invited')).toHaveAccessibleDescription(
+      'Invited, not accepted yet: Carol Diaz (@carol), Dana Wu (@dana)'
+    );
+  });
 });
 
 describe('keyboard', () => {
