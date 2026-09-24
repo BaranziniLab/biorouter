@@ -511,7 +511,7 @@ type ElectronAPI = {
   crewCredentials: (
     action: 'status' | 'init' | 'unlock' | 'lock'
   ) => Promise<
-    | { backend: 'keyring' | 'encrypted_vault'; initialized: boolean; locked: boolean }
+    | { backend: 'keyring' | 'encrypted_vault' | 'file'; initialized: boolean; locked: boolean }
     | { cancelled: true }
   >;
   crewSelectTransferFile: (options: {

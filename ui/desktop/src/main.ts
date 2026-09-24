@@ -4848,8 +4848,10 @@ function registerCliInstallHandlers() {
       });
       if (!response.ok) throw new Error('Crew credential status is unavailable.');
       const status = await response.json();
+      // `file` is the plain-file store: a development profile, and the automatic fallback on a
+      // headless Linux with no keyring (QA T-49). Refusing it left Keys and security unreadable.
       if (
-        !['keyring', 'encrypted_vault'].includes(status.backend) ||
+        !['keyring', 'encrypted_vault', 'file'].includes(status.backend) ||
         typeof status.initialized !== 'boolean' ||
         typeof status.locked !== 'boolean'
       )

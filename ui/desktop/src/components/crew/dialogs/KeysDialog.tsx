@@ -15,10 +15,11 @@ import { useDialogView } from './workspace';
 const SOURCE: ErrorSource = 'dialog:keys';
 const KEY = 'credentials';
 
-type CredentialAction = 'status' | 'init' | 'unlock' | 'lock';
+type CredentialAction = 'init' | 'unlock' | 'lock';
 /**
- * `file` is a development profile's plain-file store (`BIOROUTER_DEV_PROFILE_ROOT` with the
- * keyring disabled): said as such, never as a keychain it is not using (QA T-49).
+ * `file` is the plain-file store — a development profile (`BIOROUTER_DEV_PROFILE_ROOT` with the
+ * keyring disabled), and the automatic fallback on a headless Linux with no keyring: said as such,
+ * never as a keychain it is not using (QA T-49).
  */
 type CredentialBackend = 'keyring' | 'encrypted_vault' | 'file';
 interface CredentialStatus {
@@ -27,7 +28,36 @@ interface CredentialStatus {
   locked: boolean;
 }
 
-const BACKENDS: readonly CredentialBackend[] = ['keyring', 'encrypted_vault', 'file'];
+/**
+ * Every storage backend the daemon reports. The main process validates the same list before it
+ * answers (`crew:credentials` in `main.ts`); a test holds the two together, because the day they
+ * drifted (`file`, QA Q2-02) the main process refused the answer and the dialog never loaded.
+ */
+export const CREDENTIAL_BACKENDS: readonly CredentialBackend[] = [
+  'keyring',
+  'encrypted_vault',
+  'file',
+];
+
+/** How long "Checking where your keys are stored…" may stand before it says it couldn't. */
+export const STATUS_PATIENCE_MS = 5000;
+
+/**
+ * Electron's wrapper around an error the main process threw: `Error invoking remote method
+ * 'crew:credentials': Error: …`. Machinery, never words for a person.
+ */
+const IPC_WRAPPER = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
+
+/**
+ * An action's failure in words: the main process's own sentence without Electron's wrapper, and
+ * the plain status sentence for a status read that failed after the action (QA Q2-02).
+ */
+export function keysErrorText(message: string): string {
+  const inner = message.replace(IPC_WRAPPER, '').trim();
+  if (!inner) return copy.failed;
+  if (/credential status/i.test(inner)) return copy.statusFailed;
+  return inner;
+}
 
 /**
  * The storage status the main process reports, or null when the answer is not one: a dialog that
@@ -37,7 +67,7 @@ function statusFrom(value: unknown): CredentialStatus | null {
   if (typeof value !== 'object' || value === null || 'cancelled' in value) return null;
   const status = value as Partial<CredentialStatus>;
   return status.backend !== undefined &&
-    BACKENDS.includes(status.backend) &&
+    CREDENTIAL_BACKENDS.includes(status.backend) &&
     typeof status.initialized === 'boolean' &&
     typeof status.locked === 'boolean'
     ? { backend: status.backend, initialized: status.initialized, locked: status.locked }
@@ -86,34 +116,63 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
 export function KeysDialog({ onClose }: KeysDialogProps) {
   const { crew, snapshot } = useDialogView();
   const [status, setStatus] = React.useState<CredentialStatus | null>(null);
+  // Reading the status is not an action of the person's, so it never goes through `act`: its
+  // failure is the header's plain sentence with a Retry, never an error note (QA Q2-02).
+  const [read, setRead] = React.useState<'checking' | 'failed' | 'done'>('checking');
+  const [slow, setSlow] = React.useState(false);
+  const reads = React.useRef(0);
   const pending = crew.isPending(KEY);
   const act = crew.act;
   const connection = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
   const devices = snapshot?.actor.devices ?? [];
   const thisDevice = useDeviceFingerprint(connection);
 
+  const readStatus = React.useCallback(async () => {
+    const generation = ++reads.current;
+    setRead('checking');
+    setSlow(false);
+    let next: CredentialStatus | null = null;
+    try {
+      next = statusFrom(await window.electron.crewCredentials('status'));
+    } catch {
+      next = null;
+    }
+    // A later read (Retry) or a closed dialog owns the answer now.
+    if (generation !== reads.current) return;
+    if (next) setStatus(next);
+    setRead(next ? 'done' : 'failed');
+  }, []);
+
+  React.useEffect(() => {
+    void readStatus();
+    return () => {
+      reads.current += 1;
+    };
+  }, [readStatus]);
+
+  // No answer yet after a few seconds says so, rather than "Checking…" for ever. A late answer
+  // still replaces it.
+  React.useEffect(() => {
+    if (read !== 'checking') return;
+    const timer = window.setTimeout(() => setSlow(true), STATUS_PATIENCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [read]);
+
   const run = React.useCallback(
     (action: CredentialAction) =>
-      act(
-        SOURCE,
-        KEY,
-        async () => {
-          const next = statusFrom(await window.electron.crewCredentials(action));
-          if (next) setStatus(next);
-        },
-        // Reading the status is not an action of the person's: it must not clear an error
-        // another surface is showing.
-        { preserveError: action === 'status' }
-      ),
+      act(SOURCE, KEY, async () => {
+        const next = statusFrom(await window.electron.crewCredentials(action));
+        if (next) {
+          setStatus(next);
+          setRead('done');
+        }
+      }),
     [act]
   );
 
-  React.useEffect(() => {
-    void run('status');
-  }, [run]);
-
   const vault = status?.backend === 'encrypted_vault';
   const file = status?.backend === 'file';
+  const unknown = !status && (read === 'failed' || slow);
   const StoreIcon = vault ? Lock : file ? FileText : KeyRound;
   return (
     <ModalShell
@@ -129,7 +188,15 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
           <p role="status" className="flex min-w-0 items-center gap-2 text-body text-text-default">
             <StoreIcon aria-hidden className="h-icon-row w-icon-row shrink-0 text-text-muted" />
             <span>
-              {!status ? copy.checking : vault ? copy.vault : file ? copy.file : copy.keychain}
+              {status
+                ? vault
+                  ? copy.vault
+                  : file
+                    ? copy.file
+                    : copy.keychain
+                : unknown
+                  ? copy.statusFailed
+                  : copy.checking}
             </span>
             {vault ? (
               <Badge tone="neutral" variant="badge">
@@ -137,6 +204,11 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
               </Badge>
             ) : null}
           </p>
+          {unknown ? (
+            <Button variant="ghost" size="sm" onClick={() => void readStatus()}>
+              {copy.retry}
+            </Button>
+          ) : null}
           {vault ? (
             <Button
               variant="secondary"
@@ -207,7 +279,7 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
           </Disclosure>
         ) : null}
 
-        <DialogErrorNote source={SOURCE} />
+        <DialogErrorNote source={SOURCE} render={keysErrorText} />
       </div>
     </ModalShell>
   );

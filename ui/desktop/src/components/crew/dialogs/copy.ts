@@ -334,6 +334,10 @@ export const profileCopy = {
 export const keysCopy = {
   title: 'Keys and security',
   checking: 'Checking where your keys are stored…',
+  /** The status could not be read, or had not answered after a few seconds (QA Q2-02). */
+  statusFailed: 'Couldn’t check where your keys are stored.',
+  /** Reads the status again. */
+  retry: 'Retry',
   keychain: 'Stored in your system keychain.',
   /** A development profile keeps keys in plain files; never claim a keychain it is not using. */
   file: 'Stored in a file on this computer (development profile).',

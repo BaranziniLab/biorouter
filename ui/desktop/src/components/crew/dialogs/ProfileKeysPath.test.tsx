@@ -170,8 +170,12 @@ describe('KeysDialog', () => {
     expect(rows[0]).not.toHaveTextContent(keysCopy.thisDevice);
   });
 
-  it('shows a failure in the dialog and lists the account’s devices', async () => {
-    credentials.mockRejectedValue(new Error('The vault passphrase was not accepted.'));
+  it('says in plain words that the status could not be read, and still lists the account’s devices', async () => {
+    credentials.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'crew:credentials': Error: Invalid Crew credential status."
+      )
+    );
     renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
       snapshot: makeSnapshot({
         actor: {
@@ -182,7 +186,8 @@ describe('KeysDialog', () => {
         },
       }),
     });
-    expect(await screen.findByText('The vault passphrase was not accepted.')).toBeInTheDocument();
+    expect(await screen.findByText(keysCopy.statusFailed)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/remote method/);
     const devices = screen.getByRole('region', { name: keysCopy.devices });
     expect(within(devices).getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
     expect(devices).toHaveTextContent(keysCopy.addedVia.bootstrap);
