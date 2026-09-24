@@ -1,8 +1,25 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import CrewView from './CrewView';
+import CrewApp from './CrewApp';
 import { CrewHttpError } from './crewApi';
+import { layoutCopy } from './layout/copy';
+import {
+  chooseModel,
+  channelAction,
+  installResizeObserverStub,
+  workspaceAction,
+} from './test/crewTestUtils';
+
+/**
+ * The Crew route's behavioral regressions, driven through the redesigned layout (`CrewApp`).
+ *
+ * Migrated row by row from the legacy layout's suite as ui-redesign-spec's "CVT, query by query"
+ * lists: every behavioral assertion is kept, and a query moved only where its control deliberately
+ * left the resting screen for a menu (C5: Reconnect, Sign in…, Connection settings…, Refresh
+ * channel) or changed kind (C3: privacy radios and the status-row chip; C4: the workspace
+ * switcher; one model picker for the provider and model selects).
+ */
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -23,13 +40,19 @@ vi.mock('./crewApi', async () => {
     observeCrew: mocks.observeCrew,
   };
 });
-vi.mock('../ConfigContext', () => ({
-  useConfig: () => ({
-    getProviders: mocks.getProviders,
-    read: mocks.read,
-    getProviderModels: mocks.getProviderModels,
-  }),
-}));
+vi.mock('../ConfigContext', async () => {
+  // The actual module keeps `usePrivacyTiersEnabled`, which `PrivacyBadge` reads (enforcing,
+  // outside a provider).
+  const actual = await vi.importActual<typeof import('../ConfigContext')>('../ConfigContext');
+  return {
+    ...actual,
+    useConfig: () => ({
+      getProviders: mocks.getProviders,
+      read: mocks.read,
+      getProviderModels: mocks.getProviderModels,
+    }),
+  };
+});
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mocks.navigate };
@@ -43,11 +66,33 @@ vi.mock('./CrewAuthentication', () => ({
   ),
 }));
 vi.mock('./CrewHostTrust', () => ({ default: () => <div /> }));
+// Legacy files stay mocked until they are deleted; the new layout never imports them.
 vi.mock('./CrewFiles', () => ({
   CrewUpload: () => <div />,
   CrewAttachment: () => <div />,
   CrewRemoteReference: () => <div />,
 }));
+// Nothing here uploads; a picker must never open from a regression test.
+vi.mock('./files/useCrewUpload', async () => {
+  const actual =
+    await vi.importActual<typeof import('./files/useCrewUpload')>('./files/useCrewUpload');
+  return {
+    ...actual,
+    useCrewUpload: () => ({
+      upload: async () => undefined,
+      choosing: false,
+      error: '',
+      reportError: () => undefined,
+      dismissError: () => undefined,
+      chips: [],
+      pause: async () => undefined,
+      resume: async () => undefined,
+      forget: () => undefined,
+    }),
+  };
+});
+
+installResizeObserverStub();
 
 const connection = {
   id: 'conn-1',
@@ -81,13 +126,13 @@ const channel = {
   classification: 'restricted' as const,
 };
 const snapshot = {
-    workspace: {
-      id: 'workspace-1',
-      host_uid: 1000,
-      mode: 'private' as const,
-      policy_epoch: 1,
-      institution_id: 'ucsf',
-    },
+  workspace: {
+    id: 'workspace-1',
+    host_uid: 1000,
+    mode: 'private' as const,
+    policy_epoch: 1,
+    institution_id: 'ucsf',
+  },
   actor,
   principals: [actor],
   teams: [
@@ -107,7 +152,7 @@ const snapshot = {
 function renderCrew(entry = '/crew') {
   return render(
     <MemoryRouter initialEntries={[entry]}>
-      <CrewView />
+      <CrewApp />
     </MemoryRouter>
   );
 }
@@ -159,6 +204,7 @@ function defaultHttp() {
   mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
     if (path === '/connections') return { connections: [connection] };
     if (path.startsWith('/transfers?')) return { transfers: [] };
+    if (path === '/connections/conn-1/grants' && method === 'GET') return { grants: [] };
     if (path === '/connections/conn-1/runs' && method === 'GET') return { runs: [] };
     if (path === '/connections/conn-1/runs' && method === 'POST')
       return { run_id: 'run-1', session_id: 'session-1' };
@@ -216,28 +262,41 @@ describe('CrewView action and uncertain-start regressions', () => {
     renderCrew();
     await screen.findByText('Connected · identity verified');
     await waitFor(() =>
-      expect(mocks.observeCrew.mock.calls.some(([, observedChannel]) => observedChannel === channel.id)).toBe(true)
+      expect(
+        mocks.observeCrew.mock.calls.some(([, observedChannel]) => observedChannel === channel.id)
+      ).toBe(true)
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await workspaceAction('Connection settings…');
     const institution = await screen.findByPlaceholderText('For example, ucsf or sdsc');
     expect(institution).toBeRequired();
     fireEvent.change(institution, { target: { value: '' } });
-    fireEvent.change(screen.getAllByLabelText('Connection privacy')[1], {
-      target: { value: 'public' },
-    });
-    expect(institution).not.toBeRequired();
-    fireEvent.change(screen.getAllByLabelText('Connection privacy')[1], {
-      target: { value: 'private' },
-    });
-    expect(institution).toBeRequired();
-    expect(institution).toHaveValue('');
+    fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+    // Public needs no institution, so the field is not merely optional: it is gone.
+    expect(screen.queryByPlaceholderText('For example, ucsf or sdsc')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /^Private/ }));
+    const required = await screen.findByPlaceholderText('For example, ucsf or sdsc');
+    expect(required).toBeRequired();
+    expect(required).toHaveValue('');
     fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
-    expect(institution).toBeInvalid();
+    expect(required).toBeInvalid();
     expect(
       mocks.crewHttp.mock.calls.some(
         ([path, method]) => path === '/connections/conn-1' && method === 'PATCH'
       )
     ).toBe(false);
+  });
+
+  it('keeps a typed institution across switching the connection to Public and back', async () => {
+    renderCrew();
+    await screen.findByText('Connected · identity verified');
+    await workspaceAction('Connection settings…');
+    fireEvent.change(await screen.findByPlaceholderText('For example, ucsf or sdsc'), {
+      target: { value: 'sdsc' },
+    });
+    fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+    expect(screen.queryByPlaceholderText('For example, ucsf or sdsc')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /^Private/ }));
+    expect(await screen.findByPlaceholderText('For example, ucsf or sdsc')).toHaveValue('sdsc');
   });
 
   it('offers host institution confirmation before the workspace label is set', async () => {
@@ -246,9 +305,17 @@ describe('CrewView action and uncertain-start regressions', () => {
     workspace.institution_id = null;
     renderCrew();
     try {
-      expect(await screen.findByText('Not specified')).toBeInTheDocument();
-      const confirm = screen.getByRole('button', { name: 'Confirm workspace institution: ucsf' });
-      expect(confirm).toBeEnabled();
+      expect(
+        await screen.findByText(layoutCopy.institution.title('Fixture', 'ucsf'))
+      ).toBeInTheDocument();
+      const offer = screen.getByRole('button', { name: 'Set institution to ucsf…' });
+      expect(offer).toBeEnabled();
+      fireEvent.click(offer);
+      // The label is permanent, so it now asks first; nothing is set before the confirmation.
+      const confirm = await screen.findByRole('button', { name: 'Set ucsf permanently' });
+      expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'policy.set')).toBe(
+        false
+      );
       fireEvent.click(confirm);
       await waitFor(() =>
         expect(
@@ -283,7 +350,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'clear after policy change' } });
     connectionPolicyEpoch = 2;
-    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await workspaceAction('Reconnect');
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
     expect(screen.getByText(/privacy or selected channel access changed/)).toBeInTheDocument();
   });
@@ -320,9 +387,9 @@ describe('CrewView action and uncertain-start regressions', () => {
 
     fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
     await waitFor(() =>
-      expect(
-        mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')
-      ).toBe(true)
+      expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')).toBe(
+        true
+      )
     );
     expect(composer).toHaveValue('');
   });
@@ -344,7 +411,9 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
     fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', keyCode: 13 });
     await waitFor(() =>
-      expect(mocks.crewRequest.mock.calls.filter(([, method]) => method === 'message.post')).toHaveLength(1)
+      expect(
+        mocks.crewRequest.mock.calls.filter(([, method]) => method === 'message.post')
+      ).toHaveLength(1)
     );
     resolvePost();
     await waitFor(() => expect(composer).toHaveValue(''));
@@ -452,17 +521,15 @@ describe('CrewView action and uncertain-start regressions', () => {
     await waitFor(() => expect(askButton).toBeEnabled());
     fireEvent.click(askButton);
     fireEvent.change(await screen.findByLabelText('Task'), { target: { value: 'run it' } });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fixture-model' } });
+    await chooseModel('fixture-model');
     fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
-    expect(await screen.findAllByText('start failed')).not.toHaveLength(0);
+    expect(await screen.findAllByText('start failed')).toHaveLength(1);
     // A successful manual refresh must not erase the action error that still needs attention.
+    // The pane stays open through it, and the channel menu stays reachable beside it (C1).
     const beforeRefresh = mocks.observeCrew.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh channel' }));
+    await channelAction('Refresh channel');
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(beforeRefresh));
-    expect(screen.getAllByText('start failed').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('start failed')).toHaveLength(1);
   });
 
   it('refreshes after authenticated completion without issuing a second manual connect request', async () => {
@@ -471,7 +538,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     mocks.crewHttp.mockClear();
     mocks.crewRequest.mockClear();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    await workspaceAction('Sign in…');
     fireEvent.click(
       await screen.findByRole('button', { name: 'Simulate authenticated completion' })
     );
@@ -543,14 +610,13 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.change(composer, { target: { value: 'discard after revocation' } });
     activeSnapshot = { ...snapshot, channels: [], teams: [] };
     const observationsBeforeRefresh = mocks.observeCrew.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh channel' }));
+    await channelAction('Refresh channel');
     await waitFor(() =>
       expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observationsBeforeRefresh)
     );
     await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
     activeSnapshot = snapshot;
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await workspaceAction('Reconnect');
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
 
@@ -583,7 +649,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
     observerMode = 'failure';
     const beforeFailure = mocks.observeCrew.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await workspaceAction('Reconnect');
     await waitFor(() =>
       expect(screen.getByText(/observer temporarily unavailable/)).toBeInTheDocument()
     );
@@ -607,6 +673,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     let connectionReads = 0;
     let observationCalls = 0;
     const events: string[] = [];
+    const observedChannels: (string | undefined)[] = [];
     mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
       if (path === '/connections') {
         connectionReads += 1;
@@ -626,6 +693,7 @@ describe('CrewView action and uncertain-start regressions', () => {
       ) => {
         observationCalls += 1;
         events.push(`observe:${observationCalls}`);
+        observedChannels.push(_channelId);
         if (signal.aborted) return 'terminal';
         receive(observerState());
         if (observationCalls === 1) {
@@ -648,8 +716,21 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
 
     await waitFor(() => expect(screen.getByText('alice@new-host')).toBeInTheDocument());
-    expect(screen.getByRole('option', { name: 'Renamed workspace' })).toBeInTheDocument();
-    expect(events).toEqual(['connections:1', 'observe:1', 'connections:2', 'observe:2']);
+    expect(screen.getByRole('button', { name: /^Renamed workspace/ })).toBeInTheDocument();
+    // The reload lands before the retried observation, and nothing reloads again after it. Once
+    // the retried observation verifies the workspace, the unchanged controller may restart it for
+    // the channel it just selected; how soon that lands against this assertion is timing, not
+    // order, so it is checked for what it is rather than counted.
+    expect(events.slice(0, 4)).toEqual([
+      'connections:1',
+      'observe:1',
+      'connections:2',
+      'observe:2',
+    ]);
+    events.slice(4).forEach((event, index) => {
+      expect(event).toMatch(/^observe:/);
+      expect(observedChannels[index + 2]).toBe(channel.id);
+    });
   });
 
   it('uses observer privacy across stale connection refreshes and clears drafts on mode changes', async () => {
@@ -676,19 +757,23 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.change(privateComposer, { target: { value: 'private draft to clear' } });
 
     observedMode = 'public';
-    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    await workspaceAction('Sign in…');
     fireEvent.click(
       await screen.findByRole('button', { name: 'Simulate authenticated completion' })
     );
+    // The status row's chip is the effective mode (it replaced the privacy select and its
+    // "Effective: …" line); the payload assertions below still prove the wire.
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Connection privacy' })).toHaveValue('public')
+      expect(screen.getByRole('button', { name: /^Privacy: Public/ })).toBeInTheDocument()
     );
-    expect(screen.getByText(/Effective: public/)).toBeInTheDocument();
-    expect(screen.getByLabelText('Message #general')).toHaveValue('');
+    expect(await screen.findByLabelText('Message #general')).toHaveValue('');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Review access and posting permission' }));
+    // The note waits for the grants lookup; the mocked daemon holds none for this chat.
     fireEvent.click(
-      screen.getByRole('button', { name: 'Allow this conversation to read and post here' })
+      await screen.findByRole('button', { name: 'Review access and posting permission' })
+    );
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Allow this conversation to read and post here' })
     );
     await waitFor(() =>
       expect(
@@ -696,9 +781,9 @@ describe('CrewView action and uncertain-start regressions', () => {
           ([path, method, params]) =>
             path === '/connections/conn-1/sessions/agent-1/grant' &&
             method === 'POST' &&
-            params.expected_mode === 'public'
-            && params.expected_policy_epoch === 1
-            && params.expected_workspace_policy_epoch === 1
+            params.expected_mode === 'public' &&
+            params.expected_policy_epoch === 1 &&
+            params.expected_workspace_policy_epoch === 1
         )
       ).toBe(true)
     );
@@ -722,12 +807,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.change(await screen.findByLabelText('Task'), {
       target: { value: 'public task' },
     });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), {
-      target: { value: 'fixture-model' },
-    });
+    await chooseModel('fixture-model');
     fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
     await waitFor(() =>
       expect(
@@ -735,22 +815,21 @@ describe('CrewView action and uncertain-start regressions', () => {
           ([path, method, params]) =>
             path === '/connections/conn-1/runs' &&
             method === 'POST' &&
-            params.expected_mode === 'public'
-            && params.expected_policy_epoch === 1
-            && params.expected_workspace_policy_epoch === 1
+            params.expected_mode === 'public' &&
+            params.expected_policy_epoch === 1 &&
+            params.expected_workspace_policy_epoch === 1
         )
       ).toBe(true)
     );
 
     observedMode = 'private';
-    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    await workspaceAction('Sign in…');
     fireEvent.click(
       await screen.findByRole('button', { name: 'Simulate authenticated completion' })
     );
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Connection privacy' })).toHaveValue('private')
+      expect(screen.getByRole('button', { name: /^Privacy: Private/ })).toBeInTheDocument()
     );
-    expect(screen.getByText(/Effective: private/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
 
@@ -774,13 +853,10 @@ describe('CrewView action and uncertain-start regressions', () => {
     await screen.findByText('Welcome to #general');
     fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));
     fireEvent.change(await screen.findByLabelText('Task'), { target: { value: 'retry me' } });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fixture-model' } });
+    await chooseModel('fixture-model');
     const submit = screen.getByRole('button', { name: 'Start my agent and allow posting here' });
     fireEvent.click(submit);
-    await screen.findAllByText('temporary start failure');
+    expect(await screen.findAllByText('temporary start failure')).toHaveLength(1);
     fireEvent.click(submit);
     await waitFor(() => expect(starts).toBe(2));
     expect(requestIds[1]).toBe(requestIds[0]);
@@ -808,10 +884,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     await screen.findByText('Welcome to #general');
     fireEvent.click(screen.getByRole('button', { name: 'Ask my agent' }));
     fireEvent.change(await screen.findByLabelText('Task'), { target: { value: 'uncertain' } });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fixture-model' } });
+    await chooseModel('fixture-model');
     fireEvent.click(screen.getByRole('button', { name: 'Start my agent and allow posting here' }));
     expect(
       await screen.findByText('Inspect the previous task before starting again')
@@ -833,10 +906,7 @@ describe('CrewView action and uncertain-start regressions', () => {
       await screen.findByText('Inspect the previous task before starting again')
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Task'), { target: { value: 'edited after remount' } });
-    fireEvent.change(screen.getByLabelText('Configured provider'), {
-      target: { value: 'fixture-provider' },
-    });
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fixture-model' } });
+    await chooseModel('fixture-model');
     fireEvent.click(screen.getByRole('checkbox'));
     const restart = screen.getByRole('button', { name: /Start a new task/ });
     expect(restart).toBeEnabled();
