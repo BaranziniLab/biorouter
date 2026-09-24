@@ -261,14 +261,16 @@ export interface CrewController {
    */
   connect(opts?: { userInitiated?: boolean }): Promise<void>;
   /**
-   * POST disconnect, stop observing and clear the protected view. Never throws. Remembered for
-   * this app session: the connection is not connected again by itself until the person connects.
+   * POST disconnect, stop observing and clear the protected view. Never throws. Nothing is kept
+   * to remember it by: a loss of live updates never connects (`reconnecting`), and the daemon's own
+   * re-dial (D-KEEPALIVE) never follows a Disconnect, wherever it was made.
    */
   disconnect(): Promise<void>;
   /**
-   * The selected connection dropped while in use and Crew is reloading it and connecting it again
-   * by itself (live QA round 2, Q2-01): status "Reconnecting…", the connecting screen. Absent:
-   * false.
+   * The selected connection's observation ended as a dropped connection would, and Crew is reading
+   * its saved record again, or observing it again quietly because the daemon still (or again)
+   * holds a bridge (live QA round 2, Q2-01): status "Reconnecting…", the connecting screen. Crew
+   * never connects it by itself. Absent: false.
    */
   reconnecting?: boolean;
   lastConnectFailure: LastConnectFailure | null;

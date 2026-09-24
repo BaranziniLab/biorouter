@@ -1,9 +1,9 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectionBarCopy } from '../channel/copy';
-import { CrewHttpError } from '../crewApi';
 import { emptyCopy } from '../onboarding/copy';
 import { crewObservationCopy, crewStatusCopy } from '../state/copy';
+import { DAEMON_REDIAL_FOLLOW_MS, QUIET_REOBSERVE_GAPS_MS } from '../state/useCrewConnections';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
   channelReady,
@@ -35,13 +35,15 @@ vi.mock('../CrewAuthentication', () => ({ default: () => <div /> }));
 installResizeObserverStub();
 
 /**
- * Live QA round 2, Q2-01 (five critics): coming back to Crew after about five minutes away. The
- * broker closes an SSH bridge after 300 s with no request; the daemon notices only when the next
- * request fails, marks the connection disconnected, and the observation ends with the generic
- * `observation_refused` while the renderer's list still says connected. That used to show "Live
- * updates for chen-lab stopped" and take Retry, then Connect. Now: "Reconnecting…", one automatic
- * connect — never as the person, so Sign in never opens by itself — and the channel back with the
- * draft in it, under the rules in `mayReconnectAutomatically`.
+ * Live QA round 2, Q2-01 (five critics), and its round-2 review (SECURITY-SENSITIVE). Coming back
+ * to Crew after a while away used to show "Live updates for chen-lab stopped" and take Retry, then
+ * Connect. The daemon now keeps an idle bridge alive and dials a dropped one again by itself
+ * (D-KEEPALIVE), and never after a Disconnect. The renderer never connects by itself: the daemon
+ * ends observation with the same `observation_refused` for a dropped bridge and for a Disconnect
+ * made in a terminal or another window, which this window cannot tell apart. So it reads the saved
+ * record again: still (or again) connected, it observes again quietly, a few times with growing
+ * gaps; disconnected, it shows the offline screen, whose Connect is the person's, and reads the
+ * record a few more times to pick up the daemon's own re-dial.
  */
 
 const DAEMON_SENTENCE =
@@ -71,8 +73,6 @@ function statusRow(): HTMLElement {
 let daemon: ScriptedDaemon;
 /** The saved record's status the daemon answers with, changed as the story goes. */
 let saved: 'connected' | 'disconnected';
-/** How the daemon answers `POST …/connect`; by default it connects. */
-let connectAnswer: () => unknown;
 let watcher: ReturnType<typeof watchForStopped> | null = null;
 
 function connects(): number {
@@ -81,7 +81,10 @@ function connects(): number {
   ).length;
 }
 
-/** The SSH bridge closed while Crew was away; the observation ends as the daemon ends it. */
+/**
+ * The daemon now calls the connection disconnected — a bridge it could not dial again, or a
+ * Disconnect made anywhere — and the observation ends as the daemon ends it.
+ */
 function dropTheBridge() {
   saved = 'disconnected';
   act(() =>
@@ -93,16 +96,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   saved = 'connected';
-  connectAnswer = () => {
-    saved = 'connected';
-    return {};
-  };
   daemon = installDaemon({
     messages: richMessages(),
     http: (path, method) => {
       if (path === '/connections' && method === 'GET')
         return { connections: [{ ...connection, status: saved }] };
-      if (path === CONNECT && method === 'POST') return connectAnswer();
+      if (path === CONNECT && method === 'POST') {
+        saved = 'connected';
+        return {};
+      }
       if (path === DISCONNECT && method === 'POST') {
         saved = 'disconnected';
         return {};
@@ -116,28 +118,69 @@ afterEach(() => {
   watcher = null;
 });
 
-describe('coming back after the SSH bridge closed while Crew was away (Q2-01)', () => {
-  it('reconnects by itself, once, and hands the channel back with the draft', async () => {
+/** Advance the clock by `ms`, running every timer due meanwhile. */
+async function wait(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+/** A drop the daemon repaired before this window looked: the record still says connected. */
+function dropRepairedBridge() {
+  act(() =>
+    daemon.emit({ type: 'error', code: 'observation_refused', clear: true, error: DAEMON_SENTENCE })
+  );
+}
+
+function reads(): number {
+  return mocked.crewHttp.mock.calls.filter(
+    ([path, method]) => path === '/connections' && (method ?? 'GET') === 'GET'
+  ).length;
+}
+
+describe('coming back after the SSH bridge dropped (Q2-01): Crew never connects by itself', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('observes again quietly when the daemon already dialled the bridge again: no Retry, no connect', async () => {
     renderCrew();
     const composer = await channelReady();
     fireEvent.change(composer, { target: { value: 'half-written reply' } });
     watcher = watchForStopped();
+    const observations = mocked.observeCrew.mock.calls.length;
+    // The saved record is read again before anything else; hold that read to look at the page.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answer = daemon.state.http!;
+    daemon.state.http = (path, method, body) =>
+      path === '/connections' && method === 'GET'
+        ? held.then(() => answer(path, method, body))
+        : answer(path, method, body);
 
-    dropTheBridge();
+    dropRepairedBridge();
 
     // Nothing verified stays on screen; the status says what is happening, not that it stopped.
     expect(screen.queryByRole('textbox', { name: 'Message #general' })).toBeNull();
     await waitFor(() => expect(currentCrew().status).toBe('reconnecting'));
     expect(within(statusRow()).getByText(crewStatusCopy.reconnecting)).toBeInTheDocument();
     expect(currentCrew().screen).toBe('connecting');
+    await act(async () => {
+      release();
+    });
 
-    // One connect, then the next verified view, with the draft still in the composer.
+    // Observed again once, and the next verified view hands the draft back.
     expect(await channelReady()).toHaveValue('half-written reply');
-    expect(connects()).toBe(1);
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations + 1);
+    expect(connects()).toBe(0);
     expect(currentCrew().status).toBe('connected');
     expect(currentCrew().refreshError).toBeNull();
     expect(currentCrew().reconnecting).toBe(false);
-    // Not as the person: Sign in never opened, and no Retry or Connect was needed.
     expect(currentCrew().signIn.open).toBe(false);
     expect(watcher.seen.stopped).toBe(false);
     expect(
@@ -145,84 +188,79 @@ describe('coming back after the SSH bridge closed while Crew was away (Q2-01)', 
     ).not.toBeInTheDocument();
   });
 
-  it('shows the sign-in screen when the server wants a password, and never opens Sign in itself', async () => {
-    connectAnswer = () => {
-      throw new CrewHttpError('Crew SSH needs a password or code', 401, 'crew_ssh_auth_required');
-    };
+  it.each([
+    ['`biorouter crew disconnect` in a terminal'],
+    ['Disconnect in another window'],
+    ['an edit of the connection, which disconnects it'],
+  ])('never undoes a Disconnect made elsewhere: %s', async () => {
     renderCrew();
-    await channelReady();
-    watcher = watchForStopped();
+    const composer = await channelReady();
+    fireEvent.change(composer, { target: { value: 'half-written reply' } });
 
+    // From this window, every one of them is exactly this: the record says disconnected, and the
+    // observation ends with the daemon's generic code.
     dropTheBridge();
 
-    await waitFor(() => expect(currentCrew().screen).toBe('sign-in'));
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    expect(currentCrew().status).toBe('offline');
+    expect(currentCrew().reconnecting).toBe(false);
+    expect(connects()).toBe(0);
+
+    // Well past every follow-up read, and past any once-a-minute floor: still nothing connects.
+    const before = reads();
+    await wait(15 * 60_000);
+    expect(reads()).toBe(before + DAEMON_REDIAL_FOLLOW_MS.length);
+    expect(connects()).toBe(0);
+    expect(currentCrew().screen).toBe('offline');
+
+    // The one action that connects is the person's own, and the draft comes back with it.
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.offlineAction('Fixture') }));
+    expect(await channelReady()).toHaveValue('half-written reply');
     expect(connects()).toBe(1);
-    expect(currentCrew().status).toBe('sign-in-needed');
-    expect(currentCrew().signIn.open).toBe(false);
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('button', { name: emptyCopy.signInAction })).toBeInTheDocument();
-    expect(watcher.seen.stopped).toBe(false);
   });
 
-  it('never connects by itself after the person pressed Disconnect', async () => {
+  it('never connects after this window’s own Disconnect either', async () => {
     renderCrew();
     await channelReady();
     await act(async () => {
       await currentCrew().disconnect();
     });
     await waitFor(() => expect(currentCrew().screen).toBe('offline'));
-
-    // Connected again from a terminal (`biorouter crew connect`), then refreshed here.
-    saved = 'connected';
-    await act(async () => {
-      await currentCrew().refresh();
-    });
-    await channelReady();
-
-    dropTheBridge();
-
-    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    await wait(15 * 60_000);
     expect(connects()).toBe(0);
-    expect(currentCrew().status).toBe('offline');
-    // The one action that helps is the person's own.
-    const connect = screen.getByRole('button', { name: emptyCopy.offlineAction('Fixture') });
-    fireEvent.click(connect);
-    expect(await channelReady()).toBeInTheDocument();
-    expect(connects()).toBe(1);
+    expect(currentCrew().screen).toBe('offline');
   });
 
-  it('leaves a second drop within a minute to the person: the offline screen', async () => {
+  it('picks up the daemon’s own re-dial without a click, and still never connects', async () => {
     renderCrew();
-    await channelReady();
-    dropTheBridge();
-    await channelReady();
-    expect(connects()).toBe(1);
-    await waitFor(() => expect(currentCrew().status).toBe('connected'));
+    const composer = await channelReady();
+    fireEvent.change(composer, { target: { value: 'half-written reply' } });
 
     dropTheBridge();
-
     await waitFor(() => expect(currentCrew().screen).toBe('offline'));
-    expect(connects()).toBe(1);
-    expect(currentCrew().status).toBe('offline');
-    expect(currentCrew().reconnecting).toBe(false);
-    expect(
-      screen.getByRole('button', { name: emptyCopy.offlineAction('Fixture') })
-    ).toBeInTheDocument();
+
+    // The daemon's first retry after a network failure (20 s later) got through.
+    saved = 'connected';
+    await wait(DAEMON_REDIAL_FOLLOW_MS[0]!);
+
+    expect(await channelReady()).toHaveValue('half-written reply');
+    expect(connects()).toBe(0);
+    expect(currentCrew().status).toBe('connected');
+    expect(currentCrew().refreshError).toBeNull();
+    // Nothing more is read once it is back.
+    const after = reads();
+    await wait(15 * 60_000);
+    expect(reads()).toBe(after);
   });
 
-  it('keeps the old path when the daemon still calls the connection connected', async () => {
+  it('says so, with Retry, when the same end comes again sooner than the growing gap', async () => {
     renderCrew();
     await channelReady();
+    dropRepairedBridge();
+    await channelReady();
 
-    // The observation ended, but the saved record is still connected: not a dropped bridge.
-    act(() =>
-      daemon.emit({
-        type: 'error',
-        code: 'observation_refused',
-        clear: true,
-        error: DAEMON_SENTENCE,
-      })
-    );
+    await wait(QUIET_REOBSERVE_GAPS_MS[1]! - 5_000);
+    dropRepairedBridge();
 
     const bar = screen.getByTestId('crew-connection-bar');
     expect(await within(bar).findByRole('alert')).toHaveTextContent(
@@ -232,6 +270,30 @@ describe('coming back after the SSH bridge closed while Crew was away (Q2-01)', 
     expect(connects()).toBe(0);
     expect(currentCrew().status).toBe('updates-unavailable');
     expect(currentCrew().reconnecting).toBe(false);
+  });
+
+  it('shows a bridge that keeps dropping after three quiet re-observations, however spaced', async () => {
+    renderCrew();
+    await channelReady();
+    const bar = () => screen.getByTestId('crew-connection-bar');
+
+    // Three drops, each after a gap the back-off allows: each is picked up quietly.
+    for (const gap of [0, 20_000, 60_000]) {
+      await wait(gap);
+      dropRepairedBridge();
+      await channelReady();
+      expect(within(bar()).queryByRole('alert')).toBeNull();
+    }
+
+    // The fourth, minutes later but inside the window, is a failure worth seeing.
+    await wait(5 * 60_000);
+    dropRepairedBridge();
+    expect(await within(bar()).findByRole('alert')).toHaveTextContent(
+      crewObservationCopy.updatesStopped('lab')
+    );
+    expect(within(bar()).getByRole('button', { name: connectionBarCopy.retryName })).toBeEnabled();
+    expect(connects()).toBe(0);
+    expect(currentCrew().status).toBe('updates-unavailable');
   });
 
   it('does not connect by itself after an app restart, whose first list says disconnected', async () => {

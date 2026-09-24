@@ -3,7 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { crewObservationCopy } from '../state/copy';
 import type { ErrorSource, PaneIntent } from '../state/types';
 import { installResizeObserverStub } from '../test/crewTestUtils';
-import { channelReady, currentCrew, installDaemon, renderCrew, richMessages } from './harness';
+import {
+  channelReady,
+  currentCrew,
+  installDaemon,
+  keepEndingWith,
+  renderCrew,
+  richMessages,
+} from './harness';
 
 vi.mock('../crewApi', async () => {
   const actual = await vi.importActual<typeof import('../crewApi')>('../crewApi');
@@ -126,11 +133,15 @@ describe('every error renders exactly once (ui-redesign-spec, “Where errors re
     act(() => currentCrew().openDialog({ kind: 'connection-settings', connectionId: 'conn-1' }));
     await screen.findByRole('dialog');
 
-    act(() => daemon.emit({ type: 'error', error: 'observation broke', code: 'temporary' }));
+    // It ends, and ends the same way once observed again quietly (Q2-01).
+    const broke = { type: 'error', error: 'observation broke', code: 'temporary' };
+    keepEndingWith(broke);
+    act(() => daemon.emit(broke));
     // Nothing verified is left while the saved connection is read again (Q2-01)…
     expect(screen.queryByRole('textbox', { name: 'Message #general' })).toBeNull();
 
-    // …and it still calls the connection connected, so the end is said once, in the bar.
+    // …and it still calls the connection connected, so the end that came again is said once, in
+    // the bar.
     const stopped = crewObservationCopy.updatesStopped('lab');
     await waitFor(() => expect(screen.getAllByText(stopped)).toHaveLength(1));
     expect(within(region('bar')).getByText(stopped)).toBeInTheDocument();

@@ -372,6 +372,27 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
   };
 }
 
+/**
+ * Every later observation ends at once with `frame`, as a daemon that keeps refusing does. An end
+ * that a dropped connection explains, on a connection the daemon still calls connected, is
+ * observed again once, quietly (Q2-01); the same end again at once is then shown.
+ */
+export function keepEndingWith(frame: unknown): void {
+  mocked.observeCrew.mockImplementation(
+    async (
+      _connectionId: string,
+      _channelId: string | undefined,
+      _after: string | null,
+      signal: AbortSignal,
+      deliver: (frame: unknown) => void
+    ) => {
+      if (signal.aborted) return 'terminal';
+      deliver(frame);
+      return 'terminal';
+    }
+  );
+}
+
 let latest: CrewController | null = null;
 
 /** The controller as of the last render, for driving what a DOM query cannot. */

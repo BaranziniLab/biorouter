@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectionBarCopy } from '../channel/copy';
+import { emptyCopy } from '../onboarding/copy';
 import { crewObservationCopy, crewStatusCopy } from '../state/copy';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
@@ -194,7 +195,7 @@ describe('a member’s view when someone else’s invitation is accepted (P0-1)'
 });
 
 describe('a connection that drops while it is being observed again (Q2-01)', () => {
-  it('connects again by itself when the reload on the way back finds it disconnected', async () => {
+  it('shows it offline, and never connects it, when the reload on the way back finds it disconnected', async () => {
     let saved: 'connected' | 'disconnected' = 'connected';
     daemon.state.http = (path, method) => {
       if (path === '/connections' && method === 'GET')
@@ -205,13 +206,18 @@ describe('a connection that drops while it is being observed again (Q2-01)', () 
       }
       return undefined;
     };
+    const connects = () =>
+      mocked.crewHttp.mock.calls.filter(
+        ([path, method]) => path === `/connections/${connection.id}/connect` && method === 'POST'
+      ).length;
     renderCrew();
     const composer = await channelReady();
     fireEvent.change(composer, { target: { value: 'written before the drop' } });
     watcher = watchTheBar();
 
-    // Someone accepted an invitation (a recoverable end), and the bridge closed meanwhile: the
-    // reload before observing again says disconnected, and observing again is refused.
+    // Someone accepted an invitation (a recoverable end), and meanwhile the connection was
+    // disconnected — its bridge could not be dialled again, or someone disconnected it from a
+    // terminal: the reload before observing again says disconnected, and observing is refused.
     const answer = mocked.observeCrew.getMockImplementation()!;
     mocked.observeCrew.mockImplementation(
       async (
@@ -230,14 +236,17 @@ describe('a connection that drops while it is being observed again (Q2-01)', () 
     saved = 'disconnected';
     act(() => daemon.emit(ended('policy_changed')));
 
-    expect(await channelReady()).toHaveValue('written before the drop');
-    expect(
-      mocked.crewHttp.mock.calls.filter(
-        ([path, method]) => path === `/connections/${connection.id}/connect` && method === 'POST'
-      )
-    ).toHaveLength(1);
-    expect(currentCrew().status).toBe('connected');
+    // This window cannot tell the two apart, so it connects neither: the offline screen, whose
+    // Connect is the person's, and no alert in the bar.
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    expect(currentCrew().status).toBe('offline');
+    expect(connects()).toBe(0);
     expect(watcher.seen).toEqual({ alert: false, daemonWords: false });
+
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.offlineAction('Fixture') }));
+    expect(await channelReady()).toHaveValue('written before the drop');
+    expect(connects()).toBe(1);
+    expect(currentCrew().status).toBe('connected');
   });
 });
 

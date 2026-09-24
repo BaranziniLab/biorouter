@@ -588,9 +588,27 @@ describe('an end a dropped connection explains (live QA round 2, Q2-01)', () => 
     expect(crew.screen).toBe('connecting');
     expect(crew.draft.body).toBe('keep this');
 
-    // Still connected: not a dropped bridge after all. The old words, and the draft kept.
+    // Still connected: the daemon kept the bridge, or dialled it again (D-KEEPALIVE). Observed
+    // again quietly — no error, no Retry, and never a connect from here.
+    const before = sessions.length;
     await act(async () => {
       answer([connection]);
+    });
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(before));
+    expect(crew.refreshError).toBeNull();
+    expect(crew.reconnecting).toBe(true);
+    expect(crew.status).toBe('reconnecting');
+    await latestChannelObserver();
+    await waitFor(() => expect(crew.status).toBe('connected'));
+    expect(crew.reconnecting).toBe(false);
+    expect(crew.draft.body).toBe('keep this');
+
+    // The same end again at once is a failure, not an idle drop: said plainly, draft kept.
+    const again = holdTheReload();
+    const open = sessions.filter((item) => item.channelId === channel.id && !item.signal.aborted);
+    send(open[open.length - 1]!, ended('observation_refused'));
+    await act(async () => {
+      again([connection]);
     });
     await waitFor(() =>
       expect(crew.refreshError).toBe(
@@ -600,6 +618,24 @@ describe('an end a dropped connection explains (live QA round 2, Q2-01)', () => 
     expect(crew.refreshErrorCode).toBe('observation_refused');
     expect(crew.reconnecting).toBe(false);
     expect(crew.status).toBe('updates-unavailable');
+    expect(crew.draft.body).toBe('keep this');
+    expect(
+      mocks.crewHttp.mock.calls.filter(([path]) => path === `/connections/${connection.id}/connect`)
+    ).toHaveLength(0);
+  });
+
+  it('never connects when the saved record now says disconnected: whoever disconnected it', async () => {
+    // What a `biorouter crew disconnect` in a terminal, or Disconnect in another window, looks
+    // like from here: the same generic end, and a record that says disconnected.
+    const first = await observeChannel();
+    act(() => crew.setBody('keep this'));
+    const answer = holdTheReload();
+    send(first, ended('observation_refused'));
+    await act(async () => {
+      answer([{ ...connection, status: 'disconnected' }]);
+    });
+    await waitFor(() => expect(crew.status).toBe('offline'));
+    expect(crew.reconnecting).toBe(false);
     expect(crew.draft.body).toBe('keep this');
     expect(
       mocks.crewHttp.mock.calls.filter(([path]) => path === `/connections/${connection.id}/connect`)

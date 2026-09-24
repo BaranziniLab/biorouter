@@ -9,6 +9,7 @@ import {
   channelReady,
   currentCrew,
   installDaemon,
+  keepEndingWith,
   mocked,
   renderCrew,
   richMessages,
@@ -130,14 +131,17 @@ describe('re-verification never blanks the page (ui-redesign-spec, “Main-area 
     const menuName = channelHeaderCopy.menuName('general');
     expect(screen.getByRole('button', { name: menuName })).toBeInTheDocument();
 
-    act(() => daemon.emit({ type: 'error', error: 'observation broke', code: 'temporary' }));
+    // It ends, and ends the same way once observed again quietly (Q2-01).
+    const broke = { type: 'error', error: 'observation broke', code: 'temporary' };
+    keepEndingWith(broke);
+    act(() => daemon.emit(broke));
 
     await waitFor(() => expect(currentCrew().lastVerified).toBeNull());
     expect(screen.queryByText('Counts are in.')).toBeNull();
     expect(screen.queryByRole('button', { name: menuName })).toBeNull();
     // In plain words; the daemon's own sentence is never shown. An end without the workspace's
-    // answer is said only once the saved connection was read again and is still connected
-    // (Q2-01): nothing stale is drawn meanwhile.
+    // answer is said only once the saved connection was read again, is still connected, and a
+    // quiet re-observation ended the same way (Q2-01): nothing stale is drawn meanwhile.
     expect(await screen.findByText(crewObservationCopy.updatesStopped('lab'))).toBeInTheDocument();
     expect(currentCrew().lastVerified).toBeNull();
     expect(screen.queryByText(/observation broke/)).toBeNull();

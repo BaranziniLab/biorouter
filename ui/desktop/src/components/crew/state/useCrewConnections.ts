@@ -7,7 +7,7 @@ import {
   type SetStateAction,
 } from 'react';
 import { crewHttp, type CrewConnection } from '../crewApi';
-import { classifyConnectFailure, isTrustFailure, type ConnectFailureKind } from './connectFailure';
+import { classifyConnectFailure } from './connectFailure';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
 import type {
   ActionKey,
@@ -171,29 +171,62 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
 // ---------------------------------------------------------------------------------------------
 // What this app session remembers about each connection (live QA round 2, Q2-01 and Q2-18)
 // ---------------------------------------------------------------------------------------------
+//
+// SECURITY-SENSITIVE (human review). A connection whose live updates ended is never connected by
+// the renderer. A window's memory cannot know about a Disconnect made anywhere else — `biorouter
+// crew disconnect` in a terminal on the same daemon, the Disconnect button in a second window, an
+// edit (which disconnects) — and the daemon ends observation with the same `observation_refused`
+// for all of them and for a dropped bridge. So a renderer that connected "a dropped connection"
+// would undo exactly the Disconnects the daemon's own re-dial deliberately honours
+// (`disarm_idle_redial`). Re-dialling a dropped bridge is the daemon's alone (D-KEEPALIVE,
+// `crew/keepalive.rs`); the renderer only reads the saved record again, observes again when the
+// daemon holds a bridge, and leaves every connect to the person.
 
-/** Connections the person disconnected on purpose in this app session. */
-const disconnectedByPerson = new Set<string>();
-/** When each connection was last connected again by itself. */
-const automaticReconnects = new Map<string, number>();
+/** When each connection was last observed again quietly after a loss, in this window. */
+const quietReobserves = new Map<string, number[]>();
 /** Connections a verified view (or a `joined` answer) showed this app session. */
 const verifiedConnections = new Set<string>();
 
-/** At most one automatic reconnect per connection in this window. */
-export const AUTOMATIC_RECONNECT_INTERVAL_MS = 60_000;
-
-/** The person pressed Disconnect: never connect it again by itself until they connect it. */
-export function noteDisconnectedByPerson(connectionId: string): void {
-  if (connectionId) disconnectedByPerson.add(connectionId);
-}
+/**
+ * The least time since the previous quiet re-observation of a connection before the next one:
+ * none for the first, then 20 s, then 60 s — a growing back-off, as the daemon's own re-dial
+ * grows. Its length is also the cap: at most this many in `QUIET_REOBSERVE_WINDOW_MS`.
+ */
+export const QUIET_REOBSERVE_GAPS_MS: readonly number[] = [0, 20_000, 60_000];
+/**
+ * The window quiet re-observations are counted in. Past the cap, or sooner than the gap, a loss
+ * is shown with Retry at once: a bridge that keeps dropping is a real failure, not an idle drop.
+ */
+export const QUIET_REOBSERVE_WINDOW_MS = 10 * 60_000;
 
 /**
- * The person connected it in this app (Connect, Try again, Retry, Sign in). Nothing else forgets
- * a Disconnect — not even a verified view after a connect from a terminal: until the person
- * connects it here, it is never connected again by itself.
+ * After a loss the daemon now reports as disconnected, the gaps between the reads of the saved
+ * record that follow it: 30 s, then 60, 90 and 120 s (cumulative 30 s, 1.5, 3 and 5 min). A read
+ * is only `GET /connections`; it connects nothing. It catches the daemon's own re-dial of a
+ * network failure (tried again 20, 60 and 180 s apart) without a click: when the record says
+ * connected again, the observation, whose error is on show, observes again by itself.
  */
-export function clearDisconnectedByPerson(connectionId: string): void {
-  disconnectedByPerson.delete(connectionId);
+export const DAEMON_REDIAL_FOLLOW_MS: readonly number[] = [30_000, 60_000, 90_000, 120_000];
+
+/**
+ * Whether a connection that ended while the daemon still (or again) calls it connected may be
+ * observed again quietly now, recorded as taken when it may. Observing is read-only and verified
+ * as ever; this only limits how often a failure is hidden behind "Reconnecting…": the gaps grow
+ * (`QUIET_REOBSERVE_GAPS_MS`) and the count is capped per `QUIET_REOBSERVE_WINDOW_MS`. A person's
+ * Retry does not reset it — a bridge that keeps dropping keeps being shown.
+ */
+export function takeQuietReobserve(connectionId: string, now: number): boolean {
+  if (!connectionId) return false;
+  const recent = (quietReobserves.get(connectionId) ?? []).filter(
+    (at) => now - at < QUIET_REOBSERVE_WINDOW_MS
+  );
+  const last = recent[recent.length - 1];
+  const gap = QUIET_REOBSERVE_GAPS_MS[recent.length];
+  const allowed = gap !== undefined && (last === undefined || now - last >= gap);
+  if (allowed) recent.push(now);
+  if (recent.length) quietReobserves.set(connectionId, recent);
+  else quietReobserves.delete(connectionId);
+  return allowed;
 }
 
 /** This app session saw `connectionId` verified: its computer was known to the workspace. */
@@ -206,46 +239,9 @@ export function connectionVerifiedThisSession(connectionId: string): boolean {
   return verifiedConnections.has(connectionId);
 }
 
-export interface AutomaticReconnectInput {
-  connectionId: string;
-  /** The saved record's status, read again after the connection was lost. */
-  status: string | undefined;
-  /** The classified failure of the last connect or sign-in for this connection, if any. */
-  lastFailure: ConnectFailureKind | undefined;
-  now: number;
-}
-
-/**
- * Whether a connection that dropped while in use may be connected again without the person
- * (SECURITY-SENSITIVE, human review). All of these must hold:
- * - the daemon now calls it `disconnected` — never a restart's first list, which the caller
- *   never asks about, and never a record that is still `connected`;
- * - the person has not pressed Disconnect for it in this app session;
- * - its last connect did not fail on trust (an unknown or changed host key, a workspace identity
- *   mismatch) or on sign-in (`crew_ssh_auth_required`) — those need the person;
- * - no automatic attempt ran for it in the last `AUTOMATIC_RECONNECT_INTERVAL_MS`.
- *
- * The attempt itself is the same `POST …/connect` the Connect button sends, without
- * `userInitiated`, so Sign in never opens by itself.
- */
-export function mayReconnectAutomatically(input: AutomaticReconnectInput): boolean {
-  const { connectionId, status, lastFailure, now } = input;
-  if (!connectionId || status !== 'disconnected') return false;
-  if (disconnectedByPerson.has(connectionId)) return false;
-  if (isTrustFailure(lastFailure) || lastFailure === 'auth_required') return false;
-  const last = automaticReconnects.get(connectionId);
-  return last === undefined || now - last >= AUTOMATIC_RECONNECT_INTERVAL_MS;
-}
-
-/** Record an automatic attempt now, before it is made. */
-export function noteAutomaticReconnect(connectionId: string, now: number): void {
-  automaticReconnects.set(connectionId, now);
-}
-
 /** Forget everything kept for a removed connection, drafts and last channel included. */
 export function forgetConnectionMemory(connectionId: string): void {
-  disconnectedByPerson.delete(connectionId);
-  automaticReconnects.delete(connectionId);
+  quietReobserves.delete(connectionId);
   verifiedConnections.delete(connectionId);
   forgetConnectionDrafts(connectionId);
   forgetLastChannel(connectionId);
@@ -253,8 +249,7 @@ export function forgetConnectionMemory(connectionId: string): void {
 
 /** Forget what this module remembers. Tests share one module instance per file. */
 export function resetConnectionMemoryForTests(): void {
-  disconnectedByPerson.clear();
-  automaticReconnects.clear();
+  quietReobserves.clear();
   verifiedConnections.clear();
 }
 resetBetweenTests(resetConnectionMemoryForTests);
@@ -310,8 +305,9 @@ export interface CrewConnectionLifecycleContext {
  * with a password or code prompt opens Sign in by itself, once per attempt. Connect resolves true
  * once the daemon accepted it, and never throws.
  *
- * A Disconnect is remembered for this app session, and only a connect the person starts forgets
- * it: until then the connection is never connected again by itself (`mayReconnectAutomatically`).
+ * The loss of live updates never calls `connect` (`useCrewController`'s loss handler):
+ * re-dialling a dropped bridge is the daemon's (D-KEEPALIVE), which never follows a Disconnect,
+ * wherever it was made.
  */
 export function createConnectionLifecycle(context: CrewConnectionLifecycleContext) {
   const {
@@ -326,7 +322,6 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
   } = context;
   const connect = async (opts?: { userInitiated?: boolean }): Promise<boolean> => {
     const target = connectionId;
-    if (opts?.userInitiated) clearDisconnectedByPerson(target);
     const accepted = await act('connect', 'connect', async () => {
       try {
         await crewHttp(`/connections/${target}/connect`, 'POST', {});
@@ -345,7 +340,6 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
   };
   const disconnect = async () => {
     const target = connectionId;
-    noteDisconnectedByPerson(target);
     await act('global', 'disconnect', async () => {
       await crewHttp(`/connections/${target}/disconnect`, 'POST', {});
       stopObserving();

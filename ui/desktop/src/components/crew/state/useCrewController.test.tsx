@@ -6,11 +6,10 @@ import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from './copy';
 import { rememberLastChannel, stashedDraft } from './draftStash';
 import {
-  AUTOMATIC_RECONNECT_INTERVAL_MS,
-  mayReconnectAutomatically,
-  noteAutomaticReconnect,
-  noteDisconnectedByPerson,
-  clearDisconnectedByPerson,
+  forgetConnectionMemory,
+  QUIET_REOBSERVE_GAPS_MS,
+  QUIET_REOBSERVE_WINDOW_MS,
+  takeQuietReobserve,
 } from './useCrewConnections';
 import { teamForView } from './useCrewObservation';
 import {
@@ -142,6 +141,17 @@ function controllableObserver(): Observation[] {
       })
   );
   return sessions;
+}
+
+/**
+ * End the latest observation with `frame`, and the quiet re-observation that follows it the same
+ * way at once (Q2-01): a second end within `QUIET_REOBSERVE_GAPS_MS[1]` is shown, not hidden.
+ */
+async function endTwice(sessions: Observation[], frame: unknown) {
+  const before = sessions.length;
+  act(() => sessions[sessions.length - 1]!.receive(frame));
+  await waitFor(() => expect(sessions.length).toBeGreaterThan(before));
+  act(() => sessions[sessions.length - 1]!.receive(frame));
 }
 
 /** An observer that answers every call with a verified state and the channel's messages. */
@@ -369,14 +379,12 @@ describe('the last verified view', () => {
     expect(crew.effectivePrivacy).toBeNull();
 
     await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
-    act(() =>
-      sessions[sessions.length - 1]!.receive({
-        type: 'error',
-        clear: true,
-        code: 'observation_refused',
-        error: 'Room observation ended.',
-      })
-    );
+    await endTwice(sessions, {
+      type: 'error',
+      clear: true,
+      code: 'observation_refused',
+      error: 'Room observation ended.',
+    });
     await waitFor(() => expect(crew.lastVerified).toBeNull());
     // Plain words, never the daemon's sentence; nothing about a draft the composer never held.
     expect(crew.refreshError).toBe(crewObservationCopy.updatesStopped('Fixture'));
@@ -397,15 +405,14 @@ describe('the last verified view', () => {
     act(() => sessions[sessions.length - 1]!.receive(messagesFrame));
     await waitFor(() => expect(crew.screen).toBe('channel'));
 
-    // A dropped bridge: the observer fails, then Retry re-verifies.
-    act(() =>
-      sessions[sessions.length - 1]!.receive({
-        type: 'error',
-        clear: true,
-        code: 'observation_refused',
-        error: 'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]',
-      })
-    );
+    // A dropped bridge: the observer fails (and fails again once observed again quietly), then
+    // Retry re-verifies.
+    await endTwice(sessions, {
+      type: 'error',
+      clear: true,
+      code: 'observation_refused',
+      error: 'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]',
+    });
     await waitFor(() => expect(crew.screen).toBe('updates-paused'));
     await act(async () => {
       await crew.refresh();
@@ -866,59 +873,41 @@ describe('keeping one live observer', () => {
   });
 });
 
-describe('when a dropped connection may be connected again by itself (Q2-01, SECURITY-SENSITIVE)', () => {
+describe('how often a dropped view is observed again quietly (Q2-01, SECURITY-SENSITIVE)', () => {
   const now = 1_000_000;
-  const input = {
-    connectionId: 'conn-1',
-    status: 'disconnected',
-    lastFailure: undefined,
-    now,
-  };
+  const [, second, third] = QUIET_REOBSERVE_GAPS_MS;
 
-  it('only when the daemon now calls it disconnected', () => {
-    expect(mayReconnectAutomatically(input)).toBe(true);
-    expect(mayReconnectAutomatically({ ...input, status: 'connected' })).toBe(false);
-    expect(mayReconnectAutomatically({ ...input, status: undefined })).toBe(false);
-    expect(mayReconnectAutomatically({ ...input, status: 'authentication_required' })).toBe(false);
-    expect(mayReconnectAutomatically({ ...input, connectionId: '' })).toBe(false);
+  it('grows the gap: the first at once, the second after 20 s, the third after 60 s', () => {
+    expect(QUIET_REOBSERVE_GAPS_MS).toEqual([0, 20_000, 60_000]);
+    expect(takeQuietReobserve('conn-1', now)).toBe(true);
+    expect(takeQuietReobserve('conn-1', now + second! - 1)).toBe(false);
+    expect(takeQuietReobserve('conn-1', now + second!)).toBe(true);
+    expect(takeQuietReobserve('conn-1', now + second! + third! - 1)).toBe(false);
+    expect(takeQuietReobserve('conn-1', now + second! + third!)).toBe(true);
   });
 
-  it('never after the person pressed Disconnect, until they connect it themselves', () => {
-    noteDisconnectedByPerson('conn-1');
-    expect(mayReconnectAutomatically(input)).toBe(false);
-    expect(mayReconnectAutomatically({ ...input, connectionId: 'conn-2' })).toBe(true);
-    clearDisconnectedByPerson('conn-1');
-    expect(mayReconnectAutomatically(input)).toBe(true);
+  it('is capped: a bridge that keeps dropping is shown, however far apart the drops are', () => {
+    // Every 61 s, as a bridge that fails a minute after each repair would.
+    const drops = [0, 61_000, 122_000, 183_000, 244_000, 305_000].map((at) => now + at);
+    expect(drops.map((at) => takeQuietReobserve('conn-1', at))).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    // Only once the window has passed the earlier ones does a drop get one again.
+    expect(takeQuietReobserve('conn-1', now + QUIET_REOBSERVE_WINDOW_MS + 122_000)).toBe(true);
   });
 
-  it.each([
-    'host_key_unknown',
-    'host_key_changed',
-    'workspace_identity_mismatch',
-    'auth_required',
-  ] as const)('never after a connect that failed with %s: that needs the person', (kind) => {
-    expect(mayReconnectAutomatically({ ...input, lastFailure: kind })).toBe(false);
-  });
-
-  it.each(['unreachable', 'ssh_failed', 'bridge_missing', 'unknown'] as const)(
-    'still after a connect that failed with %s',
-    (kind) => {
-      expect(mayReconnectAutomatically({ ...input, lastFailure: kind })).toBe(true);
-    }
-  );
-
-  it('at most once a minute per connection', () => {
-    noteAutomaticReconnect('conn-1', now);
-    expect(mayReconnectAutomatically({ ...input, now: now + 1 })).toBe(false);
-    expect(
-      mayReconnectAutomatically({ ...input, now: now + AUTOMATIC_RECONNECT_INTERVAL_MS - 1 })
-    ).toBe(false);
-    expect(mayReconnectAutomatically({ ...input, connectionId: 'conn-2', now: now + 1 })).toBe(
-      true
-    );
-    expect(
-      mayReconnectAutomatically({ ...input, now: now + AUTOMATIC_RECONNECT_INTERVAL_MS })
-    ).toBe(true);
+  it('counts each connection on its own, forgets a removed one, and never takes an empty id', () => {
+    for (const at of [0, 20_000, 80_000]) expect(takeQuietReobserve('conn-1', now + at)).toBe(true);
+    expect(takeQuietReobserve('conn-1', now + 500_000)).toBe(false);
+    expect(takeQuietReobserve('conn-2', now + 500_000)).toBe(true);
+    forgetConnectionMemory('conn-1');
+    expect(takeQuietReobserve('conn-1', now + 500_000)).toBe(true);
+    expect(takeQuietReobserve('', now)).toBe(false);
   });
 });
 

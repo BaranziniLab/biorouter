@@ -473,11 +473,13 @@ describe('CrewView action and uncertain-start regressions', () => {
   it('retains the idempotency key when observation fails during an in-flight send', async () => {
     let releasePost!: () => void;
     let failObserver: (() => void) | undefined;
+    let failing = false;
     let attempts = 0;
     const requestIds: string[] = [];
     const post = new Promise<void>((resolve) => {
       releasePost = resolve;
     });
+    const failure = { type: 'error', error: 'temporary observation failure', code: 'temporary' };
     mocks.observeCrew.mockImplementation(
       async (
         _connectionId: string,
@@ -486,9 +488,16 @@ describe('CrewView action and uncertain-start regressions', () => {
         _signal: AbortSignal,
         receive: (frame: unknown) => void
       ) => {
+        // Once it fails it keeps failing, so the quiet re-observation (Q2-01) ends the same way.
+        if (failing) {
+          receive(failure);
+          return 'terminal';
+        }
         receive(observerState());
-        failObserver = () =>
-          receive({ type: 'error', error: 'temporary observation failure', code: 'temporary' });
+        failObserver = () => {
+          failing = true;
+          receive(failure);
+        };
         return 'terminal';
       }
     );
@@ -711,7 +720,8 @@ describe('CrewView action and uncertain-start regressions', () => {
       ).toBeInTheDocument()
     );
     expect(screen.queryByText(/observer temporarily unavailable/)).toBeNull();
-    expect(mocks.observeCrew.mock.calls.length).toBe(beforeFailure + 1);
+    // The failed observation, and the one quiet re-observation that ended the same way (Q2-01).
+    expect(mocks.observeCrew.mock.calls.length).toBe(beforeFailure + 2);
 
     observerMode = 'success';
     fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));

@@ -75,8 +75,9 @@ export interface ConnectionStatusInput {
    */
   reverifying?: boolean;
   /**
-   * The connection dropped while in use and Crew is reloading it and connecting it again by
-   * itself (Q2-01): "Reconnecting…", above "Offline" and "Updates unavailable". Absent: false.
+   * Live updates ended as a dropped connection would, and Crew is reading the saved record again
+   * or observing it again quietly over the daemon's bridge (Q2-01): "Reconnecting…", above
+   * "Offline" and "Updates unavailable". Absent: false.
    */
   reconnecting?: boolean;
 }
@@ -156,8 +157,8 @@ export interface CrewScreenInput {
   observationError: boolean;
   notJoined: boolean;
   /**
-   * Crew is connecting a dropped connection again by itself (Q2-01): the connecting screen, never
-   * the "updates stopped" one. Absent: false.
+   * Crew is picking a dropped view up again (Q2-01): the connecting screen, never the "updates
+   * stopped" one. Absent: false.
    */
   reconnecting?: boolean;
 }

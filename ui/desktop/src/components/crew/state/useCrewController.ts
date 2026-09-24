@@ -10,11 +10,10 @@ import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
 import { failureMessage, isFinalObservationEnd } from './observationFailure';
 import {
-  clearDisconnectedByPerson,
   connectionVerifiedThisSession,
   createConnectionLifecycle,
-  mayReconnectAutomatically,
-  noteAutomaticReconnect,
+  DAEMON_REDIAL_FOLLOW_MS,
+  takeQuietReobserve,
   useCrewConnectFailures,
   useCrewConnections,
 } from './useCrewConnections';
@@ -97,7 +96,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const { resetSurfaces, openSignIn, closeSignIn } = surfaces;
   const [joinStatus, setJoinStatus] = useState<CrewJoinStatus | null>(null);
   const connectFailures = useCrewConnectFailures();
-  // The connection Crew is connecting again by itself after it dropped while in use (Q2-01).
+  // The connection whose observation ended as a dropped connection would (Q2-01): its saved record
+  // is being read again, or it is being observed again quietly. Never connected by the renderer.
   const [reconnecting, setReconnecting] = useState<string | null>(null);
   const lossHandler = useRef<(id: string, end: ObservationEnd) => void>(() => undefined);
   const onConnectionLost = useCallback(
@@ -288,17 +288,19 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft.setContextChannels([]);
   };
 
-  // Moves on every connection change, unmount and Disconnect: a loss handled before it is over.
+  // Moves on every connection change, unmount, Disconnect, and connect or Retry the person made:
+  // a loss handled before it is over. Also ends the reads that follow the daemon's re-dial.
   const lossToken = useRef(0);
-  useEffect(() => {
+  const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const settleLoss = useCallback(() => {
     lossToken.current += 1;
-  }, [connectionId]);
-  useEffect(
-    () => () => {
-      lossToken.current += 1;
-    },
-    []
-  );
+    if (followTimer.current !== undefined) clearTimeout(followTimer.current);
+    followTimer.current = undefined;
+  }, []);
+  useEffect(() => {
+    settleLoss();
+  }, [connectionId, settleLoss]);
+  useEffect(() => () => settleLoss(), [settleLoss]);
   const lifecycle = createConnectionLifecycle({
     connectionId,
     failures: connectFailures,
@@ -311,42 +313,72 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   });
   const connect = async (opts?: { userInitiated?: boolean }) => {
     if (opts?.userInitiated) {
-      // The person's own connect replaces any reconnect on the way.
-      lossToken.current += 1;
+      // The person's own connect replaces whatever a loss was waiting for.
+      settleLoss();
       setReconnecting(null);
     }
     await lifecycle.connect(opts);
   };
   const disconnect = async () => {
-    // A Disconnect ends any reconnect on the way: it neither connects nor reports anything.
-    lossToken.current += 1;
+    // A Disconnect ends the handling of any loss: nothing is observed or reported for it.
+    settleLoss();
     setReconnecting(null);
     await lifecycle.disconnect();
   };
 
-  // What the loss handler reads after its awaits: the latest render's selection, failure and
-  // connect, never the ones of the render that saw the loss.
-  const latest = useRef({ connectionId, failure: connectFailures.failure, lifecycle });
+  // What the loss handler reads after its awaits: the latest render's selection, never the one of
+  // the render that saw the loss.
+  const latestConnectionId = useRef(connectionId);
   useEffect(() => {
-    latest.current = { connectionId, failure: connectFailures.failure, lifecycle };
+    latestConnectionId.current = connectionId;
   });
 
   /**
-   * The observation ended in a way a dropped connection explains (live QA round 2, Q2-01): the
-   * broker closes an SSH bridge after 300 s with no request, and the daemon notices only at the
-   * next one. Read the saved record again; if the daemon now calls it disconnected and
-   * `mayReconnectAutomatically` allows it, connect it again by itself — once, not as the person
-   * (Sign in never opens by itself), through the same `POST …/connect` the Connect button sends.
-   * On success the new view is verified as ever and the draft comes back unless its scope moved;
-   * a failure is classified and drives the sign-in, unreachable or offline screen. Anything else,
-   * a reload that still says connected included, is reported as the observation's end, as before.
+   * Read the saved record again at `DAEMON_REDIAL_FOLLOW_MS`, and stop once it says connected (the
+   * observation hook then observes again by itself, its error being on show), once the reads run
+   * out, or once anything else settles the loss. Reads only: it never connects.
+   */
+  const followDaemonRedial = (lostId: string, token: number, step = 0) => {
+    const gap = DAEMON_REDIAL_FOLLOW_MS[step];
+    if (gap === undefined) return;
+    followTimer.current = setTimeout(() => {
+      followTimer.current = undefined;
+      if (token !== lossToken.current || latestConnectionId.current !== lostId) return;
+      void loadConnections()
+        .then(
+          (list) => list?.find((item) => item.id === lostId)?.status === 'connected',
+          () => false
+        )
+        .then((back) => {
+          if (back || token !== lossToken.current || latestConnectionId.current !== lostId) return;
+          followDaemonRedial(lostId, token, step + 1);
+        });
+    }, gap);
+  };
+
+  /**
+   * The observation ended in a way a dropped connection explains (live QA round 2, Q2-01).
+   * SECURITY-SENSITIVE (human review): this never connects. The daemon ends observation with the
+   * same `observation_refused` for a dropped bridge and for a Disconnect made anywhere else — a
+   * terminal (`biorouter crew disconnect`), another window, an edit — and this window cannot tell
+   * them apart; re-dialling is the daemon's alone (D-KEEPALIVE), and it never follows a Disconnect.
+   * So, after reading the saved record again:
+   * - the daemon still, or again, calls it connected (its keepalive kept the bridge, or its re-dial
+   *   repaired it): observe again, quietly, while `takeQuietReobserve` allows — "Reconnecting…"
+   *   until the new view verifies, the draft coming back unless its scope moved. Past the budget,
+   *   the end is shown with Retry: a bridge that keeps dropping is a failure worth seeing;
+   * - anything else (disconnected, whoever did it): the end is shown as it is, which on a
+   *   disconnected connection is the offline screen and its Connect — the person's to press — and
+   *   the record is read again a few times (`followDaemonRedial`) so the daemon's own re-dial
+   *   brings the view back without a click.
    */
   const handleConnectionLost = (lostId: string, end: ObservationEnd) => {
-    const token = ++lossToken.current;
+    settleLoss();
+    const token = lossToken.current;
     // The observer's generation at the loss: anything that observes again meanwhile (a selection,
     // a refresh) or stops observing moves it, and then this loss is no longer the news.
     const observed = generation.current;
-    const current = () => token === lossToken.current && latest.current.connectionId === lostId;
+    const current = () => token === lossToken.current && latestConnectionId.current === lostId;
     setReconnecting(lostId);
     void (async () => {
       let record: CrewConnection | undefined;
@@ -361,26 +393,15 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         setReconnecting((id) => (id === lostId ? null : id));
         return;
       }
-      const failure = latest.current.failure;
-      const now = Date.now();
-      if (
-        !mayReconnectAutomatically({
-          connectionId: lostId,
-          status: record?.status,
-          lastFailure: failure?.connectionId === lostId ? failure.kind : undefined,
-          now,
-        })
-      ) {
-        setReconnecting(null);
-        observationFailure(end.text, end.code);
+      if (record?.status === 'connected' && takeQuietReobserve(lostId, Date.now())) {
+        // "Reconnecting…" lasts until the new view verifies (`onVerifiedFrame`), or until that
+        // observation ends too and this decides again.
+        restartObservation();
         return;
       }
-      noteAutomaticReconnect(lostId, now);
-      const accepted = await latest.current.lifecycle.connect();
-      // Accepted: "Reconnecting…" lasts until the new view verifies (`onVerifiedFrame`), or
-      // until that observation ends too — and one attempt per minute is all it gets.
-      if (!accepted && token === lossToken.current)
-        setReconnecting((id) => (id === lostId ? null : id));
+      setReconnecting(null);
+      observationFailure(end.text, end.code);
+      if (record?.status === 'disconnected') followDaemonRedial(lostId, token);
     })();
   };
   useEffect(() => {
@@ -388,11 +409,12 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   });
 
   /**
-   * The connection bar's Retry (Q2-01): read the saved record first, and when the daemon no
-   * longer calls it connected, connect at once, as the person — rather than reveal "Offline" and
-   * leave Connect as a second step. Otherwise observe again.
+   * The connection bar's Retry (Q2-01), which the person presses: read the saved record first,
+   * and when the daemon no longer calls it connected, connect at once, as the person — rather
+   * than reveal "Offline" and leave Connect as a second step. Otherwise observe again.
    */
   const retryUpdates = async () => {
+    settleLoss();
     const target = connectionId;
     let record: CrewConnection | undefined;
     try {
@@ -409,7 +431,6 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
 
   const onSignedIn = () => {
     closeSignIn();
-    clearDisconnectedByPerson(connectionId);
     connectFailures.clear(connectionId);
     void act('global', 'sign-in', async () => {
       await loadConnections();

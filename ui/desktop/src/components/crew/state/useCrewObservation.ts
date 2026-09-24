@@ -262,8 +262,9 @@ export interface CrewObservationContext {
    * The observation ended in a way a dropped connection explains — the daemon called the
    * connection connected, and the end is not the workspace's answer about access or identity
    * (`mayBeConnectionLoss`). The protected view is already cleared, the draft kept, and nothing
-   * is reported yet: the controller reloads the saved record and either connects again by itself
-   * or reports `end` with `observationFailure` (live QA round 2, Q2-01). Absent: every end is
+   * is reported yet: the controller reloads the saved record and either observes again quietly
+   * (the daemon still or again calls it connected) or reports `end` with `observationFailure`
+   * (live QA round 2, Q2-01). It never connects: re-dialling is the daemon's. Absent: every end is
    * reported at once, as before.
    */
   onConnectionLost?(connectionId: string, end: ObservationEnd): void;
@@ -704,8 +705,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      * The observation ended, by a terminal frame or a failure. A recoverable end on a connection
      * the daemon calls connected is observed again by itself — the draft kept, no error shown —
      * until the attempts run out. An end a dropped connection explains, on a connection believed
-     * connected, goes to the controller, which reloads the record and may connect it again by
-     * itself (Q2-01). Anything else, and running out, is shown in plain words.
+     * connected, goes to the controller, which reloads the record and may observe it again quietly
+     * (Q2-01); it never connects. Anything else, and running out, is shown in plain words.
      */
     const ended = (code: string | undefined, text: string, ownFailure = false) => {
       generation.current += 1;

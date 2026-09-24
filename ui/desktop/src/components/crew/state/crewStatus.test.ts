@@ -76,7 +76,7 @@ describe('deriveConnectionStatus, row by row', () => {
     expect(status({ reverifying: true, connection: disconnected })).toBe('offline');
   });
 
-  it('reads "Reconnecting…" while Crew connects a dropped connection again by itself (Q2-01)', () => {
+  it('reads "Reconnecting…" while Crew picks a dropped view up again (Q2-01)', () => {
     expect(CONNECTION_STATUS.reconnecting).toMatchObject({
       tone: 'neutral',
       word: crewStatusCopy.reconnecting,
@@ -284,7 +284,7 @@ describe('deriveCrewScreen, row by row', () => {
     ).toBe('sign-in');
   });
 
-  it('is connecting, never updates-paused or offline, while a dropped connection reconnects (Q2-01)', () => {
+  it('is connecting, never updates-paused or offline, while a dropped view is picked up again (Q2-01)', () => {
     expect(screen({ reconnecting: true })).toBe('connecting');
     expect(screen({ reconnecting: true, connection: disconnected })).toBe('connecting');
     expect(screen({ reconnecting: true, observationError: true })).toBe('connecting');

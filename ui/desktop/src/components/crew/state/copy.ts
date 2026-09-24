@@ -20,8 +20,9 @@ export const crewStatusCopy = {
   /** A verified workspace is being verified again after its live updates ended (re-observation). */
   updating: 'Updating…',
   /**
-   * The connection dropped while it was in use (an idle SSH bridge closed) and Crew is connecting
-   * it again by itself. Ranked above "Offline" and "Updates unavailable" (live QA round 2, Q2-01).
+   * Live updates ended as a dropped connection would, and Crew is checking the connection and
+   * picking the view up again over the bridge the daemon kept or dialled again. Ranked above
+   * "Offline" and "Updates unavailable" (live QA round 2, Q2-01).
    */
   reconnecting: 'Reconnecting…',
   signInNeeded: 'Sign-in needed',
