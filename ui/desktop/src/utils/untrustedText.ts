@@ -27,7 +27,7 @@
  * ⚠ The order is not a matter of taste. Any lone-surrogate (`\p{Cs}`) removal
  * in particular must run before this one: deleting a format character can
  * leave a high and a low surrogate adjacent and fuse them into a real pair, so
- * `\uD800⁦\uDC00` stripped here first becomes U+10000, which a `\p{Cs}`
+ * `\uD800\u2066\uDC00` stripped here first becomes U+10000, which a `\p{Cs}`
  * pass run afterwards can no longer see. The reference implementation is
  * `components/crew/identity/displayText.ts`.
  *

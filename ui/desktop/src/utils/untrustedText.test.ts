@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   sanitizeArtifactTitle,
@@ -77,5 +79,69 @@ describe('sanitizeArtifactTitle', () => {
     expect(sanitizeArtifactTitle('\u{202E}\n')).toBe('Artifact');
     expect(sanitizeArtifactTitle('', '\u{200B}')).toBe('Artifact');
     expect(sanitizeArtifactTitle(' ', 'Figure')).toBe('Figure');
+  });
+});
+
+/**
+ * No renderer source may carry a literal bidirectional control. An unmatched
+ * embedding, override or isolate reorders how the lines after it DISPLAY in an
+ * editor or a diff without changing what the compiler reads (the "Trojan
+ * Source" pattern), and GitHub flags the file for it. A comment in
+ * `untrustedText.ts` shipped one: a live U+2066 inside what was meant to be the
+ * example `\uD800\u2066\uDC00`, so the module that exists to strip these
+ * characters held an unterminated isolate, and the example read as an
+ * already-valid pair, hiding the very hazard it described. Write the escape.
+ *
+ * Scope: every `.ts`, `.tsx`, `.mts` and `.css` file under `ui/desktop/src`,
+ * not just the sanitizer modules — the walk costs well under a second and
+ * found no other hit. It skips the top-level `web/` and `bin/` (ignored build
+ * output and staged binaries, never source) and any `node_modules`.
+ */
+describe('source hygiene', () => {
+  // Braced escapes only, so this file never holds the characters it hunts.
+  const BIDI_CONTROL = /[\u{202A}-\u{202E}\u{2066}-\u{2069}\u{200E}\u{200F}\u{061C}]/u;
+
+  it('recognises every character it guards against', () => {
+    const guarded = [
+      0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+      0x061c,
+    ];
+    for (const codePoint of guarded) {
+      expect(BIDI_CONTROL.test(`a${String.fromCodePoint(codePoint)}b`)).toBe(true);
+    }
+    // The escape spelling is what a source file should hold instead.
+    expect(BIDI_CONTROL.test('`\\uD800\\u2066\\uDC00`')).toBe(false);
+  });
+
+  it('holds no literal bidirectional control character in any renderer source', () => {
+    const root = join(__dirname, '..');
+    const skipAtRoot = new Set(['web', 'bin']);
+    const hits: string[] = [];
+    let scanned = 0;
+
+    const walk = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules') continue;
+          if (directory === root && skipAtRoot.has(entry.name)) continue;
+          walk(path);
+        } else if (/\.(tsx?|mts|css)$/.test(entry.name)) {
+          scanned += 1;
+          readFileSync(path, 'utf8')
+            .split('\n')
+            .forEach((line, index) => {
+              if (BIDI_CONTROL.test(line)) {
+                hits.push(`${path.slice(root.length + 1)}:${index + 1}`);
+              }
+            });
+        }
+      }
+    };
+    walk(root);
+
+    // A walk that reads nothing would agree with a walk that finds nothing.
+    expect(scanned).toBeGreaterThan(200);
+    expect(hits).toEqual([]);
   });
 });
