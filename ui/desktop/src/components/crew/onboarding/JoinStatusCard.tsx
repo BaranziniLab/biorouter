@@ -25,6 +25,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { failureMessage } from '../state/observationFailure';
 import { joinStateCopy, legacyJoinCopy } from './copy';
 import { useMounted } from './fields';
+import { forgetJoinClaim, readJoinClaim, updateJoinClaim, useJoinClaim } from './joinClaimState';
 import { updateJoinContext, useJoinContext } from './joinContext';
 import { firstName, sshUsername } from './joinText';
 import { LegacyJoinForm } from './LegacyJoinForm';
@@ -83,25 +84,38 @@ export function JoinStatusCard() {
     pending: false,
     error: null,
   });
-  const claimedFor = useRef<string | null>(null);
-  // The approval whose claim has used its one automatic reconnect. Counted apart from
-  // `reconnectTried`, which every answered poll resets: a claim only ever runs after a poll
-  // answered, so that counter alone let a link that drops on each claim reconnect and re-claim,
-  // signed with the device key, without end.
-  const claimReconnectFor = useRef<string | null>(null);
-  // The approval whose claim still found no connection after that reconnect. It stays claimed
-  // (`claimedFor`), so nothing claims it again by itself, and the card offers Reconnect for as long
-  // as the status still says that approval, however many polls answer meanwhile.
-  const [claimLost, setClaimLost] = useState<string | null>(null);
+  // The claim and reconnect counters live in `joinClaimState`, per connection, not in this card:
+  // the card's own reconnect unmounts it (the screen is `connecting` while a connect runs), so a
+  // counter held here restarted from zero on every attempt. Callbacks read the store at the moment
+  // they run (`readJoinClaim`); render reads it through `useJoinClaim`. What they count:
+  // - `claimedFor`: the approval a claim was sent for; nothing claims it again by itself.
+  // - `claimReconnectFor`: the approval whose claim has used its one automatic reconnect. Counted
+  //   apart from `reconnectTried`, which every answered poll resets: a claim only ever runs after
+  //   a poll answered, so that counter alone let a link that drops on each claim reconnect and
+  //   re-claim, signed with the device key, without end.
+  // - `claimLost`: the approval whose claim still found no connection after that reconnect. It
+  //   stays claimed (`claimedFor`), so nothing claims it again by itself, and the card offers
+  //   Reconnect for as long as the status still says that approval, however many polls answer.
+  // - `reconnectTried`: the poll path's automatic reconnect, one per loss of the connection,
+  //   reset once the route answers again.
+  // - `connecting`: a connect the card started is running. A second not-connected answer (the poll
+  //   and a claim can both give one, and so can a new mount of this card) waits for its outcome
+  //   instead of counting as a failed attempt.
+  const claimState = useJoinClaim(connectionId);
   const [pollNonce, setPollNonce] = useState(0);
   const waitingId = useId();
   const [link, setLink] = useState<Link>('ok');
-  // The poll path's automatic reconnect: one per loss of the connection, reset once the route
-  // answers again. The claim path counts its own reconnect in `claimReconnectFor`.
-  const reconnectTried = useRef(false);
-  // A connect is running: a second not-connected answer (the poll and a claim can both give one)
-  // waits for its outcome instead of counting as a failed attempt.
-  const connecting = useRef(false);
+  // This mount met a not-connected answer while a connect was running, possibly one an earlier
+  // mount started (that connect is what unmounted it, so its own "ask again" lands on no mount):
+  // ask again once the store says the connect settled.
+  const awaitingConnect = useRef(false);
+  // The approval whose claim failed with an error this mount shows beside Retry. The error is this
+  // mount's display state, so when the mount goes the approval is released and the next mount
+  // claims it once, rather than spinning on a claim nobody is making.
+  const claimErrorFor = useRef<string | null>(null);
+  // This mount finished the join. The store forgets the connection then, so this flag is what stops
+  // a poll that still answers `approved` from claiming again before the screen moves on.
+  const joined = useRef(false);
   // The controller's `connect` is bound to the render it came from; read the newest one.
   const connectRef = useRef(crew.connect);
   useEffect(() => {
@@ -110,8 +124,10 @@ export function JoinStatusCard() {
 
   const finishJoined = useCallback(
     (claimed?: CrewJoinClaim) => {
-      claimReconnectFor.current = null;
-      setClaimLost(null);
+      // The join is done: nothing is left to count, and a later join of this connection starts
+      // clean.
+      joined.current = true;
+      forgetJoinClaim(connectionId);
       // The workspace named who invited this computer: remember it for the screens that follow.
       const inviter = claimed?.inviter;
       updateJoinContext(connectionId, {
@@ -132,46 +148,75 @@ export function JoinStatusCard() {
    * route still can't reach the workspace, stop asking and offer Reconnect instead of repeating a
    * poll error that can never clear by itself.
    *
-   * Two counters decide "once". A poll's reconnect is `reconnectTried`, reset by every answered
-   * poll. A claim's is `claimReconnectFor`, one per approval: the claim path clears
-   * `reconnectTried` before calling here so its one reconnect really runs, and does not call here
-   * a second time for the same approval.
+   * Two counters in the store decide "once", and survive the remount that connect causes. A
+   * poll's reconnect is `reconnectTried`, reset by every answered poll. A claim's is
+   * `claimReconnectFor`, one per approval: the claim path clears `reconnectTried` before calling
+   * here so its one reconnect really runs, and does not call here a second time for the same
+   * approval.
    */
   const recoverConnection = useCallback(() => {
     setPollError(null);
-    if (connecting.current) return;
-    if (reconnectTried.current) {
+    const counted = readJoinClaim(connectionId);
+    if (counted.connecting) {
+      awaitingConnect.current = true;
+      setLink('reconnecting');
+      return;
+    }
+    if (counted.reconnectTried) {
       setLink('lost');
       return;
     }
-    reconnectTried.current = true;
-    connecting.current = true;
+    updateJoinClaim(connectionId, { reconnectTried: true, connecting: true });
     setLink('reconnecting');
-    // `connect` records its own failure; the next answer says whether it helped.
+    // `connect` records its own failure; the next answer says whether it helped. The store is
+    // written whether or not this mount survived the connect; only this mount's state is gated.
     const askAgain = () => {
-      connecting.current = false;
-      if (mounted.current) setPollNonce((value) => value + 1);
+      updateJoinClaim(connectionId, { connecting: false });
+      if (!mounted.current) return;
+      awaitingConnect.current = false;
+      setPollNonce((value) => value + 1);
     };
     connectRef.current().then(askAgain, askAgain);
-  }, [mounted]);
+  }, [connectionId, mounted]);
 
   const reconnect = () => {
-    if (connecting.current) return;
-    connecting.current = true;
+    if (readJoinClaim(connectionId).connecting) return;
+    updateJoinClaim(connectionId, { connecting: true });
     setLink('reconnecting');
     const askAgain = () => {
-      connecting.current = false;
-      if (!mounted.current) return;
       // After a blocked claim, the person's connect stands in for that approval's reconnect: it
       // gets one fresh claim, and a claim that still finds no connection comes back to Reconnect
-      // rather than reconnecting by itself (`claimReconnectFor` still names the approval).
-      claimedFor.current = null;
-      setClaimLost(null);
+      // rather than reconnecting by itself (`claimReconnectFor` still names the approval). This
+      // runs before the mount check: the connect usually unmounted the card that was pressed, and
+      // the mount that replaced it must see the approval released, or Reconnect stays forever.
+      updateJoinClaim(connectionId, { connecting: false, claimedFor: null, claimLost: null });
+      if (!mounted.current) return;
+      awaitingConnect.current = false;
       setClaim({ pending: false, error: null });
       setPollNonce((value) => value + 1);
     };
     crew.connect({ userInitiated: true }).then(askAgain, askAgain);
   };
+
+  // A connect this mount did not start (or that unmounted the mount that did) settled: ask again.
+  // Keyed on the whole entry, not `connecting` alone, so a flip this mount never rendered in
+  // between still counts.
+  useEffect(() => {
+    if (claimState.connecting || !awaitingConnect.current) return;
+    awaitingConnect.current = false;
+    setPollNonce((value) => value + 1);
+  }, [claimState]);
+
+  // The error beside Retry goes with this mount; release its approval so the next mount claims it.
+  useEffect(
+    () => () => {
+      const approval = claimErrorFor.current;
+      if (approval && readJoinClaim(connectionId).claimedFor === approval) {
+        updateJoinClaim(connectionId, { claimedFor: null });
+      }
+    },
+    [connectionId]
+  );
 
   // Poll while visible; stop once the answer can no longer change by itself.
   useEffect(() => {
@@ -196,7 +241,7 @@ export function JoinStatusCard() {
         const result = await fetchJoinStatus(connectionId, controller.signal);
         if (controller.signal.aborted) return;
         setPollError(null);
-        reconnectTried.current = false;
+        updateJoinClaim(connectionId, { reconnectTried: false });
         setLink('ok');
         if (result.status === 'unsupported') {
           stopped = true;
@@ -249,41 +294,59 @@ export function JoinStatusCard() {
   const status = state.kind === 'status' ? state.status : null;
   useEffect(() => {
     if (status?.status !== 'approved' || !connectionId) return;
+    if (joined.current) return;
     const approval = approvalOf(connectionId, status);
-    if (claimedFor.current === approval) return;
-    claimedFor.current = approval;
+    if (readJoinClaim(connectionId).claimedFor === approval) return;
+    updateJoinClaim(connectionId, { claimedFor: approval });
     setClaim({ pending: true, error: null });
     claimJoin(connectionId).then(
       (claimed) => {
+        // Unmounted: leave the store as it is. The approval stays claimed, so no mount sends a
+        // second claim for a join that succeeded; the next mount's poll reads `joined` and
+        // finishes. (`finishJoined` is not called from here: it reports to the controller, whose
+        // selected connection may no longer be this one.)
         if (!mounted.current) return;
         setClaim({ pending: false, error: null });
         finishJoined(claimed);
       },
       (failure: unknown) => {
-        if (!mounted.current) return;
+        const counted = readJoinClaim(connectionId);
         if (crewErrorCode(failure) === CREW_NOT_CONNECTED) {
-          setClaim({ pending: false, error: null });
-          if (claimReconnectFor.current !== approval) {
+          if (counted.claimReconnectFor !== approval) {
             // Reconnect once by itself for this approval, and claim again once the connection is
-            // back and the status still says approved.
-            claimReconnectFor.current = approval;
-            claimedFor.current = null;
-            reconnectTried.current = false;
+            // back and the status still says approved. The reconnect is charged to the approval
+            // even when this mount is gone (no connect is started from an unmounted card): the
+            // next mount's claim is the "again", and it cannot reconnect by itself a second time.
+            updateJoinClaim(connectionId, {
+              claimReconnectFor: approval,
+              claimedFor: null,
+              reconnectTried: false,
+            });
+            if (!mounted.current) return;
+            setClaim({ pending: false, error: null });
             recoverConnection();
             return;
           }
           // That reconnect did not help. Keep the approval claimed so no poll claims it again by
           // itself, and wait for the person to press Reconnect.
-          setClaimLost(approval);
+          updateJoinClaim(connectionId, { claimLost: approval });
+          if (mounted.current) setClaim({ pending: false, error: null });
+          return;
+        }
+        if (!mounted.current) {
+          // The outcome lands on no mount: release the approval, or the next mount would spin on
+          // a claim nobody is making.
+          if (counted.claimedFor === approval) updateJoinClaim(connectionId, { claimedFor: null });
           return;
         }
         if (crewErrorCode(failure) === CREW_JOIN_CODE_MISMATCH) {
           // The server now expects a different code: read the status again at once.
-          claimedFor.current = null;
+          updateJoinClaim(connectionId, { claimedFor: null });
           setClaim({ pending: false, error: null });
           setPollNonce((value) => value + 1);
           return;
         }
+        claimErrorFor.current = approval;
         setClaim({
           pending: false,
           error: failureMessage(failure, joinStateCopy.claimFailed),
@@ -294,9 +357,8 @@ export function JoinStatusCard() {
 
   const retryClaim = () => {
     // A person's press: one fresh claim, with its own automatic reconnect if the link dropped.
-    claimReconnectFor.current = null;
-    claimedFor.current = null;
-    setClaimLost(null);
+    claimErrorFor.current = null;
+    updateJoinClaim(connectionId, { claimReconnectFor: null, claimedFor: null, claimLost: null });
     setClaim({ pending: false, error: null });
     setPollNonce((value) => value + 1);
   };
@@ -324,7 +386,9 @@ export function JoinStatusCard() {
   const addDevice = status?.add_device === true;
   // The claim for the approval on screen found no connection twice: offer Reconnect.
   const claimBlocked =
-    status?.status === 'approved' && claimLost === approvalOf(connectionId, status);
+    status?.status === 'approved' && claimState.claimLost === approvalOf(connectionId, status);
+  // A connect the card started is running, whichever mount started it.
+  const reconnecting = link === 'reconnecting' || claimState.connecting;
 
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
@@ -439,7 +503,7 @@ export function JoinStatusCard() {
   return (
     <SetupScreen>
       {card}
-      {link === 'reconnecting' ? (
+      {reconnecting ? (
         <div className="crew-onboard-card">
           <Note tone="neutral" role="status" testId="crew-join-reconnecting">
             {joinStateCopy.reconnecting(workspace)}

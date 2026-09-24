@@ -2,10 +2,13 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CREW_NOT_CONNECTED } from '../api/join';
 import { CrewHttpError } from '../crewApi';
+import { deriveCrewScreen } from '../state/crewStatus';
 import { joinStateCopy, legacyJoinCopy } from './copy';
+import { resetJoinClaimForTests } from './joinClaimState';
 import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { JOIN_POLL_INTERVAL_MS, JoinStatusCard, LEGACY_JOIN_STATUS } from './JoinStatusCard';
-import { DEVICE_KEY, fakeConnection, makeCrew, renderWithCrew } from './testCrew';
+import { OnboardingScreen } from './OnboardingScreen';
+import { DEVICE_KEY, fakeConnection, makeCrew, renderWithCrew, type CrewRender } from './testCrew';
 
 const mocks = vi.hoisted(() => ({ crewHttp: vi.fn() }));
 
@@ -41,9 +44,81 @@ function renderCard(overrides = {}) {
   return { crew };
 }
 
+/** The screen the real derivation picks for a saved, not-yet-joined connection. */
+function joinScreen(inFlight: boolean) {
+  return deriveCrewScreen({
+    connectionsState: 'loaded',
+    connectionCount: 1,
+    connection: fakeConnection(),
+    lastConnectFailure: null,
+    inFlight,
+    signInOpen: false,
+    view: null,
+    channelId: '',
+    observationError: false,
+    notJoined: true,
+  });
+}
+
+/**
+ * The card inside the real screen switch, with a `connect` that marks itself pending for 100 ms
+ * the way the controller's `act('connect')` does. While it runs, the real derivation says
+ * `connecting`, so `ConnectingCard` replaces the card; when it settles the card comes back as a new
+ * mount. The card's own reconnect therefore remounts it, which is what the real app does.
+ *
+ * Each `update` renders inside React's `act` (the render helper wraps it). The 100 ms wait is a
+ * fake timer that `advance` fires, so no `act` scope is left open across the steps.
+ * `settleAfterRemountMs` makes `connect`'s promise settle that long after the card came back, so
+ * the new mount meets a connect that an earlier mount started and that is still running.
+ */
+function renderRemountingScreen({ settleAfterRemountMs = 0 } = {}) {
+  let rendered: CrewRender | null = null;
+  let inFlight = false;
+  const connect = vi.fn(async (_opts?: { userInitiated?: boolean }) => {
+    inFlight = true;
+    rendered?.update({ screen: joinScreen(inFlight) });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    inFlight = false;
+    rendered?.update({ screen: joinScreen(inFlight) });
+    if (settleAfterRemountMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, settleAfterRemountMs));
+    }
+  });
+  const crew = makeCrew({
+    connectionId: 'conn-1',
+    connection: fakeConnection(),
+    connections: [fakeConnection()],
+    screen: joinScreen(false),
+    connect,
+  });
+  rendered = renderWithCrew(<OnboardingScreen />, crew);
+  return { connect, rendered };
+}
+
+const countCalls = (method: string) =>
+  mocks.crewHttp.mock.calls.filter(([, called]) => called === method).length;
+
+/**
+ * Fake time in steps shorter than a connect. React renders an `act` scope's updates when the scope
+ * ends, so one long step would batch a connect's `connecting` and `join` screens into one render
+ * and the card would never unmount.
+ */
+async function advance(ms: number) {
+  const step = 50;
+  for (let passed = 0; passed < ms; passed += step) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(Math.min(step, ms - passed));
+    });
+  }
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
 beforeEach(() => {
   mocks.crewHttp.mockReset();
   resetJoinContextForTests();
+  resetJoinClaimForTests();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -350,6 +425,142 @@ describe('JoinStatusCard', () => {
     expect(connect).toHaveBeenLastCalledWith({ userInitiated: true });
     expect(count('POST')).toBe(3);
     expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
+  });
+
+  it('keeps the one automatic reconnect per approval across the remount its own connect causes', async () => {
+    vi.useFakeTimers();
+    // The loop measured in the real app (40 connects and 40 claims in 20 s): the card's reconnect
+    // shows `connecting`, which unmounts it, and each new mount claimed, found no connection and
+    // reconnected "once" again.
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET')
+        return { status: 'approved', inviter: ALICE, workspace_name: 'lab' };
+      if (path === '/connections/conn-1/join' && method === 'POST')
+        throw new CrewHttpError('Connect first.', 409, CREW_NOT_CONNECTED);
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    updateJoinContext('conn-1', { workspaceName: 'lab' });
+    const { connect } = renderRemountingScreen();
+
+    await advance(20_000);
+    // The first claim, one automatic reconnect (which remounted the card), one more claim.
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith();
+    expect(countCalls('POST')).toBe(2);
+    expect(screen.getByTestId('crew-join-not-connected')).toHaveTextContent(
+      joinStateCopy.notConnected('lab')
+    );
+    expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
+
+    // Nothing more happens by itself while the status keeps answering.
+    const gets = countCalls('GET');
+    await advance(15_000);
+    expect(countCalls('GET')).toBeGreaterThan(gets);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(countCalls('POST')).toBe(2);
+
+    // The person's press works across the remount it causes: exactly one fresh claim.
+    fireEvent.click(screen.getByRole('button', { name: joinStateCopy.reconnect }));
+    await advance(JOIN_POLL_INTERVAL_MS * 3);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect).toHaveBeenLastCalledWith({ userInitiated: true });
+    expect(countCalls('POST')).toBe(3);
+    expect(screen.getByRole('button', { name: joinStateCopy.reconnect })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['settles before the card comes back', 0],
+    // The new mount's poll meets the old mount's connect still running: it waits for that connect
+    // instead of counting a failed attempt, and asks again once it settles.
+    ['settles after the card came back', 300],
+  ])(
+    'keeps the poll’s one automatic reconnect across the remount its own connect causes (connect %s)',
+    async (_when, settleAfterRemountMs) => {
+      vi.useFakeTimers();
+      mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+        if (path === '/connections/conn-1/join' && method === 'GET')
+          throw new CrewHttpError('Connect first.', 409, CREW_NOT_CONNECTED);
+        throw new Error(`unexpected ${method} ${path}`);
+      });
+      updateJoinContext('conn-1', { workspaceName: 'lab' });
+      const { connect } = renderRemountingScreen({ settleAfterRemountMs });
+
+      await advance(20_000);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledWith();
+      expect(screen.getByTestId('crew-join-not-connected')).toHaveTextContent(
+        joinStateCopy.notConnected('lab')
+      );
+      expect(screen.queryByTestId('crew-join-reconnecting')).toBeNull();
+      expect(countCalls('POST')).toBe(0);
+    }
+  );
+
+  it('claims again on the next mount when the claim settled after the card unmounted', async () => {
+    vi.useFakeTimers();
+    // The claim is still out when a connect takes the card away; its outcome lands on no mount.
+    let answerClaim: ((value: unknown) => void) | null = null;
+    let polls = 0;
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET') {
+        polls += 1;
+        return { status: 'approved', inviter: ALICE, workspace_name: 'lab' };
+      }
+      if (path === '/connections/conn-1/join' && method === 'POST') {
+        if (countCalls('POST') > 1)
+          return { joined: true, status: 'joined', workspace_name: 'lab' };
+        return new Promise((resolve) => {
+          answerClaim = resolve;
+        });
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const { rendered } = renderRemountingScreen();
+    await advance(0);
+    expect(countCalls('POST')).toBe(1);
+    expect(polls).toBeGreaterThan(0);
+
+    // Unmount the card, let the claim fail with no mount to hear it, then bring the card back.
+    rendered.update({ screen: joinScreen(true) });
+    expect(screen.getByTestId('crew-connecting')).toBeInTheDocument();
+    await act(async () => {
+      answerClaim?.(Promise.reject(new CrewHttpError('Crew request failed (500)', 500)));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    rendered.update({ screen: joinScreen(false) });
+    await advance(JOIN_POLL_INTERVAL_MS * 2);
+
+    // The next mount claimed again instead of spinning on a claim nobody was making.
+    expect(countCalls('POST')).toBe(2);
+    expect(rendered.crew().setJoinStatus).toHaveBeenCalledWith('joined');
+  });
+
+  it('claims again on the next mount when this mount showed a claim error and was then replaced', async () => {
+    vi.useFakeTimers();
+    // A claim error sits beside Retry; then a poll finds the link down and the automatic reconnect
+    // replaces the card. The error went with that mount, so the next one must not spin forever.
+    let gets = 0;
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (path === '/connections/conn-1/join' && method === 'GET') {
+        gets += 1;
+        if (gets === 2) throw new CrewHttpError('Connect first.', 409, CREW_NOT_CONNECTED);
+        return { status: 'approved', inviter: ALICE, workspace_name: 'lab' };
+      }
+      if (path === '/connections/conn-1/join' && method === 'POST') {
+        if (countCalls('POST') === 1) throw new CrewHttpError('Crew request failed (500)', 500);
+        return { joined: true, status: 'joined', workspace_name: 'lab' };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const { connect, rendered } = renderRemountingScreen();
+    await advance(0);
+    expect(countCalls('POST')).toBe(1);
+    expect(screen.getByRole('button', { name: joinStateCopy.retry })).toBeInTheDocument();
+
+    await advance(JOIN_POLL_INTERVAL_MS * 2);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(countCalls('POST')).toBe(2);
+    expect(rendered.crew().setJoinStatus).toHaveBeenCalledWith('joined');
   });
 
   it('says so when the invitation adds this computer to the person’s account', async () => {
