@@ -15,6 +15,7 @@ import { accessStatusTone, splitAccessRows, type AccessRow } from './accessRows'
 import { accessCopy } from './copy';
 import { InlineConfirm, RevokeResultNote } from './RevokeControls';
 import type { GrantsStatus, RevokeOutcome } from './useCrewGrants';
+import '../crew-app.css';
 
 export interface AccessListProps {
   rows: readonly AccessRow[];
@@ -49,6 +50,10 @@ async function copyText(text: string): Promise<void> {
  * **Revoke** on an active chat row or **Stop** on a running task row, and `⋯` → Copy session ID.
  * Revoked and expired rows collapse under "Show revoked and expired (n)". Revoke and Stop each ask
  * inline first; what a revoke came to is said once, above the list.
+ *
+ * The row's line wraps (`.crew-access-row-*` in `crew-app.css`, authored rather than utilities):
+ * the badge and the actions share one end group, which moves to a line of its own whenever the
+ * title and destination could not keep about 160px, as in the 360px details pane.
  */
 export function AccessList({
   rows,
@@ -106,9 +111,9 @@ export function AccessList({
         data-access-status={row.status}
         data-access-kind={row.kind}
       >
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="crew-access-row-line">
           <Icon className="h-4 w-4 shrink-0 text-text-muted" aria-hidden />
-          <div className="min-w-0 flex-1">
+          <div className="crew-access-row-text">
             <p className="truncate text-label text-text-default">
               <bdi>{row.title}</bdi>
             </p>
@@ -123,82 +128,84 @@ export function AccessList({
               ) : null}
             </p>
           </div>
-          <Badge tone={accessStatusTone(row.status)}>{row.statusLabel}</Badge>
-          {confirmingThis ? null : (
-            <div className="flex shrink-0 items-center gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label={
-                  row.kind === 'task' ? accessCopy.openTaskName : accessCopy.openName(row.title)
-                }
-                onClick={() => onOpen(row)}
-              >
-                {accessCopy.open}
-              </Button>
-              {row.canRevoke ? (
-                <Button
-                  ref={(node) => {
-                    if (node) triggers.current.set(row.key, node);
-                  }}
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  disabled={busy}
-                  aria-label={accessCopy.revokeRowName(row.title)}
-                  onClick={() => setConfirming({ key: row.key, action: 'revoke' })}
-                >
-                  {accessCopy.revokeRow}
-                </Button>
-              ) : null}
-              {row.canRetry ? (
+          <div className="crew-access-row-end">
+            <Badge tone={accessStatusTone(row.status)}>{row.statusLabel}</Badge>
+            {confirmingThis ? null : (
+              <div className="crew-access-row-actions">
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  disabled={busy}
-                  aria-label={accessCopy.retryRowName(row.title)}
-                  onClick={() => void revoke(row)}
+                  aria-label={
+                    row.kind === 'task' ? accessCopy.openTaskName : accessCopy.openName(row.title)
+                  }
+                  onClick={() => onOpen(row)}
                 >
-                  {accessCopy.retry}
+                  {accessCopy.open}
                 </Button>
-              ) : null}
-              {row.canStop ? (
-                <Button
-                  ref={(node) => {
-                    if (node) triggers.current.set(row.key, node);
-                  }}
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  aria-label={accessCopy.stopRowName}
-                  onClick={() => setConfirming({ key: row.key, action: 'stop' })}
-                >
-                  {accessCopy.stopRow}
-                </Button>
-              ) : null}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+                {row.canRevoke ? (
+                  <Button
+                    ref={(node) => {
+                      if (node) triggers.current.set(row.key, node);
+                    }}
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={busy}
+                    aria-label={accessCopy.revokeRowName(row.title)}
+                    onClick={() => setConfirming({ key: row.key, action: 'revoke' })}
+                  >
+                    {accessCopy.revokeRow}
+                  </Button>
+                ) : null}
+                {row.canRetry ? (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    shape="round"
-                    aria-label={accessCopy.rowMore(row.title)}
+                    disabled={busy}
+                    aria-label={accessCopy.retryRowName(row.title)}
+                    onClick={() => void revoke(row)}
                   >
-                    <MoreHorizontal aria-hidden />
+                    {accessCopy.retry}
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => copySessionId(row)}>
-                    {accessCopy.copySessionId}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          )}
+                ) : null}
+                {row.canStop ? (
+                  <Button
+                    ref={(node) => {
+                      if (node) triggers.current.set(row.key, node);
+                    }}
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    aria-label={accessCopy.stopRowName}
+                    onClick={() => setConfirming({ key: row.key, action: 'stop' })}
+                  >
+                    {accessCopy.stopRow}
+                  </Button>
+                ) : null}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      shape="round"
+                      aria-label={accessCopy.rowMore(row.title)}
+                    >
+                      <MoreHorizontal aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => copySessionId(row)}>
+                      {accessCopy.copySessionId}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )}
+          </div>
         </div>
         {confirmingThis === 'revoke' ? (
           <InlineConfirm

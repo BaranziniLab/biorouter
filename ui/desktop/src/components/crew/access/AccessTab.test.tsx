@@ -224,6 +224,66 @@ describe('the Access tab', () => {
     expect(mocks.navigate).toHaveBeenCalledWith('/pair?resumeSessionId=task-1');
   });
 
+  /**
+   * The 360px pane squeezed a one-line row until the title and destination were zero wide and `⋯`
+   * was clipped. The row now wraps: the text block keeps a floor, and the badge and the actions
+   * move as ONE end group onto their own line. That only works if they are siblings in the right
+   * containers (flex-wrap acts on direct children), so the structure is what is asserted here.
+   * jsdom computes no layout and loads no stylesheet, so a width check here would prove nothing;
+   * the wrapping itself is `.crew-access-row-*` in `crew-app.css`.
+   */
+  it('keeps a row’s badge and actions together in one end group that can wrap below the text', async () => {
+    setup({});
+    const chat = await rowFor('Plot review');
+    const line = chat.querySelector('.crew-access-row-line');
+    const text = chat.querySelector('.crew-access-row-text');
+    const end = chat.querySelector('.crew-access-row-end');
+    const actions = chat.querySelector('.crew-access-row-actions');
+    if (!line || !text || !end || !actions) throw new Error('an access row part is missing');
+
+    // The line's direct children: the icon, the text block, then the end group, last.
+    expect(text.parentElement).toBe(line);
+    expect(end.parentElement).toBe(line);
+    expect(line.lastElementChild).toBe(end);
+    expect(text).toHaveTextContent('Plot review');
+    expect(text).toHaveTextContent('#general');
+    expect(end).not.toHaveTextContent('Plot review');
+
+    // The end group holds the badge first, then the actions, so they wrap as one.
+    expect(end.children).toHaveLength(2);
+    expect(end.firstElementChild?.textContent).toMatch(/^(?:Active|Expires )/);
+    expect(end.lastElementChild).toBe(actions);
+
+    // Accessible names and their order are unchanged, `⋯` included, and all in the end group.
+    const names = within(actions as HTMLElement)
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label'));
+    expect(names).toEqual([
+      accessCopy.openName('Plot review'),
+      accessCopy.revokeRowName('Plot review'),
+      accessCopy.rowMore('Plot review'),
+    ]);
+    expect(within(chat).getAllByRole('button')).toHaveLength(3);
+
+    const task = await rowFor(accessCopy.yourTask);
+    const taskActions = task.querySelector('.crew-access-row-end > .crew-access-row-actions');
+    if (!taskActions) throw new Error('the task row has no end group');
+    expect(
+      within(taskActions as HTMLElement)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label'))
+    ).toEqual([
+      accessCopy.openTaskName,
+      accessCopy.stopRowName,
+      accessCopy.rowMore(accessCopy.yourTask),
+    ]);
+
+    // While a revoke is confirmed inline, the badge stays in the end group and the actions leave.
+    fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
+    expect(chat.querySelector('.crew-access-row-actions')).toBeNull();
+    expect(chat.querySelector('.crew-access-row-end')?.children).toHaveLength(1);
+  });
+
   it('copies a session ID from the row’s menu, and only there', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

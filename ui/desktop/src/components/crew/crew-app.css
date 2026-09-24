@@ -1,8 +1,8 @@
 /* Crew — the redesigned layout's stylesheet (`.crew-app`).
 
    THE CONTRACT. It binds this file and every `crew/<area>/*.css` an area
-   package adds, and `crew/crewCss.sourceGuard.test.ts` enforces it. The legacy
-   `crew/crew.css` is exempt and dies with the legacy layout.
+   package adds, and `crew/crewCss.sourceGuard.test.ts` enforces it on every
+   stylesheet under `crew/`, with no exemptions.
 
    - Only `.crew-*` classes and `[data-*]` / `[aria-*]` state hooks. No element
      selectors (`.crew-view input` is how the old stylesheet restyled every
@@ -36,6 +36,10 @@
      .crew-crossfade > .crew-crossfade-item[data-state=open|closed]
      .crew-highlight                          the one-shot task-row wash
      .crew-setup                              a setup / onboarding column
+     .crew-access-row-line                    an access row's wrapping line:
+       .crew-access-row-text                    title + destination (>= 10rem)
+       .crew-access-row-end                     badge + actions, kept together
+         .crew-access-row-actions               Open, Revoke / Retry / Stop, ⋯
 
    The skin of each column (the sidebar's `bg-sidebar` + hairline, a header's
    `h-chrome` band) belongs to the component inside it. This file owns the
@@ -367,6 +371,48 @@
   width: 100%;
   max-width: var(--crew-setup-width);
   margin-inline: auto;
+}
+
+/* ── Access rows (`access/AccessList.tsx`) ───────────────────────────────────
+   A row of the Access tab and of Workspace settings → Agent access: an icon,
+   the title over `#destination (+n)`, then the status badge and the row's
+   actions. All of it on one unwrapping line did not fit the 360px pane: the
+   title and destination were squeezed to nothing and `⋯` was clipped. So the
+   line wraps. The text keeps at least 10rem (about 160px) and takes whatever
+   is spare; when it cannot keep that much, the badge and the actions move
+   together onto a line of their own, at the end edge. The end group never
+   shrinks, and it may wrap inside itself (badge over actions) rather than
+   grow past the row, so `⋯` is never cut off. Order and names are the
+   markup's; this only places them. */
+.crew-access-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  min-width: 0;
+}
+
+.crew-access-row-text {
+  flex: 1 1 10rem;
+  min-width: min(10rem, 100%);
+}
+
+.crew-access-row-end {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.crew-access-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 /* ── Reduced motion: every animated rule's resting state ────────────────────
