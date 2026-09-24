@@ -108,6 +108,168 @@ struct Scope {
     #[serde(default)]
     institution_policy: bool,
     expired: bool,
+    /// When the broker stops honoring the run on its own (seconds since the Unix epoch), as
+    /// `run.create` answered. Display only: the broker enforces it, so a list can show
+    /// Expired without a network call. `None` for a scope granted before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+    /// The names the person saw when they granted the run (D14). Display only and possibly
+    /// stale; captured from the admission snapshot because a worker may not read one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    labels: Option<AdmissionLabels>,
+}
+
+/// The display names of a run's identifiers, captured under the person's action when the
+/// run is admitted (naming design D13 and D14). Never authority: every check still compares
+/// the IDs, and the labels are not refreshed afterwards.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AdmissionLabels {
+    /// The person the agent acts for: `Display name (@username)`, or `@username` when they
+    /// never set a display name of their own (D13). `None` when the snapshot named no actor.
+    #[serde(default)]
+    pub you: Option<String>,
+    /// The workspace's own name, or this device's name for the connection when the
+    /// workspace has none.
+    pub workspace: String,
+    pub destination: ChannelLabel,
+    /// Every channel the run may read, the destination included, in the run's order.
+    #[serde(default)]
+    pub sources: Vec<ChannelLabel>,
+}
+
+/// One channel's display name.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ChannelLabel {
+    pub channel_id: String,
+    /// `#methods`.
+    pub label: String,
+    /// The channel's team, when the snapshot showed it; qualifies `#general` and its kin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+}
+
+/// What `hello` told this daemon about the broker it is connected to. Held in memory only:
+/// capabilities are not identity (D12), so they never enter the saved [`Connection`] and a
+/// refresh can never change its binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BrokerHello {
+    /// `2` when the v2 signature verified, so everything below is the workspace's own word;
+    /// `1` when only v1 did, so `capabilities` are unauthenticated hints and the other fields
+    /// are withheld.
+    pub signature_version: u8,
+    /// In the order the broker listed them.
+    pub capabilities: Vec<String>,
+    /// The workspace's name. Signed only under v2; `None` otherwise or when it has none.
+    pub workspace_name: Option<String>,
+    /// The workspace's privacy mode. Signed only under v2.
+    pub mode: Option<ClusterMode>,
+    /// The workspace's institution. Signed only under v2.
+    pub institution_id: Option<String>,
+    /// The workspace's policy epoch. Signed only under v2.
+    pub policy_epoch: Option<u64>,
+}
+
+/// A `hello` whose signature verified, with the node identity to pin.
+struct VerifiedHello {
+    node_id: String,
+    broker: BrokerHello,
+}
+
+/// The broker's workspace identity did not verify, or no longer matches what this connection
+/// pinned. Its text is the specific check that failed, unchanged; the type lets a route answer
+/// `crew_workspace_identity_mismatch` without matching on words.
+#[derive(Debug)]
+pub struct WorkspaceIdentityError(anyhow::Error);
+
+impl WorkspaceIdentityError {
+    fn wrap(error: anyhow::Error) -> anyhow::Error {
+        anyhow::Error::new(Self(error))
+    }
+}
+
+impl std::fmt::Display for WorkspaceIdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for WorkspaceIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// What revoking a chat's or task's grant achieved. It is returned only once the grant is
+/// stopped on this device **and** that stop is saved (RV-D1): the workspace's answer never
+/// decides whether this daemon keeps honoring the grant.
+#[derive(Debug)]
+pub struct RevokeOutcome {
+    /// The workspace confirmed `run.revoke`.
+    pub remote_confirmed: bool,
+    /// The broker's revoked run, when it confirmed.
+    pub run: Option<Value>,
+    /// Why the workspace did not confirm: the transport's or the broker's own error, so an
+    /// [`SshFailure`] can still be recognized.
+    pub remote_error: Option<anyhow::Error>,
+}
+
+impl RevokeOutcome {
+    /// The confirmed run, or a [`RevocationUnconfirmed`] error carrying the workspace's
+    /// refusal, for callers that treat anything short of confirmation as a failure.
+    pub fn into_confirmed(self) -> Result<Value> {
+        match (self.remote_confirmed, self.run, self.remote_error) {
+            (true, Some(run), _) => Ok(run),
+            (_, _, Some(error)) => Err(anyhow::Error::new(RevocationUnconfirmed(error))),
+            _ => Err(anyhow::Error::new(RevocationUnconfirmed(anyhow::anyhow!(
+                "The workspace did not confirm the revocation"
+            )))),
+        }
+    }
+}
+
+/// The grant stopped on this device, but the workspace has not confirmed `run.revoke`. Its
+/// text is the workspace's (or the transport's) error, unchanged.
+#[derive(Debug)]
+pub struct RevocationUnconfirmed(anyhow::Error);
+
+impl RevocationUnconfirmed {
+    /// Why the workspace did not confirm.
+    pub fn remote_error(&self) -> &anyhow::Error {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RevocationUnconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for RevocationUnconfirmed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// Shown to the person (and the model) when a revoked chat tries to use Crew.
+const GRANT_REVOKED: &str =
+    "This chat's Crew access was removed. Start a new chat, or grant access again from Crew.";
+/// Shown when the connection's privacy or policy moved after the grant was made.
+const GRANT_POLICY_CHANGED: &str =
+    "Crew settings changed since access was granted. Grant access again from Crew.";
+/// Shown when a chat that was never granted asks for a Crew run.
+const NO_GRANT: &str = "This chat doesn't have Crew access. Grant it access from Crew first.";
+/// A task whose grant was replaced by a newer one.
+const REPLACED_RUN: &str = "This task was replaced by a newer explicitly granted run; cancel it from its current conversation";
+
+/// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
+/// so no route, tool or pass-through can.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SignedDoor {
+    /// `human_request` and the daemon's own grant path.
+    Generic,
+    /// The S3a join (`authentication.rs`), which sends `auth.join` and nothing else.
+    Join,
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct Registry {
@@ -129,6 +291,10 @@ pub struct RunAdmission {
     pub run_id: String,
     pub context: String,
     pub institution_ids: BTreeSet<String>,
+    /// The names captured at admission; `context` carries the same labels for the model.
+    pub labels: AdmissionLabels,
+    /// When the broker stops honoring the run on its own, if it said.
+    pub expires_at: Option<u64>,
 }
 #[derive(Default)]
 pub struct RunPolicy {
@@ -149,6 +315,8 @@ pub struct CrewManager {
     registry: Mutex<Registry>,
     transports: Mutex<HashMap<String, Arc<Mutex<transport::Transport>>>>,
     lifecycle: StdMutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+    /// What each connected broker's `hello` said, keyed by connection ID. Memory only (D12).
+    brokers: StdMutex<HashMap<String, BrokerHello>>,
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -218,6 +386,8 @@ pub(crate) async fn install_test_scope(
             institution_ids: BTreeSet::new(),
             institution_policy: false,
             expired: false,
+            expires_at: None,
+            labels: None,
         },
     );
     drop(registry);
@@ -268,6 +438,211 @@ fn provider_binding(provider: &dyn Provider) -> String {
         provider.tier(),
         provider.affiliation()
     )
+}
+/// The fields `hello` v2 signs besides the pinned identity, read strictly: the signature covers
+/// their exact values, so a malformed field fails verification rather than being skipped.
+struct HelloV2Fields {
+    mode: biorouter_crew::Mode,
+    institution_id: Option<String>,
+    policy_epoch: u64,
+    name: Option<String>,
+    capabilities: Vec<String>,
+}
+impl HelloV2Fields {
+    fn read(hello: &Value) -> Result<Self> {
+        let invalid = || anyhow::anyhow!("Workspace identity signature is invalid");
+        let optional_text = |field: &str| match hello.get(field) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(invalid()),
+        };
+        Ok(Self {
+            mode: serde_json::from_value(hello.get("mode").cloned().ok_or_else(invalid)?)
+                .map_err(|_| invalid())?,
+            institution_id: optional_text("institution_id")?,
+            policy_epoch: hello["policy_epoch"].as_u64().ok_or_else(invalid)?,
+            name: optional_text("name")?,
+            capabilities: hello["capabilities"]
+                .as_array()
+                .ok_or_else(invalid)?
+                .iter()
+                .map(|entry| entry.as_str().map(str::to_owned).ok_or_else(invalid))
+                .collect::<Result<_>>()?,
+        })
+    }
+    /// Verify the v2 signature over the pinned identity and these fields, and only then hand
+    /// them on as the workspace's own word.
+    fn verify(
+        self,
+        c: &Connection,
+        challenge_nonce: &str,
+        node_id: &str,
+        verifying: &VerifyingKey,
+        signature: &Signature,
+    ) -> Result<BrokerHello> {
+        let capabilities: Vec<&str> = self.capabilities.iter().map(String::as_str).collect();
+        let signed = biorouter_crew::HelloV2 {
+            workspace_id: &c.workspace_id,
+            host_uid: c.owner_uid,
+            challenge_nonce,
+            workspace_public_key: &c.workspace_public_key,
+            node_id,
+            mode: &self.mode,
+            institution_id: self.institution_id.as_deref(),
+            policy_epoch: self.policy_epoch,
+            name: self.name.as_deref(),
+            capabilities: &capabilities,
+        }
+        .signing_payload();
+        verifying.verify(&signed, signature)?;
+        Ok(BrokerHello {
+            signature_version: 2,
+            capabilities: self.capabilities,
+            workspace_name: self
+                .name
+                .filter(|name| biorouter_crew::workspace_name_valid(name)),
+            mode: Some(match self.mode {
+                biorouter_crew::Mode::Private => ClusterMode::Private,
+                biorouter_crew::Mode::Public => ClusterMode::Public,
+            }),
+            institution_id: self.institution_id,
+            policy_epoch: Some(self.policy_epoch),
+        })
+    }
+}
+impl BrokerHello {
+    /// A `hello` only v1 signed: the capabilities are kept as unauthenticated hints (malformed
+    /// entries dropped), and nothing else it said is passed on.
+    fn unsigned(hello: &Value) -> Self {
+        Self {
+            signature_version: 1,
+            capabilities: hello["capabilities"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            workspace_name: None,
+            mode: None,
+            institution_id: None,
+            policy_epoch: None,
+        }
+    }
+}
+/// One of `hello`'s workspace signatures, if present. A present but malformed one is an error,
+/// never treated as absent.
+fn hello_signature(hello: &Value, field: &str) -> Result<Option<Signature>> {
+    hello
+        .get(field)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            let encoded = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Workspace identity signature is invalid"))?;
+            Ok(Signature::from_slice(&unhex(encoded)?)?)
+        })
+        .transpose()
+}
+/// Text from a broker snapshot made safe to show and to hand a model: invisible and control
+/// characters removed and whitespace collapsed. Empty when nothing visible is left.
+fn plain_label(text: &str) -> String {
+    biorouter_crew::clean(
+        &biorouter_crew::strip_ignorable(text)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>(),
+    )
+}
+/// A person as the design's display rule shows them to a model or in a list:
+/// `Display name (@username)`, or `@username` when they never set a display name of their own
+/// (D13: a nickname equal to the username, or one that sanitizes to it, is not a choice).
+fn person_label(principal: &Value, other_usernames: &[String]) -> Option<String> {
+    let username = plain_label(principal["username"].as_str()?);
+    if username.is_empty() {
+        return None;
+    }
+    let nickname = principal["display_name"]
+        .as_str()
+        .or_else(|| principal["nickname"].as_str())
+        .unwrap_or_default();
+    let display = biorouter_crew::sanitize_display_name(
+        nickname,
+        &username,
+        other_usernames
+            .iter()
+            .map(String::as_str)
+            .filter(|other| *other != username),
+    );
+    Some(if display == username {
+        format!("@{username}")
+    } else {
+        format!("{display} (@{username})")
+    })
+}
+/// The display labels of a run's identifiers, from the snapshot the person's own admission
+/// fetched. `sources` must already be the run's final list (destination included).
+fn admission_labels(
+    snapshot: &Value,
+    connection: &Connection,
+    channel: &str,
+    sources: &[String],
+) -> AdmissionLabels {
+    let usernames: Vec<String> = snapshot["principals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|principal| principal["username"].as_str())
+        .map(plain_label)
+        .collect();
+    let workspace = snapshot["workspace"]["name"]
+        .as_str()
+        .filter(|name| biorouter_crew::workspace_name_valid(name))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let local = plain_label(&connection.name);
+            if local.is_empty() {
+                "this workspace".into()
+            } else {
+                local
+            }
+        });
+    let channel_label = |id: &str| {
+        let found = snapshot["channels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["id"].as_str() == Some(id));
+        let name = found
+            .and_then(|entry| entry["name"].as_str())
+            .map(biorouter_crew::names::sanitize_channel_name)
+            .unwrap_or_else(|| biorouter_crew::names::UNTITLED_CHANNEL.to_owned());
+        let team = found
+            .and_then(|entry| entry["team_id"].as_str())
+            .and_then(|team_id| {
+                snapshot["teams"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|team| team["id"].as_str() == Some(team_id))
+            })
+            .and_then(|team| team["name"].as_str())
+            .map(biorouter_crew::sanitize_team_name);
+        ChannelLabel {
+            channel_id: id.to_owned(),
+            label: format!("#{name}"),
+            team,
+        }
+    };
+    AdmissionLabels {
+        you: person_label(&snapshot["actor"], &usernames),
+        workspace,
+        destination: channel_label(channel),
+        sources: sources.iter().map(|id| channel_label(id)).collect(),
+    }
 }
 fn file_credentials_enabled() -> bool {
     std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref() == Ok("true")
@@ -354,7 +729,30 @@ impl CrewManager {
             registry: Mutex::new(registry),
             transports: Mutex::new(HashMap::new()),
             lifecycle: StdMutex::new(HashMap::new()),
+            brokers: StdMutex::new(HashMap::new()),
         })
+    }
+    /// The capabilities the connected broker announced in its last verified `hello`, or
+    /// `None` when this process has not connected to it (or has since disconnected). They
+    /// are signed only when [`Self::broker_hello`] reports `signature_version` 2; either way
+    /// they only decide which requests to *offer*, and the broker still refuses what it does
+    /// not support.
+    pub fn capabilities(&self, id: &str) -> Option<Vec<String>> {
+        self.broker_hello(id).map(|hello| hello.capabilities)
+    }
+    /// Everything the connected broker's last verified `hello` said, for display.
+    pub fn broker_hello(&self, id: &str) -> Option<BrokerHello> {
+        self.brokers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+    fn forget_broker(&self, id: &str) {
+        self.brokers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
     }
     pub async fn credential_status(&self) -> Result<CredentialStatus> {
         let vault = self.credential_vault.clone();
@@ -381,7 +779,7 @@ impl CrewManager {
         self.connection(connection_id).await?;
         let registry = self.registry.lock().await;
         Ok(
-            json!({"grants": registry.scopes.iter().filter(|(_, scope)| scope.connection_id == connection_id).map(|(session, scope)| json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired})).collect::<Vec<_>>()}),
+            json!({"grants": registry.scopes.iter().filter(|(_, scope)| scope.connection_id == connection_id).map(|(session, scope)| json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels})).collect::<Vec<_>>()}),
         )
     }
     fn persist(&self, registry: &Registry) -> Result<()> {
@@ -780,11 +1178,24 @@ impl CrewManager {
             authentication_id: uuid::Uuid::new_v4().to_string(),
         })
     }
+    /// Check `hello` against what this connection pinned, and verify every workspace signature
+    /// it carries: v1 (`signature`) over the identity, and v2 (`signature_v2`) over the identity
+    /// plus the workspace's name, mode, institution, policy epoch and capabilities. At least one
+    /// must be present, and any present must verify, so a relay can strip v2 (downgrading those
+    /// fields to unauthenticated hints, which the caller withholds) but never alter them.
     fn verify_workspace_identity(
         c: &Connection,
         hello: &Value,
         challenge_nonce: &str,
-    ) -> Result<String> {
+    ) -> Result<VerifiedHello> {
+        Self::verify_workspace_identity_inner(c, hello, challenge_nonce)
+            .map_err(WorkspaceIdentityError::wrap)
+    }
+    fn verify_workspace_identity_inner(
+        c: &Connection,
+        hello: &Value,
+        challenge_nonce: &str,
+    ) -> Result<VerifiedHello> {
         ensure!(
             hello["workspace_id"].as_str() == Some(&c.workspace_id),
             "Workspace identity mismatch"
@@ -801,11 +1212,13 @@ impl CrewManager {
         let public_key: [u8; 32] = unhex(&c.workspace_public_key)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("Invalid workspace key"))?;
-        let signature = Signature::from_slice(&unhex(
-            hello["signature"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Workspace identity signature missing"))?,
-        )?)?;
+        let verifying = VerifyingKey::from_bytes(&public_key)?;
+        let v1 = hello_signature(hello, "signature")?;
+        let v2 = hello_signature(hello, "signature_v2")?;
+        ensure!(
+            v1.is_some() || v2.is_some(),
+            "Workspace identity signature missing"
+        );
         let node_id = hello["node_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Verified node identity is missing"))?;
@@ -816,15 +1229,26 @@ impl CrewManager {
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
             "Invalid node identity"
         );
-        let signed = serde_json::to_vec(&json!([
-            c.workspace_id,
-            c.owner_uid,
-            challenge_nonce,
-            c.workspace_public_key,
-            node_id
-        ]))?;
-        VerifyingKey::from_bytes(&public_key)?.verify(&signed, &signature)?;
-        Ok(node_id.to_string())
+        if let Some(v1) = v1 {
+            let signed = biorouter_crew::hello_v1_payload(
+                &c.workspace_id,
+                c.owner_uid,
+                challenge_nonce,
+                &c.workspace_public_key,
+                node_id,
+            );
+            verifying.verify(&signed, &v1)?;
+        }
+        let broker = match v2 {
+            Some(v2) => {
+                HelloV2Fields::read(hello)?.verify(c, challenge_nonce, node_id, &verifying, &v2)?
+            }
+            None => BrokerHello::unsigned(hello),
+        };
+        Ok(VerifiedHello {
+            node_id: node_id.to_string(),
+            broker,
+        })
     }
     pub async fn connection_guard(&self, id: &str) -> Result<tokio::sync::OwnedMutexGuard<()>> {
         let lock = {
@@ -861,7 +1285,23 @@ impl CrewManager {
                 None,
             )
             .await?;
-        let node_id = Self::verify_workspace_identity(&c, &hello, &challenge_nonce)?;
+        let verified = Self::verify_workspace_identity(&c, &hello, &challenge_nonce)?;
+        let connected = self.adopt_verified_hello(id, &c, verified).await?;
+        self.transports
+            .lock()
+            .await
+            .insert(id.into(), Arc::new(Mutex::new(transport)));
+        Ok(connected)
+    }
+    /// Pin the verified node, merge its cluster, persist, and only then remember what the
+    /// broker announced. Nothing from `hello` other than the node enters the saved connection.
+    async fn adopt_verified_hello(
+        &self,
+        id: &str,
+        c: &Connection,
+        verified: VerifiedHello,
+    ) -> Result<Connection> {
+        let VerifiedHello { node_id, broker } = verified;
         let mut registry = self.registry.lock().await;
         let current = registry
             .connections
@@ -869,14 +1309,15 @@ impl CrewManager {
             .find(|current| current.id == id)
             .ok_or_else(|| anyhow::anyhow!("Connection removed while connecting"))?;
         ensure!(
-            connection_binding(current)? == connection_binding(&c)?,
+            connection_binding(current)? == connection_binding(c)?,
             "Connection changed while authentication was pending; reconnect"
         );
         if let Some(previous) = &current.node_id {
-            ensure!(
-                previous == &node_id,
-                "Verified SSH node identity changed; create a newly verified connection"
-            );
+            if previous != &node_id {
+                return Err(WorkspaceIdentityError::wrap(anyhow::anyhow!(
+                    "Verified SSH node identity changed; create a newly verified connection"
+                )));
+            }
         }
         let mut groups: std::collections::BTreeSet<String> = registry
             .connections
@@ -937,10 +1378,10 @@ impl CrewManager {
             .cloned()
             .expect("validated connection");
         drop(registry);
-        self.transports
+        self.brokers
             .lock()
-            .await
-            .insert(id.into(), Arc::new(Mutex::new(transport)));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), broker);
         Ok(connected)
     }
     pub async fn disconnect(&self, id: &str) -> Result<()> {
@@ -970,6 +1411,9 @@ impl CrewManager {
         if let Some(t) = removed {
             t.lock().await.close().await;
         }
+        // The next connect may reach another broker binary (an upgrade, or an edited target),
+        // so what this one announced is not carried over.
+        self.forget_broker(id);
         let mut r = self.registry.lock().await;
         if let Some(c) = r.connections.iter_mut().find(|c| c.id == id) {
             c.status = "disconnected".into();
@@ -1033,9 +1477,48 @@ impl CrewManager {
         &self,
         id: &str,
         method: &str,
+        params: Value,
+        request_id: Option<String>,
+    ) -> Result<Value> {
+        self.signed_request_via(SignedDoor::Generic, id, method, params, request_id)
+            .await
+    }
+    /// The one door `auth.join` leaves this daemon through: the S3a join in
+    /// `authentication.rs`, signed with the connection's saved device key. Everything else,
+    /// every route and tool included, reaches the broker through [`Self::human_request`],
+    /// which refuses it.
+    #[allow(
+        dead_code,
+        reason = "the S3a join in authentication.rs is its caller; until then it keeps the guard's second arm reachable"
+    )]
+    async fn signed_join_request(
+        &self,
+        id: &str,
+        params: Value,
+        request_id: Option<String>,
+    ) -> Result<Value> {
+        self.signed_request_via(SignedDoor::Join, id, "auth.join", params, request_id)
+            .await
+    }
+    async fn signed_request_via(
+        &self,
+        door: SignedDoor,
+        id: &str,
+        method: &str,
         mut params: Value,
         request_id: Option<String>,
     ) -> Result<Value> {
+        // Joining is the daemon's own act, with the key it saved for this connection; the
+        // join status is read unsigned before authentication, as `hello` is. Neither may be
+        // sent on a caller's say-so, and the join door sends nothing else.
+        ensure!(
+            method != "enrollment.pending",
+            "Biorouter checks join status itself; it is never sent as a signed request"
+        );
+        ensure!(
+            (method == "auth.join") == (door == SignedDoor::Join),
+            "Only Biorouter's own join sends auth.join; it can't be sent as a Crew request"
+        );
         ensure!(params.is_object(), "Crew params must be an object");
         let c = self.connection(id).await?;
         if method == "run.create" {
@@ -1090,7 +1573,7 @@ impl CrewManager {
             hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
             "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
         );
-        if matches!(method, "auth.bootstrap" | "auth.enroll") {
+        if matches!(method, "auth.bootstrap" | "auth.enroll" | "auth.join") {
             ensure!(
                 params["public_key"].as_str() == Some(c.public_key.as_str()),
                 "Enrollment identity changed; refresh the saved connection before joining"
@@ -1197,7 +1680,7 @@ impl CrewManager {
         let c = self.connection(&s.connection_id).await?;
         self.validate_worker_scope(session, &s, &c).await?;
         Ok(
-            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
+            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":"labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.","context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
     pub async fn is_scoped(&self, session: &str) -> bool {
@@ -1210,11 +1693,7 @@ impl CrewManager {
             .scopes
             .get(session)
             .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "This conversation has no human-approved Crew run; grant it from Crew"
-                )
-            })
+            .ok_or_else(|| anyhow::anyhow!(NO_GRANT))
     }
     pub async fn check_dispatch(&self, session: &str, cap: &CallCapability) -> Result<()> {
         self.check_tier(session, cap.tier(), cap.affiliation())
@@ -1230,19 +1709,15 @@ impl CrewManager {
         let Some(s) = r.scopes.get(session) else {
             return Ok(());
         };
-        ensure!(
-            !s.expired && s.institution_policy,
-            "Crew run was revoked; request a fresh human grant"
-        );
+        ensure!(!s.expired, GRANT_REVOKED);
+        // A scope granted before institution policy existed never passed today's admission.
+        ensure!(s.institution_policy, GRANT_POLICY_CHANGED);
         let c = r
             .connections
             .iter()
             .find(|c| c.id == s.connection_id)
             .ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
-        ensure!(
-            s.epoch == c.policy_epoch,
-            "Crew policy changed; request a fresh human grant"
-        );
+        ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
         ensure!(
             tier != ProviderTier::Public
                 || (c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted),
@@ -1309,8 +1784,12 @@ impl CrewManager {
         Ok(self
             .checked_run_admission(id, channel, sources, provider, policy)
             .await?
+            .0
             .connection)
     }
+    /// Admission under the person's action: the one place a run's snapshot is fetched, so the
+    /// display labels are captured here (D14) and never by a worker. The labels cover
+    /// `sources` followed by `channel` when `sources` lacks it, which is the run's final list.
     async fn checked_run_admission(
         &self,
         id: &str,
@@ -1318,7 +1797,7 @@ impl CrewManager {
         sources: &[String],
         provider: &dyn Provider,
         policy: &RunPolicy,
-    ) -> Result<institution::Admission> {
+    ) -> Result<(institution::Admission, AdmissionLabels)> {
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
         ensure!(
@@ -1346,7 +1825,15 @@ impl CrewManager {
             .human_request(id, "workspace.snapshot", json!({}), None)
             .await?;
         let protected = institution::protected_sources(&snapshot, channel, sources)?;
-        institution::admission(connection, provider, policy, &snapshot, protected)
+        let mut listed = sources.to_vec();
+        if !listed.iter().any(|source| source == channel) {
+            listed.push(channel.into());
+        }
+        let labels = admission_labels(&snapshot, &connection, channel, &listed);
+        Ok((
+            institution::admission(connection, provider, policy, &snapshot, protected)?,
+            labels,
+        ))
     }
     pub async fn begin_run(
         &self,
@@ -1393,7 +1880,7 @@ impl CrewManager {
             }
         }
         let origin_restricted = policy.origin_restricted;
-        let admission = self
+        let (admission, labels) = self
             .checked_run_admission(id, channel, &sources, provider, &policy)
             .await?;
         let c = admission.connection;
@@ -1423,6 +1910,7 @@ impl CrewManager {
         let credential = result["credential"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Broker did not return a scoped credential"))?;
+        let expires_at = result["run"]["expires_at"].as_u64();
         self.write_credential(&format!("run:{session}"), credential)?;
         {
             let mut r = self.registry.lock().await;
@@ -1440,6 +1928,8 @@ impl CrewManager {
                     institution_ids: institution_ids.clone(),
                     institution_policy: true,
                     expired: false,
+                    expires_at,
+                    labels: Some(labels.clone()),
                 },
             );
             self.persist(&r)?;
@@ -1454,16 +1944,20 @@ impl CrewManager {
         Ok(RunAdmission {
             run_id,
             institution_ids,
+            expires_at,
             context: serde_json::to_string(&json!({
                 "connection_id": id,
                 "destination_channel_id": channel,
                 "source_channel_ids": sources,
+                "labels": labels,
+                "naming": "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
                 "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
                 "history_channel_id": channel,
                 "remote_files_enabled": !public && c.remote_root.is_some(),
                 "remote_path_base": "the granted SSH work directory; use relative paths such as crew-task.csv, never the local task working directory",
                 "history": context
             }))?,
+            labels,
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -1522,12 +2016,9 @@ impl CrewManager {
             !method.starts_with("remote.") || !s.public_provider,
             "Public models cannot access remote files/jobs"
         );
-        ensure!(!s.expired, "Crew run revoked");
+        ensure!(!s.expired, GRANT_REVOKED);
         let c = self.connection(&s.connection_id).await?;
-        ensure!(
-            s.epoch == c.policy_epoch,
-            "Crew policy changed; obtain a fresh grant"
-        );
+        ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
         ensure!(params.is_object(), "Crew params must be an object");
         if let Some(channel) = params.get("channel_id").and_then(Value::as_str) {
             ensure!(
@@ -1566,10 +2057,11 @@ impl CrewManager {
         expected_connection: &Connection,
     ) -> Result<()> {
         let registry = self.registry.lock().await;
-        let scope = registry
-            .scopes
-            .get(session)
-            .ok_or_else(|| anyhow::anyhow!("Crew run is unavailable"))?;
+        let scope = registry.scopes.get(session).ok_or_else(|| {
+            anyhow::anyhow!(
+                "This chat's Crew access is no longer available. Grant access again from Crew."
+            )
+        })?;
         let connection = registry
             .connections
             .iter()
@@ -1587,7 +2079,7 @@ impl CrewManager {
                 && connection.workspace_public_key == expected_connection.workspace_public_key
                 && (!scope.public_provider
                     || (connection.mode == ClusterMode::Public && !scope.origin_restricted)),
-            "Crew grant or connection policy changed while this operation was pending; inspect any submitted effects before obtaining a fresh grant"
+            "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again."
         );
         Ok(())
     }
@@ -1595,37 +2087,78 @@ impl CrewManager {
         self.worker_request(session, "run.project", json!({"body":body,"status":status}))
             .await
     }
+    /// Revoke the session's grant while it still holds `expected_run_id`; a newer grant is
+    /// refused, not stopped. The grant stops here first (RV-D1): an `Err` means it could not be
+    /// found, was replaced, or the stop could not be saved; an `Ok` means it is stopped on this
+    /// device, whatever the workspace said.
+    pub async fn revoke_session_if_current(
+        &self,
+        session: &str,
+        expected_run_id: &str,
+    ) -> Result<RevokeOutcome> {
+        self.revoke_scope(session, Some(expected_run_id)).await
+    }
+    /// [`Self::revoke_session_if_current`] for whichever run the session holds now.
+    pub async fn revoke_session(&self, session: &str) -> Result<RevokeOutcome> {
+        self.revoke_scope(session, None).await
+    }
+    /// Revoke, treating anything short of the workspace's confirmation as an error. The grant
+    /// is stopped on this device either way; an unconfirmed stop is a [`RevocationUnconfirmed`].
     pub async fn cancel_run_if_current(
         &self,
         session: &str,
         expected_run_id: &str,
     ) -> Result<Value> {
-        let scope = self.scope(session).await?;
-        ensure!(scope.run_id==expected_run_id,"This task was replaced by a newer explicitly granted run; cancel it from its current conversation");
-        self.revoke_scope(session, scope).await
+        self.revoke_session_if_current(session, expected_run_id)
+            .await?
+            .into_confirmed()
     }
     pub async fn cancel_run(&self, session: &str) -> Result<Value> {
-        self.revoke_scope(session, self.scope(session).await?).await
+        self.revoke_session(session).await?.into_confirmed()
     }
-    async fn revoke_scope(&self, session: &str, s: Scope) -> Result<Value> {
-        let result = self
-            .human_request(
-                &s.connection_id,
-                "run.revoke",
-                json!({"run_id":s.run_id}),
-                None,
-            )
-            .await?;
-        let mut r = self.registry.lock().await;
-        if let Some(current) = r
-            .scopes
-            .get_mut(session)
-            .filter(|current| current.run_id == s.run_id)
-        {
+    async fn revoke_scope(
+        &self,
+        session: &str,
+        expected_run_id: Option<&str>,
+    ) -> Result<RevokeOutcome> {
+        let (connection_id, run_id) = {
+            let mut r = self.registry.lock().await;
+            let current = r
+                .scopes
+                .get_mut(session)
+                .ok_or_else(|| anyhow::anyhow!(NO_GRANT))?;
+            ensure!(
+                expected_run_id.is_none_or(|expected| current.run_id == expected),
+                REPLACED_RUN
+            );
+            // Fail closed here before asking the workspace: a transport that is down, or
+            // sign-in that lapsed, must not leave the grant usable on this device. If the save
+            // fails the flag still stands in memory, which stops this process, and the error
+            // says the stop is not yet durable.
             current.expired = true;
-        }
-        self.persist(&r)?;
-        Ok(result)
+            let target = (current.connection_id.clone(), current.run_id.clone());
+            self.persist(&r).map_err(|error| {
+                error.context("Couldn't save the revocation on this device; retry to finish it")
+            })?;
+            target
+        };
+        Ok(
+            match self
+                .human_request(&connection_id, "run.revoke", json!({"run_id":run_id}), None)
+                .await
+            {
+                Ok(run) => RevokeOutcome {
+                    remote_confirmed: true,
+                    run: Some(run),
+                    remote_error: None,
+                },
+                Err(error) => RevokeOutcome {
+                    remote_confirmed: false,
+                    run: None,
+                    remote_error: Some(error),
+                },
+            },
+        )
     }
     async fn attach_remote(&self, session: &str, params: Value) -> Result<Value> {
         let scope = self.scope(session).await?;
@@ -2031,6 +2564,8 @@ mod tests {
             institution_ids: BTreeSet::new(),
             institution_policy: true,
             expired: false,
+            expires_at: None,
+            labels: None,
         };
         let manager = CrewManager::new(root.clone())?;
         {
@@ -2064,7 +2599,7 @@ mod tests {
         let expired = manager.agent_connections("live-session").await.unwrap_err();
         assert!(expired
             .to_string()
-            .contains("grant or connection policy changed"));
+            .contains("changed while this was in progress"));
 
         manager
             .registry
@@ -2078,13 +2613,13 @@ mod tests {
         let changed = manager.agent_connections("live-session").await.unwrap_err();
         assert!(changed
             .to_string()
-            .contains("grant or connection policy changed"));
+            .contains("changed while this was in progress"));
 
         let missing = manager
             .agent_connections("missing-session")
             .await
             .unwrap_err();
-        assert!(missing.to_string().contains("no human-approved Crew run"));
+        assert_eq!(missing.to_string(), NO_GRANT);
 
         let _ = fs::remove_dir_all(root);
         Ok(())
@@ -2240,7 +2775,6 @@ done
         Ok(())
     }
 
-    #[cfg(unix)]
     fn worker_race_connection(
         connection_id: &str,
         mode: ClusterMode,
@@ -2282,6 +2816,8 @@ done
             institution_ids: BTreeSet::new(),
             institution_policy: true,
             expired: false,
+            expires_at: None,
+            labels: None,
         };
         (connection, scope)
     }
@@ -2445,7 +2981,10 @@ done
         }
         drop(held);
         let error = worker.await.unwrap().unwrap_err().to_string();
-        assert!(error.contains("policy changed"), "{error}");
+        assert!(
+            error.contains("settings changed while this was in progress"),
+            "{error}"
+        );
         assert_eq!(
             fs::read_to_string(&log).unwrap_or_default(),
             baseline_requests
@@ -2517,7 +3056,7 @@ done
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("inspect any submitted effects before obtaining a fresh grant"),
+            error.contains("Check whether it already took effect before you grant access again"),
             "{error}"
         );
         let _ = manager.transports.lock().await.remove(connection_id);
@@ -2565,6 +3104,8 @@ done
             institution_ids: BTreeSet::new(),
             institution_policy: true,
             expired: false,
+            expires_at: None,
+            labels: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -2657,6 +3198,8 @@ done
             institution_ids: BTreeSet::new(),
             institution_policy: true,
             expired: false,
+            expires_at: None,
+            labels: None,
         };
         let registry = Registry {
             connections: vec![connection.clone()],
@@ -2828,6 +3371,8 @@ done
             institution_ids: BTreeSet::new(),
             institution_policy: true,
             expired: false,
+            expires_at: None,
+            labels: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -3012,6 +3557,8 @@ done
                     institution_ids: BTreeSet::new(),
                     institution_policy: true,
                     expired: false,
+                    expires_at: None,
+                    labels: None,
                 },
             )]),
             pending_device: None,
@@ -3104,5 +3651,947 @@ done
         assert!(institution::check_origin(&ucsf, Some("ucsf")).is_ok());
         assert!(institution::check_origin(&ucsf, Some("stanford")).is_err());
         assert!(institution::check_origin(&stanford, None).is_err());
+    }
+
+    /// A fake `ssh` that logs every request line and answers by method: `auth.challenge` for
+    /// `workspace_id`, each of `answers` with its JSON result, and anything else with
+    /// `{"accepted_method":"fixture"}`. Returns the log's path.
+    #[cfg(unix)]
+    fn write_answering_ssh(root: &Path, workspace_id: &str, answers: &[(&str, Value)]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fake_bin = root.join("bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        let log = root.join("requests.log");
+        let challenge = json!({"workspace_id": workspace_id, "nonce": "nonce", "uid": 10001});
+        let mut branches = String::new();
+        for (index, (method, result)) in [("auth.challenge", &challenge)]
+            .into_iter()
+            .chain(answers.iter().map(|(method, result)| (*method, result)))
+            .enumerate()
+        {
+            let result = result.to_string();
+            assert!(
+                !result.contains('\'') && !result.contains('%'),
+                "fixture JSON must survive sh quoting and printf: {result}"
+            );
+            let keyword = if index == 0 { "if" } else { "elif" };
+            branches.push_str(&format!(
+                "  {keyword} printf '%s\\n' \"$line\" | grep -q '\"method\":\"{method}\"'; then\n    printf '{{\"id\":\"%s\",\"result\":%s}}\\n' \"$id\" '{result}'\n"
+            ));
+        }
+        let ssh = format!(
+            r#"#!/bin/sh
+log='{log}'
+if [ "$1" = "-G" ]; then
+  printf '%s\n' \
+    'hostname 127.0.0.1' 'port 22' 'stricthostkeychecking yes' \
+    'forwardagent no' 'forwardx11 no' 'permitlocalcommand no' \
+    'clearallforwardings yes' 'nohostauthenticationforlocalhost no' \
+    'tunnel no' 'forkafterauthentication no' \
+    'gssapidelegatecredentials no' 'proxycommand none' \
+    'controlmaster no' 'controlpersist no' 'controlpath none'
+  exit 0
+fi
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+{branches}  else
+    printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
+  fi
+done
+"#,
+            log = log.display()
+        );
+        let ssh_path = fake_bin.join("ssh");
+        fs::write(&ssh_path, ssh).unwrap();
+        fs::set_permissions(&ssh_path, fs::Permissions::from_mode(0o700)).unwrap();
+        log
+    }
+
+    /// Point the profile, credentials and `ssh` of this process at `root`: file credentials
+    /// under a development profile, never the OS keychain. Only inside a process of its own.
+    #[cfg(unix)]
+    fn isolated_crew_env(root: &Path) -> env_lock::EnvGuard<'static> {
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{original_path}", root.join("bin").display());
+        let profile = profile_root.to_string_lossy().into_owned();
+        crate::test_sandbox::relocate_path_root_and(
+            profile.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+                ("PATH", Some(path.as_str())),
+            ],
+        )
+    }
+
+    /// [`worker_race_connection`] with a real device key, so signed requests reach the wire.
+    #[cfg(unix)]
+    fn signed_fixture_connection(connection_id: &str) -> (Connection, Scope, SigningKey) {
+        let device_key = SigningKey::from_bytes(&[7; 32]);
+        let (mut connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        connection.device_id = hex(&Sha256::digest(device_key.verifying_key().to_bytes()));
+        connection.public_key = hex(&device_key.verifying_key().to_bytes());
+        (connection, scope, device_key)
+    }
+
+    #[cfg(unix)]
+    async fn attach_fixture_transport(manager: &CrewManager, connection: &Connection) {
+        let control = manager.control_path(&connection.id).unwrap();
+        let transport = transport::Transport::connect(connection, &control)
+            .await
+            .unwrap();
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(connection.id.clone(), Arc::new(Mutex::new(transport)));
+    }
+
+    /// A saved connection and its `worker-race-session` grant, with the device and run
+    /// credentials written, and a transport only when asked for.
+    #[cfg(unix)]
+    async fn signed_fixture_manager(
+        root: &Path,
+        connection: &Connection,
+        scope: &Scope,
+        device_key: &SigningKey,
+        with_transport: bool,
+    ) -> Arc<CrewManager> {
+        let registry = Registry {
+            connections: vec![connection.clone()],
+            scopes: HashMap::from([("worker-race-session".into(), scope.clone())]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = Arc::new(CrewManager::new(root.to_owned()).unwrap());
+        manager
+            .write_credential(
+                &format!("device:{}", connection.id),
+                &hex(&device_key.to_bytes()),
+            )
+            .unwrap();
+        manager
+            .write_credential("run:worker-race-session", "run-credential")
+            .unwrap();
+        if with_transport {
+            attach_fixture_transport(&manager, connection).await;
+        }
+        manager
+    }
+
+    #[cfg(unix)]
+    fn logged_methods(log: &Path, method: &str) -> usize {
+        let needle = format!("\"method\":\"{method}\"");
+        fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(&needle))
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revoke_expires_local_scope_even_when_the_transport_is_down() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("revoke-transport-down");
+        let connection_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let (connection, scope, device_key) = signed_fixture_connection(connection_id);
+        let log = write_answering_ssh(&root, &connection.workspace_id, &[]);
+        let _env = isolated_crew_env(&root);
+        let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, false).await;
+
+        let outcome = manager
+            .revoke_session_if_current("worker-race-session", "worker-race-run")
+            .await
+            .expect("the local stop lands even with the transport down");
+        assert!(!outcome.remote_confirmed);
+        assert!(outcome.run.is_none());
+        let remote = outcome
+            .remote_error
+            .expect("why the workspace did not confirm")
+            .to_string();
+        assert!(remote.contains("disconnected"), "{remote}");
+
+        assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(root.join("connections.json")).unwrap()).unwrap();
+        assert_eq!(
+            persisted["scopes"]["worker-race-session"]["expired"],
+            json!(true)
+        );
+        // A restarted daemon reads the stop back rather than reviving the grant.
+        let restarted = CrewManager::new(root.clone()).unwrap();
+        assert!(restarted.registry.lock().await.scopes["worker-race-session"].expired);
+
+        let dispatch = manager
+            .check_dispatch(
+                "worker-race-session",
+                &CallCapability::for_test(ProviderTier::Public, true),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(dispatch.to_string(), GRANT_REVOKED);
+        let worker = manager
+            .worker_request(
+                "worker-race-session",
+                "messages.history",
+                json!({"channel_id": "worker-race-channel"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(worker.to_string(), GRANT_REVOKED);
+
+        // The confirming callers keep their meaning: short of confirmation is an error, typed
+        // so a route can answer 503, and its text is the workspace's, unchanged.
+        let cancel = manager
+            .cancel_run_if_current("worker-race-session", "worker-race-run")
+            .await
+            .unwrap_err();
+        let unconfirmed = cancel
+            .downcast_ref::<RevocationUnconfirmed>()
+            .expect("an unconfirmed revoke is typed");
+        assert_eq!(cancel.to_string(), unconfirmed.remote_error().to_string());
+        assert!(cancel.to_string().contains("disconnected"), "{cancel}");
+
+        assert_eq!(
+            fs::read_to_string(&log).unwrap_or_default(),
+            "",
+            "nothing may reach the transport"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revoke_is_idempotent_and_confirms_on_retry() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("revoke-idempotent");
+        let connection_id = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        let (connection, scope, device_key) = signed_fixture_connection(connection_id);
+        let revoked_run = json!({"id": "worker-race-run", "revoked": true});
+        let log = write_answering_ssh(
+            &root,
+            &connection.workspace_id,
+            &[("run.revoke", revoked_run.clone())],
+        );
+        let _env = isolated_crew_env(&root);
+        let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, false).await;
+
+        let offline = manager
+            .revoke_session_if_current("worker-race-session", "worker-race-run")
+            .await
+            .unwrap();
+        assert!(!offline.remote_confirmed);
+        assert_eq!(logged_methods(&log, "run.revoke"), 0);
+
+        attach_fixture_transport(&manager, &connection).await;
+        let retry = manager
+            .revoke_session_if_current("worker-race-session", "worker-race-run")
+            .await
+            .unwrap();
+        assert!(retry.remote_confirmed);
+        assert!(retry.remote_error.is_none());
+        assert_eq!(retry.run, Some(revoked_run.clone()));
+        assert_eq!(logged_methods(&log, "run.revoke"), 1);
+        let sent = fs::read_to_string(&log).unwrap();
+        assert!(sent
+            .lines()
+            .any(|line| line.contains("\"method\":\"run.revoke\"")
+                && line.contains("worker-race-run")));
+
+        // Revoking a revoked grant asks the workspace again (its run.revoke is idempotent),
+        // and the confirming path answers with the run.
+        assert_eq!(
+            manager.cancel_run("worker-race-session").await.unwrap(),
+            revoked_run
+        );
+        assert_eq!(logged_methods(&log, "run.revoke"), 2);
+        assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn revoke_with_a_replaced_run_refuses() {
+        let root = fixture_root("revoke-replaced-run");
+        let connection_id = "13131313-1313-4313-8313-131313131313";
+        let (connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        let registry = Registry {
+            connections: vec![connection],
+            scopes: HashMap::from([("worker-race-session".into(), scope)]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let saved = fs::read(root.join("connections.json")).unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+
+        let refused = manager
+            .revoke_session_if_current("worker-race-session", "an-older-run")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.to_string(), REPLACED_RUN);
+        let cancel = manager
+            .cancel_run_if_current("worker-race-session", "an-older-run")
+            .await
+            .unwrap_err();
+        assert_eq!(cancel.to_string(), REPLACED_RUN);
+        assert!(cancel.downcast_ref::<RevocationUnconfirmed>().is_none());
+        assert!(!manager.registry.lock().await.scopes["worker-race-session"].expired);
+        assert_eq!(fs::read(root.join("connections.json")).unwrap(), saved);
+
+        let missing = manager.revoke_session("no-such-session").await.unwrap_err();
+        assert_eq!(missing.to_string(), NO_GRANT);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn revoke_keeps_the_local_stop_when_it_cannot_be_saved() {
+        let root = fixture_root("revoke-unsaved");
+        let connection_id = "14141414-1414-4414-8414-141414141414";
+        let (connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        let registry = Registry {
+            connections: vec![connection],
+            scopes: HashMap::from([("worker-race-session".into(), scope)]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        };
+        fs::write(
+            root.join("connections.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+        fs::remove_file(root.join("connections.json")).unwrap();
+        fs::create_dir(root.join("connections.json")).unwrap();
+
+        let error = manager
+            .revoke_session_if_current("worker-race-session", "worker-race-run")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Couldn't save the revocation on this device; retry to finish it"
+        );
+        assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
+        assert_eq!(
+            manager
+                .check_dispatch(
+                    "worker-race-session",
+                    &CallCapability::for_test(ProviderTier::Public, true),
+                )
+                .await
+                .unwrap_err()
+                .to_string(),
+            GRANT_REVOKED
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn grant_refusals_are_plain_words() {
+        let root = fixture_root("plain-refusals");
+        let connection_id = "15151515-1515-4515-8515-151515151515";
+        let (connection, scope) =
+            worker_race_connection(connection_id, ClusterMode::Public, 3, true);
+        let manager = CrewManager::new(root.clone()).unwrap();
+        {
+            let mut registry = manager.registry.lock().await;
+            registry.connections.push(connection);
+            registry.scopes.insert("worker-race-session".into(), scope);
+        }
+        let capability = &CallCapability::for_test(ProviderTier::Public, true);
+        let manager = &manager;
+        let refusals = move || async move {
+            let dispatch = manager
+                .check_dispatch("worker-race-session", capability)
+                .await
+                .unwrap_err()
+                .to_string();
+            let worker = manager
+                .worker_request(
+                    "worker-race-session",
+                    "messages.history",
+                    json!({"channel_id": "worker-race-channel"}),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            (dispatch, worker)
+        };
+
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("worker-race-session")
+            .unwrap()
+            .expired = true;
+        assert_eq!(
+            refusals().await,
+            (GRANT_REVOKED.to_owned(), GRANT_REVOKED.to_owned())
+        );
+
+        {
+            let mut registry = manager.registry.lock().await;
+            registry
+                .scopes
+                .get_mut("worker-race-session")
+                .unwrap()
+                .expired = false;
+            registry.connections[0].policy_epoch = 4;
+        }
+        assert_eq!(
+            refusals().await,
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                GRANT_POLICY_CHANGED.to_owned()
+            )
+        );
+
+        {
+            let mut registry = manager.registry.lock().await;
+            registry.connections[0].policy_epoch = 3;
+            registry
+                .scopes
+                .get_mut("worker-race-session")
+                .unwrap()
+                .institution_policy = false;
+        }
+        assert_eq!(refusals().await.0, GRANT_POLICY_CHANGED);
+
+        for text in [GRANT_REVOKED, GRANT_POLICY_CHANGED, NO_GRANT] {
+            assert!(
+                !text.contains("human grant") && !text.contains("Crew run"),
+                "refusals speak of access, not of runs and grants: {text}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn connection_binding_is_unchanged_by_a_capability_refresh() {
+        let root = fixture_root("capability-refresh");
+        let connection_id = "16161616-1616-4616-8616-161616161616";
+        let (connection, _) = worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        let manager = CrewManager::new(root.clone()).unwrap();
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(connection.clone());
+        let node = "cd".repeat(32);
+        let hello = |version: u8, capabilities: &[&str], name: Option<&str>| VerifiedHello {
+            node_id: node.clone(),
+            broker: BrokerHello {
+                signature_version: version,
+                capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
+                workspace_name: name.map(str::to_owned),
+                mode: (version == 2).then_some(ClusterMode::Public),
+                institution_id: None,
+                policy_epoch: (version == 2).then_some(1),
+            },
+        };
+        assert_eq!(manager.capabilities(connection_id), None);
+
+        let first = manager
+            .adopt_verified_hello(connection_id, &connection, hello(1, &["human_chat"], None))
+            .await
+            .unwrap();
+        let pinned = connection_binding(&first).unwrap();
+        assert_eq!(
+            manager.capabilities(connection_id),
+            Some(vec!["human_chat".to_owned()])
+        );
+
+        let refreshed = manager
+            .adopt_verified_hello(
+                connection_id,
+                &first,
+                hello(
+                    2,
+                    &["human_chat", "human_names_v1", "unique_names_v1"],
+                    Some("lab"),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(connection_binding(&refreshed).unwrap(), pinned);
+        assert_eq!(
+            connection_binding(&manager.connection(connection_id).await.unwrap()).unwrap(),
+            pinned
+        );
+        assert_eq!(
+            manager.capabilities(connection_id),
+            Some(vec![
+                "human_chat".to_owned(),
+                "human_names_v1".to_owned(),
+                "unique_names_v1".to_owned()
+            ])
+        );
+        let broker = manager.broker_hello(connection_id).unwrap();
+        assert_eq!(broker.signature_version, 2);
+        assert_eq!(broker.workspace_name.as_deref(), Some("lab"));
+        let saved = fs::read_to_string(root.join("connections.json")).unwrap();
+        assert!(
+            !saved.contains("human_names_v1") && !saved.contains("capabilities"),
+            "capabilities are not identity and never persist: {saved}"
+        );
+
+        manager.disconnect(connection_id).await.unwrap();
+        assert_eq!(manager.capabilities(connection_id), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hello_v1_and_v2_both_verify_and_a_tampered_v2_field_fails() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let (mut connection, _) =
+            worker_race_connection("hello-v2-connection", ClusterMode::Public, 1, true);
+        connection.workspace_public_key = hex(&key.verifying_key().to_bytes());
+        let node = "ab".repeat(32);
+        let nonce = "hello-nonce";
+        let capabilities = [
+            "human_chat",
+            "scoped_runs",
+            "human_names_v1",
+            "unique_names_v1",
+        ];
+        let v1 = hex(&key
+            .sign(&biorouter_crew::hello_v1_payload(
+                &connection.workspace_id,
+                connection.owner_uid,
+                nonce,
+                &connection.workspace_public_key,
+                &node,
+            ))
+            .to_bytes());
+        let v2 = hex(&key
+            .sign(
+                &biorouter_crew::HelloV2 {
+                    workspace_id: &connection.workspace_id,
+                    host_uid: connection.owner_uid,
+                    challenge_nonce: nonce,
+                    workspace_public_key: &connection.workspace_public_key,
+                    node_id: &node,
+                    mode: &biorouter_crew::Mode::Public,
+                    institution_id: Some("ucsf"),
+                    policy_epoch: 4,
+                    name: Some("lab"),
+                    capabilities: &capabilities,
+                }
+                .signing_payload(),
+            )
+            .to_bytes());
+        let hello = json!({
+            "protocol": 1,
+            "workspace_id": connection.workspace_id,
+            "host_uid": connection.owner_uid,
+            "workspace_public_key": connection.workspace_public_key,
+            "challenge_nonce": nonce,
+            "node_id": node,
+            "mode": "public",
+            "institution_id": "ucsf",
+            "policy_epoch": 4,
+            "name": "lab",
+            "capabilities": capabilities,
+            "signature": v1,
+            "signature_v2": v2,
+        });
+        let verify =
+            |hello: &Value| CrewManager::verify_workspace_identity(&connection, hello, nonce);
+        let without = |field: &str| {
+            let mut hello = hello.clone();
+            hello.as_object_mut().unwrap().remove(field);
+            hello
+        };
+        let all_capabilities: Vec<String> = capabilities.iter().map(|c| (*c).to_owned()).collect();
+
+        // Both signatures: the fields v2 signs are the workspace's own word.
+        let both = verify(&hello).unwrap();
+        assert_eq!(both.node_id, node);
+        assert_eq!(
+            both.broker,
+            BrokerHello {
+                signature_version: 2,
+                capabilities: all_capabilities.clone(),
+                workspace_name: Some("lab".into()),
+                mode: Some(ClusterMode::Public),
+                institution_id: Some("ucsf".into()),
+                policy_epoch: Some(4),
+            }
+        );
+        assert_eq!(
+            verify(&without("signature")).unwrap().broker,
+            both.broker,
+            "v2 alone is enough"
+        );
+
+        // v1 alone (an older broker, or a relay that stripped v2) still verifies, and nothing
+        // v1 does not sign is passed on as trusted.
+        let legacy = verify(&without("signature_v2")).unwrap();
+        assert_eq!(legacy.node_id, node);
+        assert_eq!(
+            legacy.broker,
+            BrokerHello {
+                signature_version: 1,
+                capabilities: all_capabilities,
+                workspace_name: None,
+                mode: None,
+                institution_id: None,
+                policy_epoch: None,
+            }
+        );
+
+        // Any field v2 signs, altered, removed, reordered or added to, fails verification.
+        let mut tampered_cases = vec![
+            ("name", json!("lab-2")),
+            ("mode", json!("private")),
+            ("institution_id", Value::Null),
+            ("institution_id", json!("stanford")),
+            ("policy_epoch", json!(5)),
+            (
+                "capabilities",
+                json!([
+                    "human_chat",
+                    "scoped_runs",
+                    "human_names_v1",
+                    "unique_names_v1",
+                    "join_by_name_v1"
+                ]),
+            ),
+            (
+                "capabilities",
+                json!([
+                    "scoped_runs",
+                    "human_chat",
+                    "human_names_v1",
+                    "unique_names_v1"
+                ]),
+            ),
+            (
+                "capabilities",
+                json!(["human_chat", "scoped_runs", "human_names_v1"]),
+            ),
+        ];
+        tampered_cases.push(("capabilities", json!(null)));
+        for (field, value) in tampered_cases {
+            let mut tampered = hello.clone();
+            tampered[field] = value.clone();
+            let Some(error) = verify(&tampered).err() else {
+                panic!("hello with {field} = {value} verified");
+            };
+            assert!(
+                error.downcast_ref::<WorkspaceIdentityError>().is_some(),
+                "{error}"
+            );
+        }
+        assert!(
+            verify(&without("name")).is_err(),
+            "a signed name was dropped"
+        );
+
+        // A v1 signature that does not verify fails even beside a valid v2.
+        let mut bad_v1 = hello.clone();
+        bad_v1["signature"] = json!(hex(&key.sign(b"another payload").to_bytes()));
+        assert!(verify(&bad_v1).is_err());
+
+        let mut unsigned = without("signature_v2");
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert_eq!(
+            verify(&unsigned).err().unwrap().to_string(),
+            "Workspace identity signature missing"
+        );
+        let wrong_nonce =
+            CrewManager::verify_workspace_identity(&connection, &hello, "another-nonce")
+                .err()
+                .unwrap();
+        assert_eq!(
+            wrong_nonce.to_string(),
+            "Workspace identity challenge mismatch"
+        );
+        assert!(wrong_nonce
+            .downcast_ref::<WorkspaceIdentityError>()
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auth_join_is_refused_through_human_request() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("auth-join-guard");
+        let connection_id = "17171717-1717-4717-8717-171717171717";
+        let (connection, scope, device_key) = signed_fixture_connection(connection_id);
+        let log = write_answering_ssh(
+            &root,
+            &connection.workspace_id,
+            &[("auth.join", json!({"joined": true}))],
+        );
+        let _env = isolated_crew_env(&root);
+        let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, true).await;
+        let params = json!({"public_key": connection.public_key, "join_id": "join-1"});
+
+        let refused = manager
+            .human_request(connection_id, "auth.join", params.clone(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "Only Biorouter's own join sends auth.join; it can't be sent as a Crew request"
+        );
+        let pending = manager
+            .human_request(connection_id, "enrollment.pending", json!({}), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            pending.to_string(),
+            "Biorouter checks join status itself; it is never sent as a signed request"
+        );
+        assert_eq!(
+            fs::read_to_string(&log).unwrap_or_default(),
+            "",
+            "a refused join must not reach the transport"
+        );
+
+        // The join's own door keeps the enrollment identity guard...
+        let other_key = json!({"public_key": "44".repeat(32), "join_id": "join-1"});
+        let mismatch = manager
+            .signed_join_request(connection_id, other_key, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            mismatch.to_string(),
+            "Enrollment identity changed; refresh the saved connection before joining"
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap_or_default(), "");
+
+        // ...and is the one way auth.join reaches the workspace.
+        assert_eq!(
+            manager
+                .signed_join_request(connection_id, params, None)
+                .await
+                .unwrap(),
+            json!({"joined": true})
+        );
+        assert_eq!(logged_methods(&log, "auth.join"), 1);
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admission_labels_name_every_id_and_expiry_is_recorded() -> anyhow::Result<()> {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return Ok(());
+        }
+        let root = fixture_root("admission-labels");
+        let connection_id = "18181818-1818-4818-8818-181818181818";
+        let (connection, _, device_key) = signed_fixture_connection(connection_id);
+        let alice = json!({"id": "principal-alice", "uid": 10001, "username": "alice",
+            "nickname": "Alice Chen", "avatar": null, "active": true});
+        let snapshot = json!({
+            "workspace": {"id": connection.workspace_id, "host_uid": 10001, "mode": "public",
+                "institution_id": null, "policy_epoch": 1, "name": "lab"},
+            "actor": alice,
+            "principals": [alice, {"id": "principal-bob", "uid": 10002, "username": "bob",
+                "nickname": "bob", "avatar": null, "active": true}],
+            "teams": [{"id": "team-analysis", "name": "Analysis Lab"},
+                {"id": "team-core", "name": "Methods Core"}],
+            "channels": [
+                {"id": "destination-channel", "team_id": "team-analysis", "name": "methods"},
+                {"id": "source-a", "team_id": "team-analysis", "name": "raw-data"},
+                {"id": "source-b", "team_id": "team-core", "name": "general"}
+            ],
+            "protected_channel_ids": []
+        });
+        let log = write_answering_ssh(
+            &root,
+            &connection.workspace_id,
+            &[
+                ("workspace.snapshot", snapshot),
+                (
+                    "run.create",
+                    json!({"run": {"id": "run-labelled", "protected_context": false,
+                        "expires_at": 1_790_000_000u64}, "credential": "run-credential"}),
+                ),
+                ("messages.history", json!({"messages": []})),
+            ],
+        );
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager"))?;
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(connection.clone());
+        manager.write_credential(
+            &format!("device:{}", connection.id),
+            &hex(&device_key.to_bytes()),
+        )?;
+        attach_fixture_transport(&manager, &connection).await;
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )?;
+
+        let admission = manager
+            .begin_run(
+                "labelled-session",
+                connection_id,
+                "destination-channel",
+                vec!["source-a".into(), "source-b".into()],
+                &provider,
+            )
+            .await?;
+        let channel = |id: &str, label: &str, team: &str| ChannelLabel {
+            channel_id: id.into(),
+            label: label.into(),
+            team: Some(team.into()),
+        };
+        let expected = AdmissionLabels {
+            you: Some("Alice Chen (@alice)".into()),
+            workspace: "lab".into(),
+            destination: channel("destination-channel", "#methods", "Analysis Lab"),
+            sources: vec![
+                channel("source-a", "#raw-data", "Analysis Lab"),
+                channel("source-b", "#general", "Methods Core"),
+                channel("destination-channel", "#methods", "Analysis Lab"),
+            ],
+        };
+        assert_eq!(admission.labels, expected);
+        assert_eq!(admission.expires_at, Some(1_790_000_000));
+
+        // Every ID the model is handed has a label beside it.
+        let labelled_everywhere = |carrier: &Value| {
+            assert_eq!(carrier["labels"], serde_json::to_value(&expected).unwrap());
+            assert_eq!(
+                carrier["labels"]["destination"]["channel_id"],
+                carrier["destination_channel_id"]
+            );
+            let labelled: Vec<&Value> = carrier["labels"]["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|source| &source["channel_id"])
+                .collect();
+            for id in carrier["source_channel_ids"].as_array().unwrap() {
+                assert!(labelled.contains(&id), "{id} has no label");
+            }
+            for source in carrier["labels"]["sources"].as_array().unwrap() {
+                assert!(source["label"].as_str().is_some_and(|l| l.starts_with('#')));
+            }
+        };
+        let context: Value = serde_json::from_str(&admission.context)?;
+        labelled_everywhere(&context);
+        assert_eq!(logged_methods(&log, "workspace.snapshot"), 1);
+
+        // agent_connections is on the worker path: it reads the stored labels and sends
+        // nothing, least of all a human-signed snapshot.
+        let before = fs::read_to_string(&log)?;
+        let discovery = manager.agent_connections("labelled-session").await?;
+        let entry = &discovery["connections"][0];
+        labelled_everywhere(entry);
+        assert_eq!(entry["labels"]["workspace"], "lab");
+        assert!(entry["workspace_id"].is_string() && entry["labels"]["you"].is_string());
+        assert_eq!(fs::read_to_string(&log)?, before);
+
+        let grants = manager.session_grants(connection_id).await?;
+        let grant = &grants["grants"][0];
+        assert_eq!(grant["expires_at"], json!(1_790_000_000u64));
+        assert_eq!(grant["labels"]["destination"]["label"], "#methods");
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(root.join("manager").join("connections.json"))?)?;
+        assert_eq!(
+            persisted["scopes"]["labelled-session"]["expires_at"],
+            json!(1_790_000_000u64)
+        );
+        assert_eq!(
+            persisted["scopes"]["labelled-session"]["labels"]["you"],
+            "Alice Chen (@alice)"
+        );
+
+        manager.disconnect(connection_id).await?;
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn admission_labels_follow_the_display_rule_and_fall_back_without_names() {
+        let (connection, _) =
+            worker_race_connection("labels-connection", ClusterMode::Public, 1, true);
+        let snapshot = |actor: Value| {
+            json!({
+                "workspace": {"name": null},
+                "actor": actor,
+                "principals": [{"username": "alice"}, {"username": "bob"}],
+                "teams": [],
+                "channels": [{"id": "c1", "team_id": "hidden-team", "name": "Methods\u{202e}"}],
+            })
+        };
+        let labels = admission_labels(
+            &snapshot(json!({"username": "alice", "nickname": "alice"})),
+            &connection,
+            "c1",
+            &["c1".into(), "c-missing".into()],
+        );
+        // A nickname equal to the username was never chosen (D13).
+        assert_eq!(labels.you.as_deref(), Some("@alice"));
+        // No workspace name: this device's name for the connection.
+        assert_eq!(labels.workspace, "worker-race");
+        // Invisible characters removed; a team the snapshot did not show is not guessed.
+        assert_eq!(labels.destination.label, "#Methods");
+        assert_eq!(labels.destination.team, None);
+        assert_eq!(labels.sources.len(), 2);
+        assert_eq!(labels.sources[1].channel_id, "c-missing");
+        assert_eq!(labels.sources[1].label, "#untitled");
+
+        let you = |actor: Value| {
+            admission_labels(&snapshot(actor), &connection, "c1", &["c1".into()]).you
+        };
+        assert_eq!(
+            you(json!({"username": "alice", "nickname": "Alice Chen"})).as_deref(),
+            Some("Alice Chen (@alice)")
+        );
+        assert_eq!(
+            you(json!({"username": "alice", "nickname": "bob"})).as_deref(),
+            Some("@alice"),
+            "a nickname posing as another person's username is not shown"
+        );
+        assert_eq!(
+            you(json!({"username": "alice", "nickname": "Al\u{202e}ice"})).as_deref(),
+            Some("Alice (@alice)")
+        );
+        assert_eq!(
+            you(json!({"username": "alice", "nickname": "x", "display_name": "Dr. Chen"}))
+                .as_deref(),
+            Some("Dr. Chen (@alice)")
+        );
+        assert_eq!(you(Value::Null), None);
     }
 }
