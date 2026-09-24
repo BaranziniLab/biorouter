@@ -3,6 +3,7 @@ import type { CrewMessage } from '../crewApi';
 import {
   GROUP_GAP_MS,
   HISTORY_PAGE_SIZE,
+  canBePageBefore,
   groupMessages,
   isTraceMessage,
   newLineBeforeId,
@@ -327,5 +328,18 @@ describe('history pages', () => {
     expect(reachesChannelStart(page(0))).toBe(true);
     expect(reachesChannelStart(page(HISTORY_PAGE_SIZE - 1))).toBe(true);
     expect(reachesChannelStart(page(HISTORY_PAGE_SIZE))).toBe(false);
+  });
+
+  it('knows the list on screen is not yet the page before its first message', () => {
+    const older = message({ id: 'older' });
+    const live = [message({ id: 'a' }), message({ id: 'b' }), message({ id: 'c' })];
+    const boundary = live[0].sequence;
+    // loadOlder names live[0] as the boundary before the list is cleared.
+    expect(canBePageBefore(live, boundary)).toBe(false);
+    expect(canBePageBefore([...live], boundary)).toBe(false);
+    // The page that lands holds only messages before it; the live tail always can.
+    expect(canBePageBefore([older], boundary)).toBe(true);
+    expect(canBePageBefore([], boundary)).toBe(true);
+    expect(canBePageBefore(live, null)).toBe(true);
   });
 });

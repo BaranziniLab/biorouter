@@ -19,6 +19,7 @@ import { ChannelIntro } from './ChannelIntro';
 import { timelineCopy } from './copy';
 import { DayDivider } from './DayDivider';
 import {
+  canBePageBefore,
   groupMessages,
   HISTORY_PAGE_SIZE,
   newLineBeforeId,
@@ -159,6 +160,30 @@ function ChannelTimeline({
   const scroller = useRef<ScrollAreaHandle>(null);
   const loadKey = historyBefore ?? 'live';
 
+  // ── Is the list on screen this page's? ──────────────────────────────────
+  // Loading an older page moves the boundary first and clears the list a
+  // render later (useCrewController `loadOlder`, then useCrewObservation's
+  // history effect), so for one render the previous page is drawn under the new
+  // page's key. That list is drawn as it is, but it is not the new page: it
+  // seeds no arrivals, opens nothing at its bottom, draws no New line and marks
+  // nothing read, and the log is busy. It is recognized as the very list drawn
+  // under another key, or — for an older page — by holding the boundary message.
+  // An empty list is never taken for the previous page: one shared empty array
+  // must not hold a new key busy.
+  const drawn = useRef<{ key: string; messages: readonly CrewMessage[] } | null>(null);
+  const previousPage =
+    messagesLoaded &&
+    messages.length > 0 &&
+    ((drawn.current !== null &&
+      drawn.current.key !== loadKey &&
+      drawn.current.messages === messages) ||
+      !canBePageBefore(messages, historyBefore));
+  /** The list on screen is this page, loaded. Everything that acts on a page asks this. */
+  const pageReady = messagesLoaded && !previousPage;
+  useLayoutEffect(() => {
+    if (pageReady) drawn.current = { key: loadKey, messages };
+  }, [pageReady, loadKey, messages]);
+
   // ── Following the bottom ────────────────────────────────────────────────
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(true);
@@ -175,7 +200,7 @@ function ChannelTimeline({
     computed: false,
     id: null,
   });
-  if (!newLine.computed && messagesLoaded && historyBefore === null) {
+  if (!newLine.computed && pageReady && historyBefore === null) {
     setNewLine({
       computed: true,
       id: newLineBeforeId(messages, {
@@ -214,18 +239,20 @@ function ChannelTimeline({
   // What was on screen when this page (the live tail, or one older page) first
   // loaded is not an arrival; a message that appears afterwards is. It rises in
   // only while the reader follows the bottom; otherwise the live pill shows.
+  // Only the page's own list seeds what was there: seeded from the previous
+  // page, every message of an older page would rise in as an arrival.
   const known = useRef<{ key: string; ids: Set<string> } | null>(null);
   const arriving = useRef<Set<string>>(new Set());
   const tracking = known.current;
   const fresh =
-    messagesLoaded && tracking?.key === loadKey
+    pageReady && tracking?.key === loadKey
       ? messages.filter((message) => !tracking.ids.has(message.id))
       : [];
   if (fresh.length > 0 && followingRef.current) {
     fresh.forEach((message) => arriving.current.add(message.id));
   }
   useEffect(() => {
-    if (!messagesLoaded) return;
+    if (!pageReady) return;
     if (known.current?.key !== loadKey) {
       known.current = { key: loadKey, ids: new Set(messages.map((message) => message.id)) };
       arriving.current = new Set();
@@ -235,30 +262,34 @@ function ChannelTimeline({
     const added = messages.filter((message) => !ids.has(message.id));
     added.forEach((message) => ids.add(message.id));
     if (added.length > 0 && !followingRef.current && historyBefore === null) setUnseenBelow(true);
-  }, [messages, messagesLoaded, loadKey, historyBefore]);
+  }, [messages, pageReady, loadKey, historyBefore]);
 
   // ── Opening at the newest message ───────────────────────────────────────
   // A channel (and an older page) opens at its newest message. A reload that
   // emptied the list lands there too — that was the jump to the top when an
   // agent started. A reload that kept the list keeps the reader's place,
-  // unless they were following the bottom.
+  // unless they were following the bottom. The previous page, still on screen
+  // while an older one is requested, is not opened: the reader stays at the
+  // top, where they asked for more, until the page lands.
   const lastLoaded = useRef<string | null>(null);
   const emptied = useRef(false);
   /** Set by the reader scrolling up; the sentinel loads an older page only when armed. */
   const armed = useRef(false);
   if (!messagesLoaded && messages.length === 0) emptied.current = true;
   useLayoutEffect(() => {
-    if (!messagesLoaded) return;
+    if (!pageReady) return;
     if (lastLoaded.current !== loadKey || emptied.current || followingRef.current) {
       scrollToBottom(scroller.current, 'auto');
     }
     lastLoaded.current = loadKey;
     emptied.current = false;
     armed.current = false;
-  }, [messagesLoaded, loadKey]);
+  }, [pageReady, loadKey]);
 
   // ── Older history ───────────────────────────────────────────────────────
-  const loadingPage = !messagesLoaded;
+  const loadingPage = !pageReady;
+  // Drawn from the list on screen, so the row stays put (as "Loading…") while
+  // the previous page is still drawn.
   const hasOlder = messagesLoaded && messages.length >= HISTORY_PAGE_SIZE;
   const lastTop = useRef(0);
   const onViewportScroll = useCallback((viewport: HTMLDivElement) => {
@@ -283,7 +314,7 @@ function ChannelTimeline({
     readPosition: snapshot.read_positions?.[channel.id],
     unread: snapshot.unread?.[channel.id],
     atBottom: following,
-    enabled: !readOnly && historyBefore === null && messagesLoaded && messages.length > 0,
+    enabled: !readOnly && historyBefore === null && pageReady && messages.length > 0,
     markRead: crew.markRead,
     memory: readMemory,
   });

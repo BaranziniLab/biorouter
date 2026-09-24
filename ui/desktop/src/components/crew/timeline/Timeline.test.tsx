@@ -378,6 +378,85 @@ describe('older history', () => {
     }
   });
 
+  it('loads older pages in the controller’s order without a single row rising in or a jump to the bottom', () => {
+    // useCrewController.loadOlder only moves the boundary to the first message on
+    // screen; useCrewObservation clears the list a render later and then puts the
+    // page in. For that first render the previous page is still drawn.
+    const pageOf = (label: string) =>
+      Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+        message({
+          id: `${label}-${index}`,
+          body: `${label} ${index}`,
+          at: new Date(2026, 8, 22, 9, index % 60),
+        })
+      );
+    const oldest = pageOf('oldest');
+    const older = pageOf('older');
+    const live = pageOf('live');
+    const arrivingRows = () => document.querySelectorAll('[data-arriving="true"]').length;
+
+    const controller = makeController({ messages: live });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!viewport) throw new Error('no viewport');
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    const log = screen.getByRole('log');
+
+    // 1. The boundary moves; the live tail is still the list.
+    rerenderWith({ ...controller, messages: live, historyBefore: live[0].sequence });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(log).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button', { name: timelineCopy.loadingOlder })).toBeDisabled();
+    // 2. The list is cleared while the page is fetched.
+    rerenderWith({
+      ...controller,
+      messages: [],
+      messagesLoaded: false,
+      historyBefore: live[0].sequence,
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    // 3. The page lands: opened at its newest message, and nothing on it is an arrival.
+    rerenderWith({ ...controller, messages: older, historyBefore: live[0].sequence });
+    expect(screen.getByText('older 199')).toBeInTheDocument();
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: 'auto' }));
+    expect(arrivingRows()).toBe(0);
+    expect(log).not.toHaveAttribute('aria-busy');
+
+    // The next page, with the previous list handed over as a copy this time.
+    rerenderWith({ ...controller, messages: [...older], historyBefore: older[0].sequence });
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(arrivingRows()).toBe(0);
+    rerenderWith({
+      ...controller,
+      messages: [],
+      messagesLoaded: false,
+      historyBefore: older[0].sequence,
+    });
+    rerenderWith({ ...controller, messages: oldest, historyBefore: older[0].sequence });
+    expect(screen.getByText('oldest 199')).toBeInTheDocument();
+    expect(scrollTo).toHaveBeenCalledTimes(2);
+    expect(arrivingRows()).toBe(0);
+
+    // Jump to latest clears the page and refreshes: the live tail opens, not arrives…
+    rerenderWith({ ...controller, messages: [], messagesLoaded: false, historyBefore: null });
+    rerenderWith({ ...controller, messages: live, historyBefore: null });
+    expect(scrollTo).toHaveBeenCalledTimes(3);
+    expect(arrivingRows()).toBe(0);
+    // …and a post after it is a live arrival again.
+    rerenderWith({
+      ...controller,
+      messages: [...live, message({ id: 'after', body: 'just posted' })],
+      historyBefore: null,
+    });
+    expect(screen.getByText('just posted').closest('[data-crew-row]')).toHaveAttribute(
+      'data-arriving',
+      'true'
+    );
+    expect(arrivingRows()).toBe(1);
+  });
+
   it('marks the log busy while a page loads', () => {
     renderWithController(
       <Timeline />,

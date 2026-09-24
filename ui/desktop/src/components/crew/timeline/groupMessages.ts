@@ -297,3 +297,18 @@ export function newLineBeforeId(
 export function reachesChannelStart(messages: readonly CrewMessage[]): boolean {
   return messages.length < HISTORY_PAGE_SIZE;
 }
+
+/**
+ * The list can be the page shown before `historyBefore`: it holds no message at
+ * that sequence (the live tail, `historyBefore === null`, always can). Loading
+ * an older page names the first message on screen as the page's boundary and
+ * clears the list only afterwards, so for one render the previous list is drawn
+ * under the new page's boundary — and it is the list that holds that message.
+ * Sequences are compared only for equality.
+ */
+export function canBePageBefore(
+  messages: readonly CrewMessage[],
+  historyBefore: string | null
+): boolean {
+  return historyBefore === null || !messages.some((message) => message.sequence === historyBefore);
+}
