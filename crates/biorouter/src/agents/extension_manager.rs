@@ -796,8 +796,9 @@ pub(crate) fn exact_custom_reference_key(
     target: Option<&BundledExtensionTarget>,
     active: &[ExtensionConfig],
 ) -> Option<String> {
-    // Every spelling of the Copilot reference must retain the bundled target.
-    if extension_reference_key(requested) == extension_reference_key(COPILOT_REFERENCE_ALIAS)
+    // The compact slash alias must retain the bundled target. A custom
+    // extension with the exact spaced display name keeps its existing routing.
+    if requested.eq_ignore_ascii_case(COPILOT_REFERENCE_ALIAS)
         && target.is_some_and(|target| target.key() == "computercontroller")
     {
         return None;
@@ -5534,7 +5535,7 @@ mod tests {
     }
 
     #[test]
-    fn copilot_reference_is_reserved_even_when_custom_name_matches() {
+    fn copilot_slash_alias_is_reserved_without_redirecting_exact_custom_names() {
         let custom = |name: &str| ExtensionConfig::Frontend {
             name: name.to_string(),
             description: String::new(),
@@ -5545,13 +5546,14 @@ mod tests {
         };
         let target = resolve_bundled_extension("Biorouter Copilot").unwrap();
         let entry = custom("Biorouter Copilot");
+        let custom_key = entry.key();
         assert_eq!(
             exact_custom_reference_key(
                 "Biorouter Copilot",
                 Some(&target),
                 std::slice::from_ref(&entry)
             ),
-            None
+            Some(custom_key)
         );
         assert_eq!(
             exact_custom_reference_key("computercontroller", Some(&target), &[entry]),
@@ -5567,9 +5569,9 @@ mod tests {
         );
         assert_eq!(
             exact_custom_reference_key(
-                "Biorouter Copilot",
+                "bioroutercopilot",
                 Some(&target),
-                &[custom("Biorouter Copilot")]
+                &[custom("bioroutercopilot")]
             ),
             None
         );
