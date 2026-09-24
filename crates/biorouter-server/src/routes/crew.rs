@@ -323,10 +323,25 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
     }
 }
 
-#[utoipa::path(get, path = "/crew/connections", responses((status = 200, body = Value)), tag = "Crew")]
+/// A saved connection as the routes answer it: the saved fields, plus `server_label`, what to
+/// call its server on screen (D-ALIAS; `biorouter::crew::server_label`). The label is display
+/// only and is never saved, so it never enters the connection's binding or an invitation.
+async fn connection_view(connection: &biorouter::crew::Connection) -> anyhow::Result<Value> {
+    let mut value = serde_json::to_value(connection)?;
+    value["server_label"] =
+        json!(biorouter::crew::server_label(&connection.ssh_target, connection.port).await);
+    Ok(value)
+}
+
+#[utoipa::path(get, path = "/crew/connections", responses((status = 200, description = "`connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only", body = Value)), tag = "Crew")]
 pub async fn list_connections(headers: HeaderMap) -> CrewResult {
     require_person(&headers)?;
-    Ok(Json(json!({"connections": manager()?.list().await})))
+    let connections = manager()?.list().await;
+    let views = futures::future::join_all(connections.iter().map(connection_view))
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(Json(json!({"connections": views})))
 }
 
 #[utoipa::path(post, path = "/crew/devices/prepare", responses((status = 200, body = Value)), tag = "Crew")]
@@ -342,7 +357,7 @@ pub async fn save_connection(headers: HeaderMap, Json(body): Json<Value>) -> Cre
     require_person(&headers)?;
     let request: SaveConnection = serde_json::from_value(body).map_err(anyhow::Error::from)?;
     Ok(Json(
-        serde_json::to_value(manager()?.save(request).await?).map_err(anyhow::Error::from)?,
+        connection_view(&manager()?.save(request).await?).await?,
     ))
 }
 
@@ -355,8 +370,7 @@ pub async fn update_connection(
     require_person(&headers)?;
     let request: SaveConnection = serde_json::from_value(body).map_err(anyhow::Error::from)?;
     Ok(Json(
-        serde_json::to_value(manager()?.update(&id, request).await?)
-            .map_err(anyhow::Error::from)?,
+        connection_view(&manager()?.update(&id, request).await?).await?,
     ))
 }
 
@@ -371,9 +385,7 @@ pub async fn remove_connection(headers: HeaderMap, Path(id): Path<String>) -> Cr
 pub async fn connect(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
     require_person(&headers)?;
     let connected = manager()?.connect(&id).await.map_err(connect_refusal)?;
-    Ok(Json(
-        serde_json::to_value(connected).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(connection_view(&connected).await?))
 }
 
 /// A failed connect, classified from the typed error the core returned rather than from its

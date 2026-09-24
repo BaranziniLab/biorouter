@@ -6,6 +6,8 @@ mod institution;
 #[path = "institution_tests.rs"]
 mod institution_tests;
 mod keepalive;
+mod server_label;
+pub use server_label::server_label;
 #[cfg(test)]
 #[path = "keepalive_tests.rs"]
 mod keepalive_tests;

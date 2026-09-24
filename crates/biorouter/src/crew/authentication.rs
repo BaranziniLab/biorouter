@@ -763,6 +763,11 @@ pub struct InvitationPreview {
     /// computer can't mix institutions on one server (T-52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub institution_conflict: Option<String>,
+    /// What to call the server on screen (D-ALIAS): the person's own SSH alias for the address
+    /// saving would use, when one maps to it, else that address's host. Display only; `server`
+    /// and `ssh_target` stay the invitation's resolved address. See [`super::server_label`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_label: Option<String>,
 }
 
 /// The result of [`CrewManager::connection_from_invitation`].
@@ -1355,6 +1360,7 @@ fn plan_invitation(
         existing_connection_id: existing.as_ref().map(|saved| saved.id.clone()),
         missing,
         institution_conflict: None,
+        server_label: None,
     };
     Ok(InvitationPlan {
         preview,
@@ -1566,7 +1572,7 @@ struct ServerAddress {
 }
 
 /// `ssh -G <args>`: the effective settings, first value per key.
-async fn resolve_ssh(args: &[String]) -> Result<HashMap<String, String>> {
+pub(super) async fn resolve_ssh(args: &[String]) -> Result<HashMap<String, String>> {
     use tokio::io::AsyncReadExt;
     let mut command = tokio::process::Command::new("ssh");
     command
@@ -1645,7 +1651,7 @@ fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
 /// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
 /// the same configuration the bridge reads, else the login's own host part and port. `None`
 /// for a login that can't safely be passed to `ssh`.
-async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
+pub(super) async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
     if !safe_atom(target) {
         return None;
     }
@@ -1675,7 +1681,7 @@ async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> 
 }
 
 /// `hostname` and `port` from `ssh -G` settings.
-fn resolved_endpoint(settings: &HashMap<String, String>) -> Result<(String, u16)> {
+pub(super) fn resolved_endpoint(settings: &HashMap<String, String>) -> Result<(String, u16)> {
     let host = settings
         .get("hostname")
         .filter(|host| safe_atom(host) && !host.contains(['@', '/']) && host.len() <= 253)
@@ -1731,6 +1737,9 @@ impl CrewManager {
             let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
             let mut preview = plan.preview;
             preview.institution_conflict = self.institution_conflict(&preview).await;
+            if let Some(target) = preview.ssh_target.as_deref() {
+                preview.server_label = Some(super::server_label(target, preview.port).await);
+            }
             return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
@@ -4049,6 +4058,51 @@ done
             "a refused answer is never cached"
         );
         assert_eq!(cached.policy_epoch, Some(1));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// D-ALIAS: the preview names the server by the joiner's own SSH alias for the address the
+    /// invitation carries, while the login it would save keeps that address.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preview_names_the_server_by_the_joiners_own_alias() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("preview-server-label");
+        write_fake_ssh(
+            &root,
+            &[
+                (
+                    "bob@hpc.example.org",
+                    &["hostname hpc.example.org", "port 22"],
+                ),
+                ("hpc-alias", &["hostname hpc.example.org", "port 22"]),
+                ("elsewhere", &["hostname other.example.org", "port 22"]),
+            ],
+            &[],
+        );
+        let _env = isolated_env(&root);
+        let ssh = root.join("profile/home/.ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host elsewhere\n  HostName other.example.org\nHost hpc-alias\n  HostName hpc.example.org\n",
+        )
+        .unwrap();
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let text = crew_invitation::message(&lab_invitation()).unwrap();
+        let preview = preview_of(
+            manager
+                .connection_from_invitation(&text, true, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(preview.ssh_target.as_deref(), Some("bob@hpc.example.org"));
+        assert_eq!(preview.server.as_deref(), Some("hpc.example.org"));
+        assert_eq!(preview.server_label.as_deref(), Some("hpc-alias"));
+        let json = serde_json::to_value(&preview).unwrap();
+        assert_eq!(json["server_label"], "hpc-alias");
         let _ = fs::remove_dir_all(root);
     }
 
