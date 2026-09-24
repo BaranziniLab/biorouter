@@ -1164,6 +1164,29 @@ Coordinator decision; the user delegated product calls. Source: round-1 triage (
   - Agent-chat chrome: chat product scope.
   - The broker keeps its existing policy-epoch bump on membership changes: conservative, and grants re-consent.
 
+### Live QA round 2 design changes (2026-09-24)
+
+Coordinator decision; the user delegated product calls. Source: round-2 triage (`/private/tmp/crew-ui-redesign/live/reports/TRIAGE-r2.md`).
+
+- **D-DROP: trusted file drop and paste** (fixes Q2-16, which failed 3 novice tasks). Dropping or pasting a file into a Crew channel or composer shares it after ONE confirmation in trusted native UI. The renderer never supplies an authoritative path: the preload resolves the dropped or pasted `File` with Electron's `webUtils.getPathForFile` and asks the main process, which shows a native `dialog.showMessageBox` parented to the window naming the file's basename, its size and the destination channel. *Security rationale:* the capability comes from a person's click in a dialog the renderer cannot draw or answer, and a path only a real OS drag or paste can produce. A compromised renderer can neither name an arbitrary file nor skip the confirmation.
+- **D-KEEPALIVE: an idle connection stays up** (fixes Q2-01, hit by 5 critics). While a Crew connection is connected, it must not die after the broker's 300 s idle timeout. The daemon keeps the SSH bridge alive with a cheap authenticated heartbeat well inside the timeout, or re-dials transparently after an idle close when no interactive authentication is needed. The renderer reconnects silently after an idle drop, with no Retry or Connect click. "Sign in" appears only when interactive authentication is really required. *Security rationale:* the heartbeat is authenticated over the existing transport, and a re-dial reuses only non-interactive credentials. No SSH, MFA or human-proof gate is skipped, and any prompt still reaches the person.
+- **D-HOST: one-click hosting** (alice T-27/F5). HostDialog step 2 gains a primary "Start it for me" button. On an explicit human click carrying user-action proof, the daemon runs EXACTLY the app-authored start and status command shown in the dialog, over the already-authenticated SSH transport, as that same account. It streams the output into the dialog, parses the status itself and continues to step 3 with nothing to paste. The manual "Run it yourself" path stays. *Security rationale:* the command is fixed app text the person has seen, never renderer- or agent-supplied; it needs user-action proof; and it gains no account or privilege beyond what the person already authenticated as.
+- **D-ALIAS: show the person's own name for the server** (6 critics: "lab-server" versus 52.33.141.141). Wherever the UI shows the server (the workspace menu's "Signed in as", the join summary, the host dialog, connection settings), prefer the person's own SSH alias when one maps to that address: the alias they typed when saving or joining, or a `~/.ssh/config` Host entry whose resolved HostName equals the address, resolved with the same `ssh -G` logic the transport uses. *Security rationale:* display only. The invitation still carries the resolved address, and the SSH target and host-key checks are unchanged, so an alias can never redirect a connection.
+- **D-AVATAR: distinguishable people** (carol F4). Add 8 avatar hue token pairs (background plus initials foreground) to each theme family's `*.theme.mjs`, for light AND dark, generated into `main.css` by `npm run themes`, with every pair audited by `scripts/check-contrast.mjs` (initials at least 4.5:1). An avatar picks its hue deterministically from the canonical `@username`, so it is stable across sessions and devices; the initials come from the display name. *Security rationale:* keying on the kernel-derived canonical username, not the self-chosen display name, means a display name cannot borrow another person's colour. The hue is a recognition aid, never an identity proof; the `@username` stays visible.
+- **Not actionable in round 2, with reasons** (from `TRIAGE-r2.md` §7):
+  - Pre-selecting a dropped file in the picker: superseded by D-DROP.
+  - "lab-server" versus the address: superseded by D-ALIAS.
+  - Keeping the cached sidebar and timeline dimmed while reconnecting: `clearProtectedState()` keeps nothing stale after a failure; showing a cached view needs security review.
+  - The observer's re-authorization semantics (security F3): a security-reviewed change; only the sentence was fixed (Q2-77).
+  - Listing, cancelling or retiring legacy `{uid, public_key}` enrollments: needs a new broker method or a coordinator call.
+  - Carol N7, the menu edge on hover after keyboard use: the standard `:focus-visible` heuristic; removing it would undo a11y A2.
+  - `/crew` from an empty chat creating the chat; "Start a new chat" carrying the draft; the raw model ID; chat tool rows, raw JSON, Recents and duplicate titles: chat-product scope.
+  - @-mention suggestions and Reply in Crew: new features with no protocol semantics.
+  - "All extensions loaded" on opening a task chat: app-level toast policy outside Crew; worth its own fix.
+  - A per-person avatar hue: superseded by D-AVATAR.
+  - Field boundaries under 3:1 at rest and status dots at 1.28:1: design-system decisions, not hard failures.
+  - Reflow at 400%, keyboard shortcuts, channel discovery, a status indicator outside Crew, and a new-window control by the switcher: deferred features or app-shell scope.
+
 <!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
 
 ## Related documentation
