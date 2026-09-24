@@ -1215,8 +1215,13 @@ uses a field inside.
 
 **`Avatar`** (`ui/avatar.tsx`): on the existing `@radix-ui/react-avatar` dependency. Props `fallback`,
 `size` (20 | 24 | 32), `shape` (`circle` for people, `square` for agents and objects), `icon`, `ring`. Ground
-`bg-background-medium`, ink `text-text-muted`. Initials: first letters of up to two words of the display name,
-else the first two letters of the username.
+`bg-background-medium`, ink `text-text-muted`. Initials (`avatarInitials`): a display name the person chose gives
+the first letters of its first two words, or one letter for one word whatever joins its parts (`Alice Chen` → AC,
+`Jean-Luc` → J). A display name that only repeats the username ("equal", as defined under
+[Identity and naming display rules](#identity-and-naming-display-rules)) is read from the username's account part
+instead — never an SSSD realm, which every member shares: a handle joined by `_`, `.` or `-` gives the first letter
+of its last part (`crew_bob` → B, `crew_bob@ad.ucsf.edu` → B), anything else its first letter (`bob@ad.ucsf.edu` →
+B). With no letter in the display name at all, an unseparated username gives its first two letters (`bob` → BO).
 
 ### Crew-local components
 
@@ -1548,9 +1553,18 @@ function (`personLabel`). No other code formats a person.
 |---|---|---|
 | `header` | **Display name** (`text-label`) then `@username` (`text-supporting text-text-muted`) as a separate element; `@username` alone when the two are equal case-insensitively | Message heads, member rows, the You row |
 | `inline` | `Display name (@username)`, or `@username` when equal | Notes, toasts, invitation rows, "Hosted by", intro lines |
-| `authority` | Always `Display name (@username)`, plus ` · former member` when inactive | Pickers (every row), remove member, ownership offer and accept, offboard, grant consent, approval context |
+| `authority` | Always `Display name (@username)`, or `@username` alone when the two are equal; plus ` · former member` when inactive | Pickers (every row), remove member, ownership offer and accept, offboard, grant consent, approval context |
 | `chip` | Display name with `@username` in a tooltip; `Display name (@username)` on a collision | Member stack, avatar tooltips |
 | Joiner at a host decision | `@username` first in mono, then "{full name} (name on the server account)" | Waiting to join rows, Let in dialog, invite result |
+
+**Equal** means the display name only repeats the username, so the person has not chosen one: the same text
+case-insensitively, or the username with its `@` and `#` removed. The second shape is an SSSD account's default: a
+new principal's nickname is its username, the daemon's `sanitize_display_name` strips `@` from a nickname, and so
+`bob@ad.ucsf.edu` is projected as `bobad.ucsf.edu`. Equal names render `@username` once in **every** context,
+authority included — never `crew_alice (@crew_alice)` or `bobad.ucsf.edu (@bob@ad.ucsf.edu)` (T-31). An authority
+point loses nothing by it: what it must show in full is `@username`, which it still does, and the daemon refuses a
+nickname that reads as another person's username (`validate_display_name_for`), so `@username` alone never hides an
+impersonation. `personLabel.ts` `displayNameRepeatsUsername` is the one test of equality.
 
 Rules:
 

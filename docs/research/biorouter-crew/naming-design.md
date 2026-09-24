@@ -75,12 +75,20 @@ review. Every finding of both reviews is answered below; the few that are deferr
 |---|---|---|
 | Message header, people list, member rows | **Display name**, then `@username` as muted secondary text in its own element; `@username` alone when the two are equal case-insensitively | **Bob Lee** `@bob` |
 | Compact inline text (notes, toasts, invitation text, run owner tags, CLI lines) | `Display name (@username)`, or `@username` when equal | `Bob Lee (@bob) invited you to Analysis Lab` |
-| Authority decision points (invite, remove member, offer or accept ownership, offboard, approve an agent request, grant consent) | Always `Display name (@username)`, plus `· former member` when inactive, even if equal | `Remove Bob Lee (@bob) from #methods?` |
+| Authority decision points (invite, remove member, offer or accept ownership, offboard, approve an agent request, grant consent) | Always `Display name (@username)`, or `@username` alone when the two are equal, plus `· former member` when inactive | `Remove Bob Lee (@bob) from #methods?` |
 | Admitting a joiner (host) | `@username` first, in monospace, then "{full name} (name on the server account)" | `@bob` · Bob Lee (name on the server account) |
 | Chips, avatars, @-mention autocomplete | Display name with `@username` in a tooltip; both on a collision | — |
 | Former member | Label plus ` · former member`, muted | `Bob Lee (@bob) · former member` |
 | ID in no projection | `Unknown member`, with the ID only under Copy ID | — |
 | CLI human output and model-facing text | `"Display name" (@username)`, the display name quoted and wrapped in Unicode isolates (U+2068 … U+2069) | `"Bob Lee" (@bob) · 14:02  The analysis is ready.` |
+
+**Equal names.** A display name is equal to the username when it only repeats it, so the person has not chosen one:
+the same text case-insensitively, or the username with its `@` and `#` removed — the default an SSSD account gets,
+since a new principal's nickname is its username and the projection strips `@` (`bob@ad.ucsf.edu` is projected as
+`bobad.ucsf.edu`). In the GUI, equal names render `@username` once in every context, authority points included,
+never `bob (@bob)` (T-31). An authority point still shows the `@username` in full, and that is the part it needs:
+`validate_display_name_for` refuses a nickname that reads as another person's username, so `@username` alone never
+hides an impersonation.
 
 **Collision rule.** Build the directory of one workspace: active principals, the former principals projected below,
 and the host. Two entries collide when their display names share a `skeleton_key` (from S2b; `name_key` before it).
