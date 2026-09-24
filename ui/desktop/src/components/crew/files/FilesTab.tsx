@@ -1,11 +1,12 @@
 import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '../../ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../../ui/dropdown-menu';
-import { File, MoreHorizontal, Paperclip } from '../../icons/app-icons';
+import { DropdownMenu, DropdownMenuContent } from '../../ui/dropdown-menu';
+import { File, Paperclip } from '../../icons/app-icons';
 import { forgetTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
 import { useCrew } from '../state/CrewControllerContext';
 import { AttachmentCard, type CrewBlob } from './AttachmentCard';
 import { filesCopy } from './copy';
+import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { ServerPathRow } from './ServerPathRow';
 import { TransferMenuItems, TransferRow } from './TransferRow';
@@ -159,17 +160,7 @@ export function FilesTab() {
                     {filesCopy.attach}
                   </Button>
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        shape="round"
-                        aria-label={filesCopy.fileActions(transfer.name)}
-                      >
-                        <MoreHorizontal aria-hidden />
-                      </Button>
-                    </DropdownMenuTrigger>
+                    <MoreActionsTrigger name={transfer.name} />
                     <DropdownMenuContent align="end" className="crew-menu">
                       <TransferMenuItems
                         transfer={transfer}

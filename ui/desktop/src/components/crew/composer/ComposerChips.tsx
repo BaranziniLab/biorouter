@@ -2,6 +2,7 @@ import { Badge } from '../../ui/badge';
 import { File, Link, XIcon } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import type { DraftFile, DraftReference } from '../state/types';
+import { ChipAction } from '../files/GlyphButton';
 import { UploadChip } from '../files/UploadChip';
 import { composerCopy } from './copy';
 import './composer.css';
@@ -43,14 +44,12 @@ export function ComposerChips({
           <Badge variant="chip" className="crew-chip max-w-full min-w-0">
             <File className="crew-chip-icon" aria-hidden />
             <span className="min-w-0 truncate text-text-default">{file.name}</span>
-            <button
-              type="button"
-              className="crew-chip-action"
-              aria-label={composerCopy.removeFile(file.name)}
+            <ChipAction
+              label={composerCopy.removeFile(file.name)}
               onClick={() => onRemoveAttachment(file.id)}
             >
               <XIcon className="crew-chip-icon" aria-hidden />
-            </button>
+            </ChipAction>
           </Badge>
         </li>
       ))}
@@ -59,14 +58,12 @@ export function ComposerChips({
           <Badge variant="chip" className="crew-chip max-w-full min-w-0">
             <Link className="crew-chip-icon" aria-hidden />
             <span className="min-w-0 truncate text-text-default">{item.label}</span>
-            <button
-              type="button"
-              className="crew-chip-action"
-              aria-label={composerCopy.removeRef(item.label)}
+            <ChipAction
+              label={composerCopy.removeRef(item.label)}
               onClick={() => onRemoveReference(item.id)}
             >
               <XIcon className="crew-chip-icon" aria-hidden />
-            </button>
+            </ChipAction>
           </Badge>
         </li>
       ))}

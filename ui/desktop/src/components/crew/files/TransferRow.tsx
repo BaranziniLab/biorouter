@@ -1,16 +1,12 @@
 import { useId } from 'react';
 import { Button } from '../../ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../../ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from '../../ui/dropdown-menu';
 import { Progress } from '../../ui/progress';
-import { Download, MoreHorizontal, Pause, Play, Trash2, Upload } from '../../icons/app-icons';
+import { Download, Pause, Play, Trash2, Upload } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import './files.css';
 
@@ -109,17 +105,7 @@ export function TransferRow({
         ) : null}
         {presentation.active ? null : (
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                shape="round"
-                aria-label={filesCopy.fileActions(transfer.name)}
-              >
-                <MoreHorizontal aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
+            <MoreActionsTrigger name={transfer.name} />
             <DropdownMenuContent align="end" className="crew-menu">
               <TransferMenuItems transfer={transfer} onResume={onResume} onRemove={onRemove} />
             </DropdownMenuContent>

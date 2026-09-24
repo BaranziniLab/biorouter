@@ -16,7 +16,6 @@ export const composerCopy = {
   askAgent: 'Ask my agent',
   /** Pinned: Send's accessible name. */
   send: 'Send message',
-  sendTooltip: 'Send',
   sending: 'Sending…',
   /** The chips row: what goes with the message. */
   chips: 'Attachments',

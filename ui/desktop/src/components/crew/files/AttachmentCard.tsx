@@ -5,19 +5,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Progress } from '../../ui/progress';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import {
-  Copy,
-  Download,
-  Eye,
-  File,
-  Fingerprint,
-  MoreHorizontal,
-  Pause,
-} from '../../icons/app-icons';
+import { Copy, Download, Eye, File, Fingerprint, Pause } from '../../icons/app-icons';
 import { crewRequest } from '../crewApi';
 import {
   beginTransfer,
@@ -29,6 +20,7 @@ import {
 } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { TransferMenuItems } from './TransferRow';
 import { useCopyAnnouncer } from './useCopyAnnouncer';
@@ -220,17 +212,7 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
             </Tooltip>
           ) : null}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                shape="round"
-                aria-label={filesCopy.fileActions(name)}
-              >
-                <MoreHorizontal aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
+            <MoreActionsTrigger name={name} />
             <DropdownMenuContent align="end" className="crew-menu">
               <DropdownMenuItem onSelect={() => void copy(blobId)}>
                 <Copy aria-hidden />

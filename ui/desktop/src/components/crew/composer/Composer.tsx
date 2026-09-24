@@ -453,9 +453,7 @@ function ComposerCard({
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>
-            {posting ? composerCopy.sending : composerCopy.sendTooltip}
-          </TooltipContent>
+          <TooltipContent>{posting ? composerCopy.sending : composerCopy.send}</TooltipContent>
         </Tooltip>
       </div>
     </div>

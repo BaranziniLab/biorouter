@@ -3,6 +3,7 @@ import { Loader2, Pause, Play } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { ChipAction } from './GlyphButton';
 import './files.css';
 
 const RING_RADIUS = 6.5;
@@ -67,24 +68,14 @@ export function UploadChip({
       <span className="min-w-0 truncate text-text-default">{transfer.name}</span>
       <span className="shrink-0 tabular-nums">{state}</span>
       {canPause ? (
-        <button
-          type="button"
-          className="crew-chip-action"
-          aria-label={filesCopy.pauseNamed(transfer.name)}
-          onClick={() => onPause(transfer)}
-        >
+        <ChipAction label={filesCopy.pauseNamed(transfer.name)} onClick={() => onPause(transfer)}>
           <Pause className="crew-chip-icon" aria-hidden />
-        </button>
+        </ChipAction>
       ) : null}
       {canResume ? (
-        <button
-          type="button"
-          className="crew-chip-action"
-          aria-label={filesCopy.resumeNamed(transfer.name)}
-          onClick={() => onResume(transfer)}
-        >
+        <ChipAction label={filesCopy.resumeNamed(transfer.name)} onClick={() => onResume(transfer)}>
           <Play className="crew-chip-icon" aria-hidden />
-        </button>
+        </ChipAction>
       ) : null}
     </Badge>
   );
