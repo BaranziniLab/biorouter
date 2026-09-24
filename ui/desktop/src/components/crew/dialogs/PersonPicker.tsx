@@ -7,6 +7,7 @@ import { cn } from '../../../utils';
 import { PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
 import { addPeopleCopy } from './copy';
 import { personMatches } from './people';
+import './dialogs.css';
 
 export interface PersonPickerProps {
   /** Who may be chosen. The caller has already removed members and pending invitees. */
@@ -26,6 +27,8 @@ export interface PersonPickerProps {
   emptyText?: string;
   dir?: PeopleDirectory | null;
   disabled?: boolean;
+  /** Focus the field when it mounts — for a dialog step that replaced the field that had focus. */
+  autoFocus?: boolean;
   'aria-describedby'?: string;
 }
 
@@ -50,6 +53,7 @@ export function PersonPicker({
   emptyText,
   dir,
   disabled,
+  autoFocus,
   'aria-describedby': describedBy,
 }: PersonPickerProps) {
   const [open, setOpen] = React.useState(false);
@@ -77,6 +81,7 @@ export function PersonPicker({
           id={id}
           type="button"
           disabled={disabled}
+          autoFocus={autoFocus}
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-labelledby={`${labelledBy} ${valueId}`}
@@ -110,7 +115,7 @@ export function PersonPicker({
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0">
+      <PopoverContent align="start" className="crew-person-picker-list p-0">
         <Command label={label} query={query} onQueryChange={setQuery} className="max-h-72">
           <CommandInput placeholder={addPeopleCopy.search} aria-label={addPeopleCopy.search} />
           <CommandList aria-label={label}>

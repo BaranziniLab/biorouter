@@ -118,6 +118,7 @@ describe('CreateTeamDialog', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Add people to Imaging Core' })
     ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Person/ })).toHaveFocus());
     fireEvent.click(screen.getByRole('button', { name: /^Person/ }));
     fireEvent.click(await screen.findByRole('option', { name: /Bob Lee/ }));
     await act(async () => {

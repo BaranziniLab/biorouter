@@ -1,0 +1,12 @@
+/* Crew dialogs — the few load-bearing styles the dialogs area authors itself.
+
+   Bound by the contract in `crew/crew-app.css` (enforced by `crewCss.sourceGuard.test.ts`):
+   `.crew-*` classes only, tokens only, no element selectors. */
+
+/* The person picker's list is exactly as wide as the field that opened it, whatever the dialog's
+   width: a list narrower than its field reads as a different control. Radix publishes the
+   trigger's width on the popover content. */
+.crew-person-picker-list {
+  width: var(--radix-popover-trigger-width);
+  max-width: var(--radix-popover-content-available-width);
+}

@@ -110,6 +110,7 @@ describe('WorkspaceSettingsDialog', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel @eve’s invitation' }));
     expect(within(dialog).getByText(copy.cancelInvitationConfirm('eve'))).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: copy.keepInvitation })).toHaveFocus();
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel invitation' }));
     });

@@ -145,10 +145,13 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                     key={device.fingerprint}
                     className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2"
                   >
-                    <span className="font-mono text-supporting text-text-default" translate="no">
+                    <span
+                      className="shrink-0 whitespace-nowrap font-mono text-supporting text-text-default"
+                      translate="no"
+                    >
                       {device.fingerprint}
                     </span>
-                    <span className="text-supporting text-text-muted">
+                    <span className="min-w-0 text-right text-supporting text-text-muted">
                       {[date ? copy.deviceAdded(date) : null, via].filter(Boolean).join(' · ')}
                     </span>
                   </li>

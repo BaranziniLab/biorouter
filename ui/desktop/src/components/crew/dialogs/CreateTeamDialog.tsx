@@ -129,6 +129,8 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
         <form id={formId} onSubmit={add} className="flex flex-col gap-3 pb-1">
           <Field id={personId} label={addPeopleCopy.person}>
             <PersonPicker
+              // The name field that had focus is gone with the first step.
+              autoFocus
               id={personId}
               labelledBy={labelId(personId)}
               label={addPeopleCopy.person}

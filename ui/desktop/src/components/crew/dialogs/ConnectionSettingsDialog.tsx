@@ -249,7 +249,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
         </>
       }
     >
-      <form id={formId} onSubmit={submit} className="flex flex-col gap-4 pb-1">
+      <form id={formId} onSubmit={submit} className="flex flex-col gap-4 py-3">
         <Field id={ids.name} label={copy.name}>
           <Input
             id={ids.name}

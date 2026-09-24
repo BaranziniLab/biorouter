@@ -110,6 +110,7 @@ describe('LetInDialog', () => {
     });
     expect(await screen.findByText(letInCopy.approved('Eve'))).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('7QK2');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).toHaveFocus());
 
     const add = screen.getByRole('button', { name: 'Add Eve to Analysis Lab' });
     await act(async () => {

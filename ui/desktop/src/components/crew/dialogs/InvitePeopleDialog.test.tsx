@@ -89,7 +89,7 @@ describe('InvitePeopleDialog', () => {
       within(dialog).getByRole('button', { name: inviteCopy.installed('bob', 'hpc.example.edu') })
     ).toBeInTheDocument();
     expect(within(dialog).getByText(inviteCopy.nextStep('Bob'))).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
   });
 
   it('says a stale background service plainly when the message cannot be built', async () => {

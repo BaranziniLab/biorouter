@@ -101,7 +101,14 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         purpose="info"
         title={title}
         subtitle={subtitle}
-        footer={<Button onClick={onClose}>{copy.done}</Button>}
+        footer={
+          // The form that had focus is gone; land on the result's one action, not the dialog frame.
+          // The key makes it a new element: reconciled in place of the form's Cancel, React would
+          // reuse that node and never apply `autoFocus`.
+          <Button key="done" autoFocus onClick={onClose}>
+            {copy.done}
+          </Button>
+        }
       >
         <div className="flex flex-col gap-3 pb-1">
           <Note tone="success" role="status" icon={Check}>

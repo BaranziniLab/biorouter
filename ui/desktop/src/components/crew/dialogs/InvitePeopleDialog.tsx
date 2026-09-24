@@ -108,7 +108,14 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
         // `form`, so a stray click on the backdrop cannot throw away the message to send.
         purpose="form"
         title={copy.title(workspace)}
-        footer={<Button onClick={onClose}>{copy.done}</Button>}
+        footer={
+          // The form that had focus is gone; land on the result's one action, not the dialog frame.
+          // The key makes it a new element: reconciled in place of the form's Cancel, React would
+          // reuse that node and never apply `autoFocus`.
+          <Button key="done" autoFocus onClick={onClose}>
+            {copy.done}
+          </Button>
+        }
       >
         <div className="flex flex-col gap-4 pb-1">
           <p className="text-body text-text-default">

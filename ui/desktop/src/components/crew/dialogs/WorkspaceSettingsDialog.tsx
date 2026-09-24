@@ -87,7 +87,7 @@ export function WorkspaceSettingsDialog({
       <Tabs
         value={current}
         onValueChange={(value) => setCurrent(value as WorkspaceSettingsTab)}
-        className="pb-2"
+        className="py-3"
       >
         <TabsList>
           <TabsTrigger value="general">{copy.tabs.general}</TabsTrigger>
@@ -273,7 +273,7 @@ function MemberRow({
         name={person.displayName}
         username={person.username}
       />
-      <div className="min-w-0 flex-1 truncate">
+      <div className="min-w-0 flex-1 truncate text-label">
         <PersonName person={person} context="header" dir={dir} you={person.isYou} />
       </div>
       {person.isHost ? (
@@ -337,7 +337,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
   return (
     <div className="biorouter-settings-row flex min-w-0 flex-col gap-1.5 px-3 py-2">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="min-w-0 flex-1 truncate">
+        <div className="min-w-0 flex-1 truncate text-label">
           <PersonName person={person} context="joiner" />
         </div>
         {confirming ? (
@@ -349,6 +349,8 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
               {copy.cancelInvitation}
             </Button>
             <Button
+              // A destructive confirmation holds focus on the safe answer.
+              autoFocus
               variant="ghost"
               size="sm"
               disabled={pending}
@@ -433,6 +435,12 @@ function PrivacyTab({
           {connection ? (
             <>
               <PrivacyBadge tier={connection.mode} enforcementOff={false} />
+              {connection.mode === 'private' && connectionInstitution ? (
+                <span>
+                  {'· '}
+                  <InstitutionName id={connectionInstitution} />
+                </span>
+              ) : null}
               {connection.mode === 'private' ? (
                 <Button
                   variant="secondary"
