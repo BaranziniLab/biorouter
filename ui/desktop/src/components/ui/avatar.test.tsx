@@ -47,11 +47,51 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
     expect(avatarInitials(handle, handle)).toBe(expected);
   });
 
-  it('tells the people of a crew_ workspace apart', () => {
-    const people = ['crew_alice', 'crew_bob', 'crew_carol', 'crew_dave', 'crew_erin'];
-    const initials = people.map((handle) => avatarInitials(handle, handle));
-    expect(initials).toEqual(['A', 'B', 'C', 'D', 'E']);
-    expect(new Set(initials).size).toBe(people.length);
+  /**
+   * With no display name set, a member is shown by the name the daemon projects
+   * for them: the username, with any `@` removed (`sanitize_display_name`). For
+   * a fully qualified SSSD account that is `bobad.ucsf.edu`, whose last part is
+   * the realm every member shares — so a rule that split the projected name read
+   * "E" for all of them. The realm is never read.
+   */
+  it.each([
+    [
+      'crew_',
+      ['crew_alice', 'crew_bob', 'crew_carol', 'crew_dave', 'crew_erin'],
+      ['A', 'B', 'C', 'D', 'E'],
+    ],
+    [
+      'SSSD',
+      [
+        'alice@ad.ucsf.edu',
+        'bob@ad.ucsf.edu',
+        'carol@ad.ucsf.edu',
+        'crew_dave@ad.ucsf.edu',
+        'frank@ad.ucsf.edu',
+      ],
+      ['A', 'B', 'C', 'D', 'F'],
+    ],
+  ])('tells the people of a %s workspace apart', (_shape, usernames, expected) => {
+    const projected = usernames.map((username) => username.replace(/@/g, ''));
+    const initials = usernames.map((username, i) => avatarInitials(projected[i], username));
+    expect(initials).toEqual(expected);
+    expect(new Set(initials).size).toBe(usernames.length);
+    // A legacy daemon forwards the nickname as stored, which is the username itself.
+    expect(usernames.map((username) => avatarInitials(username, username))).toEqual(expected);
+  });
+
+  it('reads an SSSD account by its account part, never its realm', () => {
+    expect(avatarInitials('bobad.ucsf.edu', 'bob@ad.ucsf.edu')).toBe('B');
+    expect(avatarInitials('BobAD.ucsf.edu', 'bob@ad.ucsf.edu')).toBe('B');
+    expect(avatarInitials('crew_bobad.ucsf.edu', 'crew_bob@ad.ucsf.edu')).toBe('B');
+    expect(avatarInitials(null, 'bob@ad.ucsf.edu')).toBe('BO');
+    expect(avatarInitials(null, 'crew_bob@ad.ucsf.edu')).toBe('B');
+    expect(avatarInitials(null, 'alice.chen@ucsf.edu')).toBe('C');
+    expect(avatarInitials('', 'bob\uFF20ad.ucsf.edu')).toBe('BO');
+    for (const username of ['bob@ad.ucsf.edu', 'alice@ad.ucsf.edu', 'alice.chen@ucsf.edu']) {
+      expect(avatarInitials(username.replace('@', ''), username)).not.toBe('E');
+      expect(avatarInitials(null, username)).not.toMatch(/^E/);
+    }
   });
 
   it('still gives a real display name two initials, separators and all', () => {
@@ -59,6 +99,22 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
     expect(avatarInitials('Carol Nguyen', 'crew_carol')).toBe('CN');
     expect(avatarInitials('Mary-Jane Watson', 'mjw')).toBe('MW');
     expect(avatarInitials('J.R.R. Tolkien', 'jrrt')).toBe('JT');
+    expect(avatarInitials('Bob Lee', 'bob@ad.ucsf.edu')).toBe('BL');
+  });
+
+  /**
+   * The last-part rule is for a name nobody chose. A one-word name a person
+   * typed keeps its first letter, whatever joins its parts.
+   */
+  it.each([
+    ['Jean-Luc', 'jpicard', 'J'],
+    ['A.J.', 'ajones', 'A'],
+    ['Mary-Jane', 'mjw', 'M'],
+    ['st.john', 'sjohn', 'S'],
+    ['crew_alice', 'alice', 'C'],
+    ['bob', 'bob@ad.ucsf.edu', 'B'],
+  ])('reads a chosen one-word name %j from its start', (name, username, expected) => {
+    expect(avatarInitials(name, username)).toBe(expected);
   });
 
   it('falls back to the first two letters of an unseparated username', () => {
@@ -92,8 +148,10 @@ describe('Avatar', () => {
   });
 
   it('draws a member with no display name by the last part of their handle', () => {
-    const { container } = render(<Avatar name="crew_alice" username="crew_alice" />);
+    const { container, rerender } = render(<Avatar name="crew_alice" username="crew_alice" />);
     expect(tile(container)).toHaveTextContent(/^A$/);
+    rerender(<Avatar name="bobad.ucsf.edu" username="bob@ad.ucsf.edu" />);
+    expect(tile(container)).toHaveTextContent(/^B$/);
   });
 
   it('prefers the chosen avatar text, clamped to two characters', () => {

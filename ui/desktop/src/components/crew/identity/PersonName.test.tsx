@@ -1,10 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { avatarInitials } from '../../ui/avatar';
 import { PersonName } from './PersonName';
 import { identityCopy } from './copy';
 import {
   agentLabel,
+  displayNameRepeatsUsername,
   joinerPerson,
   personFromProjection,
   personLabel,
@@ -404,6 +406,78 @@ describe('a person with no display name of their own (T-31)', () => {
     );
     expect(personLabel(ID.alice, 'authority', named)).toBe('Alice Chen (@crew_alice)');
     expect(personLabel(ID.alice, 'inline', named)).toBe('Alice Chen (@crew_alice)');
+  });
+});
+
+describe('a fully qualified SSSD account with no display name of its own (T-31)', () => {
+  /**
+   * `valid_username` admits `bob@ad.ucsf.edu`, and a new principal's nickname
+   * is its username. The daemon's `sanitize_display_name` removes the `@`, so it
+   * projects `display_name: "bobad.ucsf.edu"` — and a legacy daemon forwards
+   * the nickname as stored, which `usableName` strips the same way. Either way
+   * the person chose nothing, so they read `@bob@ad.ucsf.edu` once, and their
+   * avatar is read from the account part, never from the shared realm.
+   */
+  const SSSD = [
+    ['bob@ad.ucsf.edu', 'B'],
+    ['alice@ad.ucsf.edu', 'A'],
+    ['carol@ad.ucsf.edu', 'C'],
+    ['crew_bob@ad.ucsf.edu', 'B'],
+  ] as const;
+
+  it('reads @username once and the account part’s initial, off a daemon projection', () => {
+    for (const [username, initial] of SSSD) {
+      for (const display_name of [username.replace('@', ''), username, undefined]) {
+        const person = personFromProjection({ username, display_name, nickname: username });
+        expect(person).not.toBeNull();
+        expect(displayNameRepeatsUsername(person!.displayName, person!.username)).toBe(true);
+        for (const context of ['header', 'inline', 'authority', 'chip'] as const) {
+          expect(personLabel(person, context)).toBe(`@${username}`);
+        }
+        expect(agentLabel(person, 'authority')).toBe(`@${username}'s agent`);
+        expect(avatarInitials(person!.displayName, person!.username)).toBe(initial);
+      }
+    }
+  });
+
+  it('renders the handle alone, in a directory too', () => {
+    const sssd = buildPeopleDirectory(
+      snapshot({
+        actor: principal(ID.alice, 'alice@ad.ucsf.edu', 'alicead.ucsf.edu', 1000),
+        principals: [
+          principal(ID.alice, 'alice@ad.ucsf.edu', 'alicead.ucsf.edu', 1000),
+          // A legacy nickname, stored before the daemon stripped it.
+          principal(ID.bob, 'bob@ad.ucsf.edu', 'bob@ad.ucsf.edu', 1001),
+          principal(ID.carol, 'carol@ad.ucsf.edu', 'Carol Nguyen', 1002),
+        ],
+        former_principals: [],
+      })
+    );
+    for (const [id, username] of [
+      [ID.alice, 'alice@ad.ucsf.edu'],
+      [ID.bob, 'bob@ad.ucsf.edu'],
+    ] as const) {
+      for (const context of ['header', 'inline', 'authority', 'chip'] as const) {
+        expect(personLabel(id, context, sssd)).toBe(`@${username}`);
+        const { container, unmount } = render(
+          <PersonName person={id} dir={sssd} context={context} />
+        );
+        expect(root(container)).toHaveTextContent(new RegExp(`^@${username}$`));
+        expect(container.querySelector('[data-person-part="display-name"]')).toBeNull();
+        unmount();
+      }
+    }
+    // A name the person chose is still spelled out beside the full handle.
+    expect(personLabel(ID.carol, 'authority', sssd)).toBe('Carol Nguyen (@carol@ad.ucsf.edu)');
+    expect(avatarInitials(sssd.byId(ID.carol)!.displayName, 'carol@ad.ucsf.edu')).toBe('CN');
+  });
+
+  it('counts only the username’s own shapes as a repeat', () => {
+    expect(displayNameRepeatsUsername('BOBad.ucsf.edu', 'bob@ad.ucsf.edu')).toBe(true);
+    expect(displayNameRepeatsUsername('crew_alice', 'crew_alice')).toBe(true);
+    expect(displayNameRepeatsUsername('Bob', 'bob@ad.ucsf.edu')).toBe(false);
+    expect(displayNameRepeatsUsername('bob ad ucsf edu', 'bob@ad.ucsf.edu')).toBe(false);
+    expect(displayNameRepeatsUsername('alicead.ucsf.edu', 'bob@ad.ucsf.edu')).toBe(false);
   });
 });
 

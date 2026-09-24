@@ -68,6 +68,25 @@ export const personRoles = Object.freeze({ host: 'Host', owner: 'Owner' } as con
 /** A role from {@link personRoles}: `host` for the workspace, `owner` for a channel. */
 export type PersonRole = keyof typeof personRoles;
 
+/**
+ * Whether a display name only repeats the username, so the person has not
+ * chosen one: the same name case aside, or the username as it reads once used
+ * as a nickname.
+ *
+ * The second shape is the SSSD one. A new principal's nickname is its username,
+ * and both the daemon (`sanitize_display_name`) and {@link usableName} remove
+ * `@` and `#` from a nickname, so `bob@ad.ucsf.edu` who never set a name is
+ * projected as `bobad.ucsf.edu`. Comparing that with the full username read as
+ * two names and rendered `bobad.ucsf.edu (@bob@ad.ucsf.edu)`. The avatar asks the
+ * same question (`avatarInitials`), so that person's avatar reads "B", not the
+ * "E" of the realm.
+ */
+export function displayNameRepeatsUsername(displayName: string, username: string): boolean {
+  if (displayNameIsUsername(displayName, username)) return true;
+  const asNickname = usableName(username);
+  return asNickname !== '' && displayNameIsUsername(displayName, asNickname);
+}
+
 /** Where `@username` goes when something else leads. */
 export type HandlePlacement =
   /** Not shown (an agent's inline label without a collision). */
@@ -111,13 +130,16 @@ export type PersonLayout =
  * Sam Park (@spark)'s agent. A former member gains " · former member".
  *
  * **When the names are equal, `@username` is shown once, in every context.** A
- * display name that is only the username (case aside) adds nothing, and
+ * display name that only repeats the username ({@link displayNameRepeatsUsername}:
+ * case aside, or with the username's `@` and `#` removed) adds nothing, and
  * repeating it read as `crew_alice (@crew_alice)` in every member row and
- * access line (T-31). An authority point loses nothing by it: what it must
- * show in full is the `@username` — the one name that cannot be chosen to look
- * like someone else's — and `@username` alone is exactly that. A display name
- * that differs from the username in anything but case is still spelled out
- * beside it.
+ * access line, and as `bobad.ucsf.edu (@bob@ad.ucsf.edu)` for an SSSD account
+ * (T-31). An authority point loses nothing by it: what it must show in full is
+ * the `@username` — the one name that cannot be chosen to look like someone
+ * else's — and `@username` alone is exactly that. The daemon already refuses a
+ * nickname that reads as another person's username, so showing only the
+ * handle never hides an impersonation. Any other display name is still spelled
+ * out beside it.
  */
 export function personLayout(
   person: CrewPerson | null,
@@ -134,7 +156,7 @@ export function personLayout(
   }
 
   const displayName = personDisplayName(person.displayName, username);
-  const equal = displayNameIsUsername(displayName, username);
+  const equal = displayNameRepeatsUsername(displayName, username);
   const collides = person.collides === true;
   const former = person.isFormer === true;
   const common = { kind: 'person' as const, displayName, handle, former };

@@ -26,8 +26,10 @@ export interface PersonNameProps extends PersonLabelOptions {
  * - Every display name sits in its own `<bdi>`, so a right-to-left or
  *   mixed-direction name cannot reorder the text around it.
  * - `@username` is always its own element, never concatenated into the name.
- * - A display name that is only the username (case aside) is not repeated: the
- *   person reads `@username` once, in every context — never `bob (@bob)`.
+ * - A display name that only repeats the username — case aside, or with the
+ *   username's `@` and `#` removed, as an SSSD account's default name is — is
+ *   not repeated: the person reads `@username` once, in every context — never
+ *   `bob (@bob)`, and never `bobad.ucsf.edu (@bob@ad.ucsf.edu)`.
  * - An unknown principal is "Unknown member"; an ID is never rendered.
  * - A former member is muted and followed by " · former member".
  */
