@@ -24,6 +24,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
 use tokio::sync::Mutex;
+pub use transport::{SshFailure, SshFailureKind};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]

@@ -1,22 +1,53 @@
 use super::Connection;
 use anyhow::{bail, ensure, Result};
 use serde_json::{json, Value};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    fmt,
+    path::Path,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout},
+    sync::watch,
+    task::JoinHandle,
 };
 
 pub const MAX_FRAME: usize = 1_048_576;
+/// Bytes of SSH stderr kept for classification. Everything after this is still
+/// read, and discarded, so a chatty ssh can never fill the pipe and block.
+const STDERR_CAPTURE_LIMIT: usize = 8 * 1024;
+/// Upper bound, in bytes, on [`SshFailure::detail`].
+pub const SSH_FAILURE_DETAIL_LIMIT: usize = 2 * 1024;
+/// A closed pipe almost always means ssh is exiting. Waiting this long for it
+/// lets the report carry ssh's own status (255, 127) instead of racing it.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+/// After ssh is gone, how long its stderr gets to reach end-of-file. A jump
+/// host's helper can hold the pipe open, so this is bounded.
+const STDERR_GRACE: Duration = Duration::from_millis(500);
+/// At most this many fingerprints are summarised at the top of the detail.
+const MAX_FINGERPRINTS: usize = 4;
+
 struct WireFailure {
     code: String,
     description: &'static str,
+    /// The peer closed a pipe, so ssh is most likely exiting on its own.
+    peer_closed: bool,
 }
 impl WireFailure {
     fn new(code: &str, description: &'static str) -> Self {
         Self {
             code: code.into(),
             description,
+            peer_closed: false,
+        }
+    }
+    fn closed(code: &str, description: &'static str) -> Self {
+        Self {
+            peer_closed: true,
+            ..Self::new(code, description)
         }
     }
     fn io(stage: &'static str, error: std::io::Error) -> Self {
@@ -37,6 +68,168 @@ impl WireFailure {
         Self {
             code: format!("ssh_{stage}_io_{kind}"),
             description: "SSH pipe I/O failed",
+            peer_closed: true,
+        }
+    }
+}
+
+/// Why the SSH transport failed, as far as OpenSSH's own words and the child's
+/// exit status tell us. Classification never guesses: anything that matches no
+/// rule is [`SshFailureKind::Other`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SshFailureKind {
+    /// The server wants a password, MFA or a key the agent does not hold.
+    AuthRequired,
+    /// Strict host-key checking refused a host absent from known_hosts.
+    HostKeyUnknown,
+    /// The server offered a key that differs from the pinned one (or a revoked one).
+    HostKeyChanged,
+    /// DNS, routing or TCP failed before SSH could start.
+    Unreachable,
+    /// SSH worked but `~/.local/bin/biorouter-crew` could not be run.
+    BridgeMissing,
+    /// Anything else, including a failure while ssh was still running.
+    Other,
+}
+
+impl SshFailureKind {
+    /// The typed code the daemon's HTTP surface answers with for this kind.
+    pub fn api_code(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "crew_ssh_auth_required",
+            Self::HostKeyUnknown => "crew_ssh_host_key_unknown",
+            Self::HostKeyChanged => "crew_ssh_host_key_changed",
+            Self::Unreachable => "crew_ssh_unreachable",
+            Self::BridgeMissing => "crew_bridge_missing",
+            Self::Other => "crew_ssh_failed",
+        }
+    }
+}
+
+/// A fatal SSH transport failure. `Display` is the stable, stderr-free message
+/// (it is persisted as `last_error` and matched by older renderers); `detail`
+/// carries OpenSSH's own bounded, control-stripped words for "Copy details"
+/// only and is deliberately absent from both `Display` and `Debug`.
+#[derive(Clone)]
+pub struct SshFailure {
+    pub kind: SshFailureKind,
+    /// The wire-level failure code, e.g. `ssh_eof`.
+    pub code: String,
+    /// The child's state before our own cleanup, e.g. `exit_255` or `running`.
+    pub status: String,
+    pub description: String,
+    /// At most [`SSH_FAILURE_DETAIL_LIMIT`] bytes of sanitized stderr, with any
+    /// host-key fingerprints summarised first. `None` when ssh said nothing.
+    pub detail: Option<String>,
+}
+
+impl SshFailure {
+    pub fn api_code(&self) -> &'static str {
+        self.kind.api_code()
+    }
+}
+
+impl fmt::Display for SshFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
+            self.code, self.status, self.description
+        )
+    }
+}
+
+impl fmt::Debug for SshFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `{:#?}` on an anyhow::Error prints this, so the detail stays out of logs.
+        f.debug_struct("SshFailure")
+            .field("kind", &self.kind)
+            .field("code", &self.code)
+            .field("status", &self.status)
+            .field("description", &self.description)
+            .field("detail_bytes", &self.detail.as_ref().map_or(0, String::len))
+            .finish()
+    }
+}
+
+impl std::error::Error for SshFailure {}
+
+/// The child's state at the moment of failure, before any cleanup signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildState {
+    Exited(Option<i32>),
+    Running,
+    Unknown,
+}
+
+impl ChildState {
+    fn label(self) -> String {
+        match self {
+            Self::Exited(Some(code)) => format!("exit_{code}"),
+            Self::Exited(None) => "exited_without_code".into(),
+            Self::Running => "running".into(),
+            Self::Unknown => "unknown".into(),
+        }
+    }
+}
+
+/// Continuously drains a child's stderr, keeping only the first
+/// [`STDERR_CAPTURE_LIMIT`] bytes.
+struct StderrCapture {
+    kept: Arc<Mutex<Vec<u8>>>,
+    finished: watch::Receiver<bool>,
+    task: JoinHandle<()>,
+}
+
+impl StderrCapture {
+    fn spawn<R: AsyncRead + Unpin + Send + 'static>(reader: R) -> Self {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let (done, finished) = watch::channel(false);
+        let sink = kept.clone();
+        let task = tokio::spawn(async move {
+            drain_stderr(reader, &sink).await;
+            let _ = done.send(true);
+        });
+        Self {
+            kept,
+            finished,
+            task,
+        }
+    }
+
+    /// Wait, at most `grace`, for the writer side to close.
+    async fn settle(&mut self, grace: Duration) {
+        let _ = tokio::time::timeout(grace, self.finished.wait_for(|done| *done)).await;
+    }
+
+    fn snapshot(&self) -> Vec<u8> {
+        self.kept
+            .lock()
+            .map(|kept| kept.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for StderrCapture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn drain_stderr<R: AsyncRead + Unpin>(mut reader: R, sink: &Mutex<Vec<u8>>) {
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = match reader.read(&mut chunk).await {
+            Ok(0) => return,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // Returning drops the reader, closing our end: ssh's later writes
+            // fail with EPIPE instead of blocking on a full pipe.
+            Err(_) => return,
+        };
+        if let Ok(mut kept) = sink.lock() {
+            let room = STDERR_CAPTURE_LIMIT.saturating_sub(kept.len());
+            kept.extend_from_slice(&chunk[..read.min(room)]);
         }
     }
 }
@@ -45,6 +238,7 @@ pub struct Transport {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr: StderrCapture,
     unusable: bool,
 }
 
@@ -110,10 +304,14 @@ impl Transport {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         crate::subprocess::prepare_agent_child_command(&mut command);
-        let mut child = command.spawn()?;
+        Self::from_child(command.spawn()?)
+    }
+    /// Adopt a spawned child whose three standard streams are all piped. Must
+    /// run inside a Tokio runtime: stderr is drained by a task from here on.
+    fn from_child(mut child: Child) -> Result<Self> {
         let stdin = child
             .stdin
             .take()
@@ -124,10 +322,17 @@ impl Transport {
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("SSH output unavailable"))?,
         );
+        let stderr = StderrCapture::spawn(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("SSH diagnostics unavailable"))?,
+        );
         Ok(Self {
             child,
             stdin,
             stdout,
+            stderr,
             unusable: false,
         })
     }
@@ -192,7 +397,7 @@ impl Transport {
             .await
             .map_err(|error| WireFailure::io("read", error))?;
         if length == 0 {
-            return Err(WireFailure::new("ssh_eof", "SSH connection closed"));
+            return Err(WireFailure::closed("ssh_eof", "SSH connection closed"));
         }
         if length > MAX_FRAME {
             return Err(WireFailure::new(
@@ -236,18 +441,28 @@ impl Transport {
         Ok(response)
     }
     async fn fatal_failure(&mut self, failure: WireFailure) -> anyhow::Error {
-        // Capture only exit status before our own cleanup, never SSH stderr or
-        // arguments. A cleanup signal must not be misreported as the cause.
-        let status = match self.child.try_wait() {
-            Ok(Some(status)) => status.code().map_or_else(
-                || "exited_without_code".into(),
-                |code| format!("exit_{code}"),
-            ),
-            Ok(None) => "running".into(),
-            Err(_) => "unknown".into(),
+        // Capture exit status before our own cleanup: a cleanup signal must not
+        // be misreported as the cause. A closed pipe means ssh is on its way
+        // out, so give its own status a bounded moment to land first.
+        if failure.peer_closed {
+            let _ = tokio::time::timeout(EXIT_GRACE, self.child.wait()).await;
+        }
+        let state = match self.child.try_wait() {
+            Ok(Some(status)) => ChildState::Exited(status.code()),
+            Ok(None) => ChildState::Running,
+            Err(_) => ChildState::Unknown,
         };
         let _ = self.child.kill().await;
-        anyhow::anyhow!("Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying", failure.code, status, failure.description)
+        // Stderr feeds the typed kind and the "Copy details" text only. It never
+        // reaches the message, which is persisted and shown verbatim.
+        self.stderr.settle(STDERR_GRACE).await;
+        let stderr = self.stderr.snapshot();
+        anyhow::Error::new(classify_failure(
+            failure.code,
+            failure.description,
+            state,
+            &stderr,
+        ))
     }
     pub fn is_usable(&self) -> bool {
         !self.unusable
@@ -257,6 +472,318 @@ impl Transport {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
     }
+}
+
+fn classify_failure(
+    code: String,
+    description: &str,
+    state: ChildState,
+    stderr: &[u8],
+) -> SshFailure {
+    let text = sanitize_stderr(&String::from_utf8_lossy(stderr));
+    let kind = classify(state, &text);
+    SshFailure {
+        kind,
+        code,
+        status: state.label(),
+        description: description.into(),
+        detail: failure_detail(kind, &text),
+    }
+}
+
+/// Map ssh's exit status and its (sanitized) stderr onto a kind. Only a child
+/// that has exited is classified: while ssh still runs, the session was
+/// established, so its stderr (a banner, the bridge's own logs) cannot explain
+/// the failure.
+fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
+    let ChildState::Exited(code) = state else {
+        return SshFailureKind::Other;
+    };
+    // The remote shell's "command not found" (127) and "cannot execute" (126).
+    // ssh itself exits 255, so these statuses can only come from the remote side.
+    if matches!(code, Some(126 | 127)) {
+        return SshFailureKind::BridgeMissing;
+    }
+    let lines: Vec<String> = stderr
+        .lines()
+        .map(str::to_lowercase)
+        // A stale ControlPath reports "Control socket connect(...): Connection
+        // refused" before ssh falls back to a direct connection; it says nothing
+        // about whether the server is reachable.
+        .filter(|line| !line.contains("control socket"))
+        .collect();
+
+    // The changed banner also ends in "Host key verification failed", so it is
+    // tested first; a revoked key or a spoofed-IP warning is the same danger.
+    if any_line_contains(
+        &lines,
+        &[
+            "remote host identification has changed",
+            "revoked host key",
+            "possible dns spoofing detected",
+            "differs from the key for the ip address",
+        ],
+    ) || any_line(&lines, |line| {
+        line.contains("host key for ") && line.contains(" has changed")
+    }) {
+        return SshFailureKind::HostKeyChanged;
+    }
+    if any_line_contains(
+        &lines,
+        &["host key verification failed", "host key is known for"],
+    ) {
+        return SshFailureKind::HostKeyUnknown;
+    }
+    if any_line_contains(
+        &lines,
+        &[
+            "permission denied (",
+            "authentication failed",
+            "too many authentication failures",
+            "no more authentication methods",
+            "keyboard-interactive",
+        ],
+    ) {
+        return SshFailureKind::AuthRequired;
+    }
+    if any_line_contains(
+        &lines,
+        &[
+            "could not resolve hostname",
+            "name or service not known",
+            "nodename nor servname provided",
+            "temporary failure in name resolution",
+            "connection refused",
+            "connection timed out",
+            "operation timed out",
+            "no route to host",
+            "network is unreachable",
+            "host is down",
+            "open failed: connect failed",
+        ],
+    ) {
+        return SshFailureKind::Unreachable;
+    }
+    if any_line(&lines, |line| {
+        line.contains("biorouter-crew")
+            && [
+                "no such file or directory",
+                "command not found",
+                ": not found",
+                "unknown command",
+            ]
+            .iter()
+            .any(|needle| line.contains(needle))
+    }) {
+        return SshFailureKind::BridgeMissing;
+    }
+    SshFailureKind::Other
+}
+
+fn any_line(lines: &[String], test: impl Fn(&str) -> bool) -> bool {
+    lines.iter().any(|line| test(line))
+}
+
+fn any_line_contains(lines: &[String], needles: &[&str]) -> bool {
+    any_line(lines, |line| {
+        needles.iter().any(|needle| line.contains(needle))
+    })
+}
+
+/// Strip terminal escape sequences, control and bidirectional-override
+/// characters, keeping one line per diagnostic. A lone carriage return (used
+/// to overwrite a line on a terminal) becomes a line break so nothing hides.
+fn sanitize_stderr(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => skip_escape_sequence(&mut chars),
+            '\n' => out.push('\n'),
+            '\r' => {
+                if chars.peek() != Some(&'\n') {
+                    out.push('\n');
+                }
+            }
+            '\t' => out.push(' '),
+            c if c.is_control() || is_bidi_control(c) => {}
+            c => out.push(c),
+        }
+    }
+    out.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        // CSI: parameters and intermediates, then one final byte in @..=~.
+        Some('[') => {
+            for c in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        }
+        // OSC, DCS, SOS, PM, APC: a string ended by BEL or ESC \.
+        Some(']' | 'P' | 'X' | '^' | '_') => {
+            while let Some(c) = chars.next() {
+                if c == '\u{7}' {
+                    break;
+                }
+                if c == '\u{1b}' {
+                    if chars.peek() == Some(&'\\') {
+                        chars.next();
+                    }
+                    break;
+                }
+            }
+        }
+        // Any other two-character escape: the second character went with it.
+        _ => {}
+    }
+}
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FingerprintRole {
+    Offered,
+    Known,
+    Unlabeled,
+}
+
+/// Every `SHA256:` host-key fingerprint in the text, labelled by the words
+/// OpenSSH put around it (the line itself and the one before).
+fn host_key_fingerprints(text: &str) -> Vec<(FingerprintRole, String)> {
+    const MARKER: &str = "SHA256:";
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found: Vec<(FingerprintRole, String)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let previous = index.checked_sub(1).map_or("", |previous| lines[previous]);
+        let context = format!("{previous} {line}").to_lowercase();
+        let role = if [
+            "sent by the remote host",
+            "key fingerprint is",
+            "server host key",
+            "offered",
+        ]
+        .iter()
+        .any(|needle| context.contains(needle))
+        {
+            FingerprintRole::Offered
+        } else if ["known_hosts", "known host", "previously", "expected"]
+            .iter()
+            .any(|needle| context.contains(needle))
+        {
+            FingerprintRole::Known
+        } else {
+            FingerprintRole::Unlabeled
+        };
+        for (at, _) in line.match_indices(MARKER) {
+            let digest: String = line
+                .get(at + MARKER.len()..)
+                .unwrap_or_default()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+                .collect();
+            // A SHA-256 digest is 43 base64 characters; shorter is not a fingerprint.
+            if digest.len() >= 32 {
+                let value = format!("{MARKER}{digest}");
+                if !found.iter().any(|(_, seen)| *seen == value) {
+                    found.push((role, value));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The "Copy details" text: fingerprints first (so truncation can never cut
+/// them), then OpenSSH's own words, head and tail kept, within the limit.
+fn failure_detail(kind: SshFailureKind, text: &str) -> Option<String> {
+    let mut summary = Vec::new();
+    if matches!(
+        kind,
+        SshFailureKind::HostKeyUnknown | SshFailureKind::HostKeyChanged
+    ) {
+        for (role, value) in host_key_fingerprints(text)
+            .into_iter()
+            .take(MAX_FINGERPRINTS)
+        {
+            summary.push(match (role, kind) {
+                (FingerprintRole::Offered, SshFailureKind::HostKeyChanged) => {
+                    format!("New host key fingerprint (offered by the server): {value}")
+                }
+                (FingerprintRole::Offered, _) => {
+                    format!("Offered host key fingerprint: {value}")
+                }
+                (FingerprintRole::Known, _) => {
+                    format!("Previously known host key fingerprint: {value}")
+                }
+                (FingerprintRole::Unlabeled, _) => format!("Host key fingerprint: {value}"),
+            });
+        }
+    }
+    let summary = summary.join("\n");
+    let detail = match (summary.is_empty(), text.is_empty()) {
+        (true, true) => return None,
+        (false, true) => summary,
+        (true, false) => fit(text, SSH_FAILURE_DETAIL_LIMIT),
+        (false, false) => {
+            let budget = SSH_FAILURE_DETAIL_LIMIT.saturating_sub(summary.len() + 2);
+            format!("{summary}\n\n{}", fit(text, budget))
+        }
+    };
+    Some(fit(detail.trim_end(), SSH_FAILURE_DETAIL_LIMIT))
+}
+
+/// Shorten `text` to at most `max` bytes, keeping its opening (a banner, the
+/// first complaint) and, mostly, its end, where OpenSSH states the final cause.
+fn fit(text: &str, max: usize) -> String {
+    const GAP: &str = "\n…\n";
+    if text.len() <= max {
+        return text.to_string();
+    }
+    if max <= GAP.len() {
+        return String::new();
+    }
+    let room = max - GAP.len();
+    let head_len = room / 4;
+    let mut head_end = head_len;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len() - (room - head_len);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    // Both indices sit on character boundaries, so `get` never comes back empty.
+    let mut head = text.get(..head_end).unwrap_or_default();
+    let mut tail = text.get(tail_start..).unwrap_or_default();
+    // Prefer whole lines when that still leaves something on each side.
+    if let Some(whole) = head
+        .rfind('\n')
+        .filter(|cut| *cut > 0)
+        .and_then(|cut| head.get(..cut))
+    {
+        head = whole;
+    }
+    if let Some(whole) = tail
+        .find('\n')
+        .filter(|cut| cut + 1 < tail.len())
+        .and_then(|cut| tail.get(cut + 1..))
+    {
+        tail = whole;
+    }
+    format!("{head}{GAP}{tail}")
 }
 
 #[cfg(all(test, unix))]
