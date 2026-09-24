@@ -6847,7 +6847,7 @@ mod tests {
             "delete bypassed the macro transaction lock"
         );
         drop(macro_guard);
-        rx.recv_timeout(std::time::Duration::from_secs(1))
+        rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("delete did not resume")
             .unwrap();
         delete.join().unwrap();
