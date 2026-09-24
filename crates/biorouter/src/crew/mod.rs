@@ -2354,13 +2354,21 @@ impl CrewManager {
 /// was made to (a random token minted with the session row, never reused under the id), and
 /// every read of a grant asks [`CrewManager::standing`] whether the chat holding the id now
 /// is that chat. Ephemeral stores mint ids no saved chat can hold
-/// ([`crate::session::SessionManager::new_ephemeral`]), and deleting a chat clears its grant
-/// ([`CrewManager::forget_deleted_sessions`]).
+/// ([`crate::session::SessionManager::new_ephemeral`]), and deleting a chat binds its grant
+/// to it for good ([`CrewManager::retire_deleted_sessions`]).
 ///
 /// The directions are deliberate. A grant made to an earlier chat under the id restricts
 /// nothing and is pruned. A grant whose chat cannot be confirmed — gone from this device, or
 /// its identity unreadable — keeps every restriction and authorizes nothing, because the
 /// chat's history may hold Crew context and a lookup failure must never lift a restriction.
+///
+/// ⚠ **Deleting a chat keeps its grant.** It is the one record of a run the workspace still
+/// honors: dropping it left nothing to revoke — the revoke route answered "not found" and a
+/// deleted task's cancel failed on every retry until the run lapsed — and it lifted the
+/// restriction from the chat's turn while that turn was still unwinding, since a delete only
+/// signals the cancel. A deleted chat's grant resolves to [`Standing::Unconfirmed`]: still
+/// restricting, still listed and revocable, never acting. It goes only when a later chat
+/// under the id shows it was an earlier chat's.
 impl CrewManager {
     /// Resolve chats against `store` in place of the shared one, for a test.
     #[cfg(test)]
@@ -2469,7 +2477,12 @@ impl CrewManager {
         let is_stale = |id: &str, scope: &Scope| id == session && scope.run_id == stale.run_id;
         let mut registry = self.registry.lock().await;
         registry.scopes.retain(|id, scope| !is_stale(id, scope));
-        if let Err(error) = self.remove_saved_scopes(is_stale) {
+        let pruned = self.edit_saved_scopes(|scopes| {
+            let before = scopes.len();
+            scopes.retain(|id, scope| !is_stale(id, scope));
+            scopes.len() != before
+        });
+        if let Err(error) = pruned {
             tracing::warn!(
                 session,
                 %error,
@@ -2485,19 +2498,20 @@ impl CrewManager {
         );
     }
 
-    /// Remove the scopes `pick` names from the saved registry only, reading it back instead
-    /// of writing this process's whole registry, so a grant another process saved after
-    /// this one loaded is never written away. The caller holds the registry lock, which
-    /// orders this with every other write this process makes.
-    fn remove_saved_scopes(&self, pick: impl Fn(&str, &Scope) -> bool) -> Result<()> {
+    /// Edit the saved registry's scopes only — `edit` answers whether it changed any —
+    /// reading the file back instead of writing this process's whole registry, so a grant
+    /// another process saved after this one loaded is never written away. The caller holds
+    /// the registry lock, which orders this with every other write this process makes.
+    fn edit_saved_scopes(
+        &self,
+        edit: impl FnOnce(&mut HashMap<String, Scope>) -> bool,
+    ) -> Result<()> {
         let mut saved: Registry = match std::fs::read(self.root.join("connections.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let before = saved.scopes.len();
-        saved.scopes.retain(|session, scope| !pick(session, scope));
-        if saved.scopes.len() != before {
+        if edit(&mut saved.scopes) {
             self.persist(&saved)?;
         }
         Ok(())
@@ -2513,19 +2527,30 @@ impl CrewManager {
         }
     }
 
-    /// Clear the grants of chats just deleted from the store at `store_dir`, each named with
-    /// the incarnation its row carried.
+    /// Retire the grants of chats just deleted from the store at `store_dir`, each named
+    /// with the incarnation its row carried: every one is **kept**, bound to the chat it was
+    /// made to.
     ///
-    /// A grant is the deleted chat's when it is bound to that incarnation, or — recorded
-    /// before grants were bound — when it sits under the id in the very store grants name.
-    /// Any other grant under one of these ids was made to a chat in another store, and
-    /// stays. Memory first, then the saved registry, read back so that a grant another
-    /// process saved since this one loaded is never written away; that also clears a grant
-    /// this process never loaded.
+    /// ⚠ **Security-relevant; needs human review.** Keeping is the point. The workspace still
+    /// honors the run, so the grant must stay listed and revocable — a deleted task's cancel
+    /// revokes through it — and a delete only signals the chat's turn to stop, so the turn
+    /// may still be dispatching tool calls with Crew context in hand. With no chat under its
+    /// id, a bound grant resolves to [`Standing::Unconfirmed`]: it restricts that turn and
+    /// authorizes nothing. It is pruned only once a later chat holds the id
+    /// ([`Self::standing`]), and `expired` is left alone: that flag says the grant was
+    /// stopped here, which is what the access list shows and what hides its Revoke control,
+    /// and deleting a chat stops nothing at the workspace.
     ///
-    /// The run's credential stays in the vault until a later grant under the id replaces it:
-    /// with no grant, nothing reads it.
-    pub(crate) async fn forget_deleted_sessions(
+    /// So a grant already bound to its chat needs nothing. What this does is bind a grant
+    /// recorded before grants were bound, which would otherwise read as its chat's own with
+    /// no chat under the id — acting for the unwinding turn in any process that had not yet
+    /// bound it in memory, and handed to whichever chat next held the id. Such a grant is
+    /// the deleted chat's only when it sits under the id in the very store grants name; a
+    /// grant under one of these ids bound to another incarnation, or recorded against
+    /// another store, belongs to a chat elsewhere and is not touched. Memory first, then the
+    /// saved registry, read back so that a grant another process saved since this one
+    /// loaded is never written away; that also binds a grant this process never loaded.
+    pub(crate) async fn retire_deleted_sessions(
         &self,
         deleted: &[(String, i64)],
         store_dir: &Path,
@@ -2535,19 +2560,39 @@ impl CrewManager {
             .iter()
             .map(|(session, incarnation)| (session.as_str(), *incarnation))
             .collect();
-        let was_deleted = |session: &str, scope: &Scope| {
+        // The deleted chat's incarnation, when the grant under `session` was made to it.
+        let deleted_chat = |session: &str, scope: &Scope| {
             deleted
                 .get(session)
-                .is_some_and(|&incarnation| match scope.session_incarnation {
+                .copied()
+                .filter(|&incarnation| match scope.session_incarnation {
                     Some(bound) => bound == incarnation,
                     None => from_own_store,
                 })
         };
+        // Bind it there for good; answers whether anything changed.
+        let retire = |scopes: &mut HashMap<String, Scope>| {
+            let mut changed = false;
+            for (session, scope) in scopes.iter_mut() {
+                if let Some(incarnation) = deleted_chat(session, scope) {
+                    changed |= scope.session_incarnation.replace(incarnation) != Some(incarnation);
+                }
+            }
+            changed
+        };
         let mut registry = self.registry.lock().await;
-        registry
-            .scopes
-            .retain(|session, scope| !was_deleted(session, scope));
-        self.remove_saved_scopes(was_deleted)
+        for (session, scope) in &registry.scopes {
+            if deleted_chat(session, scope).is_some() {
+                tracing::info!(
+                    session,
+                    run_id = %scope.run_id,
+                    "kept the Crew grant of a deleted chat: it still restricts that chat and can \
+                     be revoked, and it authorizes nothing"
+                );
+            }
+        }
+        retire(&mut registry.scopes);
+        self.edit_saved_scopes(retire)
     }
 }
 

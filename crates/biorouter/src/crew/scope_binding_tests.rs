@@ -8,9 +8,13 @@
 //! an older build sharing the file) did the same, and with a live grant the new chat could
 //! act under a grant nobody gave it.
 //!
+//! And the other half, from review: deleting a chat must KEEP its grant. The first fix
+//! dropped it on delete, which left a run the workspace still honored with nothing to revoke
+//! it through, and let the deleted chat's still-unwinding turn past the Crew-only tool gate.
+//!
 //! Each test builds its own store and its own registry, so nothing here reads or writes the
-//! process's shared store, except the two that drive the real delete path into the
-//! process-wide manager — and those use ids only their own `TempDir` store can mint.
+//! process's shared store — except the one that drives the daemon's real delete path, which
+//! runs in a process of its own.
 
 use super::*;
 use crate::{
@@ -117,6 +121,11 @@ impl Device {
         let mut registry = self.crew.registry.lock().await;
         registry.scopes.insert(session.into(), scope);
         self.crew.persist(&registry).unwrap();
+    }
+
+    /// The directory of the store this device's grants name.
+    fn own_store(&self) -> PathBuf {
+        self.store.storage().session_dir().to_path_buf()
     }
 
     /// This device's registry as a fresh process loads it.
@@ -300,34 +309,74 @@ async fn a_revoked_grant_still_refuses_the_same_chat() {
 }
 
 /// A grant whose chat is gone keeps every restriction but authorizes nothing: a turn still
-/// unwinding after the delete may hold Crew context, and must not be let loose with it.
+/// unwinding after the delete may hold Crew context, and must not be let loose with it. It
+/// stays listed and revocable, because the workspace still honors its run, and it does not
+/// read as revoked, because deleting a chat stops nothing there.
 #[tokio::test]
 async fn a_deleted_chats_grant_restricts_but_never_authorizes() {
     let device = Device::new().await;
-    let (granted, incarnation) = device.chat().await;
+    let (bound, bound_incarnation) = device.chat().await;
+    let (legacy, legacy_incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-gone", Some(incarnation)))
+        .record(&bound, grant("run-gone", Some(bound_incarnation)))
         .await;
-    // Deleted through the store: the process-wide registry is told, this one is not.
-    device.store.delete_session(&granted).await.unwrap();
+    device.record(&legacy, grant("run-gone-legacy", None)).await;
+    // Deleted through the store, which tells the process-wide registry; this device's is
+    // told the same way the hook tells that one.
+    device.store.delete_session(&bound).await.unwrap();
+    device.store.delete_session(&legacy).await.unwrap();
+    device
+        .crew
+        .retire_deleted_sessions(
+            &[
+                (bound.clone(), bound_incarnation),
+                (legacy.clone(), legacy_incarnation),
+            ],
+            &device.own_store(),
+        )
+        .await
+        .unwrap();
 
-    let crew = &device.crew;
-    assert_restricted_to_its_grant(crew, &granted).await;
-    for refused in [
-        crew.agent_connections(&granted).await.unwrap_err(),
-        crew.check_dispatch(&granted, &private_call())
-            .await
-            .unwrap_err(),
-        crew.worker_request(&granted, "messages.history", json!({}))
-            .await
-            .unwrap_err(),
-    ] {
-        assert_eq!(refused.to_string(), GRANT_GONE);
+    for crew in [&device.crew, &device.restarted()] {
+        for (session, run) in [(&bound, "run-gone"), (&legacy, "run-gone-legacy")] {
+            assert_restricted_to_its_grant(crew, session).await;
+            for refused in [
+                crew.agent_connections(session).await.unwrap_err(),
+                crew.check_dispatch(session, &private_call())
+                    .await
+                    .unwrap_err(),
+                crew.worker_request(session, "messages.history", json!({}))
+                    .await
+                    .unwrap_err(),
+            ] {
+                assert_eq!(refused.to_string(), GRANT_GONE, "{session}");
+            }
+            assert_eq!(crew.run_metadata(session).await.unwrap().run_id, run);
+        }
+        let listed = crew.session_grants(CONNECTION).await.unwrap();
+        let listed = listed["grants"].as_array().unwrap();
+        let mut sessions: Vec<&str> = listed
+            .iter()
+            .map(|row| row["session_id"].as_str().unwrap())
+            .collect();
+        sessions.sort_unstable();
+        let mut expected = vec![bound.as_str(), legacy.as_str()];
+        expected.sort_unstable();
+        assert_eq!(
+            sessions, expected,
+            "a deleted chat's grant must stay listed, or its run can't be revoked"
+        );
+        assert!(
+            listed.iter().all(|row| row["expired"] == json!(false)),
+            "deleting a chat stops nothing at the workspace, so its grant must not read as \
+             revoked: {listed:?}"
+        );
     }
-    // Still listed and revocable, so the person can end the run at the workspace.
+    // A grant recorded before binding is now bound to the chat it was made to, on disk, so
+    // no process reads it as its chat's own with no chat under the id.
     assert_eq!(
-        crew.session_grants(CONNECTION).await.unwrap()["grants"][0]["session_id"],
-        json!(granted)
+        device.saved_scopes()[&legacy]["session_incarnation"],
+        json!(legacy_incarnation)
     );
 }
 
@@ -441,14 +490,14 @@ async fn a_grant_recorded_before_binding_is_bound_to_the_chat_holding_its_id() {
     assert!(!device.saved_scopes().contains_key(&granted));
 }
 
-/// Deleting a chat clears its grant and only its grant: another chat's grant under the same
-/// id (another store's) stays, and so does a grant another process saved after this one
-/// loaded the registry.
+/// Deleting a chat binds its grant to it and touches nothing else: a grant another chat
+/// under the same id holds (another store's) stays as it was, and so does a grant another
+/// process saved after this one loaded the registry. Nothing is removed.
 #[tokio::test]
-async fn deleting_a_chat_clears_its_own_grant_and_nothing_else() {
+async fn deleting_a_chat_retires_its_own_grant_and_nothing_else() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
-    let (legacy, _) = device.chat().await;
+    let (legacy, legacy_incarnation) = device.chat().await;
     device
         .record(&granted, grant("run-granted", Some(incarnation)))
         .await;
@@ -464,80 +513,233 @@ async fn deleting_a_chat_clears_its_own_grant_and_nothing_else() {
         serde_json::to_vec(&saved).unwrap(),
     )
     .unwrap();
-    let own_store = device.store.storage().session_dir().to_path_buf();
+    device.store.delete_session(&granted).await.unwrap();
+    device.store.delete_session(&legacy).await.unwrap();
     let other_store = device.data.path().join("another-store");
+    let bindings = |scopes: &serde_json::Map<String, Value>| {
+        [granted.as_str(), legacy.as_str(), "elsewhere_1"]
+            .map(|session| scopes[session].get("session_incarnation").cloned())
+    };
 
-    // Another chat under the same id, in another store: neither grant is its.
+    // Another chat under the same ids, in another store: neither grant is its.
     device
         .crew
-        .forget_deleted_sessions(
-            &[(granted.clone(), incarnation ^ 1), (legacy.clone(), 42)],
+        .retire_deleted_sessions(
+            &[
+                (granted.clone(), incarnation ^ 1),
+                (legacy.clone(), legacy_incarnation),
+            ],
             &other_store,
         )
         .await
         .unwrap();
-    assert!(device.crew.is_scoped_session(&granted).await);
-    assert!(device.saved_scopes().contains_key(&granted));
-    assert!(device.saved_scopes().contains_key(&legacy));
+    assert_eq!(
+        bindings(&device.saved_scopes()),
+        [Some(json!(incarnation)), None, Some(json!(7))]
+    );
+    assert_eq!(
+        device.crew.registry.lock().await.scopes[&legacy].session_incarnation,
+        None
+    );
 
-    // The chat each grant was made to.
+    // The chats each grant was made to: both kept, the legacy one now bound to its chat.
     device
         .crew
-        .forget_deleted_sessions(&[(granted.clone(), incarnation)], &other_store)
-        .await
-        .unwrap();
-    device
-        .crew
-        .forget_deleted_sessions(&[(legacy.clone(), 42)], &own_store)
+        .retire_deleted_sessions(
+            &[
+                (granted.clone(), incarnation),
+                (legacy.clone(), legacy_incarnation),
+            ],
+            &device.own_store(),
+        )
         .await
         .unwrap();
     let scopes = device.saved_scopes();
-    assert!(!scopes.contains_key(&granted) && !scopes.contains_key(&legacy));
-    assert!(
-        scopes.contains_key("elsewhere_1"),
-        "clearing a deleted chat's grant wrote away a grant another process saved"
+    assert_eq!(
+        bindings(&scopes),
+        [
+            Some(json!(incarnation)),
+            Some(json!(legacy_incarnation)),
+            Some(json!(7))
+        ],
+        "retiring a deleted chat's grant wrote away a grant another process saved, or \
+         bound one it should not have"
     );
-    assert!(device.crew.registry.lock().await.scopes.is_empty());
+    for session in [&granted, &legacy] {
+        assert_eq!(scopes[session.as_str()]["expired"], json!(false));
+    }
+    let registry = device.crew.registry.lock().await;
+    assert_eq!(
+        registry.scopes.len(),
+        2,
+        "a deleted chat's grant was dropped"
+    );
+    assert_eq!(
+        registry.scopes[&legacy].session_incarnation,
+        Some(legacy_incarnation)
+    );
 }
 
-/// The real delete paths — one chat, and a History reset — reach the process-wide
-/// registry and clear the grants of the chats they delete.
+/// The daemon's own path, end to end: chats in the process's shared store, deleted through
+/// it, checked on the process-wide registry the delete reached — the one the revoke route,
+/// the task cancel and every tool gate read. A deleted chat's grant is still there,
+/// restricting and revocable; a History reset keeps them the same way; and only a later chat
+/// under the id makes one go.
 #[tokio::test]
-async fn the_store_delete_paths_clear_the_grants_of_the_chats_they_delete() {
-    let data = TempDir::new().unwrap();
-    let store = SessionManager::new(data.path().to_path_buf());
+async fn deleting_through_the_store_keeps_the_grant_restricting_and_revocable() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // File credentials under a profile of this test's own: revoking reads the device key,
+    // and a test must never reach the OS keychain.
+    let profile = TempDir::new().unwrap();
+    let profile_root = profile.path().to_string_lossy().into_owned();
+    let _env = crate::test_sandbox::relocate_path_root_and(
+        profile_root.as_str(),
+        [
+            ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_root.as_str())),
+            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+        ],
+    );
+    let store = SessionManager::instance();
     let mut chats = Vec::new();
     for _ in 0..3 {
         let id = store
-            .create_session(data.path().to_path_buf(), "chat".into(), SessionType::User)
+            .create_session(
+                profile.path().to_path_buf(),
+                "chat".into(),
+                SessionType::User,
+            )
             .await
             .unwrap()
             .id;
         let incarnation = store.session_incarnation(&id).await.unwrap().unwrap();
         chats.push((id, incarnation));
     }
+    let [(bound, bound_incarnation), (legacy, legacy_incarnation), (reset, reset_incarnation)] =
+        <[(String, i64); 3]>::try_from(chats).unwrap();
     let crew = manager().unwrap();
     {
         let mut registry = crew.registry.lock().await;
-        for (index, (id, incarnation)) in chats.iter().enumerate() {
-            registry.scopes.insert(
-                id.clone(),
-                grant(&format!("run-delete-path-{index}"), Some(*incarnation)),
-            );
-        }
+        registry.connections.push(connection());
+        registry
+            .scopes
+            .insert(bound.clone(), grant("run-bound", Some(bound_incarnation)));
+        // Recorded before grants were bound, and never looked at since, so not bound in
+        // memory either: the delete is what has to bind it.
+        registry
+            .scopes
+            .insert(legacy.clone(), grant("run-legacy", None));
+        registry
+            .scopes
+            .insert(reset.clone(), grant("run-reset", Some(reset_incarnation)));
+        crew.persist(&registry).unwrap();
     }
-    let held = |id: &str| {
-        let crew = crew.clone();
-        let id = id.to_owned();
-        async move { crew.registry.lock().await.scopes.contains_key(&id) }
+    let saved_scopes = || {
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(crew.root.join("connections.json")).unwrap())
+                .unwrap();
+        saved["scopes"].as_object().cloned().unwrap()
     };
 
-    store.delete_session(&chats[0].0).await.unwrap();
-    assert!(!held(&chats[0].0).await, "deleting a chat left its grant");
-    assert!(held(&chats[1].0).await && held(&chats[2].0).await);
+    store.delete_session(&bound).await.unwrap();
+    store.delete_session(&legacy).await.unwrap();
 
-    store.clear_all_sessions().await.unwrap();
-    for (id, _) in &chats {
-        assert!(!held(id).await, "a History reset left {id}'s grant");
+    for session in [&bound, &legacy] {
+        // The unwinding turn stays held to Crew's tools, and cannot act.
+        assert_restricted_to_its_grant(&crew, session).await;
+        for refused in [
+            crew.agent_connections(session).await.unwrap_err(),
+            crew.check_dispatch(session, &private_call())
+                .await
+                .unwrap_err(),
+            crew.worker_request(session, "messages.history", json!({}))
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(refused.to_string(), GRANT_GONE, "{session}");
+        }
+        assert!(crew.run_metadata(session).await.is_some());
+        assert!(saved_scopes().contains_key(session.as_str()));
     }
+    assert_eq!(
+        saved_scopes()[&legacy]["session_incarnation"],
+        json!(legacy_incarnation),
+        "the delete must bind a grant recorded before binding to the chat it was made to"
+    );
+    let listed = crew.session_grants(CONNECTION).await.unwrap();
+    let listed: Vec<&str> = listed["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["session_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        listed.contains(&bound.as_str()) && listed.contains(&legacy.as_str()),
+        "a deleted chat's grant must stay listed so it can be revoked: {listed:?}"
+    );
+
+    // Revocable: the revoke route's call stops it here and asks the workspace...
+    let revoked = crew
+        .revoke_session_if_current(&bound, "run-bound")
+        .await
+        .expect("a deleted chat's grant must still be revocable");
+    assert!(
+        !revoked.remote_confirmed,
+        "no workspace answers in this test"
+    );
+    // ...and so is the deleted task's cancel, which answers a retryable "unconfirmed", not
+    // "no grant", so a retry can still reach the workspace.
+    let cancelled = crew
+        .cancel_run_if_current(&legacy, "run-legacy")
+        .await
+        .unwrap_err();
+    assert!(
+        cancelled.downcast_ref::<RevocationUnconfirmed>().is_some(),
+        "a deleted task's cancel never reached the workspace: {cancelled}"
+    );
+    for session in [&bound, &legacy] {
+        assert!(crew.registry.lock().await.scopes[session.as_str()].expired);
+        assert_eq!(saved_scopes()[session.as_str()]["expired"], json!(true));
+        assert_restricted_to_its_grant(&crew, session).await;
+    }
+
+    // A History reset keeps its chats' grants the same way.
+    store.clear_all_sessions().await.unwrap();
+    assert_restricted_to_its_grant(&crew, &reset).await;
+    assert_eq!(
+        crew.agent_connections(&reset)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_GONE
+    );
+
+    // Only a later chat under the id shows a grant was an earlier chat's, and prunes it.
+    store.forget_minted_session_ids_for_test().await.unwrap();
+    for session in [&bound, &legacy] {
+        let reissued = store
+            .create_session(
+                profile.path().to_path_buf(),
+                "chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            &reissued, session,
+            "the fixture must hand the deleted chat's id to the next chat, or it proves nothing"
+        );
+        assert!(
+            !crew.is_scoped_session(session).await,
+            "a new chat inherited a deleted chat's Crew grant"
+        );
+        crew.authorize_session_tool(session, "developer__shell")
+            .await
+            .unwrap();
+        assert!(!crew.registry.lock().await.scopes.contains_key(session));
+        assert!(!saved_scopes().contains_key(session.as_str()));
+    }
+    assert!(crew.is_scoped_session(&reset).await);
 }

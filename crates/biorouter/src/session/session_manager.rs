@@ -7612,7 +7612,7 @@ impl SessionStorage {
 
         tx.commit().await?;
         self.remove_checkpoint_repository(session_id).await;
-        self.forget_crew_grants(vec![(session_id.to_string(), incarnation)])
+        self.retire_crew_grants(vec![(session_id.to_string(), incarnation)])
             .await;
         Ok(())
     }
@@ -7633,38 +7633,45 @@ impl SessionStorage {
         Ok(incarnation)
     }
 
-    /// Clear the Crew grants the chats just deleted held (SCOPE-BIND).
+    /// Tell Crew which chats were just deleted, so the grants they held are bound to them
+    /// for good (SCOPE-BIND).
     ///
     /// ⚠ **Security-relevant; needs human review.** Crew keeps its grants in
     /// `connections.json`, keyed by session id, outside this database — so, like the
-    /// checkpoint repository above, no statement in this transaction can reach them. Left
-    /// behind, the grant of a deleted chat attached itself to whichever chat next held the
-    /// id: restricted to Crew tools at best, acting under a grant nobody gave it at worst.
-    /// Each deleted row is named with its incarnation, so a grant made to some OTHER chat
-    /// under the same id (another store's) is never the one cleared — see
-    /// `crate::crew::CrewManager::forget_deleted_sessions`. Crew also refuses a grant whose
-    /// chat is not the one it was bound to, so this is hygiene over a check that stands on
-    /// its own, not the barrier.
+    /// checkpoint repository above, no statement in this transaction can reach them. Each
+    /// deleted row is named with its incarnation, so a grant made to some OTHER chat under
+    /// the same id (another store's) is never the one touched — see
+    /// `crate::crew::CrewManager::retire_deleted_sessions`.
+    ///
+    /// ⚠ **The grants are KEPT, not cleared.** A deleted chat's grant is the one record of
+    /// a run the workspace still honors: cleared, the run could no longer be revoked, and a
+    /// deleted Crew task's cancel failed on every retry. And the route that deletes a chat
+    /// only signals its turn to stop, so a turn still unwinding with Crew context in hand
+    /// would have lost its restriction to Crew tools mid-flight. Kept and bound to the
+    /// deleted chat, a grant restricts that turn, stays revocable and authorizes nothing;
+    /// Crew prunes it once a later chat holds the id.
     ///
     /// After the commit and best-effort, for the reason
     /// [`Self::remove_checkpoint_repository`] gives: the chat is gone either way, so a
-    /// failure is logged rather than returned as a failed delete.
-    async fn forget_crew_grants(&self, deleted: Vec<(String, i64)>) {
+    /// failure is logged rather than returned as a failed delete. A grant already bound to
+    /// its chat is safe without this call; what it binds is a grant recorded before grants
+    /// were bound.
+    async fn retire_crew_grants(&self, deleted: Vec<(String, i64)>) {
         if deleted.is_empty() {
             return;
         }
         let crew = match crate::crew::manager() {
             Ok(crew) => crew,
             Err(error) => {
-                warn!(%error, "could not open the Crew registry to clear a deleted chat's grant");
+                warn!(%error, "could not open the Crew registry to retire a deleted chat's grant");
                 return;
             }
         };
         if let Err(error) = crew
-            .forget_deleted_sessions(&deleted, self.session_dir())
+            .retire_deleted_sessions(&deleted, self.session_dir())
             .await
         {
-            warn!(%error, "could not clear the Crew grant of a deleted chat");
+            warn!(%error, "could not retire the Crew grant of a deleted chat");
         }
     }
 
@@ -7813,7 +7820,7 @@ impl SessionStorage {
         // `neither_a_history_reset_nor_a_reopen_restarts_the_ids` is what fails
         // if it is ever added here.
         tx.commit().await?;
-        self.forget_crew_grants(deleted).await;
+        self.retire_crew_grants(deleted).await;
         Ok(count as u64)
     }
 
