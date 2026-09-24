@@ -43,5 +43,5 @@ export {
   normalizeDeviceCodeInput,
 } from './deviceCode';
 export { channelSlugPreview, channelSlugProblem, INSTITUTION_FIELD_PATTERN } from './nameRules';
-export { uniqueNamesSupported, workspaceLabelFor } from './workspace';
+export { uniqueNamesSupported, workspaceLabelFor, workspacePhraseFor } from './workspace';
 export * from './copy';

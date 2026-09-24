@@ -113,7 +113,7 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
             }}
           />
           {offer ? (
-            <p className="flex flex-wrap items-center gap-x-1.5 text-supporting text-text-muted">
+            <p className="flex flex-wrap items-center gap-1.5 text-supporting text-text-muted">
               <Button
                 type="button"
                 variant="link"

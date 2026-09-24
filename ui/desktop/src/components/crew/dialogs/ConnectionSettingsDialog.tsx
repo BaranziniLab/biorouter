@@ -144,7 +144,7 @@ export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSe
 }
 
 function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onClose(): void }) {
-  const { crew, workspace } = useDialogView(saved.id);
+  const { crew, workspace, phrase } = useDialogView(saved.id);
   const formId = React.useId();
   const ids = {
     name: `${formId}-name`,
@@ -395,6 +395,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
       {confirmBody ? (
         <MakeConnectionPublicDialog
           workspace={workspace}
+          phrase={phrase}
           busy={saving}
           onCancel={() => {
             crew.dismissError();

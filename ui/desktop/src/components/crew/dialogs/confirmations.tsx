@@ -78,6 +78,8 @@ function runConfirmed(
 
 export interface MakeConnectionPublicDialogProps {
   workspace: string;
+  /** The name to type; the workspace's own name (`useDialogView().phrase`). */
+  phrase: string;
   busy: boolean;
   onConfirm(): void;
   onCancel(): void;
@@ -89,6 +91,7 @@ export interface MakeConnectionPublicDialogProps {
  */
 export function MakeConnectionPublicDialog({
   workspace,
+  phrase,
   busy,
   onConfirm,
   onCancel,
@@ -98,8 +101,8 @@ export function MakeConnectionPublicDialog({
       open
       title={confirmCopy.makeConnectionPublic.title(workspace)}
       description={confirmCopy.makeConnectionPublic.description}
-      phrase={workspace}
-      fieldLabel={confirmCopy.typeToConfirm(workspace)}
+      phrase={phrase}
+      fieldLabel={confirmCopy.typeToConfirm(phrase)}
       confirmLabel={confirmCopy.makeConnectionPublic.confirm}
       cancelLabel={confirmCopy.cancel}
       busy={busy}
@@ -118,7 +121,7 @@ function MakeConnectionPublic({
   connectionId: string;
   onClose(): void;
 }) {
-  const { crew, workspace } = useDialogView(connectionId);
+  const { crew, workspace, phrase } = useDialogView(connectionId);
   const saved = crew.connections.find((item) => item.id === connectionId) ?? null;
   const key = 'connection.update';
   useCloseWhenMissing(saved === null, onClose);
@@ -126,6 +129,7 @@ function MakeConnectionPublic({
   return (
     <MakeConnectionPublicDialog
       workspace={workspace}
+      phrase={phrase}
       busy={crew.isPending(key)}
       onCancel={onClose}
       onConfirm={() =>
@@ -140,15 +144,15 @@ function MakeConnectionPublic({
 }
 
 function AllowWorkspacePublic({ onClose }: { onClose(): void }) {
-  const { crew, workspace } = useDialogView();
+  const { crew, workspace, phrase } = useDialogView();
   const key = 'mutate:policy.set';
   return (
     <DangerousConfirmDialog
       open
       title={confirmCopy.allowWorkspacePublic.title(workspace)}
       description={confirmCopy.allowWorkspacePublic.description}
-      phrase={workspace}
-      fieldLabel={confirmCopy.typeToConfirm(workspace)}
+      phrase={phrase}
+      fieldLabel={confirmCopy.typeToConfirm(phrase)}
       confirmLabel={confirmCopy.allowWorkspacePublic.confirm}
       cancelLabel={confirmCopy.cancel}
       busy={crew.isPending(key)}

@@ -105,7 +105,8 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
         open
         onOpenChange={(open) => !open && onClose()}
         size="md"
-        purpose="info"
+        // `form`, so a stray click on the backdrop cannot throw away the message to send.
+        purpose="form"
         title={copy.title(workspace)}
         footer={<Button onClick={onClose}>{copy.done}</Button>}
       >

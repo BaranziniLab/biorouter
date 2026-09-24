@@ -40,6 +40,24 @@ export function workspaceLabelFor(
 }
 
 /**
+ * The phrase a typed confirmation asks for: the workspace's own name — its S2 name, else the saved
+ * connection's name — never the `name — server` label two same-named connections get, which would
+ * ask the person to type an em dash. Falls back to the label only when neither exists.
+ */
+export function workspacePhraseFor(
+  connections: readonly CrewConnection[],
+  connectionId: string,
+  snapshot: Snapshot | null,
+  dir?: PeopleDirectory | null
+): string {
+  const named = sanitizeDisplayText(snapshot?.workspace?.name);
+  if (named && !isMachineIdShaped(named)) return named;
+  const saved = sanitizeDisplayText(connections.find((item) => item.id === connectionId)?.name);
+  if (saved && !isMachineIdShaped(saved)) return saved;
+  return workspaceLabelFor(connections, connectionId, snapshot, dir);
+}
+
+/**
  * Whether the broker speaks the S2 naming rules (unique names, renames). The daemon does not yet
  * surface the `hello` capability `unique_names_v1` to the renderer, so this reads the one
  * projection only an S2 broker sends: a `handle` on every team and channel.
@@ -56,6 +74,8 @@ export interface DialogView {
   snapshot: Snapshot | null;
   dir: PeopleDirectory;
   workspace: string;
+  /** What a typed confirmation asks for: the workspace's own name. */
+  phrase: string;
   /** The server the selected connection reaches, without its `user@`. */
   server: string;
 }
@@ -70,6 +90,10 @@ export function useDialogView(connectionId?: string): DialogView {
     () => workspaceLabelFor(crew.connections, id, snapshot, dir),
     [crew.connections, id, snapshot, dir]
   );
+  const phrase = useMemo(
+    () => workspacePhraseFor(crew.connections, id, snapshot, dir),
+    [crew.connections, id, snapshot, dir]
+  );
   const saved = crew.connections.find((item) => item.id === id) ?? null;
-  return { crew, snapshot, dir, workspace, server: connectionServer(saved) };
+  return { crew, snapshot, dir, workspace, phrase, server: connectionServer(saved) };
 }
