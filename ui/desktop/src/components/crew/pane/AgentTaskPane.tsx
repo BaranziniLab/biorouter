@@ -228,7 +228,12 @@ export function AgentTaskPane({ className }: AgentTaskPaneProps) {
 
         <div className="flex flex-col gap-1.5">
           {summary && selected ? (
-            <div className="flex min-w-0 items-center gap-2">
+            // A group named "Model", so the summary answers to the same name as the picker.
+            <div
+              role="group"
+              aria-labelledby={modelLabelId}
+              className="flex min-w-0 items-center gap-2"
+            >
               <span id={modelLabelId} className="text-label text-text-default">
                 {agentCopy.model}
               </span>

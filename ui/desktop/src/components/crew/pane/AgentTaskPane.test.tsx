@@ -242,6 +242,9 @@ describe('AgentTaskPane', () => {
       renderCrew(Layout);
       const task = await openAgent(user);
       expect(await screen.findByText('gpt-5.5 · Versa')).toBeInTheDocument();
+      expect(screen.getByRole('group', { name: agentCopy.model })).toHaveTextContent(
+        'gpt-5.5 · Versa'
+      );
       expect(screen.queryByRole('button', { name: /^Model/ })).toBeNull();
 
       fireEvent.change(task, { target: { value: 'use the default' } });
