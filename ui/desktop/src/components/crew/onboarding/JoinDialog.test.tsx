@@ -61,6 +61,11 @@ function renderDialog(overrides = {}) {
   return renderWithCrew(<JoinDialog />, crew);
 }
 
+/** A 409 join refusal as `crewHttp` builds it from the daemon's body (`connection_id`). */
+function refusal(message: string, code: string, connectionId: string) {
+  return new CrewHttpError(message, 409, code, undefined, undefined, connectionId);
+}
+
 async function paste(text = MESSAGE) {
   fireEvent.change(screen.getByLabelText(joinCopy.invitation), { target: { value: text } });
 }
@@ -417,12 +422,7 @@ describe('JoinDialog', () => {
 
   it('offers to open the connection a refused paste concerns', async () => {
     mocks.previewInvitation.mockRejectedValue(
-      Object.assign(
-        new CrewHttpError('Doesn’t match “UCSF lab”.', 409, 'crew_invitation_conflict'),
-        {
-          body: { code: 'crew_invitation_conflict', connection_id: 'conn-old' },
-        }
-      )
+      refusal('Doesn’t match “UCSF lab”.', 'crew_invitation_conflict', 'conn-old')
     );
     const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
     const view = renderDialog({ connections: [existing] });
@@ -436,9 +436,7 @@ describe('JoinDialog', () => {
   it('offers to open the connection a refused save names', async () => {
     mocks.previewInvitation.mockResolvedValue(PREVIEW);
     mocks.saveFromInvitation.mockRejectedValue(
-      Object.assign(new CrewHttpError('Already saved.', 409, 'crew_connection_exists'), {
-        body: { code: 'crew_connection_exists', connection_id: 'conn-old' },
-      })
+      refusal('Already saved.', 'crew_connection_exists', 'conn-old')
     );
     const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
     const view = renderDialog({
@@ -453,6 +451,30 @@ describe('JoinDialog', () => {
     expect(screen.getByRole('alert')).toContainElement(open);
     fireEvent.click(open);
     await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-old'));
+  });
+
+  it('offers to open a connection saved after the preview, named only by the save’s refusal', async () => {
+    // The preview found nothing saved; another window saved the workspace before Join.
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, existing_connection_id: null });
+    mocks.saveFromInvitation.mockRejectedValue(
+      refusal('Already saved.', 'crew_connection_exists', 'conn-late')
+    );
+    const view = renderDialog({
+      error: { message: 'Already saved.', source: 'dialog:join' },
+      errorSlotFor: (source: string) => source === 'dialog:join',
+    });
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: 'Join lab' }));
+
+    const open = await screen.findByRole('button', { name: joinCopy.openExisting('lab') });
+    expect(screen.getByRole('alert')).toContainElement(open);
+    fireEvent.click(open);
+    const crew = view.crew();
+    // Not listed yet: the list is reloaded before the connection the refusal named is opened.
+    await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-late'));
+    expect(crew.refresh).toHaveBeenCalled();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+    expect(crew.removeConnection).not.toHaveBeenCalled();
   });
 
   it('never presents a defaulted Private as the workspace’s privacy, and saves only a choice', async () => {

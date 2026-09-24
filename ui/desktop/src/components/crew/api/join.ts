@@ -1,4 +1,4 @@
-import { crewHttp, type CrewConnection, type CrewPersonName } from '../crewApi';
+import { CrewHttpError, crewHttp, type CrewConnection, type CrewPersonName } from '../crewApi';
 import { crewErrorCode, outdatedDaemonResponse, unexpectedCrewResponse } from './errors';
 import { isRecord, nullableNumber, nullableText, optionalText } from './parse';
 
@@ -280,22 +280,15 @@ export async function saveFromInvitation(
  * The saved connection a join refusal concerns: the `connection_id` a 409
  * `crew_connection_exists` or `crew_invitation_conflict` carries, so the person can open it.
  *
- * The id is read from the refusal's JSON body, wherever the error exposes it (`body`, or as a
- * field of its own); when it exposes neither, `fallback` (the preview's `existing_connection_id`)
- * is used. Any other failure concerns no saved connection and answers null.
+ * The id is the one `crewHttp` read from the refusal's body (`CrewHttpError.connectionId`); when
+ * the refusal carries none, `fallback` (the preview's `existing_connection_id`) is used. Any other
+ * failure concerns no saved connection and answers null.
  */
 export function refusalConnectionId(error: unknown, fallback?: string | null): string | null {
   const code = crewErrorCode(error);
   if (code !== CREW_CONNECTION_EXISTS && code !== CREW_INVITATION_CONFLICT) return null;
-  const carrier = error as unknown as Record<string, unknown>;
-  const body = isRecord(carrier.body) ? carrier.body : {};
-  return (
-    optionalText(body.connection_id) ??
-    optionalText(carrier.connection_id) ??
-    optionalText(carrier.connectionId) ??
-    optionalText(fallback) ??
-    null
-  );
+  const carried = error instanceof CrewHttpError ? error.connectionId : undefined;
+  return carried ?? optionalText(fallback) ?? null;
 }
 
 /**

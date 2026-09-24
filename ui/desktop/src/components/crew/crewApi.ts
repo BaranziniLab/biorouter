@@ -215,7 +215,13 @@ export class CrewHttpError extends Error {
      * The broker's own refusal code (`name_taken`, `forbidden`, `response_too_large`…) when the
      * daemon passed a broker refusal on; `code` is then `crew_request_refused`.
      */
-    public readonly brokerCode?: string
+    public readonly brokerCode?: string,
+    /**
+     * The saved connection a refusal concerns: the top-level `connection_id` the daemon's 409
+     * `crew_connection_exists` / `crew_invitation_conflict` carries, so the person can open it.
+     * Read it through `refusalConnectionId`, which asks the code first.
+     */
+    public readonly connectionId?: string
   ) {
     super(message);
     this.name = 'CrewHttpError';
@@ -227,6 +233,15 @@ function brokerCodeOf(value: unknown): string | undefined {
   return typeof value === 'string' && /^[a-z0-9_]{1,64}$/.test(value) ? value : undefined;
 }
 
+/**
+ * A saved connection's id as a refusal names one (the daemon's are UUIDv4), or undefined. It can
+ * end up in a request path, so nothing but id characters is kept, and never a dot segment.
+ */
+function connectionIdOf(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) return undefined;
+  return /^\.+$/.test(value) ? undefined : value;
+}
+
 function crewHttpErrorFrom(result: unknown, status: number, fallback: string): CrewHttpError {
   const body =
     typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {};
@@ -235,7 +250,8 @@ function crewHttpErrorFrom(result: unknown, status: number, fallback: string): C
     status,
     typeof body.code === 'string' ? body.code : undefined,
     typeof body.detail === 'string' ? body.detail : undefined,
-    brokerCodeOf(body.broker_code)
+    brokerCodeOf(body.broker_code),
+    connectionIdOf(body.connection_id)
   );
 }
 

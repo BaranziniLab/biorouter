@@ -258,31 +258,42 @@ describe('saveFromInvitation', () => {
   });
 });
 
+// Every error here has the shape `crewHttp` builds from a daemon refusal: the `connection_id` of
+// the body is the error's `connectionId` (crewApi.errorBody.test.ts drives the real transport).
+function refusal(message: string, code: string, connectionId?: string) {
+  return new CrewHttpError(message, 409, code, undefined, undefined, connectionId);
+}
+
 describe('refusalConnectionId', () => {
   it('names the connection a duplicate or conflicting join concerns', () => {
-    const exists = Object.assign(new CrewHttpError('Already saved.', 409, CREW_CONNECTION_EXISTS), {
-      body: { code: CREW_CONNECTION_EXISTS, connection_id: 'conn-7' },
-    });
+    const exists = refusal('Already saved.', CREW_CONNECTION_EXISTS, 'conn-7');
     expect(refusalConnectionId(exists)).toBe('conn-7');
-    const conflict = Object.assign(
-      new CrewHttpError('Different key.', 409, CREW_INVITATION_CONFLICT),
-      { connection_id: 'conn-8' }
-    );
+    const conflict = refusal('Different key.', CREW_INVITATION_CONFLICT, 'conn-8');
     expect(refusalConnectionId(conflict, 'conn-1')).toBe('conn-8');
   });
 
   it('falls back to the preview’s connection when the error carries no id', () => {
-    const exists = new CrewHttpError('Already saved.', 409, CREW_CONNECTION_EXISTS);
+    const exists = refusal('Already saved.', CREW_CONNECTION_EXISTS);
     expect(refusalConnectionId(exists, 'conn-7')).toBe('conn-7');
     expect(refusalConnectionId(exists)).toBeNull();
   });
 
   it('names nothing for any other failure', () => {
-    const other = Object.assign(new CrewHttpError('No.', 409, CREW_NOT_CONNECTED), {
-      body: { connection_id: 'conn-7' },
-    });
+    const other = refusal('No.', CREW_NOT_CONNECTED, 'conn-7');
     expect(refusalConnectionId(other, 'conn-7')).toBeNull();
     expect(refusalConnectionId(new Error('boom'), 'conn-7')).toBeNull();
+  });
+
+  it('reads no id from a shape the transport never builds', () => {
+    // A field grafted onto the error is not what `crewHttp` produces, so it is not read.
+    const grafted = Object.assign(
+      new CrewHttpError('Already saved.', 409, CREW_CONNECTION_EXISTS),
+      {
+        body: { connection_id: 'conn-7' },
+        connection_id: 'conn-8',
+      }
+    );
+    expect(refusalConnectionId(grafted)).toBeNull();
   });
 });
 
