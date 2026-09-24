@@ -9,6 +9,7 @@ import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import type { CrewMessage, ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
+import { HISTORY_PAGE_SIZE, reachesChannelStart } from '../timeline/groupMessages';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { agentCopy, LONG_TASK_CHARS, LONG_TASK_LINES, unknownOutcomeCopy } from './copy';
@@ -56,11 +57,15 @@ function sharedItems(
 }
 
 /**
- * The names of the files shared in this channel's loaded messages — the source the Files tab
- * lists — or `null` while any of them is unknown: until the messages have loaded, while a name is
- * being fetched, or when one could not be (Q2-15). Names are fetched only while `wanted` (the task
- * names a file), once per file, with `blob.status` and `reference.get` as the Files tab's rows
- * fetch them. A reference answers to its label and to its path's file name.
+ * The names of the files shared in this channel — read from its loaded messages, the source the
+ * Files tab lists — or `null` while any of them is unknown: until the messages have loaded, while a
+ * name is being fetched, or when one could not be (Q2-15). Also `null` whenever the loaded messages
+ * may not be the whole channel, since a file shared in a message that is not loaded would then be
+ * warned about as unshared: while the opening backlog is still arriving, while an older page is
+ * shown instead of the live tail, and once the list holds a full page (the channel may go further
+ * back). Names are fetched only while `wanted` (the task names a file), once per file, with
+ * `blob.status` and `reference.get` as the Files tab's rows fetch them. A reference answers to its
+ * label and to its path's file name.
  *
  * Display only: it decides whether the pane warns, and nothing else.
  */
@@ -74,7 +79,13 @@ function useSharedFileNames(
   const key = `${connectionId}\n${items.map((item) => `${item.kind}:${item.id}`).join('\n')}`;
   const cache = useRef(new Map<string, readonly string[]>());
   const [resolved, setResolved] = useState<{ key: string; names: string[] | null } | null>(null);
-  const ready = wanted && messagesLoaded;
+  const pageSize =
+    typeof crew.pageSize === 'number' && crew.pageSize > 0 ? crew.pageSize : HISTORY_PAGE_SIZE;
+  const wholeChannel =
+    crew.historyBefore === null &&
+    crew.backlogComplete !== false &&
+    reachesChannelStart(messages, pageSize);
+  const ready = wanted && messagesLoaded && wholeChannel;
 
   useEffect(() => {
     if (!ready) return;
@@ -153,8 +164,9 @@ export interface AgentTaskPaneProps {
  *   pane closes. The daemon posts the task itself in the channel ("Task: …"), so the field says so,
  *   and says it again for a task long enough to be pasted data (T-24). It is at least six lines,
  *   grows with what is written and has no resize grip (`.crew-agent-task`, Q2-30).
- * - A task that names a file (`counts.csv`) no message in the loaded channel shares gets a warning
- *   before Start: "No file named … is shared in #…". It does not disable Start (Q2-15).
+ * - A task that names a file (`counts.csv`) no message in the channel shares gets a warning before
+ *   Start: "No file named … is shared in #…". It does not disable Start, and it is said only while
+ *   every message in the channel is loaded (Q2-15).
  * - **Model**: the app's default model as a summary with Change when it resolves to a configured
  *   provider, else the picker; "No models are set up." with Open Settings when nothing is
  *   configured (Crew bypasses provider onboarding). A model is named as the composer's model chip
@@ -306,7 +318,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     })
     .filter((label): label is string => label !== null);
   // Only once every shared file's name is known: a warning must not appear for a file that is
-  // still loading, and "No file named …" is said only when it is true of the loaded channel.
+  // still loading, and "No file named …" is said only when it is true of the whole channel.
   const unshared = sharedNames === null ? [] : unsharedFileNames(mentioned, sharedNames);
   const unknownDestination =
     unknown ===

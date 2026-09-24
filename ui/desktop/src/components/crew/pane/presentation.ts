@@ -89,9 +89,14 @@ export const MENU_COPY_CLOSE_MS = 600;
 
 /**
  * A file named in a task (Q2-15): a word ending in one of the extensions a lab shares as data.
- * `(?!-|\.\w)` keeps `counts.csv.gz` and `counts.csv-old` from reading as `counts.csv`.
+ * `(?!-|\.\w)` keeps `counts.csv.gz` and `counts.csv-old` from reading as `counts.csv`. A word
+ * cannot hold a space, so outside quotes `Plate Reader.csv` reads as `Reader.csv`; see
+ * `fileNameKey` for why that can never make the warning false.
  */
 const FILE_NAME = /\b[\w.-]+\.(?:csv|tsv|xlsx?|json|txt|h5ad|parquet)\b(?!-|\.\w)/gi;
+
+/** Text in straight double quotes, curly double quotes or backticks, on one line. */
+const QUOTED = /"([^"\n]+)"|“([^”\n]+)”|`([^`\n]+)`/g;
 
 /** The last segment of a path, as a shared file is named. */
 export function fileBaseName(path: string): string {
@@ -100,37 +105,78 @@ export function fileBaseName(path: string): string {
 }
 
 /**
- * The file names a task mentions, first mention first, each once whatever its case. A name inside
- * a URL (`https://…/table.csv`) is where the agent is sent, not a file it expects to find shared,
- * so it is not one of them.
+ * What a name is compared by: the file name `FILE_NAME` reads at its very end, without case, or
+ * null when it reads none there. So a name compares as a task that wrote it out would be read —
+ * `Plate Reader.csv` as `reader.csv`, `OD600 run 2.xlsx` as `2.xlsx` — and a file whose name has
+ * a space answers the shortened mention it produces. The comparison can only ever err towards
+ * silence: a file named exactly `X` always compares equal to `X`, so "No file named X is shared"
+ * is said only when that is true.
+ */
+function fileNameKey(name: string): string | null {
+  let key: string | null = null;
+  for (const match of name.matchAll(FILE_NAME)) {
+    if ((match.index ?? 0) + match[0].length === name.length) key = match[0].toLowerCase();
+  }
+  return key;
+}
+
+/**
+ * The file names a task mentions, first mention first, each once whatever its case.
+ *
+ * - A name in quotes or backticks (`"Plate Reader.csv"`, `` `OD600 run 2.xlsx` ``) is taken whole,
+ *   spaces and all, and named by its last path segment; unquoted, a name ends at a space.
+ * - A name inside a URL (`https://…/table.csv`) is where the agent is sent, not a file it expects
+ *   to find shared, so it is not one of them.
  */
 export function mentionedFileNames(text: string): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
+  const found: Array<{ at: number; name: string }> = [];
+  const quoted: Array<[number, number]> = [];
+  for (const match of text.matchAll(QUOTED)) {
+    const inner = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    const name = fileBaseName(inner).trim();
+    if (fileNameKey(name) === null) continue;
+    const at = match.index ?? 0;
+    quoted.push([at, at + match[0].length]);
+    if (!inner.includes('://')) found.push({ at, name });
+  }
   for (const match of text.matchAll(FILE_NAME)) {
     const start = match.index ?? 0;
+    if (quoted.some(([from, to]) => start >= from && start < to)) continue;
     let token = start;
     while (token > 0 && !/\s/.test(text[token - 1])) token -= 1;
     if (text.slice(token, start).includes('://')) continue;
-    const key = match[0].toLowerCase();
+    found.push({ at: start, name: match[0] });
+  }
+  found.sort((a, b) => a.at - b.at);
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const { name } of found) {
+    const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    names.push(match[0]);
+    names.push(name);
   }
   return names;
 }
 
 /**
- * The mentioned names no shared file answers to, compared by file name and without case: a
- * shared `/data/Plate.CSV` answers `plate.csv`.
+ * The mentioned names no shared file answers to, compared by `fileNameKey` of each shared file's
+ * name: a shared `/data/Plate.CSV` answers `plate.csv`, and a shared `Plate Reader.csv` answers
+ * `Reader.csv`, which is how an unquoted task mentions it.
  */
 export function unsharedFileNames(
   mentioned: readonly string[],
   shared: Iterable<string>
 ): string[] {
-  const names = new Set<string>();
-  for (const name of shared) names.add(fileBaseName(name).trim().toLowerCase());
-  return mentioned.filter((name) => !names.has(name.toLowerCase()));
+  const keys = new Set<string>();
+  for (const name of shared) {
+    const key = fileNameKey(fileBaseName(name).trim());
+    if (key !== null) keys.add(key);
+  }
+  return mentioned.filter((name) => {
+    const key = fileNameKey(name);
+    return key !== null && !keys.has(key);
+  });
 }
 
 /**

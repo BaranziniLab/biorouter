@@ -7,6 +7,7 @@ import { ChannelHeader } from '../channel/ChannelHeader';
 import { channelCopy } from '../channel/copy';
 import {
   currentCrew,
+  general,
   installDaemon,
   installObserver,
   methods,
@@ -177,9 +178,12 @@ describe('DetailsPane', () => {
       await user.click(toggle);
       await waitFor(() => expect(within(pane()).getByRole('tab', { name: 'About' })).toHaveFocus());
       // Reached by keyboard, the × shows its tooltip, whose own dismissable layer takes Escape
-      // first. That is how Escape on "Close details" used to do nothing.
+      // first. That is how Escape on "Close details" used to do nothing. It is reached with a real
+      // Shift+Tab from the tab list: a focus a program moves shows no tooltip (Q2-56), and without
+      // the tooltip this test would pass with the ×'s own Escape handler gone.
       const close = within(pane()).getByRole('button', { name: paneCopy.close });
-      act(() => close.focus());
+      await user.tab({ shift: true });
+      expect(close).toHaveFocus();
       expect(await screen.findByRole('tooltip')).toHaveTextContent(paneCopy.close);
       await user.keyboard('{Escape}');
       expect(currentCrew().ui.pane).toBeNull();
@@ -290,13 +294,25 @@ describe('DetailsPane', () => {
     expect(screen.getByLabelText(agentCopy.task)).toHaveValue('typed before the refresh');
   });
 
-  it('closes when the channel changes, without moving focus from where the person went', async () => {
+  it('stays open on its tab across a channel switch, where Ask my agent closes, without moving focus (Q2-33)', async () => {
     const user = userEvent.setup();
     renderCrew(Layout);
     await user.click(await ready());
+    act(() => currentCrew().openPane({ mode: 'details', tab: 'members' }));
     const composer = screen.getByLabelText('Message #general');
     composer.focus();
     act(() => currentCrew().selectChannel(methods.id));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
+    // Details are the channel's facts, so they follow the person to the next channel's.
+    expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'members' });
+    expect(pane()).toHaveAttribute('data-state', 'open');
+    expect(composer).toHaveFocus();
+
+    // Ask my agent is about the channel it was opened on, so a switch closes it.
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    await screen.findByLabelText(agentCopy.task);
+    composer.focus();
+    act(() => currentCrew().selectChannel(general.id));
     await waitFor(() => expect(currentCrew().ui.pane).toBeNull());
     expect(composer).toHaveFocus();
   });

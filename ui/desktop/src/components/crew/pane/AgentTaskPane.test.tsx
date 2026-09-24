@@ -898,6 +898,78 @@ describe('AgentTaskPane', () => {
       expect(fileWarning()).toBeNull();
     });
 
+    it('says nothing for a shared file whose name has a space, though the task names it unquoted', async () => {
+      const user = userEvent.setup();
+      installFiles({ 'blob-1': 'Plate Reader.csv' });
+      installObserver({ messages: [{ ...message('1'), attachments: ['blob-1'] }] });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
+      const task = await openAgent(user);
+      // Read as `Reader.csv`: a word holds no space. The shared file answers it all the same.
+      fireEvent.change(task, { target: { value: 'Compute OD ratios from Plate Reader.csv' } });
+      await waitFor(() =>
+        expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'blob.status')).toBe(
+          true
+        )
+      );
+      await act(async () => undefined);
+      expect(fileWarning()).toBeNull();
+
+      // Quoted, a name is taken whole, and a warning names it whole.
+      fireEvent.change(task, {
+        target: { value: 'Compute OD ratios from "Plate Reader.csv" and `OD600 run 2.xlsx`' },
+      });
+      expect(await screen.findByTestId('crew-agent-file-warning')).toHaveTextContent(
+        warning(['OD600 run 2.xlsx'])
+      );
+    });
+
+    it('stays quiet while the loaded messages may not be the whole channel', async () => {
+      const user = userEvent.setup();
+      installFiles({});
+      // A full page: the channel may go further back, where the file could have been shared.
+      const page = Array.from({ length: 200 }, (_, index) => message(String(index + 1)));
+      installObserver({ messages: page });
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().messages).toHaveLength(200));
+      const task = await openAgent(user);
+      fireEvent.change(task, { target: { value: 'Average counts.csv' } });
+      await act(async () => undefined);
+      expect(fileWarning()).toBeNull();
+      expect(
+        mocks.crewRequest.mock.calls.filter(([, method]) => method === 'blob.status')
+      ).toHaveLength(0);
+    });
+
+    it('stays quiet while the opening backlog is still arriving', async () => {
+      const user = userEvent.setup();
+      installObserver();
+      const observe = mocks.observeCrew.getMockImplementation()!;
+      mocks.observeCrew.mockImplementation(
+        async (
+          connectionId: string,
+          channelId: string | undefined,
+          after: string | null,
+          signal: AbortSignal,
+          receive: (frame: unknown) => void
+        ) =>
+          observe(connectionId, channelId, after, signal, (frame: unknown) =>
+            // The daemon says more of the opening page is on its way.
+            receive(
+              (frame as { type?: string }).type === 'messages'
+                ? { ...(frame as object), remaining: 3 }
+                : frame
+            )
+          )
+      );
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      expect(currentCrew().backlogComplete).toBe(false);
+      fireEvent.change(task, { target: { value: 'Average counts.csv' } });
+      await act(async () => undefined);
+      expect(fileWarning()).toBeNull();
+    });
+
     it('finds the names a task mentions, and not the ones inside a URL', () => {
       expect(
         mentionedFileNames(
@@ -916,6 +988,36 @@ describe('AgentTaskPane', () => {
       ]);
       expect(unsharedFileNames(['plate.csv', 'Other.CSV'], ['/data/PLATE.csv'])).toEqual([
         'Other.CSV',
+      ]);
+    });
+
+    it('compares a name with a space as the task reads it, so the warning is never false', () => {
+      // Unquoted, a name ends at a space…
+      expect(mentionedFileNames('Compute OD ratios from Plate Reader.csv')).toEqual(['Reader.csv']);
+      expect(mentionedFileNames('Plot OD600 run 2.xlsx')).toEqual(['2.xlsx']);
+      // …and a shared file with that name answers the shortened mention.
+      expect(unsharedFileNames(['Reader.csv'], ['Plate Reader.csv'])).toEqual([]);
+      expect(unsharedFileNames(['2.xlsx'], ['/Users/dave/OD600 run 2.xlsx'])).toEqual([]);
+      expect(unsharedFileNames(['plate.csv'], ['(v2) plate.csv', 'x(v3)plate.csv'])).toEqual([]);
+      expect(unsharedFileNames(['hidden.csv'], ['.hidden.csv'])).toEqual([]);
+      // A longer word is a different name: `myplate.csv` and `old-plate.csv` do not answer it.
+      expect(unsharedFileNames(['plate.csv'], ['myplate.csv', 'old-plate.csv'])).toEqual([
+        'plate.csv',
+      ]);
+      expect(unsharedFileNames(['counts.csv'], ['counts.csv.gz', 'counts.csv (1)'])).toEqual([
+        'counts.csv',
+      ]);
+
+      // Quoted or backticked, a name is taken whole and by its file name; a quoted URL is not one.
+      expect(
+        mentionedFileNames(
+          'Use "Plate Reader.csv", “Layout v2.xlsx”, `/data/OD600 run 2.xlsx` and "https://x.org/a b.csv"; "not a file" plate.csv'
+        )
+      ).toEqual(['Plate Reader.csv', 'Layout v2.xlsx', 'OD600 run 2.xlsx', 'plate.csv']);
+      expect(unsharedFileNames(['Plate Reader.csv'], ['plate reader.CSV'])).toEqual([]);
+      expect(unsharedFileNames(['Plate Reader.csv'], ['Reader.csv'])).toEqual([]);
+      expect(unsharedFileNames(['Plate Reader.csv'], ['Plate Reader.tsv'])).toEqual([
+        'Plate Reader.csv',
       ]);
     });
   });
