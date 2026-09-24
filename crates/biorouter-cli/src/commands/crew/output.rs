@@ -97,6 +97,156 @@ pub fn retry_hint(request_id: &str) -> String {
     format!("Retry safely with --request-id {}", safe_text(request_id))
 }
 
+/// Broker refusal words shared with the desktop, byte for byte: `refusalCopy` and
+/// `letInCopy.alreadyApproved` in `ui/desktop/src/components/crew/dialogs/copy.ts`. A test here
+/// reads that file, so the two cannot drift apart.
+const DEVICE_CONFLICT: &str =
+    "This device key is already enrolled in this workspace. Join with a new device key.";
+const IDENTITY_MISMATCH: &str = "This server account no longer matches the member it joined as. Remove the old member first, then invite them again.";
+const STORAGE_FULL: &str = "This workspace has grown past the size Crew supports and cannot take more changes. Ask the host about starting a new workspace.";
+const TOO_MANY_ATTEMPTS: &str = "Too many attempts at once. Wait a minute, then try again.";
+const IDENTITY_CONFLICT_UNNAMED: &str =
+    "Another active member already has this username. Remove the old member first.";
+
+fn identity_conflict(username: Option<&str>) -> String {
+    match username {
+        Some(name) => {
+            format!("Another active member is already @{name}. Remove the old @{name} first.")
+        }
+        None => IDENTITY_CONFLICT_UNNAMED.to_owned(),
+    }
+}
+
+fn already_approved(username: &str) -> String {
+    format!("You already let a device in for @{username}.")
+}
+
+/// Codes whose broker text is written for a person, so the `code: ` prefix can go: the
+/// desktop's `SENTENCE_CODES` in `dialogs/refusals.ts`.
+const SENTENCE_CODES: &[&str] = &[
+    "name_invalid",
+    "name_taken",
+    "device_code_invalid",
+    "rate_limited",
+    "target_mismatch",
+    "not_invited",
+    "identity_unavailable",
+    "identity_ambiguous",
+    "identity_conflict",
+    "identity_mismatch",
+    "unknown_account",
+    "already_member",
+    "already_approved",
+    "quota_exceeded",
+    "join_expired",
+    "join_changed",
+    "account_changed",
+    "code_mismatch",
+];
+
+/// Whether the broker wrote `sentence` for a person: capitalised (or opening with a number or
+/// an `@username`), and ending in a full stop. The broker's technical texts are neither.
+fn reads_as_sentence(sentence: &str) -> bool {
+    let first = sentence.chars().next();
+    first.is_some_and(|ch| ch.is_uppercase() || ch.is_numeric() || ch == '@')
+        && sentence.ends_with(['.', '!', '?'])
+}
+
+/// The first `@username` in `text`. A username may contain dots but never ends in one, so a
+/// sentence's own full stop is left out (`Invite @alice.` names `alice`, `@j.doe.` names
+/// `j.doe`).
+fn username_in(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once('@')?;
+    let name = rest
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')))
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.');
+    (!name.is_empty()).then_some(name)
+}
+
+/// The account spelling an `identity_ambiguous` refusal names (`Invite @alice.`), matched as the
+/// desktop's `CANONICAL_HINT` matches it.
+fn canonical_hint(sentence: &str) -> Option<&str> {
+    // ASCII lowercasing keeps every byte offset, so an index into `lower` is one into `sentence`.
+    let lower = sentence.to_ascii_lowercase();
+    ["invite", "did you mean"].iter().find_map(|marker| {
+        lower.match_indices(marker).find_map(|(at, _)| {
+            let rest = sentence.get(at + marker.len()..)?;
+            let spelled = rest.trim_start();
+            (spelled.len() < rest.len() && spelled.starts_with('@'))
+                .then(|| username_in(spelled))
+                .flatten()
+        })
+    })
+}
+
+/// A broker refusal in words for a person: the sentence the desktop shows for the same code,
+/// then, on its own line, the command that acts on it where there is one.
+///
+/// `message` is the broker's own `code: sentence`. A person-written sentence is printed without
+/// its code; a technical text the desktop rewords gets the same words here; anything else,
+/// including a code this CLI has never seen, is printed verbatim, code and all, because that is
+/// what the desktop shows and what support can search for.
+pub fn broker_refusal_text(code: &str, message: &str) -> String {
+    let message = message.trim();
+    let sentence = message
+        .split_once(": ")
+        .filter(|(prefix, _)| {
+            !prefix.is_empty()
+                && prefix
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        })
+        .map_or(message, |(_, rest)| rest.trim());
+    let lower = sentence.to_ascii_lowercase();
+    let shown = match (code, username_in(sentence)) {
+        ("identity_conflict", named) if lower.starts_with("another active member is @") => {
+            identity_conflict(named)
+        }
+        ("device_conflict", _) => DEVICE_CONFLICT.to_owned(),
+        ("identity_mismatch", _) if !reads_as_sentence(sentence) => IDENTITY_MISMATCH.to_owned(),
+        // The journal and state-size limits mean "this workspace is full"; the join quota's
+        // own sentence means "too many people are waiting" and is kept.
+        ("quota_exceeded", _)
+            if lower.starts_with("journal exceeds")
+                || lower.starts_with("workspace logical state exceeds") =>
+        {
+            STORAGE_FULL.to_owned()
+        }
+        ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
+        ("already_approved", Some(name)) => already_approved(name),
+        _ if SENTENCE_CODES.contains(&code) && reads_as_sentence(sentence) => sentence.to_owned(),
+        _ => message.to_owned(),
+    };
+    match broker_refusal_hint(code, sentence, &shown) {
+        Some(hint) => format!("{shown}\n{hint}"),
+        None => shown,
+    }
+}
+
+/// The command that acts on a broker refusal, when one does.
+fn broker_refusal_hint(code: &str, sentence: &str, shown: &str) -> Option<String> {
+    match code {
+        "already_approved" => Some(format!(
+            "If they sent you a new code, run: biorouter crew enroll approve {} <code> --replace",
+            username_in(sentence).map_or_else(|| "<user>".to_owned(), |name| format!("@{name}"))
+        )),
+        "identity_ambiguous" => canonical_hint(sentence)
+            .map(|canonical| format!("Run: biorouter crew enroll invite @{canonical}")),
+        "already_member" => username_in(sentence).map(|name| {
+            format!(
+                "To add another computer for them, run: biorouter crew enroll invite @{name} --add-device"
+            )
+        }),
+        // The broker's own sentence already says so; a bare code does not.
+        "name_taken" if !shown.to_ascii_lowercase().contains("choose a different name") => {
+            Some("Choose another name.".to_owned())
+        }
+        _ => None,
+    }
+}
+
 /// How text output is rendered.
 #[derive(Clone, Debug, Default)]
 pub struct HumanOptions {
@@ -2652,5 +2802,188 @@ mod tests {
             "Waiting for your approval"
         );
         assert_eq!(run_status_word("new_state"), "New state");
+    }
+
+    /// Every fixture is the broker's literal text (`crates/biorouter-crew/src/broker.rs`,
+    /// `broker/join.rs`, `DeviceCodeError`), paired with what the CLI prints for it. The words
+    /// match the desktop's table in `ui/desktop/src/components/crew/dialogs/refusals.test.ts`.
+    const BROKER_REFUSALS: &[(&str, &str, &str)] = &[
+        (
+            "name_taken",
+            "name_taken: A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.",
+            "A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.",
+        ),
+        (
+            "name_taken",
+            "name_taken",
+            "name_taken\nChoose another name.",
+        ),
+        (
+            "rate_limited",
+            "rate_limited: Too many name attempts. Try again later.",
+            "Too many name attempts. Try again later.",
+        ),
+        (
+            "rate_limited",
+            "rate_limited: too many live challenges",
+            TOO_MANY_ATTEMPTS,
+        ),
+        (
+            "target_mismatch",
+            "target_mismatch: The person you chose no longer has that username. Refresh and choose again.",
+            "The person you chose no longer has that username. Refresh and choose again.",
+        ),
+        (
+            "not_invited",
+            "not_invited: @eve has no pending invitation. Invite them first.",
+            "@eve has no pending invitation. Invite them first.",
+        ),
+        (
+            "identity_unavailable",
+            "identity_unavailable: @Bob can't be matched to one account on this server.",
+            "@Bob can't be matched to one account on this server.",
+        ),
+        (
+            "unknown_account",
+            "unknown_account: There is no account @zed on this server. Check the spelling.",
+            "There is no account @zed on this server. Check the spelling.",
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: 100 people are already waiting to join. Cancel an invitation or wait for one to expire.",
+            "100 people are already waiting to join. Cancel an invitation or wait for one to expire.",
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: journal exceeds supported replay size of 1 GiB",
+            STORAGE_FULL,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
+            STORAGE_FULL,
+        ),
+        (
+            "identity_conflict",
+            "identity_conflict: another active member is @j.doe; remove the old @j.doe first",
+            "Another active member is already @j.doe. Remove the old @j.doe first.",
+        ),
+        (
+            "identity_conflict",
+            "identity_conflict: Another account on this server is already invited as @bob. Cancel that invitation first.",
+            "Another account on this server is already invited as @bob. Cancel that invitation first.",
+        ),
+        (
+            "device_conflict",
+            "device_conflict: this device key is already enrolled in this workspace; use a new device key",
+            DEVICE_CONFLICT,
+        ),
+        (
+            "identity_mismatch",
+            "identity_mismatch: enrollment principal changed; request a new invitation explicitly identifying the existing principal or offboard the old account",
+            IDENTITY_MISMATCH,
+        ),
+        (
+            "identity_mismatch",
+            "identity_mismatch: UID account name changed; offboard the old principal before enrollment",
+            IDENTITY_MISMATCH,
+        ),
+        (
+            "identity_mismatch",
+            "identity_mismatch: This account joined as @bob and is now @robert on the server. Remove @bob first.",
+            "This account joined as @bob and is now @robert on the server. Remove @bob first.",
+        ),
+        (
+            "already_approved",
+            "already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.",
+            "You already let a device in for @eve.\nIf they sent you a new code, run: biorouter crew enroll approve @eve <code> --replace",
+        ),
+        (
+            "identity_ambiguous",
+            "identity_ambiguous: This server spells the account @alice. Invite @alice.",
+            "This server spells the account @alice. Invite @alice.\nRun: biorouter crew enroll invite @alice",
+        ),
+        (
+            "identity_ambiguous",
+            "identity_ambiguous: @Al is an alias on this server. Invite @alice.",
+            "@Al is an alias on this server. Invite @alice.\nRun: biorouter crew enroll invite @alice",
+        ),
+        (
+            "already_member",
+            "already_member: @bob is already a member. Choose Add device to add another computer for them.",
+            "@bob is already a member. Choose Add device to add another computer for them.\nTo add another computer for them, run: biorouter crew enroll invite @bob --add-device",
+        ),
+        (
+            "code_mismatch",
+            "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.",
+            "The host hasn't let this device in. Send the host the code shown on your screen.",
+        ),
+        (
+            "forbidden",
+            "forbidden: only a person can invite or admit people",
+            "forbidden: only a person can invite or admit people",
+        ),
+    ];
+
+    #[test]
+    fn each_broker_code_prints_the_desktops_sentence_and_its_flag() {
+        for (code, broker, shown) in BROKER_REFUSALS {
+            assert_eq!(broker_refusal_text(code, broker), *shown, "{broker}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_spelling_never_takes_the_sentences_full_stop() {
+        for (sentence, canonical) in [
+            (
+                "This server spells the account @alice. Invite @alice.",
+                "alice",
+            ),
+            ("@Al is an alias on this server. Invite @alice.", "alice"),
+            ("@jd is an alias on this server. Invite @j.doe.", "j.doe"),
+            (
+                "@jd is an alias on this server. invite   @j.doe_2-x.",
+                "j.doe_2-x",
+            ),
+            ("Did you mean @bob?", "bob"),
+        ] {
+            assert_eq!(canonical_hint(sentence), Some(canonical), "{sentence}");
+        }
+        assert_eq!(canonical_hint("Invite them first."), None);
+        assert_eq!(canonical_hint("Invite@alice."), None);
+    }
+
+    /// The CLI's sentences are the desktop's, byte for byte. Reading the desktop's copy deck is
+    /// the only place both halves are visible at once.
+    #[test]
+    fn broker_refusal_sentences_match_the_desktops_copy_deck() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/dialogs/copy.ts");
+        let copy = std::fs::read_to_string(&path).expect("the desktop copy deck");
+        for sentence in [
+            DEVICE_CONFLICT,
+            IDENTITY_MISMATCH,
+            STORAGE_FULL,
+            TOO_MANY_ATTEMPTS,
+            IDENTITY_CONFLICT_UNNAMED,
+        ] {
+            assert!(
+                copy.contains(&format!("'{sentence}'")),
+                "{sentence} is not in {}",
+                path.display()
+            );
+        }
+        assert!(copy.contains(
+            "`Another active member is already @${username}. Remove the old @${username} first.`"
+        ));
+        assert_eq!(
+            identity_conflict(Some("bob")),
+            "Another active member is already @bob. Remove the old @bob first."
+        );
+        assert!(copy.contains("`You already let a device in for @${username}.`"));
+        assert_eq!(
+            already_approved("eve"),
+            "You already let a device in for @eve."
+        );
     }
 }

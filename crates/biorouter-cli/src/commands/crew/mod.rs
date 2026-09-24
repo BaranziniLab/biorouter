@@ -64,11 +64,14 @@ fn failure(
     request_id: &str,
     sent: bool,
 ) -> anyhow::Error {
-    let message = safe_lines(&format!("{error:#}"));
+    let message = safe_lines(&error_text(error));
     if matches!(format, OutputFormat::Json | OutputFormat::StreamJson) {
         let mut body = json!({"error": message, "request_id": request_id});
         if let Some(code) = error_code(error) {
             body["code"] = json!(code);
+        }
+        if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
+            body["broker_code"] = json!(broker_code);
         }
         let _ = emit(&body, format);
     }
@@ -77,6 +80,37 @@ fn failure(
     } else {
         anyhow!("{message}")
     }
+}
+
+/// `{error:#}`, except that a broker refusal the daemon forwarded is said in words for a person
+/// ([`output::broker_refusal_text`]) instead of as `Daemon returned 400: code: …`.
+fn error_text(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| match broker_refusal(cause) {
+            Some((code, message)) => output::broker_refusal_text(code, message),
+            None => cause.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// A broker refusal the daemon forwarded: the broker's code and its own `code: sentence`.
+fn broker_refusal<'a>(cause: &'a (dyn std::error::Error + 'static)) -> Option<(&'a str, &'a str)> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return refused
+            .broker_code
+            .as_deref()
+            .map(|code| (code, refused.message()));
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return refused
+            .broker_code
+            .as_deref()
+            .map(|code| (code, refused.message.as_str()));
+    }
+    None
 }
 
 fn safe_lines(text: &str) -> String {
@@ -2588,7 +2622,8 @@ mod tests {
     pub(super) struct FakeRefusal {
         pub(super) status: u16,
         pub(super) code: Option<String>,
-        message: String,
+        pub(super) broker_code: Option<String>,
+        pub(super) message: String,
     }
 
     impl std::fmt::Display for FakeRefusal {
@@ -2607,6 +2642,19 @@ mod tests {
         FakeRefusal {
             status,
             code: code.map(str::to_owned),
+            broker_code: None,
+            message: message.to_owned(),
+        }
+        .into()
+    }
+
+    /// A broker refusal as a daemon with `broker_code` forwards it: `crew_request_refused`, the
+    /// broker's code, and the broker's own `code: sentence`.
+    fn refuse_broker(broker_code: &str, message: &str) -> anyhow::Error {
+        FakeRefusal {
+            status: 400,
+            code: Some("crew_request_refused".into()),
+            broker_code: Some(broker_code.into()),
             message: message.to_owned(),
         }
         .into()
@@ -3612,6 +3660,65 @@ mod tests {
             fake.broker_call("enrollment.cancel").expect("cancel")["username"],
             "bob"
         );
+    }
+
+    #[tokio::test]
+    async fn a_broker_refusal_is_said_in_its_own_words_with_the_flag_that_acts_on_it() {
+        let approved = "already_approved: You already let a device in for @bob. Replace the code only if they sent you a new one.";
+        let (api, _) = api_with(OutputFormat::Text, move |method, path, body| {
+            if path.ends_with("/request")
+                && body.and_then(|body| body["method"].as_str()) == Some("enrollment.approve")
+            {
+                return Err(refuse_broker("already_approved", approved));
+            }
+            standard(method, path, body)
+        });
+        let error = run(
+            &api,
+            CrewCommand::Enroll(EnrollmentCommand::Approve {
+                person: "@bob".into(),
+                code: "7QK2-M9XA-3JTP-WZ4D".into(),
+                replace: false,
+            }),
+        )
+        .await
+        .expect_err("already approved");
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+        assert_eq!(
+            shown,
+            "You already let a device in for @bob.\nIf they sent you a new code, run: biorouter crew enroll approve @bob <code> --replace"
+        );
+        assert!(!shown.contains("Daemon returned"), "{shown}");
+        assert!(!shown.contains("already_approved:"), "{shown}");
+        // A refusal is a definite answer, so no retry is offered, and scripts keep both codes.
+        assert!(!shown.contains("req-1"));
+        assert_eq!(error_code(&error).as_deref(), Some("crew_request_refused"));
+        assert_eq!(
+            error.chain().find_map(broker_refusal).map(|(code, _)| code),
+            Some("already_approved")
+        );
+
+        // Without a broker code (another route's refusal), the text is unchanged.
+        let other = refuse(
+            404,
+            Some("crew_grant_not_found"),
+            "No Crew grant for this session.",
+        );
+        assert_eq!(
+            failure(&other, OutputFormat::Text, "req-1", false).to_string(),
+            "Daemon returned 404: No Crew grant for this session."
+        );
+    }
+
+    #[test]
+    fn a_broker_refusal_keeps_terminal_controls_escaped() {
+        let error = refuse_broker(
+            "not_invited",
+            "not_invited: @eve has no pending invitation.\u{1b}[2J Invite them first.",
+        );
+        let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
+        assert!(!shown.contains('\u{1b}'), "{shown}");
+        assert!(shown.contains("\\u{1b}[2J"), "{shown}");
     }
 
     #[test]

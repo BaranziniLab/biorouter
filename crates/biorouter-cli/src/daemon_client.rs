@@ -16,7 +16,19 @@ pub struct CrewClient {
 pub struct DaemonRefusal {
     pub status: u16,
     pub kind: Option<String>,
+    /// The broker's own code when the daemon forwarded a broker refusal (`name_taken`,
+    /// `already_approved`, …): the body's `broker_code`, or the code inside an older daemon's
+    /// `Crew broker refused request: {json}` text.
+    pub broker_code: Option<String>,
     message: String,
+}
+
+impl DaemonRefusal {
+    /// The daemon's text, terminal-safe. For a broker refusal it is the broker's own
+    /// `code: sentence`, with an older daemon's envelope removed.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl std::fmt::Display for DaemonRefusal {
@@ -37,14 +49,54 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
         .and_then(|value| value.get("error").or_else(|| value.get("message")))
         .and_then(Value::as_str)
         .unwrap_or(fallback);
+    // An older daemon forwarded a broker refusal as `Crew broker refused request: {json}`.
+    let legacy = legacy_broker_refusal(message);
+    let broker_code = value
+        .and_then(|value| value.get("broker_code"))
+        .and_then(Value::as_str)
+        .and_then(broker_code_text)
+        .or_else(|| legacy.as_ref().map(|(code, _)| code.clone()));
+    let message = legacy.as_ref().map_or(message, |(_, text)| text.as_str());
     DaemonRefusal {
         status,
         kind: value
             .and_then(|value| value.get("status").or_else(|| value.get("code")))
             .and_then(Value::as_str)
             .map(|kind| kind.chars().take(128).collect()),
+        broker_code,
         message: terminal_safe(&message.chars().take(1024).collect::<String>()),
     }
+}
+
+/// What an older daemon wrote before the broker's JSON error object.
+#[cfg(unix)]
+const LEGACY_BROKER_REFUSAL: &str = "Crew broker refused request: ";
+
+/// A broker code as the broker writes one (`[a-z][a-z0-9_]*`), capped like `kind`. Anything
+/// else is not a code and is dropped rather than printed.
+#[cfg(unix)]
+fn broker_code_text(code: &str) -> Option<String> {
+    let mut chars = code.chars();
+    let shaped = chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+    shaped.then(|| code.chars().take(128).collect())
+}
+
+/// `Crew broker refused request: {"code":…,"message":…}` from a daemon that predates
+/// `broker_code`: the code, and the broker's own text (its message, else the code alone).
+#[cfg(unix)]
+fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
+    let encoded = text.trim().strip_prefix(LEGACY_BROKER_REFUSAL)?;
+    let error = serde_json::from_str::<Value>(encoded).ok()?;
+    let code = broker_code_text(error.get("code")?.as_str()?)?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .unwrap_or(&code)
+        .to_owned();
+    Some((code, message))
 }
 
 /// The daemon's sentence exactly, quotes and apostrophes included, with only what a terminal
@@ -1818,6 +1870,116 @@ mod tests {
             fallback,
             "Daemon returned 502: Gateway's answer was not JSON"
         );
+    }
+
+    /// `broker/join.rs`'s literal `already_approved` refusal.
+    const ALREADY_APPROVED: &str = "already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.";
+
+    #[test]
+    fn a_broker_refusal_carries_the_brokers_code_and_its_own_text() {
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_request_refused",
+                "broker_code": "already_approved",
+                "error": ALREADY_APPROVED,
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.kind.as_deref(), Some("crew_request_refused"));
+        assert_eq!(refusal.broker_code.as_deref(), Some("already_approved"));
+        assert_eq!(refusal.message(), ALREADY_APPROVED);
+
+        let plain = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "code": "crew_request_refused", "error": "x" })),
+            "fallback",
+        );
+        assert_eq!(plain.broker_code, None);
+    }
+
+    #[test]
+    fn an_older_daemons_envelope_is_unwrapped_to_the_brokers_text() {
+        let envelope = format!(
+            "Crew broker refused request: {}",
+            serde_json::json!({"code": "already_approved", "message": ALREADY_APPROVED})
+        );
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "code": "crew_request_refused", "error": envelope })),
+            "fallback",
+        );
+        assert_eq!(refusal.broker_code.as_deref(), Some("already_approved"));
+        assert_eq!(refusal.message(), ALREADY_APPROVED);
+        assert!(!refusal.to_string().contains("Crew broker refused request"));
+        assert!(!refusal.to_string().contains('{'));
+
+        let code_only = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "error": "Crew broker refused request: {\"code\":\"stale_cursor\"}"
+            })),
+            "fallback",
+        );
+        assert_eq!(code_only.broker_code.as_deref(), Some("stale_cursor"));
+        assert_eq!(code_only.message(), "stale_cursor");
+
+        for unreadable in [
+            "Crew broker refused request: not json",
+            "Crew broker refused request: {\"message\":\"no code\"}",
+            "Crew broker refused request: {\"code\":\"Not A Code\",\"message\":\"x\"}",
+        ] {
+            let refusal = daemon_refusal(
+                400,
+                Some(&serde_json::json!({ "error": unreadable })),
+                "fallback",
+            );
+            assert_eq!(refusal.broker_code, None, "{unreadable}");
+            assert_eq!(refusal.message(), unreadable);
+        }
+    }
+
+    #[test]
+    fn a_broker_code_is_only_ever_a_code() {
+        let hostile = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "broker_code": "name_taken\u{1b}[31m",
+                "error": "name_taken: x",
+            })),
+            "fallback",
+        );
+        assert_eq!(hostile.broker_code, None);
+        let long = "a".repeat(300);
+        let capped = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "broker_code": long, "error": "x" })),
+            "fallback",
+        );
+        assert_eq!(capped.broker_code.map(|code| code.len()), Some(128));
+    }
+
+    #[test]
+    fn a_broker_refusal_keeps_its_apostrophes_and_still_escapes_controls() {
+        let text = "code_mismatch: The host hasn't let this device in.\u{1b}[31m";
+        let envelope = format!(
+            "Crew broker refused request: {}",
+            serde_json::json!({"code": "code_mismatch", "message": text})
+        );
+        for body in [
+            serde_json::json!({ "broker_code": "code_mismatch", "error": text }),
+            serde_json::json!({ "error": envelope }),
+        ] {
+            let refusal = daemon_refusal(400, Some(&body), "fallback");
+            assert!(
+                refusal.message().contains("hasn't"),
+                "{}",
+                refusal.message()
+            );
+            assert!(!refusal.message().contains("hasn\\'t"));
+            assert!(!refusal.message().contains('\u{1b}'));
+            assert!(refusal.message().ends_with("in.\\u{1b}[31m"));
+        }
     }
 
     #[tokio::test]
