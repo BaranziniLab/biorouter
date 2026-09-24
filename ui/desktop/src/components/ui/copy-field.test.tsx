@@ -110,6 +110,35 @@ describe('CopyField', () => {
     expect(window.getSelection()?.toString()).toBe('/home/alice/lab/raw/counts.csv');
   });
 
+  it('turns a ⌘C of the whole grouped display into the value, and leaves a partial one alone', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    const { container } = render(
+      <CopyField value="7QK2M9XA3JTPWZ4D" display="7QK2-M9XA-3JTP-WZ4D" label="device code" />
+    );
+    // The fallback selects the grouped form, with the Copy button focused.
+    const button = screen.getByRole('button', { name: 'Copy device code' });
+    button.focus();
+    await press(button);
+    expect(window.getSelection()?.toString()).toBe('7QK2-M9XA-3JTP-WZ4D');
+
+    const setData = vi.fn();
+    const whole = fireEvent.copy(button, { clipboardData: { setData } });
+    expect(whole).toBe(false); // default prevented: the browser's own copy does not run
+    expect(setData).toHaveBeenCalledWith('text/plain', '7QK2M9XA3JTPWZ4D');
+
+    // Someone selecting part of the code by hand gets exactly that part.
+    const valueNode = container.querySelector('.biorouter-copy-field-value') as HTMLElement;
+    const range = document.createRange();
+    range.setStart(valueNode.firstChild as Text, 0);
+    range.setEnd(valueNode.firstChild as Text, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    const partialSetData = vi.fn();
+    const partial = fireEvent.copy(valueNode, { clipboardData: { setData: partialSetData } });
+    expect(partial).toBe(true);
+    expect(partialSetData).not.toHaveBeenCalled();
+  });
+
   it('treats an absent clipboard as a failure, not a silent no-op', async () => {
     const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });

@@ -320,6 +320,28 @@ describe('the Crew stylesheet contract', () => {
     }
   });
 
+  /**
+   * Measured in a real browser, not reasoned: an absolutely positioned grid item
+   * takes its GRID AREA as its containing block, so a covering pane left in the
+   * `auto` column 2 rendered 0px wide. jsdom evaluates neither the container
+   * query nor grid, so only the source can hold this.
+   */
+  it('lets a covering pane span the whole stage below the channel header', () => {
+    const cover = parseCss(readFileSync(CREW_APP_CSS, 'utf8')).rules.find(
+      (rule) =>
+        normalizeSelector(rule.selector) === '.crew-pane' &&
+        rule.atRules.some((prelude) => /^@container\s+crew-main\s*\(width\s*</.test(prelude)) &&
+        !isReduced(rule)
+    );
+    expect(cover, 'no .crew-pane rule inside the cover container query').toBeDefined();
+    const value = (property: string) =>
+      cover?.declarations.find((declaration) => declaration.property === property)?.value;
+    expect(value('position')).toBe('absolute');
+    expect(value('grid-column')).toBe('1 / -1');
+    expect(value('grid-row')).toBe('1 / -1');
+    expect(value('inset')).toBe('var(--chrome-height) 0 0 0');
+  });
+
   it('keeps load-bearing styles out of newly written arbitrary-value utilities', () => {
     const problems = SOURCE_FILES.flatMap((path) =>
       arbitraryValueViolations(readFileSync(path, 'utf8')).map((line) => `${rel(path)}:${line}`)

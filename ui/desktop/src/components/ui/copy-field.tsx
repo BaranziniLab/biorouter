@@ -53,6 +53,9 @@ async function writeClipboard(text: string): Promise<void> {
  * - If the clipboard refuses, the button reads "Copy failed" and the value is
  *   selected, so ⌘C works. A masked secret is revealed first: selecting the mask
  *   would put bullets on the clipboard, and the person asked to take the value.
+ * - A ⌘C of the whole shown text puts `value` on the clipboard too, so a grouped
+ *   display ("7QK2-M9XA-…", a fingerprint in fours) never leaks its separators
+ *   into what is pasted. A partial selection copies exactly what was selected.
  * - The accessible name stays "Copy {label}" through every state, so the control
  *   never changes identity under a screen reader; the live region carries the
  *   outcome.
@@ -132,6 +135,21 @@ export function CopyField({
 
   const masked = secret && !revealed;
   const shown = display ?? value;
+
+  // `user-select: all` makes one click take the whole value, and the clipboard
+  // fallback selects it on purpose; either way a ⌘C of the WHOLE shown form
+  // should yield the value. The listener sits on the root because a copy event
+  // targets the focused element when there is one — after a failed click that
+  // is the Copy button, not the value.
+  const handleCopyEvent = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (masked || shown === value) return;
+    const selection = typeof window !== 'undefined' ? window.getSelection() : null;
+    const node = valueRef.current;
+    if (!selection || !node || !node.contains(selection.anchorNode)) return;
+    if (selection.toString() !== shown) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', value);
+  };
   const singleLineTruncate = multiline ? undefined : truncate;
 
   let valueContent: React.ReactNode;
@@ -162,6 +180,7 @@ export function CopyField({
       data-multiline={multiline ? 'true' : undefined}
       data-size={size}
       className={cn('biorouter-copy-field', className)}
+      onCopy={handleCopyEvent}
     >
       <span
         ref={valueRef}

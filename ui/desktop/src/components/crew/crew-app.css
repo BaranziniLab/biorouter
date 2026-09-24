@@ -170,7 +170,13 @@
 }
 
 @container crew-main (width < 800px) {
+  /* ⚠ The grid placement is load-bearing. An absolutely positioned GRID ITEM
+     takes its grid area as its containing block, so a covering pane left in
+     column 2 — an `auto` track it no longer contributes to — measured 0px
+     wide. Spanning every line makes the containing block the whole stage. */
   .crew-pane {
+    grid-column: 1 / -1;
+    grid-row: 1 / -1;
     position: absolute;
     inset: var(--chrome-height) 0 0 0;
     z-index: 1;
