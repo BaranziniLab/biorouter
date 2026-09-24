@@ -653,7 +653,7 @@ fn start_job(root: &Path, params: &Value, scope: &Value) -> Result<Value> {
 pub fn exec_helper() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        return linux_exec();
+        linux_exec()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -866,6 +866,9 @@ fn confine(root: &Path) -> Result<()> {
     .collect::<std::result::Result<Vec<_>, _>>()?;
     filter.insert(libc::SYS_fcntl, fcntl_rules);
     // CPython's script fopen sets close-on-exec with FIOCLEX and treats EPERM as fatal.
+    // `FIOCLEX` is a `c_ulong` on 64-bit glibc but narrower elsewhere (musl, 32-bit), so the
+    // cast is only redundant on some targets.
+    #[allow(clippy::unnecessary_cast)]
     let close_on_exec = seccompiler::SeccompCondition::new(
         1,
         seccompiler::SeccompCmpArgLen::Dword,

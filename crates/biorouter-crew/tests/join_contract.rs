@@ -14,25 +14,27 @@
 //! `join-by-name` is that build. The feature build pins that the real broker writes exactly
 //! those two shapes, so the two runs together cover the downgrade.
 //!
-//! **The previous release's binary.** No released Biorouter carries the Crew broker yet, so the
-//! "previous binary" is the broker as it was before this campaign's naming work (`76b88555`,
-//! which predates `pending_joins`, `Workspace.name` and `Device.added_via`). The reviewer's run,
-//! on Linux as an ordinary user with `/etc/machine-id`:
+//! **The previous broker, for the reviewer.** No released Biorouter carries the Crew broker
+//! yet, so the previous binary is the broker as it was before this campaign's naming work
+//! (`76b88555`, which predates `pending_joins`, `Workspace.name` and `Device.added_via`). The
+//! run, on Linux as an ordinary user with `/etc/machine-id` and a second account `bob`:
 //!
-//! 1. Build the old broker from `git archive 76b88555 crates/biorouter-crew` in a scratch
-//!    workspace (`cargo build --bin biorouter-crew`), and this tree's broker with
-//!    `--features join-by-name`.
-//! 2. With the new binary: `start --state-dir S --bootstrap-key K`, bootstrap the host, invite an
-//!    account by `@username`, cancel it (or let it join), then `stop`.
-//! 3. With the old binary: `start --state-dir S --bootstrap-key K` must print `running` (the
-//!    journal replays; unknown fields are ignored because `State` has no
-//!    `deny_unknown_fields`), a signed `workspace.snapshot` and a mutation must succeed, then
-//!    `stop`.
-//! 4. With the new binary again: `start` must replay the journal the old binary extended.
+//! 1. Extract `git archive 76b88555 crates/biorouter-crew` into a scratch workspace, and link it
+//!    beside this tree's crate (built with `join-by-name`) into one small harness, renaming the
+//!    two dependencies (`crew_old`, `crew_new`). Both open the same state directory with
+//!    `Broker::open`, so both read the real account database, exactly as `serve` does.
+//! 2. Alternate the two over one journal: new (bootstrap, a team, invite `@bob` and cancel),
+//!    old (replay, a mutation, a signed snapshot), new (replay, invite `@bob` again and approve
+//!    his code, leaving the join pending), old (replay a journal holding a pending join, a
+//!    mutation), new (Bob's laptop joins by its code), old (replay the `auth.join` record; Bob's
+//!    device authenticates there too), new (replay everything).
+//! 3. Every step must succeed, and the journal must show exactly one `set pending_joins` per
+//!    first join and one `remove pending_joins` when the last one ends.
 //!
-//! A join still **pending** when a host downgrades is ignored by the old broker and comes back,
-//! unchanged, after an upgrade: every claim then re-checks expiry, the account name and the
-//! principal generation, so it can only fail closed.
+//! Measured 2026-09-23 in `rust:1.92-bullseye`: every step passed. A join still **pending**
+//! when a host downgrades is ignored by the old broker and comes back unchanged after an
+//! upgrade (its patches live on in the journal): a claim then re-checks expiry, the account
+//! name and the principal generation, so a stale join fails closed and a valid one completes.
 //!
 //! Tests that sign `hello` or run a real broker need Linux (a machine identity and
 //! `SO_PEERCRED`); the rest run on every Unix.
@@ -1358,10 +1360,12 @@ mod join {
             assert_eq!(code, "code_mismatch");
             let (code, _) = refused(relay.claim_on_bobs_link(&mut ws, &mut bob, &join_id));
             assert_eq!(code, "code_mismatch");
-            // The warning is there before the host has typed anything.
+            // The warning is there before the host has typed anything, and Bob's screen is not
+            // told that a code the host never entered failed.
             let joins = host_joins(&mut ws);
             assert_eq!(joins[0]["approved"], false);
             assert_eq!(joins[0]["mismatched_attempts"], 2);
+            assert!(bob.status(&mut ws.broker).get("last_refusal").is_none());
             // The host approves the code Bob's own screen shows.
             ok(approve(&mut ws, "bob", &bob.code()));
             assert!(bob.status(&mut ws.broker).get("last_refusal").is_none());

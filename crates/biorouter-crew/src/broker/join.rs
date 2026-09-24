@@ -98,9 +98,13 @@ impl Runtime {
         self.last_refusal
             .insert(join.join_id.clone(), join.approved_code.clone());
     }
+    /// `code_mismatch` while the join still carries the approval a claim was refused against.
+    /// A claim refused before the host approved anything warns the host (it counts as a
+    /// mismatched attempt) but is not reported to the joiner, whose host has entered no code.
     fn last_refusal(&self, join: &PendingJoin) -> Option<&'static str> {
-        (self.last_refusal.get(&join.join_id) == Some(&join.approved_code))
-            .then_some("code_mismatch")
+        (join.approved_code.is_some()
+            && self.last_refusal.get(&join.join_id) == Some(&join.approved_code))
+        .then_some("code_mismatch")
     }
     fn mismatched_attempts(&self, join: &PendingJoin) -> u32 {
         self.mismatched_attempts
