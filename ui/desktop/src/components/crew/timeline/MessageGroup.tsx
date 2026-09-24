@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { memo, useId } from 'react';
 import type { TimelineGroup } from './groupMessages';
 import { MessageRow, TraceRow } from './MessageRow';
 
@@ -8,7 +8,7 @@ import { MessageRow, TraceRow } from './MessageRow';
  * reads as the agent — a square Bot tile, "Alice Chen's agent" or "Your agent",
  * `@alice` and an "Agent" badge — never as the person who owns it.
  */
-export function MessageGroup({ group }: { group: TimelineGroup }) {
+export const MessageGroup = memo(function MessageGroup({ group }: { group: TimelineGroup }) {
   const author = useId();
   const time = useId();
   const ids = { author, time };
@@ -27,4 +27,4 @@ export function MessageGroup({ group }: { group: TimelineGroup }) {
       )}
     </article>
   );
-}
+});

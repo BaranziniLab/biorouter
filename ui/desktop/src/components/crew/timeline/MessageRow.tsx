@@ -18,7 +18,7 @@ import type { TimelineGroup, TimelineMessageEntry, TimelineTraceEntry } from './
 import { MessageBody } from './MessageBody';
 import { CopyIconButton, useTimelineCopy } from './TimelineCopy';
 import { useTimeline } from './TimelineContext';
-import { fullDateTime, isoTime, shortTime } from './timelineTime';
+import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
 
 /**
  * One row of a message group: the head (avatar, author, time) or a
@@ -115,7 +115,7 @@ function GutterTime({ time }: { time: Date }) {
       dateTime={isoTime(time)}
       className="crew-message-gutter-time text-supporting text-text-muted tabular-nums"
     >
-      {shortTime(time)}
+      {gutterTime(time)}
     </time>
   );
 }
@@ -222,7 +222,6 @@ export function TraceRow({
         <Disclosure
           label={timelineCopy.showDetails}
           summary={timelineCopy.detailsSummary(entry.messages.length)}
-          className="crew-trace"
         >
           <ul className="crew-trace-list">
             {entry.messages.map((message) => (

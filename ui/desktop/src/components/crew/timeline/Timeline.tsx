@@ -60,7 +60,10 @@ export interface TimelineProps {
   view?: TimelineView | null;
   /** Presentation only: no action is enabled and nothing is marked read. */
   readOnly?: boolean;
-  /** Attachments and server paths under a message body. The files area renders them. */
+  /**
+   * Attachments and server paths under a message body. The files area renders
+   * them. Pass a stable callback (`useCallback`): a new one re-renders every row.
+   */
   renderAttachments?: (message: CrewMessage) => ReactNode;
   /**
    * A task to bring into view and wash with the highlight once (a new task,
@@ -294,13 +297,16 @@ function ChannelTimeline({
     row.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     setHighlighted(highlightRunId);
   }, [highlightRunId, days]);
-  const onHighlightEnd = useCallback(
-    (runId: string) => {
-      setHighlighted((current) => (current === runId ? null : current));
-      onHighlightDone?.();
-    },
-    [onHighlightDone]
-  );
+  // The callback is read through a ref, so an inline one from the layout does
+  // not change the context every render.
+  const highlightDone = useRef(onHighlightDone);
+  useEffect(() => {
+    highlightDone.current = onHighlightDone;
+  }, [onHighlightDone]);
+  const onHighlightEnd = useCallback((runId: string) => {
+    setHighlighted((current) => (current === runId ? null : current));
+    highlightDone.current?.();
+  }, []);
 
   // ── Keyboard: ↑/↓ move between rows, Home/End to the ends ────────────────
   const [activeRow, setActiveRow] = useState<string | null>(null);
@@ -322,18 +328,36 @@ function ChannelTimeline({
     rows[next].scrollIntoView({ block: 'nearest' });
   };
 
-  const context: TimelineContextValue = {
-    dir,
-    viewerId,
-    readOnly,
-    renderAttachments,
-    activeRow,
-    setActiveRow,
-    arriving: arriving.current.size > 0 ? arriving.current : NO_IDS,
-    registerTaskRow,
-    highlightedRunId: highlighted,
-    onHighlightEnd,
-  };
+  // Stable between renders that change nothing here: the controller is a new
+  // object on every composer keystroke, and the rows (memoized per group) must
+  // not re-render with it. `arriving` keeps one identity while arrivals are
+  // added to it; a row that arrives is a new component and reads it on mount.
+  const arrivingSet = arriving.current.size > 0 ? arriving.current : NO_IDS;
+  const context = useMemo<TimelineContextValue>(
+    () => ({
+      dir,
+      viewerId,
+      readOnly,
+      renderAttachments,
+      activeRow,
+      setActiveRow,
+      arriving: arrivingSet,
+      registerTaskRow,
+      highlightedRunId: highlighted,
+      onHighlightEnd,
+    }),
+    [
+      dir,
+      viewerId,
+      readOnly,
+      renderAttachments,
+      activeRow,
+      arrivingSet,
+      registerTaskRow,
+      highlighted,
+      onHighlightEnd,
+    ]
+  );
 
   const showSkeleton = !messagesLoaded && messages.length === 0;
   const showIntro = messagesLoaded && reachesChannelStart(messages);

@@ -52,6 +52,16 @@ export function shortTime(date: Date): string {
   return date.toLocaleTimeString(LOCALE, { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
+/**
+ * "10:02", for a continuation row's 44px gutter, where "10:02 AM" does not fit
+ * on one line. The group's head, a few rows up, carries the full time.
+ */
+export function gutterTime(date: Date): string {
+  return date
+    .toLocaleTimeString(LOCALE, { hour: 'numeric', minute: '2-digit', hour12: true })
+    .replace(/\s?[AP]M$/i, '');
+}
+
 /** "Tuesday, September 22, 2026 at 10:02 AM", for the time's tooltip. */
 export function fullDateTime(date: Date): string {
   const day = date.toLocaleDateString(LOCALE, {

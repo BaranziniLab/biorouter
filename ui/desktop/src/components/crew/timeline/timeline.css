@@ -135,10 +135,12 @@
 .crew-message-gutter {
   display: flex;
   align-items: flex-start;
-  padding-top: 2px;
 }
 
+/* On the body's 20px line, so it reads level with the text beside it. */
 .crew-message-gutter-time {
+  line-height: var(--text-body--line-height);
+  white-space: nowrap;
   opacity: 0;
   transition: opacity var(--dur-fast-min) var(--ease-out);
 }
@@ -224,16 +226,14 @@
 }
 
 /* ── An agent's folded tool updates ─────────────────────────────────────── */
-.crew-trace {
-  margin-inline-start: -8px;
-}
-
+/* The Disclosure trigger already pulls itself left by its own inset, so its
+   chevron starts on the text edge; the lines it reveals start there too. */
 .crew-trace-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin: 0;
-  padding: 0 0 4px 8px;
+  padding: 0 0 4px;
   list-style: none;
 }
 
