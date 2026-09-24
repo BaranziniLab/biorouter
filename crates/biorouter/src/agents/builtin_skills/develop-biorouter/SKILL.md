@@ -43,7 +43,7 @@ just install-deps             # npm ci in ui/desktop (landing/video is a second,
 | `crates/biorouter` | Core agent library: agent loop, LLM providers, extension manager, session state, workflows, scheduler, privacy, context management |
 | `crates/biorouter-server` | Axum REST + WebSocket server, binary `biorouterd`; routes in `src/routes/` |
 | `crates/biorouter-cli` | Interactive CLI, binary `biorouter`; subcommands in `src/commands/` |
-| `crates/biorouter-mcp` | Built-in MCP servers (developer, computer controller, memory, auto visualiser, knowledge, agent drafter, datasql, files, compute) |
+| `crates/biorouter-mcp` | Built-in MCP servers (developer, Biorouter Copilot, memory, auto visualiser, knowledge, agent drafter, datasql, files, compute) |
 | `crates/biorouter-sandbox` | Capability-scoped sandboxed execution (docker, seatbelt, local) |
 | `crates/biorouter-acp` | Agent Communication Protocol for multi-agent orchestration |
 | `crates/biorouter-authprompt` | macOS auth prompt helper the background service cannot raise itself |

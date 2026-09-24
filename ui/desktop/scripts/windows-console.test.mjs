@@ -36,10 +36,9 @@
  *    `windowsHide` must show a VISIBLE console. If that control ever reports
  *    hidden, this machine cannot show the window at all and every other
  *    assertion in the file is vacuous — so it is an assertion, never a skip.
- *  * The grandchild case settles a site that looks unguarded and is not: the
- *    Biorouter Copilot helper runs `powershell.exe` per desktop action with no
- *    creation flags, but the daemon starts that helper with CREATE_NO_WINDOW and
- *    a child inherits its parent's windowless console.
+ *  * The `cmd.exe` grandchild case measures only that specific shell path. The
+ *    Biorouter Copilot Go helper starts PowerShell separately and must give
+ *    that child its own creation flags.
  *  * The Electron block pins the embedder behaviour. If a future Electron stops
  *    setting kHideConsoleWindows, `pipe-without-windowsHide` flips to visible
  *    and this goes red — which is the early warning the app currently does not

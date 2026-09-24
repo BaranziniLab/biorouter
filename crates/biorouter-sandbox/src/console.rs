@@ -8,8 +8,8 @@
 //! therefore appear as the black window that flashes on screen and vanishes,
 //! once per tool call.
 //!
-//! `CREATE_NO_WINDOW` is the documented answer: the child still gets a console
-//! object (so its pipes behave normally), just no window for it.
+//! `CREATE_NO_WINDOW` is the documented answer: the child's console handle is
+//! not set, while redirected pipes continue to work.
 //!
 //! ⚠ **This cannot be fixed on the Electron side, so do not try.** `biorouterd.ts`
 //! already spawns the daemon with `windowsHide: true` *and* `detached: true` on
@@ -19,9 +19,9 @@
 //! console" would trade this bug for a worse one. The flag has to be set by
 //! whoever spawns the grandchild — which is this crate's callers.
 //!
-//! A useful consequence: `CREATE_NO_WINDOW` yields a real-but-window-less
-//! console that descendants **inherit**, so flagging an MCP server or a shell is
-//! enough to keep the tools *it* runs quiet too.
+//! The creation flag applies only to the process being started. A helper that
+//! launches another console program must set the flag on that child too. The
+//! Windows Copilot helper does this for its per-action PowerShell process.
 //!
 //! # Why this lives in the leaf crate
 //!

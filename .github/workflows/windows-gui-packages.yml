@@ -120,6 +120,15 @@ jobs:
       - name: Build the Biorouter Copilot helper payload
         run: python scripts/computer-use-runtime.py build win32-x64
 
+      - name: Measure the release helper's PowerShell console
+        run: python scripts/test-computer-use-windows-console.py target/computer-use/source.noindex target/computer-use/win32-x64/ocu.exe --report target/computer-use/windows-console.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-package-console-evidence-${{ inputs.version }}
+          path: target/computer-use/windows-console.json
+          if-no-files-found: warn
+
       # ⚠ `src/bin` is not tracked in git, so a fresh checkout has none.
       # `prepare-platform-binaries.js` VALIDATES this directory and never copies
       # from `target/`. Omitting this stage is how 1.91.0 produced an installer

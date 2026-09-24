@@ -26,6 +26,48 @@ describe('CopilotSetup', () => {
     expect(screen.getByText(/server-host/)).toBeVisible();
   });
 
+  // A real machine had three copies of the helper — an installed Biorouter, a
+  // packaged build and a source build — with the SAME bundle id and the same
+  // Developer ID, and macOS had granted Screen Recording to two of them. The
+  // panel told the operator to "enable Screen Recording for BioRouter Computer
+  // Use" when they already had, for a different copy, and nothing on screen said
+  // which one was being probed. The path is the only thing that disambiguates.
+  it('names the exact copy that needs the OS grant when one is missing', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      runtime_version: '0.3.5',
+      target: 'darwin-arm64',
+      executable:
+        '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu',
+      permissions: { accessibility: true, screen_recording: false },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    await screen.findByText(/Screen Recording: not allowed/);
+    expect(
+      screen.getByText(
+        '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu'
+      )
+    ).toBeVisible();
+  });
+
+  // The negative control: a ready runtime must NOT nag about a path, or every
+  // healthy panel grows a line of noise.
+  it('does not name a path once permissions are allowed', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      runtime_version: '0.3.5',
+      target: 'darwin-arm64',
+      executable:
+        '/Applications/Biorouter.app/Contents/Resources/computer-use/x/Contents/MacOS/ocu',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    await screen.findByText(/Screen Recording: allowed/);
+    expect(screen.queryByText(/Grant these to this exact copy/)).not.toBeInTheDocument();
+  });
+
   it('shows an actionable missing runtime result from the backend', async () => {
     mocks.setup.mockResolvedValue({
       status: 'missing_runtime',

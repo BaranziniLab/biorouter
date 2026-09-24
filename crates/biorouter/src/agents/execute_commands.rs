@@ -49,8 +49,16 @@ pub fn list_commands() -> &'static [CommandDef] {
 
 fn extension_command_guidance(params: &str) -> String {
     match super::extension_manager::resolve_bundled_extension(params.trim()) {
-        Some(target) => format!("/extend is not a command. Select {} with /ext:{} followed by your request. Existing tool approvals still apply.", target.display_name(), target.key()),
-        None => "/extend is not a command. Use /ext:<extension-id> followed by your request, or choose an extension from the slash menu. For Biorouter Copilot, use /ext:computercontroller.".to_string(),
+        Some(target) => {
+            let key = target.key();
+            let reference = if key == "computercontroller" {
+                super::extension_manager::COPILOT_REFERENCE_ALIAS
+            } else {
+                &key
+            };
+            format!("/extend is not a command. Select {} with /ext:{reference} followed by your request. Existing tool approvals still apply.", target.display_name())
+        }
+        None => format!("/extend is not a command. Use /ext:<extension-id> followed by your request, or choose an extension from the slash menu. For Biorouter Copilot, use /ext:{}.", super::extension_manager::COPILOT_REFERENCE_ALIAS),
     }
 }
 
@@ -368,17 +376,19 @@ mod slash_command_audit_tests {
 
     #[test]
     fn legacy_extend_explains_the_current_name_and_marker() {
-        let guidance = extension_command_guidance("computer controller");
+        let guidance = extension_command_guidance("Biorouter Copilot");
         assert!(guidance.contains("Biorouter Copilot"));
-        assert!(guidance.contains("/ext:computercontroller"));
+        assert!(guidance.contains("/ext:BiorouterCopilot"));
         assert!(guidance.contains("approvals still apply"));
-        assert_eq!(guidance, extension_command_guidance("Biorouter Copilot"));
+        assert_eq!(guidance, extension_command_guidance("computer controller"));
     }
 
     #[test]
     fn unknown_extend_targets_receive_actionable_guidance() {
         let guidance = extension_command_guidance("unconfigured-extension");
         assert!(guidance.contains("/ext:<extension-id>"));
+        assert!(guidance.contains("/ext:BiorouterCopilot"));
+        assert!(!guidance.contains("computercontroller"));
         assert!(guidance.contains("slash menu"));
     }
 
@@ -398,9 +408,9 @@ mod slash_command_audit_tests {
         let config: SessionConfig =
             serde_json::from_value(serde_json::json!({"id": "slash-command-audit"})).unwrap();
         for command in [
-            "/extend computer controller",
-            "/extend\tcomputer controller",
-            "/extend\ncomputer controller",
+            "/extend Biorouter Copilot",
+            "/extend\tBiorouter Copilot",
+            "/extend\nBiorouter Copilot",
             "/knowledge",
         ] {
             assert!(agent

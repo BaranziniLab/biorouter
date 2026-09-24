@@ -1132,7 +1132,7 @@ The chat surface is an instrument readout, not a messaging app.
 
 Assistant prose is the page. Wrapping it in a bubble would halve the effective measure and add visual noise to the app's most-read surface. The user's turn is tinted only so the eye can find the boundary when scrolling.
 
-Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
+Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/desktop-ui/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
 
 An empty chat's welcome sentence belongs to its tab. Select and animate it once, preserve it through tab switching, split/move/merge layouts and Settings visits, and start a fresh lifetime in a new tab or renderer. Keep the selected tab's complete frame and close control visible; use subtle neutral tab boundaries and mark the active tab with a bold label and thin bottom accent, without an accent border or surrounding shadow.
 

@@ -785,7 +785,7 @@ enum SessionCommand {
     },
     #[command(
         about = "Diverge a saved session into a new one, preserving full history",
-        long_about = "Branch a stored chat into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
+        long_about = "Diverge a stored chat into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
     )]
     Diverge {
         #[command(flatten)]
@@ -795,7 +795,7 @@ enum SessionCommand {
         #[arg(
             long = "branch-name",
             value_name = "NAME",
-            help = "Name for the new (branched) session"
+            help = "Name for the new (diverged) session"
         )]
         branch_name: Option<String>,
     },

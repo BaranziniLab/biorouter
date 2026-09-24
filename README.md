@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
-  <img src="https://img.shields.io/badge/version-1.91.1-tan.svg" alt="Version 1.91.1">
+  <img src="https://img.shields.io/badge/version-1.91.2-tan.svg" alt="Version 1.91.2">
 </p>
 
 <a href="https://biorouter.ucsf.edu/download">Download</a> ·
@@ -45,7 +45,9 @@ Privacy protection is on by default and applies across chats, knowledge bases, e
 
 These controls help prevent accidental disclosure within Biorouter. They do not isolate ordinary files or the physical desktop: a model with shell or approved desktop access can encounter sensitive material there. For patient data or unpublished research, use an appropriate local or institutional model and follow your institution's requirements.
 
-[Privacy protections and limits](docs/security/privacy-tiers.md#what-shipped-and-what-did-not) · [Tool permissions](docs/security/permission-modes.md)
+One capability is worth knowing about before you use it: **workspace control ships on**, and its surface includes reading and steering your *other* conversations. A write from a private chat into a different chat raises an approval that shows the payload.
+
+[Privacy protections and limits](docs/security/privacy-tiers.md#what-shipped-and-what-did-not) · [Handling patient and sensitive data](docs/security/data-privacy-and-phi.md) · [Tool permissions](docs/security/permission-modes.md) · [Workspace control](docs/agent-loop/workspace-control.md)
 
 ## Built for biomedical research
 
@@ -85,7 +87,7 @@ biorouter configure
 biorouter
 ```
 
-For browser access, run `biorouter serve`. It listens on localhost by default. See [browser and server setup](docs/deployment/browser-access.md) for remote access and CLI-only Linux packages.
+For browser access, run `biorouter serve`. It listens on localhost by default. See [browser and server setup](docs/deployment/browser-access.md) for remote access.
 
 ## Learn more and contribute
 

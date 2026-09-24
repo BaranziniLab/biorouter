@@ -714,7 +714,7 @@ pub fn get_warnings() -> Vec<String> {
                             || matches!(bare, "automation_script" | "computer_control")
                     })
                 {
-                    warnings.push(format!("'{key}': legacy Computer Controller tool restrictions remain restricted. Web/document tools moved to Web & Documents; select the new native Biorouter Copilot tools explicitly to allow desktop control. Retired scripts are no longer callable."));
+                    warnings.push(format!("'{key}': previously saved tool restrictions remain in place. Web and document tools moved to Web & Documents; select Biorouter Copilot's native tools explicitly to allow desktop control. Retired scripts are no longer callable."));
                 }
             }
             if matches!(entry.config, ExtensionConfig::Sse { .. }) {

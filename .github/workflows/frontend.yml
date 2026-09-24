@@ -191,6 +191,21 @@ jobs:
       - name: Generator regression suite
         run: node --test landing/scripts/build-registry.test.mjs
 
+      # ── Where a document is allowed to live ──────────────────────────────
+      # CLAUDE.md states the documentation rule as binding, and `scripts/docs-lint.py`
+      # already encodes it — but nothing ran the linter, so two PRs merged in one
+      # afternoon each added a file loose at `docs/` root.
+      #
+      # ⚠ This is DELIBERATELY three rules, not the whole linter. The tree carries a
+      # real backlog (156 findings across ten rules, measured 2026-09-22), and a gate
+      # that fails on arrival gets disabled rather than obeyed. These three are clean
+      # on main today and can be held that way; the step prints how many findings it
+      # is NOT reporting, so a filtered pass never reads as "the docs are clean".
+      # Widen the list as a rule's backlog reaches zero — never past it.
+      - name: Documents live where the rule says (placement only)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement
+
       # The published registry, the desktop fallback snapshot and the
       # compiled-in private set are one catalog in three forms. Being written by
       # one command is not the same as being in sync — an interrupted run, a

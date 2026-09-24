@@ -456,9 +456,8 @@ export function auditTree(root = SRC_ROOT) {
     for (const site of collectSpawnSites(text, repoRelative)) {
       sites.push({ ...site, file: repoRelative });
 
-      // Rule 2, checked first because it is the one that decides what the user
-      // sees. An inherited fd stops libuv applying CREATE_NO_WINDOW, so this
-      // site shows a console window no matter what `windowsHide` says.
+      // Rule 2: inherited stdio prevents CREATE_NO_WINDOW. SW_HIDE can still
+      // hide the window, but this census requires the stronger no-console path.
       if (site.stdio === 'inherit' || site.stdio === 'fork-default' || site.stdio === 'unknown') {
         violations.push({
           ...site,
@@ -467,8 +466,8 @@ export function auditTree(root = SRC_ROOT) {
             site.stdio === 'unknown'
               ? 'stdio is not a literal this census can read, so whether it inherits an fd is unknown'
               : site.stdio === 'fork-default'
-                ? "fork() without `silent: true` defaults to stdio 'inherit', which shows a console window"
-                : 'stdio inherits a standard handle, so CREATE_NO_WINDOW is never applied and this shows a console window whatever windowsHide says',
+                ? "fork() without `silent: true` defaults to stdio 'inherit', preventing CREATE_NO_WINDOW"
+                : 'stdio inherits a standard handle, so CREATE_NO_WINDOW is never applied',
         });
         continue;
       }

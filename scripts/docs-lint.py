@@ -220,7 +220,20 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--folder")
+    # Report only these rules. The reason this exists rather than a whole-tree
+    # gate: the tree carries a real backlog (156 findings across 10 rules,
+    # measured 2026-09-22), so a blocking gate over all of them would fail on
+    # arrival — and a gate that fails on arrival gets disabled rather than
+    # obeyed. Three rules ARE clean today and can be held that way:
+    # tree/loose-at-root, tree/no-index and status/folder-disagreement.
+    # Widen this list as the backlog for a rule reaches zero; never widen it
+    # past zero.
+    ap.add_argument(
+        "--only",
+        help="comma-separated rule ids to report; others are counted but not failed on",
+    )
     args = ap.parse_args()
+    only = {r.strip() for r in args.only.split(",")} if args.only else None
 
     findings: list[dict] = []
     files = all_md()
@@ -234,6 +247,12 @@ def main() -> int:
             check_file(f, findings)
         check_tree(findings)
 
+    suppressed = 0
+    if only is not None:
+        kept = [f for f in findings if f["rule"] in only]
+        suppressed = len(findings) - len(kept)
+        findings = kept
+
     if args.json:
         print(json.dumps(findings, indent=2))
         return 1 if findings else 0
@@ -242,6 +261,10 @@ def main() -> int:
     for f in findings:
         by_rule[f["rule"]] += 1
     print(f"docs-lint: {len(files)} markdown files checked, {len(findings)} findings\n")
+    if only is not None:
+        # Said out loud, every run. A filtered gate that does not report what it
+        # filtered reads as "the docs are clean", which is the opposite of true.
+        print(f"  (reporting only {', '.join(sorted(only))}; {suppressed} finding(s) in other rules not reported)\n")
     for rule in sorted(by_rule, key=lambda k: -by_rule[k]):
         print(f"  {by_rule[rule]:5d}  {rule}")
     if findings:

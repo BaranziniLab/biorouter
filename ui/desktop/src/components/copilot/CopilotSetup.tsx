@@ -83,6 +83,20 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
         </p>
       )}
       <p>OS permissions: {permissionSummary || 'Not reported by this environment.'}</p>
+      {/* ⚠ NAME THE BINARY. macOS keys Screen Recording to a particular executable
+          PATH, not to the signing identity, so a machine holding more than one copy
+          of the helper — an installed Biorouter, a packaged build, a source build —
+          needs each copy granted separately. Without this line the panel says
+          "enable Screen Recording for BioRouter Computer Use" to someone who has
+          already done exactly that, for a different copy, and there is nothing on
+          screen to tell them so. Measured 2026-09-23: three copies on one machine,
+          two reporting `screen_recording: true` and the source build reporting
+          false, with an identical bundle id and the same Developer ID. */}
+      {runtime.executable && verdict !== 'ready' && (
+        <p className="break-all">
+          Grant these to this exact copy: <code>{runtime.executable}</code>
+        </p>
+      )}
       {runtime.message && <p>{runtime.message}</p>}
       {runtime.status === 'missing_runtime' || runtime.status === 'incompatible_runtime' ? (
         <p>
@@ -172,7 +186,12 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
             {settingsError && <p role="alert">{settingsError}</p>}
           </div>
         )}
-      {runtime.development_override && <p>Using an explicitly configured development runtime.</p>}
+      {runtime.development_override && (
+        <p>
+          Using an explicitly configured development runtime (BIOROUTER_COMPUTER_USE_DIR). Its
+          operating-system permissions are separate from the installed app&apos;s.
+        </p>
+      )}
     </div>
   );
 }
