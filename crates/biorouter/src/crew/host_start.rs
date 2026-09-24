@@ -21,6 +21,15 @@
 //!   checking, no forwarding, the same preflight), so it gains no account or privilege beyond
 //!   theirs, and it never prompts: a server that asks for a password or a code refuses with
 //!   that classified reason and the person runs the commands themselves.
+//!
+//!   The plan's wording (§16 D-HOST) is "over the already-authenticated SSH transport". At this
+//!   step there is none: the Host dialog saves the connection, and so first signs in, only at
+//!   Create, after the start. So the run is a fresh `ssh` to the login the request names, and
+//!   nothing ties that login to the host setup. That is the same trust the Create step already
+//!   gives the same field: `POST /crew/connections` takes `ssh_target` from the renderer under
+//!   the same proof of a person, and its Connect runs `biorouter-crew bridge` over this same
+//!   hardened, non-interactive `ssh` to it. A start adds a fixed command to that login and no
+//!   account, route or privilege the renderer could not already name.
 //! - **Only this computer's own host setup, once at a time.** The preparation must be this
 //!   daemon's pending hosting identity, not one already used by a saved connection; a second
 //!   click while a run is under way answers that run.
