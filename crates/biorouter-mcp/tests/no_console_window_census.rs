@@ -155,6 +155,12 @@ const EXEMPT: &[(&str, &str)] = &[
         "test scaffolding that re-execs the test binary itself, not a child of the running app",
     ),
     (
+        "crates/biorouter/src/session/session_manager_required_affiliation_tests.rs",
+        "test code: the file opens with `#![cfg(test)]` and session_manager.rs includes it only \
+         as a `#[path]` test module; its two spawns re-exec the test binary itself so each \
+         privacy-toggle case runs in a process of its own",
+    ),
+    (
         "crates/biorouter-crew/src/broker.rs",
         "the file is included only by `#[cfg(unix)] mod broker` in biorouter-crew/src/lib.rs; its broker child therefore cannot compile on Windows",
     ),
