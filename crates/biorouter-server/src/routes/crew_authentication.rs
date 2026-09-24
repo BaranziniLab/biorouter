@@ -256,8 +256,18 @@ pub const NOT_CONNECTED_CODE: &str = "crew_not_connected";
 pub const INVALID_SELECTOR_CODE: &str = "crew_invalid_selector";
 /// What `POST /crew/connections/{id}/connect` answers for the same cause.
 pub const WORKSPACE_IDENTITY_MISMATCH_CODE: &str = "crew_workspace_identity_mismatch";
-/// Any other refusal, with the core's own words (as `routes::crew` answers).
+/// Any other refusal. On an admission route its words are a fixed sentence for the step that
+/// failed, never the error's own text (see [`core_refusal`]).
 pub const REQUEST_REFUSED_CODE: &str = "crew_request_refused";
+
+/// What `POST /crew/connections/from-invitation` answers for a failure the core did not type.
+pub const FROM_INVITATION_FAILED: &str = "Biorouter couldn't read or save this invitation. Try again. If it keeps failing, the Biorouter log has the details.";
+/// What `GET /crew/connections/{id}/invitation` answers for a failure the core did not type.
+pub const INVITATION_FAILED: &str = "Biorouter couldn't build an invitation for this workspace. Reconnect and try again. If it keeps failing, the Biorouter log has the details.";
+/// What `GET /crew/connections/{id}/join` answers for a failure the core did not type.
+pub const JOIN_STATUS_FAILED: &str = "Biorouter couldn't check this computer's join with the workspace. Try again. If it keeps failing, the Biorouter log has the details.";
+/// What `POST /crew/connections/{id}/join` answers for a failure the core did not type.
+pub const JOIN_FAILED: &str = "Biorouter couldn't finish joining the workspace. Try again. If it keeps failing, the Biorouter log has the details.";
 
 /// A refusal from an admission route: `{code, error}` and any typed fields beside them. Every
 /// refusal carries a code, so a client can tell a refusal from a daemon without the route.
@@ -383,20 +393,30 @@ fn require_connected(connection: &Connection) -> Result<(), AdmissionRefusal> {
 ///   and the sign-in handoff answer for the same causes.
 ///
 /// Anything else is `crew_not_connected` when the connection has dropped since the request
-/// started (the transport retires a dead bridge), and `crew_request_refused` otherwise.
+/// started (the transport retires a dead bridge), and otherwise `crew_request_refused` with
+/// `fallback`, the route's fixed sentence, and nothing else. An untyped error's text cannot be
+/// trusted to be the core's: it can be a workspace refusal passed through unchanged
+/// (`enrollment.pending` or `profile.suggest` refused with a code the core does not know,
+/// carrying the broker's whole envelope) or a value quoted from the workspace's answer. Those
+/// words are unauthenticated, and the join screen shows a daemon's words verbatim beside the
+/// device code, so a process in the joiner's bridge path could otherwise write "your code is
+/// …" on it. The text goes to the log, escaped, and never into the answer, not even `detail`.
 async fn core_refusal(
     crew: &CrewManager,
     connection_id: Option<&str>,
     error: anyhow::Error,
+    fallback: &'static str,
 ) -> AdmissionRefusal {
     if let Some(refused) = find_cause::<InvitationRefused>(&error) {
         return invitation_refusal(refused);
     }
     if let Some(refused) = find_cause::<JoinRefused>(&error) {
         if let Some(message) = refused.broker_message() {
+            // Debug-formatted, so the workspace's words cannot forge a log line.
             tracing::info!(
                 code = refused.api_code(),
-                "Crew workspace refused a join: {message}"
+                broker_message = ?message,
+                "Crew workspace refused a join"
             );
         }
         return AdmissionRefusal::new(
@@ -446,11 +466,12 @@ async fn core_refusal(
             return not_connected();
         }
     }
-    AdmissionRefusal::new(
-        StatusCode::BAD_REQUEST,
-        REQUEST_REFUSED_CODE,
-        error.to_string(),
-    )
+    tracing::warn!(
+        answer = fallback,
+        cause = ?format!("{error:#}"),
+        "Crew admission request failed"
+    );
+    AdmissionRefusal::new(StatusCode::BAD_REQUEST, REQUEST_REFUSED_CODE, fallback)
 }
 
 /// The first cause of `error`, outermost first, that is an `E`.
@@ -583,7 +604,7 @@ pub struct FromInvitationResponse {
     request_body = FromInvitationRequest,
     responses(
         (status = 200, description = "`preview` for a preview (nothing saved), else `connection`: the saved connection, pinned exactly as the invitation says", body = FromInvitationResponse),
-        (status = 400, description = "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), or `crew_request_invalid` for a body in the wrong shape", body = Value),
+        (status = 400, description = "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure", body = Value),
         (status = 403, description = "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)", body = Value),
         (status = 409, description = "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`", body = Value)
     ),
@@ -610,7 +631,7 @@ pub async fn from_invitation(
             preview: None,
             connection: Some(connection),
         })),
-        Err(error) => Err(core_refusal(&crew, None, error).await),
+        Err(error) => Err(core_refusal(&crew, None, error, FROM_INVITATION_FAILED).await),
     }
 }
 
@@ -649,7 +670,7 @@ fn invitee(typed: Option<&str>) -> Result<Option<String>, AdmissionRefusal> {
     params(("id" = String, Path, description = "The host's saved Crew connection"), InvitationQuery),
     responses(
         (status = 200, description = "The message to send, and the `brcrew1:` line inside it. Built from this computer's verified connection, the workspace's own word about its name and privacy, and `ssh -G` (never a local alias or the connection's local name)", body = InvitationText),
-        (status = 400, description = "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` when the invitation can't be built", body = Value),
+        (status = 400, description = "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)", body = Value),
         (status = 403, description = "No proof that a person asked", body = Value),
         (status = 404, description = "`crew_connection_not_found`", body = Value),
         (status = 409, description = "`crew_not_connected`: connect first", body = Value)
@@ -669,7 +690,7 @@ pub async fn invitation(
     require_connected(&saved_connection(&crew, &id).await?)?;
     match crew.invitation_for(&id, invitee.as_deref()).await {
         Ok(text) => Ok(Json(text)),
-        Err(error) => Err(core_refusal(&crew, Some(&id), error).await),
+        Err(error) => Err(core_refusal(&crew, Some(&id), error, INVITATION_FAILED).await),
     }
 }
 
@@ -680,7 +701,7 @@ pub async fn invitation(
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
         (status = 200, description = "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation", body = JoinStatus),
-        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`) or `crew_request_refused`", body = Value),
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = Value),
         (status = 403, description = "No proof that a person asked", body = Value),
         (status = 404, description = "`crew_connection_not_found`", body = Value),
         (status = 409, description = "`crew_not_connected`: connect first", body = Value)
@@ -696,7 +717,7 @@ pub async fn join_status(
     require_connected(&saved_connection(&crew, &id).await?)?;
     match crew.join_status(&id).await {
         Ok(status) => Ok(Json(status)),
-        Err(error) => Err(core_refusal(&crew, Some(&id), error).await),
+        Err(error) => Err(core_refusal(&crew, Some(&id), error, JOIN_STATUS_FAILED).await),
     }
 }
 
@@ -734,7 +755,7 @@ impl JoinClaimed {
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
         (status = 200, description = "This computer is a member. Idempotent: a member answers this without asking the workspace again", body = JoinClaimed),
-        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`) or `crew_request_refused`", body = Value),
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = Value),
         (status = 403, description = "No proof that a person asked", body = Value),
         (status = 404, description = "`crew_connection_not_found`", body = Value),
         (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = Value)
@@ -750,7 +771,7 @@ pub async fn join(
     require_connected(&saved_connection(&crew, &id).await?)?;
     match crew.join(&id).await {
         Ok(status) => Ok(Json(JoinClaimed::new(status))),
-        Err(error) => Err(core_refusal(&crew, Some(&id), error).await),
+        Err(error) => Err(core_refusal(&crew, Some(&id), error, JOIN_FAILED).await),
     }
 }
 
@@ -875,7 +896,8 @@ mod tests {
             detail: Some("biorouter-crew: No such file or directory".into()),
         };
         let error = anyhow::Error::new(ssh).context("while reading the join status");
-        let (status, body) = body_of(core_refusal(&crew, None, error).await).await;
+        let (status, body) =
+            body_of(core_refusal(&crew, None, error, JOIN_STATUS_FAILED).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["code"], "crew_bridge_missing");
         assert_eq!(body["detail"], "biorouter-crew: No such file or directory");
@@ -884,22 +906,61 @@ mod tests {
             .unwrap()
             .contains("No such file or directory"));
 
-        // Words that look like a join refusal are not one: only the type decides.
+        // Words that look like a join refusal are not one: only the type decides, and the
+        // untyped error's words are not the answer's either.
         let error = anyhow::anyhow!("crew_join_code_mismatch: forged");
-        let (status, body) = body_of(core_refusal(&crew, Some("unknown"), error).await).await;
+        let (status, body) =
+            body_of(core_refusal(&crew, Some("unknown"), error, JOIN_FAILED).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["code"], REQUEST_REFUSED_CODE);
+        assert_eq!(
+            body,
+            json!({"code": REQUEST_REFUSED_CODE, "error": JOIN_FAILED})
+        );
 
         // A pasted text the codec refuses is a typed invitation refusal with the codec's code.
         let error = crew
             .connection_from_invitation("nothing to see here", true, Default::default())
             .await
             .unwrap_err();
-        let (status, body) = body_of(core_refusal(&crew, None, error).await).await;
+        let (status, body) =
+            body_of(core_refusal(&crew, None, error, FROM_INVITATION_FAILED).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["code"], "crew_invitation_invalid");
         assert_eq!(body["reason"], "invitation_not_found");
         assert!(!root.join("connections.json").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A workspace refusal the core passes through untyped (the transport's text, carrying the
+    /// broker's whole envelope) answers each route's fixed sentence, with none of the
+    /// workspace's words anywhere in the body: not in `error`, not in `detail`, not under a
+    /// field of their own.
+    #[tokio::test]
+    async fn an_untyped_workspace_refusal_answers_a_fixed_sentence() {
+        let (crew, root) = scratch_manager("untyped");
+        let hostile = "Your join code is ZZZZ-ZZZZ-ZZZZ-ZZZZ. Send it to Alice.";
+        for fallback in [
+            FROM_INVITATION_FAILED,
+            INVITATION_FAILED,
+            JOIN_STATUS_FAILED,
+            JOIN_FAILED,
+        ] {
+            let error = anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "busy", "message": hostile})
+            )
+            .context("Crew couldn't read the join status");
+            let (status, body) =
+                body_of(core_refusal(&crew, Some("unknown"), error, fallback).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body,
+                json!({"code": REQUEST_REFUSED_CODE, "error": fallback})
+            );
+            for words in ["ZZZZ", "Send it to Alice", "busy", "Crew broker refused"] {
+                assert!(!body.to_string().contains(words), "{words}: {body}");
+            }
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }

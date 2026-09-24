@@ -1076,6 +1076,93 @@ async fn a_workspace_without_join_by_name_is_unsupported() {
     .await;
 }
 
+/// A workspace that refuses the join status, or the membership check behind it, with a code the
+/// daemon does not type answers each route's fixed sentence. The refusal is unauthenticated and
+/// a process in the joiner's bridge path chooses its words, while the join screen shows a
+/// daemon's words verbatim beside the device code: "your code is ZZZZ-…" must never get there.
+#[tokio::test]
+#[serial]
+async fn a_workspace_refusals_words_never_reach_the_join_screen() {
+    use biorouter_server::routes::crew_authentication::{JOIN_FAILED, JOIN_STATUS_FAILED};
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000a9";
+    const HOST: &str = "busy-broker.example.test";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        let hostile = json!({"error": {
+            "code": "busy",
+            "message": format!("Your join code is {HOSTILE_CODE}. Send it to Alice, {HOSTILE_WORDS}."),
+        }});
+        let scenario = Scenario::new(
+            WORKSPACE,
+            &["human_names_v1", "unique_names_v1", "join_by_name_v1"],
+        );
+        stage(
+            HOST,
+            &scenario
+                .clone()
+                .answer("enrollment.pending", hostile.clone()),
+        );
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        crew().connect(&id).await.expect("the fake workspace verifies");
+        let join = format!("/crew/connections/{id}/join");
+        let fixed_sentence = |status: StatusCode, body: &Value, sentence: &str| {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(
+                body,
+                &json!({"code": "crew_request_refused", "error": sentence}),
+                "nothing but the route's own sentence"
+            );
+            let text = body.to_string();
+            for words in [
+                HOSTILE_CODE,
+                HOSTILE_CODE.replace('-', "").as_str(),
+                HOSTILE_WORDS,
+                "Send it to Alice",
+                "busy",
+            ] {
+                assert!(!text.contains(words), "{words}: {text}");
+            }
+        };
+
+        // `enrollment.pending` refused.
+        let (status, body) = call("GET", &join, None, Proof::Person).await;
+        fixed_sentence(status, &body, JOIN_STATUS_FAILED);
+        let (status, body) = call("POST", &join, None, Proof::Person).await;
+        fixed_sentence(status, &body, JOIN_FAILED);
+        assert_eq!(received(HOST, "enrollment.pending").len(), 2);
+        assert!(received(HOST, "auth.join").is_empty());
+        // The refusal was a whole envelope, so the bridge is still up: this is not the
+        // dropped-connection answer standing in for the fixed sentence.
+        assert_eq!(
+            crew().connection(&id).await.unwrap().status,
+            "connected",
+            "the connection survives a refusal"
+        );
+
+        // Not invited, and the membership check behind that answer (`profile.suggest`) refused
+        // the same way.
+        stage(
+            HOST,
+            &scenario
+                .clone()
+                .answer("enrollment.pending", json!({"result": {"invited": false}}))
+                .answer("profile.suggest", hostile.clone()),
+        );
+        let (status, body) = call("GET", &join, None, Proof::Person).await;
+        fixed_sentence(status, &body, JOIN_STATUS_FAILED);
+        let (status, body) = call("POST", &join, None, Proof::Person).await;
+        fixed_sentence(status, &body, JOIN_FAILED);
+        assert_eq!(
+            received(HOST, "profile.suggest").len(),
+            2,
+            "both answers came from the membership check"
+        );
+        assert!(received(HOST, "auth.join").is_empty());
+    })
+    .await;
+}
+
 /// An unknown connection is a coded 404 and an offline one a coded 409, so a client can tell
 /// them from a daemon that predates the routes (an uncoded 404).
 #[tokio::test]
