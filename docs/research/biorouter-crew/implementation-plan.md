@@ -1150,6 +1150,20 @@ Seven fix groups, each with exclusive files and an independent review, made 26 c
   - The `join-by-name` release gate (naming criterion 5).
   - LIVE-QA, which has not started and needs a new fixture: the one it was to reuse was cleaned up at 2026-09-24T13:36:06Z.
 
+### Live QA round 1 design changes (2026-09-24)
+
+Coordinator decision; the user delegated product calls. Source: round-1 triage (`/private/tmp/crew-ui-redesign/live/reports/TRIAGE-r1.md`).
+
+- **Direct add (product decision).** A team owner (or the workspace host) may add an already-admitted, active workspace member straight into a team and into chosen channels of that team, as Slack admins do. No acceptance step: the member already consented when they joined the workspace. The addition remains an explicit, journaled, owner-authorized membership record, and the broker (not React) enforces it.
+- **Observers re-authorize on policy-epoch changes** instead of terminating, with per-page authorization batching that preserves per-message decisions.
+- **Deferred, with reasons.**
+  - Channel discovery for non-members: it would expose channel names; needs a spec.
+  - A status indicator outside Crew: a new feature.
+  - A ⌘K switcher: an enhancement.
+  - Pre-selecting a dropped file in the native picker: a security design change.
+  - Agent-chat chrome: chat product scope.
+  - The broker keeps its existing policy-epoch bump on membership changes: conservative, and grants re-consent.
+
 <!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
 
 ## Related documentation
