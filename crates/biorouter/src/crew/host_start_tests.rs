@@ -418,3 +418,49 @@ async fn a_second_click_answers_the_run_under_way_and_cancel_stops_it() {
     assert!(!cancel_host_start("unknown-run"));
     assert!(host_start_status("unknown-run").is_none());
 }
+
+/// Against the real OpenSSH client, not a script: the preflight accepts the invocation a start
+/// runs, so the run reaches the network (a closed loopback port here) and fails there, as `ssh`
+/// does. The preflight once ran `ssh -G` with no login, which the real client answers with its
+/// usage and 255, and every start was refused before `ssh` ran; the scripted `ssh` above hid it.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_real_ssh_preflight_admits_a_start() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    // The development profile's own SSH files, which `login_args` names with `-F`, so the
+    // person's `~/.ssh/config` and the system's never enter the test.
+    let profile = root.path().join("profile");
+    let ssh = profile.join("home/.ssh");
+    fs::create_dir_all(&ssh).unwrap();
+    fs::write(ssh.join("config"), "").unwrap();
+    fs::write(ssh.join("known_hosts"), "").unwrap();
+    let profile = profile.to_string_lossy().into_owned();
+    let _env = crate::test_sandbox::relocate_path_root_and(
+        profile.as_str(),
+        [
+            ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+        ],
+    );
+    let closed_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let manager = CrewManager::shared(root.path().join("manager")).unwrap();
+    let prepared = manager.prepare_device().await.unwrap();
+    let first = manager
+        .start_host(HostStartRequest {
+            ssh_target: "crew_alice@127.0.0.1".into(),
+            port: Some(closed_port),
+            ..request(&prepared.preparation_id)
+        })
+        .await
+        .expect("the real ssh -G admits the start's own invocation");
+    let done = settled(&first.job_id).await;
+    assert_eq!(done.state, HostStartState::Failed, "{done:?}");
+    let error = done.error.unwrap();
+    assert_eq!(error.code, "crew_ssh_unreachable", "{error:?}");
+}
