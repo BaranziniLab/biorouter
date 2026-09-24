@@ -48,10 +48,21 @@ export const filesCopy = {
   /** Drag and drop, and pasted files. */
   dropToShare: (channel: string) => `Drop to share in #${channel}`,
   /**
-   * While the secure file window a drop or paste opened is up. A dropped file is never shared
-   * by the drop itself: the window is where the person confirms it (the one file capability).
+   * While the native Share / Cancel confirmation a drop or paste opened is up (D-DROP). The
+   * drop itself shares nothing: the main process's dialog names the file, its size and its full
+   * path, and only its Share gives the file capability.
    */
-  chooseInWindow: (name: string) => `To share ${name}, confirm it in the file window.`,
+  confirmShare: (name: string) => `To share ${name}, choose Share in the dialog.`,
+  /** A drop or paste while that confirmation is already open: nothing new opens. */
+  finishConfirming: 'Finish the open share confirmation first.',
+  /**
+   * The older path, for a desktop build without the drop confirmation: the drop opened the
+   * secure file window with nothing selected, so this says what to do there (Q2-16). `folder` is
+   * the name of the folder the file is in, when the preload could tell; it is display only and
+   * goes nowhere else.
+   */
+  chooseInWindow: (name: string, folder?: string) =>
+    `A file window opened. Select ${name}${folder ? ` (it’s in ${folder})` : ''} there and choose Open to share it.`,
   /** A drop or paste while a file window is already open: nothing new opens. */
   finishChoosing: 'Finish choosing a file in the open file window first.',
   oneAtATime: 'Crew shares one file at a time.',

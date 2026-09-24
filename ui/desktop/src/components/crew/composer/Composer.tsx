@@ -26,7 +26,8 @@ import {
   type CrewDropTarget,
   type DroppedFiles,
 } from '../files/FileDropZone';
-import { useCrewUpload } from '../files/useCrewUpload';
+import { canShareDroppedFiles, useCrewUpload, type CrewShareNames } from '../files/useCrewUpload';
+import { workspaceTitle } from '../sidebar/sidebarView';
 import { AttachMenu } from './AttachMenu';
 import { ComposerChips } from './ComposerChips';
 import { composerCopy } from './copy';
@@ -48,6 +49,16 @@ function localPath(file: File): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The folder a local file is in, from its path: display text for the picker note only (Q2-16).
+ * Never sent anywhere.
+ */
+function folderName(path: string | undefined): string {
+  if (!path) return '';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : '';
 }
 
 /** True when the main process can open the secure Crew picker here. */
@@ -86,10 +97,12 @@ export interface ComposerProps {
  * - Without a verified snapshot the card is replaced by a bar of the same height, "Verifying
  *   access…", and the textarea is not mounted (C13); the draft stays in the controller. An
  *   archived channel shows "This channel is archived." instead.
- * - Files: the Attach menu, a drop anywhere on the channel (or on the composer when the layout
- *   gives no wider zone) and a pasted file all go through the one upload path: the secure
- *   main-process picker and the exact legacy `beginTransfer` payload. The renderer never reads
- *   a file or hands a path to anything.
+ * - Files: the Attach menu opens the secure main-process picker. A drop anywhere on the channel
+ *   (or on the composer when the layout gives no wider zone) and a pasted file ask for ONE
+ *   confirmation in a native Share / Cancel dialog the main process shows (D-DROP): the preload
+ *   resolves the dropped `File` itself, and only Share yields the file capability. Both then
+ *   start the upload with the exact legacy `beginTransfer` payload. The renderer never reads a
+ *   file or hands a path to anything.
  *
  * React authorizes nothing here: the daemon and broker decide every post and every upload.
  */
@@ -124,6 +137,12 @@ export function Composer({ note, inputRef }: ComposerProps) {
   const [dropHint, setDropHint] = useState('');
   const latestUpload = useRef(upload);
   latestUpload.current = upload;
+  // What the native share confirmation calls this channel and its workspace: display text only.
+  const shareNames = useRef<CrewShareNames>({ channelName: '', workspaceName: '' });
+  shareNames.current = {
+    channelName: channelSlug(channel),
+    workspaceName: workspaceTitle(snapshot, controller.connections, connectionId),
+  };
   const ownInput = useRef<HTMLTextAreaElement | null>(null);
   const setInput = useCallback(
     (node: HTMLTextAreaElement | null) => {
@@ -188,32 +207,39 @@ export function Composer({ note, inputRef }: ComposerProps) {
   const accepting = verified && !archived && channel !== null;
 
   /**
-   * A drop or a paste. The `File` objects are looked at only for what the picker cannot say
-   * in advance (a folder, a file over the limit, data with no file behind it); then the one
-   * upload path opens the secure picker, with a note naming the file to confirm there. The
-   * picker is the only source of a file capability, so a drop can never share a file by itself,
-   * and no path from the drop is handed to anything. While a picker is already open, a drop or
-   * paste opens nothing and the note says to finish the open one.
+   * A drop or a paste. The `File` objects are looked at only for what can be said at once (a
+   * folder, a file over the limit, data with no file behind it); then the native share
+   * confirmation opens for the first file (D-DROP), with a note naming it. The main process
+   * decides everything again: it refuses what cannot be shared, and only its Share gives the file
+   * capability, so a drop never shares a file by itself. A desktop build without that
+   * confirmation opens the secure picker instead, with a note that says what to pick there. While
+   * either is already open, a drop or paste opens nothing and the note says to finish it.
    */
   const takeFiles = useCallback(async ({ files, hasFolder }: DroppedFiles) => {
     const current = latestUpload.current;
     const [first] = files;
     if (!first) return;
-    // One file window at a time. The one already open is the one to finish; a drop or paste
-    // now opens nothing, and says so instead of doing nothing.
-    if (current.choosing) return setDropHint(filesCopy.finishChoosing);
+    // One window at a time. The one already open is the one to finish; a drop or paste now opens
+    // nothing, and says so instead of doing nothing.
+    if (current.choosing)
+      return setDropHint(
+        current.confirming ? filesCopy.finishConfirming : filesCopy.finishChoosing
+      );
     if (hasFolder) return current.reportError(filesCopy.folderRefused);
     if (first.size > CREW_ATTACHMENT_LIMIT)
       return current.reportError(filesCopy.tooLarge(first.name));
-    if (hasSecurePicker() && localPath(first) === '')
+    const confirm = canShareDroppedFiles();
+    const path = localPath(first);
+    if ((confirm || hasSecurePicker()) && path === '')
       return current.reportError(filesCopy.notSaved);
-    setDropHint(
-      [filesCopy.chooseInWindow(first.name), files.length > 1 ? filesCopy.oneAtATime : '']
-        .filter(Boolean)
-        .join(' ')
-    );
+    const more = files.length > 1 ? filesCopy.oneAtATime : '';
+    const hint = confirm
+      ? filesCopy.confirmShare(first.name)
+      : filesCopy.chooseInWindow(first.name, folderName(path));
+    setDropHint([hint, more].filter(Boolean).join(' '));
     try {
-      await current.upload();
+      if (confirm) await current.shareFile(first, shareNames.current);
+      else await current.upload();
     } finally {
       setDropHint('');
     }

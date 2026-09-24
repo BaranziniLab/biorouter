@@ -323,9 +323,11 @@
 
 /* ── Drop zone ────────────────────────────────────────────────────────────── */
 
-/* The zone is a box its content fills; the overlay covers it while files are
-   dragged over, saying where they will go. It appears and goes with the drag
-   and never animates. */
+/* The zone is a box its content fills; the overlay tints it while files are
+   dragged over, saying where they will go. A tint, never an opaque blank: the
+   conversation stays readable under it, so a person can still see where the
+   file is going (Q2-60). The words sit on their own opaque label so they read
+   on any message. It appears and goes with the drag and never animates. */
 .crew-drop-zone {
   position: relative;
   display: flex;
@@ -341,13 +343,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   border: 1px dashed var(--border-accent);
   border-radius: var(--radius-container);
+  background-color: color-mix(in srgb, var(--background-canvas) 55%, transparent);
+  pointer-events: none;
+}
+
+.crew-drop-overlay-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-container);
   background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
   color: var(--text-accent);
   font-size: var(--text-label);
   font-weight: 500;
   line-height: var(--text-label--line-height);
-  pointer-events: none;
 }

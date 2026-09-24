@@ -194,7 +194,7 @@ describe('Crew files dropped or pasted', () => {
     fireEvent.drop(zone, { dataTransfer: data });
     expect(screen.queryByText('Drop to share in #general')).toBeNull();
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'To share counts.csv, confirm it in the file window.'
+      'A file window opened. Select counts.csv there and choose Open to share it.'
     );
     expect(mocks.beginTransfer).toHaveBeenCalledWith({
       expected_mode: 'public',
@@ -204,7 +204,7 @@ describe('Crew files dropped or pasted', () => {
     });
 
     await act(async () => finish());
-    expect(screen.queryByText(/in the file window/)).toBeNull();
+    expect(screen.queryByText(/A file window opened/)).toBeNull();
   });
 
   it('ignores a drag that carries no files', () => {
@@ -218,7 +218,7 @@ describe('Crew files dropped or pasted', () => {
     renderComposer(observedPublic);
     fireEvent.drop(dropZone(), { dataTransfer: dragData([file('a.csv'), file('b.csv')]) });
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'To share a.csv, confirm it in the file window. Crew shares one file at a time.'
+      'A file window opened. Select a.csv there and choose Open to share it. Crew shares one file at a time.'
     );
     expect(mocks.beginTransfer).toHaveBeenCalledTimes(1);
   });

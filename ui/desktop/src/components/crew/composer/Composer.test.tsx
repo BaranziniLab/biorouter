@@ -418,6 +418,9 @@ describe('Crew composer', () => {
       render(<StatefulComposer note={note} />);
       await pasteScreenshot();
       const alert = screen.getByRole('alert');
+      // One word, as every dismiss control says (Q2-61).
+      expect(composerCopy.dismissUploadError).toBe('Dismiss');
+      expect(within(alert).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
       await userEvent
         .setup()
         .click(within(alert).getByRole('button', { name: composerCopy.dismissUploadError }));
@@ -525,6 +528,187 @@ describe('Crew composer', () => {
     });
   });
 
+  describe('a dropped or pasted file asks once, in the native dialog (D-DROP, Q2-16)', () => {
+    const originalElectron = (window as { electron?: unknown }).electron;
+    let share: ReturnType<typeof vi.fn>;
+    let picker: ReturnType<typeof vi.fn>;
+    const counts = () => new File(['x,y'], 'counts.csv', { type: 'text/csv' });
+    const named = (): Partial<CrewController> => {
+      const snapshot = crewTestController().snapshot!;
+      return { snapshot: { ...snapshot, workspace: { ...snapshot.workspace, name: 'lab' } } };
+    };
+
+    beforeEach(() => {
+      share = vi.fn();
+      picker = vi.fn();
+      (window as { electron?: unknown }).electron = {
+        crewShareDroppedFile: share,
+        crewSelectTransferFile: picker,
+        getPathForFile: () => '/Users/dave/Downloads/counts.csv',
+      };
+    });
+    afterEach(() => {
+      (window as { electron?: unknown }).electron = originalElectron;
+    });
+
+    async function paste(file = counts()) {
+      await act(async () => {
+        fireEvent.paste(screen.getByLabelText('Message #general'), {
+          clipboardData: { files: [file], getData: () => '' },
+        });
+      });
+      return file;
+    }
+
+    it('hands the preload the File itself and the channel, then uploads with the capability it gets', async () => {
+      let answer!: (result: unknown) => void;
+      share.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          })
+      );
+      mocks.beginTransfer.mockResolvedValue({ id: 'transfer-3' });
+      renderComposer(named());
+      const file = await paste();
+
+      // While the dialog is up, the note says where to answer; nothing has been shared yet.
+      expect(screen.getByRole('status')).toHaveTextContent(filesCopy.confirmShare('counts.csv'));
+      expect(filesCopy.confirmShare('counts.csv')).toBe(
+        'To share counts.csv, choose Share in the dialog.'
+      );
+      expect(share).toHaveBeenCalledTimes(1);
+      const [sent, destination] = share.mock.calls[0];
+      expect(sent).toBe(file);
+      // Never a path: the preload resolves the File, and main shows the path in its own dialog.
+      expect(destination).toEqual({
+        expectedMode: 'private',
+        connectionId: 'connection-1',
+        channelId: 'channel-1',
+        channelName: 'general',
+        workspaceName: 'lab',
+      });
+      expect(JSON.stringify(destination)).not.toContain('/Users/');
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+      expect(picker).not.toHaveBeenCalled();
+
+      await act(async () =>
+        answer({ outcome: 'shared', capability_id: 'cap-9', name: 'counts.csv', size: 3 })
+      );
+      expect(mocks.beginTransfer).toHaveBeenCalledWith(
+        {
+          expected_mode: 'private',
+          connection_id: 'connection-1',
+          channel_id: 'channel-1',
+          direction: 'upload',
+        },
+        { capability_id: 'cap-9', name: 'counts.csv', size: 3 }
+      );
+      expect(picker).not.toHaveBeenCalled();
+      expect(screen.queryByText(filesCopy.confirmShare('counts.csv'))).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('does nothing more when the person chooses Cancel', async () => {
+      share.mockResolvedValue({ outcome: 'cancelled' });
+      renderComposer(named());
+      await paste();
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('shows the main process’s refusal as the one upload error', async () => {
+      share.mockResolvedValue({
+        outcome: 'refused',
+        message: '"results" is a folder. Crew shares one file at a time.',
+      });
+      renderComposer(named());
+      await paste();
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        '"results" is a folder. Crew shares one file at a time.'
+      );
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+    });
+
+    it('treats an answer it does not understand as a failed upload, never as a share', async () => {
+      share.mockResolvedValue({ outcome: 'shared', name: 'counts.csv' });
+      renderComposer(named());
+      await paste();
+      expect(screen.getByRole('alert')).toHaveTextContent(filesCopy.uploadFailed);
+      expect(mocks.beginTransfer).not.toHaveBeenCalled();
+    });
+
+    it('opens one confirmation at a time, and says to finish the open one', async () => {
+      let answer!: (result: unknown) => void;
+      share.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          })
+      );
+      renderComposer(named());
+      await paste();
+      await paste(new File(['z'], 'other.csv'));
+      expect(share).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status')).toHaveTextContent(filesCopy.finishConfirming);
+      await act(async () => answer({ outcome: 'cancelled' }));
+      expect(screen.queryByText(filesCopy.finishConfirming)).toBeNull();
+    });
+
+    it('asks nothing until the workspace’s privacy is verified', async () => {
+      renderComposer({
+        ...named(),
+        observedPrivacy: {
+          connectionId: 'another-connection',
+          mode: 'private',
+          institutionId: null,
+          policyEpoch: 1,
+        },
+      });
+      await paste();
+      expect(share).not.toHaveBeenCalled();
+      expect(screen.getByRole('alert')).toHaveTextContent(filesCopy.privacyPending);
+    });
+
+    it('refuses a folder and a file over the limit before any dialog opens', async () => {
+      renderComposer(named());
+      const huge = counts();
+      Object.defineProperty(huge, 'size', { value: 2 * 1024 * 1024 * 1024 });
+      await paste(huge);
+      expect(screen.getByRole('alert')).toHaveTextContent(filesCopy.tooLarge('counts.csv'));
+      expect(share).not.toHaveBeenCalled();
+    });
+
+    it('without the confirmation, opens the picker and says what to pick there, and where it is', async () => {
+      (window as { electron?: unknown }).electron = {
+        crewSelectTransferFile: picker,
+        getPathForFile: () => '/Users/dave/Downloads/counts.csv',
+      };
+      let finish!: () => void;
+      mocks.beginTransfer.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(null);
+          })
+      );
+      renderComposer(named());
+      await paste();
+      const note = screen.getByRole('status');
+      expect(note).toHaveTextContent(
+        'A file window opened. Select counts.csv (it’s in Downloads) there and choose Open to share it.'
+      );
+      // The folder is display text: the picker is asked exactly as the Attach menu asks it.
+      expect(mocks.beginTransfer).toHaveBeenCalledWith({
+        expected_mode: 'private',
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'upload',
+      });
+      await act(async () => finish());
+    });
+  });
+
   describe('uploads and the verified scope', () => {
     const finished = {
       id: 'transfer-7',
@@ -610,6 +794,11 @@ describe('Crew composer', () => {
       await user.click(attach);
       const menu = await screen.findByRole('menu');
       expect(within(menu).getByRole('menuitem', { name: 'Upload a file…' })).toBeInTheDocument();
+      // Words only, like every other Crew menu (Q2-61).
+      expect(menu.querySelector('[role="menuitem"] svg')).toBeNull();
+      // Beside the paperclip, not over the note above the card (Q2-61).
+      expect(menu).toHaveAttribute('data-side', 'right');
+      expect(menu).toHaveAttribute('data-align', 'end');
       await user.click(within(menu).getByRole('menuitem', { name: 'Share a server path…' }));
       expect(openDialog).toHaveBeenCalledWith({ kind: 'share-path' });
     });

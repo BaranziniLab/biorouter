@@ -6,14 +6,18 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import { Link, Paperclip, Upload } from '../../icons/app-icons';
+import { Paperclip } from '../../icons/app-icons';
 import { composerCopy } from './copy';
 
 /**
  * The composer's paperclip: a real menu (`aria-haspopup="menu"`, from Radix) with the two ways
- * a file reaches a channel. **Upload a file…** opens the secure main-process picker, the only
- * source of a file capability; **Share a server path…** opens the dialog that shares a path by
- * name without uploading anything.
+ * a file reaches a channel. **Upload a file…** opens the secure main-process picker;
+ * **Share a server path…** opens the dialog that shares a path by name without uploading
+ * anything. The items are words only, like every other Crew menu (Q2-61).
+ *
+ * The menu opens beside the paperclip, its bottom level with the button's, so it stays inside
+ * the card and never covers the note above the card (Q2-61): the note is usually the answer to
+ * what the person just did, such as a refused paste, and the menu is where they go next.
  */
 export function AttachMenu({
   onUpload,
@@ -46,15 +50,11 @@ export function AttachMenu({
         </TooltipTrigger>
         <TooltipContent>{composerCopy.attach}</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="start" side="top" className="crew-menu">
+      <DropdownMenuContent align="end" side="right" sideOffset={4} className="crew-menu">
         <DropdownMenuItem disabled={uploading} onSelect={onUpload}>
-          <Upload aria-hidden />
           {composerCopy.upload}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onSharePath}>
-          <Link aria-hidden />
-          {composerCopy.sharePath}
-        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onSharePath}>{composerCopy.sharePath}</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

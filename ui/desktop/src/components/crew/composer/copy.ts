@@ -25,8 +25,11 @@ export const composerCopy = {
   removeRef: (label: string) => `Remove remote reference ${label}`,
   archived: 'This channel is archived.',
   verifying: 'Verifying access…',
-  /** The upload failure's dismiss control: its accessible name and tooltip. */
-  dismissUploadError: 'Dismiss upload error',
+  /**
+   * The upload failure's dismiss control: its accessible name and tooltip. One word, as every
+   * other dismiss control says (Q2-61); the note it closes is the context.
+   */
+  dismissUploadError: 'Dismiss',
   /** The send error's lead; the error follows in its own text node. */
   sendErrorLead: 'Couldn’t send.',
   postedMetadata: 'Message sent, but its upload record couldn’t be cleared. Remove it from Files.',

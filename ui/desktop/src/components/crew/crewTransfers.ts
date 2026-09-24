@@ -26,7 +26,7 @@ export interface FileSelectionRequest {
   transfer_id?: string;
   suggestedName?: string;
 }
-interface FileCapability {
+export interface FileCapability {
   capability_id: string;
   name: string;
   size?: number | null;
@@ -58,8 +58,18 @@ export async function listTransfers(
   if (channelId) query.set('channel_id', channelId);
   return (await crewHttp<{ transfers: CrewTransfer[] }>(`/transfers?${query}`)).transfers;
 }
-export async function beginTransfer(request: FileSelectionRequest): Promise<CrewTransfer | null> {
-  const file = await chooseTransferFile(request);
+/**
+ * Start a transfer. The file capability comes from the secure picker the main process shows, or,
+ * for a file dropped or pasted into Crew (D-DROP), from the native Share / Cancel confirmation
+ * the main process showed for it (`chosen`): either way from the main process, never from a path
+ * the renderer names. The daemon binds the capability to the connection and channel it was
+ * registered for, so `request` must name the same ones.
+ */
+export async function beginTransfer(
+  request: FileSelectionRequest,
+  chosen?: FileCapability
+): Promise<CrewTransfer | null> {
+  const file = chosen ?? (await chooseTransferFile(request));
   if (!file) return null;
   return crewHttp<CrewTransfer>('/transfers', 'POST', {
     request_id: crypto.randomUUID(),
