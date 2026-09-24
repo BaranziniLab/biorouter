@@ -5,7 +5,20 @@
    `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and data/aria
    hooks, tokens only, no pixel font sizes, and no keyframes of its own. The
    spinner is the app's one spinner, the progress bar is `ui/progress`; this
-   file places them, and never re-skins a primitive. */
+   file places them, and never re-skins a primitive.
+
+   ⚠ **Names.** The legacy `crew/crew.css` stays global while `CrewView.tsx`
+   imports the legacy layout, and it styles a card called `.crew-attachment`
+   (10px padding, a 10px top margin, 12px text: a 40px row came out ~62px).
+   The card here is therefore `.crew-attachment-card`, and no name in this
+   directory or in `composer/` may be one that stylesheet defines —
+   `stylesheets.sourceGuard.test.ts` holds that.
+
+   ⚠ **Focus.** These rules are unlayered, and the D-15 focus fill lives in
+   `@layer base`, so any `color` or `background-color` set here on something
+   focusable beats that fill whatever the specificity. Every such rule restates
+   the fill under `:focus-visible` (never the outline: the base block's
+   `prefers-contrast` / `forced-colors` ring must still reach it). */
 
 /* ── Menus opened from a file row ─────────────────────────────────────────── */
 
@@ -35,7 +48,8 @@
 }
 
 /* The 16px remove / pause / resume control inside a 24px chip. Focus is the
-   app's focused-control fill (D-15), not a ring. */
+   app's focused-control fill (D-15), not a ring — restated below, because the
+   muted ink and transparent ground here would otherwise beat it. */
 .crew-chip-action {
   display: inline-flex;
   flex-shrink: 0;
@@ -57,6 +71,13 @@
 
 .crew-chip-action:hover {
   background-color: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+/* After `:hover` at the same specificity, so a focused control keeps the fill
+   under the pointer too. */
+.crew-chip-action:focus-visible {
+  background-color: var(--background-focus);
   color: var(--text-default);
 }
 
@@ -86,7 +107,7 @@
 
 /* ── Attachment card and server path (timeline and Files tab) ─────────────── */
 
-.crew-attachment,
+.crew-attachment-card,
 .crew-server-path {
   position: relative;
   display: flex;
@@ -144,10 +165,17 @@
   white-space: nowrap;
 }
 
+/* "Not uploaded" takes a tab stop so a keyboard can reach its tooltip; its
+   muted ink above would otherwise beat the focus fill's. */
 .crew-server-path-note {
   margin-left: auto;
   border-radius: var(--radius-inner);
   cursor: help;
+}
+
+.crew-server-path-note:focus-visible {
+  background-color: var(--background-focus);
+  color: var(--text-default);
 }
 
 .crew-attachment-actions {
@@ -161,7 +189,7 @@
 /* The download's thin bar along the card's bottom edge. The selector is two
    classes deep so it outranks the primitive's own 8px track wherever the two
    stylesheets land in the cascade. */
-.crew-attachment .crew-attachment-progress {
+.crew-attachment-card .crew-attachment-progress {
   position: absolute;
   right: 0;
   bottom: 0;

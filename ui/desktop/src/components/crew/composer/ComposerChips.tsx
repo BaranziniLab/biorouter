@@ -33,14 +33,14 @@ export function ComposerChips({
 }) {
   if (attachments.length === 0 && references.length === 0 && uploads.length === 0) return null;
   return (
-    <ul className="crew-composer-chips" aria-label={composerCopy.chips}>
+    <ul className="crew-compose-chips" aria-label={composerCopy.chips}>
       {uploads.map((transfer) => (
-        <li key={`upload:${transfer.id}`} className="crew-composer-chip-item">
+        <li key={`upload:${transfer.id}`} className="crew-compose-chip-item">
           <UploadChip transfer={transfer} onPause={onPauseUpload} onResume={onResumeUpload} />
         </li>
       ))}
       {attachments.map((file) => (
-        <li key={`file:${file.id}`} className="crew-composer-chip-item">
+        <li key={`file:${file.id}`} className="crew-compose-chip-item">
           <Badge variant="chip" className="crew-chip max-w-full min-w-0">
             <File className="crew-chip-icon" aria-hidden />
             <span className="min-w-0 truncate text-text-default">{file.name}</span>
@@ -54,7 +54,7 @@ export function ComposerChips({
         </li>
       ))}
       {references.map((item) => (
-        <li key={`ref:${item.id}`} className="crew-composer-chip-item">
+        <li key={`ref:${item.id}`} className="crew-compose-chip-item">
           <Badge variant="chip" className="crew-chip max-w-full min-w-0">
             <Link className="crew-chip-icon" aria-hidden />
             <span className="min-w-0 truncate text-text-default">{item.label}</span>

@@ -9,7 +9,8 @@ import './files.css';
 /**
  * A glyph-only control inside a 24px chip (remove, pause, resume): a 16px target whose
  * accessible name is also its tooltip, per the spec's rule for glyph-only buttons. Focus is the
- * app's focused-control fill (D-15), not a ring.
+ * app's focused-control fill (D-15), not a ring: `.crew-chip-action:focus-visible` in `files.css`
+ * restates it, because that file's unlayered muted ink would otherwise beat the base layer's.
  */
 export function ChipAction({
   label,

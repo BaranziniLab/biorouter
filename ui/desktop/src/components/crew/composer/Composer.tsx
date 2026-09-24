@@ -198,22 +198,22 @@ export function Composer({ note, inputRef }: ComposerProps) {
   // because an error registered to the composer must render somewhere, exactly once.
   if (!channel && verified)
     return notes ? (
-      <div className="crew-composer" data-state="no-channel">
-        <div className="crew-composer-column">{notes}</div>
+      <div className="crew-compose" data-state="no-channel">
+        <div className="crew-compose-column">{notes}</div>
       </div>
     ) : null;
 
   let body: ReactNode;
   if (!verified) {
     body = (
-      <div className="crew-composer-bar crew-composer-bar-verifying" data-testid="crew-verifying">
+      <div className="crew-compose-bar crew-compose-bar-verifying" data-testid="crew-verifying">
         <Loader2 className="size-4 animate-spin" aria-hidden />
         <span>{composerCopy.verifying}</span>
       </div>
     );
   } else if (archived) {
     body = (
-      <div className="crew-composer-bar crew-composer-bar-archived">{composerCopy.archived}</div>
+      <div className="crew-compose-bar crew-compose-bar-archived">{composerCopy.archived}</div>
     );
   } else {
     body = (
@@ -238,10 +238,10 @@ export function Composer({ note, inputRef }: ComposerProps) {
 
   const content = (
     <div
-      className="crew-composer"
+      className="crew-compose"
       data-state={!verified ? 'verifying' : archived ? 'archived' : 'ready'}
     >
-      <div className="crew-composer-column">
+      <div className="crew-compose-column">
         {notes}
         {body}
       </div>
@@ -249,7 +249,7 @@ export function Composer({ note, inputRef }: ComposerProps) {
   );
   if (enclosed) return content;
   return (
-    <CrewFileDropZone target={dropTarget} className="crew-composer-drop">
+    <CrewFileDropZone target={dropTarget} className="crew-compose-drop">
       {content}
     </CrewFileDropZone>
   );
@@ -295,7 +295,7 @@ function composerNote({
   } else if (note) {
     content = note;
   }
-  return content ? <div className="crew-composer-note">{content}</div> : null;
+  return content ? <div className="crew-compose-note">{content}</div> : null;
 }
 
 interface ComposerCardProps {
@@ -387,7 +387,7 @@ function ComposerCard({
   return (
     <div
       className={cn(
-        'biorouter-composer-card crew-composer-card relative flex min-w-0 flex-col rounded-container',
+        'biorouter-composer-card crew-compose-card relative flex min-w-0 flex-col rounded-container',
         'bg-background-default border border-border-subtle/60 py-2.5 pr-3 pl-4'
       )}
     >
@@ -402,7 +402,7 @@ function ComposerCard({
       />
       <textarea
         ref={setTextarea}
-        className="crew-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
+        className="crew-compose-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
         aria-label={composerCopy.label(name)}
         placeholder={composerCopy.placeholder(name)}
         rows={1}
@@ -415,7 +415,7 @@ function ComposerCard({
         onKeyDown={onKeyDown}
         onPaste={onPaste}
       />
-      <div className="crew-composer-controls">
+      <div className="crew-compose-controls">
         <AttachMenu
           onUpload={() => void upload.upload()}
           onSharePath={onSharePath}
@@ -425,10 +425,10 @@ function ComposerCard({
           <Bot aria-hidden />
           {composerCopy.askAgent}
         </Button>
-        <span className="crew-composer-spacer" />
+        <span className="crew-compose-spacer" />
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="crew-composer-send">
+            <span className="crew-compose-send">
               <Button
                 type="button"
                 shape="round"

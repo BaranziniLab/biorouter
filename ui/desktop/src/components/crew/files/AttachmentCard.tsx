@@ -168,7 +168,7 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
     .join(' · ');
 
   return (
-    <div className="crew-attachment" data-downloading={downloading ? 'true' : undefined}>
+    <div className="crew-attachment-card" data-downloading={downloading ? 'true' : undefined}>
       <div className="crew-attachment-row">
         <File className="crew-attachment-icon" aria-hidden />
         <span className="crew-attachment-name">{name}</span>

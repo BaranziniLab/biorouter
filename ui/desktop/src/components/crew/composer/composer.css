@@ -9,22 +9,30 @@
    authored `:has(textarea:focus)` accent edge) plus the same utilities
    `ChatInput.tsx` writes. This file only places things around and inside it,
    and never re-skins it. Nothing here animates: the spec lists composer
-   auto-grow among what must not move. */
+   auto-grow among what must not move.
+
+   ⚠ **The family is `crew-compose-*`, not `crew-composer-*`, on purpose.** The
+   legacy `crew/crew.css` stays global for as long as `CrewView.tsx` imports
+   the legacy layout, and it styles `.crew-composer` and every `textarea`
+   inside one (unlayered, 0,1,1): a 75–200px resizable box that beat this
+   file's one-row auto-grow, plus a margin, border and radius around the whole
+   bar. A name here must never be one that stylesheet defines;
+   `files/stylesheets.sourceGuard.test.ts` holds that. */
 
 /* The bar the card sits in: the canvas, 12px above, 24px below, 16px gutters,
    and the 760px chat measure. */
-.crew-composer {
+.crew-compose {
   /* The card at rest: its 10px + 10px padding, a 32px text row, the 32px
      control row and the 1px + 1px border. The Verifying bar takes the same
      height, so swapping one for the other moves nothing above it. */
-  --crew-composer-rest-height: calc(20px + 2 * var(--control-md) + 2px);
+  --crew-compose-rest-height: calc(20px + 2 * var(--control-md) + 2px);
 
   flex: 0 0 auto;
   padding: 12px 16px 24px;
   background-color: var(--background-canvas);
 }
 
-.crew-composer-column {
+.crew-compose-column {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -34,23 +42,23 @@
   margin-inline: auto;
 }
 
-.crew-composer-note {
+.crew-compose-note {
   min-width: 0;
 }
 
-.crew-composer-card {
-  min-height: var(--crew-composer-rest-height);
+.crew-compose-card {
+  min-height: var(--crew-compose-rest-height);
 }
 
 /* One row at rest; `Composer.tsx` sets the height to the content, and this is
    the ceiling past which it scrolls. */
-.crew-composer-input {
+.crew-compose-input {
   min-height: var(--control-md);
   max-height: 40vh;
   overflow-y: auto;
 }
 
-.crew-composer-controls {
+.crew-compose-controls {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -59,18 +67,18 @@
   margin-left: -8px;
 }
 
-.crew-composer-spacer {
+.crew-compose-spacer {
   flex: 1 1 auto;
 }
 
-.crew-composer-send {
+.crew-compose-send {
   display: inline-flex;
   flex-shrink: 0;
 }
 
 /* The stand-ins for the card: archived is the spec's 44px bar; Verifying takes
    the card's resting height so the view does not jump when access returns. */
-.crew-composer-bar {
+.crew-compose-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -83,16 +91,16 @@
   line-height: var(--text-secondary--line-height);
 }
 
-.crew-composer-bar-archived {
+.crew-compose-bar-archived {
   min-height: var(--chrome-height);
 }
 
-.crew-composer-bar-verifying {
-  min-height: var(--crew-composer-rest-height);
+.crew-compose-bar-verifying {
+  min-height: var(--crew-compose-rest-height);
 }
 
 /* The chips row: only rendered when there is something in it. */
-.crew-composer-chips {
+.crew-compose-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -102,13 +110,13 @@
   list-style: none;
 }
 
-.crew-composer-chip-item {
+.crew-compose-chip-item {
   display: flex;
   min-width: 0;
   max-width: 100%;
 }
 
 /* The composer's own drop zone, used only when the layout gives none wider. */
-.crew-composer-drop {
+.crew-compose-drop {
   flex: 0 0 auto;
 }
