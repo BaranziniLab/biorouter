@@ -1121,6 +1121,8 @@ Execution note: resumed work is coordinated by a Claude Code session orchestrati
 - Output: `--show-ids` and snapshot names reach every CLI-OUT formatter; `send` prints "Posted to #methods."; text errors drop the request-ID suffix (only `retry_hint` after an uncertain mutation); JSON errors keep `request_id` and add `code`.
 - Open: files, run and session IDs stay IDs (resolve refuses attachments); untested against a real daemon (LIVE-QA: join-invitation, crew join, enroll invite/approve/pending, grants revoke incl. 503); `crew join` does not open sign-in (`biorouter crew auth` first); DOCS records the forms above in `cli-guide.md`, including quoting `'#methods'`.
 
+**DOCS outcome (2026-09-24, `3c0f7363`…`55565a80`, 8 commits).** README, CLI guide, protocol contract, this plan, the status ledger and the handoff now carry context headers and closing sections and pass `docs-lint`. Design points now recorded in the [protocol contract](protocol-contract.md): capabilities from an unsigned `hello` are unauthenticated hints the daemon acts on (fails closed, since the broker authorizes each request); a capability gates which methods a client offers, never whether it sends a defense — `expected_username` goes with every `@username`-targeted mutation whatever `hello` announced. The work-package table above counts 28 packages (SCOPE-BIND added; `workplan-final.json`). Open: the GUI shows Rename from the `handle` projection, not `unique_names_v1`, because capabilities do not reach the renderer yet.
+
 <!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
 
 ## Related documentation
