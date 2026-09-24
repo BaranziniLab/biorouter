@@ -77,7 +77,9 @@ fn observation_error_text(code: &str) -> &'static str {
         "policy_changed" => {
             "The workspace's privacy settings, or this computer's connection to it, changed"
         }
-        "scope_changed" => "You can no longer read a channel that messages here come from",
+        // Q2-77: losing any readable channel ends the observer (`Verified::advance`), whether or
+        // not a message on screen came from it, so the sentence claims only what is known.
+        "scope_changed" => "Your access to a channel in this workspace changed",
         "channel_access_changed" => "You no longer have access to this channel",
         "stale_cursor" => "A message in this view is no longer available to you",
         "human_authority_required" => {
@@ -1113,6 +1115,29 @@ pub fn routes() -> Router {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_scope_change_says_only_that_access_to_a_channel_changed() {
+        // Q2-77: the observer ends on losing any readable channel, so the sentence cannot say
+        // that a message on screen came from it.
+        assert_eq!(
+            observation_error_text("scope_changed"),
+            "Your access to a channel in this workspace changed"
+        );
+        for code in [
+            "policy_changed",
+            "scope_changed",
+            "channel_access_changed",
+            "stale_cursor",
+            "unauthorized",
+            "principal_revoked",
+            "anything_else",
+        ] {
+            let text = observation_error_text(code);
+            assert!(!text.contains("cursor"), "{code}: {text}");
+            assert!(!text.contains('_'), "{code}: {text}");
+        }
+    }
     use super::reauthorize::plain_observer;
     use super::*;
 

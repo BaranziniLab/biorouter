@@ -124,8 +124,11 @@ fn identity_conflict(username: Option<&str>) -> String {
     }
 }
 
+/// Q2-75: a repeated approval means a code was already entered for them, not that any device
+/// was let in; the broker says the same. The desktop words its own version for its dialog, so
+/// this sentence is the terminal's, and the hint line says how to replace the code here.
 fn already_approved(username: &str) -> String {
-    format!("You already let a device in for @{username}.")
+    format!("You already entered a code for @{username}.")
 }
 
 /// Codes whose broker text is written for a person, so the `code: ` prefix can go: the
@@ -188,13 +191,80 @@ fn canonical_hint(sentence: &str) -> Option<&str> {
     })
 }
 
+/// The broker's technical texts that name something a person can act on, said as a sentence
+/// (Q2-76). Matched on the text after its code, in lowercase, without a closing full stop.
+const TECHNICAL_TEXTS: &[(&str, &str)] = &[
+    (
+        "unknown device",
+        "This computer isn't a member of this workspace.",
+    ),
+    (
+        "signed device required",
+        "This computer isn't signed in to this workspace.",
+    ),
+    (
+        "channel unavailable",
+        "That channel isn't available to you. It may be archived, or you may not be in it.",
+    ),
+    (
+        "principal unavailable",
+        "That person isn't a member of this workspace.",
+    ),
+    (
+        "invalid grant",
+        "This task's access to the workspace has ended.",
+    ),
+];
+
+/// What a refusal that carried only its code says (`stale_cursor`, with no text of its own).
+fn code_only_sentence(code: &str) -> &'static str {
+    match code {
+        "stale_cursor" => "A message in this view is no longer available to you.",
+        "rate_limited" => TOO_MANY_ATTEMPTS,
+        "unauthorized" => "This computer isn't signed in to this workspace.",
+        "forbidden" => "The workspace didn't allow this.",
+        "principal_revoked" => "You're no longer a member of this workspace.",
+        "name_taken" => "That name is already taken.",
+        _ => "The workspace refused this request.",
+    }
+}
+
+/// A refusal's text with its code gone, as a sentence (Q2-76): the broker's own sentence when
+/// it wrote one, a known technical text in words, else the text itself with a capital and a
+/// full stop. The code stays in JSON output (`broker_code`), for scripts and support.
+fn plain_refusal(code: &str, sentence: &str) -> String {
+    let key = sentence
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
+    if key.is_empty() || key == code {
+        return code_only_sentence(code).to_owned();
+    }
+    if let Some((_, words)) = TECHNICAL_TEXTS.iter().find(|(text, _)| *text == key) {
+        return (*words).to_owned();
+    }
+    if reads_as_sentence(sentence) {
+        return sentence.to_owned();
+    }
+    let trimmed = sentence.trim();
+    let mut chars = trimmed.chars();
+    let mut out: String = chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
+
 /// A broker refusal in words for a person: the sentence the desktop shows for the same code,
 /// then, on its own line, the command that acts on it where there is one.
 ///
-/// `message` is the broker's own `code: sentence`. A person-written sentence is printed without
-/// its code; a technical text the desktop rewords gets the same words here; anything else,
-/// including a code this CLI has never seen, is printed verbatim, code and all, because that is
-/// what the desktop shows and what support can search for.
+/// `message` is the broker's own `code: sentence`. The code never reaches text output (Q2-76):
+/// a person-written sentence is printed without it; a technical text the desktop rewords gets
+/// the same words here; anything else becomes a sentence ([`plain_refusal`]). JSON output keeps
+/// the code as `broker_code`, which is what scripts and support match.
 pub fn broker_refusal_text(code: &str, message: &str) -> String {
     let message = message.trim();
     let sentence = message
@@ -224,7 +294,7 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
         _ if SENTENCE_CODES.contains(&code) && reads_as_sentence(sentence) => sentence.to_owned(),
-        _ => message.to_owned(),
+        _ => plain_refusal(code, sentence),
     };
     match broker_refusal_hint(code, sentence, &shown) {
         Some(hint) => format!("{shown}\n{hint}"),
@@ -236,7 +306,7 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
 fn broker_refusal_hint(code: &str, sentence: &str, shown: &str) -> Option<String> {
     match code {
         "already_approved" => Some(format!(
-            "If they sent you a new code, run: biorouter crew enroll approve {} <code> --replace",
+            "If it didn't match their computer, run: biorouter crew enroll approve {} <code> --replace",
             username_in(sentence).map_or_else(|| "<user>".to_owned(), |name| format!("@{name}"))
         )),
         "identity_ambiguous" => canonical_hint(sentence)
@@ -251,6 +321,46 @@ fn broker_refusal_hint(code: &str, sentence: &str, shown: &str) -> Option<String
             Some("Choose another name.".to_owned())
         }
         _ => None,
+    }
+}
+
+/// `tasks start`'s institution refusal in the desktop's words (Q2-76, `institutionMismatch` in
+/// `ui/desktop/src/components/crew/pane/copy.ts`), in place of the daemon's "…the model's
+/// resolved affiliation…". `details` is the refusal's `institution_refusal` object; an older
+/// daemon sends none, and the sentence then names only the model the person asked for.
+pub fn institution_refusal_text(requested_model: &str, details: Option<&Value>) -> String {
+    let field = |key: &str| {
+        details
+            .and_then(|details| details.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(safe_text)
+    };
+    let model = field("model").unwrap_or_else(|| safe_text(requested_model));
+    let workspace = field("workspace").unwrap_or_else(|| "This workspace".to_owned());
+    let approved_for: Option<Vec<String>> = details
+        .and_then(|details| details.get("approved_for"))
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(safe_text)
+                .collect::<Vec<_>>()
+        })
+        .filter(|ids| !ids.is_empty());
+    const CHOOSE: &str = "Choose a model approved for it, or a local model.";
+    match (field("workspace_institution"), approved_for) {
+        (Some(institution), Some(approved)) => format!(
+            "{model} is approved for {}. {workspace} uses {institution}. {CHOOSE}",
+            approved.join(" and ")
+        ),
+        (Some(institution), None) => format!(
+            "{model} doesn't say which institution approved it. {workspace} uses {institution}. {CHOOSE}"
+        ),
+        (None, _) => {
+            format!("{model} isn't approved for this workspace's institution. {CHOOSE}")
+        }
     }
 }
 
@@ -2823,7 +2933,9 @@ mod tests {
 
     /// Every fixture is the broker's literal text (`crates/biorouter-crew/src/broker.rs`,
     /// `broker/join.rs`, `DeviceCodeError`), paired with what the CLI prints for it. The words
-    /// match the desktop's table in `ui/desktop/src/components/crew/dialogs/refusals.test.ts`.
+    /// match the desktop's table in `ui/desktop/src/components/crew/dialogs/refusals.test.ts`,
+    /// except where the desktop still shows a code and the terminal no longer does (Q2-76): a
+    /// technical text or a bare code becomes a sentence here, and the code stays in JSON.
     const BROKER_REFUSALS: &[(&str, &str, &str)] = &[
         (
             "name_taken",
@@ -2833,7 +2945,7 @@ mod tests {
         (
             "name_taken",
             "name_taken",
-            "name_taken\nChoose another name.",
+            "That name is already taken.\nChoose another name.",
         ),
         (
             "rate_limited",
@@ -2923,8 +3035,8 @@ mod tests {
         ),
         (
             "already_approved",
-            "already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.",
-            "You already let a device in for @eve.\nIf they sent you a new code, run: biorouter crew enroll approve @eve <code> --replace",
+            "already_approved: You already entered a code for @eve. If it didn't match their computer, enter the code they sent and choose Replace.",
+            "You already entered a code for @eve.\nIf it didn't match their computer, run: biorouter crew enroll approve @eve <code> --replace",
         ),
         (
             "identity_ambiguous",
@@ -2949,8 +3061,31 @@ mod tests {
         (
             "forbidden",
             "forbidden: only a person can invite or admit people",
-            "forbidden: only a person can invite or admit people",
+            "Only a person can invite or admit people.",
         ),
+        // Q2-76: live, each of these reached the terminal with its code.
+        (
+            "forbidden",
+            "forbidden: Only the team's owner or the workspace host can add people to it.",
+            "Only the team's owner or the workspace host can add people to it.",
+        ),
+        (
+            "forbidden",
+            "forbidden: channel unavailable",
+            "That channel isn't available to you. It may be archived, or you may not be in it.",
+        ),
+        (
+            "unauthorized",
+            "unauthorized: unknown device",
+            "This computer isn't a member of this workspace.",
+        ),
+        (
+            "forbidden",
+            "forbidden: That person isn't a member of this workspace. Refresh and choose again.",
+            "That person isn't a member of this workspace. Refresh and choose again.",
+        ),
+        ("stale_cursor", "stale_cursor", "A message in this view is no longer available to you."),
+        ("brand_new_code", "brand_new_code", "The workspace refused this request."),
     ];
 
     #[test]
@@ -3030,10 +3165,70 @@ mod tests {
             identity_conflict(Some("bob")),
             "Another active member is already @bob. Remove the old @bob first."
         );
-        assert!(copy.contains("`You already let a device in for @${username}.`"));
+        // `already_approved` is deliberately the terminal's own sentence (Q2-75): the desktop
+        // words it for its dialog's Replace button, which a terminal does not have.
         assert_eq!(
             already_approved("eve"),
-            "You already let a device in for @eve."
+            "You already entered a code for @eve."
         );
+    }
+
+    /// Q2-76: no broker code reaches text output, whatever the code, and whether or not the
+    /// broker wrote a sentence.
+    #[test]
+    fn no_broker_code_reaches_text_output() {
+        for (code, broker, _) in BROKER_REFUSALS {
+            let shown = broker_refusal_text(code, broker);
+            let first = shown.lines().next().unwrap();
+            assert!(!first.starts_with(&format!("{code}:")), "{shown}");
+            assert!(!first.contains(&format!("{code}:")), "{shown}");
+            assert!(reads_as_sentence(first), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_technical_text_becomes_a_sentence() {
+        assert_eq!(
+            plain_refusal("invalid_params", "missing or invalid expected_username"),
+            "Missing or invalid expected_username."
+        );
+        assert_eq!(
+            plain_refusal("unauthorized", "Unknown device."),
+            "This computer isn't a member of this workspace."
+        );
+        assert_eq!(
+            plain_refusal("forbidden", ""),
+            "The workspace didn't allow this."
+        );
+    }
+
+    #[test]
+    fn the_institution_refusal_is_the_desktops_sentence() {
+        let details = json!({
+            "model": "gpt-5.5-2026-04-24",
+            "approved_for": ["ucsf"],
+            "workspace": "foreign-lab",
+            "workspace_institution": "stanford",
+        });
+        assert_eq!(
+            institution_refusal_text("gpt-5.5-2026-04-24", Some(&details)),
+            "gpt-5.5-2026-04-24 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model."
+        );
+        let unstated = json!({"model": "private-model", "approved_for": null, "workspace": "lab", "workspace_institution": "ucsf"});
+        assert_eq!(
+            institution_refusal_text("private-model", Some(&unstated)),
+            "private-model doesn't say which institution approved it. lab uses ucsf. Choose a model approved for it, or a local model."
+        );
+        // An older daemon sends no details: the model the person asked for, and nothing made up.
+        assert_eq!(
+            institution_refusal_text("gpt-5.5", None),
+            "gpt-5.5 isn't approved for this workspace's institution. Choose a model approved for it, or a local model."
+        );
+        for text in [
+            institution_refusal_text("m", Some(&details)),
+            institution_refusal_text("m", None),
+        ] {
+            assert!(!text.contains("resolved affiliation"), "{text}");
+        }
     }
 }

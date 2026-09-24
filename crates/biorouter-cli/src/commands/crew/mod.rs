@@ -2460,6 +2460,7 @@ async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
     let client = api.client.shared()?;
     let mut cursor = args.after;
     let mut names = Directory::default();
+    let watched = api.label(&channel, "the channel", "channel ID");
     loop {
         let request = ObserveRequest {
             channel_id: Some(channel.id.clone()),
@@ -2467,7 +2468,7 @@ async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
             initial: Initial::All,
         };
         cursor = tokio::select! {
-            result = client.observe(&path, &request, |event| watch_event(api, &mut names, event)) => result?,
+            result = client.observe(&path, &request, |event| watch_event(api, &mut names, &watched, event)) => result?,
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(Reply::Streamed); }
         };
     }
@@ -2476,6 +2477,7 @@ async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
 fn watch_event(
     api: &Api,
     names: &mut Directory,
+    watched: &str,
     event: ObserveEvent,
 ) -> Result<std::ops::ControlFlow<Option<String>>> {
     match event {
@@ -2499,10 +2501,25 @@ fn watch_event(
                     output::stream_format(api.format),
                 )?;
             }
-            return Err(anyhow!("Crew observation stopped [{}]: {}. Review the connection and cursor before watching again", safe_text(&code), safe_text(&error)));
+            return Err(anyhow!(watch_stopped(watched, &error)));
         }
     }
     Ok(std::ops::ControlFlow::Continue(()))
+}
+
+/// Why `crew watch` stopped, for a person (Q2-76): the channel, then the observer's own plain
+/// sentence. The code stays in the JSON error frame; the cursor is an internal, never named.
+fn watch_stopped(watched: &str, error: &str) -> String {
+    let sentence = error.trim().trim_end_matches(['.', '!', '?']);
+    if sentence.is_empty() {
+        format!("Stopped watching {}.", safe_text(watched))
+    } else {
+        format!(
+            "Stopped watching {}: {}.",
+            safe_text(watched),
+            safe_text(sentence)
+        )
+    }
 }
 
 async fn file_command(api: &Api, mut command: FileCommand) -> Result<Reply> {
@@ -2541,7 +2558,8 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
                 .split_first()
                 .context("The task's channel was left unresolved")?;
             let context: Vec<&str> = context.iter().map(|target| target.id.as_str()).collect();
-            api.show(api.connection_action("runs", api.with_run_policy(json!({"request_id":api.request_id,"channel_id":destination.id,"prompt":prompt,"provider":provider,"model":model,"context_channels":context,"posting_grant":allow_posting}))).await?)
+            let started = api.connection_action("runs", api.with_run_policy(json!({"request_id":api.request_id,"channel_id":destination.id,"prompt":prompt,"provider":provider,"model":model,"context_channels":context,"posting_grant":allow_posting}))).await;
+            api.show(started.map_err(|error| institution_refusal(error, &model))?)
         }
         TaskCommand::List => {
             let runs = api
@@ -2564,6 +2582,34 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
         ),
     })
 }
+
+/// `tasks start`'s institution refusal ("…the model's resolved affiliation…") in the desktop's
+/// words (Q2-76), keeping the daemon's code for JSON output. Anything else is left as it is.
+fn institution_refusal(error: anyhow::Error, requested_model: &str) -> anyhow::Error {
+    let found = error.chain().find_map(|cause| {
+        if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+            return Some((
+                refused.message().to_owned(),
+                refused.institution_refusal.clone(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+            return Some((refused.message.clone(), refused.institution_refusal.clone()));
+        }
+        None
+    });
+    match found {
+        Some((message, details)) if message.contains(AFFILIATION_REFUSAL) => restated(
+            output::institution_refusal_text(requested_model, details.as_ref()),
+            Some("crew_request_refused"),
+        ),
+        _ => error,
+    }
+}
+
+/// The words that mark the daemon's institution refusal (`crew/institution.rs`).
+const AFFILIATION_REFUSAL: &str = "the model's resolved affiliation";
 
 async fn task(api: &Api, id: &str) -> Result<Value> {
     component(id)?;
@@ -2882,6 +2928,7 @@ mod tests {
         pub(super) status: u16,
         pub(super) code: Option<String>,
         pub(super) broker_code: Option<String>,
+        pub(super) institution_refusal: Option<Value>,
         pub(super) message: String,
     }
 
@@ -2902,6 +2949,7 @@ mod tests {
             status,
             code: code.map(str::to_owned),
             broker_code: None,
+            institution_refusal: None,
             message: message.to_owned(),
         }
         .into()
@@ -2914,6 +2962,7 @@ mod tests {
             status: 400,
             code: Some("crew_request_refused".into()),
             broker_code: Some(broker_code.into()),
+            institution_refusal: None,
             message: message.to_owned(),
         }
         .into()
@@ -4147,8 +4196,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tasks_start_says_the_institution_refusal_in_the_desktops_words() {
+        const DAEMON: &str = "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution";
+        for (details, expected) in [
+            (
+                Some(json!({"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "foreign-lab", "workspace_institution": "stanford"})),
+                "gpt-5.5 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model.",
+            ),
+            (
+                None,
+                "gpt-5.5 isn't approved for this workspace's institution. Choose a model approved for it, or a local model.",
+            ),
+        ] {
+            let (api, _) = api_with(OutputFormat::Text, move |method, path, body| {
+                if path.ends_with("/runs") && method == "POST" {
+                    return Err(FakeRefusal {
+                        status: 400,
+                        code: Some("crew_request_refused".into()),
+                        broker_code: None,
+                        institution_refusal: details.clone(),
+                        message: DAEMON.into(),
+                    }
+                    .into());
+                }
+                standard(method, path, body)
+            });
+            let error = run(
+                &api,
+                CrewCommand::Tasks(TaskCommand::Start {
+                    channel: "#methods".into(),
+                    prompt: TextInput {
+                        text: Some("Summarize".into()),
+                        input: None,
+                    },
+                    provider: "versa_azure".into(),
+                    model: "gpt-5.5".into(),
+                    context_channels: Vec::new(),
+                    allow_posting: true,
+                }),
+            )
+            .await
+            .expect_err("refused");
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert_eq!(shown, expected);
+            assert!(!shown.contains("resolved affiliation"), "{shown}");
+            assert!(!shown.contains("Daemon returned"), "{shown}");
+            // A refusal is a definite answer: no retry line, and scripts keep the code.
+            assert_eq!(error_code(&error).as_deref(), Some("crew_request_refused"));
+        }
+    }
+
+    #[test]
+    fn crew_watch_stops_in_a_sentence_without_a_code_or_the_cursor() {
+        assert_eq!(
+            watch_stopped("#general", "You no longer have access to this channel"),
+            "Stopped watching #general: You no longer have access to this channel."
+        );
+        assert_eq!(
+            watch_stopped(
+                "#general",
+                "Your access to a channel in this workspace changed."
+            ),
+            "Stopped watching #general: Your access to a channel in this workspace changed."
+        );
+        assert_eq!(watch_stopped("#general", " "), "Stopped watching #general.");
+        let text = watch_stopped("#general", "Live updates stopped");
+        assert!(!text.contains('['), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("cursor"), "{text}");
+    }
+
+    #[tokio::test]
     async fn a_broker_refusal_is_said_in_its_own_words_with_the_flag_that_acts_on_it() {
-        let approved = "already_approved: You already let a device in for @bob. Replace the code only if they sent you a new one.";
+        let approved = "already_approved: You already entered a code for @bob. If it didn't match their computer, enter the code they sent and choose Replace.";
         let (api, _) = api_with(OutputFormat::Text, move |method, path, body| {
             if path.ends_with("/request")
                 && body.and_then(|body| body["method"].as_str()) == Some("enrollment.approve")
@@ -4170,7 +4289,7 @@ mod tests {
         let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
         assert_eq!(
             shown,
-            "You already let a device in for @bob.\nIf they sent you a new code, run: biorouter crew enroll approve @bob <code> --replace"
+            "You already entered a code for @bob.\nIf it didn't match their computer, run: biorouter crew enroll approve @bob <code> --replace"
         );
         assert!(!shown.contains("Daemon returned"), "{shown}");
         assert!(!shown.contains("already_approved:"), "{shown}");

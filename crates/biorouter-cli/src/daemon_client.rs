@@ -20,6 +20,9 @@ pub struct DaemonRefusal {
     /// `already_approved`, …): the body's `broker_code`, or the code inside an older daemon's
     /// `Crew broker refused request: {json}` text.
     pub broker_code: Option<String>,
+    /// The daemon's `institution_refusal` beside its institution refusal: the model, who
+    /// approved it, the workspace and its institution, for the desktop's sentence (Q2-76).
+    pub institution_refusal: Option<Value>,
     message: String,
 }
 
@@ -64,6 +67,10 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
             .and_then(Value::as_str)
             .map(|kind| kind.chars().take(128).collect()),
         broker_code,
+        institution_refusal: value
+            .and_then(|value| value.get("institution_refusal"))
+            .filter(|details| details.is_object())
+            .cloned(),
         message: terminal_safe(&message.chars().take(1024).collect::<String>()),
     }
 }
@@ -1826,6 +1833,33 @@ mod tests {
     const INSTITUTION_REFUSAL: &str = "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution";
 
     #[test]
+    fn an_institution_refusal_keeps_its_details_for_the_desktops_sentence() {
+        let details = serde_json::json!({
+            "model": "gpt-5.5",
+            "approved_for": ["ucsf"],
+            "workspace": "foreign-lab",
+            "workspace_institution": "stanford",
+        });
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_request_refused",
+                "error": INSTITUTION_REFUSAL,
+                "institution_refusal": details,
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.institution_refusal.as_ref(), Some(&details));
+        assert_eq!(refusal.message(), INSTITUTION_REFUSAL);
+        let older = daemon_refusal(
+            400,
+            Some(&serde_json::json!({ "error": INSTITUTION_REFUSAL, "institution_refusal": "x" })),
+            "fallback",
+        );
+        assert_eq!(older.institution_refusal, None, "only an object is kept");
+    }
+
+    #[test]
     fn daemon_refusals_keep_the_daemons_exact_sentence() {
         let refusal = daemon_refusal(
             400,
@@ -1873,7 +1907,7 @@ mod tests {
     }
 
     /// `broker/join.rs`'s literal `already_approved` refusal.
-    const ALREADY_APPROVED: &str = "already_approved: You already let a device in for @eve. Replace the code only if they sent you a new one.";
+    const ALREADY_APPROVED: &str = "already_approved: You already entered a code for @eve. If it didn't match their computer, enter the code they sent and choose Replace.";
 
     #[test]
     fn a_broker_refusal_carries_the_brokers_code_and_its_own_text() {

@@ -155,7 +155,7 @@ biorouter crew --connection lab enroll approve @bob 7QK2-M9XA-3JTP-WZ4D
 
 - **Saving a code is not letting someone in yet.** `enroll approve` answers `Code saved. @bob joins when their computer confirms the same code.` The broker compares the code only when Bob's computer claims it, so a code you mistyped is caught then, not here.
 - **Approve only a code the person sent you themselves.** If `enroll pending` says `A computer trying to join as @bob showed a different code. Check the code @bob sent you; if you typed it wrong, run enroll approve again with --replace. Don't approve a code you didn't get from @bob.`, either you typed Bob's code wrong or something other than Bob's computer tried to join. Compare with the code Bob sent you; never approve one you did not get from him.
-- `--replace` replaces a code you already approved. `enroll cancel @bob` withdraws the invitation. An invitation expires after 24 hours; inviting again replaces it, and Bob's screen then shows a new status.
+- `--replace` replaces a code you already entered. Running `enroll approve` again with a different code and no `--replace` is refused with `You already entered a code for @bob.` and, on the next line, the command that replaces it. `enroll cancel @bob` withdraws the invitation. An invitation expires after 24 hours; inviting again replaces it, and Bob's screen then shows a new status.
 - `enroll invite @bob --add-device` invites an existing member to add another computer.
 
 ### Join (joiner)
@@ -292,6 +292,8 @@ biorouter crew --connection lab watch methods
 
 Use `--output-format json` for structured single responses. Watch commands emit one JSON value per line with either `json` or `stream-json`. Text output escapes terminal control characters. Content in messages, files and agent output remains untrusted input.
 
+When the daemon ends a watch, text output says why in one sentence, for example `Stopped watching #methods: You no longer have access to this channel.` The observer's code (`channel_access_changed`, `scope_changed`, …) is in the JSON error frame, never in the text.
+
 ## Transfer attachments or share remote references
 
 ```bash
@@ -353,6 +355,8 @@ biorouter crew --connection lab --expected-policy-epoch CONNECTION_EPOCH \
 ```
 
 Replace the epoch placeholders with the observed integers. Do not reuse stale values after policy changes. These flags do not apply to sends, transfers or cleanup.
+
+A private model that the workspace's institution has not approved is refused before the task starts, in the desktop's words: `gpt-5.5 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model.` (`--output-format json` keeps the daemon's code, `crew_request_refused`.)
 
 Task starts currently require explicit `--allow-posting` for the destination channel. Repeat `--context-channel analysis-lab/raw-data` to request additional source channels; membership and privacy policy still apply. `tasks list --show-ids` shows run IDs. `tasks watch` follows task status, while channel history contains published activity. Ctrl-C detaches a watcher; cancellation requires `tasks cancel`.
 
@@ -437,7 +441,9 @@ biorouter crew --connection lab privacy set-workspace private
 
 The accepted mode values are `private` and `public`. Workspace policy, personal mode, channel classification, provider policy and grants jointly restrict operations. A public setting or a `public-safe` channel does not override another restriction or automatically declassify private content. Connection and policy changes invalidate relevant grants and can require reconnection and renewed authorization. Each connection remains a separate workspace scope; cross-channel context is explicitly granted.
 
-For retryable broker mutations, task starts and transfer starts, retain the same `--request-id` and the same operation after an uncertain response. The ID must be 1–128 ASCII letters, digits, underscores or hyphens. Without an explicit ID the CLI generates one. When a mutation was sent and its outcome is unknown (no answer, or a server error), the error ends with a retry hint naming that ID; JSON output always carries `request_id`. A different intended operation needs a different ID. This is not a blanket transaction mechanism for every command.
+For retryable broker mutations, task starts and transfer starts, retain the same `--request-id` and the same operation after an uncertain response. The ID must be 1–128 ASCII letters, digits, underscores or hyphens. Without an explicit ID the CLI generates one. When a mutation was sent and its outcome is unknown (no answer, or a server error), the error ends with a retry hint naming that ID; JSON output always carries `request_id`.
+
+A refusal from the workspace is printed as a sentence, never with the broker's code in front of it: `Only the team's owner or the workspace host can add people to it.`, not `forbidden: Only the team's owner…`, and `This computer isn't a member of this workspace.` for a device the workspace no longer knows. The code stays in JSON output as `broker_code`, beside the daemon's `code`, for scripts and for support. A different intended operation needs a different ID. This is not a blanket transaction mechanism for every command.
 
 Transfer retries reapprove the selected local file and compare the saved operation and file identity. An exact accepted replay returns the existing receipt without launching a second transfer; changed selection, content identity, scope or overwrite authority can be refused. Resume an interrupted transfer using `files resume`, rather than expecting a start replay to resume it.
 
