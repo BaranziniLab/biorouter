@@ -2,10 +2,16 @@
 
 Start with the [comprehensive implementation plan](implementation-plan.md), revised September 22 after the user's decisions. **Section 15 makes daemon-owned native `biorouter crew`/GUI functional parity a completion requirement**, including terminal MFA/human approvals, shared transfers/tasks, CLI-only acceptance with Crew Electron clients fully closed, then mixed GUI/CLI collaboration among three real Unix users. Earlier GUI-first progress does not measure this scope. Sections 1, 3, 6, 9 and 13 define no-admin home-based deployment, 2–50-user labs, the cluster Public/Private toggle, shared MCP/SSH capabilities and real three-user dev-app acceptance testing. It incorporates the requested SSH/MFA/jump-host support, simple Linux/text storage preference, human and owned-agent collaboration, files, teams/channels and mandatory private/public boundaries.
 
+Work resumed on 2026-09-23 with two more acceptance requirements, recorded in [plan §16](implementation-plan.md#16-resumed-scope-gui-redesign-and-human-readable-identity-2026-09-23): a Slack-like desktop redesign ([UI redesign specification](ui-redesign-spec.md)) and people, teams and channels addressed by name instead of machine ID, with joining by invitation and device code ([naming design](naming-design.md)). The [resume handoff](handoff-2026-09-24.md) carries live package status and the dated decisions log; the [status ledger](implementation-status.md) records what has been measured.
+
 | Artifact | Contents |
 |---|---|
 | [Implementation plan](implementation-plan.md) | Architecture, data/protocol/storage contracts, permissions, UI, deployment, phased implementation and acceptance gates |
 | [Acceptance status](implementation-status.md) | Feature-by-service/interface parity ledger, G01–G15 release gates, remaining blockers and artifact provenance |
+| [Resume handoff](handoff-2026-09-24.md) | Live status of the resumed campaign (work-package progress, workstreams, decisions log) above the 2026-09-24 pause receipts it supersedes in part |
+| [Naming design](naming-design.md) | How people, workspaces, teams and channels are named instead of numbered: display rules, name keys, uniqueness, the daemon resolver, joining by invitation and device code; decisions D1–D17, slices S0–S4 |
+| [UI redesign specification](ui-redesign-spec.md) | The Slack-like Crew desktop GUI: layout, every screen mapped from the old UI, component architecture, copy deck, identity display, revoke, privacy, motion, accessibility and test migration |
+| [Broker protocol](protocol-contract.md) | Wire contract of the remote broker: transport and identity, `hello` v1 and v2, collaboration methods, names, joining by invitation and device code, attachments, owned-agent grants, durability and rootless setup |
 | [Native CLI source plan](cli-parity-source-plan.md) | Source inventory and proposed command/client/lifecycle seams; proposals alongside accepted bootstrap/credential design; implementation and parity acceptance remain open |
 | [Native CLI guide](cli-guide.md) | Current commands, shared desktop daemon, explicit approvals, vault, SSH/MFA, collaboration, files, agents and recovery |
 | [Validation report](validation-report.md) | Exact build/check commands, selected test counts and artifact hashes |
@@ -24,6 +30,16 @@ Start with the [comprehensive implementation plan](implementation-plan.md), revi
 | [AWS probe report](aws-identity-smoke-report.md) | Two real Unix accounts, simulated jump route, binary transfer, history replay and verified teardown |
 | [Probe scripts](smoke/) | Small reproducible synthetic tests; not production Crew code |
 | [Privacy review](review-privacy.md) and [SSH review](review-ssh.md) | Independent review findings and resolution records |
+| [Broker source review](independent-review-broker.md) | 2026-09-22 independent review of the broker and its lifecycle: findings and the corrected source for each |
+| [Transport, server and UI source review](independent-review-transport-server-ui.md) | 2026-09-22 independent review of the SSH transport, daemon routes and desktop UI: findings and recheck state |
+| [Institutional SSH compatibility](institutional-ssh-compatibility.md) | Read-only metadata and kernel-capability probes of the two institutional SSH targets, 2026-09-22 |
+| [Linux SSH PAM probe](linux-ssh-pam-test-report.md) | Synthetic keyboard-interactive PAM probe against a disposable container; not production MFA |
+| [Local Linux SSH fixture](local-linux-ssh-fixture-report.md) | The localhost Docker fixture with three synthetic Unix users used by earlier Crew QA |
+| [Local multi-hop SSH probe](local-multihop-ssh-test-report.md) | Four localhost `sshd` listeners with distinct host keys: `ProxyJump`, cancellation and changed-key refusals |
+| [Local Linux CLI and helper canary](local-linux-cli-canary-report.md) | Linux ARM64 broker, journal and peer-credential canaries on a local container |
+| [Desktop integration handoff](desktop-integration-handoff.md) | The build and launch contract for the three-client desktop runs; not evidence that a launch passed |
+| [QA fixture integrity](qa-fixture-integrity.md) | Why the first Bob enrollment attempt is excluded: the fixture's saved connection was altered by hand |
+| [Evidence records](evidence/README.md) | Curated evidence summaries for bounded live runs, each with its source revision and scope |
 
 Earlier `5455ebf9` passes the full local gate, native/Linux builds and bounded shared-CLI deterministic and natural `qwen3:8b` Crew-tool acceptance. Merged checkpoint `3dac3695` is followed by API/docs `8be945c2`; the merged UI passes 562 files/6,366 tests/19 skips, typecheck and 60 affected tests. See [current status](implementation-status.md).
 
