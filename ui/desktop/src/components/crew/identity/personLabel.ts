@@ -47,6 +47,27 @@ export function resolvePerson(person: PersonRef, dir?: PeopleDirectory | null): 
   return sanitizeUsername(resolved.username) ? resolved : null;
 }
 
+/**
+ * The two roles a person can hold, each with exactly one name (T-31).
+ *
+ * - **Host** is the workspace's role: the account that runs the workspace
+ *   (`PeopleDirectory.isHost`, from `workspace.host_principal_id`, else the
+ *   host UID). It is the badge in Workspace settings → People.
+ * - **Owner** is a channel's role: the person who owns that one channel
+ *   (`channel.owner_id`). It is the badge in a channel's Members and About tabs.
+ *
+ * They are different roles that one person often holds both of — whoever hosts
+ * a workspace usually owns the channels they created — so the same person reads
+ * "Host" in one place and "Owner" in another, correctly. What must never happen
+ * is one word standing in for the other: a workspace is never "owned" and a
+ * channel is never "hosted". A surface that badges a person by role takes the
+ * word from here.
+ */
+export const personRoles = Object.freeze({ host: 'Host', owner: 'Owner' } as const);
+
+/** A role from {@link personRoles}: `host` for the workspace, `owner` for a channel. */
+export type PersonRole = keyof typeof personRoles;
+
 /** Where `@username` goes when something else leads. */
 export type HandlePlacement =
   /** Not shown (an agent's inline label without a collision). */
@@ -82,12 +103,21 @@ export type PersonLayout =
  * |---|---|---|
  * | `header` | **Bob Lee** `@bob`; **@bob** when the names are equal | **Bob Lee's agent** `@bob`; **Your agent** `@bob` |
  * | `inline` | Bob Lee (@bob); @bob when equal | Bob Lee's agent; Your agent |
- * | `authority` | always Bob Lee (@bob), even bob (@bob) | Bob Lee (@bob)'s agent, even for the viewer |
+ * | `authority` | always Bob Lee (@bob); @bob when equal | Bob Lee (@bob)'s agent, even for the viewer; @bob's agent when equal |
  * | `chip` | Bob Lee, `@bob` in a tooltip; @bob when equal | Bob Lee's agent |
  * | `joiner` | `@bob` · Bob Lee (name on the server account) | — |
  *
  * On a collision every context spells the handle out: Sam Park (@spark), and
  * Sam Park (@spark)'s agent. A former member gains " · former member".
+ *
+ * **When the names are equal, `@username` is shown once, in every context.** A
+ * display name that is only the username (case aside) adds nothing, and
+ * repeating it read as `crew_alice (@crew_alice)` in every member row and
+ * access line (T-31). An authority point loses nothing by it: what it must
+ * show in full is the `@username` — the one name that cannot be chosen to look
+ * like someone else's — and `@username` alone is exactly that. A display name
+ * that differs from the username in anything but case is still spelled out
+ * beside it.
  */
 export function personLayout(
   person: CrewPerson | null,
@@ -123,7 +153,9 @@ export function personLayout(
   const shape = { ...common, agentOf: agent, youSuffix };
   switch (context) {
     case 'authority':
-      return { ...shape, lead: 'name', handlePlacement: 'paren' };
+      return equal
+        ? { ...shape, lead: 'handle', handlePlacement: 'none' }
+        : { ...shape, lead: 'name', handlePlacement: 'paren' };
     case 'header':
       return equal
         ? { ...shape, lead: 'handle', handlePlacement: 'none' }

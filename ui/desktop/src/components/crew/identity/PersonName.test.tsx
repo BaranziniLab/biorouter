@@ -3,7 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PersonName } from './PersonName';
 import { identityCopy } from './copy';
-import { agentLabel, joinerPerson, personFromProjection, personLabel } from './personLabel';
+import {
+  agentLabel,
+  joinerPerson,
+  personFromProjection,
+  personLabel,
+  personRoles,
+} from './personLabel';
 import { buildPeopleDirectory } from './usePeopleDirectory';
 import {
   PERSON_CONTEXTS,
@@ -131,13 +137,35 @@ describe('PersonName, inline', () => {
 });
 
 describe('PersonName, authority', () => {
-  it('always shows both, even when the names are equal', () => {
+  it('shows both names, and @username once when the names are equal', () => {
     const { container, rerender } = render(
-      <PersonName person={ID.carol} dir={dir} context="authority" />
+      <PersonName person={ID.bob} dir={dir} context="authority" />
     );
-    expect(root(container)).toHaveTextContent('Carol (@carol)');
-    rerender(<PersonName person={ID.bob} dir={dir} context="authority" />);
-    expect(root(container)).toHaveTextContent('Bob Lee (@bob)');
+    expect(root(container)).toHaveTextContent(/^Bob Lee \(@bob\)$/);
+    rerender(<PersonName person={ID.carol} dir={dir} context="authority" />);
+    expect(root(container)).toHaveTextContent(/^@carol$/);
+    expect(screen.getByText('@carol')).toHaveAttribute('data-person-part', 'username');
+    expect(screen.queryByText('Carol')).toBeNull();
+  });
+
+  /**
+   * What an authority point has to show in full is the one name nobody can
+   * choose to look like someone else's: `@username`. Dropping a display name
+   * that only repeats it (T-31) must never drop the handle itself.
+   */
+  it('always shows the full @username, for every person and option', () => {
+    for (const id of [ID.alice, ID.bob, ID.carol, ID.spark, ID.sampark, ID.sara, ID.dan]) {
+      const username = dir.byId(id)!.username;
+      for (const options of [{}, { agent: true }, { you: true }, { agent: true, you: true }]) {
+        const { container, unmount } = render(
+          <PersonName person={id} dir={dir} context="authority" {...options} />
+        );
+        const handle = container.querySelector('[data-person-part="username"]');
+        expect(handle).toHaveTextContent(new RegExp(`^@${username}$`));
+        expect(personLabel(id, 'authority', dir, options)).toContain(`@${username}`);
+        unmount();
+      }
+    }
   });
 
   it('names the viewer’s agent in full at an authority point', () => {
@@ -274,7 +302,7 @@ describe('the four contexts as strings', () => {
   it.each([
     ['header', 'Bob Lee (@bob)', '@carol'],
     ['inline', 'Bob Lee (@bob)', '@carol'],
-    ['authority', 'Bob Lee (@bob)', 'Carol (@carol)'],
+    ['authority', 'Bob Lee (@bob)', '@carol'],
     ['chip', 'Bob Lee', '@carol'],
   ] as const)('%s', (context, bob, carol) => {
     expect(personLabel(ID.bob, context, dir)).toBe(bob);
@@ -289,6 +317,7 @@ describe('the four contexts as strings', () => {
     expect(agentLabel(ID.bob, 'authority', dir)).toBe("Bob Lee (@bob)'s agent");
     expect(agentLabel(ID.spark, 'inline', dir)).toBe("Sam Park (@spark)'s agent");
     expect(agentLabel(ID.carol, 'inline', dir)).toBe("@carol's agent");
+    expect(agentLabel(ID.carol, 'authority', dir)).toBe("@carol's agent");
     expect(agentLabel(ID.alice, 'inline', dir, { you: true })).toBe('Your agent');
     expect(agentLabel(ID.alice, 'authority', dir, { you: true })).toBe(
       "Alice Chen (@alice)'s agent"
@@ -305,6 +334,84 @@ describe('the four contexts as strings', () => {
     expect(personLabel(joinerPerson('bob', 'Bob Lee'), 'joiner')).toBe(
       '@bob · Bob Lee (name on the server account)'
     );
+  });
+});
+
+describe('a person with no display name of their own (T-31)', () => {
+  /**
+   * The round-1 stage: server accounts issued as `crew_…`, nobody has set a
+   * display name yet, so each nickname is the username. Every member row and
+   * access line read `crew_alice (@crew_alice)`.
+   */
+  const unnamed = buildPeopleDirectory(
+    snapshot({
+      actor: principal(ID.alice, 'crew_alice', 'crew_alice', 1000),
+      principals: [
+        principal(ID.alice, 'crew_alice', 'crew_alice', 1000),
+        principal(ID.bob, 'crew_bob', 'Crew_Bob', 1001),
+        principal(ID.carol, 'crew_carol', '', 1002),
+      ],
+      former_principals: [
+        { id: ID.dan, username: 'crew_dan', display_name: 'crew_dan', active: false },
+      ],
+    })
+  );
+  const DOUBLED = /(@?)(crew_[a-z]+) \(@\2\)/i;
+
+  it('reads @username once in every context, as a string and rendered', () => {
+    for (const [id, username] of [
+      [ID.alice, 'crew_alice'],
+      [ID.bob, 'crew_bob'],
+      [ID.carol, 'crew_carol'],
+    ] as const) {
+      for (const context of ['header', 'inline', 'authority', 'chip'] as const) {
+        expect(personLabel(id, context, unnamed)).toBe(`@${username}`);
+        const { container, unmount } = render(
+          <PersonName person={id} dir={unnamed} context={context} />
+        );
+        expect(root(container)).toHaveTextContent(new RegExp(`^@${username}$`));
+        expect(container.querySelectorAll('[data-person-part="username"]')).toHaveLength(1);
+        expect(container.querySelector('[data-person-part="display-name"]')).toBeNull();
+        unmount();
+      }
+    }
+  });
+
+  it('never doubles the name for an agent, the viewer or a former member', () => {
+    for (const context of ['header', 'inline', 'authority', 'chip'] as const) {
+      for (const options of [{ agent: true }, { you: true }, { agent: true, you: true }]) {
+        for (const id of [ID.alice, ID.bob, ID.dan]) {
+          expect(personLabel(id, context, unnamed, options)).not.toMatch(DOUBLED);
+          const { container, unmount } = render(
+            <PersonName person={id} dir={unnamed} context={context} {...options} />
+          );
+          expect(container.textContent).not.toMatch(DOUBLED);
+          unmount();
+        }
+      }
+    }
+    expect(personLabel(ID.alice, 'authority', unnamed, { you: true })).toBe('@crew_alice · you');
+    expect(agentLabel(ID.alice, 'authority', unnamed, { you: true })).toBe("@crew_alice's agent");
+    expect(personLabel(ID.dan, 'authority', unnamed)).toBe('@crew_dan · former member');
+  });
+
+  it('still spells out a display name the person chose', () => {
+    const named = buildPeopleDirectory(
+      snapshot({
+        principals: [principal(ID.alice, 'crew_alice', 'Alice Chen', 1000)],
+        actor: principal(ID.alice, 'crew_alice', 'Alice Chen', 1000),
+      })
+    );
+    expect(personLabel(ID.alice, 'authority', named)).toBe('Alice Chen (@crew_alice)');
+    expect(personLabel(ID.alice, 'inline', named)).toBe('Alice Chen (@crew_alice)');
+  });
+});
+
+describe('role names', () => {
+  it('names the workspace role "Host" and a channel\u2019s role "Owner", and never one for the other', () => {
+    expect(personRoles).toEqual({ host: 'Host', owner: 'Owner' });
+    expect(personRoles.host).not.toBe(personRoles.owner);
+    expect(Object.isFrozen(personRoles)).toBe(true);
   });
 });
 

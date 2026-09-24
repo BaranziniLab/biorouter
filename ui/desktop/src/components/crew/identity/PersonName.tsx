@@ -26,6 +26,8 @@ export interface PersonNameProps extends PersonLabelOptions {
  * - Every display name sits in its own `<bdi>`, so a right-to-left or
  *   mixed-direction name cannot reorder the text around it.
  * - `@username` is always its own element, never concatenated into the name.
+ * - A display name that is only the username (case aside) is not repeated: the
+ *   person reads `@username` once, in every context — never `bob (@bob)`.
  * - An unknown principal is "Unknown member"; an ID is never rendered.
  * - A former member is muted and followed by " · former member".
  */
