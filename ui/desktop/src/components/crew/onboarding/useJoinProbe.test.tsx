@@ -120,6 +120,50 @@ describe('useJoinProbe', () => {
     expect(stale.crew.setJoinStatus).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['unsupported', LEGACY_JOIN_STATUS],
+    ['joined', 'invited'],
+  ] as const)(
+    'asks again when a weak answer (%s) is followed by an outright refusal',
+    async (weak, strong) => {
+      mocks.crewHttp.mockResolvedValue({ status: weak });
+      const { crew, view } = renderProbe({
+        refreshError: PLAIN,
+        refreshErrorCode: 'observation_refused',
+      });
+      await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith(weak));
+      // The controller keeps the weak answer; the next observation is refused as an unknown device.
+      view.update({ joinStatus: weak, refreshErrorCode: null, refreshError: '' });
+      mocks.crewHttp.mockResolvedValue(
+        strong === 'invited' ? { status: 'invited', code: '7QK2M9XA3JTPWZ4D' } : { status: weak }
+      );
+      view.update({ refreshError: PLAIN, refreshErrorCode: 'unauthorized' });
+      await waitFor(() => expect(crew.setJoinStatus).toHaveBeenLastCalledWith(strong));
+      expect(mocks.crewHttp).toHaveBeenCalledTimes(2);
+
+      // Answered on strong evidence, it is settled: the same answer asks nothing more.
+      view.update({ joinStatus: strong });
+      view.update({ refreshError: PLAIN, refreshErrorCode: 'unknown_device' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mocks.crewHttp).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it('asks nothing more after a strong answer that matches the weak one', async () => {
+    mocks.crewHttp.mockResolvedValue({ status: 'joined' });
+    const { crew, view } = renderProbe({
+      refreshError: PLAIN,
+      refreshErrorCode: 'observation_refused',
+    });
+    await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({ joinStatus: 'joined', refreshErrorCode: 'unauthorized' });
+    await waitFor(() => expect(mocks.crewHttp).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    view.update({ refreshError: 'still refused' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.crewHttp).toHaveBeenCalledTimes(2);
+  });
+
   it('does not ask again about a connection this window has already seen verified', async () => {
     const verified = {
       snapshot: fakeSnapshot(),

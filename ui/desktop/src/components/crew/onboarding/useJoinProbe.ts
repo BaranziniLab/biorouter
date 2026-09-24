@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { joinStatus as fetchJoinStatus } from '../api/join';
 import { isStaleDaemon } from '../api/errors';
 import { useCrew } from '../state/CrewControllerContext';
+import type { CrewJoinStatus } from '../state/types';
 import { UNKNOWN_DEVICE_CODES } from '../state/observationFailure';
 import { updateJoinContext, useJoinContext } from './joinContext';
 import { isUnknownDeviceFailure } from './joinText';
@@ -18,6 +19,9 @@ import { LEGACY_JOIN_STATUS } from './JoinStatusCard';
  */
 type ProbeReason = 'refused' | 'expected' | 'unverified';
 
+/** The answers that send no one anywhere: the join screen stays closed on either. */
+const SETTLES_NOTHING: readonly CrewJoinStatus[] = ['joined', 'unsupported'];
+
 /**
  * Notice that the selected connection is connected but this computer is not a member yet, and
  * report it to the controller, whose `screen` then turns to `join`. The layout mounts it once,
@@ -28,6 +32,10 @@ type ProbeReason = 'refused' | 'expected' | 'unverified';
  * screen. A workspace whose server cannot join by code, or a daemon too old to ask, is reported as
  * the invitation-token path — but only for a computer the workspace refused or that is expecting a
  * join, never on the weak `unverified` evidence alone.
+ *
+ * It asks once per connection, except that an answer to the weak evidence which sent no one
+ * anywhere (`joined`, `unsupported`) does not stop a stronger reason, arriving later, from asking
+ * again: that answer was never about a computer the workspace refused.
  *
  * It also clears the remembered "joining" flag once the workspace verifies this computer.
  */
@@ -70,10 +78,18 @@ export function useJoinProbe(): void {
         ? 'unverified'
         : null;
 
+  // What a weak probe recorded, while the controller still holds it for this connection.
+  const [weakAnswer, setWeakAnswer] = useState<{
+    connectionId: string;
+    status: CrewJoinStatus;
+  } | null>(null);
+  const answeredOnlyWeakly =
+    weakAnswer?.connectionId === connectionId && weakAnswer.status === joinStatus;
+  const unanswered =
+    joinStatus === null || (answeredOnlyWeakly && reason !== null && reason !== 'unverified');
+
   const probe: ProbeReason | null =
-    connectionId && connection?.status === 'connected' && !verified && joinStatus === null
-      ? reason
-      : null;
+    connectionId && connection?.status === 'connected' && !verified && unanswered ? reason : null;
 
   useEffect(() => {
     if (!probe) return;
@@ -84,17 +100,23 @@ export function useJoinProbe(): void {
         if (controller.signal.aborted) return;
         // A server that cannot join by code leaves only the invitation-token path — for a
         // computer the workspace refused. On weaker evidence, record that the server was asked,
-        // so it is not asked again, and send no one anywhere.
-        if (result.status === 'unsupported')
-          setJoinStatus(strong ? LEGACY_JOIN_STATUS : 'unsupported');
-        else setJoinStatus(result.status);
+        // so the same evidence does not ask again, and send no one anywhere.
+        const status: CrewJoinStatus =
+          result.status === 'unsupported' && strong ? LEGACY_JOIN_STATUS : result.status;
+        setWeakAnswer(
+          !strong && SETTLES_NOTHING.includes(status) ? { connectionId, status } : null
+        );
+        setJoinStatus(status);
       },
       (failure: unknown) => {
         if (controller.signal.aborted) return;
         // An older daemon has no join route: only the token path can help a computer the
         // workspace refused. Any other failure leaves the status unknown; the connection bar
         // already shows why updates stopped.
-        if (strong && isStaleDaemon(failure)) setJoinStatus(LEGACY_JOIN_STATUS);
+        if (strong && isStaleDaemon(failure)) {
+          setWeakAnswer(null);
+          setJoinStatus(LEGACY_JOIN_STATUS);
+        }
       }
     );
     return () => controller.abort();
