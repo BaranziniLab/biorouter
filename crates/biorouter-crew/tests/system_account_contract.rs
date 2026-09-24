@@ -26,7 +26,13 @@ fn pending(ws: &mut Workspace) -> serde_json::Value {
 #[test]
 fn root_nobody_daemons_and_nologin_accounts_are_never_invited() {
     let mut ws = Workspace::new("system-accounts");
-    ws.directory.set_with_shell(0, "root", "/bin/bash");
+    // The host is the test process's own UID; a run as root can't also have a separate
+    // `root` account to invite.
+    let mut names = vec!["daemon", "postgres", "nobody", "backup", "svc"];
+    if host_uid() != 0 {
+        ws.directory.set_with_shell(0, "root", "/bin/bash");
+        names.insert(0, "root");
+    }
     ws.directory
         .set_with_shell(1, "daemon", "/usr/sbin/nologin");
     ws.directory.set_with_shell(998, "postgres", "/bin/bash");
@@ -36,7 +42,7 @@ fn root_nobody_daemons_and_nologin_accounts_are_never_invited() {
         .set_with_shell(74_001, "backup", "/usr/sbin/nologin");
     ws.directory.set_with_shell(74_002, "svc", "/bin/false");
     let before = ws.journal_bytes().len();
-    for name in ["root", "daemon", "postgres", "nobody", "backup", "svc"] {
+    for name in names {
         for params in [
             json!({"username": name}),
             json!({"username": format!("@{name}")}),
