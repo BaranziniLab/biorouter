@@ -1,0 +1,252 @@
+/* Crew onboarding — first run, joining, hosting, the join states, the trust
+   and "not set up" panes and the empty states outside a channel.
+
+   Bound by the contract in `crew/crew-app.css` (enforced by
+   `crew/crewCss.sourceGuard.test.ts`): only `.crew-*` classes and data/aria
+   hooks, tokens only, and every animated rule restates its rest under
+   reduced motion. Type roles and ink stay Tailwind utilities that already
+   exist in the app (`text-subheading`, `text-text-muted`, …); the geometry a
+   layout depends on is authored here, because a newly written utility can
+   silently never generate under `BIOROUTER_NO_HMR`. */
+
+/* A main-area screen: one setup card or empty state, centred in the channel
+   column, scrolling on its own when the window is short. */
+.crew-onboard-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 100%;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+/* The setup card: a form-width column on the card ground, one step up from
+   the canvas. */
+.crew-onboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--dialog-md);
+  margin-inline: auto;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-card);
+}
+
+.crew-onboard-card[data-tone='danger'] {
+  border-color: var(--border-danger);
+}
+
+.crew-onboard-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.crew-onboard-card-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+  color: var(--text-muted);
+}
+
+.crew-onboard-card[data-tone='danger'] .crew-onboard-card-icon {
+  background-color: var(--wash-danger);
+  color: var(--text-danger);
+}
+
+.crew-onboard-card[data-tone='danger'] .crew-onboard-title {
+  color: var(--text-danger);
+}
+
+.crew-onboard-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-onboard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.crew-onboard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crew-onboard-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-onboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.crew-onboard-textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+/* The invitation summary inside the Join dialog. */
+.crew-onboard-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-card);
+}
+
+.crew-onboard-privacy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.crew-onboard-radios {
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+/* The host dialog's stepper: Name · Start · Create. */
+.crew-onboard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+}
+
+.crew-onboard-steps [aria-current='step'] {
+  color: var(--text-default);
+  font-weight: var(--text-label--font-weight);
+}
+
+.crew-onboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-inline-start: 20px;
+  list-style: decimal;
+}
+
+/* The setup checklist: one row per step, a tick when it is done. */
+.crew-onboard-checklist {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew-onboard-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 40px;
+  padding-block: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-onboard-check-row:first-child {
+  border-top: 0;
+}
+
+.crew-onboard-check-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-emphasized);
+  border-radius: var(--radius-full);
+  color: var(--text-success);
+}
+
+.crew-onboard-check-row[data-done='true'] .crew-onboard-check-mark {
+  border-color: transparent;
+  background-color: var(--wash-success);
+}
+
+.crew-onboard-check-text {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.crew-onboard-check-row[data-done='true'] .crew-onboard-check-text {
+  color: var(--text-muted);
+}
+
+/* The embedded terminal (InAppTerminalDock). The dock sizes itself for a chat
+   pane and reserves 200px of its parent for a transcript that does not exist
+   here, so the mount box is that much taller and the outer box clips the
+   difference — the accommodation `onboarding/codingAgentControls.tsx` makes. */
+.crew-onboard-terminal {
+  height: 240px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+}
+
+.crew-onboard-terminal-mount {
+  height: 440px;
+}
+
+/* The one spinner: a 700ms linear turn; a still arc under reduced motion. */
+.crew-onboard-spinner {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-emphasized);
+  border-top-color: var(--text-muted);
+  border-radius: var(--radius-full);
+  animation: crew-onboard-spin 700ms linear infinite;
+}
+
+@keyframes crew-onboard-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-onboard-spinner {
+    animation: none;
+  }
+}
