@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -70,9 +71,12 @@ export function TimelineCopyProvider({ children }: { children: ReactNode }) {
     );
     return copied;
   }, []);
+  // One value for the provider's life: a new object each render would re-render
+  // every row's actions on every message and every keystroke in the composer.
+  const api = useMemo<TimelineCopyApi>(() => ({ copy }), [copy]);
 
   return (
-    <TimelineCopyContext.Provider value={{ copy }}>
+    <TimelineCopyContext.Provider value={api}>
       {children}
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         <span key={announcement.count}>{announcement.text}</span>

@@ -457,6 +457,12 @@
   padding-block: 24px 8px;
 }
 
+/* Its place kept while the live tail streams in (Timeline): laid out, never
+   seen. It appears in place, without motion, once the start is known loaded. */
+.crew-channel-intro[data-pending='true'] {
+  visibility: hidden;
+}
+
 .crew-channel-intro-icon {
   width: 20px;
   height: 20px;

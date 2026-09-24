@@ -10,22 +10,33 @@ import { timelineCopy } from './copy';
  * who created it, and — for its owner — one secondary Add people. There is no
  * "Ask my agent" here: the composer's button stays the only control with that
  * name, so a query for it is never ambiguous.
+ *
+ * `pending` keeps its place while the live tail is still streaming in and the
+ * start is not yet known to be loaded: laid out but invisible, hidden from
+ * assistive technology and inert, so it claims nothing and cannot be reached.
  */
 export function ChannelIntro({
   channel,
   viewerId,
   dir,
   readOnly,
+  pending = false,
 }: {
   channel: Channel;
   viewerId: string | null;
   dir: PeopleDirectory;
   readOnly: boolean;
+  pending?: boolean;
 }) {
   const { openDialog } = useCrew();
   const owner = viewerId !== null && channel.owner_id === viewerId;
   return (
-    <div className="crew-channel-intro">
+    <div
+      className="crew-channel-intro"
+      data-pending={pending ? 'true' : undefined}
+      aria-hidden={pending ? true : undefined}
+      inert={pending}
+    >
       <Hash aria-hidden className="crew-channel-intro-icon" />
       <h2 className="text-subheading text-text-default">
         {timelineCopy.introTitle(channelSlug(channel))}

@@ -6,8 +6,12 @@ import {
   canBePageBefore,
   groupMessages,
   isTraceMessage,
+  keepUnchangedGroups,
   newLineBeforeId,
+  newLineDecided,
+  openingProgress,
   reachesChannelStart,
+  sameGroup,
   taskTitle,
   type GroupMessagesOptions,
   type TimelineDay,
@@ -157,14 +161,27 @@ describe('the New line', () => {
   ];
 
   it('goes before the first message after the read position', () => {
-    expect(newLineBeforeId(list(), { readPosition: 's1', unread: 0, viewerId: ID.alice })).toBe(
+    expect(newLineBeforeId(list(), { readPosition: 's1', unread: 2, viewerId: ID.alice })).toBe(
       'b'
     );
+    // Without a count, the position alone places it.
+    expect(
+      newLineBeforeId(list(), { readPosition: 's1', unread: undefined, viewerId: ID.alice })
+    ).toBe('b');
   });
 
   it('is absent when the read position is the newest message', () => {
     expect(
       newLineBeforeId(list(), { readPosition: 's3', unread: 0, viewerId: ID.alice })
+    ).toBeNull();
+  });
+
+  it('is absent whenever the broker counts nothing unread, so it never disagrees with the sidebar', () => {
+    expect(
+      newLineBeforeId(list(), { readPosition: 's1', unread: 0, viewerId: ID.alice })
+    ).toBeNull();
+    expect(
+      newLineBeforeId(list(), { readPosition: null, unread: 0, viewerId: ID.alice })
     ).toBeNull();
   });
 
@@ -187,27 +204,106 @@ describe('the New line', () => {
     ).toBeNull();
   });
 
+  it('counts back over other people’s messages only, as the broker’s unread count does', () => {
+    // The broker's `read_state` skips the viewer's own messages, their agent's included.
+    const mixed = [
+      message({ id: 'a', sequence: 's1', actor_id: ID.bob }),
+      message({ id: 'b', sequence: 's2', actor_id: ID.bob }),
+      message({ id: 'mine', sequence: 's3', actor_id: ID.alice }),
+      message({ id: 'agent', sequence: 's4', actor_id: ID.alice, run_id: ID.run }),
+      message({ id: 'c', sequence: 's5', actor_id: ID.carol }),
+    ];
+    expect(newLineBeforeId(mixed, { readPosition: null, unread: 2, viewerId: ID.alice })).toBe('b');
+  });
+
   it('skips the viewer’s own posts at the start of the new region', () => {
     const mine = [
       message({ id: 'a', sequence: 's1', actor_id: ID.bob }),
       message({ id: 'mine', sequence: 's2', actor_id: ID.alice }),
       message({ id: 'theirs', sequence: 's3', actor_id: ID.bob }),
     ];
-    expect(newLineBeforeId(mine, { readPosition: 's1', unread: 0, viewerId: ID.alice })).toBe(
+    expect(newLineBeforeId(mine, { readPosition: 's1', unread: 1, viewerId: ID.alice })).toBe(
       'theirs'
     );
-    // …but the viewer's AGENT is not the viewer: its posts are news.
+    // …but the viewer's AGENT is not the viewer: inside the new region its posts are news.
     const agent = [
       message({ id: 'a', sequence: 's1', actor_id: ID.bob }),
       message({ id: 'agent', sequence: 's2', actor_id: ID.alice, run_id: ID.run }),
+      message({ id: 'theirs', sequence: 's3', actor_id: ID.bob }),
     ];
-    expect(newLineBeforeId(agent, { readPosition: 's1', unread: 0, viewerId: ID.alice })).toBe(
+    expect(newLineBeforeId(agent, { readPosition: 's1', unread: 1, viewerId: ID.alice })).toBe(
       'agent'
     );
     // Only the viewer's own posts are new: no line.
     expect(
       newLineBeforeId(mine.slice(0, 2), { readPosition: 's1', unread: 0, viewerId: ID.alice })
     ).toBeNull();
+    expect(
+      newLineBeforeId(mine.slice(0, 2), {
+        readPosition: 's1',
+        unread: undefined,
+        viewerId: ID.alice,
+      })
+    ).toBeNull();
+  });
+});
+
+describe('a channel streaming in, one message per frame', () => {
+  // The observer sends the live tail oldest first, one message per frame.
+  const tail = (): CrewMessage[] => [
+    message({ id: 'a', sequence: 's1', actor_id: ID.bob }),
+    message({ id: 'read', sequence: 's2', actor_id: ID.carol }),
+    message({ id: 'mine', sequence: 's3', actor_id: ID.alice }),
+    message({ id: 'n1', sequence: 's4', actor_id: ID.bob }),
+    message({ id: 'n2', sequence: 's5', actor_id: ID.carol }),
+  ];
+  const prefixes = (list: CrewMessage[]) => list.map((_, index) => list.slice(0, index + 1));
+  const read = { readPosition: 's2', unread: 2, viewerId: ID.alice };
+
+  it('decides the New line only once its place cannot move, and then where the whole list puts it', () => {
+    const whole = newLineBeforeId(tail(), read);
+    expect(whole).toBe('n1');
+    const decided = prefixes(tail()).map((prefix) => newLineDecided(prefix, read));
+    // Not before the read position has arrived, nor while only the viewer's own post follows it.
+    expect(decided).toEqual([false, false, false, true, true]);
+    for (const prefix of prefixes(tail()).filter((prefix) => newLineDecided(prefix, read))) {
+      expect(newLineBeforeId(prefix, read)).toBe(whole);
+    }
+    // Nothing unread: decided (no line) from the first message.
+    expect(newLineDecided(tail().slice(0, 1), { ...read, unread: 0 })).toBe(true);
+    // A position that has not arrived, or none at all, decides nothing by itself.
+    expect(newLineDecided(tail(), { ...read, readPosition: 'later' })).toBe(false);
+    expect(newLineDecided(tail(), { ...read, readPosition: null })).toBe(false);
+  });
+
+  it('knows when the unread messages have all arrived, and when some are provably still to come', () => {
+    expect(prefixes(tail()).map((prefix) => openingProgress(prefix, read))).toEqual([
+      'streaming', // the read position's message has not arrived
+      'streaming', // it has; the two unread after it have not
+      'streaming', // the viewer's own post is not one of them
+      'streaming',
+      'caught-up',
+    ]);
+    // Never read: every message from someone else is unread.
+    const never = { readPosition: null, unread: 3, viewerId: ID.alice };
+    expect(prefixes(tail()).map((prefix) => openingProgress(prefix, never))).toEqual([
+      'streaming',
+      'streaming',
+      'streaming',
+      'caught-up',
+      'caught-up',
+    ]);
+  });
+
+  it('knows the list is complete when it is empty or a full page, and nothing without read state', () => {
+    expect(openingProgress([], read)).toBe('complete');
+    const full = Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      message({ id: `f-${index}` })
+    );
+    expect(openingProgress(full, read)).toBe('complete');
+    const noState = { readPosition: undefined, unread: undefined, viewerId: ID.alice };
+    expect(openingProgress(tail(), noState)).toBe('unknown');
+    expect(openingProgress(tail(), { ...read, unread: undefined })).toBe('unknown');
   });
 });
 
@@ -318,6 +414,55 @@ describe('an agent’s tool updates', () => {
       't1',
       't2',
     ]);
+  });
+});
+
+describe('keeping unchanged groups', () => {
+  // A channel streams in one message per frame: only the group a message joins
+  // may re-render, so every other group must keep its object.
+  const list = [
+    message({ id: 'a', actor_id: ID.bob, at: at(9) }),
+    message({ id: 'b', actor_id: ID.carol, at: at(10) }),
+    message({ id: 'c', actor_id: ID.carol, at: at(10, 1) }),
+  ];
+
+  it('reuses a group that draws the same, and replaces one a message joined', () => {
+    const before = groupMessages(list.slice(0, 2), options());
+    const after = keepUnchangedGroups(before, groupMessages(list, options()));
+    const [bob, carol] = groups(after);
+    expect(bob).toBe(groups(before)[0]);
+    expect(carol).not.toBe(groups(before)[1]);
+    expect(shape(after)).toEqual([['a'], ['b', 'c']]);
+  });
+
+  it('replaces a group whose message changed, or whose marker did', () => {
+    const before = groupMessages(list, options());
+    const edited = [list[0], { ...list[1] }, list[2]];
+    expect(groups(keepUnchangedGroups(before, groupMessages(edited, options())))[1]).not.toBe(
+      groups(before)[1]
+    );
+    const restricted = list.map((item) => ({ ...item, restricted: true }));
+    const was = groupMessages(restricted, options());
+    const now = keepUnchangedGroups(
+      was,
+      groupMessages(restricted, options({ channelRestricted: true }))
+    );
+    expect(groups(now)[0]).not.toBe(groups(was)[0]);
+  });
+
+  it('compares every field a row reads, the folded updates included', () => {
+    const trace = [
+      message({ id: 't', actor_id: ID.alice, run_id: ID.run, body: 'Task: Plot it' }),
+      message({ id: 'u', actor_id: ID.alice, run_id: ID.run, body: 'Using crew__request' }),
+    ];
+    const one = groupMessages(trace, options());
+    const two = groupMessages(
+      [...trace, message({ actor_id: ID.alice, run_id: ID.run, body: 'Using blob.read' })],
+      options()
+    );
+    const [first] = groups(one);
+    expect(sameGroup(first, groups(groupMessages(trace, options()))[0])).toBe(true);
+    expect(sameGroup(first, groups(two)[0])).toBe(false);
   });
 });
 

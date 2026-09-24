@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
@@ -6,6 +6,7 @@ import { identityCopy } from '../identity';
 import { timelineCopy } from './copy';
 import { HISTORY_PAGE_SIZE } from './groupMessages';
 import { Timeline } from './Timeline';
+import { TimelineCopyProvider, useTimelineCopy } from './TimelineCopy';
 import { SKELETON_DELAY_MS } from './TimelineSkeleton';
 import {
   ID,
@@ -20,6 +21,7 @@ import {
   snapshotFor,
 } from './timelineTestUtils';
 import { AUTO_READ_DWELL_MS, AUTO_READ_MIN_INTERVAL_MS } from './useAutoMarkRead';
+import { OPENING_QUIET_MS, OPENING_STALL_MS } from './useOpening';
 
 /**
  * The timeline against a stand-in controller (ui-redesign-spec, "The timeline"
@@ -37,6 +39,22 @@ const page = (count: number): CrewMessage[] =>
     })
   );
 
+/**
+ * The live tail has stopped growing long enough to count as arrived. Tests hand
+ * the timeline a whole list at once, which it cannot tell from the first frames
+ * of a stream (the observer sends one message per frame), so a list that is
+ * neither empty nor a full page opens after `OPENING_QUIET_MS`. Needs fake timers.
+ */
+function openFully() {
+  act(() => {
+    vi.advanceTimersByTime(OPENING_QUIET_MS);
+  });
+}
+
+/** A message posted after the page opened: a live arrival. */
+const postedNow = (overrides: Partial<CrewMessage> = {}) =>
+  message({ at: new Date(Date.now() + 1000), ...overrides });
+
 function timelineRoot(): HTMLElement {
   const root = document.querySelector<HTMLElement>('.crew-timeline');
   if (!root) throw new Error('no timeline rendered');
@@ -51,7 +69,11 @@ afterEach(() => {
 
 describe('the channel’s start', () => {
   it('shows the pinned intro when the start is loaded, with the creator by name', () => {
+    vi.useFakeTimers();
     renderWithController(<Timeline />, makeController({ messages: [message()] }));
+    // Until the tail has arrived its place is kept, claiming nothing.
+    expect(screen.queryByRole('heading', { name: 'Welcome to #general' })).toBeNull();
+    openFully();
     expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
     const intro = screen.getByText('Welcome to #general').parentElement as HTMLElement;
@@ -104,11 +126,14 @@ describe('the channel’s start', () => {
 });
 
 describe('the log', () => {
-  it('is a polite, focusable log named for the channel', () => {
+  it('is a polite, focusable log named for the channel, busy until its messages have arrived', () => {
+    vi.useFakeTimers();
     renderWithController(<Timeline />, makeController({ messages: [message()] }));
     const log = screen.getByRole('log', { name: 'general messages' });
     expect(log).toHaveAttribute('aria-live', 'polite');
     expect(log).toHaveAttribute('tabindex', '0');
+    expect(log).toHaveAttribute('aria-busy', 'true');
+    openFully();
     expect(log).not.toHaveAttribute('aria-busy');
     expect(timelineRoot().querySelector('.biorouter-scroll-fade-top')).not.toBeNull();
   });
@@ -283,6 +308,27 @@ describe('the log', () => {
 });
 
 describe('copying', () => {
+  it('hands its consumers one copy action for its whole life', () => {
+    // A new action on every render re-rendered every row's actions on every
+    // message and every keystroke in the composer.
+    const seen = new Set<unknown>();
+    function Probe() {
+      seen.add(useTimelineCopy());
+      return null;
+    }
+    const { rerender } = render(
+      <TimelineCopyProvider>
+        <Probe />
+      </TimelineCopyProvider>
+    );
+    rerender(
+      <TimelineCopyProvider>
+        <Probe />
+      </TimelineCopyProvider>
+    );
+    expect(seen.size).toBe(1);
+  });
+
   /** user-event installs its own clipboard on setup, so spy on the one it installed. */
   function setupWithClipboard() {
     const user = userEvent.setup(pointerAnywhere);
@@ -447,7 +493,7 @@ describe('older history', () => {
     // …and a post after it is a live arrival again.
     rerenderWith({
       ...controller,
-      messages: [...live, message({ id: 'after', body: 'just posted' })],
+      messages: [...live, postedNow({ id: 'after', body: 'just posted' })],
       historyBefore: null,
     });
     expect(screen.getByText('just posted').closest('[data-crew-row]')).toHaveAttribute(
@@ -483,18 +529,222 @@ describe('older history', () => {
 
 describe('arrivals', () => {
   it('lets a message that arrives while following rise in, and nothing that was already there', () => {
+    vi.useFakeTimers();
     const first = [message({ id: 'old', body: 'old' })];
     const controller = makeController({ messages: first });
     const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
     const oldRow = screen.getByText('old').closest('[data-crew-row]');
     expect(oldRow).not.toHaveAttribute('data-arriving');
 
-    rerenderWith({ ...controller, messages: [...first, message({ id: 'new', body: 'new' })] });
+    rerenderWith({ ...controller, messages: [...first, postedNow({ id: 'new', body: 'new' })] });
     expect(screen.getByText('new').closest('[data-crew-row]')).toHaveAttribute(
       'data-arriving',
       'true'
     );
     expect(screen.getByText('old').closest('[data-crew-row]')).not.toHaveAttribute('data-arriving');
+  });
+});
+
+describe('a channel streaming in, one message per frame', () => {
+  // The daemon's observer sends the live tail oldest first, ONE message per
+  // frame (routes/crew_observation.rs), each behind several broker round trips,
+  // and useCrewObservation marks the list loaded on the first. Nothing that
+  // describes the whole channel may be decided from the first frames.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const tailOf = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      message({
+        id: `t-${index}`,
+        body: `tail ${index}`,
+        actor_id: index % 2 ? ID.bob : ID.carol,
+        at: new Date(2026, 8, 22, 6, 0, index * 20),
+      })
+    );
+  // Class lookups, not selectors or role queries: these run on every one of two
+  // hundred frames, over a list two hundred rows long.
+  const arrivingRows = () => document.querySelectorAll('[data-arriving="true"]').length;
+  const byClass = (name: string) => document.getElementsByClassName(name);
+  const shownIntro = () => {
+    const intro = byClass('crew-channel-intro')[0];
+    return intro && !intro.hasAttribute('data-pending') ? intro : null;
+  };
+  const newLine = () => byClass('crew-new-divider')[0] ?? null;
+  const before = (first: Node, second: Node) =>
+    Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const row = (body: string) => {
+    const exact = new RegExp(`${body}(?!\\d)`);
+    const found = Array.from(document.querySelectorAll('[data-crew-row]')).find((element) =>
+      exact.test(element.textContent ?? '')
+    );
+    if (!found) throw new Error(`no row reads ${body}`);
+    return found;
+  };
+  const busy = () => byClass('crew-timeline-log')[0]?.getAttribute('aria-busy') ?? null;
+
+  /**
+   * Opens the channel with nothing loaded, then delivers `tail` one message per
+   * render, `gap` apart, calling `check` with the index of the newest message.
+   */
+  function stream(
+    tail: CrewMessage[],
+    controller: ReturnType<typeof makeController>,
+    gap: number,
+    check: (newest: number) => void
+  ) {
+    const opened = { ...controller, messages: [], messagesLoaded: false };
+    const view = renderWithController(<Timeline />, opened);
+    tail.forEach((_, index) => {
+      act(() => {
+        vi.advanceTimersByTime(gap);
+      });
+      view.rerenderWith({ ...controller, messages: tail.slice(0, index + 1) });
+      check(index);
+    });
+    return view;
+  }
+
+  it('puts the New line where the whole tail does, never above the first message to arrive', () => {
+    // A busy channel: the tail is a full page, read up to message 150 of it,
+    // with the 49 after it unread — the read position arrives 151 frames in.
+    const tail = tailOf(HISTORY_PAGE_SIZE);
+    const controller = makeController({
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: tail[150].sequence },
+        unread: { [ID.general]: 49 },
+      }),
+    });
+    // Frames slower than the mark-read dwell, and faster than the quiet window.
+    const { rerenderWith } = stream(tail, controller, AUTO_READ_DWELL_MS + 100, (newest) => {
+      const line = newLine();
+      if (newest <= 150) expect(line).toBeNull();
+      else {
+        expect(line).not.toBeNull();
+        expect(before(row('tail 150') as Node, line as Node)).toBe(true);
+        expect(before(line as Node, row('tail 151') as Node)).toBe(true);
+      }
+      // No false "start of the channel" while the page is still filling.
+      expect(shownIntro()).toBeNull();
+      if (newest < HISTORY_PAGE_SIZE - 1) {
+        expect(busy()).toBe('true');
+        expect(byClass('crew-history-sentinel')).toHaveLength(0);
+        // Not marked read to a message in the middle of the backlog.
+        expect(controller.markRead).not.toHaveBeenCalled();
+      }
+    });
+
+    // Nothing posted before the channel opened rose in as an arrival. A row keeps
+    // its mark once given (the set only grows), so one look covers every frame.
+    expect(arrivingRows()).toBe(0);
+    // The full page is in: "Older messages", no intro, not busy, one New line.
+    expect(screen.getByRole('button', { name: timelineCopy.older })).toBeInTheDocument();
+    expect(document.querySelector('.crew-channel-intro')).toBeNull();
+    expect(busy()).toBeNull();
+    expect(document.querySelectorAll('.crew-new-divider')).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(1);
+    expect(controller.markRead).toHaveBeenCalledWith(ID.general, tail[199].sequence);
+
+    // A message posted after the channel opened is a live arrival.
+    rerenderWith({
+      ...controller,
+      messages: [...tail.slice(1), postedNow({ id: 'live', body: 'just posted' })],
+    });
+    expect(screen.getByText('just posted').closest('[data-crew-row]')).toHaveAttribute(
+      'data-arriving',
+      'true'
+    );
+    expect(arrivingRows()).toBe(1);
+  });
+
+  it('keeps the intro’s place while a short channel streams in, and shows it once the tail has arrived', () => {
+    const tail = tailOf(30);
+    const controller = makeController({
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: tail[29].sequence },
+        unread: { [ID.general]: 0 },
+      }),
+    });
+    stream(tail, controller, 200, () => {
+      // The place is held from the first message, so nothing moves down later…
+      expect(document.querySelector('.crew-channel-intro[data-pending="true"]')).not.toBeNull();
+      // …but it claims nothing: hidden from assistive technology, and inert.
+      expect(screen.queryByRole('heading', { name: 'Welcome to #general' })).toBeNull();
+      expect(screen.getByRole('log')).toHaveAttribute('aria-busy', 'true');
+      expect(arrivingRows()).toBe(0);
+    });
+    act(() => {
+      vi.advanceTimersByTime(OPENING_QUIET_MS - 1);
+    });
+    expect(shownIntro()).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
+    expect(screen.getByRole('log')).not.toHaveAttribute('aria-busy');
+    // Read through its newest message: no New line, nothing to mark read.
+    expect(newLine()).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS);
+    });
+    expect(controller.markRead).not.toHaveBeenCalled();
+  });
+
+  it('draws no New line for a channel the broker counts nothing unread in, whatever streams in', () => {
+    // The viewer's agent posted after the read position: the broker counts
+    // neither the viewer's posts nor their agent's, and neither does the line.
+    const tail = [
+      message({ id: 'r', sequence: 's1', body: 'read' }),
+      message({ id: 'x', sequence: 's2', body: 'result', actor_id: ID.alice, run_id: ID.run }),
+    ];
+    stream(
+      tail,
+      makeController({
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 's1' },
+          unread: { [ID.general]: 0 },
+        }),
+      }),
+      200,
+      () => expect(newLine()).toBeNull()
+    );
+    openFully();
+    expect(newLine()).toBeNull();
+  });
+
+  it('settles with what it holds when the stream stalls before the messages it expects', () => {
+    // The read position never arrives (a tail the daemon shortened): after the
+    // stall window the list stops being busy and the line falls back to the count.
+    const tail = tailOf(5);
+    const controller = makeController({
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: 'not-in-this-tail' },
+        unread: { [ID.general]: 2 },
+      }),
+    });
+    stream(tail, controller, 200, () => expect(newLine()).toBeNull());
+    act(() => {
+      vi.advanceTimersByTime(OPENING_QUIET_MS);
+    });
+    // Provably still streaming: the quiet window is not enough.
+    expect(screen.getByRole('log')).toHaveAttribute('aria-busy', 'true');
+    act(() => {
+      vi.advanceTimersByTime(OPENING_STALL_MS - OPENING_QUIET_MS);
+    });
+    expect(screen.getByRole('log')).not.toHaveAttribute('aria-busy');
+    const line = newLine();
+    expect(line).not.toBeNull();
+    expect(before(screen.getByText('tail 2'), line as Node)).toBe(true);
+    expect(before(line as Node, screen.getByText('tail 3'))).toBe(true);
   });
 });
 
@@ -520,6 +770,8 @@ describe('automatic mark-read', () => {
   it('marks the channel read to its newest message after a second at the bottom, without a refresh', () => {
     const controller = unread();
     renderWithController(<Timeline />, controller);
+    openFully();
+    expect(controller.markRead).not.toHaveBeenCalled();
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS - 1);
     });
@@ -538,6 +790,7 @@ describe('automatic mark-read', () => {
   it('waits five seconds before marking the same channel again', () => {
     const controller = unread();
     const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });
@@ -599,6 +852,7 @@ describe('automatic mark-read', () => {
       markRead: vi.fn(async () => Promise.reject(new Error('offline'))),
     });
     renderWithController(<Timeline />, controller);
+    openFully();
     await act(async () => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });

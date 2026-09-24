@@ -22,8 +22,13 @@ import {
   canBePageBefore,
   groupMessages,
   HISTORY_PAGE_SIZE,
+  keepUnchangedGroups,
   newLineBeforeId,
+  newLineDecided,
+  openingProgress,
   reachesChannelStart,
+  type NewLineInput,
+  type TimelineDay,
   type TimelineItem,
 } from './groupMessages';
 import { HistorySentinel } from './HistorySentinel';
@@ -34,7 +39,9 @@ import { TaskStatusRow } from './TaskStatusRow';
 import { TimelineContextProvider, type TimelineContextValue } from './TimelineContext';
 import { TimelineCopyProvider } from './TimelineCopy';
 import { TimelineSkeleton } from './TimelineSkeleton';
+import { messageTime } from './timelineTime';
 import { useAutoMarkRead, type AutoReadMemory } from './useAutoMarkRead';
+import { useOpening } from './useOpening';
 import '../crew-app.css';
 import './timeline.css';
 
@@ -105,7 +112,10 @@ function prefersReducedMotion(): boolean {
  * `role="log"` in the 760px chat column. It opens at the newest message,
  * follows new posts while the reader is at the bottom, and keeps its place when
  * they are not (a "Jump to latest" pill appears instead). A refresh never sends
- * it to the top. Older history loads by itself at the top of a full page.
+ * it to the top. Older history loads by itself at the top of a full page. The
+ * live tail streams in one message per frame, so what describes the whole
+ * channel — the New line, the intro, mark-read, `aria-busy`, arrivals — waits
+ * until enough of it has arrived (`openingProgress`, `useOpening`).
  *
  * Messages are grouped by author and time, broken by day dividers and a fixed
  * New line; agents read as agents; an agent's tool updates fold behind "Show
@@ -195,20 +205,43 @@ function ChannelTimeline({
   }, []);
   const anchorBottom = useCallback(() => followingRef.current, []);
 
-  // ── The New line: computed once, when the channel's live tail first loads ──
+  // ── The opening: the live tail streams in, one message per frame ────────
+  // The observer sends the channel's newest messages oldest first, one per
+  // frame, each behind a few broker round trips (routes/crew_observation.rs), so
+  // over a remote link the tail takes seconds to arrive and `messagesLoaded` is
+  // true from its first message. Nothing that describes the whole channel may be
+  // decided from what has arrived so far: the New line waits until its place
+  // cannot move, and the intro, the automatic mark-read, `aria-busy` and live
+  // arrivals wait until the opening has arrived (`useOpening`). An older page
+  // lands whole.
+  const readState: NewLineInput = {
+    readPosition: snapshot.read_positions?.[channel.id],
+    unread: snapshot.unread?.[channel.id],
+    viewerId,
+  };
+  const progress = historyBefore === null ? openingProgress(messages, readState) : 'complete';
+  const reloading = !messagesLoaded && messages.length === 0;
+  const opened = useOpening({
+    loadKey,
+    pageReady,
+    reloading,
+    progress,
+    size: messages.length,
+    newestId: messages[messages.length - 1]?.id ?? null,
+  });
+
+  // ── The New line: fixed once, as soon as the live tail decides its place ──
   const [newLine, setNewLine] = useState<{ computed: boolean; id: string | null }>({
     computed: false,
     id: null,
   });
-  if (!newLine.computed && pageReady && historyBefore === null) {
-    setNewLine({
-      computed: true,
-      id: newLineBeforeId(messages, {
-        readPosition: snapshot.read_positions?.[channel.id],
-        unread: snapshot.unread?.[channel.id],
-        viewerId,
-      }),
-    });
+  if (
+    !newLine.computed &&
+    pageReady &&
+    historyBefore === null &&
+    (opened || progress === 'caught-up' || newLineDecided(messages, readState))
+  ) {
+    setNewLine({ computed: true, id: newLineBeforeId(messages, readState) });
   }
 
   // "Today" becomes "Yesterday" at midnight even when nothing new arrives.
@@ -222,31 +255,48 @@ function ChannelTimeline({
     return () => window.clearTimeout(timer);
   }, [now]);
 
+  // Groups that did not change keep their objects, so only the group a new
+  // message joins re-renders — not every row on every frame of a stream.
+  const drawnDays = useRef<TimelineDay[]>([]);
   const days = useMemo(
     () =>
-      groupMessages(messages, {
-        channelId: channel.id,
-        channelRestricted: channel.classification === 'restricted',
-        newLineBeforeId: newLine.id,
-        runs,
-        includeUnanchoredRuns: historyBefore === null,
-        now,
-      }),
+      keepUnchangedGroups(
+        drawnDays.current,
+        groupMessages(messages, {
+          channelId: channel.id,
+          channelRestricted: channel.classification === 'restricted',
+          newLineBeforeId: newLine.id,
+          runs,
+          includeUnanchoredRuns: historyBefore === null,
+          now,
+        })
+      ),
     [messages, channel.id, channel.classification, newLine.id, runs, historyBefore, now]
   );
+  useEffect(() => {
+    drawnDays.current = days;
+  }, [days]);
 
   // ── Live arrivals ───────────────────────────────────────────────────────
-  // What was on screen when this page (the live tail, or one older page) first
-  // loaded is not an arrival; a message that appears afterwards is. It rises in
-  // only while the reader follows the bottom; otherwise the live pill shows.
+  // A live arrival is a message posted after this page opened that appears once
+  // the opening has arrived. It rises in only while the reader follows the
+  // bottom; otherwise the live pill shows. The rest of the backlog, still
+  // streaming in, was posted before the page opened: that — not whether it is
+  // on screen yet — is what keeps it still. Both tests hold together, so neither
+  // a misjudged end of the stream nor a skewed broker clock animates history.
   // Only the page's own list seeds what was there: seeded from the previous
-  // page, every message of an older page would rise in as an arrival.
+  // page, every message of an older page would count as new.
+  const [openedAt, setOpenedAt] = useState(() => ({ key: loadKey, at: Date.now() }));
+  if (openedAt.key !== loadKey) setOpenedAt({ key: loadKey, at: Date.now() });
   const known = useRef<{ key: string; ids: Set<string> } | null>(null);
   const arriving = useRef<Set<string>>(new Set());
   const tracking = known.current;
   const fresh =
-    pageReady && tracking?.key === loadKey
-      ? messages.filter((message) => !tracking.ids.has(message.id))
+    pageReady && opened && openedAt.key === loadKey && tracking?.key === loadKey
+      ? messages.filter(
+          (message) =>
+            !tracking.ids.has(message.id) && messageTime(message.created_at).getTime() > openedAt.at
+        )
       : [];
   if (fresh.length > 0 && followingRef.current) {
     fresh.forEach((message) => arriving.current.add(message.id));
@@ -275,7 +325,7 @@ function ChannelTimeline({
   const emptied = useRef(false);
   /** Set by the reader scrolling up; the sentinel loads an older page only when armed. */
   const armed = useRef(false);
-  if (!messagesLoaded && messages.length === 0) emptied.current = true;
+  if (reloading) emptied.current = true;
   useLayoutEffect(() => {
     if (!pageReady) return;
     if (lastLoaded.current !== loadKey || emptied.current || followingRef.current) {
@@ -314,7 +364,8 @@ function ChannelTimeline({
     readPosition: snapshot.read_positions?.[channel.id],
     unread: snapshot.unread?.[channel.id],
     atBottom: following,
-    enabled: !readOnly && historyBefore === null && pageReady && messages.length > 0,
+    // Not while the tail streams in: the newest message so far is not the channel's.
+    enabled: !readOnly && historyBefore === null && opened && messages.length > 0,
     markRead: crew.markRead,
     memory: readMemory,
   });
@@ -401,8 +452,18 @@ function ChannelTimeline({
     ]
   );
 
-  const showSkeleton = !messagesLoaded && messages.length === 0;
-  const showIntro = messagesLoaded && reachesChannelStart(messages);
+  const showSkeleton = reloading;
+  // The intro claims the channel's start is loaded, which only the whole tail
+  // can show: while it streams in, the list is short whatever the channel's
+  // size. Its place is kept meanwhile (hidden, named nothing), so a short
+  // channel's messages do not move down when it appears; a full page removes it.
+  const intro: 'shown' | 'pending' | null = !reachesChannelStart(messages)
+    ? null
+    : opened
+      ? 'shown'
+      : pageReady && historyBefore === null && messages.length > 0
+        ? 'pending'
+        : null;
   const pill: 'history' | 'live' | null =
     historyBefore !== null ? 'history' : unseenBelow && !following ? 'live' : null;
 
@@ -425,7 +486,7 @@ function ChannelTimeline({
                 role="log"
                 aria-live="polite"
                 aria-label={timelineCopy.logLabel(slug)}
-                aria-busy={loadingPage ? 'true' : undefined}
+                aria-busy={opened ? undefined : 'true'}
                 tabIndex={0}
                 className="crew-timeline-log biorouter-focus-region"
                 onKeyDown={onLogKeyDown}
@@ -439,12 +500,13 @@ function ChannelTimeline({
                     root={sentinelRoot}
                   />
                 )}
-                {showIntro && (
+                {intro && (
                   <ChannelIntro
                     channel={channel}
                     viewerId={viewerId}
                     dir={dir}
                     readOnly={readOnly}
+                    pending={intro === 'pending'}
                   />
                 )}
                 {showSkeleton && (
