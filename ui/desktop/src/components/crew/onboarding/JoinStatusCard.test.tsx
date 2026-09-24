@@ -167,6 +167,13 @@ describe('JoinStatusCard', () => {
     expect(screen.getByLabelText('Enrollment invitation')).toBeInTheDocument();
   });
 
+  it('opens straight on the token path when the probe already found it', () => {
+    mocks.crewHttp.mockReturnValue(new Promise(() => {}));
+    renderCard({ joinStatus: LEGACY_JOIN_STATUS });
+    expect(screen.getByText(legacyJoinCopy.title)).toBeInTheDocument();
+    expect(screen.queryByText(joinStateCopy.checking)).toBeNull();
+  });
+
   it('treats a daemon without the join route as the token path', async () => {
     mocks.crewHttp.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
     const { crew } = renderCard();

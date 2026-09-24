@@ -60,7 +60,10 @@ export function JoinStatusCard() {
   const { connectionId, connection, setJoinStatus, refresh, openDialog } = crew;
   const context = useJoinContext(connectionId);
   const mounted = useMounted();
-  const [state, setState] = useState<CardState>({ kind: 'checking' });
+  // The probe may already know this is the token path; say so at once rather than "Checking".
+  const [state, setState] = useState<CardState>(() =>
+    crew.joinStatus === LEGACY_JOIN_STATUS ? { kind: 'legacy' } : { kind: 'checking' }
+  );
   const [pollError, setPollError] = useState<string | null>(null);
   const [claim, setClaim] = useState<{ pending: boolean; error: string | null }>({
     pending: false,
