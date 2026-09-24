@@ -364,7 +364,7 @@ fn canonical(value: &Value) -> Value {
 #[cfg(unix)]
 mod broker;
 #[cfg(unix)]
-pub use broker::{bridge, lifecycle, serve, Broker, Connection};
+pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Directory};
 
 #[cfg(unix)]
 pub mod remote;

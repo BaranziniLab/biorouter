@@ -3,6 +3,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -10,7 +11,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 fn projection_status(p: &Value) -> Result<Option<String>> {
@@ -102,26 +103,106 @@ fn mode(p: &Value, key: &str) -> Result<Mode> {
     )
     .map_err(Into::into)
 }
-fn username(uid: u32) -> Result<String> {
-    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut found = std::ptr::null_mut();
-    let mut buffer = vec![0u8; 65536];
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut found,
-        )
-    };
-    ensure!(
-        status == 0 && !found.is_null(),
-        "identity_unavailable: Unix account cannot be resolved"
-    );
-    Ok(unsafe { std::ffi::CStr::from_ptr((*found).pw_name) }
-        .to_str()?
-        .to_owned())
+/// One Unix account as the node's account database reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub uid: u32,
+    /// The account name (`pw_name`).
+    pub name: String,
+    /// The first field of the account's GECOS entry, trimmed; `None` when empty or not UTF-8.
+    /// A label only: never validated here and never used for authority.
+    pub full_name: Option<String>,
+}
+
+/// The node's account database, as the broker reads it: point lookups only, never an
+/// enumeration. The shipped broker uses `getpwuid_r`/`getpwnam_r`; tests inject a fake through
+/// [`Broker::open_with_directory`] (feature `test-seams`).
+///
+/// Every authenticated request checks `by_uid(uid).name` against the principal's username, so
+/// an account renamed or recycled under an enrolled UID stops authenticating.
+pub trait Directory {
+    /// The account holding `uid`.
+    fn by_uid(&self, uid: u32) -> Result<Account>;
+    /// The account named exactly `name`, as NSS resolves it (which may be an alias whose
+    /// canonical name differs; callers that care compare `by_uid(account.uid)`).
+    fn by_name(&self, name: &str) -> Result<Account>;
+}
+
+/// The node's NSS account database.
+struct SystemDirectory;
+
+/// `getpwuid_r`/`getpwnam_r` buffers start here and grow on `ERANGE` up to the cap.
+const PASSWD_BUFFER_START: usize = 16 * 1024;
+const PASSWD_BUFFER_CAP: usize = 1024 * 1024;
+
+impl SystemDirectory {
+    fn lookup(
+        mut call: impl FnMut(
+            *mut libc::passwd,
+            *mut libc::c_char,
+            libc::size_t,
+            *mut *mut libc::passwd,
+        ) -> libc::c_int,
+    ) -> Result<Account> {
+        let mut size = PASSWD_BUFFER_START;
+        loop {
+            let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+            let mut found = std::ptr::null_mut();
+            let mut buffer = vec![0u8; size];
+            let status = call(
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            );
+            if status == libc::ERANGE && size < PASSWD_BUFFER_CAP {
+                size *= 4;
+                continue;
+            }
+            ensure!(
+                status == 0 && !found.is_null(),
+                "identity_unavailable: Unix account cannot be resolved"
+            );
+            // SAFETY: on success `found` points at `entry`, whose strings live in `buffer`,
+            // both alive for the rest of this iteration.
+            let entry = unsafe { &*found };
+            let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) }
+                .to_str()
+                .map_err(|_| anyhow!("identity_unavailable: Unix account name is not UTF-8"))?
+                .to_owned();
+            let full_name = if entry.pw_gecos.is_null() {
+                None
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(entry.pw_gecos) }
+                    .to_str()
+                    .ok()
+                    .and_then(|gecos| gecos.split(',').next())
+                    .map(str::trim)
+                    .filter(|first| !first.is_empty())
+                    .map(str::to_owned)
+            };
+            return Ok(Account {
+                uid: entry.pw_uid,
+                name,
+                full_name,
+            });
+        }
+    }
+}
+
+impl Directory for SystemDirectory {
+    fn by_uid(&self, uid: u32) -> Result<Account> {
+        Self::lookup(|entry, buffer, length, found| unsafe {
+            libc::getpwuid_r(uid, entry, buffer, length, found)
+        })
+    }
+    fn by_name(&self, name: &str) -> Result<Account> {
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| anyhow!("identity_unavailable: Unix account cannot be resolved"))?;
+        Self::lookup(|entry, buffer, length, found| unsafe {
+            libc::getpwnam_r(name.as_ptr(), entry, buffer, length, found)
+        })
+    }
 }
 fn private_dir(path: &Path) -> Result<()> {
     if !path.exists() {
@@ -161,6 +242,14 @@ fn sync_dir(path: &Path) -> Result<()> {
 struct Device {
     principal_id: String,
     public_key: String,
+    /// When the key was bound (seconds since the Unix epoch). Absent on devices bound before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    added_at: Option<u64>,
+    /// How the key was bound: `bootstrap`, `token` (legacy enrollment) or `invitation_code`
+    /// (S3a). Absent on devices bound before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    added_via: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Enrollment {
@@ -209,6 +298,13 @@ struct State {
     sequence: u64,
     #[serde(default)]
     read_positions: BTreeMap<String, u64>,
+    /// Host-issued workspace joins (S3a), keyed by the decimal UID. Serialized only when
+    /// non-empty, so a journal that never held one replays and re-serializes byte for byte, no
+    /// upgrade record is written on open, and an older broker (which ignores unknown fields)
+    /// replays a journal that did. Kept by every build, with or without `join-by-name`, so a
+    /// broker built without the feature never drops a pending join from state.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pending_joins: BTreeMap<String, PendingJoin>,
 }
 #[derive(Serialize, Deserialize)]
 struct Record {
@@ -343,7 +439,48 @@ pub struct Broker {
     _lock: File,
     checksum: String,
     poisoned: bool,
+    /// The account database every UID-to-name check goes through.
+    directory: Box<dyn Directory + Send>,
+    /// Where sibling runtime directories (`crew-<uid>-<hex>/broker.sock`) live: `/tmp`.
+    runtime_root: PathBuf,
+    /// Per-actor times of recent name-collision refusals (in memory only), for the rate limit
+    /// that bounds the name-existence oracle (D5).
+    name_refusals: BTreeMap<String, VecDeque<u64>>,
+    #[cfg(feature = "join-by-name")]
+    join_runtime: join::Runtime,
 }
+
+/// Collision refusals allowed per actor within [`NAME_REFUSAL_WINDOW_SECS`] before every
+/// name-bearing create or rename is answered with the generic [`NAME_RATE_LIMITED`].
+const NAME_REFUSAL_LIMIT: usize = 10;
+const NAME_REFUSAL_WINDOW_SECS: u64 = 600;
+/// The one refusal for a name that collides with another team, whether or not the caller can
+/// see it. It carries no ID, creator, member count or colliding spelling (D5).
+const TEAM_NAME_TAKEN: &str = "name_taken: A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.";
+/// As [`TEAM_NAME_TAKEN`], for channels in one team (archived channels included).
+const CHANNEL_NAME_TAKEN: &str = "name_taken: A channel with this name, or one that looks like it, already exists in this team. Choose a different name.";
+/// A workspace name a running sibling workspace of the same host account already uses.
+const WORKSPACE_NAME_TAKEN: &str = "name_taken: Another workspace you host on this server is already using this name. Choose a different name.";
+const NAME_RATE_LIMITED: &str = "rate_limited: Too many name attempts. Try again later.";
+const GENERAL_RESERVED: &str =
+    "name_invalid: Channel name general is reserved for the team's first channel.";
+const TARGET_MISMATCH: &str =
+    "target_mismatch: The person you chose no longer has that username. Refresh and choose again.";
+/// Methods whose collision refusals count toward, and are blocked by, the rate limit.
+const NAME_METHODS: [&str; 5] = [
+    "team.create",
+    "team.rename",
+    "channel.create",
+    "channel.rename",
+    "workspace.rename",
+];
+/// At most this many sibling runtime directories are probed for a workspace name.
+const SIBLING_PROBE_LIMIT: usize = 32;
+/// How long one sibling broker may take to answer `hello` during the probe.
+const SIBLING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(feature = "join-by-name")]
+mod join;
 #[derive(Clone)]
 struct Actor {
     id: String,
@@ -477,7 +614,12 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
         torn_tail,
     })
 }
-fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Result<State> {
+fn recovered_state(
+    state_value: Value,
+    sequence: u64,
+    bootstrap_key: &str,
+    initial_name: Option<&str>,
+) -> Result<State> {
     let recovered = if sequence > 0 {
         Some(
             serde_json::from_value::<State>(state_value)
@@ -513,7 +655,7 @@ fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Re
                     mode: Mode::Private,
                     institution_id: None,
                     policy_epoch: 1,
-                    name: None,
+                    name: initial_name.map(str::to_owned),
                 },
                 bootstrap_key: bootstrap_key.into(),
                 workspace_signing_key: digest(token().as_bytes()),
@@ -533,6 +675,7 @@ fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Re
                 dedupe: BTreeMap::new(),
                 sequence: 0,
                 read_positions: BTreeMap::new(),
+                pending_joins: BTreeMap::new(),
             }
         }
     };
@@ -540,6 +683,35 @@ fn recovered_state(state_value: Value, sequence: u64, bootstrap_key: &str) -> Re
 }
 impl Broker {
     pub fn open(root: &Path, bootstrap_key: &str) -> Result<Self> {
+        Self::open_inner(root, bootstrap_key, Box::new(SystemDirectory), None)
+    }
+    /// [`Broker::open`] with an injected account directory. Test builds only: the shipped
+    /// binary never enables `test-seams`, so it always reads the node's NSS database.
+    #[cfg(feature = "test-seams")]
+    pub fn open_with_directory(
+        root: &Path,
+        bootstrap_key: &str,
+        directory: Box<dyn Directory + Send>,
+    ) -> Result<Self> {
+        Self::open_inner(root, bootstrap_key, directory, None)
+    }
+    /// Point the sibling-workspace probe of `workspace.rename` at another directory than
+    /// `/tmp`. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn set_runtime_root(&mut self, runtime_root: &Path) {
+        self.runtime_root = runtime_root.to_path_buf();
+    }
+    /// Open (or initialize) a workspace. `initial_name` names a workspace this call creates; an
+    /// existing workspace keeps its stored name.
+    fn open_inner(
+        root: &Path,
+        bootstrap_key: &str,
+        directory: Box<dyn Directory + Send>,
+        initial_name: Option<&str>,
+    ) -> Result<Self> {
+        if let Some(name) = initial_name {
+            validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
+        }
         private_dir(root)?;
         let canonical_root = fs::canonicalize(root)?;
         for ancestor in canonical_root.ancestors().skip(1) {
@@ -579,7 +751,7 @@ impl Broker {
             committed,
             torn_tail,
         } = replay_journal(&journal)?;
-        let state = recovered_state(state_value, sequence, bootstrap_key)?;
+        let state = recovered_state(state_value, sequence, bootstrap_key, initial_name)?;
         if let Some(torn_bytes) = torn_tail {
             let tail = root.join(format!("torn-tail-{}", id()));
             let mut file = private_file(&tail, false)?;
@@ -597,6 +769,11 @@ impl Broker {
             _lock: lock,
             checksum,
             poisoned: false,
+            directory,
+            runtime_root: PathBuf::from("/tmp"),
+            name_refusals: BTreeMap::new(),
+            #[cfg(feature = "join-by-name")]
+            join_runtime: join::Runtime::default(),
         };
         if sequence == 0 {
             broker.commit(broker.state.clone(), "system", "workspace.initialize")?;
@@ -694,6 +871,12 @@ impl Broker {
         if req.method == "auth.bootstrap" || req.method == "auth.enroll" {
             return self.enroll(uid, conn, req);
         }
+        // `enrollment.pending` and `auth.join` are pre-authentication, like `hello` and
+        // `auth.*`: the kernel UID and (for `auth.join`) a signature by the claimed key.
+        #[cfg(feature = "join-by-name")]
+        if let Some(result) = join::pre_auth(self, uid, conn, req) {
+            return result;
+        }
         let actor = match self.authenticate_actor(uid, conn, req)? {
             Admission::Actor(actor) => *actor,
             Admission::Replay(result) => return Ok(result),
@@ -708,6 +891,7 @@ impl Broker {
                 | "blob.read"
                 | "blob.status"
                 | "reference.get"
+                | "profile.suggest"
         ) {
             return self.read(&actor, req);
         }
@@ -776,7 +960,9 @@ impl Broker {
                 .get(&device.principal_id)
                 .ok_or_else(|| anyhow!("unauthorized"))?;
             ensure!(
-                principal.active && principal.uid == uid && principal.username == username(uid)?,
+                principal.active
+                    && principal.uid == uid
+                    && principal.username == self.directory.by_uid(uid)?.name,
                 "unauthorized: account enrollment changed"
             );
             self.verify(uid, conn, req, &device.public_key)?;
@@ -858,8 +1044,27 @@ impl Broker {
             self.state.dedupe.len() < 100_000,
             "quota_exceeded: workspace operation quota requires maintenance"
         );
+        let naming = NAME_METHODS.contains(&req.method.as_str());
+        if naming {
+            // Checked before anything about the name is evaluated, so the answer to a
+            // rate-limited attempt is the same whether or not the name is taken.
+            ensure!(
+                self.recent_name_refusals(&actor.id, now()) < NAME_REFUSAL_LIMIT,
+                NAME_RATE_LIMITED
+            );
+        }
         let mut state = self.state.clone();
-        let result = self.mutate(&mut state, actor, req)?;
+        #[cfg(feature = "join-by-name")]
+        join::prune_expired(&mut state, now());
+        let result = match self.mutate(&mut state, actor, req) {
+            Ok(result) => result,
+            Err(error) => {
+                if naming && error.to_string().starts_with("name_taken:") {
+                    self.record_name_refusal(&actor.id, now());
+                }
+                return Err(error);
+            }
+        };
         state.dedupe.insert(
             key,
             Cached {
@@ -900,17 +1105,57 @@ impl Broker {
                 .is_none_or(|expected| expected == &node_id),
             "node_identity_changed: workspace belongs to another writer node"
         );
-        let payload = serde_json::to_vec(&json!([
-            self.state.workspace.id,
-            self.state.workspace.host_uid,
-            nonce,
-            public_key,
-            node_id
-        ]))?;
-        let signature = hex::encode(key.sign(&payload).to_bytes());
+        let workspace = &self.state.workspace;
+        let signature = hex::encode(
+            key.sign(&hello_v1_payload(
+                &workspace.id,
+                workspace.host_uid,
+                nonce,
+                &public_key,
+                &node_id,
+            ))
+            .to_bytes(),
+        );
+        let capabilities = Self::capabilities();
+        // v2 is sent beside v1: a daemon that verifies it may trust the name, mode,
+        // institution, policy epoch and capabilities for display. PROTOCOL_VERSION stays 1.
+        let signature_v2 = hex::encode(
+            key.sign(
+                &HelloV2 {
+                    workspace_id: &workspace.id,
+                    host_uid: workspace.host_uid,
+                    challenge_nonce: nonce,
+                    workspace_public_key: &public_key,
+                    node_id: &node_id,
+                    mode: &workspace.mode,
+                    institution_id: workspace.institution_id.as_deref(),
+                    policy_epoch: workspace.policy_epoch,
+                    name: workspace.name.as_deref(),
+                    capabilities: &capabilities,
+                }
+                .signing_payload(),
+            )
+            .to_bytes(),
+        );
         Ok(
-            json!({"protocol":1,"workspace_id":self.state.workspace.id,"host_uid":self.state.workspace.host_uid,"mode":self.state.workspace.mode,"institution_id":self.state.workspace.institution_id,"policy_epoch":self.state.workspace.policy_epoch,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"capabilities":["human_chat","signed_devices","resumable_blobs","scoped_runs"],"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
+            json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
         )
+    }
+    /// What `hello` advertises, in the order it advertises it (the v2 signature covers the
+    /// order).
+    fn capabilities() -> Vec<&'static str> {
+        #[allow(unused_mut)]
+        let mut capabilities = vec![
+            "human_chat",
+            "signed_devices",
+            "resumable_blobs",
+            "scoped_runs",
+            "human_names_v1",
+            "unique_names_v1",
+        ];
+        #[cfg(feature = "join-by-name")]
+        capabilities.push("join_by_name_v1");
+        capabilities
     }
     fn challenge(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
         let device = text(&req.params, "device_id")?;
@@ -1000,22 +1245,37 @@ impl Broker {
         }
         self.verify(uid, conn, req, public_key)?;
         let mut state = self.state.clone();
-        let current_username = username(uid)?;
+        #[cfg(feature = "join-by-name")]
+        join::prune_expired(&mut state, now());
+        let current_username = self.directory.by_uid(uid)?.name;
         let active = state.principals.values().find(|p| p.uid == uid && p.active);
         let principal = match (existing_principal_id.as_deref(), active) {
             (Some(expected), Some(principal)) if principal.id == expected && principal.username == current_username => principal.clone(),
-            (None, None) => Principal {
-                id: id(), uid, username: current_username.clone(), nickname: current_username,
-                avatar: None, active: true,
-            },
+            (None, None) => {
+                Self::ensure_username_free(&state, uid, &current_username)?;
+                Principal {
+                    id: id(), uid, username: current_username.clone(), nickname: current_username,
+                    avatar: None, active: true,
+                }
+            }
             _ => bail!("identity_mismatch: enrollment principal changed; request a new invitation explicitly identifying the existing principal or offboard the old account"),
         };
         let device_id = digest(&hex::decode(public_key)?);
+        Self::ensure_new_device(&state, &device_id)?;
         state.devices.insert(
             device_id.clone(),
             Device {
                 principal_id: principal.id.clone(),
                 public_key: public_key.into(),
+                added_at: Some(now()),
+                added_via: Some(
+                    if req.method == "auth.bootstrap" {
+                        "bootstrap"
+                    } else {
+                        "token"
+                    }
+                    .into(),
+                ),
             },
         );
         state
@@ -1025,9 +1285,36 @@ impl Broker {
             state
                 .enrollments
                 .remove(&digest(text(&req.params, "invitation")?.as_bytes()));
+            #[cfg(feature = "join-by-name")]
+            join::on_legacy_enrolled(&mut state, uid);
         }
         self.commit(state, &principal.id, &req.method)?;
         Ok(json!({"principal":principal,"device_id":device_id,"workspace":self.state.workspace}))
+    }
+    /// D3: no two active principals share a canonical username. Refuses creating a principal
+    /// for `uid` named `username` while another UID's active principal has a colliding name
+    /// (case, width, separators, invisible characters or lookalikes ignored).
+    fn ensure_username_free(s: &State, uid: u32, username: &str) -> Result<()> {
+        if let Some(other) = s
+            .principals
+            .values()
+            .find(|p| p.active && p.uid != uid && names_collide(&p.username, username))
+        {
+            bail!(
+                "identity_conflict: another active member is @{0}; remove the old @{0} first",
+                other.username
+            );
+        }
+        Ok(())
+    }
+    /// SR11: a key that is already a device of this workspace is never bound again, to the
+    /// same principal or another.
+    fn ensure_new_device(s: &State, device_id: &str) -> Result<()> {
+        ensure!(
+            !s.devices.contains_key(device_id),
+            "device_conflict: this device key is already enrolled in this workspace; use a new device key"
+        );
+        Ok(())
     }
     fn protected_channel_ids(s: &State) -> BTreeSet<&str> {
         s.channels
@@ -1126,7 +1413,7 @@ impl Broker {
         ensure!(
             p.active
                 && p.uid == uid
-                && p.username == username(uid)?
+                && p.username == self.directory.by_uid(uid)?.name
                 && !run.revoked
                 && run.expires_at >= now()
                 && run.policy_epoch == self.state.workspace.policy_epoch,
@@ -1221,6 +1508,7 @@ impl Broker {
             "reference.get" => self.read_reference_get(actor, req),
             "blob.status" => self.read_blob_status(actor, req),
             "blob.read" => self.read_blob_read(actor, req),
+            "profile.suggest" => self.read_profile_suggest(actor),
             _ => bail!("unsupported: method unavailable"),
         }
     }
@@ -1228,6 +1516,63 @@ impl Broker {
         let mut value = json!(message);
         value["sequence"] = json!(message.id);
         value
+    }
+    /// The display-only names that go beside messages in a result: `people` for every author,
+    /// and `channel_names` for the channels the messages name, each checked at runtime against
+    /// what the actor can read (never a `debug_assert!`), so no name leaves the actor's view.
+    fn message_names<'a>(
+        &self,
+        s: &State,
+        actor: &Actor,
+        messages: impl IntoIterator<Item = &'a Message>,
+    ) -> (Value, Value) {
+        let index = PeopleIndex::new(s);
+        let mut people = serde_json::Map::new();
+        let mut channels = BTreeSet::new();
+        for message in messages {
+            if !people.contains_key(&message.actor_id) {
+                if let Some(principal) = s.principals.get(&message.actor_id) {
+                    people.insert(message.actor_id.clone(), index.person_wire(principal));
+                }
+            }
+            channels.insert(message.channel_id.as_str());
+            channels.extend(message.source_channels.iter().map(String::as_str));
+        }
+        let channel_names: serde_json::Map<String, Value> = channels
+            .into_iter()
+            .filter_map(|id| {
+                self.channel(s, &actor.id, id, false)
+                    .ok()
+                    .map(|channel| (id.to_owned(), json!(sanitize_channel_name(&channel.name))))
+            })
+            .collect();
+        (Value::Object(people), Value::Object(channel_names))
+    }
+    fn read_profile_suggest(&self, actor: &Actor) -> Result<Value> {
+        let s = &self.state;
+        let principal = s
+            .principals
+            .get(&actor.id)
+            .ok_or_else(|| anyhow!("unauthorized"))?;
+        // The actor's own account only: one NSS lookup, never on the snapshot path. The
+        // suggestion passes the same rules a person's own display name must pass, or nothing
+        // is suggested.
+        let full_name = self
+            .directory
+            .by_uid(principal.uid)?
+            .full_name
+            .and_then(|name| {
+                validate_display_name_for(
+                    &name,
+                    &principal.username,
+                    s.principals
+                        .values()
+                        .filter(|other| other.id != principal.id)
+                        .map(|other| other.username.as_str()),
+                )
+                .ok()
+            });
+        Ok(json!({ "full_name": full_name }))
     }
     fn read_position_wire(&self, s: &State, actor: &Actor, channel: &str, sequence: u64) -> Value {
         json!(s
@@ -1290,7 +1635,12 @@ impl Broker {
                             && self.visible(&self.state, actor, message)
                     })
                     .ok_or_else(|| anyhow!("forbidden: message unavailable"))?;
-                Ok(Self::message_wire(message))
+                let mut wire = Self::message_wire(message);
+                let (people, channel_names) =
+                    self.message_names(&self.state, actor, std::iter::once(message));
+                wire["people"] = people;
+                wire["channel_names"] = channel_names;
+                Ok(wire)
             }
             "channel.read" => {
                 let channel = text(&req.params, "channel_id")?;
@@ -1339,9 +1689,241 @@ impl Broker {
                 .count();
             unread.insert(channel.id.clone(), count);
         }
-        Ok(
-            json!({"workspace":s.workspace,"protected_channel_ids":protected_channel_ids,"actor":s.principals.get(&actor.id),"principals":s.principals.values().filter(|p|p.active).collect::<Vec<_>>(),"teams":s.teams.values().filter(|t|t.members.contains(&actor.id)).collect::<Vec<_>>(),"channels":s.channels.values().filter(|c|c.members.contains(&actor.id)).collect::<Vec<_>>(),"invitations":s.invitations.values().filter(|i|i.principal_id==actor.id || i.inviter_id==actor.id).collect::<Vec<_>>(),"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()}),
-        )
+        let host = self.manager(s, &actor.id).is_ok();
+        let now = now();
+        let index = PeopleIndex::new(s);
+        let teams: Vec<&Team> = s
+            .teams
+            .values()
+            .filter(|t| t.members.contains(&actor.id))
+            .collect();
+        let channels: Vec<&Channel> = s
+            .channels
+            .values()
+            .filter(|c| c.members.contains(&actor.id))
+            .collect();
+        // An invitee no longer sees an invitation once it has expired (it can never be
+        // accepted); its inviter still does, marked `expired`.
+        let invitations: Vec<&Invitation> = s
+            .invitations
+            .values()
+            .filter(|i| {
+                i.inviter_id == actor.id || (i.principal_id == actor.id && i.expires_at >= now)
+            })
+            .collect();
+        let mut workspace = json!(s.workspace);
+        workspace["host_principal_id"] = json!(host_principal_id(s));
+        let stale = if host {
+            self.stale_principals(s)
+        } else {
+            BTreeSet::new()
+        };
+        let principals: Vec<Value> = s
+            .principals
+            .values()
+            .filter(|p| p.active)
+            .map(|p| {
+                let mut wire = index.principal_wire(p);
+                if stale.contains(p.id.as_str()) {
+                    wire["account_stale"] = json!(true);
+                }
+                wire
+            })
+            .collect();
+        let former_principals = Self::former_principals(s, &index, &teams, &channels, &invitations);
+        let actor_wire = s.principals.get(&actor.id).map(|principal| {
+            let mut wire = index.principal_wire(principal);
+            wire["devices"] = Value::Array(
+                s.devices
+                    .iter()
+                    .filter(|(_, device)| device.principal_id == actor.id)
+                    .map(|(device_id, device)| {
+                        json!({
+                            "fingerprint": crate::invitation::grouped_fingerprint(device_id),
+                            "added_at": device.added_at,
+                            "added_via": device.added_via,
+                        })
+                    })
+                    .collect(),
+            );
+            wire
+        });
+        let teams_wire = Self::teams_wire(&teams);
+        let channels_wire = Self::channels_wire(&channels);
+        let invitations_wire: Vec<Value> = invitations
+            .iter()
+            .map(|invitation| Self::invitation_wire(s, &index, invitation, now))
+            .collect();
+        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":protected_channel_ids,"actor":actor_wire,"principals":principals,"former_principals":former_principals,"teams":teams_wire,"channels":channels_wire,"invitations":invitations_wire,"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()});
+        if host {
+            let refusals: BTreeMap<&str, usize> = self
+                .name_refusals
+                .keys()
+                .map(|id| (id.as_str(), self.recent_name_refusals(id, now)))
+                .filter(|(_, count)| *count > 0)
+                .collect();
+            snapshot["name_collision_refusals"] = json!(refusals);
+            #[cfg(feature = "join-by-name")]
+            {
+                snapshot["pending_joins"] = join::project_for_manager(self, s);
+            }
+        }
+        Ok(snapshot)
+    }
+    /// Inactive principals referenced by the actor's visible objects: the members, creator,
+    /// owner and pending owner of visible teams and channels, and the invitee and inviter of
+    /// visible invitations. Display only; bounded by team and channel sizes.
+    fn former_principals(
+        s: &State,
+        index: &PeopleIndex,
+        teams: &[&Team],
+        channels: &[&Channel],
+        invitations: &[&Invitation],
+    ) -> Vec<Value> {
+        let mut referenced: BTreeSet<&str> = BTreeSet::new();
+        for team in teams {
+            referenced.extend(team.members.iter().map(String::as_str));
+            referenced.insert(&team.created_by);
+        }
+        for channel in channels {
+            referenced.extend(channel.members.iter().map(String::as_str));
+            referenced.insert(&channel.created_by);
+            referenced.insert(&channel.owner_id);
+            referenced.extend(channel.pending_owner.as_deref());
+        }
+        for invitation in invitations {
+            referenced.insert(&invitation.principal_id);
+            referenced.insert(&invitation.inviter_id);
+        }
+        referenced
+            .into_iter()
+            .filter_map(|id| s.principals.get(id))
+            .filter(|p| !p.active)
+            .map(|p| {
+                json!({
+                    "id": p.id,
+                    "username": p.username,
+                    "display_name": index.display_name(p),
+                    "avatar": p.avatar,
+                    "active": false,
+                })
+            })
+            .collect()
+    }
+    /// Visible teams with their computed, never stored, name fields: the sanitized
+    /// `display_name`, the `handle` a resolver matches against, `name_conflict` (another team
+    /// **the viewer can see** has the same name) and `name_invalid` (a legacy name the current
+    /// rules refuse).
+    fn teams_wire(teams: &[&Team]) -> Vec<Value> {
+        let keys: Vec<(String, String)> = teams
+            .iter()
+            .map(|t| (name_key(&t.name), skeleton_key(&t.name)))
+            .collect();
+        teams
+            .iter()
+            .enumerate()
+            .map(|(position, team)| {
+                let conflict = keys.iter().enumerate().any(|(other, key)| {
+                    other != position && (key.0 == keys[position].0 || key.1 == keys[position].1)
+                });
+                let mut wire = json!(team);
+                wire["display_name"] = json!(sanitize_team_name(&team.name));
+                wire["handle"] = json!(keys[position].0);
+                wire["name_conflict"] = json!(conflict);
+                wire["name_invalid"] = json!(validate_team_name(&team.name).is_err());
+                wire
+            })
+            .collect()
+    }
+    /// Visible channels with the same computed fields as [`Self::teams_wire`]; a conflict is
+    /// another visible channel **in the same team**. A stored name that is not a canonical
+    /// slug (a legacy `Data Analysis`) is `name_invalid`.
+    fn channels_wire(channels: &[&Channel]) -> Vec<Value> {
+        let keys: Vec<(String, String)> = channels
+            .iter()
+            .map(|c| (name_key(&c.name), skeleton_key(&c.name)))
+            .collect();
+        channels
+            .iter()
+            .enumerate()
+            .map(|(position, channel)| {
+                let conflict = channels.iter().enumerate().any(|(other, peer)| {
+                    other != position
+                        && peer.team_id == channel.team_id
+                        && (keys[other].0 == keys[position].0 || keys[other].1 == keys[position].1)
+                });
+                let mut wire = json!(channel);
+                wire["display_name"] = json!(sanitize_channel_name(&channel.name));
+                wire["handle"] = json!(keys[position].0);
+                wire["name_conflict"] = json!(conflict);
+                wire["name_invalid"] =
+                    json!(canonical_channel_name(&channel.name)
+                        .map_or(true, |slug| slug != channel.name));
+                wire
+            })
+            .collect()
+    }
+    /// An invitation as its invitee or inviter sees it: the target's current name (the
+    /// team's, or the channel's plus its team's), who invited, and whether it has expired.
+    /// Naming the target to its intended invitee is the purpose of an invitation.
+    fn invitation_wire(s: &State, index: &PeopleIndex, invitation: &Invitation, now: u64) -> Value {
+        let (target_name, team_name) = match invitation.kind.as_str() {
+            "team" => (
+                s.teams
+                    .get(&invitation.target_id)
+                    .map(|team| sanitize_team_name(&team.name)),
+                None,
+            ),
+            _ => {
+                let channel = s.channels.get(&invitation.target_id);
+                (
+                    channel.map(|channel| sanitize_channel_name(&channel.name)),
+                    channel
+                        .and_then(|channel| s.teams.get(&channel.team_id))
+                        .map(|team| sanitize_team_name(&team.name)),
+                )
+            }
+        };
+        let mut wire = json!(invitation);
+        wire["target_name"] = json!(target_name);
+        if invitation.kind != "team" {
+            wire["team_name"] = json!(team_name);
+        }
+        wire["inviter"] = s
+            .principals
+            .get(&invitation.inviter_id)
+            .map(|inviter| {
+                json!({"username": inviter.username, "display_name": index.display_name(inviter)})
+            })
+            .unwrap_or(Value::Null);
+        wire["expired"] = json!(invitation.expires_at < now);
+        wire
+    }
+    /// Host snapshot only: of the active principals whose usernames collide with another
+    /// active principal's (a legacy journal from before D3), those whose UID no longer maps to
+    /// their username. One NSS lookup per principal in a colliding pair, nothing otherwise.
+    fn stale_principals<'s>(&self, s: &'s State) -> BTreeSet<&'s str> {
+        let active: Vec<&Principal> = s.principals.values().filter(|p| p.active).collect();
+        let keys: Vec<(String, String)> = active
+            .iter()
+            .map(|p| (name_key(&p.username), skeleton_key(&p.username)))
+            .collect();
+        active
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| {
+                keys.iter().enumerate().any(|(other, key)| {
+                    other != *position && (key.0 == keys[*position].0 || key.1 == keys[*position].1)
+                })
+            })
+            .filter(|(_, principal)| {
+                !self
+                    .directory
+                    .by_uid(principal.uid)
+                    .is_ok_and(|account| account.name == principal.username)
+            })
+            .map(|(_, principal)| principal.id.as_str())
+            .collect()
     }
     fn read_messages_history(&self, actor: &Actor, req: &Request) -> Result<Value> {
         let s = &self.state;
@@ -1384,8 +1966,11 @@ impl Broker {
             .last()
             .map(|message| message.id.clone())
             .or_else(|| p.get("after").and_then(Value::as_str).map(str::to_owned));
+        let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
-        Ok(json!({"messages":messages,"cursor":cursor}))
+        Ok(
+            json!({"messages":messages,"cursor":cursor,"people":people,"channel_names":channel_names}),
+        )
     }
     fn read_run_remote_scope(&self, actor: &Actor, _req: &Request) -> Result<Value> {
         let run = actor
@@ -1418,9 +2003,10 @@ impl Broker {
             .take(200)
             .collect();
         let restricted = messages.iter().any(|message| message.restricted);
+        let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
         Ok(
-            json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":restricted}),
+            json!({"run_id":run.id,"policy_epoch":s.workspace.policy_epoch,"source_channels":run.source_channels,"messages":messages,"restricted":restricted,"people":people,"channel_names":channel_names}),
         )
     }
     fn read_reference_get(&self, actor: &Actor, req: &Request) -> Result<Value> {
@@ -1504,7 +2090,13 @@ impl Broker {
         }
         Ok(())
     }
-    fn mutate(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+    fn mutate(&mut self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        // S3a: the new form of `enrollment.invite` (params carry `username`),
+        // `enrollment.approve` and `enrollment.cancel`.
+        #[cfg(feature = "join-by-name")]
+        if let Some(result) = join::mutate(self, s, actor, req) {
+            return result;
+        }
         match req.method.as_str() {
             "channel.read" => self.mutate_channel_read(s, actor, req),
             "profile.update" => self.mutate_profile_update(s, actor, req),
@@ -1512,7 +2104,10 @@ impl Broker {
             "enrollment.revoke" => self.mutate_enrollment_revoke(s, actor, req),
             "policy.set" => self.mutate_policy_set(s, actor, req),
             "team.create" => self.mutate_team_create(s, actor, req),
+            "team.rename" => self.mutate_team_rename(s, actor, req),
             "channel.create" => self.mutate_channel_create(s, actor, req),
+            "channel.rename" => self.mutate_channel_rename(s, actor, req),
+            "workspace.rename" => self.mutate_workspace_rename(s, actor, req),
             "invitation.create" => self.mutate_invitation_create(s, actor, req),
             "invitation.accept" => self.mutate_invitation_accept(s, actor, req),
             "channel.archive" | "channel.transfer" | "membership.revoke" => {
@@ -1546,8 +2141,27 @@ impl Broker {
     fn mutate_profile_update(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
-        let nickname = text(p, "nickname")?;
-        ensure!(nickname.len() <= 120, "invalid_params: nickname too long");
+        let own = s
+            .principals
+            .get(who)
+            .ok_or_else(|| anyhow!("unauthorized"))?
+            .username
+            .clone();
+        // `nickname: null` resets the display name to the username (D2); a string must pass
+        // the display-name rules, including not being another person's username.
+        let nickname = match p.get("nickname") {
+            Some(Value::Null) => own.clone(),
+            Some(Value::String(nickname)) => validate_display_name_for(
+                nickname,
+                &own,
+                s.principals
+                    .values()
+                    .filter(|other| other.id != *who)
+                    .map(|other| other.username.as_str()),
+            )
+            .map_err(|error| anyhow!(error.wire()))?,
+            _ => bail!("invalid_params: nickname must be a string or null"),
+        };
         let avatar = p.get("avatar").and_then(Value::as_str);
         ensure!(
             avatar.is_none_or(|a| a.chars().count() <= 12 && !a.chars().any(char::is_control)),
@@ -1557,7 +2171,7 @@ impl Broker {
             .principals
             .get_mut(who)
             .ok_or_else(|| anyhow!("unauthorized"))?;
-        profile.nickname = nickname.into();
+        profile.nickname = nickname;
         profile.avatar = avatar.map(str::to_owned);
         Ok(json!(profile))
     }
@@ -1571,7 +2185,7 @@ impl Broker {
         let who = &actor.id;
         self.manager(s, who)?;
         let uid: u32 = number(p, "uid")?.try_into()?;
-        let current_username = username(uid)?;
+        let current_username = self.directory.by_uid(uid)?.name;
         let existing_principal_id = match p.get("existing_principal_id") {
             None | Some(Value::Null) => None,
             Some(Value::String(value)) => Some(value.clone()),
@@ -1586,16 +2200,20 @@ impl Broker {
                 ensure!(principal.username == current_username, "identity_mismatch: UID account name changed; offboard the old principal before enrollment");
                 ensure!(existing_principal_id.as_deref() == Some(principal.id.as_str()), "invalid_params: adding a device requires the active existing_principal_id; offboard first if this is a replacement account");
             }
-            None => ensure!(
-                existing_principal_id.is_none(),
-                "invalid_params: no active principal exists for this UID"
-            ),
+            None => {
+                ensure!(
+                    existing_principal_id.is_none(),
+                    "invalid_params: no active principal exists for this UID"
+                );
+                Self::ensure_username_free(s, uid, &current_username)?;
+            }
         }
         let key = text(p, "public_key")?;
         let bytes: [u8; 32] = hex::decode(key)?
             .try_into()
             .map_err(|_| anyhow!("invalid_params: Ed25519 key"))?;
         VerifyingKey::from_bytes(&bytes)?;
+        Self::ensure_new_device(s, &digest(&bytes))?;
         let invitation = token();
         s.enrollments.insert(
             digest(invitation.as_bytes()),
@@ -1621,10 +2239,18 @@ impl Broker {
         self.manager(s, who)?;
         let target = text(p, "principal_id")?;
         ensure!(target != who, "forbidden: cannot revoke workspace host");
-        s.principals
-            .get_mut(target)
-            .ok_or_else(|| anyhow!("forbidden: principal unavailable"))?
-            .active = false;
+        ensure!(
+            s.principals.contains_key(target),
+            "forbidden: principal unavailable"
+        );
+        check_expected_username(s, p, target)?;
+        let principal = s.principals.get_mut(target).expect("checked principal");
+        principal.active = false;
+        #[cfg(feature = "join-by-name")]
+        {
+            let (uid, username) = (principal.uid, principal.username.clone());
+            join::on_principal_revoked(s, uid, &username);
+        }
         s.devices.retain(|_, d| d.principal_id != target);
         s.enrollments.retain(|_, e| {
             s.principals
@@ -1664,14 +2290,13 @@ impl Broker {
         let p = &req.params;
         let who = &actor.id;
         ensure!(s.teams.len() < 100, "quota_exceeded: maximum teams");
-        let name = text(p, "name")?;
-        ensure!(name.len() <= 120, "invalid_params: name too long");
+        let name = Self::team_name_for(s, p, None)?;
         let team_id = id();
         let channel_id = id();
         let members = BTreeSet::from([who.clone()]);
         let team = Team {
             id: team_id.clone(),
-            name: name.into(),
+            name,
             created_by: who.clone(),
             members: members.clone(),
             general_channel_id: channel_id.clone(),
@@ -1679,7 +2304,7 @@ impl Broker {
         let channel = Channel {
             id: channel_id.clone(),
             team_id: team_id.clone(),
-            name: "general".into(),
+            name: names::RESERVED_CHANNEL_NAME.into(),
             created_by: who.clone(),
             owner_id: who.clone(),
             members,
@@ -1706,8 +2331,7 @@ impl Broker {
             "forbidden: team unavailable"
         );
         ensure!(s.channels.len() < 1000, "quota_exceeded: maximum channels");
-        let name = text(p, "name")?;
-        ensure!(name.len() <= 120, "invalid_params: name too long");
+        let name = Self::channel_name_for(s, p, team_id, None)?;
         let classification = match p.get("classification") {
             Some(v) => serde_json::from_value(v.clone())?,
             None => Classification::Restricted,
@@ -1715,7 +2339,7 @@ impl Broker {
         let c = Channel {
             id: id(),
             team_id: team_id.into(),
-            name: name.into(),
+            name,
             created_by: who.clone(),
             owner_id: who.clone(),
             members: BTreeSet::from([who.clone()]),
@@ -1725,6 +2349,116 @@ impl Broker {
         };
         s.channels.insert(c.id.clone(), c.clone());
         Ok(json!(c))
+    }
+    /// The validated, cleaned team name in `p["name"]`, refused when it collides with any
+    /// **other** team in the workspace (whatever the caller's membership, with one wording
+    /// either way). `renaming` excludes the team being renamed, so changing only the case or
+    /// spacing of its own name is allowed.
+    fn team_name_for(s: &State, p: &Value, renaming: Option<&str>) -> Result<String> {
+        let name = validate_team_name(text(p, "name")?).map_err(|error| anyhow!(error.wire()))?;
+        ensure!(
+            !s.teams
+                .values()
+                .any(|team| Some(team.id.as_str()) != renaming && names_collide(&team.name, &name)),
+            TEAM_NAME_TAKEN
+        );
+        Ok(name)
+    }
+    /// The canonical channel slug for `p["name"]` in `team_id` (older clients sending
+    /// `"Data Analysis"` get `data-analysis`), refused when it collides with any other channel
+    /// in the team, archived and hidden ones included. `general` belongs to the channel the
+    /// team was created with.
+    fn channel_name_for(
+        s: &State,
+        p: &Value,
+        team_id: &str,
+        renaming: Option<&str>,
+    ) -> Result<String> {
+        let name =
+            canonical_channel_name(text(p, "name")?).map_err(|error| anyhow!(error.wire()))?;
+        let general = s
+            .teams
+            .get(team_id)
+            .map(|team| team.general_channel_id.as_str());
+        ensure!(
+            name != names::RESERVED_CHANNEL_NAME || (renaming.is_some() && renaming == general),
+            GENERAL_RESERVED
+        );
+        ensure!(
+            !s.channels.values().any(|channel| {
+                channel.team_id == team_id
+                    && Some(channel.id.as_str()) != renaming
+                    && names_collide(&channel.name, &name)
+            }),
+            CHANNEL_NAME_TAKEN
+        );
+        Ok(name)
+    }
+    /// `team.rename {team_id, name}`: the team's creator only. The ID, memberships and
+    /// invitations are unchanged; the old name is free at once.
+    fn mutate_team_rename(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let team_id = text(p, "team_id")?;
+        ensure!(
+            s.teams
+                .get(team_id)
+                .is_some_and(|team| team.created_by == *who && team.members.contains(who)),
+            "forbidden: team creator required"
+        );
+        let name = Self::team_name_for(s, p, Some(team_id))?;
+        let team = s.teams.get_mut(team_id).expect("authorized team");
+        team.name = name;
+        Ok(json!(team))
+    }
+    /// `channel.rename {channel_id, name}`: the channel's current owner only, and not while
+    /// archived (an archived channel is read-only and keeps its name reserved).
+    fn mutate_channel_rename(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        let channel_id = text(p, "channel_id")?;
+        let channel = self.channel(s, who, channel_id, true)?;
+        ensure!(
+            channel.owner_id == *who,
+            "forbidden: current owner required"
+        );
+        let team_id = channel.team_id.clone();
+        let name = Self::channel_name_for(s, p, &team_id, Some(channel_id))?;
+        let channel = s.channels.get_mut(channel_id).expect("authorized channel");
+        channel.name = name;
+        Ok(json!(channel))
+    }
+    /// `workspace.rename {name}`: the host only. Best-effort uniqueness per host account: a
+    /// name a running sibling workspace of this account already answers `hello` with is
+    /// refused.
+    fn mutate_workspace_rename(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        self.manager(s, &actor.id)?;
+        ensure!(
+            actor.run.is_none(),
+            "forbidden: human host decision required"
+        );
+        let name = text(&req.params, "name")?;
+        validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
+        if s.workspace.name.as_deref() != Some(name) {
+            ensure!(
+                !sibling_workspace_names(
+                    &self.runtime_root,
+                    s.workspace.host_uid,
+                    s.runtime_basename.as_deref(),
+                    &s.workspace.id,
+                )
+                .iter()
+                .any(|sibling| sibling == name),
+                WORKSPACE_NAME_TAKEN
+            );
+            s.workspace.name = Some(name.to_owned());
+        }
+        Ok(json!(s.workspace))
     }
     fn mutate_invitation_create(
         &self,
@@ -1758,6 +2492,7 @@ impl Broker {
             }
             _ => bail!("invalid_params: invitation kind"),
         }
+        check_expected_username(s, p, principal)?;
         let invitation = Invitation {
             id: id(),
             kind: kind.into(),
@@ -1820,20 +2555,34 @@ impl Broker {
         let channel = text(p, "channel_id")?;
         let c = self.channel(s, who, channel, true)?;
         ensure!(c.owner_id == *who, "forbidden: current owner required");
+        match req.method.as_str() {
+            "channel.transfer" => {
+                let successor = text(p, "successor_id")?;
+                // The successor must still be an active principal: an offboarded member's ID
+                // in a stale snapshot is refused, as invitation.create refuses it (FR18).
+                ensure!(
+                    successor != who
+                        && c.members.contains(successor)
+                        && s.principals.get(successor).is_some_and(|p| p.active),
+                    "forbidden: eligible successor required"
+                );
+                check_expected_username(s, p, successor)?;
+            }
+            "membership.revoke" => {
+                let target = text(p, "principal_id")?;
+                ensure!(target != who, "forbidden: transfer before owner removal");
+                check_expected_username(s, p, target)?;
+            }
+            _ => {}
+        }
         let c = s.channels.get_mut(channel).expect("authorized channel");
         match req.method.as_str() {
             "channel.archive" => c.archived = true,
             "channel.transfer" => {
-                let successor = text(p, "successor_id")?;
-                ensure!(
-                    successor != who && c.members.contains(successor),
-                    "forbidden: eligible successor required"
-                );
-                c.pending_owner = Some(successor.into());
+                c.pending_owner = Some(text(p, "successor_id")?.into());
             }
             _ => {
                 let target = text(p, "principal_id")?;
-                ensure!(target != who, "forbidden: transfer before owner removal");
                 c.members.remove(target);
                 if c.pending_owner.as_deref() == Some(target) {
                     c.pending_owner = None;
@@ -2347,6 +3096,114 @@ impl Broker {
         );
         Ok(())
     }
+    /// Collision refusals `actor` received within the window ending at `now`.
+    fn recent_name_refusals(&self, actor: &str, now: u64) -> usize {
+        self.name_refusals.get(actor).map_or(0, |times| {
+            times
+                .iter()
+                .filter(|at| now.saturating_sub(**at) < NAME_REFUSAL_WINDOW_SECS)
+                .count()
+        })
+    }
+    fn record_name_refusal(&mut self, actor: &str, now: u64) {
+        let times = self.name_refusals.entry(actor.to_owned()).or_default();
+        times.retain(|at| now.saturating_sub(*at) < NAME_REFUSAL_WINDOW_SECS);
+        times.push_back(now);
+        while times.len() > NAME_REFUSAL_LIMIT {
+            times.pop_front();
+        }
+    }
+}
+
+/// The host's active principal, injected into the snapshot's `workspace` at projection time
+/// and never stored (it would be journaled otherwise).
+fn host_principal_id(s: &State) -> Option<&str> {
+    s.principals
+        .values()
+        .find(|p| p.active && p.uid == s.workspace.host_uid)
+        .map(|p| p.id.as_str())
+}
+
+/// If `params` carries `expected_username` (the `@username` the person confirmed, inside
+/// their signature), the target principal must still have exactly that username. Closes the
+/// window between a (possibly tampered) snapshot and the mutation that acts on it.
+fn check_expected_username(s: &State, params: &Value, principal_id: &str) -> Result<()> {
+    let expected = match params.get("expected_username") {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(expected)) => expected,
+        Some(_) => bail!("invalid_params: expected_username must be a string"),
+    };
+    let expected = expected.strip_prefix('@').unwrap_or(expected);
+    ensure!(
+        s.principals
+            .get(principal_id)
+            .is_some_and(|target| target.username == expected),
+        TARGET_MISMATCH
+    );
+    Ok(())
+}
+
+/// Display names for one projection. The username keys of every principal (active or
+/// former) are computed once, so projecting N people costs N key computations rather than N².
+struct PeopleIndex<'a> {
+    keys: BTreeMap<String, BTreeSet<&'a str>>,
+    skeletons: BTreeMap<String, BTreeSet<&'a str>>,
+}
+
+impl<'a> PeopleIndex<'a> {
+    fn new(s: &'a State) -> Self {
+        let mut index = Self {
+            keys: BTreeMap::new(),
+            skeletons: BTreeMap::new(),
+        };
+        for principal in s.principals.values() {
+            let username = principal.username.as_str();
+            index
+                .keys
+                .entry(name_key(username))
+                .or_default()
+                .insert(username);
+            index
+                .skeletons
+                .entry(skeleton_key(username))
+                .or_default()
+                .insert(username);
+        }
+        index
+    }
+    /// [`sanitize_display_name`] against every other principal's username: the stored
+    /// nickname with the characters the validator refuses stripped, or the username when
+    /// nothing valid is left or the result reads as someone else's username.
+    fn display_name(&self, principal: &Principal) -> String {
+        let own = principal.username.as_str();
+        let name = sanitize_display_name(&principal.nickname, own, std::iter::empty::<&str>());
+        let key = name_key(&name);
+        if key == name_key(own) {
+            return name;
+        }
+        let other = |set: Option<&BTreeSet<&str>>| {
+            set.is_some_and(|usernames| usernames.iter().any(|username| *username != own))
+        };
+        if other(self.keys.get(&key)) || other(self.skeletons.get(&skeleton_key(&name))) {
+            own.to_owned()
+        } else {
+            name
+        }
+    }
+    /// A principal as the snapshot lists it: every stored field plus `display_name`.
+    fn principal_wire(&self, principal: &Principal) -> Value {
+        let mut wire = json!(principal);
+        wire["display_name"] = json!(self.display_name(principal));
+        wire
+    }
+    /// A message author in a result's `people` map.
+    fn person_wire(&self, principal: &Principal) -> Value {
+        json!({
+            "username": principal.username,
+            "display_name": self.display_name(principal),
+            "active": principal.active,
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2409,6 +3266,76 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
         "unsafe_socket: ownership or runtime permissions invalid"
     );
     Ok(())
+}
+/// The workspace names running sibling brokers of `uid` answer `hello` with: every
+/// `crew-<uid>-<32 hex>/broker.sock` under `runtime_root` (at most [`SIBLING_PROBE_LIMIT`])
+/// whose directory and socket `uid` owns and whose listener runs as `uid`, except `own_basename`
+/// and a broker answering with `own_workspace_id`. Best effort: a stale, slow or unexpected
+/// socket is skipped, each probe is bounded by [`SIBLING_PROBE_TIMEOUT`], and nothing is
+/// trusted beyond the name used to refuse a duplicate. Names are what any node user can
+/// already learn from `hello`.
+fn sibling_workspace_names(
+    runtime_root: &Path,
+    uid: u32,
+    own_basename: Option<&str>,
+    own_workspace_id: &str,
+) -> Vec<String> {
+    let prefix = format!("crew-{uid}-");
+    let Ok(entries) = fs::read_dir(runtime_root) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix(&prefix).is_some_and(|suffix| {
+                suffix.len() == 32
+                    && suffix
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }) && Some(name.as_str()) != own_basename
+        })
+        .collect();
+    candidates.sort();
+    candidates.truncate(SIBLING_PROBE_LIMIT);
+    candidates
+        .into_iter()
+        .filter_map(|basename| {
+            let directory = runtime_root.join(&basename);
+            let socket = directory.join("broker.sock");
+            let (hello_workspace, name) = probe_hello(&directory, &socket, uid).ok()?;
+            (hello_workspace != own_workspace_id).then_some(name?)
+        })
+        .collect()
+}
+/// `hello` on one sibling socket: `(workspace_id, name)`.
+fn probe_hello(directory: &Path, socket: &Path, uid: u32) -> Result<(String, Option<String>)> {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = fs::symlink_metadata(directory)?;
+    let file = fs::symlink_metadata(socket)?;
+    ensure!(
+        dir.is_dir() && dir.uid() == uid && file.file_type().is_socket() && file.uid() == uid,
+        "unsafe_runtime: not this account's runtime"
+    );
+    let mut stream = UnixStream::connect(socket)?;
+    ensure!(
+        peer_uid(&stream)? == uid,
+        "identity_mismatch: sibling broker UID"
+    );
+    stream.set_read_timeout(Some(SIBLING_PROBE_TIMEOUT))?;
+    stream.set_write_timeout(Some(SIBLING_PROBE_TIMEOUT))?;
+    stream
+        .write_all(b"{\"version\":1,\"id\":\"name-probe\",\"method\":\"hello\",\"params\":{}}\n")?;
+    let response: Response = serde_json::from_slice(
+        &read_frame(&mut BufReader::new(stream))?.ok_or_else(|| anyhow!("unavailable"))?,
+    )?;
+    let result = response.result.ok_or_else(|| anyhow!("unavailable"))?;
+    Ok((
+        text(&result, "workspace_id")?.to_owned(),
+        result
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    ))
 }
 fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
     let uid = broker.state.workspace.host_uid;
@@ -2580,13 +3507,29 @@ impl Drop for ConnectionPermit {
         }
     }
 }
-pub fn serve(root: &Path, bootstrap_key: &str) -> Result<()> {
+/// Run the broker in the foreground. `name` names a workspace this call initializes, or an
+/// existing workspace that has no name yet; a workspace already named otherwise is refused
+/// (rename it with `workspace.rename`).
+pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()> {
     ensure!(
         cfg!(target_os = "linux"),
         "unsupported: serve requires Linux"
     );
     let node_id = node_identity()?;
-    let mut broker = Broker::open(root, bootstrap_key)?;
+    let mut broker = Broker::open_inner(root, bootstrap_key, Box::new(SystemDirectory), name)?;
+    if let Some(name) = name {
+        match broker.state.workspace.name.as_deref() {
+            Some(stored) if stored == name => {}
+            Some(_) => bail!(
+                "name_mismatch: this workspace already has another name; start it without --name, or rename it in Crew"
+            ),
+            None => {
+                let mut state = broker.state.clone();
+                state.workspace.name = Some(name.to_owned());
+                broker.commit(state, "system", "workspace.name")?;
+            }
+        }
+    }
     ensure!(broker.state.writer_node_id.as_ref().is_none_or(|expected|expected==&node_id),"node_identity_changed: workspace belongs to another writer node; automatic failover is disabled");
     if broker.state.writer_node_id.is_none() {
         let mut state = broker.state.clone();
@@ -2761,33 +3704,11 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
     }
     Ok(())
 }
-pub fn lifecycle(command: &str, root: &Path, key: &str) -> Result<Value> {
+/// `start`, `status` or `stop` a broker for the state directory `root`. `name` (`start` only)
+/// names the workspace; see [`serve`].
+pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
     match command {
-        "start" => {
-            private_dir(root)?;
-            let log = private_file(&root.join("broker.log"), true)?;
-            use std::os::unix::process::CommandExt;
-            let mut command = std::process::Command::new(std::env::current_exe()?);
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            let child = command
-                .arg("serve")
-                .arg("--state-dir")
-                .arg(root)
-                .arg("--bootstrap-key")
-                .arg(key)
-                .stdin(std::process::Stdio::null())
-                .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?;
-            Ok(json!({"started_pid":child.id(),"state":"starting","status_command":"status"}))
-        }
+        "start" => start(root, key, name),
         "status" => {
             let mut file = private_file(&root.join("runtime.json"), false)?;
             let mut bytes = Vec::new();
@@ -2817,6 +3738,236 @@ pub fn lifecycle(command: &str, root: &Path, key: &str) -> Result<Value> {
     }
 }
 
+/// How long `start` waits for the broker it launched to answer `hello`.
+const START_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Launch `serve` detached, wait until it answers `hello`, and print the workspace's
+/// invitation line (`brcrew1:…`) for the host to paste into Crew. A name is validated and
+/// checked against the host account's running sibling workspaces **before** anything is
+/// spawned.
+fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
+    if let Some(name) = name {
+        validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
+    }
+    private_dir(root)?;
+    if let Some(name) = name {
+        let stored = stored_workspace(root)?;
+        if let Some(stored_name) = stored.as_ref().and_then(|stored| stored.name.as_deref()) {
+            ensure!(
+                stored_name == name,
+                "name_mismatch: this workspace already has another name; start it without --name, or rename it in Crew"
+            );
+        }
+        let (own_workspace, own_basename) = stored
+            .map(|stored| (stored.id, stored.runtime_basename))
+            .unwrap_or_default();
+        ensure!(
+            !sibling_workspace_names(
+                Path::new("/tmp"),
+                unsafe { libc::geteuid() },
+                own_basename.as_deref(),
+                &own_workspace,
+            )
+            .iter()
+            .any(|sibling| sibling == name),
+            WORKSPACE_NAME_TAKEN
+        );
+    }
+    let log = private_file(&root.join("broker.log"), true)?;
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+        .arg("serve")
+        .arg("--state-dir")
+        .arg(root)
+        .arg("--bootstrap-key")
+        .arg(key);
+    if let Some(name) = name {
+        command.arg("--name").arg(name);
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()?;
+    let pid = child.id();
+    let deadline = Instant::now() + START_READY_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            bail!(
+                "start_failed: the broker stopped during startup ({status}); last log line: {}",
+                last_log_line(root)
+            );
+        }
+        if let Some(info) = read_runtime_descriptor(root)? {
+            if info.get("pid").and_then(Value::as_u64) == Some(u64::from(pid)) {
+                if let Ok(hello) = verified_hello(&info) {
+                    let mut result = json!({
+                        "started_pid": pid,
+                        "state": "running",
+                        "status_command": "status",
+                        "workspace_id": hello["workspace_id"],
+                        "name": hello["name"],
+                    });
+                    match start_invitation(&info, &hello) {
+                        Ok(line) => result["invitation"] = json!(line),
+                        Err(error) => {
+                            result["invitation"] = Value::Null;
+                            result["invitation_error"] = json!(error.to_string());
+                        }
+                    }
+                    return Ok(result);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(json!({"started_pid":pid,"state":"starting","status_command":"status"}));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+/// What `start` needs to know about a workspace already in its state directory.
+struct StoredWorkspace {
+    id: String,
+    name: Option<String>,
+    runtime_basename: Option<String>,
+}
+/// The workspace already in `root`, read from its journal without the writer lock (a live
+/// writer only ever appends complete records).
+fn stored_workspace(root: &Path) -> Result<Option<StoredWorkspace>> {
+    let journal = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("journal.jsonl"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("unsafe_storage: cannot read the journal"),
+    };
+    let metadata = journal.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "unsafe_storage: file ownership, mode or links invalid"
+    );
+    let replay = replay_journal(&journal)?;
+    if replay.sequence == 0 {
+        return Ok(None);
+    }
+    let workspace = &replay.state_value["workspace"];
+    Ok(Some(StoredWorkspace {
+        id: text(workspace, "id")?.to_owned(),
+        name: workspace
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        runtime_basename: replay
+            .state_value
+            .get("runtime_basename")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }))
+}
+/// `runtime.json`, read without creating it.
+fn read_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("runtime.json"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("unsafe_runtime: cannot read runtime descriptor"),
+    };
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.len() <= MAX_FRAME as u64,
+        "unsafe_runtime: invalid private runtime descriptor"
+    );
+    Ok(serde_json::from_reader(file).ok())
+}
+/// `hello` from the broker `info` describes, checked as `status` checks it: the socket and its
+/// listener belong to the host account, and the broker answers for the recorded workspace and
+/// key.
+fn verified_hello(info: &Value) -> Result<Value> {
+    let socket = PathBuf::from(text(info, "socket")?);
+    let uid = number(info, "host_uid")? as u32;
+    validate_socket(&socket, uid)?;
+    let mut stream = UnixStream::connect(socket)?;
+    ensure!(peer_uid(&stream)? == uid, "identity_mismatch");
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    stream.write_all(b"{\"version\":1,\"id\":\"start\",\"method\":\"hello\",\"params\":{}}\n")?;
+    let response: Response = serde_json::from_slice(
+        &read_frame(&mut BufReader::new(stream))?.ok_or_else(|| anyhow!("unavailable"))?,
+    )?;
+    let hello = response.result.ok_or_else(|| anyhow!("unavailable"))?;
+    ensure!(
+        hello.get("workspace_id") == info.get("workspace_id")
+            && hello.get("workspace_public_key") == info.get("workspace_public_key"),
+        "identity_mismatch"
+    );
+    Ok(hello)
+}
+/// The `brcrew1:` line for the host: the four pinned fields from the verified runtime, the
+/// workspace's name, privacy mode and institution from `hello`, and the host's own username.
+/// SSH hints are left out; the broker cannot know how people reach the server.
+fn start_invitation(info: &Value, hello: &Value) -> Result<String> {
+    let owner_uid = u32::try_from(number(hello, "host_uid")?)?;
+    let optional = |key: &str| hello.get(key).and_then(Value::as_str).map(str::to_owned);
+    let invitation = crate::invitation::WorkspaceInvitation {
+        workspace_id: text(hello, "workspace_id")?.to_owned(),
+        workspace_public_key: text(hello, "workspace_public_key")?.to_owned(),
+        socket_path: text(info, "socket")?.to_owned(),
+        owner_uid,
+        workspace_name: optional("name"),
+        host_username: Some(SystemDirectory.by_uid(owner_uid)?.name),
+        host_display_name: None,
+        mode: Some(mode(hello, "mode")?),
+        institution_id: optional("institution_id"),
+        ssh_host: None,
+        ssh_port: None,
+        proxy_jump: None,
+        invitee_username: None,
+    };
+    crate::invitation::encode(&invitation).map_err(|error| anyhow!("{}: {error}", error.code()))
+}
+/// The last non-empty line of `broker.log`, stripped of control characters, for a start
+/// failure message.
+fn last_log_line(root: &Path) -> String {
+    let read = || -> Result<String> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root.join("broker.log"))?;
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(4096)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(300)
+            .collect())
+    };
+    read().unwrap_or_default()
+}
 #[cfg(target_os = "linux")]
 fn stop(root: &Path) -> Result<Value> {
     use std::os::fd::FromRawFd;
