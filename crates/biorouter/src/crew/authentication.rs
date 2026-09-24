@@ -21,7 +21,8 @@
 //!   `hello` is asked, whether this account is invited, and show the device code **computed
 //!   here** from the saved device key and the pinned workspace key.
 //! - [`CrewManager::join`]: send `auth.join`, signed with the saved device key, only when the
-//!   workspace says the host approved, and only through `CrewManager::signed_join_request`.
+//!   workspace says the host approved and this computer's own claim was not already refused
+//!   under that approval, and only through `CrewManager::signed_join_request`.
 //!
 //! Nothing the broker returns can change the code this computer shows: a process in the bridge
 //! path can relay, drop or fake every answer here, which can only mislead this screen. To have
@@ -41,9 +42,10 @@ use std::{
     collections::HashMap,
     fmt,
     io::{Read, Write},
+    path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, LazyLock, Mutex, PoisonError,
     },
     time::{Duration, Instant},
 };
@@ -1382,7 +1384,10 @@ struct PendingInvitation {
     approved: bool,
     expires_at: Option<u64>,
     expired: bool,
-    code_mismatch: bool,
+    /// Some claim for this account was refused `code_mismatch` under the host's current
+    /// approval. Not necessarily this computer's: the broker keeps one per join, and a join
+    /// belongs to an account, not to a device. See [`RefusedClaim`].
+    last_refusal: bool,
 }
 
 fn now_seconds() -> u64 {
@@ -1436,13 +1441,16 @@ impl PendingInvitation {
             approved: flag("approved")?.unwrap_or(false),
             expires_at,
             expired,
-            code_mismatch: answer["last_refusal"].as_str() == Some("code_mismatch"),
+            last_refusal: answer["last_refusal"].as_str() == Some("code_mismatch"),
         }))
     }
-    fn state(&self) -> JoinState {
+    /// The state, given whether this computer's own claim was refused under the current
+    /// approval ([`CrewManager::refused_here`]). The join-wide `last_refusal` alone never makes
+    /// a `code_mismatch`: it may be another device's.
+    fn state(&self, refused_here: bool) -> JoinState {
         if self.expired {
             JoinState::Expired
-        } else if self.code_mismatch {
+        } else if refused_here {
             JoinState::CodeMismatch
         } else if self.approved {
             JoinState::Approved
@@ -1450,6 +1458,72 @@ impl PendingInvitation {
             JoinState::Invited
         }
     }
+}
+
+/// This computer's own `auth.join` that the workspace refused `code_mismatch`, per connection.
+///
+/// The broker's `last_refusal` cannot say whose claim it refused. It is kept per join, and a
+/// join belongs to an account (a UID), not to a device: the broker sets it whenever *any* claim
+/// for the account is refused, and reports it for as long as the host's approval is unchanged.
+/// Another computer of the same account, or a same-account process in the bridge path, can set
+/// it under an approval of *this* computer's code; and approving that code again changes
+/// nothing on the broker. Only this record tells this computer's refusal from another's, so only
+/// it withholds a claim.
+///
+/// Memory only, like the broker's own record: a restart forgets it, which costs at most one more
+/// claim (and one more warning for the host).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RefusedClaim {
+    device_id: String,
+    join_id: String,
+    /// When it was recorded, on [`CLAIM_CLOCK`].
+    at: u64,
+}
+
+/// What a join status answer means for a [`RefusedClaim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RefusalVerdict {
+    /// This computer's claim was refused under the join's current approval.
+    refused_here: bool,
+    /// The record still stands; `false` forgets it.
+    keep: bool,
+}
+
+impl RefusedClaim {
+    /// Read the record against an answer (`None`: not invited) to a question asked at
+    /// `asked_at` on [`CLAIM_CLOCK`], from the computer whose device is `device_id`.
+    ///
+    /// It stands for the same device and the same join while the answer still reports a
+    /// refusal, which the broker does only while the approval is unchanged. An answer to a
+    /// question asked *before* the refusal was recorded may predate the refusal, so it can
+    /// neither clear the record nor contradict it; the next question settles it.
+    fn judge(
+        &self,
+        device_id: &str,
+        pending: Option<&PendingInvitation>,
+        asked_at: u64,
+    ) -> RefusalVerdict {
+        let recorded_after_asking = self.at > asked_at;
+        let same_join = self.device_id == device_id
+            && pending.is_some_and(|pending| pending.join_id == self.join_id);
+        let still_refused =
+            pending.is_some_and(|pending| pending.last_refusal) || recorded_after_asking;
+        let refused_here = same_join && still_refused;
+        RefusalVerdict {
+            refused_here,
+            keep: refused_here || recorded_after_asking,
+        }
+    }
+}
+
+/// [`RefusedClaim`]s, by manager root and connection ID.
+static REFUSED_CLAIMS: LazyLock<Mutex<HashMap<(PathBuf, String), RefusedClaim>>> =
+    LazyLock::new(Default::default);
+/// Orders a join status question against a recorded refusal.
+static CLAIM_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+fn claim_clock_tick() -> u64 {
+    CLAIM_CLOCK.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// A person from an unauthenticated answer, made safe to show: a valid username, and a display
@@ -1809,8 +1883,10 @@ impl CrewManager {
     /// is already a member answers `joined` without sending anything.
     ///
     /// Any other state is a [`JoinRefused`] and sends nothing, because a claim under an
-    /// unapproved or already refused code would only show the host a warning about a device
-    /// with a different code.
+    /// unapproved code, or under an approval this computer's own claim was already refused
+    /// under, would only show the host a warning about a device with a different code. A
+    /// refusal the workspace reports for the join but this computer never received (another
+    /// device's) does not stop the claim; see [`RefusedClaim`].
     pub async fn join(&self, id: &str) -> Result<JoinStatus> {
         let observed = self.observe_join(id).await?;
         let workspace_name = observed.status.workspace_name.clone();
@@ -1832,6 +1908,9 @@ impl CrewManager {
                     return Err(error);
                 };
                 let refusal = JoinRefusal::from_broker_code(&code);
+                if refusal == JoinRefusal::CodeMismatch {
+                    self.remember_refused_claim(&c, &join_id);
+                }
                 // A second claim racing the first finds the join already used.
                 if refusal == JoinRefusal::NotInvited && self.is_member(id).await? {
                     return Ok(JoinStatus::bare(JoinState::Joined, workspace_name));
@@ -1876,6 +1955,7 @@ impl CrewManager {
         }) {
             return Ok(unsupported());
         }
+        let asked_at = claim_clock_tick();
         let answer = match self
             .pre_authentication_request(id, "enrollment.pending")
             .await
@@ -1889,7 +1969,9 @@ impl CrewManager {
                 _ => return Err(error),
             },
         };
-        let Some(pending) = PendingInvitation::read(&answer)? else {
+        let pending = PendingInvitation::read(&answer)?;
+        let refused_here = self.refused_here(&c, pending.as_ref(), asked_at);
+        let Some(pending) = pending else {
             let state = if self.is_member(id).await? {
                 JoinState::Joined
             } else {
@@ -1900,7 +1982,7 @@ impl CrewManager {
                 join_id: None,
             });
         };
-        let state = pending.state();
+        let state = pending.state(refused_here);
         let code = match state {
             JoinState::Invited | JoinState::Approved | JoinState::CodeMismatch => {
                 Some(self.device_code_of(&c)?)
@@ -1918,6 +2000,48 @@ impl CrewManager {
             },
             join_id: Some(pending.join_id),
         })
+    }
+
+    /// Remember that the workspace refused this computer's claim under `join_id` with
+    /// `code_mismatch` ([`RefusedClaim`]).
+    fn remember_refused_claim(&self, c: &Connection, join_id: &str) {
+        REFUSED_CLAIMS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                (self.root.clone(), c.id.clone()),
+                RefusedClaim {
+                    device_id: c.device_id.clone(),
+                    join_id: join_id.to_owned(),
+                    at: claim_clock_tick(),
+                },
+            );
+    }
+
+    /// Whether this computer's own claim was refused under the join's current approval, read
+    /// against `pending`, the answer to a question asked at `asked_at`. Forgets a record the
+    /// answer outdates: the host approved another code, replaced or cancelled the invitation,
+    /// or the account joined.
+    fn refused_here(
+        &self,
+        c: &Connection,
+        pending: Option<&PendingInvitation>,
+        asked_at: u64,
+    ) -> bool {
+        let mut claims = REFUSED_CLAIMS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let key = (self.root.clone(), c.id.clone());
+        let Some(verdict) = claims
+            .get(&key)
+            .map(|claim| claim.judge(&c.device_id, pending, asked_at))
+        else {
+            return false;
+        };
+        if !verdict.keep {
+            claims.remove(&key);
+        }
+        verdict.refused_here
     }
 
     /// This computer's device code for the connection's workspace (`7QK2-M9XA-3JTP-WZ4D`),
@@ -2574,24 +2698,29 @@ mod admission_tests {
             }
             answer
         };
-        let state = |answer: &Value| {
+        let state_if = |answer: &Value, refused_here: bool| {
             PendingInvitation::read(answer)
                 .unwrap()
-                .map(|pending| pending.state())
+                .map(|pending| pending.state(refused_here))
         };
+        let state = |answer: &Value| state_if(answer, false);
         assert_eq!(state(&invited), Some(JoinState::Invited));
         assert_eq!(
             state(&with(json!({"approved": true}))),
             Some(JoinState::Approved)
         );
-        assert_eq!(
-            state(&with(
-                json!({"approved": true, "last_refusal": "code_mismatch"})
-            )),
-            Some(JoinState::CodeMismatch)
+        // The join-wide refusal alone is not this computer's: it may be another device's.
+        let refused = with(json!({"approved": true, "last_refusal": "code_mismatch"}));
+        assert!(
+            PendingInvitation::read(&refused)
+                .unwrap()
+                .unwrap()
+                .last_refusal
         );
+        assert_eq!(state(&refused), Some(JoinState::Approved));
+        assert_eq!(state_if(&refused, true), Some(JoinState::CodeMismatch));
         assert_eq!(
-            state(&with(json!({"expired": true, "approved": true}))),
+            state_if(&with(json!({"expired": true, "approved": true})), true),
             Some(JoinState::Expired)
         );
         assert_eq!(
@@ -2631,6 +2760,52 @@ mod admission_tests {
         ] {
             assert!(PendingInvitation::read(&malformed).is_err(), "{malformed}");
         }
+    }
+
+    #[test]
+    fn only_this_computers_own_refusal_withholds_a_claim() {
+        let pending = |join_id: &str, last_refusal: bool| {
+            let mut answer = json!({"invited": true, "join_id": join_id, "approved": true});
+            if last_refusal {
+                answer["last_refusal"] = json!("code_mismatch");
+            }
+            PendingInvitation::read(&answer).unwrap()
+        };
+        let claim = RefusedClaim {
+            device_id: "d-desk".into(),
+            join_id: "join-1".into(),
+            at: 10,
+        };
+        let verdict = |device: &str, answer: Option<PendingInvitation>, asked_at: u64| {
+            let verdict = claim.judge(device, answer.as_ref(), asked_at);
+            (verdict.refused_here, verdict.keep)
+        };
+        // Asked after the refusal was recorded: it stands while the workspace still reports a
+        // refusal for this join, and an answer without one (a new approval) forgets it.
+        assert_eq!(verdict("d-desk", pending("join-1", true), 11), (true, true));
+        assert_eq!(
+            verdict("d-desk", pending("join-1", false), 11),
+            (false, false)
+        );
+        // A new invitation, or none, outdates it; so does another device's key.
+        assert_eq!(
+            verdict("d-desk", pending("join-2", true), 11),
+            (false, false)
+        );
+        assert_eq!(verdict("d-desk", None, 11), (false, false));
+        assert_eq!(
+            verdict("d-lap", pending("join-1", true), 11),
+            (false, false)
+        );
+        // An answer to a question asked before the refusal was recorded may predate it: it can
+        // neither clear the record nor contradict it.
+        assert_eq!(verdict("d-desk", pending("join-1", false), 9), (true, true));
+        assert_eq!(verdict("d-desk", None, 9), (false, true));
+        assert_eq!(
+            verdict("d-desk", pending("join-2", false), 9),
+            (false, true)
+        );
+        assert!(claim_clock_tick() < claim_clock_tick());
     }
 
     #[test]
@@ -3105,10 +3280,12 @@ done
                 stranger.clone(),
                 JoinState::Approved,
             ),
+            // Another device's refusal: this computer never claimed, so its code may be the
+            // approved one.
             (
                 answer(json!({"approved": true, "last_refusal": "code_mismatch"})),
                 stranger.clone(),
-                JoinState::CodeMismatch,
+                JoinState::Approved,
             ),
             (
                 answer(json!({"expired": true})),
@@ -3242,6 +3419,7 @@ done
             "device_id": device_id, "workspace": {"id": WORKSPACE_ID}}});
         let mismatch = json!({"error": {"code": "code_mismatch", "message": "code_mismatch: not this device"}});
         let not_invited = json!({"result": {"invited": false}});
+        // In order: the manager remembers its own refused claim from one case to the next.
         vec![
             (
                 pending(false, false),
@@ -3250,12 +3428,14 @@ done
                 Some(JoinRefusal::NotApproved),
                 0,
             ),
+            // Another device's refusal under the approval: this computer never claimed, so it
+            // claims exactly once.
             (
                 pending(true, true),
                 stranger.clone(),
                 joined.clone(),
-                Some(JoinRefusal::CodeMismatch),
-                0,
+                None,
+                1,
             ),
             (
                 not_invited.clone(),
@@ -3265,6 +3445,7 @@ done
                 0,
             ),
             (not_invited, json!({"result": {}}), joined.clone(), None, 0),
+            // This computer's own claim refused: remembered.
             (
                 pending(true, false),
                 stranger.clone(),
@@ -3272,6 +3453,15 @@ done
                 Some(JoinRefusal::CodeMismatch),
                 1,
             ),
+            // The workspace still reports it: no second claim under the same approval.
+            (
+                pending(true, true),
+                stranger.clone(),
+                joined.clone(),
+                Some(JoinRefusal::CodeMismatch),
+                0,
+            ),
+            // It no longer does (the host approved another code): claim once more.
             (pending(true, false), stranger, joined, None, 1),
         ]
     }
@@ -3347,6 +3537,93 @@ done
         attach_transport(&manager, &connection).await;
         let error = manager.join(&connection.id).await.unwrap_err();
         assert!(error.to_string().contains("different device"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Answer the next `enrollment.pending` with `pending` and `auth.join` with `claim`.
+    #[cfg(unix)]
+    async fn answer_join(
+        root: &Path,
+        manager: &CrewManager,
+        connection: &Connection,
+        pending: &Value,
+        claim: &Value,
+    ) {
+        write_fake_ssh(
+            root,
+            &[],
+            &[
+                ("enrollment.pending", pending.clone()),
+                ("auth.join", claim.clone()),
+            ],
+        );
+        attach_transport(manager, connection).await;
+    }
+
+    /// Bob pastes the invitation on his desktop and his laptop, and Alice approves the
+    /// desktop's code. The laptop claims first and is refused, which puts a join-wide
+    /// `last_refusal` on the account. The desktop must still show `approved` and claim; only a
+    /// refusal of its own claim makes it `code_mismatch`, and only until the approval changes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn another_devices_refusal_never_strands_the_approved_computer() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "join-refusal",
+            "5d5d5d5d-5d5d-45d5-85d5-5d5d5d5d5d5d",
+            &[JOIN_BY_NAME_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.as_str();
+        let refused = json!({"result": {"invited": true, "join_id": "join-1", "approved": true,
+            "last_refusal": "code_mismatch", "expires_at": now_seconds() + 3600}});
+        let mut approved = refused.clone();
+        approved["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("last_refusal");
+        let mismatch = json!({"error": {"code": "code_mismatch", "message": "code_mismatch: not this device"}});
+        let joined = json!({"result": {"device_id": connection.device_id}});
+        let refusal = |error: anyhow::Error| error.downcast_ref::<JoinRefused>().unwrap().refusal();
+
+        // The laptop's refusal: the desktop shows its code as approved and claims once.
+        answer_join(&root, &manager, &connection, &refused, &joined).await;
+        let status = manager.join_status(id).await.unwrap();
+        assert_eq!(status.status, JoinState::Approved);
+        assert_eq!(status.code, Some(manager.device_code(id).await.unwrap()));
+        assert_eq!(manager.join(id).await.unwrap().status, JoinState::Joined);
+        assert_claims(&root, &connection, 1, 0);
+
+        // Its own claim refused: `code_mismatch` while the workspace still reports a refusal,
+        // and no second claim under that approval.
+        answer_join(&root, &manager, &connection, &approved, &mismatch).await;
+        let error = manager.join(id).await.unwrap_err();
+        assert_eq!(refusal(error), JoinRefusal::CodeMismatch);
+        assert_claims(&root, &connection, 2, 1);
+        answer_join(&root, &manager, &connection, &refused, &joined).await;
+        let status = manager.join_status(id).await.unwrap();
+        assert_eq!(status.status, JoinState::CodeMismatch);
+        assert!(status.code.is_some());
+        let error = manager.join(id).await.unwrap_err();
+        assert_eq!(refusal(error), JoinRefusal::CodeMismatch);
+        assert_claims(&root, &connection, 2, 2);
+
+        // The host approved another code: forgotten, and a later refusal (another device's,
+        // under the new approval) no longer holds this computer back.
+        answer_join(&root, &manager, &connection, &approved, &joined).await;
+        assert_eq!(
+            manager.join_status(id).await.unwrap().status,
+            JoinState::Approved
+        );
+        answer_join(&root, &manager, &connection, &refused, &joined).await;
+        assert_eq!(
+            manager.join_status(id).await.unwrap().status,
+            JoinState::Approved
+        );
+        assert_eq!(manager.join(id).await.unwrap().status, JoinState::Joined);
+        assert_claims(&root, &connection, 3, 3);
         let _ = fs::remove_dir_all(root);
     }
 
