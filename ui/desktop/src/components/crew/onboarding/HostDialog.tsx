@@ -183,7 +183,12 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     slug || sanitizeDisplayText(resumeContext.workspaceName) || resumeConnection?.name || '';
   const loginForServer = resumeConnection?.ssh_target ?? serverLogin.trim();
   const server = connectionServer({ id: '', ssh_target: loginForServer }) || loginForServer;
-  const busy = preparing || parse === 'reading' || (phase !== 'idle' && phase !== 'labelling');
+  // Once bootstrapped the workspace exists: waiting for its first verified view never traps the
+  // person in the dialog, so `verifying` (like the label question) is not busy.
+  const busy =
+    preparing ||
+    parse === 'reading' ||
+    (phase !== 'idle' && phase !== 'labelling' && phase !== 'verifying');
   const portValue = port.trim() ? Number(port) : undefined;
 
   // ── Create, driven by the controller's state ──────────────────────────────────────────────
@@ -447,8 +452,15 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         </>
       );
     }
+    const verifying = phase === 'verifying';
     const back =
-      step === 'name' ? null : step === 'start' ? 'name' : resumeId ? null : ('start' as const);
+      step === 'name' || verifying
+        ? null
+        : step === 'start'
+          ? 'name'
+          : resumeId || savedId
+            ? null
+            : ('start' as const);
     return (
       <>
         {back ? (
@@ -460,7 +472,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             {joinCopy.cancel}
           </Button>
         )}
-        <Button type="submit" form={formId} disabled={busy}>
+        <Button type="submit" form={formId} disabled={busy || verifying}>
           {step === 'name'
             ? preparing
               ? hostCopy.preparing
