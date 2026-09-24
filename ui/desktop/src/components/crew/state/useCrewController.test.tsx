@@ -772,6 +772,29 @@ describe('keeping one live observer', () => {
     await waitFor(() => expect(crew.channelId).toBe(imagingGeneral.id));
   });
 
+  it('starts one observer, for the new channel, when a team with another channel is selected', async () => {
+    const sessions = controllableObserver();
+    renderController();
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    const withImaging = {
+      ...snapshot,
+      teams: [...snapshot.teams, imaging],
+      channels: [channel, imagingGeneral],
+    };
+    act(() => sessions[0]!.receive({ ...stateFrame, snapshot: withImaging }));
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1]!.channelId).toBe(channel.id);
+    await waitFor(() => expect(crew.channelId).toBe(channel.id));
+
+    act(() => crew.selectTeam(imaging.id));
+    await waitFor(() => expect(crew.channelId).toBe(imagingGeneral.id));
+    await waitFor(() => expect(sessions).toHaveLength(3));
+    // Never a restart for the old channel on the way: the channel's own change starts the new one.
+    expect(sessions[2]!.channelId).toBe(imagingGeneral.id);
+    expect(sessions[1]!.signal.aborted).toBe(true);
+    expect(sessions[2]!.signal.aborted).toBe(false);
+  });
+
   it('observes again when the selected connection is selected again', async () => {
     renderController();
     await verifiedChannel();

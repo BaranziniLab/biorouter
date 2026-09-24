@@ -27,6 +27,17 @@ export function isWorkspaceHost(snapshot: Snapshot | null): boolean {
     : snapshot.actor.uid === snapshot.workspace.host_uid;
 }
 
+/**
+ * The channel to show for `teamId`: `current` while the team still has it, else the team's first
+ * channel that is not archived, else none.
+ */
+function channelForTeam(snapshot: Snapshot, teamId: string, current: string): string {
+  const channels = snapshot.channels.filter((item) => item.team_id === teamId);
+  return channels.some((item) => item.id === current)
+    ? current
+    : (channels.find((item) => !item.archived)?.id ?? '');
+}
+
 /** A join status other than `joined` (or a broker without joins) means not a member yet. */
 function isNotJoined(status: CrewJoinStatus | null): boolean {
   return status !== null && status !== 'joined' && status !== 'unsupported';
@@ -123,15 +134,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     restartObservation,
   } = observation;
 
-  const channels = snapshot?.channels.filter((item) => item.team_id === teamId) ?? [];
   useEffect(() => {
     if (!snapshot) return;
-    setChannelId((old) =>
-      channels.some((item) => item.id === old)
-        ? old
-        : (channels.find((item) => !item.archived)?.id ?? '')
-    );
-  }, [teamId, snapshot]); // eslint-disable-line react-hooks/exhaustive-deps
+    setChannelId((old) => channelForTeam(snapshot, teamId, old));
+  }, [teamId, snapshot]);
 
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
@@ -180,7 +186,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // sure a new one starts. A different connection or channel restarts it through the observer's
   // own dependencies; the same connection, or a team whose channel does not change (a team just
   // created, absent from the verified view, leaves the channel empty), would otherwise leave no
-  // observer at all, and every later frame dropped until Crew is left (T-08).
+  // observer at all, and every later frame dropped until Crew is left (T-08). A team whose channel
+  // does change moves the channel here, in the same update, rather than restarting first and
+  // letting the effect above move it — that started an observer for the old channel on the way.
   const selectConnection = (id: string) => {
     generation.current += 1;
     setSnapshot(null);
@@ -198,7 +206,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft.setAttachments([]);
     draft.setContextChannels([]);
     setTeamId(id);
-    restartObservation();
+    const next = snapshot ? channelForTeam(snapshot, id, channelId) : channelId;
+    if (next !== channelId) setChannelId(next);
+    else restartObservation();
   };
   const selectChannel = (id: string) => {
     if (id === channelId) return;
