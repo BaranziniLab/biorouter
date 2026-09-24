@@ -46,7 +46,7 @@ const LABEL_STACK_STYLE: React.CSSProperties = { display: 'inline-grid' };
 const LABEL_CELL_STYLE: React.CSSProperties = { gridArea: '1 / 1' };
 const LABEL_HIDDEN_STYLE: React.CSSProperties = { gridArea: '1 / 1', visibility: 'hidden' };
 
-/** One of the Copy button's labels, in the shared cell; the inactive one keeps its width only. */
+/** One of the Copy button's labels, in the shared cell; an inactive one keeps its width only. */
 function CopyLabel({ active, children }: { active: boolean; children: React.ReactNode }) {
   return (
     <span
@@ -241,13 +241,14 @@ export function CopyField({
           aria-label={`Copy ${label}`}
           data-feedback={feedback}
         >
-          {/* Both labels share one grid cell, the inactive one laid out but unseen, so the button
-              is always as wide as "Copied" and the value beside it never re-wraps when the label
-              swaps (QA Q2-24: an 18-line invitation reflowed for two seconds on every copy). */}
+          {/* All three labels share one grid cell, the inactive ones laid out but unseen, so the
+              button is always as wide as the widest of them, "Copy failed", and the value beside
+              it never re-wraps when the label swaps (QA Q2-24: an 18-line invitation reflowed for
+              two seconds on every copy; a failed copy still did while only "Copied" was held). */}
           <span data-slot="copy-field-labels" style={LABEL_STACK_STYLE}>
-            <CopyLabel active={feedback !== 'copied'}>
+            <CopyLabel active={feedback === 'idle'}>
               <Copy aria-hidden />
-              {feedback === 'failed' ? 'Copy failed' : 'Copy'}
+              Copy
             </CopyLabel>
             <CopyLabel active={feedback === 'copied'}>
               <Check
@@ -255,6 +256,10 @@ export function CopyField({
                 className={feedback === 'copied' ? 'biorouter-check-settled' : undefined}
               />
               Copied
+            </CopyLabel>
+            <CopyLabel active={feedback === 'failed'}>
+              <Copy aria-hidden />
+              Copy failed
             </CopyLabel>
           </span>
         </Button>

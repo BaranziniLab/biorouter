@@ -9,7 +9,7 @@ const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 const liveRegion = (container: HTMLElement) =>
   container.querySelector('[aria-live="polite"]') as HTMLElement;
 
-/** The label the Copy button shows now; the other one only reserves its width. */
+/** The label the Copy button shows now; the others only reserve their width. */
 const shown = (button: HTMLElement) =>
   button.querySelector('[data-active="true"]')?.textContent ?? '';
 
@@ -75,25 +75,33 @@ describe('CopyField', () => {
   });
 
   // QA Q2-24: the pill grew by "Copied"'s width, and an 18-line invitation beside it re-wrapped.
+  // The review then found "Copy failed", the widest label, still widening it.
   it('keeps the button as wide as its widest label, whichever is showing', async () => {
+    writeText.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('denied'));
     render(<CopyField value="abc" label="command" />);
     const button = screen.getByRole('button', { name: 'Copy command' });
     const cells = Array.from(
       button.querySelectorAll<HTMLElement>('[data-slot="copy-field-labels"] > span')
     );
-    expect(cells.map((cell) => cell.textContent)).toEqual(['Copy', 'Copied']);
+    expect(cells.map((cell) => cell.textContent)).toEqual(['Copy', 'Copied', 'Copy failed']);
     const stack = button.querySelector<HTMLElement>('[data-slot="copy-field-labels"]')!;
     expect(stack.style.display).toBe('inline-grid');
-    // Both in the one cell; the inactive one laid out (so it holds the width) but unseen.
+    // All in the one cell; the inactive ones laid out (so they hold the width) but unseen.
     for (const cell of cells) expect(cell.style.gridArea).toContain('1 / 1');
-    expect(cells[0].style.visibility).toBe('');
-    expect(cells[1].style.visibility).toBe('hidden');
-    expect(cells[1]).toHaveAttribute('aria-hidden', 'true');
+    const visible = () => cells.map((cell) => cell.style.visibility !== 'hidden');
+    const hiddenFromReaders = () =>
+      cells.map((cell) => cell.getAttribute('aria-hidden') === 'true');
+    expect(visible()).toEqual([true, false, false]);
+    expect(hiddenFromReaders()).toEqual([false, true, true]);
 
     await press(button);
-    expect(cells[0].style.visibility).toBe('hidden');
-    expect(cells[1].style.visibility).toBe('');
+    expect(visible()).toEqual([false, true, false]);
     expect(shown(button)).toBe('Copied');
+
+    await press(button);
+    expect(visible()).toEqual([false, false, true]);
+    expect(hiddenFromReaders()).toEqual([true, true, false]);
+    expect(shown(button)).toBe('Copy failed');
   });
 
   it('restarts the two seconds when copied again', async () => {
