@@ -24,6 +24,9 @@ export const layoutCopy = {
   /** `updates-paused` with no saved connection loaded at all: nothing in the bar can retry. */
   tryAgain: 'Try again',
 
+  /** A toast for the host: `person` is `personLabel(…, 'inline')`, e.g. "Bob Lee (@bob)". */
+  joined: (person: string, workspace: string) => `${person} joined ${workspace}`,
+
   ownership: {
     /** `owner` is `personLabel(…, 'authority')`; `channel` is `#name`. */
     offeredBy: (owner: string, channel: string) => `${owner} offered you ownership of ${channel}.`,
