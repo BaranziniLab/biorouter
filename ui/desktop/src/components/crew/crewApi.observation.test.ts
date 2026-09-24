@@ -162,20 +162,17 @@ describe('observeCrew NDJSON framing', () => {
   it('accepts a null institution but rejects missing, blank, newline, and overlong ids', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        responseFromChunks([encoder.encode(`${stateFrame()}\n${reconnectFrame()}\n`)])
-      )
+      vi
+        .fn()
+        .mockResolvedValue(
+          responseFromChunks([encoder.encode(`${stateFrame()}\n${reconnectFrame()}\n`)])
+        )
     );
     await expect(
       observeCrew('connection-1', 'channel-1', null, new AbortController().signal, vi.fn())
     ).resolves.toBe('reconnect');
 
-    for (const connection_institution_id of [
-      undefined,
-      '',
-      'ucsf\n',
-      'a'.repeat(65),
-    ]) {
+    for (const connection_institution_id of [undefined, '', 'ucsf\n', 'a'.repeat(65)]) {
       vi.stubGlobal(
         'fetch',
         vi
