@@ -1,0 +1,13 @@
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+index a91ac94..02b2487 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+@@ -161,7 +161,7 @@ enum SnapshotBuilder {
+ 
+         let permissions = PermissionDiagnostics.current()
+         guard permissions.accessibilityTrusted else {
+-            throw ComputerUseError.permissionDenied("Accessibility permission is required. Run `open-computer-use doctor` and grant access to Open Computer Use.")
++            throw ComputerUseError.permissionDenied("Biorouter Copilot requires Accessibility permission. In System Settings, allow \(PermissionSupport.currentBundleDisplayName()) under Accessibility.")
+         }
+ 
+         try ComputerUseCancellation.check()
