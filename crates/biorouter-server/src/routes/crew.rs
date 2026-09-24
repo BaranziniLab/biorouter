@@ -1370,8 +1370,45 @@ async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<St
         };
         finish_failed_run(ledger, &view.run_id, error, revoked).await;
     } else {
-        set_run_status(ledger, &view.run_id, "completed", None).await;
+        finish_completed_run_with(ledger, view, |session_id, run_id| async move {
+            manager()?.cancel_run_if_current(&session_id, &run_id).await
+        })
+        .await;
     }
+}
+
+/// Text recorded on a completed task whose grant was stopped on this device but not confirmed
+/// by the workspace.
+const COMPLETED_REVOCATION_UNCONFIRMED: &str = "Task finished. Its Crew access is stopped on this computer, but the workspace didn't confirm removing it; it also ends when the grant expires.";
+
+/// T-25: a task's grant is "for this task only", so a task that finished revokes it once its
+/// result is posted, exactly as a failed or cancelled one does; it no longer lingers in Access
+/// until its hour runs out. The workspace already ended the run when the completed result was
+/// projected; `revoke` stops the grant on this device too and asks the workspace to confirm.
+/// Whether it confirmed is recorded: the task is still `completed`, and an unconfirmed
+/// revocation leaves [`COMPLETED_REVOCATION_UNCONFIRMED`] as its error. Returns whether the
+/// revocation was confirmed.
+async fn finish_completed_run_with<R, F>(ledger: &RunLedger, view: &RunView, revoke: R) -> bool
+where
+    R: FnOnce(String, String) -> F,
+    F: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let revocation = revoke(view.session_id.clone(), view.run_id.clone()).await;
+    if let Err(error) = &revocation {
+        tracing::warn!(
+            run = %view.run_id,
+            "Crew couldn't confirm revoking a finished task's grant: {error}"
+        );
+    }
+    let confirmed = revocation.is_ok();
+    set_run_status(
+        ledger,
+        &view.run_id,
+        "completed",
+        (!confirmed).then(|| COMPLETED_REVOCATION_UNCONFIRMED.to_owned()),
+    )
+    .await;
+    confirmed
 }
 
 async fn finish_failed_run(ledger: &RunLedger, run_id: &str, error: String, revoked: bool) {
@@ -1977,10 +2014,11 @@ mod route_tests;
 mod tests {
     use super::{
         cancel_owned_run_with, cancellation_response, drive_run_events, finish_cancellation,
-        finish_failed_run, finish_run_outcome, owns_task_run, prepare_run_projection,
-        publish_run_finished, reserve_cancellation, run_with_deadline, transition_run_status,
-        CancelReservation, LedgerState, OwnedCancellation, OwnedRun, RunLedger, RunProjection,
-        RunStatusUpdate, RunView, ToolActivity, MAX_QUEUED_RUN_PROJECTIONS,
+        finish_completed_run_with, finish_failed_run, finish_run_outcome, owns_task_run,
+        prepare_run_projection, publish_run_finished, reserve_cancellation, run_with_deadline,
+        transition_run_status, CancelReservation, LedgerState, OwnedCancellation, OwnedRun,
+        RunLedger, RunProjection, RunStatusUpdate, RunView, ToolActivity,
+        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -2475,6 +2513,49 @@ mod tests {
         };
         assert_eq!(body["cancelled"], true);
         assert_eq!(body["remote_revocation_confirmed"], true);
+    }
+
+    /// T-25: a task that finished revokes its grant (the panel promised "for this task
+    /// only") and records whether the workspace confirmed it.
+    #[tokio::test]
+    async fn a_completed_task_revokes_its_grant_then_records_the_outcome() {
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        let revoked = Revocations::default();
+        let calls = revoked.clone();
+        let confirmed = finish_completed_run_with(&ledger, &view, |session_id, run_id| {
+            calls.lock().unwrap().push((session_id, run_id));
+            async move { Ok(json!({"id": "run-1", "revoked": true})) }
+        })
+        .await;
+        assert!(confirmed);
+        assert_eq!(
+            *revoked.lock().unwrap(),
+            vec![(view.session_id.clone(), "run-1".to_owned())]
+        );
+        {
+            let state = ledger.state.lock().await;
+            let run = state.runs.get("run-1").expect("run");
+            assert_eq!(run.view.status, "completed");
+            assert_eq!(run.view.error, None);
+        }
+        assert_eq!(persisted_status(&ledger.path), "completed");
+
+        // The workspace didn't answer: still done, the stop recorded as unconfirmed.
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        let confirmed = finish_completed_run_with(&ledger, &view, |_, _| async {
+            Err(anyhow::anyhow!("synthetic transport down"))
+        })
+        .await;
+        assert!(!confirmed);
+        let state = ledger.state.lock().await;
+        let run = state.runs.get("run-1").expect("run");
+        assert_eq!(run.view.status, "completed");
+        assert_eq!(
+            run.view.error.as_deref(),
+            Some(COMPLETED_REVOCATION_UNCONFIRMED)
+        );
+        drop(state);
+        assert_eq!(persisted_status(&ledger.path), "completed");
     }
 
     #[tokio::test]
