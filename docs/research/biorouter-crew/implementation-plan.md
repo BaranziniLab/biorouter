@@ -941,6 +941,22 @@ Consequences of the one-owner-per-file rule, and other ordering constraints:
 - Open (coordinator): the invitation route's `advanced` struct must accept `port`, `identity_file`, `proxy_jump`. `CrewInvitationAdvanced` in `api/join.ts` still lists `name`/`remote_root`/`remote_execution`, unsent; narrow it if the backend struct is stricter.
 - Note: UI-ONBOARD edited UI-API's `api/join.ts` and `api/join.test.ts` (preview `socket_path`/`owner_uid`, nullable; `ssh_target` added then removed in `aa4495d3`). No other package touches them.
 
+**UI-COMPOSER outcome (2026-09-23, `c4e23ab2`, `d8e380ae`, `3164efe3`, `0561a748`, `e8ca4a06`, `aaf526d5`, `a2bd41bf`, `019bba31`, `bace5dd5`, `da2ddc0b`).** Built and tested under `crew/composer/` and `crew/files/`; not mounted until UI-INTEGRATE. Decisions that change the spec's surface:
+
+- Drag-and-drop and paste are built (the spec said none), keeping its rule: a drop or paste opens the same main-process picker with the Attach menu's exact `beginTransfer` payload, and a Note names the file to choose. Preload `getPathForFile` only distinguishes a real file from fileless pasted data (refused: "save it as a file first") and copied text carrying a picture (pasted as text); the path is never sent and no bytes are read. Folders and files over 1 GiB are refused before a picker opens. No `main.ts`/preload change.
+- `composer/` imports `files/` (`useCrewUpload`, `CrewFileDropZone`, `UploadChip`, `ChipAction`); both are this package's, so no-cross-area-import still holds between packages.
+- Files beyond the spec's list: `files/FileDropZone.tsx`, `TransferRow.tsx`, `GlyphButton.tsx`, `useCopyAnnouncer.tsx`, `formatBytes.ts`, `crewTestController.tsx` (test-only fake controller), `composer/composer.css`, `files/files.css`, `files/stylesheets.sourceGuard.test.ts` (7 tests: no class shared with legacy `crew.css`/markup or another area's stylesheet; `:focus-visible` fill on every plain focusable element painted).
+- Class names: composer family is `crew-compose-*` and `--crew-compose-rest-height` (was `crew-composer-*`); attachment card root is `crew-attachment-card` (was `crew-attachment`), to avoid legacy `crew.css` collisions (review fix `bace5dd5`).
+- 'Remove from list' (?) help is an `aria-describedby` description line inside the ⋯ menu item, since a tooltip inside a Radix menu item is not keyboard-reachable.
+- Textarea is read-only, not disabled, while a post is in flight (focus kept; `crewSend` success clears the whole body, so typed text would be lost). Send returns focus to the textarea.
+- An upload in flight survives a plain refresh (legacy lost it); it is dropped on `protected-cleared` and on a change of privacy mode, connection or workspace policy epoch.
+- `AttachmentCard` and `ServerPathRow` take `connectionId` as a prop (renderable through a timeline slot); `Composer` and `FilesTab` read `useCrew()`.
+- Verifying bar height = the card's resting height (86px, `--crew-compose-rest-height`); archived bar is 44px (`--chrome-height`).
+- Composer uses UI-IDENTITY's `channelSlug()` for #name although UI-IDENTITY is not in its `depends_on`.
+- Send tooltip reads 'Send message' (same as accessible name); ChatInput's says 'Send'.
+- New copy key `composerCopy.dismissUploadError` = 'Dismiss upload error' (20px ghost × on the upload-error note; distinct from the connection bar's 'Dismiss').
+- Note slot keeps the upload error ranked above the layout `note` prop (with the send error), not below as review asked: the chat-connect note shows in every grant state while `?sessionId=` is present, so note-first would hide every upload refusal. Instead the error is short-lived (`da2ddc0b`): cleared on any draft-content change, Send, dismiss, privacy verification, scope change/reset, and channel change. Strict note-first is a one-branch reorder in `composerNote` if a maintainer wants it, but upload refusals would then need another surface.
+
 Findings from resumed testing that no package covers yet are listed in the [resume handoff](handoff-2026-09-24.md#open-findings-from-resumed-testing).
 
 Execution note: resumed work is coordinated by a Claude Code session orchestrating subagents with separate research/design, implementation (explicit file ownership), independent review, test execution/GUI critic and documentation roles. §14's Astra/Luna assignment identifies who produced the earlier work and evidence; the separation between authoring, independent review and test execution carries over.
