@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { createPortal } from 'react-dom';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -16,7 +18,37 @@ vi.mock('../../hooks/use-mobile', () => ({
   useIsMobile: () => isMobile.value,
 }));
 
-import { Sidebar, SidebarProvider, SidebarTrigger } from './sidebar';
+// The REAL app layout is rendered below (T-61, T-66), with its heavy children
+// stood in for exactly as `AppLayout.test.tsx` does. The stand-in rail offers
+// one destination and one disclosure: the two kinds of control T-66 must tell
+// apart.
+vi.mock('../BioRouterSidebar/AppSidebar', () => ({
+  default: function StandInRail() {
+    const navigate = useNavigate();
+    return (
+      <div>
+        <button type="button" onClick={() => navigate('/settings')}>
+          Settings
+        </button>
+        <button type="button" aria-expanded={false}>
+          Components
+        </button>
+      </div>
+    );
+  },
+}));
+vi.mock('../DependencySetupModal', () => ({ default: () => null }));
+vi.mock('../ExtensionUpdateReporter', () => ({ default: () => null }));
+vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
+
+import { AppLayout } from '../Layout/AppLayout';
+import {
+  SIDEBAR_OVERLAY_BODY_CLASS,
+  Sidebar,
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from './sidebar';
 
 beforeEach(() => {
   localStorage.clear();
@@ -292,5 +324,297 @@ describe('the resize handle is styled by authored CSS, not a generated utility',
   it('kills the width transition for the duration of a drag', () => {
     expect(CSS).toContain("body.biorouter-sidebar-resizing [data-slot='sidebar-gap']");
     expect(SOURCE).toContain("'biorouter-sidebar-resizing'");
+  });
+});
+
+const panel = () => {
+  const element = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]');
+  if (!element) throw new Error('the sidebar panel did not render');
+  return element;
+};
+const sidebarState = () =>
+  document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state');
+const toggleWithShortcut = () =>
+  act(() => {
+    fireEvent.keyDown(window, { key: 'b', metaKey: true });
+  });
+
+/**
+ * T-20. The collapsed off-canvas panel is only TRANSLATED off-screen, so its
+ * seven rows stayed Tab stops at x = -272: focus disappeared for seven presses,
+ * and Erin opened Settings by pressing Enter on a row she could not see.
+ *
+ * jsdom implements no inert behaviour (focus, pointer, a11y tree), so what is
+ * decidable here is the attribute; that the browser honours it is the platform's
+ * contract. The attribute being present exactly when the panel is away — and
+ * never while it is on screen — is the whole bug.
+ */
+describe('the off-canvas panel leaves the tab order while it is away', () => {
+  it('is inert while collapsed and live again once opened', () => {
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+      </SidebarProvider>
+    );
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(panel()).not.toHaveAttribute('inert');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle sidebar' }));
+    expect(panel()).toHaveAttribute('inert');
+  });
+
+  it('is never inert while expanded', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(panel()).not.toHaveAttribute('inert');
+  });
+
+  // An `icon` sidebar collapses to a rail that is still ON screen and still
+  // operable; making it inert would take working controls away.
+  it('leaves a collapsed icon rail operable', () => {
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar collapsible="icon">
+          <button type="button">Settings</button>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).not.toHaveAttribute('inert');
+  });
+
+  // Collapsing with focus inside would strand focus on <body>. It goes to the
+  // toggle that brings the panel back instead.
+  it('hands focus to the toggle when the panel leaves while holding it', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+      </SidebarProvider>
+    );
+    const row = screen.getByRole('button', { name: 'Settings' });
+    act(() => row.focus());
+
+    toggleWithShortcut();
+    expect(panel()).toHaveAttribute('inert');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Toggle sidebar' }));
+  });
+
+  it('leaves focus alone when it was elsewhere', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <textarea aria-label="Composer" />
+      </SidebarProvider>
+    );
+    const composer = screen.getByRole('textbox', { name: 'Composer' });
+    act(() => composer.focus());
+
+    toggleWithShortcut();
+    expect(document.activeElement).toBe(composer);
+  });
+});
+
+/**
+ * T-66. Below rung 1 an open sidebar floats OVER the page (AppLayout puts
+ * SIDEBAR_OVERLAY_BODY_CLASS on <body> and main.css draws the overlay from it),
+ * so an overlay left open after a choice kept covering the page the user had
+ * just asked for.
+ */
+describe('an overlay sidebar steps aside once something is chosen', () => {
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const renderOpenSidebar = (extra?: React.ReactNode) =>
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+          <button type="button" aria-expanded={false}>
+            Components
+          </button>
+          <button type="button" aria-haspopup="menu">
+            More
+          </button>
+          {extra}
+        </Sidebar>
+      </SidebarProvider>
+    );
+
+  it('closes after a destination is chosen in the overlay', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+  });
+
+  // A disclosure or a menu opener changes what the rail SHOWS. The user is
+  // still choosing, so closing then would take the menu they just opened away.
+  it('stays open for a disclosure or a menu opener', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Components' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  // A row's context menu or confirmation is portalled to <body>, but React
+  // still bubbles its clicks through the row. Acting there is not choosing a
+  // destination in the rail.
+  it('ignores clicks that only bubble in from a portal', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar(createPortal(<button type="button">Delete chat</button>, document.body));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  // A docked column sits beside the content, not over it: it stays as the user
+  // left it, which is what it has always done.
+  it('leaves a docked sidebar open', () => {
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+});
+
+/**
+ * The same three fixes, measured on the REAL app shell rather than on the
+ * primitive alone: the body class comes from AppLayout's own width watcher, the
+ * toggle from its own titlebar, and the landmarks from its own route container.
+ *
+ * jsdom's window is 1024 px wide, which is below rung 1 (1120 px), so the shell
+ * starts exactly where Erin did: sidebar auto-collapsed, overlay on demand.
+ */
+describe('the app shell, as a keyboard and screen-reader user meets it', () => {
+  let innerWidth: PropertyDescriptor | undefined;
+
+  const setWindowWidth = (width: number) =>
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+
+  beforeEach(() => {
+    innerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+  });
+
+  afterEach(() => {
+    if (innerWidth) Object.defineProperty(window, 'innerWidth', innerWidth);
+  });
+
+  const renderShell = () =>
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<p>Home page</p>} />
+            <Route path="/settings" element={<p>Settings page</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+
+  // T-61: SidebarInset rendered a <main> around the route container's own
+  // <main>, so the landmark list offered "main" twice for one page. The inset
+  // is a layout box and contributes no landmark; the route supplies the one.
+  it('lets the inset add no landmark of its own', () => {
+    render(
+      <SidebarProvider>
+        <SidebarInset>
+          <p>page</p>
+        </SidebarInset>
+      </SidebarProvider>
+    );
+    expect(screen.queryByRole('main')).toBeNull();
+  });
+
+  it('has exactly one main landmark, and it holds the route', () => {
+    setWindowWidth(1400);
+    renderShell();
+
+    const mains = screen.getAllByRole('main');
+    expect(mains).toHaveLength(1);
+    expect(mains[0]).toHaveTextContent('Home page');
+    expect(document.querySelector('[data-slot="sidebar-inset"]')?.tagName).toBe('DIV');
+  });
+
+  it('keeps the auto-collapsed rail out of the tab order, and closes the overlay after a choice', () => {
+    setWindowWidth(1024);
+    renderShell();
+
+    expect(document.body).toHaveClass(SIDEBAR_OVERLAY_BODY_CLASS);
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+
+    // ⌘B opens it as an overlay, and an overlay is operable.
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(panel()).not.toHaveAttribute('inert');
+
+    // Opening the disclosure is not a choice: the overlay stays.
+    fireEvent.click(screen.getByRole('button', { name: 'Components' }));
+    expect(sidebarState()).toBe('expanded');
+
+    // Choosing a destination by keyboard: Settings opens AND the overlay gets
+    // out of its way, handing focus to the titlebar toggle rather than <body>.
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    act(() => settings.focus());
+    act(() => {
+      fireEvent.click(settings);
+    });
+    expect(screen.getByText('Settings page')).toBeInTheDocument();
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(document.activeElement).toBe(screen.getByTestId('titlebar-sidebar-toggle'));
+  });
+
+  it('leaves the docked sidebar open after a choice on a wide window', () => {
+    setWindowWidth(1400);
+    renderShell();
+
+    expect(document.body).not.toHaveClass(SIDEBAR_OVERLAY_BODY_CLASS);
+    expect(sidebarState()).toBe('expanded');
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    });
+    expect(screen.getByText('Settings page')).toBeInTheDocument();
+    expect(sidebarState()).toBe('expanded');
+  });
+});
+
+/**
+ * ⚠ The overlay is ONE class in three files, and nothing but this ties them.
+ * `AppLayout` sets it, `main.css` draws the overlay from it, and the sidebar
+ * asks it whether a choice should close the panel. A rename in any one of them
+ * would leave the overlay drawn but never dismissed — or dismissed while docked.
+ */
+describe('the overlay class is shared, not re-spelled', () => {
+  const CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+  const LAYOUT = readFileSync(join(__dirname, '../Layout/AppLayout.tsx'), 'utf8');
+
+  it('is the class AppLayout toggles on <body> and main.css draws the overlay from', () => {
+    expect(LAYOUT).toContain(`classList.toggle('${SIDEBAR_OVERLAY_BODY_CLASS}'`);
+    expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-container']`);
+    expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-inset']`);
   });
 });

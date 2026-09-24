@@ -38,6 +38,45 @@ const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
 /** Marks the drag on `<body>` so the width transitions stop lagging the pointer. */
 const SIDEBAR_RESIZING_CLASS = 'biorouter-sidebar-resizing';
+/**
+ * The class that makes an open sidebar an OVERLAY rather than a column.
+ *
+ * `AppLayout` puts it on `<body>` below rung 1 of the yield ladder
+ * (`SIDEBAR_COMPACT_WIDTH`), and `main.css` keys the overlay on it: the gap
+ * collapses, the inset stops making room and the panel floats over the page.
+ * The class IS the presentation, so it is also the test for "the user is
+ * looking at an overlay" — a second width rule here could only drift from the
+ * one that actually draws it. `sidebar.test.tsx` pins all three places to it.
+ */
+export const SIDEBAR_OVERLAY_BODY_CLASS = 'biorouter-sidebar-compact';
+/**
+ * What a person activates to CHOOSE something in the sidebar: a destination, a
+ * chat, an action. A disclosure or a menu opener is not a choice (it changes what
+ * the sidebar shows, and the user is still choosing), so it is excluded below by
+ * its ARIA state rather than listed here.
+ */
+const SIDEBAR_CHOICE_SELECTOR =
+  'a[href], button, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+
+function sidebarIsOverlay(): boolean {
+  return document.body.classList.contains(SIDEBAR_OVERLAY_BODY_CLASS);
+}
+
+/**
+ * Whether a click inside the panel chose something, so an overlay should get
+ * out of the way of what was chosen (triage T-66).
+ *
+ * The DOM containment check is load-bearing: a context menu or a confirmation
+ * opened from a row is portalled to `<body>`, and React still bubbles its clicks
+ * through the row — but acting in that menu is not picking a destination here.
+ */
+function isSidebarChoice(target: EventTarget | null, panel: HTMLElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest(SIDEBAR_CHOICE_SELECTOR);
+  if (!control || !panel.contains(control)) return false;
+  if (control.hasAttribute('aria-expanded') || control.hasAttribute('aria-haspopup')) return false;
+  return !control.matches(':disabled, [aria-disabled="true"]');
+}
 
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed';
@@ -341,7 +380,32 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset';
   collapsible?: 'offcanvas' | 'icon' | 'none';
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile } = useSidebar();
+  const panelRef = React.useRef<HTMLDivElement>(null);
+
+  /*
+   * OFF-CANVAS MEANS OUT OF THE TAB ORDER (triage T-20). The collapsed panel is
+   * only translated off-screen, so its seven controls stayed Tab stops at
+   * x = -272: focus vanished for seven presses, and Enter on an invisible row
+   * opened Settings by accident. `inert` takes the whole panel out of focus,
+   * pointer and the accessibility tree while it is away, and opening it (⌘B,
+   * the titlebar toggle) gives it all back. An `icon` sidebar keeps its rail on
+   * screen, so it is never inert; the mobile sheet is a separate branch.
+   */
+  const offCanvas = collapsible === 'offcanvas' && state === 'collapsed';
+
+  // A panel that goes inert while it holds focus would drop that focus on
+  // <body>, and the next Tab would restart from the top of the document. Hand
+  // it to the toggle that brings the panel back — the control the user would
+  // reach for next. A route that focuses something itself (the composer) does
+  // so in a later effect, and wins.
+  React.useLayoutEffect(() => {
+    if (!offCanvas) return;
+    const panel = panelRef.current;
+    const focused = document.activeElement;
+    if (!panel || !(focused instanceof HTMLElement) || !panel.contains(focused)) return;
+    document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus();
+  }, [offCanvas]);
 
   if (collapsible === 'none') {
     return (
@@ -383,6 +447,21 @@ function Sidebar({
     );
   }
 
+  const { onClick: onPanelClick, ...panelProps } = props;
+
+  // AN OVERLAY STEPS ASIDE ONCE SOMETHING IS CHOSEN (triage T-66). Below rung 1
+  // the open sidebar floats over the page, so leaving it open after a choice
+  // kept it covering the very page the user just asked for — Crew's banner, the
+  // start of the chat. A docked column is beside the content, not over it, and
+  // stays exactly as the user left it.
+  const handlePanelClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    onPanelClick?.(event);
+    // `defaultPrevented` is deliberately NOT a veto: a client-side link cancels
+    // the browser's navigation precisely because it is navigating.
+    if (!open || !sidebarIsOverlay()) return;
+    if (isSidebarChoice(event.target, event.currentTarget)) setOpen(false);
+  };
+
   return (
     <div
       className="group peer text-sidebar-foreground hidden md:block"
@@ -405,7 +484,10 @@ function Sidebar({
         )}
       />
       <div
+        ref={panelRef}
         data-slot="sidebar-container"
+        inert={offCanvas}
+        onClick={handlePanelClick}
         className={cn(
           'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-[var(--motion-slow)] ease-[var(--ease-out)] will-change-transform md:flex',
           side === 'left'
@@ -417,7 +499,7 @@ function Sidebar({
             : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className
         )}
-        {...props}
+        {...panelProps}
       >
         <div
           data-sidebar="sidebar"
@@ -436,10 +518,11 @@ function Sidebar({
  * The sidebar's drag edge.
  *
  * WHY IT SITS INSIDE THE SIDEBAR'S OWN BOX. `sidebar-container` is `z-10` and
- * `SidebarInset`'s `<main>` is `z-[60]`, so any part of this handle that hung
- * past the sidebar's right edge would be painted under the content pane and
- * silently un-grabbable — a control that looks present and does nothing. The
- * 8px target therefore sits wholly within the sidebar, flush to the edge.
+ * the route's `<main>` inside `SidebarInset` is `z-[60]`, so any part of this
+ * handle that hung past the sidebar's right edge would be painted under the
+ * content pane and silently un-grabbable — a control that looks present and
+ * does nothing. The 8px target therefore sits wholly within the sidebar, flush
+ * to the edge.
  *
  * WHY THE STYLING IS AUTHORED CSS. The hover hairline and `cursor: col-resize`
  * are the only affordance the control has, and a Tailwind utility can silently
@@ -548,9 +631,16 @@ function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
   );
 }
 
-function SidebarInset({ className, ...props }: React.ComponentProps<'main'>) {
+/**
+ * The content column beside the sidebar. A `<div>`, deliberately NOT a `<main>`
+ * (triage T-61): the app's one main landmark is the route container that
+ * `AppLayout` renders INSIDE this box, and shadcn's `<main>` here nested a
+ * second one around it, so a screen reader's landmark list offered "main" twice
+ * for one page. `sidebar.test.tsx` renders the real layout and counts them.
+ */
+function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
   return (
-    <main
+    <div
       data-slot="sidebar-inset"
       className={cn(
         'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
