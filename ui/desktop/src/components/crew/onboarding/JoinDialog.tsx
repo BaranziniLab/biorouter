@@ -48,6 +48,17 @@ export const WORKSPACE_KEY_PATTERN = '[a-fA-F0-9]{64}';
 export const SSH_LOGIN_PATTERN = String.raw`[A-Za-z0-9_.\/:@%][A-Za-z0-9_.\/:@%\-]*`;
 const SSH_LOGIN = /^[A-Za-z0-9_./:@%][A-Za-z0-9_./:@%-]*$/;
 
+/** Advanced choices a joiner may make that the invitation route's contract does not carry. */
+type LocalSettings = Partial<
+  Pick<SaveConnectionInput, 'ssh_target' | 'name' | 'remote_root' | 'remote_execution'>
+>;
+
+function settingsDiffer(connection: CrewConnection, settings: LocalSettings): boolean {
+  return (Object.keys(settings) as (keyof LocalSettings)[]).some(
+    (key) => connection[key] !== settings[key]
+  );
+}
+
 /** Whether a server login override holds a value the daemon would refuse. Empty is fine. */
 export function serverLoginInvalid(value: string): boolean {
   const login = value.trim();
@@ -221,31 +232,43 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         ? joinCopy.submit(workspaceLabel)
         : joinCopy.submitFallback;
 
+  /**
+   * The overrides the invitation route's contract names (naming-design "Joiner": port, identity
+   * file, jump host). Anything else the person chose is applied afterwards (`localSettings`).
+   */
   const advanced = (): CrewInvitationAdvanced | undefined => {
     const value: CrewInvitationAdvanced = {};
     if (portValue !== null && portValue !== defaultPort) value.port = portValue;
     if (identityFile.trim()) value.identity_file = identityFile.trim();
     if (proxyJump.trim()) value.proxy_jump = proxyJump.trim();
+    return Object.keys(value).length ? value : undefined;
+  };
+
+  /** The Advanced choices the invitation route does not take: server login, name, work folder. */
+  const localSettings = (): LocalSettings => {
+    const value: LocalSettings = {};
+    if (sshAlias.trim()) value.ssh_target = sshAlias.trim();
     if (connectionName.trim()) value.name = connectionName.trim();
     if (remoteRoot.trim()) {
       value.remote_root = remoteRoot.trim();
       value.remote_execution = remoteExecution;
     }
-    return Object.keys(value).length ? value : undefined;
+    return value;
   };
 
   /**
-   * The invitation route saves `{username}@{server}`. A server login override (an alias from the
-   * person's SSH config) replaces it through the ordinary full-body update every daemon accepts,
-   * so the join never depends on the invitation route knowing the override. If that update fails,
-   * the connection this dialog just saved is removed again: a retry starts clean instead of
-   * leaving a connection that would sign in as someone the person did not choose.
+   * The invitation route saves `{username}@{server}`, named for the workspace, with no work
+   * folder. What the person chose instead (an SSH alias from their own config, a connection name,
+   * a work folder) is applied through the ordinary full-body update every daemon accepts, so the
+   * join never depends on the invitation route knowing a field its contract does not name. If
+   * that update fails, the connection this dialog just saved is removed again: a retry starts
+   * clean instead of leaving a connection that would sign in as someone the person did not choose.
    */
-  const applyServerLogin = async (connection: CrewConnection, login: string) => {
+  const applyLocalSettings = async (connection: CrewConnection, settings: LocalSettings) => {
     try {
       return await crew.updateConnection(connection.id, {
         ...connectionUpdateBody(connection),
-        ssh_target: login,
+        ...settings,
       });
     } catch (failure) {
       // The update's failure is the one to show; a leftover connection stays removable.
@@ -304,9 +327,9 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       const extra = advanced();
       if (extra) overrides.advanced = extra;
       let connection = await saveFromInvitation(invitation, overrides);
-      const login = sshAlias.trim();
-      if (login && connection.ssh_target !== login)
-        connection = await applyServerLogin(connection, login);
+      const settings = localSettings();
+      if (settingsDiffer(connection, settings))
+        connection = await applyLocalSettings(connection, settings);
       // Reload the list before selecting, so the controller knows the connection it connects.
       await crew.refresh();
       crew.selectConnection(connection.id);

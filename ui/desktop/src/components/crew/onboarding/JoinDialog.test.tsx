@@ -213,12 +213,11 @@ describe('JoinDialog', () => {
     await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
   });
 
-  it('applies a server login override with the ordinary update, never through the invitation route', async () => {
+  it('sends the invitation route only its named overrides and applies the rest with the ordinary update', async () => {
     mocks.previewInvitation.mockResolvedValue(PREVIEW);
-    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected', port: 2222 });
     mocks.saveFromInvitation.mockResolvedValue(saved);
-    const updated = { ...saved, ssh_target: 'hpc' };
-    const updateConnection = vi.fn().mockResolvedValue(updated);
+    const updateConnection = vi.fn(async (_id: string, body: object) => ({ ...saved, ...body }));
     const view = renderDialog({ updateConnection });
     await paste();
     await screen.findByTestId('crew-join-summary');
@@ -226,23 +225,32 @@ describe('JoinDialog', () => {
     const login = screen.getByLabelText(joinCopy.serverLogin);
     expect(login).toHaveAttribute('pattern', SSH_LOGIN_PATTERN);
     fireEvent.change(login, { target: { value: 'hpc' } });
+    fireEvent.change(screen.getByLabelText(joinCopy.port), { target: { value: '2222' } });
+    fireEvent.change(screen.getByLabelText(joinCopy.connectionName), {
+      target: { value: 'UCSF lab' },
+    });
+    fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+      target: { value: '/work/lab' },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: joinCopy.remoteExecution }));
     fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
 
-    // The invitation route gets only what its contract names; the override is not in `advanced`.
+    // Port, identity file and jump host are what the route's contract names; nothing else rides it.
     await waitFor(() =>
       expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
         mode: 'private',
         institution_id: 'ucsf',
         username: 'bob',
+        advanced: { port: 2222 },
       })
     );
     const crew = view.crew();
-    // The full body, pins unchanged, with only the server login replaced.
+    // The full body, pins unchanged, with the person's local choices applied over it.
     await waitFor(() =>
       expect(updateConnection).toHaveBeenCalledWith('conn-new', {
-        name: saved.name,
+        name: 'UCSF lab',
         ssh_target: 'hpc',
-        port: saved.port,
+        port: 2222,
         identity_file: saved.identity_file,
         proxy_jump: saved.proxy_jump,
         socket_path: saved.socket_path,
@@ -250,12 +258,13 @@ describe('JoinDialog', () => {
         workspace_id: saved.workspace_id,
         workspace_public_key: saved.workspace_public_key,
         cluster_connection_id: saved.cluster_connection_id,
-        remote_root: saved.remote_root,
-        remote_execution: saved.remote_execution,
+        remote_root: '/work/lab',
+        remote_execution: true,
         mode: 'private',
         institution_id: 'ucsf',
       })
     );
+    expect(updateConnection).toHaveBeenCalledOnce();
     await waitFor(() => expect(crew.selectConnection).toHaveBeenCalledWith('conn-new'));
     expect(crew.removeConnection).not.toHaveBeenCalled();
   });
