@@ -68,7 +68,10 @@ export function ChannelHeader({
   const pane = crew.ui.pane;
   const detailsOpen = pane?.mode === 'details';
   const chats = agentAccess?.chats ?? 0;
-  const tasks = agentAccess?.tasks ?? activeTasksIn(crew.runs, channel.id);
+  // While a refresh re-verifies, the runs come from the last verified view too, so who can post
+  // here never blinks out of the header.
+  const runs = crew.snapshot ? crew.runs : (crew.lastVerified?.runs ?? crew.runs);
+  const tasks = agentAccess?.tasks ?? activeTasksIn(runs, channel.id);
 
   return (
     <header

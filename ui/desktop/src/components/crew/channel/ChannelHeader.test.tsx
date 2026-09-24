@@ -135,6 +135,14 @@ describe('ChannelHeader', () => {
       await channelShown();
       const chip = await screen.findByRole('button', { name: '1 task can post here' });
       expect(chip).toHaveTextContent('1 task');
+
+      // A refresh clears the live runs while it re-verifies; the chip keeps the last verified count.
+      mocks.observeCrew.mockImplementation(async () => new Promise(() => undefined));
+      await act(async () => {
+        void currentCrew().refresh();
+      });
+      await waitFor(() => expect(currentCrew().runs).toEqual([]));
+      expect(screen.getByRole('button', { name: '1 task can post here' })).toBeInTheDocument();
     });
 
     it('labels chats, and chats with tasks as agents, keeping the visible words in the name', async () => {
