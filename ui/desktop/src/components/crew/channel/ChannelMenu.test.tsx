@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChannelHeader } from './ChannelHeader';
 import { channelCopy } from './copy';
+import { channelHeaderCopy } from './headerCopy';
 import {
   bob,
   currentCrew,
@@ -49,7 +50,7 @@ function Layout({ canRename = false }: { canRename?: boolean }) {
 }
 
 async function openMenu(user: ReturnType<typeof userEvent.setup>, slug = 'general') {
-  await user.click(await screen.findByRole('button', { name: channelCopy.menuName(slug) }));
+  await user.click(await screen.findByRole('button', { name: channelHeaderCopy.menuName(slug) }));
   return screen.findByRole('menu');
 }
 
@@ -118,7 +119,7 @@ describe('ChannelMenu items per role', () => {
       snapshot: makeSnapshot({ channels: [{ ...general, archived: true }, methods] }),
     });
     renderCrew(() => <Layout canRename />);
-    await screen.findByRole('button', { name: channelCopy.menuName('methods') });
+    await screen.findByRole('button', { name: channelHeaderCopy.menuName('methods') });
     act(() => currentCrew().selectChannel(general.id));
     await openMenu(user);
     expect(itemNames()).toEqual(EVERYONE);
@@ -203,7 +204,9 @@ describe('ChannelMenu actions', () => {
   it('opens the owner dialogs by intent, focusing the trigger first so it is their opener', async () => {
     const user = userEvent.setup();
     renderCrew(() => <Layout canRename />);
-    const trigger = await screen.findByRole('button', { name: channelCopy.menuName('general') });
+    const trigger = await screen.findByRole('button', {
+      name: channelHeaderCopy.menuName('general'),
+    });
 
     await choose(user, menu.addPeople);
     expect(currentCrew().ui.dialog).toEqual({
@@ -237,6 +240,7 @@ describe('ChannelMenu actions', () => {
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe('#general'));
     await choose(user, menu.copyId);
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
-    expect(screen.queryByRole('status')).toBeNull();
+    // The header's one status region (Refresh channel's answer) stays empty.
+    for (const status of screen.queryAllByRole('status')) expect(status).toBeEmptyDOMElement();
   });
 });

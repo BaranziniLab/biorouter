@@ -1,7 +1,9 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChannelHeader } from './ChannelHeader';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ChannelHeader, REFRESHED_NOTICE_MS } from './ChannelHeader';
 import { channelCopy } from './copy';
+import { channelHeaderCopy } from './headerCopy';
 import {
   currentCrew,
   general,
@@ -38,7 +40,7 @@ function Header(props: Parameters<typeof ChannelHeader>[0]) {
 }
 
 async function channelShown() {
-  return screen.findByRole('button', { name: channelCopy.menuName('general') });
+  return screen.findByRole('button', { name: channelHeaderCopy.menuName('general') });
 }
 
 beforeEach(() => {
@@ -55,6 +57,9 @@ describe('ChannelHeader', () => {
     expect(trigger).toHaveTextContent('general');
     const heading = screen.getByRole('heading', { level: 1 });
     expect(heading).toContainElement(trigger);
+    // A heading jump reads the channel, then what the control is — never "general channel menu".
+    expect(heading).toHaveAccessibleName('#general, channel menu');
+    expect(trigger).not.toHaveAttribute('aria-label');
     // The channel section is named "#general" through the hidden label, not the menu's name.
     expect(document.getElementById('channel-title')).toHaveTextContent('#general');
     expect(document.getElementById('channel-title')).not.toBeVisible();
@@ -70,13 +75,30 @@ describe('ChannelHeader', () => {
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
   });
 
+  it('lets a keyboard reach the classification and read its explanation (T-65)', async () => {
+    renderCrew(Header({}));
+    const trigger = await channelShown();
+    const badge = screen.getByRole('button', {
+      name: `${channelCopy.restricted}: ${channelCopy.restrictedHint}`,
+    });
+    expect(badge).toHaveClass('no-drag', 'biorouter-focus-surface');
+    // The next Tab stop after the channel menu, and its explanation opens on that focus.
+    act(() => trigger.focus());
+    await userEvent.setup().tab();
+    expect(badge).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(channelCopy.restrictedHint);
+    // Pressing it opens where the classification is described in full.
+    fireEvent.click(badge);
+    expect(currentCrew().ui.pane).toEqual({ mode: 'details', tab: 'about' });
+  });
+
   it('marks an archived channel', async () => {
     installObserver({
       snapshot: makeSnapshot({ channels: [{ ...general, archived: true }, methods] }),
     });
     renderCrew(Header({}));
     // Crew opens the first open channel; an archived one is shown only when chosen.
-    await screen.findByRole('button', { name: channelCopy.menuName('methods') });
+    await screen.findByRole('button', { name: channelHeaderCopy.menuName('methods') });
     expect(screen.queryByText(channelCopy.archived)).toBeNull();
     act(() => currentCrew().selectChannel(general.id));
     await channelShown();
@@ -104,6 +126,38 @@ describe('ChannelHeader', () => {
     fireEvent.click(toggle);
     expect(currentCrew().ui.pane).toBeNull();
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('paints the pressed look while the pane is open (T-46)', async () => {
+    renderCrew(Header({}));
+    await channelShown();
+    const toggle = screen.getByRole('button', { name: channelCopy.details });
+    // The rule lives in channel.css; the class and the pressed state are what it keys on.
+    expect(toggle).toHaveClass('crew-details-toggle');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(`${__dirname}/channel.css`, 'utf8');
+    expect(css).toMatch(
+      /\.crew-details-toggle\[aria-pressed='true'\]\s*\{\s*background-color: var\(--background-medium\);\s*color: var\(--text-default\);/
+    );
+  });
+
+  it('opens the toggle’s tooltip for a Tab, never for focus a program hands back (T-46)', async () => {
+    renderCrew(Header({}));
+    await channelShown();
+    const toggle = screen.getByRole('button', { name: channelCopy.details });
+    // The pane closing puts focus back on its opener by script.
+    act(() => toggle.focus());
+    expect(toggle).toHaveFocus();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+
+    // From the control before it, Tab moves focus there: that opens it.
+    act(() => screen.getByRole('button', { name: '2 members' }).focus());
+    await userEvent.setup().tab();
+    expect(toggle).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(channelCopy.details);
   });
 
   it('reads the pressed state as false while the pane shows another mode', async () => {
@@ -181,7 +235,69 @@ describe('ChannelHeader', () => {
       void currentCrew().refresh();
     });
     await waitFor(() => expect(currentCrew().snapshot).toBeNull());
-    expect(screen.getByRole('button', { name: channelCopy.menuName('general') })).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: channelHeaderCopy.menuName('general') })
+    ).toBeVisible();
+  });
+
+  describe('the page title (T-60)', () => {
+    const original = 'Biorouter - Crew';
+    beforeEach(() => {
+      document.title = original;
+    });
+    afterEach(() => {
+      document.title = '';
+    });
+
+    it('names the channel and the workspace, follows the channel, and is put back on close', async () => {
+      const view = renderCrew(Header({}));
+      await channelShown();
+      await waitFor(() => expect(document.title).toMatch(/^#general · .+ — Biorouter$/));
+      act(() => currentCrew().selectChannel(methods.id));
+      await screen.findByRole('button', { name: channelHeaderCopy.menuName('methods') });
+      await waitFor(() => expect(document.title).toMatch(/^#methods · .+ — Biorouter$/));
+      view.unmount();
+      expect(document.title).toBe(original);
+    });
+
+    it('says the workspace by name, never by ID', () => {
+      expect(channelHeaderCopy.pageTitle('general', 'chen-lab')).toBe(
+        '#general · chen-lab — Biorouter'
+      );
+      expect(channelHeaderCopy.pageTitle('general', '')).toBe('#general — Biorouter');
+    });
+  });
+
+  describe('Refresh channel (T-67)', () => {
+    it('answers “Up to date” once the channel is verified again, then lets it go', async () => {
+      const user = userEvent.setup();
+      renderCrew(Header({}));
+      const trigger = await channelShown();
+      const status = () =>
+        screen
+          .getAllByRole('status')
+          .find((node) => node.classList.contains('crew-channel-refreshed'));
+      expect(status()).toBeEmptyDOMElement();
+      await user.click(trigger);
+      await user.click(await screen.findByRole('menuitem', { name: channelCopy.menu.refresh }));
+      await waitFor(() => expect(status()).toHaveTextContent(channelHeaderCopy.upToDate));
+      await waitFor(() => expect(status()).toBeEmptyDOMElement(), {
+        timeout: REFRESHED_NOTICE_MS + 2000,
+      });
+    });
+
+    it('says nothing while the channel is not verified again', async () => {
+      const user = userEvent.setup();
+      renderCrew(Header({}));
+      const trigger = await channelShown();
+      // The next observation never answers: the refresh resolves, the view stays unverified.
+      mocks.observeCrew.mockImplementation(async () => new Promise(() => undefined));
+      await user.click(trigger);
+      await user.click(await screen.findByRole('menuitem', { name: channelCopy.menu.refresh }));
+      await waitFor(() => expect(currentCrew().snapshot).toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(screen.queryByText(channelHeaderCopy.upToDate)).toBeNull();
+    });
   });
 
   it('renders nothing without a channel', async () => {

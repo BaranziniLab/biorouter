@@ -11,6 +11,7 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, expect, vi } from 'vitest';
+import { channelHeaderCopy } from '../channel/headerCopy';
 
 /** A fresh user-event session per action: it binds to the document the test is rendering into. */
 function user() {
@@ -29,9 +30,12 @@ export async function workspaceAction(item: string, workspace: RegExp = /^Fixtur
   await user().click(entry);
 }
 
-/** Open the channel menu (the channel's `<h1>`, "# general ▾") and choose `item`. */
+/**
+ * Open the channel menu (the channel's `<h1>`, "# general ▾", named "#general, channel menu") and
+ * choose `item`.
+ */
 export async function channelAction(item: string, channel = 'general') {
-  await user().click(screen.getByRole('button', { name: `${channel} channel menu` }));
+  await user().click(screen.getByRole('button', { name: channelHeaderCopy.menuName(channel) }));
   const entry = await screen.findByRole('menuitem', { name: item });
   await waitFor(() => expect(entry).not.toHaveAttribute('aria-disabled', 'true'));
   await user().click(entry);

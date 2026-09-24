@@ -23,6 +23,23 @@
   transition-duration: var(--dur-fast-max);
 }
 
+/* The details toggle while the pane is open: the pressed look of the chat
+   header's panel toggle, so "on" is visible and not only announced. Focus
+   still reads as focus on top of it. */
+.crew-details-toggle[aria-pressed='true'] {
+  background-color: var(--background-medium);
+  color: var(--text-default);
+}
+
+.crew-details-toggle[aria-pressed='true']:focus-visible {
+  background-color: var(--background-focus);
+}
+
+/* Refresh channel's brief "Up to date", beside the badges. */
+.crew-channel-refreshed {
+  white-space: nowrap;
+}
+
 /* The member stack: up to three 20px avatars overlapping by 4px. Each avatar's
    2px ring paints the band's own ground, so the overlap reads as a cut. */
 .crew-member-stack {
