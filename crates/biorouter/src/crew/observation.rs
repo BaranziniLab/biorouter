@@ -34,12 +34,36 @@ pub enum ObserveEvent {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[schema(inline)]
         labels: BTreeMap<String, PersonLabel>,
+        /// What the connected broker's last verified `hello` said it supports (for example
+        /// `unique_names_v1`). They decide only which requests a client offers; the broker still
+        /// refuses what it does not support. Absent before the first verified hello, and from a
+        /// daemon that predates it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
     },
     Messages {
         channel_id: String,
         messages: Vec<Value>,
         cursor: Option<String>,
         reset: bool,
+        /// How many messages of the page this frame was taken from are still to come. `0` ends
+        /// the page, so on the opening frames it marks the end of the channel's backlog. Absent
+        /// from a daemon that predates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remaining: Option<u32>,
+        /// The largest page the observer asks the broker for right now. It shrinks when the
+        /// broker answers `response_too_large`, so a client must not assume a fixed size.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page_size: Option<u32>,
+        /// How the broker names each author of this frame's messages, keyed by principal ID,
+        /// including a person who has since left the workspace. Display only.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        #[schema(inline)]
+        people: BTreeMap<String, MessagePerson>,
+        /// The names of the channels this frame's messages name, limited by the broker to the
+        /// channels the viewer can read. Display only.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        channel_names: BTreeMap<String, String>,
     },
     Reconnect {
         cursor: Option<String>,
@@ -49,6 +73,19 @@ pub enum ObserveEvent {
         error: String,
         clear: bool,
     },
+}
+
+/// One entry of the `people` map the broker returns beside messages (`messages.history`).
+/// Display only: it names a message's author, and is the only name a client has for someone who
+/// has left the workspace since they posted.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct MessagePerson {
+    pub username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// False for a person who was removed from the workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
 }
 
 /// How one person is shown, from the naming design's display rule. Display only: the daemon

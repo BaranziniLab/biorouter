@@ -2695,6 +2695,13 @@ export type ModelUsageRow = {
 };
 
 export type ObserveEvent = {
+    /**
+     * What the connected broker's last verified `hello` said it supports (for example
+     * `unique_names_v1`). They decide only which requests a client offers; the broker still
+     * refuses what it does not support. Absent before the first verified hello, and from a
+     * daemon that predates it.
+     */
+    capabilities?: Array<string>;
     connection_id: string;
     connection_institution_id?: string | null;
     connection_mode: 'public' | 'private';
@@ -2727,8 +2734,40 @@ export type ObserveEvent = {
     type: 'state';
 } | {
     channel_id: string;
+    /**
+     * The names of the channels this frame's messages name, limited by the broker to the
+     * channels the viewer can read. Display only.
+     */
+    channel_names?: {
+        [key: string]: string;
+    };
     cursor?: string | null;
     messages: Array<unknown>;
+    /**
+     * The largest page the observer asks the broker for right now. It shrinks when the
+     * broker answers `response_too_large`, so a client must not assume a fixed size.
+     */
+    page_size?: number | null;
+    /**
+     * How the broker names each author of this frame's messages, keyed by principal ID,
+     * including a person who has since left the workspace. Display only.
+     */
+    people?: {
+        [key: string]: {
+            /**
+             * False for a person who was removed from the workspace.
+             */
+            active?: boolean | null;
+            display_name?: string | null;
+            username: string;
+        };
+    };
+    /**
+     * How many messages of the page this frame was taken from are still to come. `0` ends
+     * the page, so on the opening frames it marks the end of the channel's backlog. Absent
+     * from a daemon that predates it.
+     */
+    remaining?: number | null;
     reset: boolean;
     type: 'messages';
 } | {
@@ -3572,6 +3611,11 @@ export type RunView = {
     error?: string | null;
     run_id: string;
     session_id: string;
+    /**
+     * When this device admitted the task, in Unix milliseconds. Absent from a run recorded
+     * before it was kept.
+     */
+    started_at?: number | null;
     status: string;
 };
 

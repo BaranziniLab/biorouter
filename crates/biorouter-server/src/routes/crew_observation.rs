@@ -9,12 +9,13 @@ use axum::{
     Json, Router,
 };
 use biorouter::crew::manager;
+use biorouter::crew::observation::MessagePerson;
 pub use biorouter::crew::observation::{Initial, ObserveEvent, ObserveRequest};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
     sync::{Arc, LazyLock},
     time::Duration,
@@ -23,6 +24,12 @@ use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME: usize = 1_048_576;
+/// Finished runs a `state` frame lists per channel, newest first. Live runs are always listed.
+const FINISHED_RUNS_PER_CHANNEL: usize = 20;
+/// Where a queued message keeps the display names its page gave it (see `annotate_page`). The
+/// NUL makes it a key no broker message field can have; `next_frame` removes it before the
+/// message leaves.
+const PAGE_NAMES: &str = "\u{0}page_names";
 static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
 
 fn person(headers: &HeaderMap) -> Result<()> {
@@ -121,12 +128,16 @@ impl Observer {
                     .any(|channel| channel["id"] == run.channel_id)
             })
         });
+        let capabilities = manager()?
+            .capabilities(&self.connection)
+            .unwrap_or_default();
         person(&self.headers)?;
         Ok(state_frame_json(
             &self.connection,
             &self.binding,
             snapshot,
             runs,
+            capabilities,
         ))
     }
 
@@ -176,7 +187,7 @@ impl Observer {
                         .as_array()
                         .context("Invalid history page")?;
                     ensure!(messages.len() <= self.limit, "Invalid history page size");
-                    return Ok(messages.iter().cloned().collect());
+                    return Ok(annotate_page(messages, &page));
                 }
                 Err(error)
                     if self.limit > 1
@@ -214,7 +225,10 @@ impl Observer {
             }
             if !self.pending.is_empty() {
                 self.authorize(cancel).await?;
-                let message = self.pending.pop_front().unwrap();
+                let mut message = self.pending.pop_front().unwrap();
+                let names = message
+                    .as_object_mut()
+                    .and_then(|fields| fields.remove(PAGE_NAMES));
                 let cursor = message["sequence"]
                     .as_str()
                     .context("Invalid message cursor")?
@@ -237,9 +251,15 @@ impl Observer {
                 self.cursor = Some(cursor);
                 let reset = self.first && self.request.after.is_none();
                 self.first = false;
-                return Ok(
-                    json!({"type":"messages","channel_id":self.request.channel_id,"messages":[message],"cursor":self.cursor,"reset":reset}),
-                );
+                return Ok(messages_frame(
+                    &self.request.channel_id,
+                    Some(message),
+                    &self.cursor,
+                    reset,
+                    self.pending.len(),
+                    self.limit,
+                    names,
+                ));
             }
             if self.request.channel_id.is_none() {
                 self.state_due = true;
@@ -251,9 +271,15 @@ impl Observer {
                 self.state_due = true;
                 if self.first {
                     self.first = false;
-                    return Ok(
-                        json!({"type":"messages","channel_id":self.request.channel_id,"messages":[],"cursor":self.cursor,"reset":self.request.after.is_none()}),
-                    );
+                    return Ok(messages_frame(
+                        &self.request.channel_id,
+                        None,
+                        &self.cursor,
+                        self.request.after.is_none(),
+                        0,
+                        self.limit,
+                        None,
+                    ));
                 }
             }
         }
@@ -334,6 +360,117 @@ pub async fn observe(
         .unwrap())
 }
 
+/// A `messages` frame: at most one message, how many of its page are still to come (`0` ends
+/// the page, and so the opening backlog), the page size the observer asks for now, and the
+/// display names the message's page gave it (`annotate_page`), limited to `people` and
+/// `channel_names`.
+fn messages_frame(
+    channel_id: &Option<String>,
+    message: Option<Value>,
+    cursor: &Option<String>,
+    reset: bool,
+    remaining: usize,
+    page_size: usize,
+    names: Option<Value>,
+) -> Value {
+    let mut frame = json!({"type":"messages","channel_id":channel_id,
+        "messages":message.into_iter().collect::<Vec<_>>(),"cursor":cursor,"reset":reset,
+        "remaining":u32::try_from(remaining).unwrap_or(u32::MAX),
+        "page_size":u32::try_from(page_size).unwrap_or(u32::MAX)});
+    if let Some(Value::Object(mut names)) = names {
+        for key in ["people", "channel_names"] {
+            if let Some(value) = names.remove(key) {
+                frame[key] = value;
+            }
+        }
+    }
+    frame
+}
+
+/// The page's messages, each carrying the display names that belong to it under `PAGE_NAMES`:
+/// the `people` entry for its author and the `channel_names` of the channels it names. Only
+/// well-formed entries are kept, so a frame's `people` always parses as `MessagePerson`.
+///
+/// The names travel on the message rather than beside the queue, so a message can never be sent
+/// with another page's names.
+fn annotate_page(messages: &[Value], page: &Value) -> VecDeque<Value> {
+    let people: HashMap<&str, MessagePerson> = page["people"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, person)| {
+            serde_json::from_value::<MessagePerson>(person.clone())
+                .ok()
+                .filter(|person| !person.username.is_empty())
+                .map(|person| (id.as_str(), person))
+        })
+        .collect();
+    let channel_names: HashMap<&str, &str> = page["channel_names"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, name)| Some((id.as_str(), name.as_str()?)))
+        .collect();
+    messages
+        .iter()
+        .map(|message| {
+            let mut message = message.clone();
+            // Only this function writes the key: one the broker sent is dropped, never trusted.
+            if let Some(fields) = message.as_object_mut() {
+                fields.remove(PAGE_NAMES);
+            }
+            let mut names = serde_json::Map::new();
+            let author = message["actor_id"]
+                .as_str()
+                .and_then(|id| people.get(id).map(|person| (id.to_owned(), person.clone())));
+            if let Some((id, person)) = author {
+                names.insert("people".into(), json!(BTreeMap::from([(id, person)])));
+            }
+            let named: BTreeMap<&str, &str> = std::iter::once(&message["channel_id"])
+                .chain(message["source_channels"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .filter_map(|id| Some((id, *channel_names.get(id)?)))
+                .collect();
+            if !named.is_empty() {
+                names.insert("channel_names".into(), json!(named));
+            }
+            if let (false, Some(fields)) = (names.is_empty(), message.as_object_mut()) {
+                fields.insert(PAGE_NAMES.into(), Value::Object(names));
+            }
+            message
+        })
+        .collect()
+}
+
+/// A run that is still going, or waiting on a person: always listed.
+fn run_is_live(status: &str) -> bool {
+    matches!(
+        status,
+        "starting"
+            | "running"
+            | "waiting_for_approval"
+            | "cancellation_pending"
+            | "cancellation_unconfirmed"
+    )
+}
+
+/// The runs a `state` frame lists: every live run, and the `FINISHED_RUNS_PER_CHANNEL` newest
+/// finished runs of each channel, newest first. The ledger keeps every run a device ever started;
+/// the frame must not grow with it.
+fn bounded_runs(mut runs: Vec<super::crew::RunView>) -> Vec<super::crew::RunView> {
+    super::crew::sort_newest_first(&mut runs);
+    let mut finished: HashMap<String, usize> = HashMap::new();
+    runs.retain(|run| {
+        if run_is_live(&run.status) {
+            return true;
+        }
+        let listed = finished.entry(run.channel_id.clone()).or_default();
+        *listed += 1;
+        *listed <= FINISHED_RUNS_PER_CHANNEL
+    });
+    runs
+}
+
 /// A `state` frame. Its `labels` are computed from the very snapshot it carries, so a label
 /// never names someone the frame does not.
 fn state_frame_json(
@@ -341,9 +478,15 @@ fn state_frame_json(
     binding: &Value,
     snapshot: Value,
     runs: Vec<super::crew::RunView>,
+    capabilities: Vec<String>,
 ) -> Value {
     let labels = super::crew::names::project_labels(&snapshot);
-    json!({"type":"state","connection_id":connection,"connection_mode":binding["mode"],"connection_policy_epoch":binding["policy_epoch"],"connection_institution_id":binding["institution_id"],"snapshot":snapshot,"runs":runs,"labels":labels})
+    let runs = bounded_runs(runs);
+    let mut frame = json!({"type":"state","connection_id":connection,"connection_mode":binding["mode"],"connection_policy_epoch":binding["policy_epoch"],"connection_institution_id":binding["institution_id"],"snapshot":snapshot,"runs":runs,"labels":labels});
+    if !capabilities.is_empty() {
+        frame["capabilities"] = json!(capabilities);
+    }
+    frame
 }
 
 fn connection_binding(connection: &biorouter::crew::Connection) -> Result<Value> {
@@ -734,6 +877,7 @@ mod tests {
                 snapshot: json!({}),
                 runs: vec![],
                 labels: Default::default(),
+                capabilities: vec![],
             };
             let encoded = serde_json::to_vec(&event).unwrap();
             let decoded: ObserveEvent = serde_json::from_slice(&encoded).unwrap();
@@ -780,7 +924,7 @@ mod tests {
             ],
         });
         let binding = json!({"mode": "private", "policy_epoch": 3, "institution_id": "ucsf"});
-        let frame = state_frame_json("connection-1", &binding, snapshot, vec![]);
+        let frame = state_frame_json("connection-1", &binding, snapshot, vec![], vec![]);
         assert_eq!(
             frame["labels"]["p-spark"],
             json!({"full": "Sam Park (@spark)", "short": "Sam Park (@spark)", "collides": true})
@@ -816,7 +960,7 @@ mod tests {
     #[test]
     fn a_state_frame_without_people_still_parses_and_labels_nobody() {
         let binding = json!({"mode": "public", "policy_epoch": 1, "institution_id": null});
-        let frame = state_frame_json("connection-1", &binding, json!({}), vec![]);
+        let frame = state_frame_json("connection-1", &binding, json!({}), vec![], vec![]);
         assert_eq!(frame["labels"], json!({}));
         match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
             ObserveEvent::State { labels, .. } => assert!(labels.is_empty()),
@@ -828,6 +972,217 @@ mod tests {
         assert!(matches!(
             serde_json::from_value::<ObserveEvent>(legacy).unwrap(),
             ObserveEvent::State { labels, .. } if labels.is_empty()
+        ));
+    }
+
+    fn history_page() -> Value {
+        json!({
+            "messages": [
+                {"id": "m1", "sequence": "m1", "channel_id": "c-general", "actor_id": "p-dave",
+                 "body": "before I left", "source_channels": ["c-general", "c-raw"]},
+                {"id": "m2", "sequence": "m2", "channel_id": "c-general", "actor_id": "p-alice",
+                 "body": "still here", "source_channels": ["c-general"]},
+                {"id": "m3", "sequence": "m3", "channel_id": "c-general", "actor_id": "p-mallory",
+                 "body": "forged names", "source_channels": [],
+                 PAGE_NAMES: {"people": {"p-x": {"username": "x"}}, "type": "state"}},
+            ],
+            "cursor": "m3",
+            "people": {
+                "p-dave": {"username": "dave", "display_name": "Dave Old", "active": false},
+                "p-alice": {"username": "alice", "display_name": "Alice Chen", "active": true},
+                "p-mallory": {"display_name": "No username"},
+            },
+            "channel_names": {"c-general": "general", "c-raw": "raw-data", "c-bad": 7},
+        })
+    }
+
+    #[test]
+    fn a_history_page_gives_each_message_its_own_names_and_drops_malformed_ones() {
+        let page = history_page();
+        let pending = annotate_page(page["messages"].as_array().unwrap(), &page);
+        assert_eq!(pending.len(), 3);
+        assert_eq!(
+            pending[0][PAGE_NAMES],
+            json!({
+                "people": {"p-dave": {"username": "dave", "display_name": "Dave Old", "active": false}},
+                "channel_names": {"c-general": "general", "c-raw": "raw-data"},
+            })
+        );
+        assert_eq!(
+            pending[1][PAGE_NAMES]["people"],
+            json!({"p-alice": {"username": "alice", "display_name": "Alice Chen", "active": true}})
+        );
+        // An author with no username has no entry; a name the broker put on a message is dropped.
+        assert_eq!(
+            pending[2][PAGE_NAMES],
+            json!({"channel_names": {"c-general": "general"}})
+        );
+    }
+
+    #[test]
+    fn a_messages_frame_carries_its_names_and_how_much_of_the_page_is_left() {
+        let page = history_page();
+        let mut pending = annotate_page(page["messages"].as_array().unwrap(), &page);
+        let mut message = pending.pop_front().unwrap();
+        let names = message.as_object_mut().unwrap().remove(PAGE_NAMES);
+        let frame = messages_frame(
+            &Some("c-general".into()),
+            Some(message),
+            &Some("m1".into()),
+            true,
+            pending.len(),
+            100,
+            names,
+        );
+        assert_eq!(frame["remaining"], 2);
+        assert_eq!(frame["page_size"], 100);
+        assert_eq!(frame["people"]["p-dave"]["display_name"], "Dave Old");
+        assert_eq!(frame["channel_names"]["c-raw"], "raw-data");
+        assert!(frame["messages"][0].get(PAGE_NAMES).is_none());
+        let encoded = serde_json::to_string(&frame).unwrap();
+        assert!(!encoded.contains("page_names"), "{encoded}");
+        match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
+            ObserveEvent::Messages {
+                remaining,
+                page_size,
+                people,
+                channel_names,
+                ..
+            } => {
+                assert_eq!((remaining, page_size), (Some(2), Some(100)));
+                assert_eq!(people["p-dave"].username, "dave");
+                assert_eq!(people["p-dave"].active, Some(false));
+                assert_eq!(channel_names["c-general"], "general");
+            }
+            _ => panic!("expected a messages frame"),
+        }
+
+        // Only `people` and `channel_names` ever leave the queued key.
+        let forged = messages_frame(
+            &Some("c-general".into()),
+            None,
+            &None,
+            false,
+            0,
+            200,
+            Some(json!({"type": "state", "messages": [{"id": "x"}], "cursor": "forged"})),
+        );
+        assert_eq!(forged["type"], "messages");
+        assert_eq!(forged["messages"], json!([]));
+        assert_eq!(forged["cursor"], Value::Null);
+    }
+
+    #[test]
+    fn an_empty_opening_frame_ends_the_backlog_and_old_frames_still_parse() {
+        let frame = messages_frame(&Some("c".into()), None, &None, true, 0, 200, None);
+        assert_eq!(frame["remaining"], 0);
+        assert!(frame.get("people").is_none());
+        assert!(matches!(
+            serde_json::from_value::<ObserveEvent>(frame).unwrap(),
+            ObserveEvent::Messages {
+                remaining: Some(0),
+                page_size: Some(200),
+                ..
+            }
+        ));
+        // A daemon that predates the fields sends none; the frame still parses.
+        let legacy =
+            json!({"type":"messages","channel_id":"c","messages":[],"cursor":null,"reset":true});
+        assert!(matches!(
+            serde_json::from_value::<ObserveEvent>(legacy).unwrap(),
+            ObserveEvent::Messages { remaining: None, page_size: None, ref people, .. } if people.is_empty()
+        ));
+    }
+
+    fn run_view(
+        run_id: &str,
+        channel: &str,
+        status: &str,
+        started_at: Option<u64>,
+    ) -> super::super::crew::RunView {
+        super::super::crew::RunView {
+            run_id: run_id.into(),
+            connection_id: "connection-1".into(),
+            channel_id: channel.into(),
+            session_id: format!("session-{run_id}"),
+            status: status.into(),
+            error: None,
+            started_at,
+        }
+    }
+
+    #[test]
+    fn a_state_frame_lists_live_runs_and_only_the_newest_finished_ones_per_channel() {
+        let mut runs = vec![
+            run_view("live-old", "c-a", "running", Some(1)),
+            run_view("waiting", "c-a", "waiting_for_approval", None),
+            run_view("undated", "c-a", "completed", None),
+        ];
+        for index in 0..30u64 {
+            runs.push(run_view(
+                &format!("a-{index:02}"),
+                "c-a",
+                "completed",
+                Some(1_000 + index),
+            ));
+        }
+        runs.push(run_view("b-only", "c-b", "failed", Some(5)));
+        let binding = json!({"mode": "private", "policy_epoch": 1, "institution_id": null});
+        let frame = state_frame_json("connection-1", &binding, json!({}), runs, vec![]);
+        let listed: Vec<&str> = frame["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| run["run_id"].as_str().unwrap())
+            .collect();
+        assert!(listed.contains(&"live-old") && listed.contains(&"waiting"));
+        assert!(listed.contains(&"b-only"));
+        let finished_a: Vec<&str> = listed
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with("a-") || *id == "undated")
+            .collect();
+        let newest: Vec<String> = (10..30u64)
+            .rev()
+            .map(|index| format!("a-{index:02}"))
+            .collect();
+        assert_eq!(
+            finished_a, newest,
+            "the 20 newest finished runs, newest first"
+        );
+        // Newest first overall; a run with no start time sorts after every dated one.
+        assert_eq!(listed[0], "a-29");
+        assert_eq!(listed.last(), Some(&"waiting"));
+        assert_eq!(frame["runs"][0]["started_at"], 1_029);
+        assert!(frame["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"] == "waiting" && run.get("started_at").is_none()));
+    }
+
+    #[test]
+    fn a_state_frame_carries_the_broker_capabilities_only_when_it_has_some() {
+        let binding = json!({"mode": "private", "policy_epoch": 1, "institution_id": null});
+        let frame = state_frame_json(
+            "connection-1",
+            &binding,
+            json!({}),
+            vec![],
+            vec!["unique_names_v1".into()],
+        );
+        assert_eq!(frame["capabilities"], json!(["unique_names_v1"]));
+        match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
+            ObserveEvent::State { capabilities, .. } => {
+                assert_eq!(capabilities, vec!["unique_names_v1".to_owned()])
+            }
+            _ => panic!("expected a state frame"),
+        }
+        let frame = state_frame_json("connection-1", &binding, json!({}), vec![], vec![]);
+        assert!(frame.get("capabilities").is_none());
+        assert!(matches!(
+            serde_json::from_value::<ObserveEvent>(frame).unwrap(),
+            ObserveEvent::State { ref capabilities, .. } if capabilities.is_empty()
         ));
     }
 

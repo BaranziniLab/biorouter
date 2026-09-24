@@ -179,7 +179,7 @@ async fn run_ledger() -> anyhow::Result<Arc<RunLedger>> {
         if let Some(session_id) = &receipt.session_id {
             if let Some(metadata) = manager()?.run_metadata(session_id).await {
                 receipt.run_id = Some(metadata.run_id.clone());
-                runs.entry(metadata.run_id.clone()).or_insert_with(||OwnedRun{view:RunView{run_id:metadata.run_id,connection_id:metadata.connection_id,channel_id:metadata.channel_id,session_id:session_id.clone(),status:"interrupted".into(),error:Some("Setup was interrupted; inspect the conversation and revoke or renew its grant before continuing.".into())},cancel:CancellationToken::new()});
+                runs.entry(metadata.run_id.clone()).or_insert_with(||OwnedRun{view:RunView{run_id:metadata.run_id,connection_id:metadata.connection_id,channel_id:metadata.channel_id,session_id:session_id.clone(),status:"interrupted".into(),error:Some("Setup was interrupted; inspect the conversation and revoke or renew its grant before continuing.".into()),started_at:None},cancel:CancellationToken::new()});
             }
         }
     }
@@ -230,13 +230,61 @@ impl CrewRouteError {
     }
 }
 
+/// The prefix the transport puts before the broker's `{code, message}` refusal
+/// (`crew/transport.rs`).
+const BROKER_REFUSAL_PREFIX: &str = "Crew broker refused request: ";
+
+/// The broker's refusal carried somewhere in `error`: its `code`, its `message` when it sent one,
+/// and whether the envelope is the outermost link (rather than wrapped in a `.context()`).
+struct BrokerRefusal {
+    code: String,
+    message: Option<String>,
+    outermost: bool,
+}
+
+fn broker_refusal(error: &anyhow::Error) -> Option<BrokerRefusal> {
+    error.chain().enumerate().find_map(|(depth, link)| {
+        let text = link.to_string();
+        let envelope: Value =
+            serde_json::from_str(text.strip_prefix(BROKER_REFUSAL_PREFIX)?).ok()?;
+        let code = envelope.as_object()?.get("code")?.as_str()?;
+        // A code is a short snake_case word; anything else is not the broker's code.
+        if code.is_empty()
+            || code.len() > 64
+            || !code
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return None;
+        }
+        Some(BrokerRefusal {
+            code: code.to_owned(),
+            message: envelope["message"].as_str().map(str::to_owned),
+            outermost: depth == 0,
+        })
+    })
+}
+
 impl From<anyhow::Error> for CrewRouteError {
+    /// A refusal the route did not classify. `code` stays `crew_request_refused`; a broker refusal
+    /// also carries the broker's own code as `broker_code`, and its `message` (which the broker
+    /// writes as `code: sentence`) replaces the transport's JSON envelope as `error`. A context the
+    /// daemon added on top keeps its own text.
     fn from(error: anyhow::Error) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "crew_request_refused",
-            error.to_string(),
-        )
+        let Some(refusal) = broker_refusal(&error) else {
+            return Self::new(
+                StatusCode::BAD_REQUEST,
+                "crew_request_refused",
+                error.to_string(),
+            );
+        };
+        let text = if refusal.outermost {
+            refusal.message.unwrap_or_else(|| refusal.code.clone())
+        } else {
+            error.to_string()
+        };
+        Self::new(StatusCode::BAD_REQUEST, "crew_request_refused", text)
+            .with("broker_code", refusal.code)
     }
 }
 
@@ -505,6 +553,10 @@ pub struct RunView {
     pub session_id: String,
     pub status: String,
     pub error: Option<String>,
+    /// When this device admitted the task, in Unix milliseconds. Absent from a run recorded
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
 }
 
 struct OwnedRun {
@@ -880,6 +932,7 @@ async fn launch_run(
         session_id: session_id.clone(),
         status: "starting".into(),
         error: None,
+        started_at: Some(unix_millis()),
     };
     record_starting_run(&ledger, &request_key, &view, &cancel).await?;
     let titled = title_task_session(
@@ -1512,9 +1565,11 @@ pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult
     Ok(Json(json!({"runs": owned_run_views(&id).await?})))
 }
 
+/// This connection's owned runs, newest first. The ledger is a map, so its order says nothing;
+/// a run recorded before `started_at` was kept sorts after every run that has one.
 pub(super) async fn owned_run_views(id: &str) -> anyhow::Result<Vec<RunView>> {
     let ledger = run_ledger().await?;
-    let views = ledger
+    let mut views: Vec<RunView> = ledger
         .state
         .lock()
         .await
@@ -1523,7 +1578,24 @@ pub(super) async fn owned_run_views(id: &str) -> anyhow::Result<Vec<RunView>> {
         .filter(|run| run.view.connection_id == id)
         .map(|run| run.view.clone())
         .collect();
+    sort_newest_first(&mut views);
     Ok(views)
+}
+
+/// Newest first by `started_at`, then by `run_id` so the order is stable.
+pub(super) fn sort_newest_first(views: &mut [RunView]) {
+    views.sort_by(|a, b| {
+        b.started_at
+            .cmp(&a.started_at)
+            .then_with(|| a.run_id.cmp(&b.run_id))
+    });
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 #[utoipa::path(post, path = "/crew/connections/{id}/runs/{run_id}/cancel", params(("id" = String, Path, description = "Crew id"), ("run_id" = String, Path, description = "Crew run_id")), responses((status = 200, body = Value)), tag = "Crew")]
@@ -1952,6 +2024,7 @@ mod tests {
             session_id: format!("crew-cancel-test-{fixture_id}"),
             status: status.into(),
             error: None,
+            started_at: None,
         };
         let mut runs = HashMap::new();
         runs.insert(

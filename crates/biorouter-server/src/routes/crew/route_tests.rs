@@ -1,5 +1,6 @@
 //! Route-level tests for `routes/crew.rs`: the resolver's gate, the connect route's typed SSH
-//! failures, the task title set after admission, and the task conversation's first message.
+//! failures, the broker's refusal code on an unclassified refusal, the task title set after
+//! admission, and the task conversation's first message.
 use super::names::{SelectorInput, SelectorKind};
 use super::{
     connect_refusal, resolve, task_brief, task_context_message, task_title, title_task_session,
@@ -121,6 +122,85 @@ async fn a_refusal_never_lets_an_added_field_replace_its_code_or_message() {
         body,
         json!({"code": "ambiguous_name", "error": "Two match.", "candidates": ["Lab — a", "lab — b"]})
     );
+}
+
+/// The error `crew/transport.rs` raises for a broker refusal, built from the broker's envelope.
+fn broker_refused(envelope: Value) -> anyhow::Error {
+    anyhow::anyhow!("Crew broker refused request: {}", envelope)
+}
+
+#[tokio::test]
+async fn a_broker_refusal_answers_the_brokers_code_and_its_own_sentence() {
+    let refusal = CrewRouteError::from(broker_refused(json!({
+        "code": "name_taken",
+        "message": "name_taken: A team with this name, or one that looks like it, already exists.",
+    })));
+    let (status, body) = refusal_body(refusal).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({
+            "code": "crew_request_refused",
+            "broker_code": "name_taken",
+            "error": "name_taken: A team with this name, or one that looks like it, already exists.",
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_broker_refusal_without_a_message_answers_its_code_as_the_error() {
+    let refusal = CrewRouteError::from(broker_refused(json!({"code": "response_too_large"})));
+    let (_, body) = refusal_body(refusal).await;
+    assert_eq!(
+        body,
+        json!({
+            "code": "crew_request_refused",
+            "broker_code": "response_too_large",
+            "error": "response_too_large",
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_daemon_context_over_a_broker_refusal_keeps_its_text_and_the_brokers_code() {
+    let wrapped =
+        broker_refused(json!({"code": "forbidden", "message": "forbidden: team owner required"}))
+            .context("Could not rename the team");
+    let (_, body) = refusal_body(CrewRouteError::from(wrapped)).await;
+    assert_eq!(
+        body,
+        json!({
+            "code": "crew_request_refused",
+            "broker_code": "forbidden",
+            "error": "Could not rename the team",
+        })
+    );
+}
+
+#[tokio::test]
+async fn anything_that_is_not_a_broker_envelope_is_unchanged() {
+    for text in [
+        "Crew connection not found".to_owned(),
+        // Not JSON, not an object, and no string code: not the broker's envelope.
+        "Crew broker refused request: not json".to_owned(),
+        format!("Crew broker refused request: {}", json!(["name_taken"])),
+        format!(
+            "Crew broker refused request: {}",
+            json!({"code": 7, "message": "x"})
+        ),
+        format!(
+            "Crew broker refused request: {}",
+            json!({"message": "name_taken: x"})
+        ),
+        format!(
+            "Crew broker refused request: {}",
+            json!({"code": "Not A Code!", "message": "x"})
+        ),
+    ] {
+        let (status, body) = refusal_body(CrewRouteError::from(anyhow::anyhow!("{text}"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({"code": "crew_request_refused", "error": text}));
+    }
 }
 
 fn labels() -> AdmissionLabels {

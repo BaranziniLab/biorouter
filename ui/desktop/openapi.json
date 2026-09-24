@@ -12739,6 +12739,13 @@
               "type"
             ],
             "properties": {
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What the connected broker's last verified `hello` said it supports (for example\n`unique_names_v1`). They decide only which requests a client offers; the broker still\nrefuses what it does not support. Absent before the first verified hello, and from a\ndaemon that predates it."
+              },
               "connection_id": {
                 "type": "string"
               },
@@ -12810,6 +12817,13 @@
               "channel_id": {
                 "type": "string"
               },
+              "channel_names": {
+                "type": "object",
+                "description": "The names of the channels this frame's messages name, limited by the broker to the\nchannels the viewer can read. Display only.",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
               "cursor": {
                 "type": "string",
                 "nullable": true
@@ -12817,6 +12831,45 @@
               "messages": {
                 "type": "array",
                 "items": {}
+              },
+              "page_size": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The largest page the observer asks the broker for right now. It shrinks when the\nbroker answers `response_too_large`, so a client must not assume a fixed size.",
+                "nullable": true,
+                "minimum": 0
+              },
+              "people": {
+                "type": "object",
+                "description": "How the broker names each author of this frame's messages, keyed by principal ID,\nincluding a person who has since left the workspace. Display only.",
+                "additionalProperties": {
+                  "type": "object",
+                  "description": "One entry of the `people` map the broker returns beside messages (`messages.history`).\nDisplay only: it names a message's author, and is the only name a client has for someone who\nhas left the workspace since they posted.",
+                  "required": [
+                    "username"
+                  ],
+                  "properties": {
+                    "active": {
+                      "type": "boolean",
+                      "description": "False for a person who was removed from the workspace.",
+                      "nullable": true
+                    },
+                    "display_name": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "username": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "remaining": {
+                "type": "integer",
+                "format": "int32",
+                "description": "How many messages of the page this frame was taken from are still to come. `0` ends\nthe page, so on the opening frames it marks the end of the channel's backlog. Absent\nfrom a daemon that predates it.",
+                "nullable": true,
+                "minimum": 0
               },
               "reset": {
                 "type": "boolean"
@@ -14565,6 +14618,13 @@
           },
           "session_id": {
             "type": "string"
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When this device admitted the task, in Unix milliseconds. Absent from a run recorded\nbefore it was kept.",
+            "nullable": true,
+            "minimum": 0
           },
           "status": {
             "type": "string"
