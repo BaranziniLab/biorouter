@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { sessionGrantState } from '../api/grants';
 import { Button } from '../../ui/button';
@@ -7,7 +7,7 @@ import { channelName, connectionNames, identityCopy } from '../identity';
 import { useCrew, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { channelLabels } from './accessRows';
 import { accessCopy } from './copy';
-import { useCrewGrants } from './useCrewGrants';
+import { isUnconfirmedRevocation, useCrewGrants } from './useCrewGrants';
 
 export interface ChatConnectNoteProps {
   /** Layout only. */
@@ -20,11 +20,29 @@ export interface ChatConnectNoteProps {
 // round 1, T-55). They now navigate with this route state, and the note opens the pane itself once
 // it knows the chat's grant state, exactly as its own button would. Opening the pane grants
 // nothing: Allow and Revoke stay the person's clicks.
+//
+// Live QA round 2 (Q2-10) found the pane still did not open, and Crew showing #general for a chat
+// whose grant is on #methods. Two causes, both fixed here:
+// - Crew showed its first channel, not the grant's. The note now moves to the grant's channel,
+//   once per intent, before it opens the pane.
+// - The intent was spent the moment the pane was asked to open, and a surface reset in the same
+//   update (a channel settling, the connection arriving) closed it again. The intent is now spent
+//   only once the pane has been seen open on a verified view that did not move in that update; a
+//   reset before then opens it again.
 
 const CHAT_ACCESS_INTENT = 'crewOpenChatAccess';
 
 /** Intents already honoured, so Back to this entry, or the note remounting, never reopens it. */
 const consumedIntents = new Set<string>();
+/** Intents whose move to the grant's channel was already asked for: it is asked once. */
+const movedIntents = new Set<string>();
+/**
+ * How often each intent asked for the pane. A reset in the same update can close it (the reason it
+ * is asked again), but only a few times on any real arrival: past this, the intent is given up
+ * rather than fought over with whatever keeps closing the pane.
+ */
+const openAttempts = new Map<string, number>();
+const MAX_OPEN_ATTEMPTS = 4;
 
 function newIntentId(): string {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -73,7 +91,10 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
     connectionId,
     channel,
     snapshot,
+    observedPrivacy,
+    ui,
     openPane,
+    selectChannel,
     subscribeSurfaceReset,
   } = useCrew();
   const ids = useMemo(() => connections.map((item) => item.id), [connections]);
@@ -112,7 +133,14 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
     }
   } else {
     const state = sessionGrantState(grant);
-    if (state === 'revoked') {
+    if (
+      state !== 'active' &&
+      grant.kind === 'task' &&
+      !isUnconfirmedRevocation(grant.connection_id, grant.session_id)
+    ) {
+      // A task's access ends with the task (Q2-09): nothing to grant again from here.
+      text = accessCopy.noteTaskFinished;
+    } else if (state === 'revoked') {
       text = accessCopy.noteRevoked;
       action = { label: accessCopy.noteGrantAgain };
     } else if (state === 'expired') {
@@ -138,11 +166,64 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
   // Not while the grant state is still being read, nor when the read failed: the one hop opens the
   // pane the note's own button would, and there is no button until the note knows which.
   const actionable = action !== null;
+  const verified = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  const paneOpen =
+    ui.pane?.mode === 'chat-access' && (ui.pane.sessionId ?? grantSessionId) === grantSessionId;
+  // The channel the chat's grant is on, when this view can show it: the grant's own connection, and
+  // a channel of the verified snapshot that is not archived.
+  const grantChannel =
+    grant &&
+    grant.connection_id === connectionId &&
+    snapshot?.channels.some((item) => item.id === grant.channel_id && !item.archived)
+      ? grant.channel_id
+      : null;
+  const channelNow = channel?.id ?? null;
+  // Read through a ref: the controller's `selectChannel` is a new function every render.
+  const select = useRef(selectChannel);
+  select.current = selectChannel;
+  // The channel the previous pass saw. A pass whose channel moved may still be followed, in the same
+  // update, by the reset that closes the pane, so it never spends the intent.
+  const lastChannel = useRef<string | null | undefined>(undefined);
+  const [recheck, setRecheck] = useState(0);
   useEffect(() => {
+    const settled = lastChannel.current === channelNow;
+    lastChannel.current = channelNow;
     if (!intentId || !grantSessionId || !actionable || consumedIntents.has(intentId)) return;
+    if (!verified) return;
+    if (grantChannel && channelNow !== grantChannel && !movedIntents.has(intentId)) {
+      movedIntents.add(intentId);
+      select.current(grantChannel);
+      return;
+    }
+    if (!paneOpen) {
+      const attempts = openAttempts.get(intentId) ?? 0;
+      if (attempts >= MAX_OPEN_ATTEMPTS) {
+        consumedIntents.add(intentId);
+        return;
+      }
+      openAttempts.set(intentId, attempts + 1);
+      openPane({ mode: 'chat-access', sessionId: grantSessionId });
+      // Look again after this update: a reset batched with the open closes the pane without
+      // anything this effect reads changing.
+      setRecheck((value) => value + 1);
+      return;
+    }
+    if (!settled) {
+      setRecheck((value) => value + 1);
+      return;
+    }
     consumedIntents.add(intentId);
-    openPane({ mode: 'chat-access', sessionId: grantSessionId });
-  }, [intentId, grantSessionId, actionable, openPane]);
+  }, [
+    intentId,
+    grantSessionId,
+    actionable,
+    verified,
+    grantChannel,
+    channelNow,
+    paneOpen,
+    recheck,
+    openPane,
+  ]);
 
   if (!grantSessionId || text === null) return null;
 

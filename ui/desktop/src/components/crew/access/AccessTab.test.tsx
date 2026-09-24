@@ -326,6 +326,60 @@ describe('the Access tab', () => {
   });
 });
 
+/**
+ * Q2-09 and Q2-74 (live QA round 2): two finished tasks were listed as "Your task · #general ·
+ * Revoked" twice over — a task that did its work read as revoked, and the rows could not be told
+ * apart. They read "Ended", with when each started and its first words.
+ */
+describe('the Access tab’s finished tasks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+  });
+
+  const hourAgo = () => Math.floor(Date.now() / 1000) - 3600;
+
+  it('reads each ended task as Ended, told apart by its time and first words', async () => {
+    setup({
+      runs: [],
+      grants: () => [
+        grantRow({
+          session_id: 'task-sums',
+          run_id: 'run-sums',
+          kind: 'task',
+          expired: true,
+          session_name: 'Crew · #general · Please work out the sum and the average of each…',
+          expires_at: hourAgo() + 600,
+        }),
+        grantRow({
+          session_id: 'task-plot',
+          run_id: 'run-plot',
+          kind: 'task',
+          expired: true,
+          session_name: 'Crew · #general · Plot the growth curves',
+          expires_at: hourAgo() + 1800,
+        }),
+      ],
+    });
+    fireEvent.click(await screen.findByRole('button', { name: accessCopy.showOld(2) }));
+    const rows = await screen.findAllByTestId('crew-access-row');
+    const texts = rows.map((row) => row.textContent ?? '');
+    expect(texts).toHaveLength(2);
+    expect(texts[0]).not.toBe(texts[1]);
+    const sums = rows.find((row) => row.textContent?.includes('Please work out…'));
+    const plot = rows.find((row) => row.textContent?.includes('Plot the growth…'));
+    expect(sums, 'the sums task').toBeDefined();
+    expect(plot, 'the plot task').toBeDefined();
+    for (const row of [sums, plot]) {
+      if (!row) continue;
+      expect(row).toHaveTextContent(/^Your task · \S+.* · /);
+      expect(row).toHaveTextContent(accessCopy.status.ended);
+      expect(row).not.toHaveTextContent(accessCopy.status.revoked);
+      expect(row).not.toHaveTextContent(/run-|task-/);
+    }
+  });
+});
+
 describe('Workspace settings → Agent access', () => {
   beforeEach(() => {
     vi.clearAllMocks();

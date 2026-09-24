@@ -31,6 +31,12 @@ export interface AccessRow {
   kind: 'chat' | 'task';
   /** What the row is called: the chat's title, "Untitled chat", or "Your task". */
   title: string;
+  /**
+   * What tells one task row from another after its title: when it started and the task's first
+   * words, `1:16 PM · Please work out…` (Q2-74). `null` for a chat, whose title already does, and
+   * for a task when neither is known.
+   */
+  detail: string | null;
   /** The chat's own title for sentences, or `null` when the daemon does not know it. */
   chatTitle: string | null;
   /** The channel it posts in. */
@@ -43,6 +49,7 @@ export interface AccessRow {
   /** Further channels it may read, beyond the destination. */
   extraSources: number;
   status: AccessStatus;
+  /** The badge. A task's grant that is over reads "Ended": it ended with the task (Q2-09). */
   statusLabel: string;
   /** Unix seconds, when the daemon recorded when the workspace ends the grant. */
   expiresAt: number | null;
@@ -92,6 +99,46 @@ export function grantKind(
 export function chatTitleOf(grant: Pick<CrewSessionGrant, 'session_name'>): string | null {
   const title = sanitizeDisplayText(grant.session_name);
   return title && !isMachineIdShaped(title) ? title : null;
+}
+
+/**
+ * How long a grant lasts: the daemon asks the broker for an hour (`expires_in: 3600` in
+ * `crates/biorouter/src/crew/mod.rs`), which is the consent's "or after an hour". A grant's start
+ * is its end less this, for a task whose run the observer did not report.
+ */
+const GRANT_LIFETIME_SECONDS = 3600;
+
+/** When a task started, in Unix seconds: its run's own time, else its grant's end less an hour. */
+export function taskStartedAt(
+  grant: Pick<CrewSessionGrant, 'expires_at'>,
+  run: Pick<ObservedRun, 'started_at'> | null
+): number | null {
+  if (run && typeof run.started_at === 'number' && Number.isFinite(run.started_at))
+    return run.started_at / 1000;
+  if (typeof grant.expires_at === 'number' && Number.isFinite(grant.expires_at))
+    return grant.expires_at - GRANT_LIFETIME_SECONDS;
+  return null;
+}
+
+const TASK_TITLE_PREFIX = 'Crew';
+const TASK_TITLE_SEPARATOR = ' · ';
+const TASK_WORDS = 3;
+
+/**
+ * The first words of a task, from its conversation's title. The daemon names a task conversation
+ * `Crew · #methods · Please work out the sum…` (`task_title` in the server's Crew routes); anything
+ * else — "Crew task" before admission, a title with no prompt, one renamed since — has none.
+ */
+export function taskFirstWords(sessionName: string | null | undefined): string | null {
+  const name = sanitizeDisplayText(sessionName);
+  const parts = name.split(TASK_TITLE_SEPARATOR);
+  if (parts.length < 3 || parts[0] !== TASK_TITLE_PREFIX) return null;
+  const excerpt = parts.slice(2).join(TASK_TITLE_SEPARATOR).trim();
+  const cut = excerpt.endsWith('…');
+  const words = excerpt.replace(/…$/, '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0 || isMachineIdShaped(words.join(' '))) return null;
+  const shown = words.slice(0, TASK_WORDS).join(' ');
+  return cut || words.length > TASK_WORDS ? `${shown}…` : shown;
 }
 
 /** Channel labels for a snapshot, keyed by channel ID. */
@@ -162,6 +209,17 @@ export function accessRow(
     now,
     input.isUnconfirmed?.(grant.connection_id, grant.session_id) ?? false
   );
+  // A task's grant ends when the task does, which is how a task that did its work ends: not
+  // "Revoked" (nobody revoked it) and not a failure.
+  const ended = kind === 'task' && (status === 'revoked' || status === 'expired');
+  const startedAt = kind === 'task' ? taskStartedAt(grant, run) : null;
+  const detail =
+    kind === 'task'
+      ? accessCopy.taskDetail(
+          startedAt === null ? null : formatExpiry(startedAt, now),
+          taskFirstWords(grant.session_name)
+        ) || null
+      : null;
   const extraSources = new Set(grant.source_channels.filter((id) => id !== grant.channel_id)).size;
   return {
     key: `${grant.connection_id}\n${grant.session_id}`,
@@ -170,6 +228,7 @@ export function accessRow(
     runId: grant.run_id,
     kind,
     title: kind === 'task' ? accessCopy.yourTask : (chatTitle ?? accessCopy.untitled),
+    detail,
     chatTitle,
     channelId: grant.channel_id,
     destination:
@@ -177,7 +236,7 @@ export function accessRow(
       (sanitizeDisplayText(grantDestinationLabel(grant)) || accessCopy.unknownChannel),
     extraSources,
     status,
-    statusLabel: label,
+    statusLabel: ended ? accessCopy.status.ended : label,
     expiresAt: typeof grant.expires_at === 'number' ? grant.expires_at : null,
     run,
     canRevoke: kind === 'chat' && status === 'active',

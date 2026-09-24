@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useEffect } from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { ToastContainer, toast, type ToastTransitionProps } from 'react-toastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toastWarning } from '../../../toasts';
 import { CrewHttpError } from '../crewApi';
 import {
   forgetChannelLabels,
@@ -8,7 +11,7 @@ import {
   useChatCrewAccess,
   useChatCrewAccessState,
 } from './chatCrewAccess';
-import { ChatCrewAccessBar, useCrewComposerHold } from './ChatCrewAccessBar';
+import { ChatCrewAccessBar, crewHoldToastId, useCrewComposerHold } from './ChatCrewAccessBar';
 import { chatAccessRouteState } from './ChatConnectNote';
 import { accessCopy } from './copy';
 import { connection, grantRow } from './testing';
@@ -58,8 +61,41 @@ function Chat({ sessionId = 'chat-1' }: { sessionId?: string }) {
       <p data-testid="state">{access.state}</p>
       <p data-testid="published">{String(published)}</p>
       <p data-testid="hold">{hold ? `${hold.title} | ${hold.message}` : 'none'}</p>
+      <Composer sessionId={sessionId} blocked={access.blocksComposer} />
     </div>
   );
+}
+
+const sent = vi.fn();
+
+/**
+ * Enter, as `ChatInput` handles it (`ChatInput.tsx`, the `Enter` branch of its key handler): send
+ * when nothing holds the chat, else show the Crew hold's toast — `BaseChat` passes
+ * `access.blocksComposer` as `submissionBlocked`. `ChatInput.crewCommand.test.tsx` pins the
+ * composer's half with the real component; this is the other half, from the real lookup and bar.
+ */
+function Composer({ sessionId, blocked }: { sessionId: string; blocked: boolean }) {
+  const hold = useCrewComposerHold(sessionId);
+  return (
+    <textarea
+      aria-label="Message"
+      defaultValue="Thanks! Can you also tell me what a good OD600 starting value is?"
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        if (!blocked) sent();
+        else if (hold) toastWarning({ title: hold.title, msg: hold.message });
+      }}
+    />
+  );
+}
+
+/** Toasts appear and leave at once, as in `DeclassifySessionDialog.toastLayer.test.tsx`. */
+function NoAnimation({ children, isIn, done }: ToastTransitionProps) {
+  useEffect(() => {
+    if (!isIn) done();
+  }, [isIn, done]);
+  return <>{children}</>;
 }
 
 /** The route state a one-hop navigation carried: the Chat access pane intent, nothing else. */
@@ -79,6 +115,15 @@ function renderChat(sessionId?: string) {
     </MemoryRouter>
   );
 }
+
+/** The chat beside a toast layer that is not part of it, as the app mounts one per window. */
+function renderChatWithToasts() {
+  render(<ToastContainer transition={NoAnimation} />);
+  return renderChat();
+}
+
+const pressEnter = () =>
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' });
 
 const lookupCalls = () => mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections');
 
@@ -404,5 +449,252 @@ describe('the ordinary chat’s Crew access', () => {
     );
     expect(mocks.crewHttp).not.toHaveBeenCalled();
     expect(screen.getByTestId('published')).toHaveTextContent('null');
+  });
+});
+
+/**
+ * Q2-08 (live QA round 2): a chat whose grant stands while its Crew connection is down showed
+ * nothing, and its next turn failed as "Model request failed". It says Crew is offline now, with
+ * the way to connect, and holds nothing.
+ */
+describe('a chat whose Crew connection is offline', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChannelLabels();
+  });
+
+  it('says Crew is offline, offers Connect in Crew, and neither holds the chat nor unlocks Crew', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    installDaemon({
+      connections: [{ ...connection, status: 'disconnected' }],
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+    });
+    renderChat();
+
+    const note = await screen.findByTestId('crew-chat-access-offline');
+    expect(note).toHaveTextContent(accessCopy.chatOffline('#general'));
+    expect(note).toHaveTextContent(
+      'Crew is offline. This chat can’t read or post in #general until you connect.'
+    );
+    expect(screen.getByTestId('state')).toHaveTextContent('offline');
+    expect(screen.getByTestId('blocked')).toHaveTextContent('false');
+    expect(screen.getByTestId('hold')).toHaveTextContent('none');
+    // The grant still stands, so the extension menu keeps Crew switched on.
+    expect(screen.getByTestId('published')).toHaveTextContent('active');
+    // Not the connected chip, and no Revoke beside a connection that cannot carry it.
+    expect(screen.queryByRole('button', { name: /^Crew · / })).toBeNull();
+
+    fireEvent.click(within(note).getByRole('button', { name: accessCopy.chatConnectInCrew }));
+    expect(mocks.navigate).toHaveBeenLastCalledWith('/crew?sessionId=chat-1');
+  });
+
+  it('reads as connected once the connection is back', async () => {
+    let status = 'disconnected';
+    installDaemon({
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+      get connections() {
+        return [{ ...connection, status }];
+      },
+    });
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('offline'));
+
+    status = 'connected';
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expect(screen.queryByTestId('crew-chat-access-offline')).toBeNull();
+    expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Q2-09 (live QA round 2): a task's grant ends when the task does (T-25), and its chat then read
+ * "Crew access to #general was removed … can't continue" under a warning, after a task that
+ * succeeded. It says the task is finished now, calmly, and offers only a new chat.
+ */
+describe('a finished task’s chat', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChannelLabels();
+  });
+
+  it.each([
+    ['ended with the task', { expired: true }],
+    ['ran out', { expires_at: Math.floor(Date.now() / 1000) - 60 }],
+  ])(
+    'says the task is finished when its grant %s, with no warning and no re-grant',
+    async (_, ended) => {
+      rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+      installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', kind: 'task', ...ended })] });
+      renderChat();
+
+      const note = await screen.findByTestId('crew-chat-access-finished');
+      expect(note).toHaveTextContent(
+        'This task is finished. Its access to #general ended when it finished.'
+      );
+      expect(note).not.toHaveTextContent(/removed|can’t continue/);
+      // Neutral, and no warning glyph.
+      expect(note.querySelector('svg')).toBeNull();
+      expect(screen.queryByTestId('crew-chat-access-lapsed')).toBeNull();
+      expect(
+        within(note).getByRole('button', { name: accessCopy.chatNewChat })
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: accessCopy.chatGrantAgain })).toBeNull();
+
+      // The daemon refuses its turns all the same, so the chat is held, and Enter says why.
+      expect(screen.getByTestId('state')).toHaveTextContent('finished');
+      expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+      expect(screen.getByTestId('hold')).toHaveTextContent(
+        `${accessCopy.chatBlockedSendTitle} | ${accessCopy.chatBlockedSendTaskFinished('#general')}`
+      );
+    }
+  );
+
+  it('still reads a chat’s revoked grant as removed, with Grant access again', async () => {
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
+    renderChat();
+    const lapsed = await screen.findByTestId('crew-chat-access-lapsed');
+    expect(lapsed).toHaveTextContent(
+      'was removed, so this chat can’t continue. It holds messages from the channel. Grant access again to continue, or start a new chat.'
+    );
+    expect(
+      within(lapsed).getByRole('button', { name: accessCopy.chatGrantAgain })
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('crew-chat-access-finished')).toBeNull();
+  });
+});
+
+/**
+ * Q2-73 and Q2-74 (live QA round 2): after "Revoke access" in the chat itself, Enter did nothing
+ * at all; and the "Can't send" toast followed the person into Crew.
+ */
+describe('Enter after a revoke in the chat, and its toast', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChannelLabels();
+  });
+  afterEach(async () => {
+    await act(async () => {
+      toast.dismiss();
+    });
+  });
+
+  async function revokeInChat() {
+    fireEvent.click(await screen.findByRole('button', { name: accessCopy.revokeButton }));
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.confirmRevoke }));
+    await waitFor(() =>
+      expect(mocks.crewHttp).toHaveBeenCalledWith(
+        '/connections/conn-1/sessions/chat-1/revoke',
+        'POST'
+      )
+    );
+  }
+
+  it('holds the chat the moment the revoke lands, even before the list says so, and Enter says why', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    // The daemon's list lags behind its own revoke: it still says active.
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1' })] });
+    renderChatWithToasts();
+    await screen.findByRole('button', { name: accessCopy.revokeButton });
+    const lookupsBefore = lookupCalls().length;
+
+    await revokeInChat();
+
+    await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    expect(screen.getByTestId('state')).toHaveTextContent('revoked');
+    expect(screen.getByTestId('published')).toHaveTextContent('revoked');
+    expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
+    // The chat read its grant again after the revoke.
+    await waitFor(() => expect(lookupCalls().length).toBeGreaterThan(lookupsBefore));
+    // …and a list that still says active does not undo the hold.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+
+    pressEnter();
+    expect(sent).not.toHaveBeenCalled();
+    const shown = await screen.findByText(accessCopy.chatBlockedSendRevoked('#general'));
+    expect(shown).toBeInTheDocument();
+    expect(screen.getByText(accessCopy.chatBlockedSendTitle)).toBeInTheDocument();
+  });
+
+  it('forgets the revoke once access is granted again', async () => {
+    let expired = false;
+    let run = 'run-1';
+    installDaemon({
+      grants: () => [grantRow({ session_id: 'chat-1', expired, run_id: run })],
+      revoke: () => {
+        expired = true;
+        return { revoked: true, remote_revocation_confirmed: true };
+      },
+    });
+    renderChat();
+    await revokeInChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('revoked'));
+
+    expired = false;
+    run = 'run-2';
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'chat-1', change: 'granted' })
+    );
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expect(screen.getByTestId('blocked')).toHaveTextContent('false');
+
+    pressEnter();
+    expect(sent).toHaveBeenCalledTimes(1);
+  });
+
+  it('never holds the chat for a revoke the daemon refused', async () => {
+    installDaemon({
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+      revoke: () => {
+        throw new CrewHttpError('A person must approve this.', 403, 'crew_user_action_required');
+      },
+    });
+    renderChat();
+    await revokeInChat();
+    expect(await screen.findByRole('alert')).toHaveTextContent(accessCopy.notRevoked);
+    expect(screen.getByTestId('state')).toHaveTextContent('active');
+    expect(screen.getByTestId('blocked')).toHaveTextContent('false');
+  });
+
+  it('shows one toast under a fixed id however often Enter is pressed, and takes it down with the chat', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
+    const view = renderChatWithToasts();
+    await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+
+    pressEnter();
+    pressEnter();
+    const message = accessCopy.chatBlockedSendRevoked('#general');
+    await screen.findByText(message);
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    const id = crewHoldToastId(accessCopy.chatBlockedSendTitle, message);
+    expect(toast.isActive(id)).toBe(true);
+
+    // Leaving the chat — for Crew, or anywhere — takes its reason with it.
+    view.unmount();
+    await waitFor(() => expect(screen.queryByText(message)).toBeNull());
+    expect(toast.isActive(id)).toBe(false);
+  });
+
+  it('takes the toast down when the chat leaves for Crew from Grant access again', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
+    renderChatWithToasts();
+    await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    pressEnter();
+    const message = accessCopy.chatBlockedSendRevoked('#general');
+    await screen.findByText(message);
+
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.chatGrantAgain }));
+    expectOneHop('chat-1');
+    await waitFor(() => expect(screen.queryByText(message)).toBeNull());
   });
 });

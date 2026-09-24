@@ -8,6 +8,8 @@ import {
   formatExpiry,
   grantKind,
   splitAccessRows,
+  taskFirstWords,
+  taskStartedAt,
 } from './accessRows';
 import { accessCopy } from './copy';
 
@@ -218,6 +220,101 @@ describe('rows', () => {
       { snapshot, now: NOW, channelId: 'channel-1' }
     );
     expect(rows.map((row) => row.sessionId).sort()).toEqual(['posts', 'reads']);
+  });
+});
+
+/**
+ * Q2-09 and Q2-74 (live QA round 2): a task's grant ends with the task, and the Access history
+ * listed it as "Revoked", in two rows reading "Your task · #general" that could not be told apart.
+ */
+describe('task rows in the Access history', () => {
+  const TASK_NAME = 'Crew · #general · Please work out the sum and the average of each number…';
+  const task = (overrides: Partial<CrewSessionGrant> = {}) =>
+    grant({ session_id: 'task-1', kind: 'task', session_name: TASK_NAME, ...overrides });
+
+  it('labels a task whose access is over "Ended", never "Revoked" or "Expired"', () => {
+    const rows = accessRows(
+      [
+        task({ expired: true }),
+        task({ session_id: 'task-2', expires_at: NOW / 1000 - 5 }),
+        grant({ session_id: 'chat-revoked', expired: true }),
+        grant({ session_id: 'chat-expired', expires_at: NOW / 1000 - 5 }),
+      ],
+      { snapshot, now: NOW }
+    );
+    const label = (id: string) => rows.find((row) => row.sessionId === id)?.statusLabel;
+    expect(label('task-1')).toBe('Ended');
+    expect(label('task-2')).toBe(accessCopy.status.ended);
+    // A chat's access still reads as what happened to it.
+    expect(label('chat-revoked')).toBe(accessCopy.status.revoked);
+    expect(label('chat-expired')).toBe(accessCopy.status.expired);
+    // The state itself is unchanged: an ended task still folds behind "Show revoked and expired".
+    expect(splitAccessRows(rows).old.map((row) => row.sessionId)).toContain('task-1');
+  });
+
+  it('keeps a task stopped only on this device as a stop to confirm, with Retry', () => {
+    const [row] = accessRows([task({ expired: true })], {
+      snapshot,
+      now: NOW,
+      isUnconfirmed: () => true,
+    });
+    expect(row).toMatchObject({ status: 'unconfirmed', canRetry: true });
+    expect(row.statusLabel).toBe(accessCopy.status.unconfirmed);
+  });
+
+  it('tells two tasks apart by when they started and their first words', () => {
+    const started = NOW - 2 * 3600 * 1000;
+    const rows = accessRows(
+      [
+        task({ expired: true, run_id: 'run-a' }),
+        task({
+          session_id: 'task-2',
+          run_id: 'run-b',
+          expired: true,
+          session_name: 'Crew · #general · Plot counts',
+          expires_at: NOW / 1000 - 1800,
+        }),
+      ],
+      {
+        snapshot,
+        now: NOW,
+        runs: [run({ session_id: 'task-1', run_id: 'run-a', status: 'completed' })].map((item) => ({
+          ...item,
+          started_at: started,
+        })),
+      }
+    );
+    const detail = (id: string) => rows.find((row) => row.sessionId === id)?.detail;
+    // The run's own start, when the observer reported it.
+    expect(detail('task-1')).toBe(`${formatExpiry(started / 1000, NOW)} · Please work out…`);
+    // Else the grant's end less the hour it lasts.
+    expect(detail('task-2')).toBe(`${formatExpiry(NOW / 1000 - 5400, NOW)} · Plot counts`);
+    expect(detail('task-1')).not.toBe(detail('task-2'));
+    for (const row of rows) expect(row.title).toBe(accessCopy.yourTask);
+  });
+
+  it('gives a chat row no detail: its title already names it', () => {
+    const [row] = accessRows([grant()], { snapshot, now: NOW });
+    expect(row.detail).toBeNull();
+  });
+
+  it('reads the first words from the task conversation’s title, and nothing else', () => {
+    expect(taskFirstWords(TASK_NAME)).toBe('Please work out…');
+    expect(taskFirstWords('Crew · #general · Plot counts')).toBe('Plot counts');
+    expect(taskFirstWords('Crew · #general · Summarize…')).toBe('Summarize…');
+    expect(taskFirstWords('Crew · #general · a · b · c d')).toBe('a · b…');
+    // Before admission, without a prompt, renamed since, or ID-shaped: none.
+    expect(taskFirstWords('Crew task')).toBeNull();
+    expect(taskFirstWords('Crew · #general')).toBeNull();
+    expect(taskFirstWords('Plate reader sums')).toBeNull();
+    expect(taskFirstWords('Crew · #general · 0b8f3c2e-4f7a-4c1e-9a55-1d2b3c4d5e6f')).toBeNull();
+    expect(taskFirstWords(null)).toBeNull();
+  });
+
+  it('dates a task by its run, else by its grant, else not at all', () => {
+    expect(taskStartedAt({ expires_at: 5000 }, { started_at: 2_000_000 })).toBe(2000);
+    expect(taskStartedAt({ expires_at: 5000 }, null)).toBe(1400);
+    expect(taskStartedAt({ expires_at: null }, { started_at: undefined })).toBeNull();
   });
 });
 

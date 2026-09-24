@@ -28,8 +28,19 @@ export type ChatCrewAccessState =
   /** No saved Crew connection holds a grant for this chat. */
   | 'none'
   | 'active'
+  /**
+   * The grant is active, but the connection it was made on is disconnected: the chat's next turn
+   * fails with "Crew connection is disconnected" until the person connects in Crew (Q2-08). It
+   * holds nothing — connecting is all it takes — and for the extension menu it is still active.
+   */
+  | 'offline'
   | 'revoked'
-  | 'expired';
+  | 'expired'
+  /**
+   * A task's grant after the task: it ended with the task (T-25), which is how a task that did its
+   * work ends, so it is not "revoked" and nothing went wrong (Q2-09). The chat is held all the same.
+   */
+  | 'finished';
 
 export interface ChatCrewAccess {
   sessionId: string | null;
@@ -42,7 +53,11 @@ export interface ChatCrewAccess {
   destination: string;
   /** The grant was stopped on this device and the workspace has not confirmed it yet. */
   unconfirmed: boolean;
-  /** The daemon refuses this chat's turns: hold the composer with the reason beside it. */
+  /**
+   * The daemon refuses this chat's turns: hold the composer with the reason beside it. True for
+   * `revoked`, `expired` and `finished`, including the moment after a revoke this window saw
+   * confirmed and before the daemon's list says so.
+   */
   blocksComposer: boolean;
   /** Look the grant up again now. */
   refetch(): void;
@@ -93,6 +108,15 @@ export function forgetChannelLabels(): void {
 
 type Listener = () => void;
 const published = new Map<string, { token: object; state: ChatCrewAccessState }>();
+
+/**
+ * What the extension menu is told: whether the grant stands, not how the bar words it. An offline
+ * chat's grant is still active — switching the Crew extension off would not end it — so the menu
+ * keeps the Crew row locked on.
+ */
+function publishedState(state: ChatCrewAccessState): ChatCrewAccessState {
+  return state === 'offline' ? 'active' : state;
+}
 const listeners = new Set<Listener>();
 
 function publish(sessionId: string, token: object, state: ChatCrewAccessState | null) {
@@ -138,6 +162,8 @@ export function isCrewExtensionName(name: string): boolean {
 interface SavedConnection {
   id: string;
   name: string;
+  /** The daemon's word for the connection now (`connected`, `disconnected`), when it gave one. */
+  status?: string;
 }
 
 function savedConnections(result: unknown): SavedConnection[] {
@@ -145,8 +171,24 @@ function savedConnections(result: unknown): SavedConnection[] {
   return rows.flatMap((row): SavedConnection[] => {
     if (!isRecord(row)) return [];
     const id = optionalText(row.id);
-    return id ? [{ id, name: sanitizeDisplayText(row.name) }] : [];
+    if (!id) return [];
+    const connection: SavedConnection = { id, name: sanitizeDisplayText(row.name) };
+    const status = optionalText(row.status);
+    if (status) connection.status = status;
+    return [connection];
   });
+}
+
+/** Whether the daemon says the connection `connectionId` is down (only an explicit answer). */
+function isDisconnected(connections: readonly SavedConnection[], connectionId: string): boolean {
+  return connections.find((item) => item.id === connectionId)?.status === 'disconnected';
+}
+
+/** A revoke this window saw land, for one grant: its chat, connection and run. */
+interface SeenRevoke {
+  sessionId: string;
+  connectionId: string;
+  runId: string;
 }
 
 interface Lookup {
@@ -192,6 +234,8 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   const [nonce, setNonce] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [, setMarks] = useState(0);
+  const [seenRevoke, setSeenRevoke] = useState<SeenRevoke | null>(null);
+  const shownGrant = useRef<CrewSessionGrant | null>(null);
   const token = useRef({});
   const refetch = useCallback(() => setNonce((value) => value + 1), []);
 
@@ -226,10 +270,22 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   const hasConnections = Boolean(current && current.connections.length > 0);
   const hasGrant = Boolean(current?.grant);
 
+  // A revoke of this chat's grant, from this chat's own bar or any other surface, holds the chat
+  // at once: the daemon's list is read again, but until it answers the chat must not look usable,
+  // and Enter must say why (live QA round 2, Q2-73). Only a revoke that stopped the grant counts —
+  // a refused one leaves it active — and only for the grant shown when it landed: a grant made
+  // afterwards is a new run, and a 'granted' announcement forgets it outright.
   useEffect(() => {
     if (!id) return;
     return onGrantsChanged((detail) => {
       if (detail.sessionId !== id) return;
+      if (detail.change === 'revoked' || detail.change === 'unconfirmed') {
+        const shown = shownGrant.current;
+        if (shown && shown.connection_id === detail.connectionId)
+          setSeenRevoke({ sessionId: id, connectionId: shown.connection_id, runId: shown.run_id });
+      } else if (detail.change === 'granted') {
+        setSeenRevoke(null);
+      }
       setMarks((value) => value + 1);
       refetch();
     });
@@ -250,7 +306,18 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   }, [id, hasGrant, refetch]);
 
   const grant = current?.grant ?? null;
-  const grantState = grant ? sessionGrantState(grant, now) : null;
+  useEffect(() => {
+    shownGrant.current = grant;
+  }, [grant]);
+  const revokedHere = Boolean(
+    grant &&
+    seenRevoke &&
+    seenRevoke.sessionId === id &&
+    seenRevoke.connectionId === grant.connection_id &&
+    seenRevoke.runId === grant.run_id
+  );
+  const listedState = grant ? sessionGrantState(grant, now) : null;
+  const grantState = listedState === 'active' && revokedHere ? 'revoked' : listedState;
   const expiresAt = grant?.expires_at;
 
   useEffect(() => {
@@ -261,19 +328,26 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     return () => window.clearTimeout(timer);
   }, [grantState, expiresAt]);
 
-  const state: ChatCrewAccessState =
-    !id || !current || current.failed ? 'unknown' : (grantState ?? 'none');
   const unconfirmed =
-    state === 'revoked' && grant
+    grantState === 'revoked' && grant
       ? isUnconfirmedRevocation(grant.connection_id, grant.session_id)
       : false;
+  let state: ChatCrewAccessState;
+  if (!id || !current || current.failed) state = 'unknown';
+  else if (!grant || !grantState) state = 'none';
+  else if (grantState === 'active')
+    state = isDisconnected(current.connections, grant.connection_id) ? 'offline' : 'active';
+  // A task's grant that stopped only on this device is still a revoke to confirm, with Retry.
+  else if (grant.kind === 'task' && !unconfirmed) state = 'finished';
+  else state = grantState;
 
+  const shared = publishedState(state);
   useEffect(() => {
     if (!id) return;
     const owner = token.current;
-    publish(id, owner, state);
+    publish(id, owner, shared);
     return () => publish(id, owner, null);
-  }, [id, state]);
+  }, [id, shared]);
 
   const destination = useMemo(
     () => chatDestination(grant, current?.connections ?? []),
@@ -286,7 +360,7 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     grant,
     destination,
     unconfirmed,
-    blocksComposer: state === 'revoked' || state === 'expired',
+    blocksComposer: state === 'revoked' || state === 'expired' || state === 'finished',
     refetch,
   };
 }

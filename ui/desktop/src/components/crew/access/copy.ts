@@ -29,6 +29,8 @@ export const accessCopy = {
   noteRevoked: 'This chat’s Crew access was revoked.',
   noteExpired: 'This chat’s access expired.',
   noteGrantAgain: 'Grant again',
+  /** A task's grant ends when the task does: nothing went wrong, and there is nothing to grant. */
+  noteTaskFinished: 'This task is finished. Its access ended when it finished.',
 
   // ── The Chat access pane ───────────────────────────────────────────────────────────────────
   paneTitle: 'Chat access',
@@ -62,10 +64,12 @@ export const accessCopy = {
       : `Stop this chat reading and posting in ${channel}?`,
   confirmRevoke: 'Revoke',
   confirmKeep: 'Keep access',
+  // One way forward, said once: "…, or start a new chat" read as a second, unrelated instruction
+  // (live QA round 2, Q2-72).
   revoked: (chat: string | null) =>
     chat
-      ? `Access revoked. ${quoted(chat)} can’t use Crew until you grant access again, or start a new chat.`
-      : 'Access revoked. This chat can’t use Crew until you grant access again, or start a new chat.',
+      ? `Access revoked. ${quoted(chat)} can’t use Crew until you grant access again.`
+      : 'Access revoked. This chat can’t use Crew until you grant access again.',
   unconfirmed: 'Stopped on this device. Reconnect to confirm with the workspace.',
   notRevoked: 'Not revoked. This chat can still read and post.',
   retry: 'Retry',
@@ -76,6 +80,7 @@ export const accessCopy = {
     chat ? `Crew access for ${quoted(chat)} was revoked.` : 'This chat’s Crew access was revoked.',
   paneExpired: (chat: string | null) =>
     chat ? `Crew access for ${quoted(chat)} expired.` : 'This chat’s access expired.',
+  paneTaskFinished: 'This task is finished. Its access ended when it finished.',
   /** A revoked chat that did not arrive here with /crew can only be connected from inside it. */
   reconnectHow: 'To connect it again, type /crew in that chat.',
 
@@ -90,6 +95,8 @@ export const accessCopy = {
     expired: 'Expired',
     revoked: 'Revoked',
     unconfirmed: 'Stopped on this device',
+    /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
+    ended: 'Ended',
   },
   showOld: (count: number) => `Show revoked and expired (${count})`,
   oldListName: 'Revoked and expired',
@@ -100,6 +107,12 @@ export const accessCopy = {
   emptyHow: 'To connect a chat, send it a message, then type /crew in it.',
   untitled: 'Untitled chat',
   yourTask: 'Your task',
+  /**
+   * What tells two task rows apart after "Your task": when it started and its first words,
+   * `1:16 PM · Please work out…` (Q2-74). Either part may be missing.
+   */
+  taskDetail: (time: string | null, words: string | null) =>
+    [time, words].filter((part): part is string => Boolean(part)).join(' · '),
   unknownChannel: 'a channel you can’t see',
   moreSources: (count: number) => `+${count}`,
   moreSourcesName: (count: number) =>
@@ -140,10 +153,18 @@ export const accessCopy = {
   /** Contains the visible text, so a voice command naming what is shown still reaches it. */
   chatChipName: (destination: string) => `Crew · ${destination}, manage access`,
   chatChipTip: (destination: string) => `This chat can read and post in ${destination}.`,
+  // "Team content" was unexplained (Q2-72): say what it is — messages from the channel.
   chatRevoked: (destination: string) =>
-    `Crew access to ${destination} was removed. This chat has team content, so it can’t continue.`,
+    `Crew access to ${destination} was removed, so this chat can’t continue. It holds messages from the channel. Grant access again to continue, or start a new chat.`,
   chatExpired: (destination: string) =>
     `Crew access to ${destination} expired. This chat has team content, so it can’t continue.`,
+  /** A task's chat after the task: its grant ended with it (Q2-09). Neutral, not a warning. */
+  chatTaskFinished: (destination: string) =>
+    `This task is finished. Its access to ${destination} ended when it finished.`,
+  /** An active grant whose Crew connection is down (Q2-08). */
+  chatOffline: (destination: string) =>
+    `Crew is offline. This chat can’t read or post in ${destination} until you connect.`,
+  chatConnectInCrew: 'Connect in Crew',
   chatNewChat: 'Start a new chat',
   chatGrantAgain: 'Grant access again',
   chatBlockedReason: 'This chat can’t continue without Crew access.',
@@ -153,6 +174,8 @@ export const accessCopy = {
     `Crew access to ${destination} was removed. Grant it again or start a new chat.`,
   chatBlockedSendExpired: (destination: string) =>
     `Crew access to ${destination} expired. Grant it again or start a new chat.`,
+  chatBlockedSendTaskFinished: (destination: string) =>
+    `This task is finished, and its access to ${destination} ended with it. Start a new chat to continue.`,
   /** A destination whose channel name this computer has not seen: the workspace instead. */
   chatDestinationWorkspace: (workspace: string) => `a channel in ${workspace}`,
   chatDestinationUnknown: 'a Crew channel',

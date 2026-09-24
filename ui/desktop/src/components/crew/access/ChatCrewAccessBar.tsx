@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
 import { AlertTriangle, Users } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -23,6 +24,22 @@ import { revokeGrant, type RevokeOutcome } from './useCrewGrants';
 export interface CrewComposerHold {
   title: string;
   message: string;
+  /** The one toast id this hold is shown under ({@link crewHoldToastId}). */
+  toastId: string;
+}
+
+/**
+ * The toast id of a hold's "Can't send": fixed for the hold, so pressing Enter twice shows one
+ * toast, and the bar can take it down again. It is the id `toastWarning` gives a warning with this
+ * title and message (its dedupe key), which is how the composer shows it today.
+ */
+export function crewHoldToastId(title: string, message: string): string {
+  return `warning:${title}:${message}`;
+}
+
+/** Take down the hold's toast: the reason no longer stands, or its chat is not on screen. */
+function dismissHoldToast(hold: CrewComposerHold | null) {
+  if (hold) toast.dismiss(hold.toastId);
 }
 
 const holds = new Map<string, Map<object, CrewComposerHold>>();
@@ -35,7 +52,7 @@ function publishHold(sessionId: string, token: object, hold: CrewComposerHold | 
     if (!current) return;
     forChat.delete(token);
   } else {
-    if (current && current.title === hold.title && current.message === hold.message) return;
+    if (current && current.toastId === hold.toastId) return;
     forChat.set(token, hold);
   }
   if (forChat.size === 0) holds.delete(sessionId);
@@ -85,11 +102,16 @@ export interface ChatCrewAccessBarProps {
  * - **Connected:** a small "Crew · #general" chip (it opens the chat's access pane in Crew) and
  *   **Revoke access**, a real button that asks inline first — so the chat itself says it is
  *   connected and where the control that ends it lives.
- * - **Revoked or expired:** a calm notice, "Crew access to #general was removed. This chat has team
- *   content, so it can't continue.", with **Start a new chat** and **Grant access again**, which
- *   opens this chat's consent in Crew in one hop. The chat holds its composer
- *   (`access.blocksComposer`) so the person reads why instead of a model error, and Enter says it
- *   again ({@link useCrewComposerHold}); the daemon refuses the turn either way.
+ * - **Offline:** the grant stands but its Crew connection is down, so the next turn would fail as
+ *   a model error (Q2-08). A neutral note says so, with **Connect in Crew**. Nothing is held.
+ * - **Revoked or expired:** a calm notice, "Crew access to #general was removed, so this chat
+ *   can't continue. …", with **Start a new chat** and **Grant access again**, which opens this
+ *   chat's consent in Crew in one hop. The chat holds its composer (`access.blocksComposer`) so the
+ *   person reads why instead of a model error, and Enter says it again
+ *   ({@link useCrewComposerHold}); the daemon refuses the turn either way.
+ * - **A finished task:** "This task is finished. Its access to #general ended when it finished."
+ *   in a neutral note with no warning glyph, and only **Start a new chat**: nothing went wrong, and
+ *   a task's access is not granted again from its chat (Q2-09).
  * - A revoke that stopped only on this device, or was not revoked at all, says so, with Retry.
  *
  * Renders nothing when the chat has no Crew grant or the lookup failed.
@@ -115,32 +137,57 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
   }, [access.state]);
 
   const unconfirmed = outcome?.kind === 'unconfirmed' || access.unconfirmed;
+  const finished = access.state === 'finished';
   const lapsed =
-    outcome?.kind === 'revoked' || access.state === 'revoked' || access.state === 'expired';
+    outcome?.kind === 'revoked' ||
+    access.state === 'revoked' ||
+    access.state === 'expired' ||
+    finished;
   const holdMessage =
     sessionId && grant && lapsed
-      ? access.state === 'expired'
-        ? accessCopy.chatBlockedSendExpired(destination)
-        : accessCopy.chatBlockedSendRevoked(destination)
+      ? finished
+        ? accessCopy.chatBlockedSendTaskFinished(destination)
+        : access.state === 'expired'
+          ? accessCopy.chatBlockedSendExpired(destination)
+          : accessCopy.chatBlockedSendRevoked(destination)
       : null;
 
+  // The composer shows the hold's toast on Enter. When the reason goes — access is back, or this
+  // bar and its chat leave the screen — the toast goes with it, rather than following the person
+  // into Crew (Q2-74).
   useEffect(() => {
-    if (!sessionId) return;
-    publishHold(
-      sessionId,
-      holdToken,
-      holdMessage ? { title: accessCopy.chatBlockedSendTitle, message: holdMessage } : null
-    );
-    return () => publishHold(sessionId, holdToken, null);
+    if (!sessionId || !holdMessage) return;
+    const hold: CrewComposerHold = {
+      title: accessCopy.chatBlockedSendTitle,
+      message: holdMessage,
+      toastId: crewHoldToastId(accessCopy.chatBlockedSendTitle, holdMessage),
+    };
+    publishHold(sessionId, holdToken, hold);
+    return () => {
+      publishHold(sessionId, holdToken, null);
+      dismissHoldToast(hold);
+    };
   }, [sessionId, holdToken, holdMessage]);
 
   if (!sessionId || !grant) return null;
 
   const title = sanitizeDisplayText(chatTitle);
   const chat = title && !isMachineIdShaped(title) ? title : null;
+  const leaveChat = () => dismissHoldToast(currentHold(sessionId));
   // One hop: Crew opens this chat's access pane itself, rather than a note whose button does.
-  const openAccess = () => navigate(chatAccessRoute(sessionId), { state: chatAccessRouteState() });
-  const startNewChat = () => navigateWithViewTransition(navigate, '/pair', { newChat: true });
+  const openAccess = () => {
+    leaveChat();
+    navigate(chatAccessRoute(sessionId), { state: chatAccessRouteState() });
+  };
+  // To Crew's own screen for this chat, where the connection is: connecting is not a consent.
+  const connectInCrew = () => {
+    leaveChat();
+    navigate(chatAccessRoute(sessionId));
+  };
+  const startNewChat = () => {
+    leaveChat();
+    navigateWithViewTransition(navigate, '/pair', { newChat: true });
+  };
 
   const revoke = async () => {
     setConfirming(false);
@@ -148,7 +195,29 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     const result = await revokeGrant(grant.connection_id, sessionId);
     setRevoking(false);
     setOutcome(result);
+    // Read the grant again now rather than trusting the announcement to reach this chat's lookup:
+    // the composer's hold follows the lookup (Q2-73).
+    access.refetch();
   };
+
+  if (finished) {
+    return (
+      <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
+        <Note
+          tone="neutral"
+          role="status"
+          testId="crew-chat-access-finished"
+          action={
+            <Button type="button" variant="secondary" size="sm" onClick={startNewChat}>
+              {accessCopy.chatNewChat}
+            </Button>
+          }
+        >
+          {accessCopy.chatTaskFinished(destination)}
+        </Note>
+      </div>
+    );
+  }
 
   if (lapsed) {
     return (
@@ -184,6 +253,25 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
           {access.state === 'expired'
             ? accessCopy.chatExpired(destination)
             : accessCopy.chatRevoked(destination)}
+        </Note>
+      </div>
+    );
+  }
+
+  if (access.state === 'offline') {
+    return (
+      <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
+        <Note
+          tone="neutral"
+          role="status"
+          testId="crew-chat-access-offline"
+          action={
+            <Button type="button" variant="secondary" size="sm" onClick={connectInCrew}>
+              {accessCopy.chatConnectInCrew}
+            </Button>
+          }
+        >
+          {accessCopy.chatOffline(destination)}
         </Note>
       </div>
     );

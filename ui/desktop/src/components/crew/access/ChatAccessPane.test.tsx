@@ -1,4 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -434,6 +436,10 @@ describe('chat access: the consent names the chat before Allow', () => {
     // A long title wraps inside the pane instead of overflowing it on one fixed-height line.
     expect(allow).toHaveClass('whitespace-normal', 'h-auto');
     expect(allow).not.toHaveClass('whitespace-nowrap', 'h-control-md');
+    // Q2-06: and the button takes the pane's width. The base class is `shrink-0`, so wrapping
+    // alone left it at its one-line width, overflowing to the left and clipping "Allow".
+    expect(allow).toHaveClass('w-full', 'max-w-full', 'min-w-0', 'text-center');
+    expect(allow).toHaveTextContent(/^Allow “Greeting exchange” to read and post in #general$/);
 
     fireEvent.click(allow);
     await waitFor(() => expect(callsTo(mocks, NAMED_GRANT, 'POST')).toHaveLength(1));
@@ -578,5 +584,160 @@ describe('chat access: one hop from the ordinary chat', () => {
     renderWithController(Layout);
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked));
     expect(screen.queryByTestId('pane')).toBeNull();
+  });
+});
+
+/**
+ * Q2-06 (live QA round 2): the Allow button overflowed the 328px pane to the left, and its label
+ * read "w “Lab channel greeting” to read and post in #general". jsdom lays nothing out, so the
+ * classes that keep it inside the pane are pinned at the source as well as on the rendered button.
+ */
+describe('chat access: the Allow button stays inside the pane', () => {
+  it('declares its full-width, wrapping, centred classes in the source', () => {
+    const source = readFileSync(join(__dirname, 'ChatAccessPane.tsx'), 'utf8');
+    const allow = /<Button\s+key="crew-chat-access-allow"[\s\S]*?className="([^"]*)"/.exec(source);
+    expect(allow, 'the Allow button').not.toBeNull();
+    const classes = (allow?.[1] ?? '').split(/\s+/);
+    for (const name of [
+      'w-full',
+      'max-w-full',
+      'min-w-0',
+      'whitespace-normal',
+      'text-center',
+      'h-auto',
+    ])
+      expect(classes, name).toContain(name);
+    expect(classes).not.toContain('whitespace-nowrap');
+  });
+});
+
+/**
+ * Q2-10 (live QA round 2): the chip on a chat connected to #methods, and "Grant access again" on
+ * one whose access to #methods was revoked, opened Crew on #general — and the pane did not open.
+ * The one hop now lands on the grant's own channel with the pane open.
+ */
+describe('chat access: one hop lands on the grant’s channel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+  });
+
+  const onMethods = (extra: Record<string, unknown> = {}) =>
+    grantRow({ channel_id: 'channel-2', source_channels: ['channel-2'], ...extra });
+
+  function arrive(entry = chatAccessRoute('agent-1')) {
+    return render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/crew',
+            search: entry.slice('/crew'.length),
+            state: chatAccessRouteState(),
+          },
+        ]}
+      >
+        <CrewView layout={Layout} />
+      </MemoryRouter>
+    );
+  }
+
+  it('opens #methods with Manage for the chip of a chat connected there', async () => {
+    installDaemon(mocks, { grants: () => [onMethods()] });
+    arrive();
+    const paneNode = await screen.findByTestId('pane');
+    expect(await within(paneNode).findByText('“Plot review” can')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods'));
+    expect(paneNode).toHaveTextContent('Posts in #methods as Alice Chen (@alice)');
+    expect(note()).toHaveTextContent(accessCopy.noteActive('#methods'));
+    // Settled: the pane stays open.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('pane')).toBeInTheDocument();
+  });
+
+  it('reaches Allow for #methods in one hop from Grant access again', async () => {
+    installDaemon(mocks, { grants: () => [onMethods({ expired: true })] });
+    arrive();
+    const allow = await within(await screen.findByTestId('pane')).findByRole('button', {
+      name: accessCopy.allowChat('Plot review', '#methods'),
+    });
+    expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods');
+    expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(0);
+
+    fireEvent.click(allow);
+    await waitFor(() => expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(1));
+    expect(callsTo(mocks, GRANT_PATH, 'POST')[0][2]).toMatchObject({ channel_id: 'channel-2' });
+  });
+
+  it('makes closing the pane after the one hop final, and stays on the grant’s channel', async () => {
+    installDaemon(mocks, { grants: () => [onMethods()] });
+    arrive();
+    await within(await screen.findByTestId('pane')).findByText('“Plot review” can');
+    fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
+    await waitFor(() => expect(screen.queryByTestId('pane')).toBeNull());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods');
+    expect(screen.queryByTestId('pane')).toBeNull();
+  });
+
+  it('stays on the channel shown when the grant’s channel is archived', async () => {
+    installDaemon(mocks, {
+      grants: () => [grantRow({ channel_id: 'channel-3', source_channels: ['channel-3'] })],
+    });
+    arrive();
+    await within(await screen.findByTestId('pane')).findByText('“Plot review” can');
+    expect(screen.getByTestId('channel-ready')).toHaveTextContent('general');
+  });
+});
+
+/**
+ * Q2-09 (live QA round 2): a task's grant ends with the task. Crew's note and pane say the task
+ * is finished, and offer no re-grant: a task is not connected again from its chat.
+ */
+describe('chat access: a finished task', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+  });
+
+  it('says the task is finished in the note, with nothing to press', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ kind: 'task', expired: true })] });
+    renderWithController(Layout);
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteTaskFinished));
+    expect(within(note()).queryByRole('button')).toBeNull();
+    expect(note()).not.toHaveTextContent(/revoked/i);
+  });
+
+  it('says so in the pane too, and offers no Allow', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ kind: 'task', expired: true })] });
+    function PaneOnly() {
+      const { channel, openPane, ui } = useCrew();
+      return (
+        <div>
+          {channel ? (
+            <button
+              type="button"
+              onClick={() => openPane({ mode: 'chat-access', sessionId: 'agent-1' })}
+            >
+              Open access
+            </button>
+          ) : null}
+          {ui.pane?.mode === 'chat-access' ? (
+            <aside data-testid="pane">
+              <ChatAccessPane />
+            </aside>
+          ) : null}
+        </div>
+      );
+    }
+    renderWithController(PaneOnly);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
+    const paneNode = await screen.findByTestId('pane');
+    expect(await within(paneNode).findByText(accessCopy.paneTaskFinished)).toBeInTheDocument();
+    expect(within(paneNode).queryByRole('button', { name: /^Allow/ })).toBeNull();
+    expect(within(paneNode).getByRole('button', { name: accessCopy.openChat })).toBeInTheDocument();
   });
 });

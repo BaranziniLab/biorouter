@@ -35,8 +35,9 @@ type Confirming = { key: string; action: 'revoke' | 'stop' } | null;
  * The list of chats and tasks that can read or post (ui-redesign-spec, "Revoke", "Access rows"):
  * the Access tab's, and Workspace settings → Agent access's.
  *
- * A row: the chat's title (or "Your task"), `#destination (+n)`, a status badge, **Open**, and a
- * visible **Revoke** on an active chat row or **Stop** on a running task row. There is no `⋯`: its
+ * A row: the chat's title (or "Your task · 1:16 PM · Please work out…", so two tasks can be told
+ * apart), `#destination (+n)`, a status badge ("Ended" once a task's access ended with it),
+ * **Open**, and a visible **Revoke** on an active chat row or **Stop** on a running task row. There is no `⋯`: its
  * only item was "Copy session ID", a machine ID with no use to the person reading the list (live QA
  * round 1, T-55). Revoked and expired rows collapse under "Show revoked and expired (n)". Revoke and
  * Stop each ask inline first; what a revoke came to is said once, above the list.
@@ -97,6 +98,12 @@ export function AccessList({
           <div className="crew-access-row-text">
             <p className="truncate text-label text-text-default">
               <bdi>{row.title}</bdi>
+              {row.detail ? (
+                <span className="text-text-muted">
+                  {accessCopy.agentsSeparator}
+                  <bdi>{row.detail}</bdi>
+                </span>
+              ) : null}
             </p>
             <p className="truncate text-supporting text-text-muted">
               <bdi>{row.destination}</bdi>
@@ -145,7 +152,11 @@ export function AccessList({
                     variant="ghost"
                     size="sm"
                     disabled={busy}
-                    aria-label={accessCopy.retryRowName(row.title)}
+                    aria-label={accessCopy.retryRowName(
+                      row.detail
+                        ? `${row.title}${accessCopy.agentsSeparator}${row.detail}`
+                        : row.title
+                    )}
                     onClick={() => void revoke(row)}
                   >
                     {accessCopy.retry}

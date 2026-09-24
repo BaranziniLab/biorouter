@@ -399,6 +399,22 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     );
   }
 
+  // ── A task's access after the task: it ended with it, and a task is not granted again ────────
+  if (grant && grant.kind === 'task') {
+    return (
+      <div className={className} data-testid="crew-chat-access-pane">
+        <div className="flex flex-col gap-3">
+          <p className="text-label text-text-default">{accessCopy.paneTaskFinished}</p>
+          <div>
+            <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+              {accessCopy.openChat}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Revoked or expired, or never granted: the consent (only for the chat that sent us here) ─
   const lapsed =
     grant && state === 'expired'
@@ -438,11 +454,14 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         {errorNote}
         <div className="flex justify-end">
           {/* It names the chat, and a chat's title can be long: the label wraps rather than
-              overflowing the 360px pane or hiding which chat is being let in. */}
+              overflowing the pane or hiding which chat is being let in. The button's base class is
+              `shrink-0`, so wrapping alone never narrowed it: its one-line width overflowed a
+              328px pane to the left and clipped "Allow" off the front (live QA round 2, Q2-06).
+              It takes the row's width instead, and its lines are centred. */}
           <Button
             key="crew-chat-access-allow"
             type="submit"
-            className="h-auto min-h-control-md whitespace-normal break-words py-1.5"
+            className="h-auto min-h-control-md w-full min-w-0 max-w-full whitespace-normal break-words py-1.5 text-center"
             disabled={controller.isPending('grant')}
           >
             {chat && channel ? accessCopy.allowChat(chat, here) : accessCopy.allow}
