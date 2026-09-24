@@ -186,6 +186,17 @@ function ChannelTimeline({
     });
   }
 
+  // "Today" becomes "Yesterday" at midnight even when nothing new arrives.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const timer = window.setTimeout(
+      () => setNow(new Date()),
+      midnight.getTime() - Date.now() + 1000
+    );
+    return () => window.clearTimeout(timer);
+  }, [now]);
+
   const days = useMemo(
     () =>
       groupMessages(messages, {
@@ -194,9 +205,9 @@ function ChannelTimeline({
         newLineBeforeId: newLine.id,
         runs,
         includeUnanchoredRuns: historyBefore === null,
-        now: new Date(),
+        now,
       }),
-    [messages, channel.id, channel.classification, newLine.id, runs, historyBefore]
+    [messages, channel.id, channel.classification, newLine.id, runs, historyBefore, now]
   );
 
   // ── Live arrivals ───────────────────────────────────────────────────────
@@ -364,13 +375,12 @@ function ChannelTimeline({
   const pill: 'history' | 'live' | null =
     historyBefore !== null ? 'history' : unseenBelow && !following ? 'live' : null;
 
+  // The copy announcer's live region sits inside the timeline's own box, beside
+  // (never inside) the log, so an announcement is not read as a message.
   return (
-    <TimelineCopyProvider>
-      <TimelineContextProvider value={context}>
-        <div
-          className={cn('crew-timeline', className)}
-          data-readonly={readOnly ? 'true' : undefined}
-        >
+    <div className={cn('crew-timeline', className)} data-readonly={readOnly ? 'true' : undefined}>
+      <TimelineCopyProvider>
+        <TimelineContextProvider value={context}>
           <ScrollArea
             ref={scroller}
             className="crew-timeline-scroll biorouter-scroll-fade-top"
@@ -445,9 +455,9 @@ function ChannelTimeline({
               />
             </div>
           )}
-        </div>
-      </TimelineContextProvider>
-    </TimelineCopyProvider>
+        </TimelineContextProvider>
+      </TimelineCopyProvider>
+    </div>
   );
 }
 

@@ -201,6 +201,20 @@ describe('the log', () => {
     expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('relabels Today as Yesterday at midnight, with nothing new arriving', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(2026, 8, 22, 23, 59, 30));
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ at: new Date(2026, 8, 22, 9, 0) })] })
+    );
+    expect(screen.getByRole('separator', { name: 'Today' })).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(screen.getByRole('separator', { name: 'Yesterday' })).toBeInTheDocument();
+  });
+
   it('keeps the New line where it was when the channel opened', () => {
     const messages = [message({ id: 'a', sequence: 's1' }), message({ id: 'b', sequence: 's2' })];
     const opened = makeController({

@@ -80,6 +80,11 @@ describe('markdown', () => {
     expect(container.innerHTML).not.toMatch(/javascript:|data:text|file:\/\//);
     expect(container).toHaveTextContent('bad');
 
+    // A link says where it really goes, whatever its words say.
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute(
+      'title',
+      'https://biorouter.ucsf.edu/docs.html'
+    );
     fireEvent.click(screen.getByRole('link', { name: 'docs' }));
     expect(openExternal).toHaveBeenCalledWith('https://biorouter.ucsf.edu/docs.html');
   });

@@ -149,6 +149,8 @@ const COMPONENTS: Components = {
         target="_blank"
         rel="noopener noreferrer"
         className="crew-md-link"
+        // Where it really goes, whatever its words say.
+        title={safe}
         onClick={(event) => openExternally(event, safe)}
       >
         {children}
@@ -171,6 +173,7 @@ const COMPONENTS: Components = {
         target="_blank"
         rel="noopener noreferrer"
         className="crew-md-link crew-md-image"
+        title={safe}
         onClick={(event) => openExternally(event, safe)}
       >
         {content}
