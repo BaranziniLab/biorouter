@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -365,5 +367,92 @@ describe('WorkspaceSettingsDialog', () => {
     expect(await screen.findByText(copy.institutionNeedsConnection)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Set institution to/ })).toBeNull();
     expect(alice.id).toBe('person-alice');
+  });
+});
+
+describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () => {
+  /** The access area's content as it really comes: a section headed by the tab's own name. */
+  function AgentAccessFixture() {
+    return (
+      <section aria-labelledby="access-heading">
+        <h3 id="access-heading">Agent access</h3>
+        <p>agent access rows</p>
+      </section>
+    );
+  }
+
+  const firstLabel = (panel: HTMLElement) =>
+    panel.firstElementChild?.querySelector('h3.text-caps')?.textContent;
+
+  it('opens every tab with the same caps label', async () => {
+    const user = userEvent.setup();
+    renderSettings({ tab: 'general', agentAccess: <AgentAccessFixture /> });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    for (const [tab, label] of [
+      ['General', copy.tabs.general],
+      ['People', copy.tabs.people],
+      ['Privacy', copy.tabs.privacy],
+      ['Agent access', copy.tabs.agentAccess],
+    ] as const) {
+      await user.click(within(dialog).getByRole('tab', { name: tab }));
+      const panel = within(dialog).getByRole('tabpanel');
+      expect(firstLabel(panel)).toBe(label);
+    }
+    // The access area's own heading repeats the tab's name: its panel is marked for the rule that
+    // hides it there, and that rule is read at the source (jsdom applies no stylesheet).
+    const access = within(dialog).getByRole('tabpanel');
+    expect(access).toHaveAttribute('data-crew-tab', 'agent-access');
+    const css = readFileSync(join(__dirname, 'dialogs.css'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ' '
+    );
+    const hide =
+      /\.crew-settings-panel\[data-crew-tab='agent-access'\]\s*>\s*\[aria-labelledby\]\s*>\s*:first-child\s*\{([^}]*)\}/.exec(
+        css
+      );
+    expect(hide?.[1]).toMatch(/display:\s*none;/);
+    // That selector reaches exactly the access area's heading, and nothing of ours.
+    expect(access.querySelectorAll(':scope > [aria-labelledby] > :first-child')).toHaveLength(1);
+    expect(access.querySelector(':scope > [aria-labelledby] > :first-child')).toHaveTextContent(
+      'Agent access'
+    );
+    // It still names the section.
+    expect(within(access).getByRole('region', { name: 'Agent access' })).toBeInTheDocument();
+  });
+
+  it('makes the People rows a list, one item per person', async () => {
+    renderSettings(
+      { tab: 'people' },
+      { snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }) }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const members = within(dialog).getByRole('region', { name: copy.members });
+    const list = within(members).getByRole('list');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(makeSnapshot().principals.length);
+    const waiting = within(dialog).getByRole('region', { name: copy.waiting });
+    expect(within(within(waiting).getByRole('list')).getAllByRole('listitem')).toHaveLength(1);
+  });
+
+  it('names the connection-only action as the popover does, with the popover’s one line', async () => {
+    renderSettings({ tab: 'privacy' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const button = within(dialog).getByRole('button', { name: 'Make my connection public…' });
+    expect(button).toHaveAccessibleDescription(
+      sidebarCopy.privacy.makePublicEffect('lab', 'private')
+    );
+  });
+
+  it('says what the Host badge means, on hover and to the keyboard', async () => {
+    const user = userEvent.setup();
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const badge = within(dialog).getByText(copy.host);
+    const trigger = badge.parentElement as HTMLElement;
+    expect(trigger).toHaveAttribute('tabindex', '0');
+    await user.hover(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Workspace host: runs lab on the server'
+    );
+    expect(copy.hostTooltip('lab')).toBe('Workspace host: runs lab on the server');
   });
 });

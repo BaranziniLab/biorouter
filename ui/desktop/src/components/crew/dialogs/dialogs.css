@@ -47,3 +47,11 @@
   overflow-wrap: normal;
   white-space: pre;
 }
+
+/* Workspace settings → Agent access opens with the dialog's own caps label, like every other tab
+   (QA Q2-29). The access area's content brings a heading of its own that repeats the tab's name
+   (QA Q2-66): hidden here, where the tab already names it. It stays the section's accessible name —
+   `aria-labelledby` reads a hidden node — and it still shows wherever else that content mounts. */
+.crew-settings-panel[data-crew-tab='agent-access'] > [aria-labelledby] > :first-child {
+  display: none;
+}

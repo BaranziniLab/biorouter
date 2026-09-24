@@ -13,6 +13,7 @@ import {
 import { Note } from '../../ui/note';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, MoreHorizontal } from '../../icons/app-icons';
 import type { PendingJoin } from '../crewApi';
 import {
@@ -134,9 +135,16 @@ export function WorkspaceSettingsDialog({
             />
           </TabsContent>
           {/* The access area's content mounts only while it is selected: it is not ours to run
-              hidden. It shares the cell, so the dialog is at least as tall as the tallest of ours. */}
+              hidden. It shares the cell, so the dialog is at least as tall as the tallest of ours.
+              It opens with the same caps label as every other tab; the access area's own heading
+              repeated the tab's name, so `dialogs.css` hides it here (QA Q2-29, Q2-66). */}
           {agentAccess !== undefined ? (
-            <TabsContent value="agent-access" className="crew-settings-panel">
+            <TabsContent
+              value="agent-access"
+              className="crew-settings-panel"
+              data-crew-tab="agent-access"
+            >
+              <TabLabel title={copy.tabs.agentAccess} />
               {agentAccess}
             </TabsContent>
           ) : null}
@@ -220,25 +228,34 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function Section({
-  title,
-  action,
-  children,
-}: {
-  title: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+/**
+ * The caps label every tab opens with — GENERAL, PEOPLE, PRIVACY, AGENT ACCESS — so no tab starts
+ * with a different kind of heading, or with none (QA Q2-29).
+ */
+function TabLabel({ title, id, action }: { title: string; id?: string; action?: React.ReactNode }) {
+  return (
+    <div className="biorouter-settings-section-header flex min-w-0 items-center justify-between gap-3">
+      <h3 id={id} className="text-caps text-text-muted">
+        {title}
+      </h3>
+      {action}
+    </div>
+  );
+}
+
+/** A group of people rows under its own caps label: a real list, so it is announced as one. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   const headingId = React.useId();
   return (
     <section className="biorouter-settings-section" aria-labelledby={headingId}>
       <div className="biorouter-settings-section-header flex min-w-0 items-center justify-between gap-3">
-        <h3 id={headingId} className="text-caps text-text-muted">
+        <h4 id={headingId} className="text-caps text-text-muted">
           {title}
-        </h3>
-        {action}
+        </h4>
       </div>
-      <div className="biorouter-settings-list">{children}</div>
+      <ul role="list" className="biorouter-settings-list">
+        {children}
+      </ul>
     </section>
   );
 }
@@ -248,6 +265,7 @@ function GeneralTab({ view }: { view: DialogView }) {
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
   return (
     <div className="flex flex-col">
+      <TabLabel title={copy.tabs.general} />
       <div className="biorouter-settings-list">
         <Row label={copy.hostedBy}>
           <PersonName person={dir.host} context="inline" dir={dir} />
@@ -294,15 +312,8 @@ function PeopleTab({
 
   return (
     <div className="flex flex-col">
-      {waiting.length > 0 ? (
-        <Section title={copy.waiting}>
-          {waiting.map((join) => (
-            <WaitingRow key={join.username} join={join} view={view} />
-          ))}
-        </Section>
-      ) : null}
-      <Section
-        title={copy.members}
+      <TabLabel
+        title={copy.tabs.people}
         action={
           isHost ? (
             <Button
@@ -314,7 +325,15 @@ function PeopleTab({
             </Button>
           ) : undefined
         }
-      >
+      />
+      {waiting.length > 0 ? (
+        <Section title={copy.waiting}>
+          {waiting.map((join) => (
+            <WaitingRow key={join.username} join={join} view={view} />
+          ))}
+        </Section>
+      ) : null}
+      <Section title={copy.members}>
         {people.map((person) => (
           <MemberRow
             key={person.id ?? person.username}
@@ -361,7 +380,7 @@ function MemberRow({
 }) {
   const { dir, workspace } = view;
   return (
-    <div className="biorouter-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
+    <li className="biorouter-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
       <Avatar
         size={24}
         fallback={person.avatar}
@@ -372,9 +391,18 @@ function MemberRow({
         <PersonName person={person} context="header" dir={dir} you={person.isYou} />
       </div>
       {person.isHost ? (
-        <Badge tone="neutral" variant="badge">
-          {copy.host}
-        </Badge>
+        // What "Host" means, on hover and on focus (QA Q2-69): the badge takes a tab stop only
+        // for the one row that has it.
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span tabIndex={0} className="inline-flex rounded-element">
+              <Badge tone="neutral" variant="badge">
+                {copy.host}
+              </Badge>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{copy.hostTooltip(workspace)}</TooltipContent>
+        </Tooltip>
       ) : null}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -406,7 +434,7 @@ function MemberRow({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-    </div>
+    </li>
   );
 }
 
@@ -432,7 +460,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
       });
 
   return (
-    <div className="biorouter-settings-row flex min-w-0 flex-col gap-1.5 px-3 py-2">
+    <li className="biorouter-settings-row flex min-w-0 flex-col gap-1.5 px-3 py-2">
       <div className="flex min-w-0 items-center gap-3">
         <div className="min-w-0 flex-1 truncate text-label">
           <PersonName person={person} context="joiner" />
@@ -499,7 +527,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
           {copy.otherDevice(join.username)}
         </p>
       ) : null}
-    </div>
+    </li>
   );
 }
 
@@ -512,9 +540,10 @@ function PrivacyTab({
   onConfirm(intent: ConfirmIntent): void;
   onMakePrivate(): void;
 }) {
-  const { crew, dir, snapshot } = view;
+  const { crew, dir, snapshot, workspace } = view;
   const connection = crew.connection;
   const saved = savedConnection(view);
+  const effectId = React.useId();
   const isHost = dir.viewerIsHost;
   const workspaceMode = snapshot?.workspace.mode ?? null;
   const workspaceInstitution = snapshot?.workspace.institution_id ?? null;
@@ -538,8 +567,15 @@ function PrivacyTab({
     });
   };
 
+  // The popover's one line saying what "Make my connection public…" changes, under the same words.
+  const publicEffect =
+    connection?.mode === 'private' && workspaceMode
+      ? sidebarCopy.privacy.makePublicEffect(workspace, workspaceMode)
+      : null;
+
   return (
     <div className="flex flex-col">
+      <TabLabel title={copy.tabs.privacy} />
       <div className="biorouter-settings-list">
         <Row label={copy.yourConnection}>
           {connection ? (
@@ -556,6 +592,7 @@ function PrivacyTab({
                   variant="secondary"
                   size="sm"
                   disabled={!saved}
+                  aria-describedby={publicEffect ? effectId : undefined}
                   onClick={() =>
                     saved && onConfirm({ action: 'make-connection-public', connectionId: saved.id })
                   }
@@ -616,6 +653,11 @@ function PrivacyTab({
           ) : null}
         </Row>
       </div>
+      {publicEffect ? (
+        <p id={effectId} className="mt-2 px-3 text-supporting text-text-muted">
+          {publicEffect}
+        </p>
+      ) : null}
       {!workspaceInstitution && isHost && !connectionInstitution ? (
         <p className="mt-2 px-3 text-supporting text-text-muted">
           {copy.institutionNeedsConnection}

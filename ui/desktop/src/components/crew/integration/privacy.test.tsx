@@ -110,7 +110,7 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
 
     await workspaceAction('Privacy…', /^lab/);
     const settings = await screen.findByRole('dialog', { name: /settings/ });
-    await user.click(within(settings).getByRole('button', { name: 'Make public…' }));
+    await user.click(within(settings).getByRole('button', { name: 'Make my connection public…' }));
     let dialog = await makePublicConfirmation();
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     // Cancel steps back to the settings it came from, having changed nothing.
@@ -123,7 +123,7 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
 
     await user.click(
       within(await screen.findByRole('dialog', { name: /settings/ })).getByRole('button', {
-        name: 'Make public…',
+        name: 'Make my connection public…',
       })
     );
     dialog = await makePublicConfirmation();

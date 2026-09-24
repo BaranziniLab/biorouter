@@ -80,6 +80,8 @@ export const workspaceSettingsCopy = {
   members: 'Members',
   invite: 'Invite people…',
   host: 'Host',
+  /** The Host badge's tooltip: what the role is (QA Q2-69). */
+  hostTooltip: (workspace: string) => `Workspace host: runs ${workspace} on the server`,
   you: 'you',
   letIn: 'Let in…',
   letInLabel: (username: string) => `Let @${username} in`,
@@ -100,7 +102,8 @@ export const workspaceSettingsCopy = {
   allowsPublic: 'Allows Public',
   allowPublic: 'Allow Public…',
   makePrivateForEveryone: 'Make Private for everyone…',
-  makePublic: 'Make public…',
+  /** The privacy popover's words for the same action (QA Q2-29): only this person's connection. */
+  makePublic: 'Make my connection public…',
   makePrivate: 'Make private',
   institution: 'Institution',
   notSet: 'Not set',
