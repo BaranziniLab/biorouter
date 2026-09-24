@@ -69,13 +69,20 @@ function useChannelAgentAccess(crew: CrewController) {
  *
  * The whole body — timeline and composer — is one file drop zone. It has no target of its own: the
  * composer registers its upload with it (`useCrewDropTarget`), so a file dropped on the messages
- * goes where one dropped on the composer does, through the secure picker, and the zone takes
- * nothing while the composer cannot (verifying, archived).
+ * goes where one dropped on the composer does, through the native share confirmation, and the
+ * zone takes nothing while the composer cannot (verifying, archived).
+ *
+ * While a Crew dialog or the sign-in dialog is open, the timeline's slot is `inert` and
+ * `aria-hidden`: the messages and their buttons are behind the dialog, and a screen reader's
+ * cursor must not wander out of it into them (Q2-13). A dialog's own focus trap and `hideOthers`
+ * cover the rest of the page; this is the belt to that brace, because `hideOthers` keeps any
+ * element with an `aria-live` attribute, which the log carries while it opens.
  */
 export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const crew = useCrew();
   const titleId = useId();
   const verifying = !crew.snapshot;
+  const behindDialog = crew.ui.dialog !== null || crew.signIn.open;
   const lastView = verifying ? lastVerifiedTimeline(crew.lastVerified, crew.channelId) : null;
   const access = useChannelAgentAccess(crew);
   const canRename = uniqueNamesSupported(
@@ -102,7 +109,8 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
           <CrewFileDropZone className="crew-frame-drop">
             <div
               className="crew-frame-timeline"
-              inert={verifying}
+              inert={verifying || behindDialog}
+              aria-hidden={behindDialog ? true : undefined}
               data-verifying={verifying ? 'true' : undefined}
             >
               <Timeline

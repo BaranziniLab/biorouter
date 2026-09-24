@@ -9,6 +9,7 @@ import type { CrewController } from '../state/types';
 import { ChannelStage } from './ChannelStage';
 import { SidebarSkeleton } from './CrewSkeleton';
 import { MainScreen } from './MainScreen';
+import { useChannelAddedToast } from './useChannelAddedToast';
 import { useJoinedToast } from './useJoinedToast';
 import { useTaskHighlight } from './useTaskHighlight';
 import '../crew-app.css';
@@ -41,6 +42,7 @@ export function CrewLayout() {
   const crew = useCrew();
   useJoinProbe();
   useJoinedToast();
+  useChannelAddedToast();
   const highlight = useTaskHighlight();
   const { screen } = crew;
   const sidebar = sidebarFor(screen, crew);

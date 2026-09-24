@@ -4,14 +4,31 @@ import { Skeleton } from '../../ui/skeleton';
 /** The skeleton waits this long, so a fast load never flashes it (ui-redesign-spec, `loading`). */
 export const CREW_SKELETON_DELAY_MS = 150;
 
-/** True once `CREW_SKELETON_DELAY_MS` has passed since mount. */
-function useDelayed(): boolean {
-  const [shown, setShown] = useState(false);
+/**
+ * True once `CREW_SKELETON_DELAY_MS` has passed since `since` (a `Date.now()` stamp), or since
+ * mount without one. With a stamp, a placeholder that mounts again partway through one wait (the
+ * main area moving between `loading`, `connecting` and `checking`) picks up where the wait is
+ * instead of blanking for another 150ms each time (Q2-59).
+ */
+function useDelayed(since?: number): boolean {
+  const [shown, setShown] = useState(() => remainingDelay(since) <= 0);
   useEffect(() => {
-    const timer = window.setTimeout(() => setShown(true), CREW_SKELETON_DELAY_MS);
+    const wait = remainingDelay(since);
+    if (wait <= 0) {
+      setShown(true);
+      return;
+    }
+    setShown(false);
+    const timer = window.setTimeout(() => setShown(true), wait);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [since]);
   return shown;
+}
+
+function remainingDelay(since?: number): number {
+  return since === undefined
+    ? CREW_SKELETON_DELAY_MS
+    : CREW_SKELETON_DELAY_MS - (Date.now() - since);
 }
 
 const SIDEBAR_SECTIONS = [3, 3] as const;
@@ -46,10 +63,11 @@ export function SidebarSkeleton() {
 
 /**
  * Four message-shaped blocks in the chat column, after the same delay. `label` is read by a
- * screen reader at once; the blocks are decoration.
+ * screen reader at once; the blocks are decoration. `since` is when the main area started
+ * waiting, so the delay is counted once per wait, not once per mount.
  */
-export function MessagesSkeleton({ label }: { label: string }) {
-  const shown = useDelayed();
+export function MessagesSkeleton({ label, since }: { label: string; since?: number }) {
+  const shown = useDelayed(since);
   return (
     <div className="crew-frame-messages-skeleton" role="status">
       <span className="sr-only">{label}</span>
