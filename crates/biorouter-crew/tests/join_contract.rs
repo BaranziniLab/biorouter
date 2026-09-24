@@ -474,6 +474,21 @@ mod join {
     }
 
     #[test]
+    fn a_cached_lookup_cannot_carry_a_rename_past_the_claim() {
+        let mut ws = Workspace::new("join-cache-rename");
+        let (mut bob, _) = invited_bob(&mut ws, 21);
+        // The account is renamed; a re-invite within 30 seconds reuses the cached lookup.
+        ws.directory.set(BOB, "robert", None);
+        ok(invite(&mut ws, "bob"));
+        let join_id = join_id_of(&mut ws, BOB);
+        ok(approve(&mut ws, "bob", &bob.code()));
+        // The claim's own lookup is fresh, so the stale name fails closed.
+        let (code, _) = refused(bob.claim(&mut ws.broker, &join_id));
+        assert_eq!(code, "account_changed");
+        assert!(!is_device(&mut ws, BOB, &bob.member.key));
+    }
+
+    #[test]
     fn a_non_managers_invite_is_refused_before_any_account_lookup() {
         let mut ws = Workspace::new("join-non-manager");
         let mut carol = ws.enroll(CAROL, "carol", 12);

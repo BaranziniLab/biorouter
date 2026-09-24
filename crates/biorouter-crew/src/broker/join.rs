@@ -40,7 +40,7 @@ const JOIN_CAP: usize = 100;
 const LOOKUP_CACHE_SECS: u64 = 30;
 /// At most this many cached canonicalizations; the host's own typing is the only source.
 const LOOKUP_CACHE_CAP: usize = 64;
-/// How a device bound by `auth.join` is labelled in `actor.devices`.
+/// How a device bound by `auth.join` is labeled in `actor.devices`.
 const ADDED_VIA: &str = "invitation_code";
 
 const NOT_INVITED: &str =
@@ -279,7 +279,7 @@ fn code_matches(s: &State, join: &PendingJoin, key: &[u8; 32]) -> Result<bool> {
 }
 
 /// Bind the key: a new principal (nickname = username, D2) or the existing one for an added
-/// device, the device labelled `invitation_code`, the join and any legacy enrollment for the
+/// device, the device labeled `invitation_code`, the join and any legacy enrollment for the
 /// UID removed, committed as `uid:<n>`.
 fn bind(
     broker: &mut Broker,
