@@ -228,27 +228,33 @@ export function SwitchRow({
  * Private / Public radio rows and the institution a Private connection needs. The institution is
  * required only while Private is chosen, marked so, and its value survives a trip to Public and
  * back. Its helper stays put while the person types, so the dialog never jumps by a line.
+ *
+ * `mode={null}` is the unmade choice (an invitation that states no privacy): both rows unchecked,
+ * nothing assumed. It is the same fieldset either way, so the first pick keeps keyboard focus on
+ * the radio just chosen instead of swapping the rows for new ones and dropping it to the page.
  */
 export function PrivacyFields({
   mode,
   institution,
   disabled,
   institutionHelper = joinCopy.institutionHelper,
+  testId,
   onMode,
   onInstitution,
 }: {
-  mode: 'private' | 'public';
+  mode: 'private' | 'public' | null;
   institution: string;
   disabled?: boolean;
   /** What to say under the institution: whom to ask, when the caller knows. */
   institutionHelper?: ReactNode;
+  testId?: string;
   onMode: (mode: 'private' | 'public') => void;
   onInstitution: (institution: string) => void;
 }) {
   const name = useId();
   return (
     <>
-      <fieldset className="crew-onboard-radios">
+      <fieldset className="crew-onboard-radios" data-testid={testId}>
         <legend className="text-label text-text-default">{joinCopy.privacy}</legend>
         <CustomRadio
           id={`${name}-private`}

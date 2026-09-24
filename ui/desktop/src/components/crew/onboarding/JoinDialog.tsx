@@ -10,7 +10,6 @@ import {
 import { Check } from '../../icons/app-icons';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
-import CustomRadio from '../../ui/CustomRadio';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
@@ -768,23 +767,17 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   ) : null}
                 </div>
               ) : null}
-              {privacyShown && mode === null ? (
-                <UnchosenPrivacy
-                  disabled={locked}
-                  onMode={(next) => {
-                    // Keep the choice in view once made, so it can still be changed.
-                    setPrivacyOpen(true);
-                    setPrivacyEdited(true);
-                    setMode(next);
-                  }}
-                />
-              ) : privacyShown && mode !== null ? (
+              {privacyShown ? (
+                // One fieldset for the unmade choice and the made one, so the first pick keeps
+                // focus on the radio it landed on.
                 <PrivacyFields
                   mode={mode}
                   institution={institution}
                   disabled={locked}
                   institutionHelper={institutionHelper}
+                  testId={mode === null ? 'crew-join-privacy-unchosen' : undefined}
                   onMode={(next) => {
+                    // Keep the choice in view once made, so it can still be changed.
                     setPrivacyOpen(true);
                     setPrivacyEdited(true);
                     setMode(next);
@@ -950,45 +943,6 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         </form>
       </FieldErrorsProvider>
     </ModalShell>
-  );
-}
-
-/**
- * Private / Public with neither chosen, for an invitation that doesn't state the workspace's
- * privacy. Choosing one hands over to `PrivacyFields`; nothing is assumed before that.
- */
-function UnchosenPrivacy({
-  disabled,
-  onMode,
-}: {
-  disabled: boolean;
-  onMode: (mode: Mode) => void;
-}) {
-  const name = useId();
-  return (
-    <fieldset className="crew-onboard-radios" data-testid="crew-join-privacy-unchosen">
-      <legend className="text-label text-text-default">{joinCopy.privacy}</legend>
-      <CustomRadio
-        id={`${name}-private`}
-        name={name}
-        value="private"
-        checked={false}
-        disabled={disabled}
-        onChange={() => onMode('private')}
-        label={joinCopy.private}
-        secondaryLabel={joinCopy.privateHint}
-      />
-      <CustomRadio
-        id={`${name}-public`}
-        name={name}
-        value="public"
-        checked={false}
-        disabled={disabled}
-        onChange={() => onMode('public')}
-        label={joinCopy.public}
-        secondaryLabel={joinCopy.publicHint}
-      />
-    </fieldset>
   );
 }
 

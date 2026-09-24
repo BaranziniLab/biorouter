@@ -541,11 +541,18 @@ describe('JoinDialog', () => {
     fireEvent.submit(join.closest('form') ?? document.body);
     expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+    const pick = screen.getByRole('radio', { name: /^Public/ });
+    pick.focus();
+    fireEvent.click(pick);
     // The choice stays on screen, where it can still be changed; it states itself, once.
     expect(screen.getByRole('radio', { name: /^Public/ })).toBeChecked();
     expect(screen.getByRole('radio', { name: /^Private/ })).not.toBeChecked();
     expect(screen.queryByTestId('crew-join-as')).toBeNull();
+    // The same rows, now chosen: the first pick keeps focus on the radio it landed on rather than
+    // swapping the rows for new ones and dropping focus to the page.
+    expect(pick).toBeChecked();
+    expect(pick).toHaveFocus();
+    expect(screen.queryByTestId('crew-join-privacy-unchosen')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
     await waitFor(() =>
       expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
