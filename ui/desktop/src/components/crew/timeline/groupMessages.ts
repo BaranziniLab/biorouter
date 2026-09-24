@@ -16,11 +16,21 @@ import { dayKey, dayLabel, messageTime } from './timelineTime';
  *   position. It is computed once, when the channel opens — which, since the
  *   observer sends the channel one message per frame, means once enough of it
  *   has arrived that the line cannot move (`newLineDecided`, `openingProgress`).
- * - A task status row is anchored after the first message carrying its
- *   `run_id` (the agent's "Task: …" post), else at the end of the live log —
- *   there only while the task is live, or when it started no earlier than the
- *   oldest message loaded (`started_at`), so an old task whose post has scrolled
- *   out of the tail does not pile up below the newest message.
+ * - A task status row follows the task's result: the last message carrying its
+ *   `run_id` once one of them, besides the "Task: …" post, is not a tool update.
+ *   With no result yet it sits right after the "Task: …" post (the first message
+ *   carrying the `run_id`), and moves under the result when it lands (Q2-62).
+ *   The task's own posts stay one group above it. With none of its messages
+ *   loaded it goes at the end of the live log — there only while the task is
+ *   live, or when it started no earlier than the oldest message loaded
+ *   (`started_at`), so an old task whose post has scrolled out of the tail does
+ *   not pile up below the newest message.
+ * - When the first unread message is also its day's first, the New line is not
+ *   a second rule 30px under the day's: "New" goes on the day's own rule
+ *   (`TimelineDay.newOnRule`, Q2-53).
+ * - Rows of one author (as a person, or as their agent) posted in the same
+ *   minute read the same "Bob Lee's message, 10:02 AM" in their action names,
+ *   so each carries its place among them (`sameMinute`, ", 2 of 2", Q2-57).
  *
  * Supplement (baseline critique): an agent's step-by-step tool updates ("Using
  * crew__request", "Tool failed: blob.read. …") are folded behind one "Show
@@ -107,6 +117,11 @@ export interface TimelineMessageEntry {
   /** The message is restricted and the channel is not: show the muted "Restricted". */
   restrictedMarker: boolean;
   time: Date;
+  /**
+   * Where this row stands among the author's rows posted in the same minute, when there is more
+   * than one: `{ index: 2, count: 2 }` reads ", 2 of 2" after the time in its action names.
+   */
+  sameMinute?: { index: number; count: number };
 }
 
 /** Consecutive tool updates of one agent, folded into one row. */
@@ -153,6 +168,11 @@ export interface TimelineDay {
   key: string;
   /** Null only for task rows with no message loaded at all. */
   label: string | null;
+  /**
+   * The New line falls on this day's first message: its "New" goes on the day's own rule
+   * instead of a second rule under it. The day's items then hold no `new` item.
+   */
+  newOnRule?: boolean;
   items: TimelineItem[];
 }
 
@@ -180,10 +200,21 @@ export function groupMessages(
 ): TimelineDay[] {
   const runs = options.runs.filter((run) => run.channel_id === options.channelId);
   const runById = new Map(runs.map((run) => [run.run_id, run]));
+  /** Each run's first loaded message: its "Task: …" post, where its title comes from. */
   const anchorOf = new Map<string, number>();
+  /** Each run's last loaded message, and whether a result (not a tool update) came after its post. */
+  const lastOf = new Map<string, number>();
+  const hasResult = new Set<string>();
   messages.forEach((message, index) => {
-    if (message.run_id && !anchorOf.has(message.run_id)) anchorOf.set(message.run_id, index);
+    const runId = message.run_id;
+    if (!runId) return;
+    if (!anchorOf.has(runId)) anchorOf.set(runId, index);
+    else if (!isTraceMessage(message)) hasResult.add(runId);
+    lastOf.set(runId, index);
   });
+  /** The message the run's status row follows: its result, else its "Task: …" post. */
+  const rowAfter = (runId: string) =>
+    hasResult.has(runId) ? lastOf.get(runId) : anchorOf.get(runId);
 
   const days: TimelineDay[] = [];
   const placed = new Set<string>();
@@ -200,13 +231,16 @@ export function groupMessages(
       group = null;
     }
     if (message.id === options.newLineBeforeId) {
-      day.items.push({ kind: 'new', key: 'new' });
+      // The day's first message: "New" rides on the day's own rule rather than a second one.
+      if (day.items.length === 0) day.newOnRule = true;
+      else day.items.push({ kind: 'new', key: 'new' });
       group = null;
     }
 
     const runId = message.run_id || null;
     const agent = runId !== null;
     const anchor = runId !== null && anchorOf.get(runId) === index;
+    const statusRowHere = runId !== null && rowAfter(runId) === index;
     if (
       !group ||
       group.authorId !== message.actor_id ||
@@ -250,19 +284,22 @@ export function groupMessages(
       });
     }
 
-    const run = anchor && runId ? runById.get(runId) : undefined;
+    const run = statusRowHere && runId ? runById.get(runId) : undefined;
     if (run) {
+      const first = messages[anchorOf.get(run.run_id) ?? index];
       day.items.push({
         kind: 'task',
         key: `task-${run.run_id}`,
         run,
-        title: taskTitle(message.body),
+        title: taskTitle(first.body),
         anchored: true,
       });
       placed.add(run.run_id);
       group = null;
     }
   });
+
+  numberSameMinuteRows(days);
 
   if (options.includeUnanchoredRuns) {
     const oldest = messages.length > 0 ? messageTime(messages[0].created_at).getTime() : null;
@@ -301,10 +338,44 @@ export function groupMessages(
   return days;
 }
 
+/**
+ * Gives each message row that shares its author (as a person or as their agent) and its minute
+ * with another row its place among them, in reading order (`sameMinute`). Their action names are
+ * otherwise identical ("Copy text of Bob Lee's message, 10:02 AM"), which a screen reader's
+ * button list cannot tell apart. A day never spans a minute, so rows are counted per day.
+ */
+function numberSameMinuteRows(days: TimelineDay[]): void {
+  for (const day of days) {
+    const byMinute = new Map<string, TimelineMessageEntry[]>();
+    for (const item of day.items) {
+      if (item.kind !== 'group') continue;
+      for (const entry of item.entries) {
+        if (entry.kind !== 'message') continue;
+        const minute = Math.floor(entry.time.getTime() / 60_000);
+        const key = `${item.authorId}\u0000${item.agent ? 'agent' : 'person'}\u0000${minute}`;
+        const rows = byMinute.get(key);
+        if (rows) rows.push(entry);
+        else byMinute.set(key, [entry]);
+      }
+    }
+    for (const rows of byMinute.values()) {
+      if (rows.length < 2) continue;
+      rows.forEach((entry, position) => {
+        entry.sameMinute = { index: position + 1, count: rows.length };
+      });
+    }
+  }
+}
+
 function sameEntry(a: TimelineGroupEntry, b: TimelineGroupEntry): boolean {
   if (a.key !== b.key || a.head !== b.head || a.time.getTime() !== b.time.getTime()) return false;
   if (a.kind === 'message' && b.kind === 'message')
-    return a.message === b.message && a.restrictedMarker === b.restrictedMarker;
+    return (
+      a.message === b.message &&
+      a.restrictedMarker === b.restrictedMarker &&
+      a.sameMinute?.index === b.sameMinute?.index &&
+      a.sameMinute?.count === b.sameMinute?.count
+    );
   if (a.kind === 'trace' && b.kind === 'trace')
     return (
       a.messages.length === b.messages.length &&

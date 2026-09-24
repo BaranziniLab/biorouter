@@ -16,7 +16,7 @@ import type { CrewMessage } from '../crewApi';
 import { timelineCopy } from './copy';
 import type { TimelineGroup, TimelineMessageEntry, TimelineTraceEntry } from './groupMessages';
 import { MessageBody } from './MessageBody';
-import { CopyIconButton, useTimelineCopy } from './TimelineCopy';
+import { CopyIconButton, useMenuCopy, useTimelineCopy } from './TimelineCopy';
 import { useTimeline } from './TimelineContext';
 import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
 
@@ -165,7 +165,8 @@ function GutterTime({ time, id }: { time: Date; id: string }) {
  * Copy text, then ⋯ → Copy text and Copy message ID. The ID lives only behind
  * this menu, and the menu never holds the ID alone: a whole menu for one
  * machine string reads as the message's only other action. Both controls are
- * named for the message they act on.
+ * named for the message they act on. A copy from the menu answers in the menu:
+ * the item reads "Copied" and the menu closes 600ms later (Q2-34).
  */
 function RowActions({
   message,
@@ -180,6 +181,7 @@ function RowActions({
 }) {
   const copy = useTimelineCopy();
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuCopy = useMenuCopy<'text' | 'id'>(copy, setMenuOpen);
   const moreName = timelineCopy.moreActionsFor(who, time);
   return (
     <div className="crew-row-actions" data-open={menuOpen ? 'true' : undefined}>
@@ -189,7 +191,7 @@ function RowActions({
         name={timelineCopy.copyTextOf(who, time)}
         tabIndex={tabIndex}
       />
-      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <DropdownMenu open={menuOpen} onOpenChange={menuCopy.onOpenChange}>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
@@ -209,11 +211,17 @@ function RowActions({
           <TooltipContent>{timelineCopy.moreActions}</TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => void copy(message.body)}>
-            {timelineCopy.copyText}
+          <DropdownMenuItem
+            data-crew-copy-state={menuCopy.state('text')}
+            onSelect={menuCopy.select('text', message.body)}
+          >
+            {menuCopy.label('text', timelineCopy.copyText)}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void copy(message.id)}>
-            {timelineCopy.copyMessageId}
+          <DropdownMenuItem
+            data-crew-copy-state={menuCopy.state('id')}
+            onSelect={menuCopy.select('id', message.id)}
+          >
+            {menuCopy.label('id', timelineCopy.copyMessageId)}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -235,6 +243,14 @@ export function MessageRow({
   const ownTime = useId();
   const timeId = entry.head ? ids.time : ownTime;
   const who = useAuthorLabel(group);
+  // Two rows of one author in one minute would read the same: each says which of them it is.
+  const when = entry.sameMinute
+    ? timelineCopy.timeInMinute(
+        shortTime(entry.time),
+        entry.sameMinute.index,
+        entry.sameMinute.count
+      )
+    : shortTime(entry.time);
   return (
     <div
       role="group"
@@ -266,7 +282,7 @@ export function MessageRow({
         message={message}
         tabIndex={activeRow === entry.key ? 0 : -1}
         who={who}
-        time={shortTime(entry.time)}
+        time={when}
       />
     </div>
   );

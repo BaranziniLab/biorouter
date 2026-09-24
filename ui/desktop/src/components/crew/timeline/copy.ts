@@ -25,13 +25,12 @@ export const timelineCopy = {
   introCreatedBy: ' created this channel.',
   introAddPeople: 'Add people',
   /**
-   * For a member who does not own the channel: why they may not see every channel, and who to
-   * ask. `owner` is `@username`; without one the first sentence stands alone.
+   * For anyone but the workspace's host: whom to ask for the channels they are not in. The
+   * sidebar already says that other channels appear once someone adds you, so this says only
+   * the next step (Q2-64). `host` is `@username`; without one there is nothing to say (`''`).
    */
-  introOtherChannels: (owner: string | null) =>
-    owner
-      ? `Only channels you’ve been added to appear here. Ask ${owner} to add you to others.`
-      : 'Only channels you’ve been added to appear here.',
+  introOtherChannels: (host: string | null) =>
+    host ? `Ask ${host} to add you to other channels.` : '',
 
   today: 'Today',
   yesterday: 'Yesterday',
@@ -51,6 +50,11 @@ export const timelineCopy = {
    * buttons never reads "Copy text, Copy text, …". `who` comes from `personLabel`.
    */
   copyTextOf: (who: string, time: string) => `Copy text of ${who}’s message, ${time}`,
+  /**
+   * The time part of a row's action names when the same author posted more than once that
+   * minute: "10:02 AM, 2 of 2", so no two buttons read the same (Q2-57).
+   */
+  timeInMinute: (time: string, index: number, count: number) => `${time}, ${index} of ${count}`,
   copyMessageId: 'Copy message ID',
   moreActions: 'More actions',
   moreActionsFor: (who: string, time: string) => `More actions for ${who}’s message, ${time}`,
@@ -75,6 +79,13 @@ export const timelineCopy = {
   /** Markdown code block chrome. */
   code: 'code',
   copyCode: 'Copy code',
+  /** A code block wide enough to scroll: its region's name, with its language when it has one. */
+  codeRegion: (language: string) => (language ? `Code: ${language}` : 'Code'),
+  /**
+   * A table wide enough to scroll: its region's name, from its header cells, so no two tables
+   * read the same (Q2-57). `headers` is the cells joined with ", ".
+   */
+  tableNamed: (headers: string) => (headers ? `Table: ${headers}` : 'Table'),
   /** A message image is never fetched; it is a link the person may choose to open. */
   image: 'Image',
   imageNamed: (alt: string) => `Image: ${alt}`,
@@ -92,7 +103,8 @@ export const timelineCopy = {
   taskStopAgain: 'Try stopping again',
   taskMoreActions: 'More task actions',
   taskCopyId: 'Copy task ID',
-  taskOpenHistory: 'Open chat history',
+  /** Goes to the chat history list; "Open" is the row's own way into the task's chat (Q2-62). */
+  taskOpenHistory: 'Show in chat history',
   taskCopyError: 'Copy error',
   /** The task row's accessible name, when the task's first line is not loaded. */
   taskRowLabel: 'Your agent’s task',

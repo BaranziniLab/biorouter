@@ -12,10 +12,11 @@ import { timelineCopy } from './copy';
  * "Ask my agent" here: the composer's button stays the only control with that
  * name, so a query for it is never ambiguous.
  *
- * Everyone else learns how the other channels appear: only channels someone
- * added you to are listed, so a `#methods` named in a post and missing from the
- * sidebar is not broken — and the owner is who to ask. (Crew lists no channel
- * to a non-member, so nothing here can name the ones you are not in.)
+ * Everyone but the host learns whom to ask for the other channels: "Ask
+ * @alice to add you to other channels." The sidebar already says that other
+ * channels appear once someone adds you, so this is only the next step, and it
+ * names the workspace's host, as the no-team state does (Q2-64). (Crew lists no
+ * channel to a non-member, so nothing here can name the ones you are not in.)
  *
  * While the host is still alone in the workspace, the setup checklist's one line — "No one else
  * has joined {workspace} yet." with **Invite people to {workspace}…** — follows (T-22): opening a
@@ -41,11 +42,9 @@ export function ChannelIntro({
 }) {
   const { openDialog } = useCrew();
   const owner = viewerId !== null && channel.owner_id === viewerId;
-  const ownerPerson = owner ? null : dir.byId(channel.owner_id);
-  const ownerHandle =
-    ownerPerson && !ownerPerson.isFormer && ownerPerson.username
-      ? isolate(`@${ownerPerson.username}`)
-      : null;
+  const host = dir.viewerIsHost ? null : dir.host;
+  const hostHandle = host && !host.isFormer && host.username ? isolate(`@${host.username}`) : null;
+  const askHost = timelineCopy.introOtherChannels(hostHandle);
   return (
     <div
       className="crew-channel-intro"
@@ -61,10 +60,8 @@ export function ChannelIntro({
         <PersonName person={channel.created_by} context="inline" dir={dir} />
         {timelineCopy.introCreatedBy}
       </p>
-      {!owner && (
-        <p className="crew-channel-intro-hint text-supporting text-text-muted">
-          {timelineCopy.introOtherChannels(ownerHandle)}
-        </p>
+      {askHost && (
+        <p className="crew-channel-intro-hint text-supporting text-text-muted">{askHost}</p>
       )}
       {owner && !channel.archived && (
         <Button

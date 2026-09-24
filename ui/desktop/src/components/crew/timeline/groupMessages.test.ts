@@ -309,7 +309,7 @@ describe('a channel streaming in, one message per frame', () => {
 });
 
 describe('task rows', () => {
-  it('anchors a run after its first message and continues its posts in a new group', () => {
+  it('puts a run’s row under its result, keeping the task and its result one group (Q2-62)', () => {
     const list = [
       message({ id: 'ask', actor_id: ID.bob, at: at(10, 0) }),
       message({
@@ -320,13 +320,65 @@ describe('task rows', () => {
         at: at(10, 1),
       }),
       message({ id: 'answer', actor_id: ID.alice, run_id: ID.run, body: 'Done.', at: at(10, 2) }),
+      message({ id: 'thanks', actor_id: ID.bob, at: at(10, 3) }),
     ];
     const days = groupMessages(list, options({ runs: [run()] }));
     const sequence = items(days).map((item) => item.kind);
     expect(sequence).toEqual(['group', 'group', 'task', 'group']);
     const task = items(days).find((item) => item.kind === 'task');
     expect(task).toMatchObject({ anchored: true, title: 'Plot counts by sample' });
-    expect(shape(days)).toEqual([['ask'], ['task'], ['answer']]);
+    expect(shape(days)).toEqual([['ask'], ['task', 'answer'], ['thanks']]);
+  });
+
+  it('puts a run’s row right after its post while it has no result, tool updates after it', () => {
+    const list = [
+      message({ id: 'task', actor_id: ID.alice, run_id: ID.run, body: 'Task: Sum', at: at(10, 1) }),
+      message({
+        id: 'step',
+        actor_id: ID.alice,
+        run_id: ID.run,
+        body: 'Using crew__request',
+        at: at(10, 2),
+      }),
+    ];
+    const days = groupMessages(list, options({ runs: [run()] }));
+    expect(items(days).map((item) => item.kind)).toEqual(['group', 'task', 'group']);
+    expect(shape(days)).toEqual([['task'], ['step']]);
+  });
+
+  it('puts "New" on the day’s rule when the first unread message is the day’s first (Q2-53)', () => {
+    const list = [
+      message({ id: 'old', at: at(9, 0, 21) }),
+      message({ id: 'first-today', at: at(9, 0) }),
+      message({ id: 'second-today', at: at(9, 1) }),
+    ];
+    const onRule = groupMessages(list, options({ newLineBeforeId: 'first-today' }));
+    expect(onRule[1].newOnRule).toBe(true);
+    expect(items(onRule).some((item) => item.kind === 'new')).toBe(false);
+
+    // Anywhere else in the day it is its own line.
+    const inDay = groupMessages(list, options({ newLineBeforeId: 'second-today' }));
+    expect(inDay[1].newOnRule).toBeUndefined();
+    expect(inDay[1].items.map((item) => item.kind)).toEqual(['group', 'new', 'group']);
+  });
+
+  it('numbers an author’s rows within one minute, so their action names differ (Q2-57)', () => {
+    const list = [
+      message({ id: 'a', at: new Date(2026, 8, 22, 10, 2, 5) }),
+      message({ id: 'b', at: new Date(2026, 8, 22, 10, 2, 40) }),
+      message({ id: 'c', at: new Date(2026, 8, 22, 10, 3, 1) }),
+      message({ id: 'd', actor_id: ID.carol, at: new Date(2026, 8, 22, 10, 3, 2) }),
+    ];
+    const days = groupMessages(list, options());
+    const entries = groups(days).flatMap((group) => group.entries);
+    const minute = (id: string) =>
+      entries.find((entry) => entry.kind === 'message' && entry.message.id === id) as {
+        sameMinute?: { index: number; count: number };
+      };
+    expect(minute('a').sameMinute).toEqual({ index: 1, count: 2 });
+    expect(minute('b').sameMinute).toEqual({ index: 2, count: 2 });
+    expect(minute('c').sameMinute).toBeUndefined();
+    expect(minute('d').sameMinute).toBeUndefined();
   });
 
   it('puts a run whose first message is not loaded at the end of the live log only', () => {

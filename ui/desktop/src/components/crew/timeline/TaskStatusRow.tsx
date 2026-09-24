@@ -7,6 +7,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
@@ -17,14 +18,19 @@ import { useCrew } from '../state/CrewControllerContext';
 import { runStatusPresentation, type RunStatusPresentation } from '../state/crewStatus';
 import { timelineCopy } from './copy';
 import type { TimelineTask } from './groupMessages';
-import { useTimelineCopy } from './TimelineCopy';
+import { useMenuCopy, useTimelineCopy } from './TimelineCopy';
 import { useTimeline } from './TimelineContext';
 
 /**
  * The viewer's own agent task, as a line in the log — not a card (design.md
  * D-17): a square agent tile, "Your agent · {status word}", the task's first
  * line muted beneath, the one inline action, a visible Stop while the task can
- * be stopped, and ⋯ (Copy task ID, Open chat history, Copy error).
+ * be stopped, and ⋯: Show in chat history, Copy error (when there is one), a
+ * separator, then Copy task ID — the person's actions first, the machine string
+ * last (Q2-62). A copy answers in the menu ("Copied", then it closes).
+ *
+ * It sits under the task's result, or under the task's post until a result
+ * lands, never between the two (`groupMessages`, Q2-62).
  *
  * - **Open and Review go to THIS task's own conversation**, `run.session_id`
  *   (baseline critique F-8: the old card opened a different chat). Crew
@@ -44,6 +50,7 @@ export function TaskStatusRow({ task }: { task: TimelineTask }) {
   const { readOnly, setActiveRow, registerTaskRow, highlightedRunId, onHighlightEnd } =
     useTimeline();
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuCopy = useMenuCopy<'error' | 'id'>(copy, setMenuOpen);
   const labelId = useId();
   const presentation = runStatusPresentation(run.status);
   const stopping = crew.isPending('run.cancel');
@@ -134,7 +141,7 @@ export function TaskStatusRow({ task }: { task: TimelineTask }) {
             {timelineCopy.taskStop}
           </Button>
         )}
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenu open={menuOpen} onOpenChange={menuCopy.onOpenChange}>
           <Tooltip>
             <TooltipTrigger asChild>
               <DropdownMenuTrigger asChild>
@@ -153,17 +160,24 @@ export function TaskStatusRow({ task }: { task: TimelineTask }) {
             <TooltipContent>{timelineCopy.taskMoreActions}</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => void copy(run.run_id)}>
-              {timelineCopy.taskCopyId}
-            </DropdownMenuItem>
             <DropdownMenuItem disabled={readOnly} onSelect={() => navigate('/sessions')}>
               {timelineCopy.taskOpenHistory}
             </DropdownMenuItem>
             {run.error && (
-              <DropdownMenuItem onSelect={() => void copy(run.error ?? '')}>
-                {timelineCopy.taskCopyError}
+              <DropdownMenuItem
+                data-crew-copy-state={menuCopy.state('error')}
+                onSelect={menuCopy.select('error', run.error)}
+              >
+                {menuCopy.label('error', timelineCopy.taskCopyError)}
               </DropdownMenuItem>
             )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              data-crew-copy-state={menuCopy.state('id')}
+              onSelect={menuCopy.select('id', run.run_id)}
+            >
+              {menuCopy.label('id', timelineCopy.taskCopyId)}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

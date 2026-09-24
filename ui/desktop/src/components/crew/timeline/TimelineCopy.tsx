@@ -106,6 +106,77 @@ export function useTimelineCopy(): TimelineCopyApi['copy'] {
 /** What a copy control shows: nothing yet, or the outcome of its last copy. */
 export type CopyOutcome = 'copied' | 'failed' | null;
 
+/** How long a menu stays open showing "Copied" before it closes itself (Q2-34). */
+export const MENU_COPY_CLOSE_MS = 600;
+
+/**
+ * Copy items that answer inside their own menu (Q2-34): the chosen item reads "Copied" and the
+ * menu stays open for {@link MENU_COPY_CLOSE_MS}, then closes; a refused copy reads "Couldn't
+ * copy" for {@link COPY_FEEDBACK_MS} and the menu stays, so the person can try again or select
+ * the text. A menu that closed on the click said nothing at all. `copy` announces the outcome
+ * where the menu's owner announces it; `setOpen` is the menu's own open state.
+ *
+ * Pass `onOpenChange` as the menu's, and `select(item, text)` as a copy item's `onSelect`.
+ */
+export function useMenuCopy<Item extends string>(
+  copy: (text: string) => Promise<boolean>,
+  setOpen: (open: boolean) => void
+) {
+  const [outcome, setOutcome] = useState<{ item: Item; copied: boolean } | null>(null);
+  const timer = useRef<number | null>(null);
+  const clearTimer = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  useEffect(() => clearTimer, [clearTimer]);
+
+  const run = useCallback(
+    async (item: Item, text: string) => {
+      const copied = await copy(text);
+      setOutcome({ item, copied });
+      clearTimer();
+      timer.current = window.setTimeout(
+        () => {
+          timer.current = null;
+          // The label keeps "Copied" while the menu fades out; opening it again resets it.
+          if (copied) setOpen(false);
+          else setOutcome(null);
+        },
+        copied ? MENU_COPY_CLOSE_MS : COPY_FEEDBACK_MS
+      );
+    },
+    [copy, setOpen, clearTimer]
+  );
+
+  const onOpenChange = useCallback(
+    (next: boolean) => {
+      clearTimer();
+      if (next) setOutcome(null);
+      setOpen(next);
+    },
+    [setOpen, clearTimer]
+  );
+
+  return {
+    onOpenChange,
+    /** A copy item's `onSelect`: keeps the menu open and copies. */
+    select: (item: Item, text: string) => (event: Event) => {
+      event.preventDefault();
+      void run(item, text);
+    },
+    /** What the item says: its own words, or the outcome of the copy it just made. */
+    label: (item: Item, idle: string) =>
+      outcome?.item === item
+        ? outcome.copied
+          ? timelineCopy.copied
+          : timelineCopy.copyFailedShort
+        : idle,
+    /** `data-crew-copy-state` for the item, while it shows an outcome. */
+    state: (item: Item): 'copied' | 'failed' | undefined =>
+      outcome?.item === item ? (outcome.copied ? 'copied' : 'failed') : undefined,
+  };
+}
+
 /** The outcome of this control's last copy, for two seconds. */
 export function useCopyOutcome(): [CopyOutcome, (text: string) => Promise<void>] {
   const copy = useTimelineCopy();

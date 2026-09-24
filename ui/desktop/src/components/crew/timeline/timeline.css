@@ -79,7 +79,29 @@
   padding: 2px 10px;
   border-radius: var(--radius-inner);
   background-color: var(--background-canvas);
-  box-shadow: var(--inset-hairline);
+  /* Its hairline, then a 4px ring of the canvas: riding over a line of text,
+     the words stop short of the pill instead of running into its edge (Q2-53). */
+  box-shadow:
+    var(--inset-hairline),
+    0 0 0 4px var(--background-canvas);
+}
+
+/* The New line on the day's own rule (Q2-53): the first unread message is the
+   day's first, so the rule turns the accent and carries "New" at its end, on
+   the canvas so the line stops short of it. Never sticky: only the pill rides
+   the top of the log. */
+.crew-day-rule[data-new='true'] {
+  position: relative;
+  background-color: var(--accent-bar);
+}
+
+.crew-day-rule-new {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  padding-inline-start: 8px;
+  background-color: var(--background-canvas);
+  transform: translateY(-50%);
 }
 
 /* ── The New line ────────────────────────────────────────────────────────── */
@@ -138,17 +160,15 @@
   align-items: flex-start;
 }
 
-/* An agent's post is prose — lists, tables, several paragraphs — so it takes
-   the 14/21 reading line (design.md's body role) where a person's short
-   messages keep the denser 14/20. Its gutter times keep level with it. */
-.crew-message-group[data-agent='true'] .crew-md,
-.crew-message-group[data-agent='true'] .crew-message-gutter-time {
+/* Every message body sits on the 14/21 reading line (design.md's body role),
+   a person's short messages as much as an agent's prose — lists, tables,
+   several paragraphs (Q2-58). The gutter times keep level with it. */
+.crew-md,
+.crew-message-gutter-time {
   line-height: 21px;
 }
 
-/* On the body's 20px line, so it reads level with the text beside it. */
 .crew-message-gutter-time {
-  line-height: var(--text-body--line-height);
   white-space: nowrap;
   opacity: 0;
   transition: opacity var(--dur-fast-min) var(--ease-out);
@@ -223,8 +243,12 @@
 }
 
 /* Right under the New line, the cluster would sit on its "New" label: it
-   drops inside the row instead. */
-.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions {
+   drops inside the row instead. The same under a day rule that carries "New". */
+.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions,
+.crew-day-label[data-new='true']
+  + .crew-message-group
+  > .crew-message-row:first-child
+  > .crew-row-actions {
   top: 4px;
 }
 
@@ -345,6 +369,7 @@
   tab-size: 2;
 }
 
+/* Only a box that scrolls is focusable (MessageBody), so only it ever shows this. */
 .crew-md-code-body:focus-visible,
 .crew-md-table-scroll:focus-visible {
   outline: none;
@@ -397,8 +422,10 @@
 
 /* Numbers line up in columns (design.md: tables are tabular), and the corners
    are rounded like a code block's. Rounded corners need the separate border
-   model — a collapsed table ignores its radius — so each cell draws only its
-   start and top edges, and the table draws the outside. */
+   model — a collapsed table ignores its radius — so each body cell draws only
+   its top edge, and the table draws the outside. Horizontal rules only, 11×16
+   cells, and a code span in a cell is plain mono, not a chip (design.md
+   §4.17, Q2-52). */
 .crew-md-table {
   border-collapse: separate;
   border-spacing: 0;
@@ -410,16 +437,29 @@
 }
 
 .crew-md-cell {
-  padding: 4px 10px;
+  padding: 11px 16px;
   border: 0;
-  border-inline-start: 1px solid var(--border-subtle);
   border-block-start: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: top;
+  /* Never inherit the body's `overflow-wrap: anywhere`: it split "Sample" into
+     "Sampl / e" once the pane narrowed the column. A table that is too wide
+     scrolls in its own region instead. */
+  overflow-wrap: normal;
 }
 
-.crew-md-cell:first-child {
-  border-inline-start: 0;
+/* Headers and every column after the first stay on one line — a number or a
+   short label is never broken to squeeze it in; the first column (names) may
+   still wrap between words. */
+.crew-md-cell[data-head='true'],
+.crew-md-cell:not(:first-child) {
+  white-space: nowrap;
+}
+
+.crew-md-cell .crew-md-code-inline {
+  padding: 0;
+  background-color: transparent;
+  overflow-wrap: normal;
 }
 
 /* A GFM table has exactly one header row, and it is the first. */

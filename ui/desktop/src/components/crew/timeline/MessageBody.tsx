@@ -1,6 +1,7 @@
 import {
   memo,
   useId,
+  useLayoutEffect,
   useMemo,
   useState,
   type CSSProperties,
@@ -47,6 +48,13 @@ import { CopyIconButton } from './TimelineCopy';
  *
  * A long body folds by the chat's rule (`utils/messageClamp.ts`): above ten
  * lines or 600 characters, behind "Show more" with its size stated.
+ *
+ * A table or a code block that is wider than the column scrolls sideways in its
+ * own box, and only then is that box a named, focusable region, so a keyboard
+ * can scroll it. One that fits is a plain box: every agent table used to be a
+ * Tab stop of its own, overflowing or not, which put ten stops between the log
+ * and the composer (Q2-12). A table's region is named for its header cells
+ * ("Table: Sample, od600_t0"), so two tables never share a name (Q2-57).
  */
 
 const REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [remarkGfm, remarkBreaks];
@@ -118,7 +126,34 @@ function fenceLanguage(code: HastLike | null): string {
   return language && /^[\w.+-]{1,32}$/.test(language) ? language : '';
 }
 
+/**
+ * Whether an element is wider inside than it is shown, now and after any resize of it or of its
+ * first child (the table or the code). Where there is no `ResizeObserver` (jsdom) it is measured
+ * once. The answer decides only whether the box is a scrollable region a keyboard can reach.
+ */
+function useOverflowsSideways<T extends HTMLElement>(): [(node: T | null) => void, boolean] {
+  const [node, setNode] = useState<T | null>(null);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    if (!node) return;
+    const measure = () => setOverflows(node.scrollWidth > node.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    return () => observer.disconnect();
+  }, [node]);
+  return [setNode, overflows];
+}
+
+/** The attributes that make a scrolling box a region a keyboard can reach, when it scrolls. */
+function scrollRegion(overflows: boolean, name: string) {
+  return overflows ? { role: 'region', 'aria-label': name, tabIndex: 0 } : {};
+}
+
 function CodeBlock({ text, language }: { text: string; language: string }) {
+  const [measure, overflows] = useOverflowsSideways<HTMLPreElement>();
   return (
     <div className="crew-md-code">
       <div className="crew-md-code-head">
@@ -127,9 +162,40 @@ function CodeBlock({ text, language }: { text: string; language: string }) {
         </span>
         <CopyIconButton text={text} label={timelineCopy.copyCode} />
       </div>
-      <pre className="crew-md-code-body" tabIndex={0}>
+      <pre
+        ref={measure}
+        className="crew-md-code-body"
+        {...scrollRegion(overflows, timelineCopy.codeRegion(language))}
+      >
         <code>{text}</code>
       </pre>
+    </div>
+  );
+}
+
+/** The text of a table's header cells, from its markdown tree. */
+function headerCells(node: unknown): string[] {
+  const cells: string[] = [];
+  const visit = (current: unknown) => {
+    if (!current || typeof current !== 'object') return;
+    const element = current as HastLike;
+    if (element.type === 'element' && element.tagName === 'th') {
+      const text = hastText(element).replace(/\s+/g, ' ').trim();
+      if (text) cells.push(text);
+      return;
+    }
+    if (Array.isArray(element.children)) element.children.forEach(visit);
+  };
+  visit(node);
+  return cells;
+}
+
+function TableScroll({ node, children }: { node: unknown; children?: ReactNode }) {
+  const [measure, overflows] = useOverflowsSideways<HTMLDivElement>();
+  const name = timelineCopy.tableNamed(headerCells(node).join(', '));
+  return (
+    <div ref={measure} className="crew-md-table-scroll" {...scrollRegion(overflows, name)}>
+      <table className="crew-md-table">{children}</table>
     </div>
   );
 }
@@ -219,11 +285,7 @@ const COMPONENTS: Components = {
   ),
   blockquote: ({ children }) => <blockquote className="crew-md-quote">{children}</blockquote>,
   hr: () => <hr className="crew-md-rule" />,
-  table: ({ children }) => (
-    <div className="crew-md-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
-      <table className="crew-md-table">{children}</table>
-    </div>
-  ),
+  table: ({ node, children }) => <TableScroll node={node}>{children}</TableScroll>,
   th: ({ children, style }) => (
     <th className="crew-md-cell" data-head="true" style={style}>
       {children}

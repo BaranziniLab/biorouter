@@ -25,6 +25,20 @@ import {
 } from './timelineTestUtils';
 import { AUTO_READ_DWELL_MS, AUTO_READ_MIN_INTERVAL_MS } from './useAutoMarkRead';
 import { OPENING_QUIET_MS, OPENING_STALL_MS } from './useOpening';
+import { ChannelHeader } from '../channel/ChannelHeader';
+import { channelHeaderCopy } from '../channel/headerCopy';
+import { Composer } from '../composer/Composer';
+
+// The composer's upload hook lists this channel's transfers; nothing here uploads.
+vi.mock('../crewTransfers', () => ({
+  beginTransfer: vi.fn(),
+  listTransfers: vi.fn(async () => []),
+  pauseTransfer: vi.fn(),
+  resumeTransfer: vi.fn(),
+  forgetTransfer: vi.fn(),
+  previewAttachment: vi.fn(),
+  clearPublishedTransfers: vi.fn(),
+}));
 
 /**
  * The timeline against a stand-in controller (ui-redesign-spec, "The timeline"
@@ -103,7 +117,7 @@ describe('the channel’s start', () => {
     expect(screen.getAllByRole('button', { name: timelineCopy.introAddPeople })).toHaveLength(1);
   });
 
-  it('tells a member how other channels appear, and whom to ask (T-28)', () => {
+  it('tells a member only whom to ask for other channels: the host (T-28, Q2-64)', () => {
     const member = makeController({
       snapshot: snapshotFor({
         actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
@@ -111,29 +125,38 @@ describe('the channel’s start', () => {
     });
     renderWithController(<Timeline />, member);
     expect(
-      screen.getByText(
-        'Only channels you’ve been added to appear here. Ask @alice to add you to others.'
-      )
+      screen.getByText('Ask @alice to add you to other channels.', { exact: true })
     ).toBeInTheDocument();
-  });
-
-  it('does not tell the owner to ask themselves', () => {
-    renderWithController(<Timeline />, makeController());
-    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+    // The sidebar already says how other channels appear; the intro does not repeat it.
     expect(screen.queryByText(/Only channels you’ve been added to/)).toBeNull();
   });
 
-  it('names no owner it cannot name, and never an ID', () => {
+  it('names the host, not the channel’s owner, and tells the host nothing', () => {
     const member = makeController({
       snapshot: snapshotFor({
+        actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+      }),
+      channel: { ...channel, owner_id: ID.carol, created_by: ID.carol },
+    });
+    const { unmount } = renderWithController(<Timeline />, member);
+    expect(screen.getByText('Ask @alice to add you to other channels.')).toBeInTheDocument();
+    unmount();
+    renderWithController(<Timeline />, makeController());
+    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+    expect(screen.queryByText(/add you to other channels/)).toBeNull();
+  });
+
+  it('names no host it cannot name, and never an ID', () => {
+    const member = makeController({
+      snapshot: snapshotFor({
+        workspace: { id: ID.workspace, host_uid: 4242, mode: 'private', policy_epoch: 1 },
         actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
       }),
       channel: { ...channel, owner_id: ID.gone },
     });
     renderWithController(<Timeline />, member);
-    expect(
-      screen.getByText('Only channels you’ve been added to appear here.', { exact: true })
-    ).toBeInTheDocument();
+    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+    expect(screen.queryByText(/add you to other channels/)).toBeNull();
     expect(timelineRoot().innerHTML).not.toMatch(MACHINE_STRING);
   });
 
@@ -163,7 +186,7 @@ describe('the channel’s start', () => {
 });
 
 describe('the log', () => {
-  it('is a focusable log named for the channel, silent and busy until its messages have arrived, then polite', () => {
+  it('is a focusable log named for the channel, silent and busy until its messages have arrived, then polite (as a log is)', () => {
     vi.useFakeTimers();
     renderWithController(<Timeline />, makeController({ messages: [message()] }));
     const log = screen.getByRole('log', { name: 'general messages' });
@@ -173,12 +196,14 @@ describe('the log', () => {
     expect(log).toHaveAttribute('aria-busy', 'true');
     openFully();
     expect(log).not.toHaveAttribute('aria-busy');
-    // Polite once a frame has been drawn with the opening in it, not in the same commit.
+    // Polite once a frame has been drawn with the opening in it, not in the same commit. Polite
+    // is the log role's own default, so the attribute goes rather than reading "polite": a modal's
+    // `hideOthers` keeps any element carrying `aria-live` in the tree behind it (Q2-13).
     expect(log).toHaveAttribute('aria-live', 'off');
     act(() => {
       vi.advanceTimersByTime(64);
     });
-    expect(log).toHaveAttribute('aria-live', 'polite');
+    expect(log).not.toHaveAttribute('aria-live');
     expect(timelineRoot().querySelector('.biorouter-scroll-fade-top')).not.toBeNull();
   });
 
@@ -233,6 +258,28 @@ describe('the log', () => {
       .map((button) => button.getAttribute('aria-label'));
     expect(new Set(more).size).toBe(3);
     expect(more[0]).toBe(timelineCopy.moreActionsFor('Bob Lee', '10:02 AM'));
+  });
+
+  it('tells two rows of one minute apart in their action names (Q2-57)', () => {
+    const messages = [
+      message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2, 5) }),
+      message({ id: 'b', body: 'Plot next?', at: new Date(2026, 8, 22, 10, 2, 40) }),
+    ];
+    renderWithController(<Timeline />, makeController({ messages }));
+    const copies = screen
+      .getAllByRole('button', { name: /^Copy text/, hidden: true })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(copies).toEqual([
+      'Copy text of Bob Lee’s message, 10:02 AM, 1 of 2',
+      'Copy text of Bob Lee’s message, 10:02 AM, 2 of 2',
+    ]);
+    const more = screen
+      .getAllByRole('button', { name: /^More actions/, hidden: true })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(more).toEqual([
+      'More actions for Bob Lee’s message, 10:02 AM, 1 of 2',
+      'More actions for Bob Lee’s message, 10:02 AM, 2 of 2',
+    ]);
   });
 
   it('groups a person’s messages under one head with a short time and the full date in a tooltip', async () => {
@@ -334,6 +381,32 @@ describe('the log', () => {
     expect(within(newLine).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
     expect(newLine.outerHTML).not.toMatch(/danger/);
     // The line sits right before the unread message.
+    const fresh = screen.getByText('fresh');
+    expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('puts “New” on the day’s rule when the first unread message is the day’s first (Q2-53)', () => {
+    const messages = [
+      message({ id: 'a', sequence: 's1', at: new Date(2025, 5, 3, 9, 0) }),
+      message({ id: 'b', sequence: 's2', at: new Date(2026, 8, 22, 9, 0), body: 'fresh' }),
+    ];
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages,
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 's1' },
+          unread: { [ID.general]: 1 },
+        }),
+      })
+    );
+    // One rule, not two 30px apart: the day's own, in accent, named as the New line.
+    const newLine = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(newLine).toHaveClass('crew-day-rule');
+    expect(newLine).toHaveAttribute('data-new', 'true');
+    expect(within(newLine).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
+    expect(document.querySelector('.crew-new-divider')).toBeNull();
+    expect(screen.getAllByRole('separator', { name: timelineCopy.newLineLabel })).toHaveLength(1);
     const fresh = screen.getByText('fresh');
     expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -486,6 +559,21 @@ describe('copying', () => {
     // Never silent where the press happened (T-56).
     expect(copyButton()).toHaveAttribute('data-copy-outcome', 'failed');
     expect(await screen.findByRole('tooltip')).toHaveTextContent(timelineCopy.copyFailedShort);
+  });
+
+  it('answers a copy from ⋯ in the menu itself, then closes it (Q2-34)', async () => {
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'msg-9', body: 'Plot it.' })] })
+    );
+    const { user, writeText } = setupWithClipboard();
+    await user.click(moreButton());
+    await user.click(await screen.findByRole('menuitem', { name: timelineCopy.copyMessageId }));
+    expect(writeText).toHaveBeenLastCalledWith('msg-9');
+    const item = await screen.findByRole('menuitem', { name: timelineCopy.copied });
+    expect(item).toHaveAttribute('data-crew-copy-state', 'copied');
+    await waitFor(() => expect(liveStatus()).toHaveTextContent(timelineCopy.copied));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
   });
 
   it('never gives ⋯ a menu that holds only the message ID', async () => {
@@ -668,7 +756,7 @@ describe('older history', () => {
     const controller = makeController({ messages: live });
     const view = renderWithController(<Timeline />, controller);
     const log = screen.getByRole('log');
-    await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'));
+    await waitFor(() => expect(log).not.toHaveAttribute('aria-live'));
     expect(log).not.toHaveAttribute('aria-busy');
 
     // The boundary moves first, with the previous page still drawn: busy and silent.
@@ -703,7 +791,7 @@ describe('older history', () => {
     expect(seen.some((record) => record.addedNodes.length > 0)).toBe(true);
     expect(log).toHaveAttribute('aria-live', 'off');
     expect(log).not.toHaveAttribute('aria-busy');
-    await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'));
+    await waitFor(() => expect(log).not.toHaveAttribute('aria-live'));
     seen.push(...mutations.takeRecords());
     mutations.disconnect();
     // Polite again only after that frame, in a change that inserts nothing of its own.
@@ -1374,6 +1462,82 @@ describe('keyboard', () => {
   });
 });
 
+describe('the Tab order through a channel (Q2-12)', () => {
+  const TABLE = '| Sample | od600_t0 |\n|---|---|\n| WT-1 | 0.05 |';
+  const tables = [
+    message({ id: 't1', body: TABLE, at: new Date(2026, 8, 22, 10, 0) }),
+    message({ id: 't2', body: TABLE, actor_id: ID.carol, at: new Date(2026, 8, 22, 10, 1) }),
+    message({ id: 't3', body: TABLE, at: new Date(2026, 8, 22, 10, 9) }),
+  ];
+
+  const channelTitle = () =>
+    screen.getByRole('button', { name: channelHeaderCopy.menuName('general') });
+
+  async function tabsToComposer(user: ReturnType<typeof userEvent.setup>) {
+    const composer = screen.getByRole('textbox', { name: 'Message #general' });
+    let stops = 0;
+    while (document.activeElement !== composer && stops < 20) {
+      await user.tab();
+      stops += 1;
+    }
+    expect(document.activeElement).toBe(composer);
+    return stops;
+  }
+
+  it('goes from the header to the composer in at most five stops past three tables that fit', async () => {
+    renderWithController(
+      <>
+        <ChannelHeader />
+        <Timeline />
+        <Composer />
+      </>,
+      makeController({ messages: tables })
+    );
+    const user = userEvent.setup(pointerAnywhere);
+    // From the header's first stop, the channel's name: its badge, the member stack, the details
+    // toggle, the log, then the composer. Every table used to add a stop of its own.
+    act(() => channelTitle().focus());
+    expect(await tabsToComposer(user)).toBeLessThanOrEqual(5);
+    // A table that fits is not a stop of its own.
+    expect(document.querySelectorAll('.crew-md-table-scroll[tabindex]')).toHaveLength(0);
+  });
+
+  it('takes a used row’s actions back out of the Tab order once focus leaves the log', async () => {
+    renderWithController(
+      <>
+        <ChannelHeader />
+        <Timeline />
+        <Composer />
+      </>,
+      makeController({ messages: tables })
+    );
+    const user = userEvent.setup(pointerAnywhere);
+    const log = screen.getByRole('log');
+    const copyButtons = () => screen.getAllByRole('button', { name: /^Copy text of / });
+    // A person arrows onto a message: its actions join the Tab order…
+    act(() => log.focus());
+    fireEvent.keyDown(log, { key: 'ArrowUp' });
+    expect(copyButtons().some((button) => button.tabIndex === 0)).toBe(true);
+    // …and focus moves on, out of the log.
+    act(() => channelTitle().focus());
+    expect(copyButtons().every((button) => button.tabIndex === -1)).toBe(true);
+    // So a Tab and some typing can never land on Copy text again.
+    expect(await tabsToComposer(user)).toBeLessThanOrEqual(5);
+  });
+
+  it('keeps the row’s actions in the Tab order while focus moves among them', () => {
+    renderWithController(<Timeline />, makeController({ messages: tables }));
+    const log = screen.getByRole('log');
+    act(() => log.focus());
+    fireEvent.keyDown(log, { key: 'ArrowUp' });
+    const active = screen
+      .getAllByRole('button', { name: /^Copy text of / })
+      .find((button) => button.tabIndex === 0) as HTMLElement;
+    act(() => active.focus());
+    expect(active.tabIndex).toBe(0);
+  });
+});
+
 describe('a read-only view (re-verification)', () => {
   it('draws the given view dimmed, with nothing that acts', () => {
     const controller = makeController({ snapshot: null, channel: null });
@@ -1434,12 +1598,30 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     return css.slice(at, css.indexOf('}', at));
   };
 
-  it('keeps the hover toolbar off the New label (T-56)', () => {
-    expect(
-      rule(
-        '.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions'
-      )
-    ).toMatch(/top: 4px;/);
+  it('keeps the hover toolbar off the New label, on its own line or on the day rule (T-56)', () => {
+    // Both selectors share one rule; the stylesheet may wrap them across lines.
+    const flat = css.replace(/\s+/g, ' ');
+    expect(flat).toContain(
+      ".crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions, .crew-day-label[data-new='true'] + .crew-message-group > .crew-message-row:first-child > .crew-row-actions { top: 4px; }"
+    );
+  });
+
+  it('rings the sticky day pill with the canvas, and never makes the New line sticky (Q2-53)', () => {
+    expect(rule('.crew-day-pill')).toMatch(/0 0 0 4px var\(--background-canvas\)/);
+    expect(rule('.crew-new-divider')).not.toMatch(/sticky/);
+    expect(rule(".crew-day-rule[data-new='true']")).not.toMatch(/sticky/);
+    expect(rule(".crew-day-rule[data-new='true']")).toMatch(/var\(--accent-bar\)/);
+  });
+
+  it('never splits a table heading or a number, and draws horizontal rules only (Q2-52)', () => {
+    const cell = rule('.crew-md-cell');
+    expect(cell).toMatch(/overflow-wrap: normal;/);
+    expect(cell).toMatch(/padding: 11px 16px;/);
+    expect(cell).not.toMatch(/border-inline-start/);
+    expect(rule(".crew-md-cell[data-head='true'],\n.crew-md-cell:not(:first-child)")).toMatch(
+      /white-space: nowrap;/
+    );
+    expect(rule('.crew-md-cell .crew-md-code-inline')).toMatch(/background-color: transparent;/);
   });
 
   it('gives tables tabular numbers and the element radius (T-62)', () => {
@@ -1451,9 +1633,7 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     expect(table).toMatch(/overflow: hidden;/);
   });
 
-  it('sets an agent’s post on the 14/21 reading line (T-62)', () => {
-    expect(css).toMatch(
-      /\.crew-message-group\[data-agent='true'\] \.crew-md,\s*\.crew-message-group\[data-agent='true'\] \.crew-message-gutter-time \{\s*line-height: 21px;/
-    );
+  it('sets every message body on the 14/21 reading line (T-62, Q2-58)', () => {
+    expect(css).toMatch(/\.crew-md,\s*\.crew-message-gutter-time \{\s*line-height: 21px;/);
   });
 });

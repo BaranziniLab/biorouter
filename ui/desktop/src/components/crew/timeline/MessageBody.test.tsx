@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CLAMP_CHAR_THRESHOLD } from '../../../utils/messageClamp';
@@ -105,10 +105,70 @@ describe('markdown', () => {
     expect(writeText).toHaveBeenCalledWith('sum(x)\nmean(x)');
   });
 
-  it('renders a table in a scrollable region', () => {
-    render(<MessageBody body={'| a | b |\n|---|---|\n| 1 | 2 |'} />);
-    expect(screen.getByRole('region', { name: 'Scrollable table' })).toBeInTheDocument();
-    expect(screen.getAllByRole('cell')).toHaveLength(2);
+  describe('tables and code blocks: a Tab stop only when they scroll (Q2-12, Q2-57)', () => {
+    /** Makes every element report `scrollWidth` wider than `clientWidth` while `wide` holds. */
+    function layoutWidths(wide: boolean) {
+      vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(wide ? 900 : 400);
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+    }
+    const TABLE = '| Sample | od600_t0 |\n|---|---|\n| WT-1 | 0.05 |';
+
+    it('draws a table that fits as a plain box: no region, no Tab stop', () => {
+      layoutWidths(false);
+      const { container } = render(<MessageBody body={TABLE} />);
+      expect(screen.queryByRole('region')).toBeNull();
+      const box = container.querySelector('.crew-md-table-scroll') as HTMLElement;
+      expect(box).not.toHaveAttribute('tabindex');
+      expect(box).not.toHaveAttribute('aria-label');
+      expect(screen.getAllByRole('cell')).toHaveLength(2);
+    });
+
+    it('makes a table that scrolls a focusable region named for its header cells', () => {
+      layoutWidths(true);
+      render(<MessageBody body={TABLE} />);
+      const region = screen.getByRole('region', { name: 'Table: Sample, od600_t0' });
+      expect(region).toHaveAttribute('tabindex', '0');
+      expect(region).toHaveClass('crew-md-table-scroll');
+      expect(timelineCopy.tableNamed('Sample, od600_t0')).toBe('Table: Sample, od600_t0');
+    });
+
+    it('re-measures when the column changes width', () => {
+      let observed: (() => void) | null = null;
+      class Observer {
+        constructor(callback: () => void) {
+          observed = callback;
+        }
+        observe() {}
+        disconnect() {}
+      }
+      vi.stubGlobal('ResizeObserver', Observer);
+      try {
+        const wide = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(400);
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+        render(<MessageBody body={TABLE} />);
+        expect(screen.queryByRole('region')).toBeNull();
+        // The details pane opens and the column narrows: now it scrolls.
+        wide.mockReturnValue(900);
+        act(() => observed?.());
+        expect(screen.getByRole('region', { name: 'Table: Sample, od600_t0' })).toHaveAttribute(
+          'tabindex',
+          '0'
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('does the same for a code block, named for its language', () => {
+      layoutWidths(false);
+      const { container, unmount } = render(<MessageBody body={'```r\nsum(x)\n```'} />);
+      expect(container.querySelector('pre')).not.toHaveAttribute('tabindex');
+      expect(screen.queryByRole('region')).toBeNull();
+      unmount();
+      layoutWidths(true);
+      render(<MessageBody body={'```r\nsum(x)\n```'} />);
+      expect(screen.getByRole('region', { name: 'Code: r' })).toHaveAttribute('tabindex', '0');
+    });
   });
 
   it('accepts only absolute http(s) and mailto hrefs', () => {

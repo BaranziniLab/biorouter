@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactNode,
@@ -384,6 +385,11 @@ function ChannelTimeline({
   // out as a flood of messages. It turns polite only after a frame has been
   // drawn with the page in it, so the insertions that opened it are already
   // behind it when the region starts listening.
+  //
+  // Once live, the attribute is left off rather than set to "polite": `role="log"` is polite by
+  // itself, and a modal's `hideOthers` (aria-hidden) keeps every element that carries an
+  // `aria-live` attribute, and its ancestors, in the accessibility tree. With the attribute on,
+  // every Crew dialog left the whole log and its buttons reachable behind it (Q2-13).
   const [liveKey, setLiveKey] = useState<string | null>(null);
   useEffect(() => {
     if (!opened) return;
@@ -428,11 +434,13 @@ function ChannelTimeline({
           channelRestricted: channel.classification === 'restricted',
           newLineBeforeId: newLine.id,
           runs,
-          includeUnanchoredRuns: historyBefore === null,
+          // Not while the page loads: a task row with nothing under it would stand above the
+          // skeleton, and then jump below the messages when they land (Q2-62).
+          includeUnanchoredRuns: historyBefore === null && pageReady,
           now,
         })
       ),
-    [messages, channel.id, channel.classification, newLine.id, runs, historyBefore, now]
+    [messages, channel.id, channel.classification, newLine.id, runs, historyBefore, pageReady, now]
   );
   useEffect(() => {
     drawnDays.current = days;
@@ -595,7 +603,16 @@ function ChannelTimeline({
   const showPending = pendingPost !== null && !readOnly && historyBefore === null;
 
   // ── Keyboard: ↑/↓ move between rows, Home/End to the ends ────────────────
+  // The active row's actions are Tab stops only while focus is inside the log. Once focus leaves
+  // it (Tab onward, a click elsewhere, the window losing focus), no row is active and Tab from the
+  // header goes straight through the log to the composer: a row focused once used to keep its
+  // Copy text in the Tab order, so a person typing after a Tab pressed it with a space (Q2-12).
   const [activeRow, setActiveRow] = useState<string | null>(null);
+  const onLogBlur = (event: FocusEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && event.currentTarget.contains(next)) return;
+    setActiveRow(null);
+  };
   const onLogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const log = event.currentTarget;
@@ -677,13 +694,14 @@ function ChannelTimeline({
             <div className="crew-timeline-column max-w-measure-chat mx-auto">
               <div
                 role="log"
-                aria-live={live ? 'polite' : 'off'}
+                aria-live={live ? undefined : 'off'}
                 aria-label={timelineCopy.logLabel(slug)}
                 aria-description={timelineCopy.logDescription}
                 aria-busy={opened && !loadingPage ? undefined : 'true'}
                 tabIndex={0}
                 className="crew-timeline-log biorouter-focus-region"
                 onKeyDown={onLogKeyDown}
+                onBlur={onLogBlur}
               >
                 {hasOlder && (
                   <HistorySentinel
@@ -714,7 +732,7 @@ function ChannelTimeline({
                 )}
                 {days.map((day) => (
                   <section key={day.key} className="crew-day">
-                    {day.label && <DayDivider label={day.label} />}
+                    {day.label && <DayDivider label={day.label} newOnRule={day.newOnRule} />}
                     {day.items.map((item) => (
                       <TimelineEntry key={item.key} item={item} />
                     ))}

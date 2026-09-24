@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { identityCopy } from '../identity';
@@ -135,7 +135,7 @@ describe('task status rows', () => {
     expect(screen.getByRole('button', { name: timelineCopy.taskStopAgain })).toBeDisabled();
   });
 
-  it('keeps the task ID, chat history and the error behind ⋯', async () => {
+  it('keeps chat history, the error and then the task ID behind ⋯, in that order (Q2-62)', async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText');
     const { row } = renderTask('failed', { error: 'Model refused the request.' });
@@ -143,12 +143,27 @@ describe('task status rows', () => {
     expect(row).not.toHaveTextContent('Model refused');
 
     await user.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
-    await user.click(await screen.findByRole('menuitem', { name: timelineCopy.taskCopyId }));
+    const menu = await screen.findByRole('menu');
+    // The person's actions first, a separator, then the machine string.
+    expect(
+      Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map((node) =>
+        node.getAttribute('role') === 'separator' ? '—' : node.textContent
+      )
+    ).toEqual(['Show in chat history', timelineCopy.taskCopyError, '—', timelineCopy.taskCopyId]);
+
+    // A copy answers in the menu, which then closes by itself.
+    await user.click(screen.getByRole('menuitem', { name: timelineCopy.taskCopyId }));
     expect(writeText).toHaveBeenLastCalledWith(ID.run);
+    expect(await screen.findByRole('menuitem', { name: timelineCopy.copied })).toHaveAttribute(
+      'data-crew-copy-state',
+      'copied'
+    );
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     await user.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
     await user.click(await screen.findByRole('menuitem', { name: timelineCopy.taskCopyError }));
     expect(writeText).toHaveBeenLastCalledWith('Model refused the request.');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     await user.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
     await user.click(await screen.findByRole('menuitem', { name: timelineCopy.taskOpenHistory }));
@@ -170,6 +185,48 @@ describe('task status rows', () => {
     running.unmount();
     const done = renderTask('completed');
     expect(within(done.row).getByText('Done')).not.toHaveClass('crew-task-running');
+  });
+
+  it('sits under the task’s result, not between the task and its result (Q2-62)', () => {
+    const controller = makeController({
+      messages: [
+        message({ id: 'task', actor_id: ID.alice, run_id: ID.run, body: 'Task: Sum the columns' }),
+        message({ id: 'step', actor_id: ID.alice, run_id: ID.run, body: 'Using crew__request' }),
+        message({ id: 'result', actor_id: ID.alice, run_id: ID.run, body: 'The totals are 1.80.' }),
+      ],
+      runs: [run({ status: 'completed' })],
+    });
+    renderWithController(<Timeline />, controller);
+    const row = screen.getByRole('group', { name: /^Your agent · / });
+    const result = screen.getByText('The totals are 1.80.');
+    expect(result.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The task keeps its title from its own post.
+    expect(within(row).getByText('Sum the columns')).toBeInTheDocument();
+  });
+
+  it('sits with the task’s post while there is no result yet', () => {
+    const controller = makeController({
+      messages: [
+        message({ id: 'task', actor_id: ID.alice, run_id: ID.run, body: 'Task: Sum the columns' }),
+        message({ id: 'later', actor_id: ID.bob, body: 'Thanks!' }),
+      ],
+      runs: [run({ status: 'running' })],
+    });
+    renderWithController(<Timeline />, controller);
+    const row = screen.getByRole('group', { name: /^Your agent · / });
+    const later = screen.getByText('Thanks!');
+    expect(row.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('never stands above the loading skeleton (Q2-62)', () => {
+    const controller = makeController({
+      messages: [],
+      messagesLoaded: false,
+      runs: [run({ status: 'running' })],
+    });
+    renderWithController(<Timeline />, controller);
+    expect(screen.queryByRole('group', { name: /^Your agent · / })).toBeNull();
+    expect(document.querySelector('.crew-timeline-skeleton')).not.toBeNull();
   });
 
   it('shows a task whose request is not loaded at the end of the log, without a title', () => {
