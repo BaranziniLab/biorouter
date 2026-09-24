@@ -180,7 +180,9 @@ export function useCrewGrants(
   options: UseCrewGrantsOptions = {}
 ): CrewGrantsView {
   const enabled = options.enabled ?? true;
-  const scope = options.cacheScope;
+  // Read through a ref: a scope that is a new object every render must not re-read the list.
+  const scopeRef = useRef(options.cacheScope);
+  scopeRef.current = options.cacheScope;
   const ids = useMemo(
     () => [...new Set(connectionIds.filter((id) => typeof id === 'string' && id))].sort(),
     // The joined key is the identity: a new array with the same ids must not refetch.
@@ -189,7 +191,9 @@ export function useCrewGrants(
   );
   const key = ids.join('\n');
   const [nonce, setNonce] = useState(0);
-  const [state, setState] = useState<GrantsState>(() => remembered(scope, key) ?? IDLE);
+  const [state, setState] = useState<GrantsState>(
+    () => remembered(options.cacheScope, key) ?? IDLE
+  );
   // Bumped by an announcement so the unconfirmed marks re-render even when the list is unchanged.
   const [, setMarks] = useState(0);
   const request = useRef(0);
@@ -213,6 +217,7 @@ export function useCrewGrants(
       return;
     }
     const controller = new AbortController();
+    const scope = scopeRef.current;
     // A refetch of the same set keeps its rows; a new set starts from the scope's last answer for
     // it, else from nothing.
     setState((previous) =>
@@ -247,7 +252,7 @@ export function useCrewGrants(
       }
     );
     return () => controller.abort();
-  }, [enabled, key, ids, nonce, scope]);
+  }, [enabled, key, ids, nonce]);
 
   const revoke = useCallback(
     (connectionId: string, sessionId: string) => revokeGrant(connectionId, sessionId),
