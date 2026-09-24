@@ -150,7 +150,11 @@ def observe(cli, wrapper):
                                text=True, encoding="utf-8", errors="replace",
                                creationflags=CREATE_NO_WINDOW, env=env)
     lines = queue.Queue()
-    threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
+    def read_lines():
+        for line in process.stdout:
+            lines.put(line)
+        lines.put(None)
+    threading.Thread(target=read_lines, daemon=True).start()
     replies = {}
     try:
         for message in messages:
@@ -167,6 +171,8 @@ def observe(cli, wrapper):
                     line = lines.get(timeout=remaining)
                 except queue.Empty as error:
                     raise AssertionError(f"packaged MCP request {message['id']} timed out") from error
+                if line is None:
+                    raise AssertionError(f"packaged MCP exited before response {message['id']}")
                 reply = json.loads(line)
                 if "id" in reply:
                     replies[reply["id"]] = reply
