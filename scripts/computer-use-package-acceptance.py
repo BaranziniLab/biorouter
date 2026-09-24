@@ -317,6 +317,8 @@ def verify(target):
                 if platform == 'win32':
                     run([PYTHON, 'scripts/test-computer-use-windows-fixture.py', helper,
                          '--report', OUTPUT / 'windows-installed-fixture.json'], timeout=180)
+                    run([PYTHON, 'scripts/test-computer-use-packaged-windows-console.py',
+                         '--cli', cli, '--report', OUTPUT / 'windows-packaged-console.json'], timeout=180)
                     local = directory / 'isolated-user'
                     env = dict(os.environ, LOCALAPPDATA=str(local), BIOROUTER_DISABLE_KEYRING='true',
                                BIOROUTER_PATH_ROOT=str(directory / 'isolated-config'))
