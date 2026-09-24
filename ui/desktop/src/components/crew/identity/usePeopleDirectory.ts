@@ -5,6 +5,7 @@ import type {
   CrewPeopleMap,
   CrewPerson,
   CrewPrincipalInput,
+  DaemonPersonLabel,
   DaemonPersonLabels,
   PeopleSnapshotInput,
 } from './types';
@@ -65,6 +66,18 @@ function readPrincipal(value: unknown, former: boolean): RawEntry | null {
 }
 
 const EMPTY: readonly CrewPerson[] = Object.freeze([]);
+
+/** The daemon's collision verdict for one principal, when its label carries a boolean one. */
+function daemonCollision(
+  labels: DaemonPersonLabels | null | undefined,
+  principalId: string
+): boolean | undefined {
+  if (!labels || typeof labels !== 'object') return undefined;
+  const label: unknown = (labels as Record<string, unknown>)[principalId];
+  if (!label || typeof label !== 'object') return undefined;
+  const collides = (label as DaemonPersonLabel).collides;
+  return typeof collides === 'boolean' ? collides : undefined;
+}
 
 function asArray<T>(value: readonly T[] | null | undefined): readonly T[] {
   return Array.isArray(value) ? value : [];
@@ -147,7 +160,7 @@ export function buildPeopleDirectory(
   const byId = new Map<string, CrewPerson>();
   entries.forEach((entry) => {
     const displayName = displayNames.get(entry.id) ?? entry.username;
-    const daemonCollides = labels?.[entry.id]?.collides;
+    const daemonCollides = daemonCollision(labels, entry.id);
     const avatar = sanitizeDisplayText(entry.avatar);
     byId.set(
       entry.id,

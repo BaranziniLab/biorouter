@@ -63,7 +63,14 @@ export interface DaemonPersonLabel {
   collides?: boolean;
 }
 
-export type DaemonPersonLabels = Readonly<Record<string, DaemonPersonLabel | null | undefined>>;
+/**
+ * The labels map as the controller passes it through from a `state` frame. It
+ * is typed loosely on purpose — the controller forwards it without a schema —
+ * and each entry is checked here before it is read.
+ */
+export type DaemonPersonLabels = Readonly<
+  Record<string, DaemonPersonLabel | null | undefined> | Record<string, unknown>
+>;
 
 export type CrewPeopleMap = Readonly<Record<string, CrewPeopleMapEntry | null | undefined>>;
 
