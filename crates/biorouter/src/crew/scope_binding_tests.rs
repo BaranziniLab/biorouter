@@ -568,16 +568,23 @@ async fn deleting_a_chat_retires_its_own_grant_and_nothing_else() {
     for session in [&granted, &legacy] {
         assert_eq!(scopes[session.as_str()]["expired"], json!(false));
     }
+    // In memory: both kept, and — since every write now reads the saved registry back (D8) —
+    // the grant another process saved is held here too, as it was saved.
     let registry = device.crew.registry.lock().await;
+    let mut held: Vec<&str> = registry.scopes.keys().map(String::as_str).collect();
+    held.sort_unstable();
+    let mut expected = vec![granted.as_str(), legacy.as_str(), "elsewhere_1"];
+    expected.sort_unstable();
     assert_eq!(
-        registry.scopes.len(),
-        2,
-        "a deleted chat's grant was dropped"
+        held, expected,
+        "a deleted chat's grant was dropped, or another process's grant was not read back"
     );
     assert_eq!(
         registry.scopes[&legacy].session_incarnation,
         Some(legacy_incarnation)
     );
+    assert_eq!(registry.scopes["elsewhere_1"].session_incarnation, Some(7));
+    assert!(!registry.scopes["elsewhere_1"].expired);
 }
 
 /// The daemon's own path, end to end: chats in the process's shared store, deleted through

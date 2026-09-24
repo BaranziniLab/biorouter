@@ -7,6 +7,9 @@ mod institution;
 mod institution_tests;
 pub mod observation;
 #[cfg(test)]
+#[path = "registry_lock_tests.rs"]
+mod registry_lock_tests;
+#[cfg(test)]
 #[path = "scope_binding_tests.rs"]
 mod scope_binding_tests;
 pub use credentials::CredentialStatus;
@@ -312,6 +315,77 @@ struct Registry {
     #[serde(default)]
     completed_preparations: HashMap<String, String>,
 }
+/// How long a registry update waits for another Biorouter process to finish its own.
+const REGISTRY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A registry update that waited [`REGISTRY_LOCK_WAIT`] for another process and gave up.
+const REGISTRY_BUSY: &str =
+    "Crew settings are being saved by another Biorouter process. Try again in a moment.";
+/// What a registry update does with this process's copy when the saved registry cannot be
+/// locked, read or written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unsaved {
+    /// Leave it as it was: the change happened nowhere.
+    Discard,
+    /// Apply the change to it anyway: the change holds in this process, just not durably.
+    KeepHere,
+}
+/// The saved registry as an update found it, holding both locks.
+struct SavedRegistry {
+    /// The copy to edit.
+    registry: Registry,
+    /// The file's contents (an empty registry when there is none), to tell whether the edit
+    /// changed anything that needs writing.
+    saved: Value,
+    /// The digest of the file's bytes; `None` when there is no file.
+    digest: Option<[u8; 32]>,
+}
+fn registry_digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+/// Carry into a registry just read back from disk what this process holds that the file does
+/// not speak for (D8), so that re-reading never drops it:
+///
+/// - each connection's status and last error, which describe this process's own transports
+///   (the file's copy is whatever process wrote last, and is reset on load for that reason);
+///   a connection this process has not seen reads as a fresh load reads it, disconnected;
+/// - a grant's binding to its chat, when this process bound a grant recorded before grants
+///   were bound ([`CrewManager::adopt_binding`]) and the file still has it unbound;
+/// - a stop: a grant this process expired stays expired even if its save failed, because
+///   nothing may bring a revoked run back to life.
+///
+/// Only for the same grant, matched by run: a grant the file no longer holds, or holds for a
+/// newer run, is the file's to decide.
+fn carry_process_state(here: &Registry, theirs: &mut Registry) {
+    for connection in &mut theirs.connections {
+        match here
+            .connections
+            .iter()
+            .find(|mine| mine.id == connection.id)
+        {
+            Some(mine) => {
+                connection.status = mine.status.clone();
+                connection.last_error = mine.last_error.clone();
+            }
+            None => {
+                connection.status = "disconnected".into();
+                connection.last_error = None;
+            }
+        }
+    }
+    for (session, scope) in &mut theirs.scopes {
+        let Some(mine) = here
+            .scopes
+            .get(session)
+            .filter(|mine| mine.run_id == scope.run_id)
+        else {
+            continue;
+        };
+        scope.expired |= mine.expired;
+        if scope.session_incarnation.is_none() {
+            scope.session_incarnation = mine.session_incarnation;
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PreparedDevice {
     pub preparation_id: String,
@@ -349,6 +423,10 @@ pub struct CrewManager {
     lifecycle: StdMutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// What each connected broker's `hello` said, keyed by connection ID. Memory only (D12).
     brokers: StdMutex<HashMap<String, BrokerHello>>,
+    /// The digest of `connections.json` as `registry` was last read from or written to it
+    /// (`None`: there was no file), so an update can tell whether another process has written
+    /// since (D8). Read and set only under `registry`'s lock.
+    saved_digest: StdMutex<Option<[u8; 32]>>,
     /// The store a test resolves chats against in place of the shared one (SCOPE-BIND).
     #[cfg(test)]
     session_store: StdMutex<Option<Arc<crate::session::SessionManager>>>,
@@ -736,6 +814,25 @@ impl CrewManager {
             Ok(())
         }
     }
+    /// Remove a credential; one that is already absent is not an error.
+    fn delete_credential(&self, id: &str) -> Result<()> {
+        self.credential_vault
+            .delete(id, || self.delete_legacy_credential(id))
+    }
+    fn delete_legacy_credential(&self, id: &str) -> Result<()> {
+        if file_credentials_enabled() {
+            match std::fs::remove_file(self.credential_path(id)) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            match self.credential_entry(id)?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        }
+    }
     fn read_credential(&self, id: &str) -> Result<zeroize::Zeroizing<String>> {
         self.credential_vault.read(id, || {
             self.read_legacy_credential(id).map(zeroize::Zeroizing::new)
@@ -750,9 +847,12 @@ impl CrewManager {
     }
     pub fn new(root: PathBuf) -> Result<Self> {
         let path = root.join("connections.json");
-        let mut registry: Registry = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registry::default(),
+        let (mut registry, saved_digest): (Registry, _) = match std::fs::read(&path) {
+            Ok(bytes) => (
+                serde_json::from_slice(&bytes)?,
+                Some(registry_digest(&bytes)),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Registry::default(), None),
             Err(e) => return Err(e.into()),
         };
         for c in &mut registry.connections {
@@ -766,6 +866,7 @@ impl CrewManager {
             transports: Mutex::new(HashMap::new()),
             lifecycle: StdMutex::new(HashMap::new()),
             brokers: StdMutex::new(HashMap::new()),
+            saved_digest: StdMutex::new(saved_digest),
             #[cfg(test)]
             session_store: StdMutex::new(None),
         })
@@ -840,19 +941,25 @@ impl CrewManager {
         }
         Ok(json!({ "grants": grants }))
     }
+    /// Write `registry` over the saved one as it stands, for a test that plays another
+    /// process's save (or seeds one). Production writes go through
+    /// [`Self::update_registry`], which never writes a stale copy back.
+    #[cfg(test)]
     fn persist(&self, registry: &Registry) -> Result<()> {
-        #[cfg(unix)]
-        let directories_to_sync = {
-            let mut directories = vec![self.root.clone()];
-            let mut directory = self.root.as_path();
-            while !directory.exists() {
-                directory = directory
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("Crew registry parent unavailable"))?;
-                directories.push(directory.to_path_buf());
-            }
-            directories
-        };
+        self.write_registry(registry).map(drop)
+    }
+    /// Create the registry's directory — private, never a symlink — and answer the
+    /// directories whose entries a save must sync: the registry's own, then each ancestor this
+    /// call created, then the first that already existed.
+    fn prepare_registry_directory(&self) -> Result<Vec<PathBuf>> {
+        let mut directories = vec![self.root.clone()];
+        let mut directory = self.root.as_path();
+        while !directory.exists() {
+            directory = directory
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Crew registry parent unavailable"))?;
+            directories.push(directory.to_path_buf());
+        }
         std::fs::create_dir_all(&self.root)?;
         ensure!(
             !std::fs::symlink_metadata(&self.root)?
@@ -865,16 +972,188 @@ impl CrewManager {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o700))?;
         }
+        Ok(directories)
+    }
+    /// Replace `connections.json` with `registry`, atomically and durably, and answer the
+    /// digest of what was written. Only [`Self::try_update_registry`] calls this outside tests,
+    /// under both locks, with a copy it has just read back.
+    fn write_registry(&self, registry: &Registry) -> Result<[u8; 32]> {
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        let directories_to_sync = self.prepare_registry_directory()?;
+        let bytes = serde_json::to_vec(registry)?;
         let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
         use std::io::Write;
-        file.write_all(&serde_json::to_vec(registry)?)?;
+        file.write_all(&bytes)?;
         file.as_file().sync_all()?;
         file.persist(self.root.join("connections.json"))?;
         #[cfg(unix)]
         for directory in directories_to_sync {
             std::fs::File::open(directory)?.sync_all()?;
         }
-        Ok(())
+        Ok(registry_digest(&bytes))
+    }
+    fn set_saved_digest(&self, digest: Option<[u8; 32]>) {
+        *self
+            .saved_digest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = digest;
+    }
+    fn saved_digest(&self) -> Option<[u8; 32]> {
+        *self
+            .saved_digest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Take the advisory lock that orders registry writes across every process sharing this
+    /// profile (D8); it is released when the returned file is dropped. The wait is bounded: a
+    /// lock another process holds for longer than [`REGISTRY_LOCK_WAIT`] is refused with
+    /// [`REGISTRY_BUSY`], never waited on forever, and the runtime is never blocked on it.
+    async fn lock_saved_registry(&self) -> Result<std::fs::File> {
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        let created = self.prepare_registry_directory()?;
+        // A directory this call created must survive a crash as the save's would.
+        #[cfg(unix)]
+        for directory in created.iter().skip(1) {
+            std::fs::File::open(directory)?.sync_all()?;
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = options.open(self.root.join("connections.lock"))?;
+        let deadline = tokio::time::Instant::now() + REGISTRY_LOCK_WAIT;
+        let mut pause = std::time::Duration::from_millis(2);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    ensure!(tokio::time::Instant::now() < deadline, REGISTRY_BUSY);
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(std::time::Duration::from_millis(50));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
+    }
+    /// The saved registry as it is now, to edit: the file's copy with this process's own state
+    /// carried in ([`carry_process_state`]), or — when the file is exactly what `here` was last
+    /// read from or written as — `here` itself, which keeps what this process holds and has
+    /// not saved (a stop whose save failed, a grant a test put in memory). Call it holding
+    /// both locks.
+    fn read_saved_registry(&self, here: &Registry) -> Result<SavedRegistry> {
+        let bytes = match std::fs::read(self.root.join("connections.json")) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let digest = bytes.as_deref().map(registry_digest);
+        let saved: Value = match &bytes {
+            Some(bytes) => serde_json::from_slice(bytes)?,
+            None => serde_json::to_value(Registry::default())?,
+        };
+        let registry = if digest == self.saved_digest() {
+            here.clone()
+        } else {
+            let mut theirs: Registry = serde_json::from_value(saved.clone())?;
+            carry_process_state(here, &mut theirs);
+            theirs
+        };
+        Ok(SavedRegistry {
+            registry,
+            saved,
+            digest,
+        })
+    }
+    /// Change the saved registry: the only way this process writes it (D8).
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** Every process that opens this
+    /// profile — the desktop's daemon, a CLI run, another daemon — holds its own copy of the
+    /// registry, loaded once. Writing that whole copy back, as every save once did, put back
+    /// whatever another process had changed since it loaded: a connection it saved vanished,
+    /// a grant it revoked came back live. So an update:
+    ///
+    /// 1. takes this process's registry lock, which orders it with every other write here;
+    /// 2. takes the advisory lock on `connections.lock`, which orders it with every other
+    ///    process's ([`Self::lock_saved_registry`]);
+    /// 3. reads `connections.json` again ([`Self::read_saved_registry`]);
+    /// 4. applies `edit` to that copy, and writes the result atomically if it differs from
+    ///    the file;
+    /// 5. makes the result this process's copy, then releases the file lock.
+    ///
+    /// When `edit` refuses, nothing changes anywhere and its error is returned. When the file
+    /// cannot be locked, read or written, this process's copy is left as it was too; an edit
+    /// that must hold here even then uses [`Self::update_registry_keeping`].
+    async fn update_registry<R>(&self, edit: impl FnOnce(&mut Registry) -> Result<R>) -> Result<R> {
+        self.try_update_registry(Unsaved::Discard, edit).await?
+    }
+    /// [`Self::update_registry`] for an edit that takes effect in this process even when the
+    /// saved registry cannot be locked, read or written: a stop above all, which must hold
+    /// here whether or not it could be saved, and the edits that have always behaved so. The
+    /// outer error is the file's, and the edit already holds here when it is returned; the
+    /// inner result is `edit`'s own, including its refusal.
+    async fn update_registry_keeping<R>(
+        &self,
+        edit: impl FnOnce(&mut Registry) -> Result<R>,
+    ) -> Result<Result<R>> {
+        self.try_update_registry(Unsaved::KeepHere, edit).await
+    }
+    async fn try_update_registry<R>(
+        &self,
+        unsaved: Unsaved,
+        edit: impl FnOnce(&mut Registry) -> Result<R>,
+    ) -> Result<Result<R>> {
+        let mut registry = self.registry.lock().await;
+        let opened = match self.lock_saved_registry().await {
+            Ok(lock) => self
+                .read_saved_registry(&registry)
+                .map(|saved| (lock, saved)),
+            Err(error) => Err(error),
+        };
+        let (lock, mut saved) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                // The saved registry could not be seen, so nothing is written. An edit that
+                // must hold here applies to this process's copy alone; any other is not run.
+                if unsaved == Unsaved::KeepHere {
+                    let mut here = registry.clone();
+                    if let Err(refused) = edit(&mut here) {
+                        return Ok(Err(refused));
+                    }
+                    *registry = here;
+                }
+                return Err(error);
+            }
+        };
+        let out = match edit(&mut saved.registry) {
+            Ok(out) => out,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        let changed = match serde_json::to_value(&saved.registry) {
+            Ok(now) => now != saved.saved,
+            Err(_) => true,
+        };
+        if changed {
+            match self.write_registry(&saved.registry) {
+                Ok(digest) => saved.digest = Some(digest),
+                Err(error) => {
+                    if unsaved == Unsaved::KeepHere {
+                        // This copy now derives from the file as it was read, plus the edit.
+                        *registry = saved.registry;
+                        self.set_saved_digest(saved.digest);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        *registry = saved.registry;
+        self.set_saved_digest(saved.digest);
+        drop(lock);
+        Ok(Ok(out))
     }
     fn control_path(&self, id: &str) -> Result<PathBuf> {
         #[cfg(unix)]
@@ -961,22 +1240,24 @@ impl CrewManager {
             .ok_or_else(|| anyhow::anyhow!("Unknown Crew connection"))
     }
     pub async fn prepare_device(&self) -> Result<PreparedDevice> {
-        let mut registry = self.registry.lock().await;
-        if let Some(prepared) = &registry.pending_device {
-            return Ok(prepared.clone());
-        }
-        let preparation_id = uuid::Uuid::new_v4().to_string();
-        let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-        let public = key.verifying_key().to_bytes();
-        self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))?;
-        let prepared = PreparedDevice {
-            preparation_id,
-            public_key: hex(&public),
-            device_id: hex(&Sha256::digest(public)),
-        };
-        registry.pending_device = Some(prepared.clone());
-        self.persist(&registry)?;
-        Ok(prepared)
+        self.update_registry_keeping(|registry| {
+            // Another process's pending identity is this profile's too: reuse it.
+            if let Some(prepared) = &registry.pending_device {
+                return Ok(prepared.clone());
+            }
+            let preparation_id = uuid::Uuid::new_v4().to_string();
+            let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+            let public = key.verifying_key().to_bytes();
+            self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))?;
+            let prepared = PreparedDevice {
+                preparation_id,
+                public_key: hex(&public),
+                device_id: hex(&Sha256::digest(public)),
+            };
+            registry.pending_device = Some(prepared.clone());
+            Ok(prepared)
+        })
+        .await?
     }
     pub async fn save(&self, input: SaveConnection) -> Result<Connection> {
         self.save_inner(None, input).await
@@ -1141,13 +1422,29 @@ impl CrewManager {
     }
     async fn save_inner(&self, id: Option<&str>, mut input: SaveConnection) -> Result<Connection> {
         Self::validate_connection(&input)?;
-        let mut registry = self.registry.lock().await;
-        let mut r = registry.clone();
         input.institution_id = input
             .institution_id
             .as_deref()
             .map(institution::normalize)
             .transpose()?;
+        // The refusals that need no saved state come before the registry is touched, so a
+        // refused new connection creates nothing on disk.
+        ensure!(
+            id.is_some() || input.mode != ClusterMode::Private || input.institution_id.is_some(),
+            "Choose this private SSH connection's institution before saving"
+        );
+        // Edits the saved registry as it is now, so a connection another process saved since
+        // this one loaded is kept (D8). A refusal changes nothing.
+        self.update_registry(|r| self.save_edit(r, id, input)).await
+    }
+    /// [`Self::save_inner`]'s edit of the saved registry, with `input` already validated and
+    /// its institution normalized.
+    fn save_edit(
+        &self,
+        r: &mut Registry,
+        id: Option<&str>,
+        mut input: SaveConnection,
+    ) -> Result<Connection> {
         if input.institution_id.is_none() {
             input.institution_id = r
                 .connections
@@ -1181,7 +1478,6 @@ impl CrewManager {
                             "Prepared connection was removed; prepare a new device identity"
                         )
                     })?;
-                self.persist(&r)?;
                 return Ok(connection);
             }
             Some(
@@ -1196,7 +1492,7 @@ impl CrewManager {
         } else {
             None
         };
-        let c = self.build_connection(&mut r, id, input, prepared.as_ref())?;
+        let c = self.build_connection(r, id, input, prepared.as_ref())?;
         r.connections.retain(|old| old.id != c.id);
         r.connections.push(c.clone());
         if let Some(prepared) = prepared {
@@ -1204,19 +1500,19 @@ impl CrewManager {
                 .insert(prepared.preparation_id, preparation_hash);
             r.pending_device = None;
         }
-        self.persist(&r)?;
-        *registry = r;
         Ok(c)
     }
     pub async fn remove(&self, id: &str) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
         self.disconnect_locked(id).await?;
-        let mut r = self.registry.lock().await;
-        r.connections.retain(|c| c.id != id);
-        for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
-            scope.expired = true;
-        }
-        self.persist(&r)
+        self.update_registry_keeping(|r| {
+            r.connections.retain(|c| c.id != id);
+            for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                scope.expired = true;
+            }
+            Ok(())
+        })
+        .await?
     }
     pub async fn authentication_plan(&self, id: &str) -> Result<AuthenticationPlan> {
         let c = self.connection(id).await?;
@@ -1360,7 +1656,22 @@ impl CrewManager {
         verified: VerifiedHello,
     ) -> Result<Connection> {
         let VerifiedHello { node_id, broker } = verified;
-        let mut registry = self.registry.lock().await;
+        let connected = self
+            .update_registry_keeping(|registry| Self::adopt_node(registry, id, c, node_id))
+            .await??;
+        self.brokers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), broker);
+        Ok(connected)
+    }
+    /// [`Self::adopt_verified_hello`]'s edit of the saved registry, as it is now.
+    fn adopt_node(
+        registry: &mut Registry,
+        id: &str,
+        c: &Connection,
+        node_id: String,
+    ) -> Result<Connection> {
         let current = registry
             .connections
             .iter()
@@ -1428,19 +1739,12 @@ impl CrewManager {
                 entry.last_error = None;
             }
         }
-        self.persist(&registry)?;
-        let connected = registry
+        Ok(registry
             .connections
             .iter()
             .find(|entry| entry.id == id)
             .cloned()
-            .expect("validated connection");
-        drop(registry);
-        self.brokers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.into(), broker);
-        Ok(connected)
+            .expect("validated connection"))
     }
     pub async fn disconnect(&self, id: &str) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
@@ -1991,68 +2295,162 @@ impl CrewManager {
         // here (`--no-session`, or deleted meanwhile) never leaves a live run behind.
         let session_incarnation = self.grantable_chat(session).await?;
         let result=self.signed_request(id,"run.create",json!({"expected_mode":c.mode,"expected_policy_epoch":c.policy_epoch,"expected_workspace_policy_epoch":admission.workspace_policy_epoch,"expected_protected_context":admission.protected_context,"workspace_institution_id":admission.workspace_institution_id,"connection_institution_id":c.institution_id,"provider_affiliation":institution::provider_affiliation(provider),"channel_id":channel,"source_channels":sources,"provider_policy_id":provider_binding(provider),"personal_mode":if origin_restricted {ClusterMode::Private}else{c.mode},"public_provider":public,"expires_in":3600,"remote_root":if public {None}else{c.remote_root.clone()},"remote_execution":!public && c.remote_execution}),None).await?;
-        ensure!(
-            result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
-            "Crew broker returned a different protected-context policy; refresh before granting agent access"
-        );
+        // Without its ID there is no run to revoke; with it, the workspace now honors a run,
+        // and every failure from here on must take it back (D7).
         let run_id = result["run"]["id"]
             .as_str()
             .or_else(|| result["run"]["run_id"].as_str())
             .ok_or_else(|| anyhow::anyhow!("Broker did not return a run ID"))?
             .to_string();
-        let credential = result["credential"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Broker did not return a scoped credential"))?;
-        let expires_at = result["run"]["expires_at"].as_u64();
-        self.write_credential(&format!("run:{session}"), credential)?;
-        {
-            let mut r = self.registry.lock().await;
-            r.scopes.insert(
-                session.into(),
-                Scope {
-                    connection_id: id.into(),
-                    run_id: run_id.clone(),
-                    channel_id: channel.into(),
-                    source_channels: sources.clone(),
-                    epoch: c.policy_epoch,
-                    provider_binding: provider_binding(provider),
-                    public_provider: public,
-                    origin_restricted,
-                    institution_ids: institution_ids.clone(),
-                    institution_policy: true,
-                    expired: false,
-                    expires_at,
-                    labels: Some(labels.clone()),
-                    session_incarnation: Some(session_incarnation),
-                },
+        let mut credential_written = false;
+        let admitted: Result<RunAdmission> = async {
+            ensure!(
+                result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
+                "Crew broker returned a different protected-context policy; refresh before granting agent access"
             );
-            self.persist(&r)?;
+            let credential = result["credential"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Broker did not return a scoped credential"))?;
+            let expires_at = result["run"]["expires_at"].as_u64();
+            self.write_credential(&format!("run:{session}"), credential)?;
+            credential_written = true;
+            let scope = Scope {
+                connection_id: id.into(),
+                run_id: run_id.clone(),
+                channel_id: channel.into(),
+                source_channels: sources.clone(),
+                epoch: c.policy_epoch,
+                provider_binding: provider_binding(provider),
+                public_provider: public,
+                origin_restricted,
+                institution_ids: institution_ids.clone(),
+                institution_policy: true,
+                expired: false,
+                expires_at,
+                labels: Some(labels.clone()),
+                session_incarnation: Some(session_incarnation),
+            };
+            // Recorded here even when the save fails, as it always was: the abandon below
+            // then finds it and stops it here too.
+            self.update_registry_keeping(|r| {
+                r.scopes.insert(session.into(), scope);
+                Ok(())
+            })
+            .await??;
+            let context = self
+                .worker_request(
+                    session,
+                    "messages.history",
+                    json!({"channel_id":channel,"limit":50,"latest":true}),
+                )
+                .await?;
+            Ok(RunAdmission {
+                run_id: run_id.clone(),
+                institution_ids: institution_ids.clone(),
+                expires_at,
+                context: serde_json::to_string(&json!({
+                    "connection_id": id,
+                    "destination_channel_id": channel,
+                    "source_channel_ids": sources,
+                    "labels": labels,
+                    "naming": "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
+                    "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
+                    "history_channel_id": channel,
+                    "remote_files_enabled": !public && c.remote_root.is_some(),
+                    "remote_path_base": "the granted SSH work directory; use relative paths such as crew-task.csv, never the local task working directory",
+                    "history": context
+                }))?,
+                labels: labels.clone(),
+            })
         }
-        let context = self
-            .worker_request(
-                session,
-                "messages.history",
-                json!({"channel_id":channel,"limit":50,"latest":true}),
+        .await;
+        match admitted {
+            Ok(admitted) => Ok(admitted),
+            Err(error) => {
+                self.abandon_run(session, id, &run_id, credential_written)
+                    .await;
+                Err(error)
+            }
+        }
+    }
+    /// Take back a run the workspace created for a grant that then failed to be set up (D7),
+    /// best effort: the caller answers with the failure that brought it here, never this.
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** Before this, a grant whose
+    /// setup failed after `run.create` (a broker answer that did not match, a credential or
+    /// registry that could not be saved, the first `messages.history`) left the run live at the
+    /// workspace until it lapsed, and — once recorded — left the grant active here.
+    ///
+    /// - The grant was recorded: revoke it as the person would, which expires it here (saved,
+    ///   or held in memory when it cannot be) and then asks the workspace. It stays listed,
+    ///   expired, so the person can see and retry the revocation; `grant_session` shares this
+    ///   path, so a failed grant is left expired, never active.
+    /// - It was not: ask the workspace to revoke the run, and delete the run credential this
+    ///   setup wrote, since no grant here names it.
+    ///
+    /// When the local revoke fails before it asked the workspace (the grant is not this chat's
+    /// any more, or the stop could not be saved), the workspace is asked directly.
+    async fn abandon_run(
+        &self,
+        session: &str,
+        connection_id: &str,
+        run_id: &str,
+        credential_written: bool,
+    ) {
+        let recorded = self
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| scope.run_id == run_id);
+        if recorded {
+            match self.revoke_session_if_current(session, run_id).await {
+                Ok(outcome) => {
+                    if let Some(error) = outcome.remote_error {
+                        tracing::warn!(
+                            session,
+                            run_id,
+                            %error,
+                            "stopped a Crew grant whose setup failed; the workspace did not \
+                             confirm the revocation"
+                        );
+                    }
+                    return;
+                }
+                Err(error) => tracing::warn!(
+                    session,
+                    run_id,
+                    %error,
+                    "could not stop a Crew grant whose setup failed on this device; asking the \
+                     workspace to revoke its run"
+                ),
+            }
+        } else if credential_written {
+            if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+                tracing::warn!(
+                    session,
+                    %error,
+                    "could not delete the credential of a Crew run whose setup failed"
+                );
+            }
+        }
+        if let Err(error) = self
+            .human_request(
+                connection_id,
+                "run.revoke",
+                json!({ "run_id": run_id }),
+                None,
             )
-            .await?;
-        Ok(RunAdmission {
-            run_id,
-            institution_ids,
-            expires_at,
-            context: serde_json::to_string(&json!({
-                "connection_id": id,
-                "destination_channel_id": channel,
-                "source_channel_ids": sources,
-                "labels": labels,
-                "naming": "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
-                "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
-                "history_channel_id": channel,
-                "remote_files_enabled": !public && c.remote_root.is_some(),
-                "remote_path_base": "the granted SSH work directory; use relative paths such as crew-task.csv, never the local task working directory",
-                "history": context
-            }))?,
-            labels,
-        })
+            .await
+        {
+            tracing::warn!(
+                session,
+                run_id,
+                %error,
+                "could not revoke a Crew run whose setup failed; it lapses when it expires"
+            );
+        }
     }
     /// A re-grant keeps every restriction the chat's current grant carries: its boundary,
     /// its private origin, its institutions and its sources. Only the chat's own grant (or
@@ -2256,27 +2654,28 @@ impl CrewManager {
             !matches!(self.standing(session).await, Standing::None),
             NO_GRANT
         );
-        let (connection_id, run_id) = {
-            let mut r = self.registry.lock().await;
-            let current = r
-                .scopes
-                .get_mut(session)
-                .ok_or_else(|| anyhow::anyhow!(NO_GRANT))?;
-            ensure!(
-                expected_run_id.is_none_or(|expected| current.run_id == expected),
-                REPLACED_RUN
-            );
-            // Fail closed here before asking the workspace: a transport that is down, or
-            // sign-in that lapsed, must not leave the grant usable on this device. If the save
-            // fails the flag still stands in memory, which stops this process, and the error
-            // says the stop is not yet durable.
-            current.expired = true;
-            let target = (current.connection_id.clone(), current.run_id.clone());
-            self.persist(&r).map_err(|error| {
+        // Fail closed here before asking the workspace: a transport that is down, or sign-in
+        // that lapsed, must not leave the grant usable on this device. If the save fails the
+        // flag still stands in memory, which stops this process, and the error says the stop
+        // is not yet durable. The saved registry is edited as it is now (D8), so this never
+        // writes back a grant another process changed, and no later write here revives it.
+        let (connection_id, run_id) = self
+            .update_registry_keeping(|r| {
+                let current = r
+                    .scopes
+                    .get_mut(session)
+                    .ok_or_else(|| anyhow::anyhow!(NO_GRANT))?;
+                ensure!(
+                    expected_run_id.is_none_or(|expected| current.run_id == expected),
+                    REPLACED_RUN
+                );
+                current.expired = true;
+                Ok((current.connection_id.clone(), current.run_id.clone()))
+            })
+            .await
+            .map_err(|error| {
                 error.context("Couldn't save the revocation on this device; retry to finish it")
-            })?;
-            target
-        };
+            })??;
         Ok(
             match self
                 .human_request(&connection_id, "run.revoke", json!({"run_id":run_id}), None)
@@ -2476,9 +2875,10 @@ impl CrewManager {
 
     /// Bind a grant recorded before grants were bound to the chat holding its id — the chat
     /// it was made to, since the store mints an id once — so a later chat under the id can
-    /// never inherit it. In memory only: every process derives the same binding from the
-    /// same row, and writing it back from here could overwrite a grant another process saved
-    /// since this one loaded the registry.
+    /// never inherit it. In memory here: every process derives the same binding from the
+    /// same row. This process's next registry update carries it into the saved registry
+    /// ([`carry_process_state`]), which — reading the file back first (D8) — can no longer
+    /// overwrite a grant another process saved since this one loaded.
     async fn adopt_binding(&self, session: &str, legacy: Scope, current: i64) -> Scope {
         let mut registry = self.registry.lock().await;
         match registry.scopes.get_mut(session) {
@@ -2499,13 +2899,12 @@ impl CrewManager {
     /// with it.
     async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
         let is_stale = |id: &str, scope: &Scope| id == session && scope.run_id == stale.run_id;
-        let mut registry = self.registry.lock().await;
-        registry.scopes.retain(|id, scope| !is_stale(id, scope));
-        let pruned = self.edit_saved_scopes(|scopes| {
-            let before = scopes.len();
-            scopes.retain(|id, scope| !is_stale(id, scope));
-            scopes.len() != before
-        });
+        let pruned = self
+            .update_registry_keeping(|registry| {
+                registry.scopes.retain(|id, scope| !is_stale(id, scope));
+                Ok(())
+            })
+            .await;
         if let Err(error) = pruned {
             tracing::warn!(
                 session,
@@ -2514,31 +2913,11 @@ impl CrewManager {
                  saved registry; it stays inert there"
             );
         }
-        drop(registry);
         tracing::info!(
             session,
             run_id = %stale.run_id,
             "ignored a Crew grant that was made to an earlier chat under this id"
         );
-    }
-
-    /// Edit the saved registry's scopes only — `edit` answers whether it changed any —
-    /// reading the file back instead of writing this process's whole registry, so a grant
-    /// another process saved after this one loaded is never written away. The caller holds
-    /// the registry lock, which orders this with every other write this process makes.
-    fn edit_saved_scopes(
-        &self,
-        edit: impl FnOnce(&mut HashMap<String, Scope>) -> bool,
-    ) -> Result<()> {
-        let mut saved: Registry = match std::fs::read(self.root.join("connections.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
-        if edit(&mut saved.scopes) {
-            self.persist(&saved)?;
-        }
-        Ok(())
     }
 
     /// The identity a new grant is bound to: the incarnation of the chat holding `session`
@@ -2571,9 +2950,10 @@ impl CrewManager {
     /// bound it in memory, and handed to whichever chat next held the id. Such a grant is
     /// the deleted chat's only when it sits under the id in the very store grants name; a
     /// grant under one of these ids bound to another incarnation, or recorded against
-    /// another store, belongs to a chat elsewhere and is not touched. Memory first, then the
-    /// saved registry, read back so that a grant another process saved since this one
-    /// loaded is never written away; that also binds a grant this process never loaded.
+    /// another store, belongs to a chat elsewhere and is not touched. One update of the saved
+    /// registry as it is now ([`Self::update_registry_keeping`]), so a grant another process
+    /// saved since this one loaded is never written away, and is bound too when it is the
+    /// deleted chat's; memory takes the same edit even if the save fails.
     pub(crate) async fn retire_deleted_sessions(
         &self,
         deleted: &[(String, i64)],
@@ -2594,29 +2974,37 @@ impl CrewManager {
                     None => from_own_store,
                 })
         };
-        // Bind it there for good; answers whether anything changed.
-        let retire = |scopes: &mut HashMap<String, Scope>| {
-            let mut changed = false;
-            for (session, scope) in scopes.iter_mut() {
-                if let Some(incarnation) = deleted_chat(session, scope) {
-                    changed |= scope.session_incarnation.replace(incarnation) != Some(incarnation);
+        {
+            let registry = self.registry.lock().await;
+            let mut kept = false;
+            for (session, scope) in &registry.scopes {
+                if deleted_chat(session, scope).is_some() {
+                    kept = true;
+                    tracing::info!(
+                        session,
+                        run_id = %scope.run_id,
+                        "kept the Crew grant of a deleted chat: it still restricts that chat and \
+                         can be revoked, and it authorizes nothing"
+                    );
                 }
             }
-            changed
-        };
-        let mut registry = self.registry.lock().await;
-        for (session, scope) in &registry.scopes {
-            if deleted_chat(session, scope).is_some() {
-                tracing::info!(
-                    session,
-                    run_id = %scope.run_id,
-                    "kept the Crew grant of a deleted chat: it still restricts that chat and can \
-                     be revoked, and it authorizes nothing"
-                );
+            // Every chat delete lands here. With no grant in memory and no saved registry
+            // there is nothing to retire, and no reason to create Crew's directory (and its
+            // lock) for a profile that never used Crew.
+            if !kept && !self.root.join("connections.json").exists() {
+                return Ok(());
             }
         }
-        retire(&mut registry.scopes);
-        self.edit_saved_scopes(retire)
+        // Bind it there for good, in memory and in the saved registry read back as it is now.
+        self.update_registry_keeping(|registry| {
+            for (session, scope) in registry.scopes.iter_mut() {
+                if let Some(incarnation) = deleted_chat(session, scope) {
+                    scope.session_incarnation = Some(incarnation);
+                }
+            }
+            Ok(())
+        })
+        .await?
     }
 }
 
@@ -4074,6 +4462,18 @@ done
     /// `{"accepted_method":"fixture"}`. Returns the log's path.
     #[cfg(unix)]
     fn write_answering_ssh(root: &Path, workspace_id: &str, answers: &[(&str, Value)]) -> PathBuf {
+        write_scripted_ssh(root, workspace_id, answers, &[])
+    }
+
+    /// [`write_answering_ssh`], refusing each method of `refusals` with a broker error whose
+    /// code and message are the given text.
+    #[cfg(unix)]
+    fn write_scripted_ssh(
+        root: &Path,
+        workspace_id: &str,
+        answers: &[(&str, Value)],
+        refusals: &[(&str, &str)],
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
         let fake_bin = root.join("bin");
@@ -4094,6 +4494,16 @@ done
             let keyword = if index == 0 { "if" } else { "elif" };
             branches.push_str(&format!(
                 "  {keyword} printf '%s\\n' \"$line\" | grep -q '\"method\":\"{method}\"'; then\n    printf '{{\"id\":\"%s\",\"result\":%s}}\\n' \"$id\" '{result}'\n"
+            ));
+        }
+        for (method, code) in refusals {
+            assert!(
+                code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "fixture refusal codes are plain words: {code}"
+            );
+            let error = json!({"code": code, "message": code}).to_string();
+            branches.push_str(&format!(
+                "  elif printf '%s\\n' \"$line\" | grep -q '\"method\":\"{method}\"'; then\n    printf '{{\"id\":\"%s\",\"error\":%s}}\\n' \"$id\" '{error}'\n"
             ));
         }
         let ssh = format!(
@@ -4986,6 +5396,279 @@ done
         manager.disconnect(connection_id).await?;
         let _ = fs::remove_dir_all(root);
         Ok(())
+    }
+
+    /// A workspace, a connection to it and a manager with a live transport, for driving a grant
+    /// through `begin_run` against a fake broker that answers `run.create` with `run_create`
+    /// and refuses each method of `refusals`. Returns the manager, the request log and the
+    /// grantable chat. Only inside a process of its own.
+    #[cfg(unix)]
+    async fn abandon_fixture(
+        root: &Path,
+        connection_id: &str,
+        run_create: Value,
+        refusals: &[(&str, &str)],
+    ) -> (CrewManager, PathBuf, String) {
+        let (connection, _, device_key) = signed_fixture_connection(connection_id);
+        let snapshot = json!({
+            "workspace": {"id": connection.workspace_id, "host_uid": 10001, "mode": "public",
+                "institution_id": null, "policy_epoch": 1, "name": "lab"},
+            "principals": [],
+            "teams": [],
+            "channels": [{"id": "destination-channel", "name": "methods"},
+                {"id": "source-a", "name": "raw-data"}],
+            "protected_channel_ids": []
+        });
+        let log = write_scripted_ssh(
+            root,
+            &connection.workspace_id,
+            &[("workspace.snapshot", snapshot), ("run.create", run_create)],
+            refusals,
+        );
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        manager
+            .registry
+            .lock()
+            .await
+            .connections
+            .push(connection.clone());
+        manager
+            .write_credential(
+                &format!("device:{}", connection.id),
+                &hex(&device_key.to_bytes()),
+            )
+            .unwrap();
+        attach_fixture_transport(&manager, &connection).await;
+        let session = saved_chat(root).await;
+        (manager, log, session)
+    }
+
+    /// The request lines of `method` in `log`, in order.
+    #[cfg(unix)]
+    fn logged_lines(log: &Path, method: &str) -> Vec<String> {
+        let needle = format!("\"method\":\"{method}\"");
+        fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(&needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// D7. ⚠ Grant and revocation state; a change here needs human review. The workspace
+    /// created the run, the grant was recorded, and then the first `messages.history` failed:
+    /// the grant used to stay active here and the run live at the workspace. Now the run is
+    /// revoked, the grant is left expired (saved, and in memory), and the caller still gets
+    /// the failure that caused it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_grant_whose_history_fails_is_revoked_and_left_expired() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("abandon-history");
+        let _env = isolated_crew_env(&root);
+        let connection_id = "19191919-1919-4919-8919-191919191919";
+        let (manager, log, session) = abandon_fixture(
+            &root,
+            connection_id,
+            json!({"run": {"id": "run-abandoned", "protected_context": false,
+                "expires_at": 1_790_000_000u64}, "credential": "run-credential"}),
+            &[("messages.history", "history_unavailable")],
+        )
+        .await;
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )
+        .unwrap();
+
+        let error = manager
+            .begin_run(
+                &session,
+                connection_id,
+                "destination-channel",
+                vec!["source-a".into()],
+                &provider,
+            )
+            .await
+            .err()
+            .expect("a grant whose first history read fails is not granted");
+        assert!(
+            error.to_string().contains("history_unavailable"),
+            "the caller must get the failure that stopped the grant, not the cleanup's: {error}"
+        );
+
+        assert_eq!(logged_methods(&log, "run.create"), 1);
+        assert_eq!(logged_methods(&log, "messages.history"), 1);
+        let revokes = logged_lines(&log, "run.revoke");
+        assert_eq!(revokes.len(), 1, "the created run must be revoked once");
+        assert!(revokes[0].contains("run-abandoned"), "{}", revokes[0]);
+        let sent = fs::read_to_string(&log).unwrap();
+        assert!(
+            sent.find("messages.history").unwrap() < sent.find("run.revoke").unwrap(),
+            "the run is revoked after the failure, not before: {sent}"
+        );
+
+        let scope = manager.registry.lock().await.scopes[&session].clone();
+        assert_eq!(scope.run_id, "run-abandoned");
+        assert!(scope.expired, "a failed grant must never be left active");
+        let persisted: Value = serde_json::from_slice(
+            &fs::read(root.join("manager").join("connections.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted["scopes"][&session]["run_id"],
+            json!("run-abandoned")
+        );
+        assert_eq!(persisted["scopes"][&session]["expired"], json!(true));
+        assert_eq!(
+            manager
+                .check_dispatch(
+                    &session,
+                    &CallCapability::for_test(ProviderTier::Public, true),
+                )
+                .await
+                .unwrap_err()
+                .to_string(),
+            GRANT_REVOKED
+        );
+        // Still listed, as revoked, so the person sees what happened.
+        let grants = manager.session_grants(connection_id).await.unwrap();
+        assert_eq!(grants["grants"][0]["run_id"], json!("run-abandoned"));
+        assert_eq!(grants["grants"][0]["expired"], json!(true));
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// D7, before the grant is recorded: the broker's answer did not match what was admitted,
+    /// so nothing was recorded here — but the run exists at the workspace. It is revoked, and
+    /// no grant or run credential is left behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_refused_before_its_grant_is_recorded_is_revoked_and_leaves_nothing() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("abandon-unrecorded");
+        let _env = isolated_crew_env(&root);
+        let connection_id = "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a";
+        let (manager, log, session) = abandon_fixture(
+            &root,
+            connection_id,
+            // The admission expected no protected context; the broker claims otherwise.
+            json!({"run": {"id": "run-unrecorded", "protected_context": true},
+                "credential": "run-credential"}),
+            &[],
+        )
+        .await;
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )
+        .unwrap();
+
+        let error = manager
+            .begin_run(
+                &session,
+                connection_id,
+                "destination-channel",
+                vec!["source-a".into()],
+                &provider,
+            )
+            .await
+            .err()
+            .expect("a run the broker answered differently is not granted");
+        assert!(
+            error.to_string().contains("protected-context"),
+            "the caller must get the refusal itself: {error}"
+        );
+
+        assert_eq!(logged_methods(&log, "run.create"), 1);
+        let revokes = logged_lines(&log, "run.revoke");
+        assert_eq!(revokes.len(), 1, "the created run must be revoked");
+        assert!(revokes[0].contains("run-unrecorded"), "{}", revokes[0]);
+        assert_eq!(logged_methods(&log, "messages.history"), 0);
+        assert!(!manager.registry.lock().await.scopes.contains_key(&session));
+        assert!(
+            !manager.credential_path(&format!("run:{session}")).exists(),
+            "no run credential may outlive a run that was never granted"
+        );
+        assert!(manager.read_credential(&format!("run:{session}")).is_err());
+        let saved = root.join("manager").join("connections.json");
+        if saved.exists() {
+            let persisted: Value = serde_json::from_slice(&fs::read(saved).unwrap()).unwrap();
+            assert!(persisted["scopes"].get(&session).is_none());
+        }
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The run credential a failed setup wrote goes with it, from whichever backend holds it;
+    /// deleting one that is already gone is not an error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_credential_is_gone_and_deleting_it_again_is_harmless() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("delete-credential");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        manager
+            .write_credential("run:doomed", "run-credential")
+            .unwrap();
+        manager
+            .write_credential("run:kept", "other-credential")
+            .unwrap();
+        manager.delete_credential("run:doomed").unwrap();
+        assert!(!manager.credential_path("run:doomed").exists());
+        assert!(manager.read_credential("run:doomed").is_err());
+        manager.delete_credential("run:doomed").unwrap();
+        assert_eq!(
+            manager.read_credential("run:kept").unwrap().as_str(),
+            "other-credential"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The same deletion from an encrypted vault: it leaves the vault, other entries stay, and
+    /// a locked vault is an error — never a fall back to the keyring.
+    #[test]
+    #[serial_test::serial(crew_credentials)]
+    fn a_vault_credential_is_deleted_there_and_never_through_the_keyring() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = credentials::CredentialVault::new(root.path().to_path_buf());
+        vault
+            .init(zeroize::Zeroizing::new(
+                "correct horse battery staple".into(),
+            ))
+            .unwrap();
+        let no_keyring = || -> Result<()> { anyhow::bail!("the keyring was reached") };
+        let no_keyring_read =
+            || -> Result<zeroize::Zeroizing<String>> { anyhow::bail!("the keyring was reached") };
+        vault
+            .write("run:doomed", "run-credential", no_keyring)
+            .unwrap();
+        vault
+            .write("run:kept", "other-credential", no_keyring)
+            .unwrap();
+
+        vault.delete("run:doomed", no_keyring).unwrap();
+        vault.delete("run:doomed", no_keyring).unwrap();
+        let gone = vault.read("run:doomed", no_keyring_read).unwrap_err();
+        assert!(gone.to_string().contains("absent"), "{gone}");
+        assert_eq!(
+            vault.read("run:kept", no_keyring_read).unwrap().as_str(),
+            "other-credential"
+        );
+
+        vault.lock().unwrap();
+        let locked = vault.delete("run:kept", no_keyring).unwrap_err();
+        assert!(
+            !locked.to_string().contains("keyring was reached"),
+            "{locked}"
+        );
     }
 
     #[test]

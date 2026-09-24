@@ -288,6 +288,27 @@ impl CredentialVault {
         Ok(())
     }
 
+    /// Remove `id`, from whichever backend this profile selected; an absent entry is not an
+    /// error. As with every operation here, a selected vault that is missing or locked is an
+    /// error, never a fall back to the keyring.
+    pub(super) fn delete(
+        &self,
+        id: &str,
+        legacy_delete: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let mut state = self.state()?;
+        if !self.selected(&mut state)? {
+            return legacy_delete();
+        }
+        let unlocked = require_unlocked(&state)?;
+        let mut contents = decrypt(&self.read_envelope()?, unlocked)?;
+        if contents.credentials.remove(id).is_some() {
+            let bytes = encrypt(&contents, unlocked)?;
+            atomic_write(&self.vault_path(), &bytes, true)?;
+        }
+        Ok(())
+    }
+
     fn read_envelope(&self) -> Result<Envelope> {
         let bytes = read_bounded(&self.vault_path(), MAX_FILE_BYTES)?;
         let envelope: Envelope =
