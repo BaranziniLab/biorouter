@@ -18,14 +18,21 @@
  *    registration the Attach picker uses, and the renderer gets back only the daemon's opaque
  *    capability. The file is inspected again after the click, and the daemon's own reading of
  *    it (name and size) must match what the dialog showed, so a file swapped while the dialog
- *    was open is refused rather than shared.
+ *    was open is refused rather than shared. The daemon refuses a credential file here too, and
+ *    the person is told so in one sentence ({@link crewShareCopy.credential}).
  *
  * So through this channel a compromised renderer can at most make the dialog appear, and pick
- * the destination names it prints below the true path; it cannot upload anything a person has
- * not read the path of and accepted. This channel is not the only way to the daemon: the
- * renderer already holds the daemon secret and the user-action key, so it can call
+ * the destination names it prints below the true path; it can neither name an arbitrary file
+ * nor skip the confirmation. This channel is not the only way to the daemon, though: the
+ * renderer still holds the daemon secret and the user-action key, so it can call
  * `POST /crew/files` itself and skip both the Attach picker and this dialog. D-DROP does not
- * widen that; closing it is a daemon-side change.
+ * widen that. What holds on that route whichever door a path came through (the Attach picker,
+ * this flow, the CLI, or page script) is the daemon's credential floor (Q3-01): a path the BR-23
+ * secret guard names — a private key, a cloud credential file, a `secrets.*` or `.env` store,
+ * judged after links are resolved and with case folded — or a file whose first 64 KiB hold
+ * credential material is refused with the code {@link CREW_FILE_IS_CREDENTIAL}, and so is a
+ * download into such a location. A main-only registration door, which would close the route to
+ * the renderer altogether, is a deferred design decision (implementation plan §16, D-DROP).
  *
  * The one exception is the development auto-confirm for automated QA
  * ({@link resolveDevAutoConfirmShare}): the gating of the development approval stdin
@@ -63,10 +70,16 @@ export const CREW_SHARE_BUTTON_SHARE = 0;
 const PRIVACY_CHANGED_ERROR =
   'Crew connection privacy changed; refresh the verified workspace before selecting a file';
 
+/**
+ * The code `POST /crew/files` answers when the BR-23 credential floor refuses a path
+ * (`local_files::CREDENTIAL_REFUSAL_CODE`, Q3-01). Every other refusal is `crew_transfer_refused`.
+ */
+export const CREW_FILE_IS_CREDENTIAL = 'crew_file_is_credential';
+
 /** Every sentence this flow can show a person. `name` is already made visible. */
 export const crewShareCopy = {
   notAFile:
-    "This item isn't a saved file, so it can't be shared. Save it as a file first, then drop it again.",
+    "This item isn't a saved file, so it can't be shared. Save it as a file first, then share it again.",
   missing: (name: string) => `"${name}" is no longer there. It may have been moved or deleted.`,
   unreadable: (name: string) =>
     `Biorouter can't read "${name}". Check that you're allowed to open it, then try again.`,
@@ -86,7 +99,32 @@ export const crewShareCopy = {
   privacyChanged: 'Connection privacy changed. Refresh Crew and drop the file again.',
   daemonRefused: (name: string) =>
     `Crew couldn't take "${name}". Check that the file is readable, then drop it again.`,
+  /**
+   * The daemon's own sentences for {@link CREW_FILE_IS_CREDENTIAL}, word for word
+   * (`CredentialRefusal`'s `Display` in `crew/local_files.rs`), rebuilt here from the name this
+   * process read rather than relayed, so no daemon text reaches a dialog unchecked.
+   */
+  credential: (name: string) =>
+    `“${name}” looks like a credential file (a password, key or token store), so Crew won't share it.`,
+  credentialLocation: "Crew won't save into a credential location. Choose another folder.",
 } as const;
+
+/**
+ * The sentence for a `POST /crew/files` refusal that has one of its own, or `undefined` for the
+ * caller's general wording. Today that is the credential floor (Q3-01): an upload names the file
+ * (made visible), a download names no file, because the refusal is about the folder.
+ */
+export function crewFileRefusal(
+  failure: unknown,
+  direction: 'upload' | 'download',
+  name: string
+): string | undefined {
+  if (!failure || typeof failure !== 'object') return undefined;
+  if ((failure as { code?: unknown }).code !== CREW_FILE_IS_CREDENTIAL) return undefined;
+  return direction === 'upload'
+    ? crewShareCopy.credential(visibleText(name) || 'This file')
+    : crewShareCopy.credentialLocation;
+}
 
 /** What the main process accepts over `crew:share-dropped-file`, after validation. */
 export interface CrewShareRequest extends CrewShareDestination {
@@ -347,13 +385,17 @@ export async function inspectDroppedFile(
  * ```text
  * Share "<name>" (<size>) to Crew?          (the message, shown bold)
  * Full path: <real path>                    (the detail's first line)
- * Destination: #<channel> in <workspace>    (its second and last)
+ * Destination: #<channel> in <workspace>    (its second)
+ * It uploads now and appears in #<channel> when you send your message.   (its third and last)
  * ```
+ *
+ * The last line says what Share does (Q3-14): the bytes leave for the host at once, and the file
+ * reaches the channel with the message it is attached to.
  *
  * ⚠ The order is the security property, not a matter of taste. The channel and workspace names
  * are the only text here the renderer writes, and they are not checked against the ids the
  * capability is bound to. Everything above the true path is therefore the main process's own
- * words or what it read from the file system, and the renderer's names come last, on one line:
+ * words or what it read from the file system, and the renderer's names come only below it:
  * whatever a name spells, even `Full path: …`, can only appear after the real one, never above
  * it. Every value also passes through {@link visibleText}, so none of them can start a line.
  */
@@ -361,13 +403,15 @@ export function crewShareDialogOptions(
   file: { name: string; size: number; realPath: string },
   destination: Pick<CrewShareDestination, 'channelName' | 'workspaceName'>
 ): MessageBoxOptions {
+  const channel = visibleText(destination.channelName);
   return {
     type: 'question',
     title: 'Share file to Crew',
     message: `Share "${visibleText(file.name)}" (${formatBytes(file.size)}) to Crew?`,
     detail: [
       `Full path: ${visibleText(file.realPath)}`,
-      `Destination: #${visibleText(destination.channelName)} in ${visibleText(destination.workspaceName)}`,
+      `Destination: #${channel} in ${visibleText(destination.workspaceName)}`,
+      `It uploads now and appears in #${channel} when you send your message.`,
     ].join('\n'),
     buttons: ['Share', 'Cancel'],
     defaultId: 1,
@@ -450,9 +494,10 @@ export async function shareDroppedFile(
   if (!answer.ok) {
     const failure = answer.body as { error?: unknown } | null;
     return refused(
-      failure?.error === PRIVACY_CHANGED_ERROR
-        ? crewShareCopy.privacyChanged
-        : crewShareCopy.daemonRefused(shownName)
+      crewFileRefusal(answer.body, 'upload', inspected.name) ??
+        (failure?.error === PRIVACY_CHANGED_ERROR
+          ? crewShareCopy.privacyChanged
+          : crewShareCopy.daemonRefused(shownName))
     );
   }
   const result = answer.body as Record<string, unknown> | null;

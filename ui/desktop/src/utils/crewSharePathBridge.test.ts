@@ -222,7 +222,7 @@ describe('the main.ts share handler', () => {
       {
         owner: harness.owner,
         message: 'Share "growth.csv" (8 bytes) to Crew?',
-        detail: `Full path: ${file}\nDestination: #methods in chen-lab`,
+        detail: `Full path: ${file}\nDestination: #methods in chen-lab\nIt uploads now and appears in #methods when you send your message.`,
       },
     ]);
     expect(harness.fetchCalls).toEqual([
@@ -292,6 +292,25 @@ describe('the main.ts share handler', () => {
     answer(1);
     await expect(first).resolves.toEqual({ outcome: 'cancelled' });
     await expect(harness.invoke(request())).resolves.toEqual({ outcome: 'cancelled' });
+  });
+
+  it('refuses a credential file after Share with a plain sentence, not the daemon text (Q3-15)', async () => {
+    const harness = createMainHarness({
+      responses: [
+        {
+          ok: false,
+          body: { code: 'crew_file_is_credential', error: 'daemon wording is never relayed' },
+        },
+      ],
+    });
+    await expect(harness.invoke(request())).resolves.toEqual({
+      outcome: 'refused',
+      message: crewSharePath.crewShareCopy.credential('growth.csv'),
+    });
+    expect(harness.dialogs).toHaveLength(1);
+    expect(harness.fetchCalls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      'POST http://daemon.test/crew/files',
+    ]);
   });
 
   it('gives a mismatched capability back with DELETE', async () => {

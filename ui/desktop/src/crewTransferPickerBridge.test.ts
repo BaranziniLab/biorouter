@@ -5,6 +5,7 @@ import path from 'node:path';
 import * as vm from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { crewFileRefusal, crewShareCopy } from './utils/crewSharePath';
 
 const source = (name: string) =>
   fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), name), 'utf8');
@@ -88,6 +89,7 @@ function createPickerHarness(
     getUserActionKey: () => 'user-action',
     loadSettings: () => ({}),
     path,
+    crewFileRefusal,
   });
   const runtimeHandler = vm.runInContext(transferPickerJavaScript(), context) as PickerHandler;
   return {
@@ -242,6 +244,29 @@ describe('Crew transfer picker opaque-capability bridge', () => {
       approval_pending: false,
       overwrite: false,
     });
+  });
+
+  it('names a credential refusal in plain words for an upload and a download (Q3-01)', async () => {
+    const refusal = jsonResponse(
+      { code: 'crew_file_is_credential', error: 'daemon wording is never relayed' },
+      false
+    );
+    const upload = createPickerHarness([refusal], {
+      open: { canceled: false, filePaths: ['/Users/frank/profile/biorouter/config/secrets.yaml'] },
+    });
+    await expect(upload.invoke(transferRequest({ direction: 'upload' }))).rejects.toThrow(
+      crewShareCopy.credential('secrets.yaml')
+    );
+    expect(upload.calls).toHaveLength(1);
+
+    const download = createPickerHarness([refusal], {
+      save: { canceled: false, filePath: '/Users/frank/.ssh/id_ed25519' },
+    });
+    await expect(download.invoke(transferRequest())).rejects.toThrow(
+      crewShareCopy.credentialLocation
+    );
+    expect(download.dialogEvents).toEqual(['save']);
+    expect(download.calls).toHaveLength(1);
   });
 
   it('stops before replacement UI when the sender closes after preflight', async () => {

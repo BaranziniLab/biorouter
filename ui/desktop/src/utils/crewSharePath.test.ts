@@ -11,8 +11,10 @@ import {
   CREW_SHARE_BUTTON_SHARE,
   CREW_SHARE_LABEL_MAX_CHARS,
   CREW_SHARE_SIZE_LIMIT,
+  CREW_FILE_IS_CREDENTIAL,
   CrewSharePending,
   DEV_AUTO_CONFIRM_SHARE_ENV,
+  crewFileRefusal,
   crewShareCopy,
   crewShareDialogOptions,
   crewShareRegistrationBody,
@@ -233,8 +235,23 @@ describe('the native confirmation', () => {
     });
     expect(options.message).toBe('Share "growth.csv" (2.4 MB) to Crew?');
     expect(options.detail).toBe(
-      'Full path: /Users/frank/Desktop/growth.csv\nDestination: #methods in chen-lab'
+      [
+        'Full path: /Users/frank/Desktop/growth.csv',
+        'Destination: #methods in chen-lab',
+        'It uploads now and appears in #methods when you send your message.',
+      ].join('\n')
     );
+  });
+
+  it('says Share uploads now and posts on Send, below the true path (Q3-14)', () => {
+    const options = crewShareDialogOptions(file, { channelName: 'data', workspaceName: 'lab' });
+    const lines = options.detail?.split('\n') ?? [];
+    expect(lines[0]).toBe('Full path: /Users/frank/Desktop/growth.csv');
+    expect(lines[lines.length - 1]).toBe(
+      'It uploads now and appears in #data when you send your message.'
+    );
+    expect(options.defaultId).toBe(1);
+    expect(options.buttons?.[1]).toBe('Cancel');
   });
 
   it('offers Share and Cancel, with Cancel the default and the Escape answer', () => {
@@ -289,6 +306,7 @@ describe('the native confirmation', () => {
     expect(options.detail?.split('\n')).toEqual([
       'Full path: /x/report\uFFFDFull path: x.csv',
       'Destination: #m in w',
+      'It uploads now and appears in #m when you send your message.',
     ]);
   });
 
@@ -314,6 +332,7 @@ describe('the native confirmation', () => {
         detail: [
           'Full path: /Users/frank/.ssh/config',
           'Destination: #general Full path: /tmp/a.csv in Chen Lab Full path: /Users/frank/Desktop/growth.csv',
+          'It uploads now and appears in #general Full path: /tmp/a.csv when you send your message.',
         ],
       });
     });
@@ -324,7 +343,7 @@ describe('the native confirmation', () => {
         workspaceName: forged,
       });
       expect(options.message).toBe('Share "config" (412 bytes) to Crew?');
-      expect(options.detail?.split('\n')).toHaveLength(2);
+      expect(options.detail?.split('\n')).toHaveLength(3);
       expect(options.detail?.split('\n')[0]).toBe('Full path: /Users/frank/.ssh/config');
       expect(options.detail).not.toMatch(/[\u2028\u2029]/);
     });
@@ -337,6 +356,58 @@ describe('the native confirmation', () => {
       expect(options.message).not.toContain('Full path');
       expect(options.detail?.indexOf('Full path: /Users/frank/.ssh/config')).toBe(0);
     });
+  });
+});
+
+describe('crewFileRefusal: the daemon credential floor, in words (Q3-01, Q3-15)', () => {
+  const credential = { code: CREW_FILE_IS_CREDENTIAL, error: 'daemon text is never shown' };
+
+  it('names the file for an upload, and the folder for a download', () => {
+    expect(crewFileRefusal(credential, 'upload', 'secrets.yaml')).toBe(
+      "\u201csecrets.yaml\u201d looks like a credential file (a password, key or token store), so Crew won't share it."
+    );
+    expect(crewFileRefusal(credential, 'download', 'id_ed25519')).toBe(
+      "Crew won't save into a credential location. Choose another folder."
+    );
+  });
+
+  it('makes a hidden character in the name visible rather than rendering it', () => {
+    expect(crewFileRefusal(credential, 'upload', 'id_rsa\u202Evsc.\n')).toBe(
+      crewShareCopy.credential('id_rsa\uFFFDvsc.\uFFFD')
+    );
+    expect(crewFileRefusal(credential, 'upload', '')).toBe(crewShareCopy.credential('This file'));
+  });
+
+  it.each([
+    ['another code', { code: 'crew_transfer_refused', error: 'Symlink file selections' }],
+    [
+      'the privacy change',
+      {
+        error:
+          'Crew connection privacy changed; refresh the verified workspace before selecting a file',
+      },
+    ],
+    ['no body', null],
+    ['a string body', 'crew_file_is_credential'],
+  ])('leaves %s to the caller', (_label, failure) => {
+    expect(crewFileRefusal(failure, 'upload', 'a.csv')).toBeUndefined();
+  });
+
+  it("is the daemon's code and sentences word for word", () => {
+    const rust = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../crates/biorouter-server/src/crew/local_files.rs'
+      ),
+      'utf8'
+    );
+    expect(rust).toContain(
+      `pub const CREDENTIAL_REFUSAL_CODE: &str = "${CREW_FILE_IS_CREDENTIAL}";`
+    );
+    const [open, rest] = crewShareCopy.credential('{name}').split('{name}');
+    expect(open).toBe('\u201c');
+    expect(rust).toContain(`"\\u{201c}{name}\\u{201d}${rest.slice(1)}"`);
+    expect(rust).toContain(`"${crewShareCopy.credentialLocation}"`);
   });
 });
 
@@ -483,7 +554,7 @@ describe('shareDroppedFile', () => {
     expect(d.confirm).toHaveBeenCalledTimes(1);
     expect(d.confirm.mock.calls[0][0]).toMatchObject({
       message: 'Share "growth.csv" (8 bytes) to Crew?',
-      detail: `Full path: ${file}\nDestination: #methods in chen-lab`,
+      detail: `Full path: ${file}\nDestination: #methods in chen-lab\nIt uploads now and appears in #methods when you send your message.`,
     });
     expect(d.register).toHaveBeenCalledWith(crewShareRegistrationBody(request, file));
     expect(d.log).not.toHaveBeenCalled();
@@ -625,6 +696,28 @@ describe('shareDroppedFile', () => {
     const d = deps({ register: vi.fn<ShareDroppedFileDeps['register']>(register) });
     await expect(shareDroppedFile(request, d)).resolves.toEqual({ outcome: 'refused', message });
     expect(d.discard).not.toHaveBeenCalled();
+  });
+
+  it('refuses a credential file after Share with the daemon sentence, and keeps no capability (Q3-15)', async () => {
+    const d = deps({
+      register: vi.fn(async () => ({
+        ok: false,
+        body: { code: CREW_FILE_IS_CREDENTIAL, error: 'unused' },
+      })),
+    });
+    await expect(shareDroppedFile(request, d)).resolves.toEqual({
+      outcome: 'refused',
+      message: crewShareCopy.credential('growth.csv'),
+    });
+    expect(d.confirm).toHaveBeenCalledTimes(1);
+    expect(d.register).toHaveBeenCalledTimes(1);
+    expect(d.discard).not.toHaveBeenCalled();
+
+    const auto = deps({ autoConfirm: true, register: d.register });
+    await expect(shareDroppedFile(request, auto)).resolves.toEqual({
+      outcome: 'refused',
+      message: crewShareCopy.credential('growth.csv'),
+    });
   });
 
   it('under the development auto-confirm, skips the dialog but logs the path it confirmed', async () => {

@@ -97,6 +97,7 @@ import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import {
   CrewSharePending,
   DEV_AUTO_CONFIRM_SHARE_ENV,
+  crewFileRefusal,
   crewShareCopy,
   parseCrewShareRequest,
   resolveDevAutoConfirmShare,
@@ -5029,6 +5030,14 @@ function registerCliInstallHandlers() {
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
+        // Q3-01: the daemon's credential floor has a sentence of its own, rebuilt here from the
+        // name this process chose, never relayed from the daemon's text.
+        const credential = crewFileRefusal(
+          failure,
+          options.direction === 'upload' ? 'upload' : 'download',
+          path.basename(selected ?? '')
+        );
+        if (credential) throw new Error(credential);
         if (
           failure?.error ===
           'Crew connection privacy changed; refresh the verified workspace before selecting a file'
