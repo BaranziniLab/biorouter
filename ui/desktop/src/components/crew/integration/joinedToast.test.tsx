@@ -1,12 +1,14 @@
-import { act, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installResizeObserverStub } from '../test/crewTestUtils';
+import { sidebarCopy } from '../sidebar/copy';
 import {
   alice,
   bob,
   channelReady,
   connection,
   currentCrew,
+  ids,
   installDaemon,
   richSnapshot,
   renderCrew,
@@ -80,6 +82,52 @@ describe('the host hears when someone joins (a result that happens off-screen)',
     // The same membership again announces nothing.
     act(() => daemon.emit(stateFrame(daemon)));
     expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a row in the host’s sidebar until the joiner is in one of their teams (Q3-52)', async () => {
+    // The Let in dialog says "you can close this"; a host who did is brought back here, not by a
+    // toast that is gone in seconds.
+    const daemon = installDaemon();
+    renderCrew();
+    await channelReady();
+    const joinedList = () =>
+      screen.queryByRole('list', { name: sidebarCopy.section.joined }) as HTMLElement | null;
+    expect(joinedList()).toBeNull();
+
+    daemon.state.snapshot = richSnapshot({ principals: [alice, bob, dave], pending_joins: [] });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() => expect(joinedList()).not.toBeNull());
+    const row = within(joinedList() as HTMLElement).getByRole('listitem');
+    expect(row).toHaveTextContent('Dave Kim (@dave) · joined');
+    // Said once, politely, and not as a second "joined": the toast already said that.
+    await waitFor(() =>
+      expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
+        'Dave Kim (@dave) isn’t in any of your teams yet.'
+      )
+    );
+
+    // The host's only team is one click away.
+    fireEvent.click(
+      within(row).getByRole('button', { name: 'Add Dave Kim (@dave) to Analysis Lab' })
+    );
+    await waitFor(() =>
+      expect(currentCrew().ui.dialog).toEqual({
+        kind: 'add-people',
+        target: 'team',
+        targetId: ids.team,
+      })
+    );
+    act(() => currentCrew().closeDialog());
+
+    // Once Dave is in the team, the row goes.
+    const base = richSnapshot();
+    daemon.state.snapshot = richSnapshot({
+      principals: [alice, bob, dave],
+      pending_joins: [],
+      teams: base.teams.map((team) => ({ ...team, members: [...team.members, dave.id] })),
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() => expect(joinedList()).toBeNull());
   });
 
   it('tells only the host', async () => {

@@ -1,17 +1,21 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { hideOthers } from 'aria-hidden';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, PendingJoin } from '../crewApi';
 import type { CrewController } from '../state/types';
+import { buildPeopleDirectory } from '../identity';
 import {
   acceptKey,
   AttentionSections,
+  newlyWithoutTeam,
   waitingChanges,
   waitingStates,
   type WaitingState,
 } from './AttentionSections';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
+import { joinedWithoutTeam } from './sidebarView';
 import {
   alice,
   bob,
@@ -20,6 +24,8 @@ import {
   makeSnapshot,
   renderWithCrew,
   secondConnection,
+  TEAM_LAB,
+  TEAM_SC,
 } from './sidebarTestUtils';
 
 const carol = { id: 'person-carol-0000', uid: 1002, username: 'carol', nickname: 'Carol Diaz' };
@@ -551,6 +557,213 @@ describe('announcing Waiting to join (T-17)', () => {
         },
       })
     );
+    expect(polite()).toHaveTextContent('');
+  });
+});
+
+describe('Joined, not in your teams (Q3-52)', () => {
+  const dana = { id: 'person-dana-0000', uid: 1003, username: 'dana', nickname: 'Dana Wu' };
+  const polite = () => document.querySelector('[data-crew-sidebar-announcer]') as HTMLElement;
+
+  /** Alice hosts; Carol joined and is in no team or channel. */
+  function hostWith(overrides: Parameters<typeof makeSnapshot>[0] = {}, extra = {}) {
+    return makeController({
+      snapshot: makeSnapshot({ principals: [alice, bob, carol], ...overrides }),
+      ...extra,
+    });
+  }
+
+  function renderJoined(controller: CrewController) {
+    return renderWithCrew(
+      <SidebarAnnouncer>
+        <AttentionSections />
+      </SidebarAnnouncer>,
+      controller
+    );
+  }
+
+  const joinedList = () => section(sidebarCopy.section.joined);
+
+  it('lists, for the host, someone who joined and is in none of their teams', () => {
+    renderJoined(hostWith());
+    const rows = within(joinedList()).getAllByRole('listitem');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('Carol Diaz (@carol) · joined');
+    // The section's name says whose teams: the host's snapshot holds only the host's own.
+    expect(sidebarCopy.section.joined).toBe('Joined, not in your teams');
+    // No machine ID reaches the screen.
+    expect(rows[0].textContent).not.toMatch(/person-/);
+  });
+
+  it('shows a member nothing: only the host places people', () => {
+    renderJoined(hostWith({ actor: bob }, { isHost: false }));
+    expect(screen.queryByRole('list', { name: sidebarCopy.section.joined })).toBeNull();
+  });
+
+  it('leaves out anyone in a team or channel the host can see, invited by the host, or gone', () => {
+    const snapshot = makeSnapshot({
+      principals: [
+        alice,
+        bob,
+        carol,
+        dana,
+        { ...dana, id: 'person-gone-0000', username: 'gone', active: false },
+      ],
+      invitations: [
+        {
+          id: 'invitation-dana',
+          kind: 'team',
+          target_id: TEAM_LAB,
+          principal_id: dana.id,
+          inviter_id: alice.id,
+          expires_at: 4_000_000_000,
+          target_name: 'Analysis Lab',
+        },
+      ],
+    });
+    const dir = buildPeopleDirectory(snapshot, null);
+    // Bob is in a team; Dana has a live invitation from the host; "gone" was removed; Alice hosts.
+    expect(joinedWithoutTeam(snapshot, dir).map((row) => row.id)).toEqual([carol.id]);
+
+    // A channel of the host's counts: a channel invitation admits without the team.
+    const inChannel = makeSnapshot({
+      principals: [alice, bob, carol],
+      channels: makeSnapshot().channels.map((channel) =>
+        channel.id === 'chan-intro' ? { ...channel, members: [alice.id, carol.id] } : channel
+      ),
+    });
+    expect(joinedWithoutTeam(inChannel, buildPeopleDirectory(inChannel, null))).toEqual([]);
+
+    // An invitation that ran out is not an action taken: Dana is listed again.
+    const expired = makeSnapshot({
+      principals: [alice, bob, dana],
+      invitations: [
+        {
+          id: 'invitation-dana',
+          kind: 'team',
+          target_id: TEAM_LAB,
+          principal_id: dana.id,
+          inviter_id: alice.id,
+          expires_at: 10,
+          target_name: 'Analysis Lab',
+        },
+      ],
+    });
+    expect(
+      joinedWithoutTeam(expired, buildPeopleDirectory(expired, null), 20).map((row) => row.id)
+    ).toEqual([dana.id]);
+  });
+
+  it('opens Add people for the only team the host can add to', () => {
+    // Without direct add, only the teams the host created: here, just Analysis Lab.
+    const controller = hostWith(
+      {
+        teams: makeSnapshot().teams.map((team) =>
+          team.id === TEAM_SC ? { ...team, created_by: bob.id } : team
+        ),
+      },
+      { capabilities: null }
+    );
+    renderJoined(controller);
+    const add = within(joinedList()).getByRole('button', {
+      name: 'Add Carol Diaz (@carol) to Analysis Lab',
+    });
+    expect(add).toHaveTextContent(sidebarCopy.joined.addToTeam);
+    fireEvent.click(add);
+    expect(controller.openDialog).toHaveBeenCalledWith({
+      kind: 'add-people',
+      target: 'team',
+      targetId: TEAM_LAB,
+    });
+  });
+
+  it('asks which team when the host can add to several', async () => {
+    const user = userEvent.setup();
+    const controller = hostWith({}, { capabilities: ['direct_add_v1'] });
+    renderJoined(controller);
+    await user.click(
+      within(joinedList()).getByRole('button', { name: 'Add Carol Diaz (@carol) to a team' })
+    );
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual(['Analysis Lab', 'single-cell']);
+    await user.click(within(menu).getByRole('menuitem', { name: 'single-cell' }));
+    expect(controller.openDialog).toHaveBeenCalledWith({
+      kind: 'add-people',
+      target: 'team',
+      targetId: TEAM_SC,
+    });
+  });
+
+  it('offers nothing to press where the host can add to no team, and still says who is left', () => {
+    renderJoined(
+      hostWith(
+        { teams: makeSnapshot().teams.map((team) => ({ ...team, created_by: bob.id })) },
+        { capabilities: null }
+      )
+    );
+    const row = within(joinedList()).getByRole('listitem');
+    expect(row).toHaveTextContent('Carol Diaz (@carol) · joined');
+    expect(within(row).queryByRole('button')).toBeNull();
+  });
+
+  it('disables Add to a team… while it shows only the last verified copy', () => {
+    const snapshot = makeSnapshot({ principals: [alice, bob, carol] });
+    renderJoined(
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        lastVerified: {
+          connectionId: connection.id,
+          snapshot,
+          observedPrivacy: {
+            connectionId: connection.id,
+            mode: 'private',
+            institutionId: 'ucsf',
+            policyEpoch: 1,
+          },
+          runs: [],
+          labels: null,
+          teamId: TEAM_LAB,
+          channelId: 'chan-methods',
+          messages: [],
+        },
+      })
+    );
+    for (const button of within(joinedList()).getAllByRole('button')) {
+      expect(button).toBeDisabled();
+    }
+  });
+
+  it('drops the row once the person is in a team', () => {
+    const view = renderJoined(hostWith());
+    expect(within(joinedList()).getAllByRole('listitem')).toHaveLength(1);
+    view.update(
+      hostWith({
+        teams: makeSnapshot().teams.map((team) =>
+          team.id === TEAM_SC ? { ...team, members: [alice.id, carol.id] } : team
+        ),
+      })
+    );
+    expect(screen.queryByRole('list', { name: sidebarCopy.section.joined })).toBeNull();
+  });
+
+  it('announces someone newly listed, politely, and nobody already there', () => {
+    const view = renderJoined(makeController({ snapshot: makeSnapshot() }));
+    // The first view is the baseline.
+    expect(polite()).toHaveTextContent('');
+    view.update(hostWith());
+    expect(polite()).toHaveTextContent('Carol Diaz (@carol) isn’t in any of your teams yet.');
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    expect(newlyWithoutTeam(null, [])).toEqual([]);
+  });
+
+  it('says nothing about the people already listed when Crew opens', () => {
+    renderJoined(hostWith());
     expect(polite()).toHaveTextContent('');
   });
 });

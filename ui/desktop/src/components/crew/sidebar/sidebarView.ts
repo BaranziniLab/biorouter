@@ -16,6 +16,7 @@ import {
   type KnownInstitution,
   type PeopleDirectory,
 } from '../identity';
+import { liveInvitations } from '../dialogs/people';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
 import { knownInstitutions } from '../pane/presentation';
@@ -299,6 +300,62 @@ export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null):
       otherDeviceTried:
         typeof join.mismatched_attempts === 'number' && join.mismatched_attempts > 0,
     }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// People who joined and are in none of the host's teams (Q3-52)
+// ---------------------------------------------------------------------------------------------
+
+export interface JoinedRow {
+  id: string;
+  person: CrewPerson;
+}
+
+/**
+ * The people a host should add somewhere: active members who are in none of the teams, and none
+ * of the channels, the host's snapshot holds, and whom the host has not already invited to one.
+ * A joiner the host let in and then walked away from — as the Let in dialog says they can — used
+ * to be announced once by a toast and then never again (Q3-52).
+ *
+ * ⚠ **Only the host's own teams.** The broker's snapshot lists the teams the viewer is a member
+ * of, the host included, so "in no team" cannot be known here; "in none of yours" can. The
+ * section says exactly that. A channel the host can see counts too: a channel invitation admits
+ * someone to a channel without its team (`invitation.accept`), and that person has somewhere to
+ * be. A live invitation from the host counts as acted on: the team's header already says
+ * "· 1 invited". Display only: membership is the broker's.
+ */
+export function joinedWithoutTeam(
+  snapshot: Pick<
+    Snapshot,
+    'actor' | 'workspace' | 'principals' | 'teams' | 'channels' | 'invitations'
+  > | null,
+  dir: PeopleDirectory,
+  nowSeconds?: number
+): JoinedRow[] {
+  if (!snapshot || !Array.isArray(snapshot.principals)) return [];
+  const me = snapshot.actor?.id ?? null;
+  const host = snapshot.workspace?.host_principal_id ?? null;
+  const placed = new Set<string>();
+  for (const group of [snapshot.teams, snapshot.channels]) {
+    if (!Array.isArray(group)) continue;
+    for (const item of group) {
+      if (item && Array.isArray(item.members)) item.members.forEach((id) => placed.add(id));
+    }
+  }
+  const invited = new Set(
+    liveInvitations(Array.isArray(snapshot.invitations) ? snapshot.invitations : [], nowSeconds)
+      .filter((invitation) => me !== null && invitation.inviter_id === me)
+      .map((invitation) => invitation.principal_id)
+  );
+  const rows: JoinedRow[] = [];
+  for (const principal of snapshot.principals) {
+    if (!principal || typeof principal.id !== 'string') continue;
+    if (principal.active === false || principal.id === me || principal.id === host) continue;
+    if (placed.has(principal.id) || invited.has(principal.id)) continue;
+    const person = dir.byId(principal.id) ?? personFromProjection(principal);
+    if (person) rows.push({ id: principal.id, person });
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------------------------------------

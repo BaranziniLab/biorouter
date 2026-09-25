@@ -83,6 +83,12 @@ export const sidebarCopy = {
     /** Authored in sentence case; `text-caps` uppercases them. */
     invitations: 'Invitations',
     waiting: 'Waiting to join',
+    /**
+     * The host's reminder of people who joined and are in none of their teams (Q3-52). "Your
+     * teams", not "a team": the host's snapshot holds only the teams the host is in, so someone in
+     * a team the host is not in would otherwise be told falsely they are in none.
+     */
+    joined: 'Joined, not in your teams',
   },
 
   invitation: {
@@ -136,6 +142,21 @@ export const sidebarCopy = {
     separator: '·',
     inviteAgain: 'Invite again…',
     inviteAgainLabel: (username: string) => `Invite @${username} again`,
+  },
+
+  /**
+   * A person who joined and is in none of the host's teams (Q3-52): the host who let them in and
+   * closed the dialog ("you can close this") is brought back to add them. `person` is
+   * `personLabel(…, 'inline')`; `team` is the team as typed.
+   */
+  joined: {
+    /** After the person's name, muted: `Gina Rossi (@crew_gina) · joined`. */
+    state: 'joined',
+    addToTeam: 'Add to a team…',
+    addToTeamLabel: (person: string) => `Add ${person} to a team`,
+    addToTeamNamedLabel: (person: string, team: string) => `Add ${person} to ${team}`,
+    /** Spoken once, when someone new appears in the section. */
+    announce: (person: string) => `${person} isn’t in any of your teams yet.`,
   },
 
   team: {

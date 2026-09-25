@@ -1,16 +1,32 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import { AlertTriangle } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../ui/dropdown-menu';
 import type { Snapshot } from '../crewApi';
-import { identityCopy, joinerPerson, PersonName, personLabel } from '../identity';
+import { directAddSupported } from '../dialogs/people';
+import {
+  identityCopy,
+  joinerPerson,
+  PersonName,
+  personLabel,
+  type PeopleDirectory,
+} from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useSidebarAnnounce } from './SidebarAnnouncer';
 import {
   invitationsToMe,
+  joinedWithoutTeam,
+  teamSections,
   useSidebarView,
   waitingToJoin,
   type InvitationRow,
+  type JoinedRow,
   type WaitingRow,
 } from './sidebarView';
 import './crew-sidebar.css';
@@ -128,6 +144,53 @@ function useWaitingAnnouncements(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Who joined and is in none of the host's teams (Q3-52)
+// ---------------------------------------------------------------------------------------------
+
+/** The people newly in "Joined, not in your teams": in `after` and not in `before`. */
+export function newlyWithoutTeam(
+  before: ReadonlySet<string> | null,
+  after: readonly JoinedRow[]
+): JoinedRow[] {
+  if (!before) return [];
+  return after.filter((row) => !before.has(row.id));
+}
+
+/**
+ * Speaks, politely, each person who newly appears in "Joined, not in your teams" (Q3-52). The
+ * first verified view of a workspace is the baseline, as for Waiting to join, so opening Crew
+ * never reads out the people already listed. The joined toast says THAT someone joined; this says
+ * what is left to do, so the two never repeat each other.
+ */
+function useJoinedAnnouncements(
+  rows: readonly JoinedRow[] | null,
+  connectionId: string,
+  workspaceId: string,
+  dir: PeopleDirectory
+) {
+  const { announce } = useSidebarAnnounce();
+  const seen = useRef<{ key: string; ids: Set<string> } | null>(null);
+
+  useEffect(() => {
+    if (!rows) return;
+    const key = `${connectionId}\u0000${workspaceId}`;
+    const before = seen.current?.key === key ? seen.current.ids : null;
+    seen.current = { key, ids: new Set(rows.map((row) => row.id)) };
+    const fresh = newlyWithoutTeam(before, rows);
+    if (fresh.length === 0) return;
+    announce(
+      fresh.map((row) => copy.joined.announce(personLabel(row.person, 'inline', dir))).join(' ')
+    );
+  }, [rows, connectionId, workspaceId, dir, announce]);
+}
+
+/** A team the host can add someone to, as the picker names it. */
+interface AddableTeam {
+  id: string;
+  name: string;
+}
+
+// ---------------------------------------------------------------------------------------------
 // The sections
 // ---------------------------------------------------------------------------------------------
 
@@ -146,8 +209,14 @@ function useWaitingAnnouncements(
  * refused, the warning says what to do, and Let in… stays offered so a mistyped code can be
  * entered again (the dialog then offers Replace code).
  *
- * Both name people through `PersonName` and never show an ID: an invitation the broker did not
- * name yet reads "Invitation" from its inviter, and a joiner reads `@bob` first (the joiner
+ * Last, for the host, **Joined, not in your teams** (Q3-52): each person who joined and is in none
+ * of the host's teams, as "{name} · joined" with **Add to a team…** — straight to Add people for
+ * the only team the host can add to, or a picker of them. The row leaves once the person is in
+ * one; someone newly listed is announced politely. "Your" teams, because the snapshot holds only
+ * the teams the host is in (`joinedWithoutTeam`).
+ *
+ * All of them name people through `PersonName` and never show an ID: an invitation the broker did
+ * not name yet reads "Invitation" from its inviter, and a joiner reads `@bob` first (the joiner
  * context), because at a host's decision the account name is what matters.
  */
 export function AttentionSections() {
@@ -156,7 +225,27 @@ export function AttentionSections() {
   const invitations = useMemo(() => invitationsToMe(snapshot, dir), [snapshot, dir]);
   const waiting = useMemo(() => waitingToJoin(snapshot), [snapshot]);
   useWaitingAnnouncements(snapshot, verified, crew.connectionId, title);
-  if (invitations.length === 0 && waiting.length === 0) return null;
+  const joined = useMemo(
+    () => (crew.isHost ? joinedWithoutTeam(snapshot, dir) : []),
+    [crew.isHost, snapshot, dir]
+  );
+  useJoinedAnnouncements(
+    crew.isHost && verified ? joined : null,
+    crew.connectionId,
+    snapshot?.workspace?.id ?? '',
+    dir
+  );
+  // The teams the host may add people to: `team.add_member` lets the host add to any of them where
+  // the broker adds directly (`direct_add_v1`); otherwise inviting is the creator's alone (Q2-41).
+  const directAdd = directAddSupported(crew.capabilities);
+  const addable = useMemo<AddableTeam[]>(() => {
+    const me = snapshot?.actor?.id;
+    const creators = new Map((snapshot?.teams ?? []).map((team) => [team.id, team.created_by]));
+    return teamSections(snapshot)
+      .filter((section) => directAdd || (me !== undefined && creators.get(section.id) === me))
+      .map((section) => ({ id: section.id, name: section.name }));
+  }, [snapshot, directAdd]);
+  if (invitations.length === 0 && waiting.length === 0 && joined.length === 0) return null;
 
   const letIn = (username: string, describedBy?: string) => (
     <Button
@@ -188,7 +277,82 @@ export function AttentionSections() {
           ))}
         </Section>
       )}
+      {joined.length > 0 && (
+        <Section label={copy.section.joined} attention="joined">
+          {joined.map((row) => (
+            <JoinedItem key={row.id} row={row} teams={addable} dir={dir} actionable={verified} />
+          ))}
+        </Section>
+      )}
     </>
+  );
+}
+
+/**
+ * One "Joined, not in your teams" row (Q3-52): "{name} · joined", and Add to a team… — the Add
+ * people dialog for the only team the host can add to, or a picker when there are several. With
+ * none, the row still says who is waiting to be placed.
+ */
+function JoinedItem({
+  row,
+  teams,
+  dir,
+  actionable,
+}: {
+  row: JoinedRow;
+  teams: readonly AddableTeam[];
+  dir: PeopleDirectory;
+  /** False while the sidebar shows only the last verified copy: nothing is actionable then. */
+  actionable: boolean;
+}) {
+  const crew = useCrew();
+  const name = personLabel(row.person, 'inline', dir);
+  const addTo = (teamId: string) =>
+    crew.openDialog({ kind: 'add-people', target: 'team', targetId: teamId });
+  const only = teams.length === 1 ? teams[0] : null;
+
+  return (
+    <li className="flex min-w-0 items-center gap-2 px-2 py-1.5" data-crew-joined="">
+      <span className="crew-sidebar-wrap min-w-0 flex-1 text-secondary">
+        <PersonName person={row.person} context="inline" dir={dir} />
+        <span className="text-text-muted" data-crew-joined-state="">
+          {` ${copy.waiting.separator} ${copy.joined.state}`}
+        </span>
+      </span>
+      {only ? (
+        <Button
+          variant="secondary"
+          size="xs"
+          className="no-drag"
+          aria-label={copy.joined.addToTeamNamedLabel(name, only.name)}
+          disabled={!actionable}
+          onClick={() => addTo(only.id)}
+        >
+          {copy.joined.addToTeam}
+        </Button>
+      ) : teams.length > 1 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="secondary"
+              size="xs"
+              className="no-drag"
+              aria-label={copy.joined.addToTeamLabel(name)}
+              disabled={!actionable}
+            >
+              {copy.joined.addToTeam}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" data-crew-menu="joined-team">
+            {teams.map((team) => (
+              <DropdownMenuItem key={team.id} onSelect={() => addTo(team.id)}>
+                <bdi className="crew-sidebar-truncate">{team.name}</bdi>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+    </li>
   );
 }
 
