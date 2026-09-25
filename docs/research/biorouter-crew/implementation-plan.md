@@ -1187,6 +1187,23 @@ Coordinator decision; the user delegated product calls. Source: round-2 triage (
   - Field boundaries under 3:1 at rest and status dots at 1.28:1: design-system decisions, not hard failures.
   - Reflow at 400%, keyboard shortcuts, channel discovery, a status indicator outside Crew, and a new-window control by the switcher: deferred features or app-shell scope.
 
+**LIVE-QA round 3 (2026-09-24; gates ALL_GREEN at `ac02e57a`).** Unaided task rate 85% (51/60), up from 57% in round 2 and 39% in round 1. Findings: 0 P0, 5 P1, 58 P2; 54 round-2 findings verified fixed. Henry, a brand-new PI who had never used a terminal, hosted a workspace with "Start it for me" in about 4 s and completed 14 of 15 steps unaided; Gina, a brand-new novice, 15 of 18 unaided. The design critic scored 8.5/10. Security held on every boundary tested: D-DROP native confirmation, host-start, keepalive (leaks nothing), direct add, the institution gate, and no machine IDs on screen. The one security finding, **Q3-01** — the renderer could register any local path through `POST /crew/files`, including `secrets.yaml` — is being closed in round 4 by applying the BR-23 credential floor (secret guard) to local file registration, upload and download. Its structural half, a main-only door, is deferred: the renderer's user-action proof also reaches `POST /agent/call_tool`, and the CLI registers files through the same route with the same proof, so it needs a security design decision. Fixture network: the Mac moved to a full-tunnel VPN, and its egress `128.218.42.202/32` was added to the fixture security group (`169.230.180.159/32` kept); new SSH, daemon and app processes start outside the Bash tool sandbox (see `STAGE.md`). Report: `/private/tmp/crew-ui-redesign/live/reports/TRIAGE-r3.md`; structured `/private/tmp/crew-ui-redesign/live/round3-result.json`. Round 4 is in progress.
+
+Not actionable in round 3, with the reason:
+  - A main-only door for local file registration (Q3-01's structural half): the user-action proof also reaches `/agent/call_tool`, and the CLI uses the same route and proof; needs a security design decision.
+  - Deleting an uploaded-but-unsent file from the host (security F2's structural half): the broker has no `blob.discard`; the alternative, uploading only on Send, is also a protocol addition. The copy staying is now said honestly (Q3-14).
+  - Avatar hue collisions (host and "you" both lavender): D-AVATAR derives the hue from the username; per-workspace distinct hues need a workspace-scoped assignment and a stable join order the snapshot lacks. Coordinator decision.
+  - Listing or cancelling legacy `{uid, public_key}` enrollments (security F5): needs a broker method; the system-account half is fixed.
+  - The observer's re-authorization semantics (security F7): a security-reviewed change; the sentence is already true.
+  - Chat product: raw tool rows and bookkeeping rows in the agent conversation, Edit on a finished task's prompt, truncated tab titles, Recents lag, duplicate chat titles, the raw model id.
+  - "All extensions loaded" on opening a task chat (intermittent): app-level toast policy (`utils/extensionErrorUtils.ts` rule 1); flagged to the app owner.
+  - "Copied!" versus "Copied": an app-wide label decision.
+  - @-mention suggestions, Reply, keyboard shortcuts, channel discovery, reflow at 400%: new or deferred features.
+  - `/crew` in an empty chat: by decision, a session must exist before it can be granted.
+  - By design or spec: Carol N7 (menu hover edge after keyboard use), the "Restricted" label and "Refresh channel", the rail emptying while offline, a visible arrow-key hint for the rail, the new-window control by the switcher, the shared Button's `active:scale`.
+  - The real native share sheet's wording was not seen by the GUI critics (the dev gate answered it); security read it on two apps and it was accurate.
+  Stage and harness notes (not product defects) are in the report's §8.
+
 <!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
 
 ## Related documentation
