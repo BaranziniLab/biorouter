@@ -75,6 +75,13 @@ function statusFrom(value: unknown): CredentialStatus | null {
     : null;
 }
 
+/** "Added September 24, 2026 · with an invitation": when and how a device joined, as known. */
+function deviceMeta(device: CrewDevice): string {
+  const date = addedOn(device);
+  const via = device.added_via ? copy.addedVia[device.added_via] : undefined;
+  return [date ? copy.deviceAdded(date) : null, via].filter(Boolean).join(' · ');
+}
+
 function addedOn(device: CrewDevice): string | null {
   if (typeof device.added_at !== 'number' || !Number.isFinite(device.added_at)) return null;
   return new Date(device.added_at * 1000).toLocaleDateString(undefined, {
@@ -112,7 +119,10 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
  * main process's own native dialog; nothing secret passes through this renderer.
  *
  * It also lists the devices on the person's account, so "A new device was added…" has somewhere to
- * send them to review it.
+ * send them to review it: each device's fingerprint, and under it, on its own left-aligned line,
+ * when and how it was added (QA Q3-41). When this computer is the only device, that line sits under
+ * its fingerprint above and nothing repeats the fingerprint. The dialog opens on Done: it is read,
+ * not filled in, and the first key must not copy anything.
  */
 export function KeysDialog({ onClose }: KeysDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -127,6 +137,9 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
   const connection = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
   const devices = snapshot?.actor.devices ?? [];
   const thisDevice = useDeviceFingerprint(connection);
+  // The account's one device is this computer: its fingerprint is already in the box above.
+  const onlyThisDevice =
+    thisDevice !== null && devices.length === 1 && devices[0].fingerprint === thisDevice;
 
   const readStatus = React.useCallback(async () => {
     const generation = ++reads.current;
@@ -182,7 +195,11 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
       size="md"
       purpose="info"
       title={copy.title}
-      footer={<Button onClick={onClose}>{copy.done}</Button>}
+      footer={
+        <Button autoFocus onClick={onClose}>
+          {copy.done}
+        </Button>
+      }
     >
       <div className="flex flex-col gap-4 pb-1">
         <div className="flex min-w-0 items-center justify-between gap-3">
@@ -226,22 +243,26 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
           <div className="flex min-w-0 flex-col gap-1.5">
             <p className="text-label text-text-default">{copy.deviceKey}</p>
             <CopyField value={thisDevice} label={copy.deviceKeyLabel} />
+            {onlyThisDevice && deviceMeta(devices[0]) ? (
+              <p className="text-supporting text-text-muted" data-crew-device-meta="">
+                {deviceMeta(devices[0])}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
-        {devices.length > 0 ? (
+        {devices.length > 0 && !onlyThisDevice ? (
           <section className="flex min-w-0 flex-col gap-1.5" aria-label={copy.devices}>
             <h3 className="text-caps text-text-muted">{copy.devices}</h3>
             <ul className="biorouter-settings-list">
               {devices.map((device) => {
-                const date = addedOn(device);
-                const via = device.added_via ? copy.addedVia[device.added_via] : undefined;
+                const meta = deviceMeta(device);
                 return (
                   <li
                     key={device.fingerprint}
-                    className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2"
+                    className="biorouter-settings-row flex min-w-0 flex-col items-start gap-0.5 px-3 py-2"
                   >
-                    <span className="flex shrink-0 items-center gap-2">
+                    <span className="flex min-w-0 items-center gap-2">
                       <span
                         className="whitespace-nowrap font-mono text-supporting text-text-default"
                         translate="no"
@@ -254,9 +275,13 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                         </Badge>
                       ) : null}
                     </span>
-                    <span className="min-w-0 text-right text-supporting text-text-muted">
-                      {[date ? copy.deviceAdded(date) : null, via].filter(Boolean).join(' · ')}
-                    </span>
+                    {/* Its own line, left-aligned: it wrapped right-aligned beside the
+                        fingerprint (QA Q3-41). */}
+                    {meta ? (
+                      <span className="text-supporting text-text-muted" data-crew-device-meta="">
+                        {meta}
+                      </span>
+                    ) : null}
                   </li>
                 );
               })}

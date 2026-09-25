@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { keysCopy } from './copy';
-import { renderWithCrew } from './dialogsTestHarness';
+import { alice, connection, makeSnapshot, renderWithCrew } from './dialogsTestHarness';
+import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { CREDENTIAL_BACKENDS, KeysDialog, keysErrorText, STATUS_PATIENCE_MS } from './KeysDialog';
 
 /**
@@ -142,5 +143,80 @@ describe('the backends the main process accepts', () => {
     const preload = readFileSync(join(SRC, 'preload.ts'), 'utf8');
     const typed = /crewCredentials:[\s\S]*?backend:\s*([^;]+);/.exec(preload)?.[1] ?? '';
     for (const backend of CREDENTIAL_BACKENDS) expect(typed).toContain(`'${backend}'`);
+  });
+});
+
+describe('KeysDialog, the layout (QA Q3-41)', () => {
+  const ADDED = 1_758_700_000;
+  const addedText = () =>
+    `${keysCopy.deviceAdded(
+      new Date(ADDED * 1000).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    )} · ${keysCopy.addedVia.invitation_code}`;
+
+  it('opens on Done: the dialog is read, and the first key must not copy anything', async () => {
+    credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
+    // A saved device ID that IS the digest, as a real profile has: the fingerprint and its Copy are
+    // there from the first frame, and the dialog's own first-control focus landed on Copy.
+    renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
+      connections: [{ ...connection, device_id: 'ef'.repeat(32) }],
+    });
+    const dialog = await screen.findByRole('dialog', { name: keysCopy.title });
+    expect(
+      within(dialog).getByRole('button', { name: `Copy ${keysCopy.deviceKeyLabel}` })
+    ).toBeInTheDocument();
+    const done = within(dialog).getByRole('button', { name: keysCopy.done });
+    await waitFor(() => expect(done).toHaveFocus());
+  });
+
+  it('shows this computer once when it is the account’s only device, with when it was added', async () => {
+    credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
+    const mine = groupedFingerprint((await workspaceKeyFingerprint(connection.public_key))!);
+    renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
+      snapshot: makeSnapshot({
+        actor: {
+          ...alice,
+          devices: [{ fingerprint: mine, added_at: ADDED, added_via: 'invitation_code' }],
+        },
+      }),
+    });
+    const dialog = await screen.findByRole('dialog', { name: keysCopy.title });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: `Copy ${keysCopy.deviceKeyLabel}` }))
+    );
+    await waitFor(() =>
+      expect(within(dialog).queryByRole('region', { name: keysCopy.devices })).toBeNull()
+    );
+    // The fingerprint appears once — in the box to copy — and the line under it says when.
+    expect(within(dialog).getAllByText(mine)).toHaveLength(1);
+    expect(within(dialog).getByText(addedText())).toHaveAttribute('data-crew-device-meta');
+  });
+
+  it('puts each device’s when-and-how on its own line under its fingerprint', async () => {
+    credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
+    const mine = groupedFingerprint((await workspaceKeyFingerprint(connection.public_key))!);
+    renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
+      snapshot: makeSnapshot({
+        actor: {
+          ...alice,
+          devices: [
+            { fingerprint: '3F2A 9C1E 77B0 D4E1', added_at: ADDED, added_via: 'invitation_code' },
+            { fingerprint: mine, added_at: ADDED, added_via: 'invitation_code' },
+          ],
+        },
+      }),
+    });
+    const devices = await screen.findByRole('region', { name: keysCopy.devices });
+    await waitFor(() => expect(within(devices).getAllByText(keysCopy.thisDevice)).toHaveLength(1));
+    for (const row of within(devices).getAllByRole('listitem')) {
+      // A column: the fingerprint line, then the meta line, both from the start edge.
+      expect(row).toHaveClass('flex-col', 'items-start');
+      const meta = within(row).getByText(addedText());
+      expect(meta).toHaveAttribute('data-crew-device-meta');
+      expect(meta).not.toHaveClass('text-right');
+    }
   });
 });
