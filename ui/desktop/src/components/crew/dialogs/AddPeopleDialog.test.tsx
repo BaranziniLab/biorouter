@@ -259,7 +259,7 @@ describe('AddPeopleDialog and its checklist', () => {
 });
 
 describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
-  it('lists who is in already, host and you first, names the workspace’s invitees, and shows one Done', async () => {
+  it('lists who is in already, owner and you first, names the workspace’s invitees, and shows one Done', async () => {
     const zed = { id: 'person-zed', uid: 1009, username: 'zed', nickname: 'Aaron Zed' };
     const snapshot = makeSnapshot({
       actor: bob,
@@ -295,9 +295,11 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
         .getAllByRole('listitem')
         .map((row) => row.querySelector('[data-person-context]')?.textContent)
     ).toEqual([
-      expect.stringContaining('Alice Chen'),
+      // The channel's owner, who is also you (QA Q4-32), then everyone else by name — the host
+      // included, as the details pane's Members tab orders the same channel.
       expect.stringContaining('Bob Lee'),
       expect.stringContaining('Aaron Zed'),
+      expect.stringContaining('Alice Chen'),
       expect.stringContaining('Carol Diaz'),
     ]);
     expect(

@@ -121,7 +121,8 @@ export const workspaceSettingsCopy = {
   notSet: 'Not set',
   setInstitution: (id: string) => `Set institution to ${id}…`,
   institutionNeedsConnection: 'Add your institution in Connection settings first.',
-  hostOnly: 'Only the host can change this.',
+  /** Under Privacy, for a member: names what "this" was (QA Q4-39). */
+  hostOnly: (workspace: string) => `Only the host can change ${workspace}’s privacy.`,
   noMembers: (workspace: string) => `No one else has joined ${workspace} yet.`,
   done: 'Done',
 } as const;

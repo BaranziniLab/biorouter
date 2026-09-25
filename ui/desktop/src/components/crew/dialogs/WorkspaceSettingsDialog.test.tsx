@@ -268,7 +268,9 @@ describe('WorkspaceSettingsDialog', () => {
     renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     expect(within(dialog).queryByRole('button', { name: copy.allowPublic })).toBeNull();
-    expect(within(dialog).getAllByText(copy.hostOnly).length).toBeGreaterThan(0);
+    // Names what "this" was (QA Q4-39).
+    expect(within(dialog).getAllByText(copy.hostOnly('lab')).length).toBeGreaterThan(0);
+    expect(copy.hostOnly('lab')).toBe('Only the host can change lab’s privacy.');
     fireEvent.mouseDown(within(dialog).getByRole('tab', { name: 'People' }));
     fireEvent.click(within(dialog).getByRole('tab', { name: 'People' }));
     await waitFor(() => expect(dialog).toHaveTextContent('Members'));
@@ -296,7 +298,9 @@ describe('WorkspaceSettingsDialog', () => {
   });
 
   it('makes the connection public only through the typed confirmation', async () => {
-    const { crew } = renderSettings({ tab: 'privacy' });
+    const snapshot = makeSnapshot();
+    snapshot.workspace.mode = 'public';
+    const { crew } = renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     fireEvent.click(within(dialog).getByRole('button', { name: copy.makePublic }));
     const confirm = await screen.findByRole('alertdialog', {
@@ -398,6 +402,41 @@ describe('WorkspaceSettingsDialog', () => {
     }
     expect(within(dialog).queryByRole('button', { name: copy.invite })).toBeNull();
     expect(within(dialog).getAllByRole('tabpanel')).toHaveLength(1);
+  });
+
+  it('sorts people without a chosen name by it, never by the "@" in front (QA Q4-32)', async () => {
+    const named = { id: 'person-aaron', uid: 1010, username: 'zz_park', nickname: 'Aaron Park' };
+    const unnamed = (username: string, uid: number) => ({
+      id: `person-${username}`,
+      uid,
+      username,
+      nickname: username,
+    });
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [
+        unnamed('crew_frank', 1011),
+        named,
+        bob,
+        { id: 'person-erin', uid: 1012, username: 'crew_erin', nickname: 'Erin Wu' },
+        unnamed('crew_dave', 1013),
+        alice,
+      ],
+    });
+    renderSettings({ tab: 'people' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const rows = within(dialog)
+      .getAllByRole('button', { name: / options$/ })
+      .map((button) => button.getAttribute('aria-label'));
+    // Host, you, then by the name each row shows — "@crew_dave" files under c, not before "A".
+    expect(rows).toEqual([
+      'Alice Chen (@alice) options',
+      'Bob Lee (@bob) options',
+      'Aaron Park (@zz_park) options',
+      '@crew_dave options',
+      '@crew_frank options',
+      'Erin Wu (@crew_erin) options',
+    ]);
   });
 
   it('lists the host first, then you, then everyone else alphabetically', async () => {
@@ -519,12 +558,41 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
   });
 
   it('names the connection-only action as the popover does, with the popover’s one line', async () => {
-    renderSettings({ tab: 'privacy' });
+    const snapshot = makeSnapshot();
+    snapshot.workspace.mode = 'public';
+    renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     const button = within(dialog).getByRole('button', { name: 'Make my connection public…' });
     expect(button).toHaveAccessibleDescription(
-      sidebarCopy.privacy.makePublicEffect('lab', 'private')
+      sidebarCopy.privacy.makePublicEffect('lab', 'public')
     );
+  });
+
+  it('offers no downgrade in a workspace that is Private for everyone, as the popover (QA Q4-39)', async () => {
+    // The default fixture's workspace is Private for everyone, and the connection is Private.
+    for (const actor of [alice, bob]) {
+      const view = renderSettings({ tab: 'privacy' }, { snapshot: makeSnapshot({ actor }) });
+      const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+      expect(dialog).toHaveTextContent(copy.privateForEveryone);
+      // A control that changes nothing, and the line saying so, are both gone.
+      expect(within(dialog).queryByRole('button', { name: copy.makePublic })).toBeNull();
+      expect(dialog).not.toHaveTextContent(sidebarCopy.privacy.makePublicEffect('lab', 'private'));
+      expect(dialog.textContent).not.toMatch(/stay the same|change this\./);
+      view.unmount();
+    }
+  });
+
+  it('rings the focused Host badge outside the chip, where its fill cannot cover it (QA Q4-40)', async () => {
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const trigger = within(dialog).getByText(copy.host).parentElement as HTMLElement;
+    expect(trigger).toHaveClass('crew-settings-host-badge');
+    // jsdom loads no stylesheet: the rule is read at the source.
+    const ring = cssRule('.crew-settings-host-badge:focus-visible');
+    expect(ring).toMatch(/outline:\s*2px solid var\(--ring\);/);
+    expect(ring).toMatch(/outline-offset:\s*2px;/);
+    // Not an inset shadow, which the chip's own background paints over.
+    expect(ring).not.toMatch(/box-shadow:\s*inset/);
   });
 
   it('says what the Host badge means, on hover and to the keyboard', async () => {
@@ -543,6 +611,34 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
 });
 
 describe('WorkspaceSettingsDialog, the seams (QA Q3-40, Q3-26, Q3-33)', () => {
+  it('divides its rows with a straight hairline, not a border that curls at the corners (QA Q4-25)', async () => {
+    renderSettings(
+      { tab: 'people' },
+      { snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }) }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    // Every row of every tab: General's and Privacy's label rows, members, waiting joiners.
+    const rows = dialog.querySelectorAll('.biorouter-settings-row');
+    expect(rows.length).toBeGreaterThan(5);
+    for (const row of Array.from(rows)) expect(row).toHaveClass('crew-settings-row');
+
+    // jsdom loads no stylesheet: the rules are read at the source. The rounded row loses its
+    // bottom border, keeping its room, and draws the divider as a straight inset line.
+    const row = cssRule('.crew-settings-panel .crew-settings-row');
+    expect(row).toMatch(/border-bottom-width:\s*0;/);
+    expect(row).toMatch(/margin-bottom:\s*1px;/);
+    const line = cssRule('.crew-settings-panel .crew-settings-row::after');
+    expect(line).toMatch(/position:\s*absolute;/);
+    expect(line).toMatch(/inset-inline:\s*var\(--radius-md\);/);
+    // A border, which forced colours still draw; they drop background colours.
+    expect(line).toMatch(/border-top:\s*1px solid var\(--border-subtle\);/);
+    expect(line).not.toMatch(/background/);
+    expect(line).not.toMatch(/border-radius/);
+    expect(cssRule('.crew-settings-panel .crew-settings-row:last-child::after')).toMatch(
+      /content:\s*none;/
+    );
+  });
+
   it('shows the institution as the sidebar does, and the connection as one badge', async () => {
     config.state.providers = [ucsfProvider];
     renderSettings({ tab: 'privacy' });

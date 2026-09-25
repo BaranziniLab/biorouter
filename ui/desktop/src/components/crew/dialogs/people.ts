@@ -4,6 +4,7 @@ import {
   channelName,
   cleanName,
   nameKey,
+  personLayout,
   type CrewPerson,
   type PeopleDirectory,
 } from '../identity';
@@ -293,22 +294,49 @@ export function personMatches(person: CrewPerson, query: string): boolean {
   return nameKey(person.displayName).includes(wanted) || nameKey(person.username).includes(wanted);
 }
 
-/** The host, then you, then everyone else alphabetically by name (QA T-32). */
-export function peopleInOrder(people: readonly CrewPerson[]): CrewPerson[] {
-  const rank = (person: CrewPerson) => (person.isHost ? 0 : person.isYou ? 1 : 2);
-  const name = (person: CrewPerson) => person.displayName || person.username;
+/**
+ * The name a row shows, as it sorts: what `PersonName` leads with — the display name, or
+ * `@username` for someone who has not chosen one — with that leading "@" ignored (QA Q4-32), so a
+ * person without a chosen name sorts among everyone by name rather than ahead of them all.
+ */
+function visibleSortName(person: CrewPerson): string {
+  const layout = personLayout(person, 'header');
+  if (layout.kind !== 'person') return person.username;
+  const shown = layout.lead === 'handle' ? layout.handle : layout.displayName;
+  return shown.replace(/^@/, '');
+}
+
+const byText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * The shared member order (QA Q4-32, T-32): the owner — or, for the workspace's own list, the host —
+ * then you, then everyone else by the name their row shows with a leading "@" ignored, case aside,
+ * then by username. The same order the details pane's Members tab and the channel header's member
+ * stack use, so one team's people read alike everywhere. `leadId` names the owner of a team or
+ * channel; without it, or when the owner is not in the list, the host leads.
+ */
+export function peopleInOrder(
+  people: readonly CrewPerson[],
+  leadId: string | null = null
+): CrewPerson[] {
+  const owner = leadId !== null && people.some((person) => person.id === leadId) ? leadId : null;
+  const leads = (person: CrewPerson) => (owner !== null ? person.id === owner : person.isHost);
+  const rank = (person: CrewPerson) => (leads(person) ? 0 : person.isYou ? 1 : 2);
   return [...people].sort(
     (a, b) =>
       rank(a) - rank(b) ||
-      name(a).localeCompare(name(b), undefined, { sensitivity: 'base' }) ||
+      byText(visibleSortName(a), visibleSortName(b)) ||
+      byText(a.username, b.username) ||
       a.username.localeCompare(b.username)
   );
 }
 
 /**
- * The people already in a team or channel, host first, then you, then by name (QA Q2-22): what an
- * Add people with no one left to add shows instead of an empty picker. `extra` are principal IDs
- * the caller knows were just added, before the next state frame lists them.
+ * The people already in a team or channel — its owner first, then you, then by name (QA Q2-22,
+ * Q4-32): what an Add people with no one left to add shows instead of an empty picker, and what
+ * "Members of {team}" lists. A team's owner is its creator; with no owner known, the host leads.
+ * `extra` are principal IDs the caller knows were just added, before the next state frame lists
+ * them.
  */
 export function targetMembers(
   snapshot: Snapshot | null | undefined,
@@ -316,17 +344,20 @@ export function targetMembers(
   target: PickerTarget,
   extra: Iterable<string> = []
 ): CrewPerson[] {
-  const object =
-    target.kind === 'team'
-      ? snapshot?.teams.find((item) => item.id === target.teamId)
-      : snapshot?.channels.find((item) => item.id === target.channelId);
+  const team =
+    target.kind === 'team' ? snapshot?.teams.find((item) => item.id === target.teamId) : undefined;
+  const channel =
+    target.kind === 'channel'
+      ? snapshot?.channels.find((item) => item.id === target.channelId)
+      : undefined;
+  const object = team ?? channel;
   const ids = new Set([...(object?.members ?? []), ...extra]);
   const people: CrewPerson[] = [];
   for (const id of ids) {
     const person = dir.byId(id);
     if (person && !person.isFormer) people.push(person);
   }
-  return peopleInOrder(people);
+  return peopleInOrder(people, (team ? team.created_by : channel?.owner_id) || null);
 }
 
 /**

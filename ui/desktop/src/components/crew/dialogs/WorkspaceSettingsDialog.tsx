@@ -234,7 +234,7 @@ function savedConnection({ crew }: DialogView) {
 /** A label and its value, one settings row. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
+    <div className="biorouter-settings-row crew-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
       <span className="text-label text-text-default">{label}</span>
       <div className="flex min-w-0 items-center gap-2 text-body text-text-muted">{children}</div>
     </div>
@@ -399,7 +399,7 @@ function MemberRow({
     menuCopy.onOpenChange(next);
   };
   return (
-    <li className="crew-settings-member biorouter-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
+    <li className="crew-settings-member biorouter-settings-row crew-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
       <Avatar
         size={24}
         fallback={person.avatar}
@@ -411,10 +411,11 @@ function MemberRow({
       </div>
       {person.isHost ? (
         // What "Host" means, on hover and on focus (QA Q2-69): the badge takes a tab stop only
-        // for the one row that has it.
+        // for the one row that has it. Its focus ring is an outline outside the chip, which the
+        // chip's own fill cannot paint over as it did the inset ring (QA Q4-40; `dialogs.css`).
         <Tooltip>
           <TooltipTrigger asChild>
-            <span tabIndex={0} className="inline-flex rounded-element">
+            <span tabIndex={0} className="crew-settings-host-badge inline-flex rounded-element">
               <Badge tone="neutral" variant="badge">
                 {copy.host}
               </Badge>
@@ -507,7 +508,7 @@ function WaitingRow({ join, view }: { join: PendingJoin; view: DialogView }) {
       });
 
   return (
-    <li className="biorouter-settings-row flex min-w-0 flex-col gap-1.5 px-3 py-2">
+    <li className="biorouter-settings-row crew-settings-row flex min-w-0 flex-col gap-1.5 px-3 py-2">
       <div className="flex min-w-0 items-center gap-3">
         <div className="min-w-0 flex-1 truncate text-label">
           <PersonName person={person} context="joiner" />
@@ -618,11 +619,14 @@ function PrivacyTab({
     });
   };
 
-  // The popover's one line saying what "Make my connection public…" changes, under the same words.
-  const publicEffect =
-    connection?.mode === 'private' && workspaceMode
-      ? sidebarCopy.privacy.makePublicEffect(workspace, workspaceMode)
-      : null;
+  // The popover's rule (Q3-54, Q4-39): "Make my connection public…" only where it changes
+  // something — a workspace that allows Public. Private for everyone, the models that may read it
+  // stay the same whatever this connection is set to, so a downgrade there is offered nowhere.
+  const offerPublic = connection?.mode === 'private' && workspaceMode === 'public';
+  // The popover's one line saying what it changes, under the same words.
+  const publicEffect = offerPublic
+    ? sidebarCopy.privacy.makePublicEffect(workspace, 'public')
+    : null;
 
   return (
     <div className="flex flex-col">
@@ -645,17 +649,20 @@ function PrivacyTab({
                 ) : null}
               </span>
               {connection.mode === 'private' ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!saved}
-                  aria-describedby={publicEffect ? effectId : undefined}
-                  onClick={() =>
-                    saved && onConfirm({ action: 'make-connection-public', connectionId: saved.id })
-                  }
-                >
-                  {copy.makePublic}
-                </Button>
+                offerPublic ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!saved}
+                    aria-describedby={publicEffect ? effectId : undefined}
+                    onClick={() =>
+                      saved &&
+                      onConfirm({ action: 'make-connection-public', connectionId: saved.id })
+                    }
+                  >
+                    {copy.makePublic}
+                  </Button>
+                ) : null
               ) : (
                 <Button
                   variant="secondary"
@@ -721,7 +728,7 @@ function PrivacyTab({
         </p>
       ) : null}
       {!isHost ? (
-        <p className="mt-2 px-3 text-supporting text-text-muted">{copy.hostOnly}</p>
+        <p className="mt-2 px-3 text-supporting text-text-muted">{copy.hostOnly(workspace)}</p>
       ) : null}
     </div>
   );

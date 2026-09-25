@@ -69,6 +69,50 @@
   }
 }
 
+/* Workspace settings' rows divide with a straight hairline (QA Q4-25). The shared
+   `biorouter-settings-row` draws its divider as a bottom BORDER on a box with rounded corners, so
+   the line curled up at both ends — faintly on a normal screen, and plainly in forced colours, which
+   paint every border in the system's text colour. Here the border goes (its 1px of room kept as a
+   margin, so no row moves) and the divider is a straight line drawn under the row, inset by the
+   corner radius so it ends where the rounded hover wash begins to curve. It is itself a border, not
+   a background, so forced colours still draw it: they drop background colours. The last row of a
+   list has none, as before, and a row holding focus firms its line as the shared rule firmed the
+   border. */
+.crew-settings-panel .crew-settings-row {
+  position: relative;
+  border-bottom-width: 0;
+  margin-bottom: 1px;
+}
+
+.crew-settings-panel .crew-settings-row::after {
+  content: '';
+  position: absolute;
+  inset-inline: var(--radius-md);
+  bottom: -1px;
+  height: 1px;
+  border-top: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.crew-settings-panel .crew-settings-row:focus-within::after {
+  border-top-color: var(--border-focus);
+}
+
+.crew-settings-panel .crew-settings-row:last-child::after {
+  content: none;
+}
+
+/* People's Host badge takes a Tab stop for its tooltip (QA Q2-69). The shared focus rule marks a
+   tab stop with an INSET ring, which the chip's own fill painted over, so the badge showed no focus
+   at all (QA Q4-40). Its ring is an outline outside the chip instead. Forced colours keep an outline
+   (they drop the fill and the box-shadow), and the OS-requested ring in `main.css` draws the same
+   one there. */
+.crew-settings-host-badge:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
 /* A member row's ⋯ is hidden at rest and shown on the row's hover and focus, and while its menu is
    open (design.md §4.14; QA Q3-33). The hook is a wrapper around the button, so the button's own
    transitions stay its own. A device with no hover keeps it shown: nothing would reveal it. */
