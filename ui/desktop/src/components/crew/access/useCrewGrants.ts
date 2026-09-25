@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listSessionGrants, revokeSessionGrant, type CrewSessionGrant } from '../api/grants';
+import {
+  listSessionGrants,
+  revokeSessionGrant,
+  type CrewRevokeResult,
+  type CrewSessionGrant,
+} from '../api/grants';
 import { isRevocationUnconfirmed, isStaleDaemon, STALE_DAEMON_MESSAGE } from '../api/errors';
 import { accessCopy } from './copy';
+import { rememberConfirmedRevoke, type RevokedGrantInfo } from './pastAccess';
 
 /**
  * Chat and task grants, as the daemon lists them (ui-redesign-spec, "Revoke", RV-R1..R3).
@@ -92,15 +98,26 @@ export function revokeOutcomeFrom(failure: unknown): RevokeOutcome {
  * Revoke one grant and announce the change. Resolves `revoked` only when the daemon confirmed it
  * (a 200 whose body says so); never throws. Every outcome is announced, because even a refused
  * revoke is a reason to re-read the list: a 503 means the local stop landed.
+ *
+ * `revoking` is the grant the person pressed Revoke on, when the surface has it: a confirmed revoke
+ * of it is remembered for "Show past access" (`pastAccess.ts`, Q4-12), which the daemon's list
+ * forgets once the chat is granted again. Display only; it changes nothing about the request.
  */
-export async function revokeGrant(connectionId: string, sessionId: string): Promise<RevokeOutcome> {
+export async function revokeGrant(
+  connectionId: string,
+  sessionId: string,
+  revoking?: RevokedGrantInfo | null
+): Promise<RevokeOutcome> {
   let outcome: RevokeOutcome;
+  let answer: CrewRevokeResult | null = null;
   try {
-    await revokeSessionGrant(connectionId, sessionId);
+    answer = await revokeSessionGrant(connectionId, sessionId);
     outcome = { kind: 'revoked' };
   } catch (failure) {
     outcome = revokeOutcomeFrom(failure);
   }
+  if (outcome.kind === 'revoked')
+    rememberConfirmedRevoke(connectionId, sessionId, revoking, answer);
   announceGrantsChanged({ connectionId, sessionId, change: outcome.kind });
   return outcome;
 }
@@ -123,8 +140,15 @@ export interface CrewGrantsView {
   anyFailed: boolean;
   /** Re-read the lists now. */
   refetch(): void;
-  /** Revoke through the daemon, announce it and re-read. Never throws. */
-  revoke(connectionId: string, sessionId: string): Promise<RevokeOutcome>;
+  /**
+   * Revoke through the daemon, announce it and re-read. Never throws. `revoking` describes the
+   * grant for the past-access record; it defaults to the listed grant of that chat.
+   */
+  revoke(
+    connectionId: string,
+    sessionId: string,
+    revoking?: RevokedGrantInfo | null
+  ): Promise<RevokeOutcome>;
   /** Whether this window saw that grant stopped only on this device. */
   isUnconfirmed(connectionId: string, sessionId: string): boolean;
 }
@@ -254,12 +278,24 @@ export function useCrewGrants(
     return () => controller.abort();
   }, [enabled, key, ids, nonce]);
 
+  const fresh = state.key === key;
+  // Read through a ref, so `revoke` stays one function while the list changes under it.
+  const listed = useRef<CrewSessionGrant[]>(NO_GRANTS);
+  listed.current = fresh ? state.grants : NO_GRANTS;
   const revoke = useCallback(
-    (connectionId: string, sessionId: string) => revokeGrant(connectionId, sessionId),
+    (connectionId: string, sessionId: string, revoking?: RevokedGrantInfo | null) =>
+      revokeGrant(
+        connectionId,
+        sessionId,
+        revoking ??
+          listed.current.find(
+            (grant) => grant.connection_id === connectionId && grant.session_id === sessionId
+          ) ??
+          null
+      ),
     []
   );
 
-  const fresh = state.key === key;
   return {
     grants: fresh ? state.grants : NO_GRANTS,
     status: !enabled ? 'idle' : fresh ? state.status : 'loading',

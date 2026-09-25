@@ -72,6 +72,11 @@ export const accessCopy = {
     chat
       ? `Stop ${quoted(chat)} reading and posting in ${channel}?`
       : `Stop this chat reading and posting in ${channel}?`,
+  /**
+   * Under the revoke question: the whole chat stops, not only its posts in Crew (live QA round 4,
+   * Q4-15). The question above already names the chat.
+   */
+  confirmStops: 'This chat will stop until you grant access again.',
   confirmRevoke: 'Revoke',
   confirmKeep: 'Keep access',
   // One way forward, said once: "…, or start a new chat" read as a second, unrelated instruction
@@ -180,7 +185,14 @@ export const accessCopy = {
   /** An active grant whose Crew connection is down (Q2-08). */
   chatOffline: (destination: string) =>
     `Crew is offline. This chat can’t read or post in ${destination} until you connect.`,
+  /**
+   * The same, when the connection went down for a network reason: the daemon dials it again by
+   * itself once the network is back (Q4-01), so the person need not act (live QA round 4, Q4-06).
+   */
+  chatOfflineNetwork: 'Crew is offline. It will reconnect by itself when the network is back.',
   chatConnectInCrew: 'Connect in Crew',
+  /** Beside {@link accessCopy.chatOfflineNetwork}: the same one-hop connect, not a requirement. */
+  chatConnectNow: 'Connect now',
   chatNewChat: 'Start a new chat',
   chatGrantAgain: 'Grant access again',
   chatBlockedReason: 'This chat can’t continue without Crew access.',
@@ -192,6 +204,12 @@ export const accessCopy = {
     `Crew access to ${destination} expired. Grant it again or start a new chat.`,
   chatBlockedSendTaskFinished: (destination: string) =>
     `This task is finished, and its access to ${destination} ended with it. Start a new chat to continue.`,
+  /**
+   * The held composer's placeholder: Send is grey, and the empty box says why before anyone types
+   * (live QA round 4, Q4-15). A finished task is not granted again, so it names the other way on.
+   */
+  chatBlockedPlaceholder: 'Grant access again to continue this chat',
+  chatBlockedPlaceholderTaskFinished: 'Start a new chat to continue',
   /** A destination whose channel name this computer has not seen: the workspace instead. */
   chatDestinationWorkspace: (workspace: string) => `a channel in ${workspace}`,
   chatDestinationUnknown: 'a Crew channel',

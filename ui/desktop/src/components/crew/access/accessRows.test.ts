@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewSessionGrant } from '../api/grants';
 import {
   accessRows,
@@ -12,6 +12,14 @@ import {
   taskStartedAt,
 } from './accessRows';
 import { accessCopy } from './copy';
+import {
+  PAST_ACCESS_LIMIT,
+  pastAccessStorageKey,
+  readPastAccess,
+  rememberConfirmedRevoke,
+  rememberPastAccess,
+  type PastAccessEntry,
+} from './pastAccess';
 
 const NOW = Date.UTC(2026, 8, 23, 20, 0, 0);
 const inAnHour = NOW / 1000 + 3600;
@@ -384,3 +392,212 @@ describe('the header chip’s count', () => {
     ).toBe('1 chat or agent can post here');
   });
 });
+
+/**
+ * Q4-12 (live QA round 4): the daemon lists one grant per chat, so a chat revoked and then granted
+ * again lost its revoked row, and "Show past access" forgot the earlier grant (Jack J6, Gina F9).
+ * This device remembers each confirmed revoke and the list merges it in as "Revoked", unless the
+ * daemon's list still holds the same run. Display only, bounded, and every storage access wrapped.
+ */
+describe('past access this device remembers', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  const remembered = (overrides: Partial<PastAccessEntry> = {}): PastAccessEntry => ({
+    session_id: 'chat-1',
+    run_id: 'run-1',
+    session_name: 'Plot review',
+    channel_id: 'channel-1',
+    revoked_at: NOW - 60_000,
+    kind: 'chat',
+    ...overrides,
+  });
+  const past = (entries: PastAccessEntry[]) => ({ connectionId: 'conn-1', entries });
+
+  it('lists a remembered revoke as Revoked beside the chat’s new grant', () => {
+    const rows = accessRows([grant({ run_id: 'run-2' })], {
+      snapshot,
+      now: NOW,
+      pastAccess: past([remembered()]),
+    });
+    const { current, old } = splitAccessRows(rows);
+    expect(current.map((row) => [row.title, row.runId, row.status])).toEqual([
+      ['Plot review', 'run-2', 'active'],
+    ]);
+    expect(old).toHaveLength(1);
+    const [revoked] = old;
+    expect(revoked).toMatchObject({
+      title: 'Plot review',
+      runId: 'run-1',
+      status: 'revoked',
+      statusLabel: accessCopy.status.revoked,
+      destination: 'Analysis Lab / #methods',
+      canRevoke: false,
+      canRetry: false,
+      canStop: false,
+    });
+    // Its own key: the chat is listed too, and React and the list's controls key rows by it.
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+    expect(showOldLabel(rows)).toBe('Show past access (1)');
+  });
+
+  it('adds nothing for a run the daemon’s list still holds', () => {
+    const rows = accessRows([grant({ expired: true })], {
+      snapshot,
+      now: NOW,
+      pastAccess: past([remembered()]),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].runId).toBe('run-1');
+  });
+
+  it('keeps only the channel’s remembered rows, and another connection’s list never hides them', () => {
+    const rows = accessRows(
+      [grant({ connection_id: 'conn-2', run_id: 'run-1', session_id: 'x' })],
+      {
+        snapshot,
+        now: NOW,
+        channelId: 'channel-1',
+        pastAccess: past([
+          remembered(),
+          remembered({ run_id: 'run-3', session_id: 'chat-3', channel_id: 'channel-2' }),
+        ]),
+      }
+    );
+    expect(rows.filter((row) => row.connectionId === 'conn-1').map((row) => row.runId)).toEqual([
+      'run-1',
+    ]);
+  });
+
+  it('never reads a remembered revoke as stopped on this device', () => {
+    const rows = accessRows([grant({ run_id: 'run-2', expired: true })], {
+      snapshot,
+      now: NOW,
+      isUnconfirmed: () => true,
+      pastAccess: past([remembered()]),
+    });
+    expect(rows.find((row) => row.runId === 'run-2')?.status).toBe('unconfirmed');
+    expect(rows.find((row) => row.runId === 'run-1')?.status).toBe('revoked');
+  });
+
+  it('records a confirmed revoke once per run, newest first, under the connection’s key', () => {
+    rememberConfirmedRevoke('conn-1', 'chat-1', grant(), { run_id: 'run-1' }, NOW);
+    rememberConfirmedRevoke(
+      'conn-1',
+      'chat-2',
+      grant({ session_id: 'chat-2', run_id: 'run-2' }),
+      null,
+      NOW + 1
+    );
+    rememberConfirmedRevoke('conn-1', 'chat-1', grant(), { run_id: 'run-1' }, NOW + 2);
+    expect(readPastAccess('conn-1').map((entry) => [entry.run_id, entry.revoked_at])).toEqual([
+      ['run-1', NOW + 2],
+      ['run-2', NOW + 1],
+    ]);
+    expect(readPastAccess('conn-1')[0]).toMatchObject({
+      session_id: 'chat-1',
+      session_name: 'Plot review',
+      channel_id: 'channel-1',
+      kind: 'chat',
+    });
+    expect(window.localStorage.getItem(pastAccessStorageKey('conn-1'))).toContain('run-2');
+    expect(pastAccessStorageKey('conn-1')).toBe('crew:pastAccess:v1:conn-1');
+    expect(readPastAccess('conn-2')).toEqual([]);
+  });
+
+  it('takes the daemon’s run, and records nothing when the row described another run', () => {
+    // Just granted in the pane: the row has no run yet, the daemon's answer names it.
+    rememberConfirmedRevoke(
+      'conn-1',
+      'chat-1',
+      { channel_id: 'channel-1' },
+      { run_id: 'run-7' },
+      NOW
+    );
+    expect(readPastAccess('conn-1').map((entry) => entry.run_id)).toEqual(['run-7']);
+    // A listed row of an earlier run: its channel may not be this run's.
+    rememberConfirmedRevoke(
+      'conn-1',
+      'chat-1',
+      grant({ run_id: 'run-1' }),
+      { run_id: 'run-8' },
+      NOW
+    );
+    rememberConfirmedRevoke(
+      'conn-1',
+      'chat-1',
+      grant(),
+      { session_id: 'other', run_id: 'run-1' },
+      NOW
+    );
+    rememberConfirmedRevoke('conn-1', 'chat-1', { run_id: 'run-9' }, null, NOW);
+    expect(readPastAccess('conn-1').map((entry) => entry.run_id)).toEqual(['run-7']);
+  });
+
+  it(`keeps at most ${PAST_ACCESS_LIMIT} rows, dropping the oldest`, () => {
+    for (let index = 0; index < PAST_ACCESS_LIMIT + 5; index += 1)
+      rememberPastAccess('conn-1', remembered({ run_id: `run-${index}`, revoked_at: index }));
+    const entries = readPastAccess('conn-1');
+    expect(entries).toHaveLength(PAST_ACCESS_LIMIT);
+    expect(entries[0].run_id).toBe(`run-${PAST_ACCESS_LIMIT + 4}`);
+    expect(entries.some((entry) => entry.run_id === 'run-0')).toBe(false);
+  });
+
+  it('reads corrupt, malformed or oversized storage as nothing remembered', () => {
+    const key = pastAccessStorageKey('conn-1');
+    window.localStorage.setItem(key, '{not json');
+    expect(readPastAccess('conn-1')).toEqual([]);
+    window.localStorage.setItem(key, JSON.stringify({ run_id: 'run-1' }));
+    expect(readPastAccess('conn-1')).toEqual([]);
+    window.localStorage.setItem(
+      key,
+      JSON.stringify([
+        null,
+        { run_id: 'run-1' },
+        { ...remembered(), session_id: 'x'.repeat(1000) },
+        { ...remembered(), revoked_at: 'yesterday' },
+        { ...remembered(), run_id: 'run-ok', session_name: 42, source_channels: ['c', 7] },
+      ])
+    );
+    expect(readPastAccess('conn-1')).toEqual([
+      {
+        session_id: 'chat-1',
+        run_id: 'run-ok',
+        session_name: null,
+        channel_id: 'channel-1',
+        revoked_at: NOW - 60_000,
+        kind: 'chat',
+        source_channels: ['c'],
+      },
+    ]);
+  });
+
+  it('survives storage that throws on read and on write, or cannot be reached at all', () => {
+    const throwing = {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('full');
+      },
+    } as unknown as Storage;
+    const access = vi.spyOn(window, 'localStorage', 'get').mockReturnValue(throwing);
+    expect(() => rememberPastAccess('conn-1', remembered())).not.toThrow();
+    expect(readPastAccess('conn-1')).toEqual([]);
+
+    access.mockImplementation(() => {
+      throw new Error('denied');
+    });
+    expect(() => rememberPastAccess('conn-1', remembered())).not.toThrow();
+    expect(readPastAccess('conn-1')).toEqual([]);
+    access.mockRestore();
+    expect(readPastAccess('conn-1')).toEqual([]);
+  });
+});
+
+/** The disclosure's label for a list of rows, as `AccessList` draws it. */
+function showOldLabel(rows: ReturnType<typeof accessRows>): string {
+  return accessCopy.showOld(splitAccessRows(rows).old.length);
+}

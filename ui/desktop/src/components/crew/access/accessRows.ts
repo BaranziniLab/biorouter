@@ -9,6 +9,7 @@ import {
 } from '../identity';
 import { CANCELLABLE_RUN_STATUSES } from '../state/crewStatus';
 import { accessCopy } from './copy';
+import { pastAccessGrants, type PastAccessEntry } from './pastAccess';
 
 /**
  * How a grant reads in a list (ui-redesign-spec, "Revoke", "Access rows"). Pure, so the Access tab,
@@ -77,6 +78,12 @@ export interface AccessRowInput {
   now?: number;
   /** Whether this window saw the grant stopped only on this device. */
   isUnconfirmed?: (connectionId: string, sessionId: string) => boolean;
+  /**
+   * Revokes this device remembers for one connection (`pastAccess.ts`, Q4-12). Each becomes a
+   * "Revoked" row unless the daemon's list still holds the same run: the list keeps one grant per
+   * chat, so a chat granted again had lost its revoked row.
+   */
+  pastAccess?: { connectionId: string; entries: readonly PastAccessEntry[] };
 }
 
 /** Run statuses that are over: no Stop, and hidden at rest in the Agents section. */
@@ -256,29 +263,38 @@ function rank(row: AccessRow): number {
 
 /**
  * Rows for a list of grants, attention first: stopped-but-unconfirmed, then active (the most
- * recently granted first), then expired and revoked. `channelId` keeps only the grants that may
- * post in or read that channel.
+ * recently granted first), then expired and revoked — the remembered revokes of
+ * `input.pastAccess` among them. `channelId` keeps only the grants that may post in or read that
+ * channel.
  */
 export function accessRows(
   grants: readonly CrewSessionGrant[],
   input: AccessRowInput & { channelId?: string } = {}
 ): AccessRow[] {
   const labels = channelLabels(input.snapshot);
-  return grants
-    .filter(
-      (grant) =>
-        !input.channelId ||
-        grant.channel_id === input.channelId ||
-        grant.source_channels.includes(input.channelId)
-    )
-    .map((grant) => accessRow(grant, input, labels))
-    .sort(
-      (a, b) =>
-        rank(a) - rank(b) ||
-        (b.expiresAt ?? 0) - (a.expiresAt ?? 0) ||
-        a.title.localeCompare(b.title) ||
-        a.sessionId.localeCompare(b.sessionId)
-    );
+  const inChannel = (grant: CrewSessionGrant) =>
+    !input.channelId ||
+    grant.channel_id === input.channelId ||
+    grant.source_channels.includes(input.channelId);
+  const listed = grants.filter(inChannel).map((grant) => accessRow(grant, input, labels));
+  // A remembered revoke is a fact about a run this device saw stopped: never "Stopped on this
+  // device" (that mark is per chat, and may be the newer grant's), and keyed by its run, since the
+  // same chat may also be listed.
+  const remembered = input.pastAccess
+    ? pastAccessGrants(input.pastAccess.connectionId, input.pastAccess.entries, grants)
+        .filter(inChannel)
+        .map((grant) => ({
+          ...accessRow(grant, { ...input, isUnconfirmed: undefined }, labels),
+          key: `${grant.connection_id}\n${grant.session_id}\n${grant.run_id}`,
+        }))
+    : [];
+  return [...listed, ...remembered].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (b.expiresAt ?? 0) - (a.expiresAt ?? 0) ||
+      a.title.localeCompare(b.title) ||
+      a.sessionId.localeCompare(b.sessionId)
+  );
 }
 
 /** Rows shown at rest, and the revoked, expired and ended rows behind "Show past access (n)". */

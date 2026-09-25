@@ -25,6 +25,12 @@ export interface AccessListProps {
   onRevoke(row: AccessRow): Promise<RevokeOutcome>;
   /** Stop a task through the existing cancel route. Never throws. */
   onStop(row: AccessRow): Promise<void>;
+  /**
+   * Layout only. Words start at the container's own edge, as the details pane's About rows do
+   * (live QA round 4, Q4-29): a row steps out 4px and pads back in 4px, so only its hover wash
+   * reaches past the edge. Without it, rows and the empty state are inset 12px.
+   */
+  flush?: boolean;
   /** Layout only. */
   className?: string;
 }
@@ -55,6 +61,7 @@ export function AccessList({
   onOpen,
   onRevoke,
   onStop,
+  flush = false,
   className,
 }: AccessListProps) {
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -62,6 +69,10 @@ export function AccessList({
   const [result, setResult] = useState<{ row: AccessRow; outcome: RevokeOutcome } | null>(null);
   const triggers = useRef(new Map<string, HTMLButtonElement>());
   const { current, old } = splitAccessRows(rows);
+  // Standard spacing utilities only: this area has no stylesheet of its own, and the shared
+  // stylesheets allow no arbitrary values.
+  const shellClass = cn('biorouter-list-shell', flush && '-mx-1');
+  const inset = flush ? 'px-0' : 'px-3';
 
   const restoreFocus = (key: string) =>
     window.setTimeout(() => triggers.current.get(key)?.focus(), 0);
@@ -88,7 +99,7 @@ export function AccessList({
     return (
       <li
         key={row.key}
-        className="biorouter-list-row flex flex-col gap-2 px-3 py-2"
+        className={cn('biorouter-list-row flex flex-col gap-2 py-2', flush ? 'px-1' : 'px-3')}
         data-testid="crew-access-row"
         data-access-status={row.status}
         data-access-kind={row.kind}
@@ -184,6 +195,7 @@ export function AccessList({
         {confirmingThis === 'revoke' ? (
           <InlineConfirm
             question={accessCopy.confirm(row.chatTitle, row.destination)}
+            detail={accessCopy.confirmStops}
             confirmLabel={accessCopy.confirmRevoke}
             cancelLabel={accessCopy.confirmKeep}
             pending={busy}
@@ -215,25 +227,25 @@ export function AccessList({
   let body;
   if (status === 'loading' || status === 'idle') {
     body = (
-      <p role="status" className="px-3 py-2 text-supporting text-text-muted">
+      <p role="status" className={cn('py-2 text-supporting text-text-muted', inset)}>
         {accessCopy.listLoading}
       </p>
     );
   } else if (status === 'failed') {
     body = null;
   } else if (rows.length === 0) {
-    body = <EmptyAccess text={emptyText} />;
+    body = <EmptyAccess text={emptyText} className={inset} />;
   } else {
     body = (
       <>
         {current.length > 0 ? (
-          <ul className="biorouter-list-shell">{current.map(renderRow)}</ul>
+          <ul className={shellClass}>{current.map(renderRow)}</ul>
         ) : (
-          <EmptyAccess text={emptyText} />
+          <EmptyAccess text={emptyText} className={inset} />
         )}
         {old.length > 0 ? (
           <Disclosure label={accessCopy.showOld(old.length)}>
-            <ul className="biorouter-list-shell" aria-label={accessCopy.oldListName}>
+            <ul className={shellClass} aria-label={accessCopy.oldListName}>
               {old.map(renderRow)}
             </ul>
           </Disclosure>
@@ -288,10 +300,10 @@ const CREW_COMMAND = '/crew';
  * "None of your chats can post in #methods yet." and how to connect one, with the command drawn as
  * code: it is something to type, not a word in the sentence (Q3-29).
  */
-function EmptyAccess({ text }: { text: string }) {
+function EmptyAccess({ text, className }: { text: string; className?: string }) {
   const [before, ...rest] = accessCopy.emptyHow.split(CREW_COMMAND);
   return (
-    <div className="flex flex-col gap-1 px-3 py-2">
+    <div className={cn('flex flex-col gap-1 py-2', className)}>
       <p className="text-secondary text-text-default">{text}</p>
       <p className="text-supporting text-text-muted">
         {before}

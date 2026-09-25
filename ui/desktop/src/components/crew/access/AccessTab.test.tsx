@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { useCrew } from '../state/CrewControllerContext';
@@ -11,7 +11,8 @@ import {
   renderWithController,
   type DaemonFixture,
 } from './testing';
-import { forgetUnconfirmedRevocations } from './useCrewGrants';
+import { pastAccessStorageKey, readPastAccess } from './pastAccess';
+import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
 import { WorkspaceAgentAccess } from './WorkspaceAgentAccess';
 
 const mocks = vi.hoisted(() => ({
@@ -90,6 +91,8 @@ describe('the Access tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     forgetUnconfirmedRevocations();
+    // Past access is remembered in localStorage (Q4-12): each test starts with none.
+    window.localStorage.clear();
   });
 
   it('lists this channel’s chats with Revoke and tasks with Stop, and folds revoked and expired rows', async () => {
@@ -326,6 +329,102 @@ describe('the Access tab', () => {
     expect(await screen.findByRole('region', { name: 'Agent access' })).toBeInTheDocument();
   });
 
+  /**
+   * Q4-15 (live QA round 4): the confirmation said the chat would stop reading and posting here,
+   * not that the whole chat stops.
+   */
+  it('says the chat stops until access is granted again, in the revoke question', async () => {
+    setup({});
+    const chat = await rowFor('Plot review');
+    fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
+    const confirm = within(chat).getByRole('group', {
+      name: 'Stop “Plot review” reading and posting in #general?',
+    });
+    expect(confirm).toHaveTextContent(accessCopy.confirmStops);
+  });
+
+  /**
+   * Q4-12 (live QA round 4): the daemon lists one grant per chat, so after a revoke and a new
+   * grant "Show past access" no longer listed the revoked one (Jack J6, Gina F9). This device
+   * remembers what it saw revoked.
+   */
+  it('keeps a revoked grant under past access after the chat is granted again', async () => {
+    const state = { run: 'run-1', revoked: false };
+    setup({
+      grants: () => [
+        grantRow({ run_id: state.run, expired: state.revoked }),
+        ...workspaceGrants()().slice(1),
+      ],
+      revoke: (sessionId) => {
+        state.revoked = true;
+        return {
+          revoked: true,
+          remote_revocation_confirmed: true,
+          session_id: sessionId,
+          run_id: 'run-1',
+        };
+      },
+    });
+    const chat = await rowFor('Plot review');
+    fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
+    fireEvent.click(within(chat).getByRole('button', { name: accessCopy.confirmRevoke }));
+    expect(await screen.findByText(accessCopy.revoked('Plot review'))).toBeInTheDocument();
+    // The daemon still lists the revoked run: one row for it, not two.
+    expect(await screen.findByRole('button', { name: accessCopy.showOld(3) })).toBeInTheDocument();
+    expect(readPastAccess('conn-1')).toEqual([
+      expect.objectContaining({
+        session_id: 'agent-1',
+        run_id: 'run-1',
+        session_name: 'Plot review',
+        channel_id: 'channel-1',
+      }),
+    ]);
+
+    // Granted again: the daemon's list now holds the new run in the chat's one row.
+    state.run = 'run-2';
+    state.revoked = false;
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'agent-1', change: 'granted' })
+    );
+    await waitFor(async () =>
+      expect(await rowFor('Plot review')).toHaveAttribute('data-access-status', 'active')
+    );
+    fireEvent.click(await screen.findByRole('button', { name: accessCopy.showOld(3) }));
+    const pastList = screen.getByRole('list', { name: accessCopy.oldListName });
+    const revoked = within(pastList)
+      .getAllByTestId('crew-access-row')
+      .find((row) => within(row).queryByText('Plot review'));
+    expect(revoked, 'the remembered Plot review row').toBeDefined();
+    expect(revoked).toHaveAttribute('data-access-status', 'revoked');
+    expect(revoked).toHaveTextContent(accessCopy.status.revoked);
+    expect(revoked).toHaveTextContent('#general');
+    expect(within(revoked as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+    // Display only: nothing but the page reads the record, and it holds no more than it shows.
+    expect(window.localStorage.getItem(pastAccessStorageKey('conn-1'))).not.toMatch(/secret|key/i);
+  });
+
+  /**
+   * Q4-29 (live QA round 4): the pane's tabs did not share a left edge — About's words start at
+   * the tab panel's own padding, Agent access's 12px further in (Carol R4-6). jsdom lays nothing
+   * out, so the classes that put the words on that edge are what is asserted.
+   */
+  it('starts its words at the tab panel’s own edge, as About does', async () => {
+    setup({});
+    const chat = await rowFor('Plot review');
+    expect(chat).toHaveClass('px-1');
+    expect(chat).not.toHaveClass('px-3');
+    // The row steps out by the 4px it pads back in, as About's rows do: only its hover wash
+    // reaches past the edge.
+    expect(chat.parentElement).toHaveClass('biorouter-list-shell', '-mx-1');
+  });
+
+  it('keeps Workspace settings’ inset rows', async () => {
+    setup({}, WorkspaceLayout);
+    const chat = await rowFor('Plot review');
+    expect(chat).toHaveClass('px-3');
+    expect(chat.parentElement).not.toHaveClass('-mx-1');
+  });
+
   it('shows an empty channel, and a failed list with Retry', async () => {
     let fail = true;
     setup({
@@ -350,6 +449,8 @@ describe('the Access tab', () => {
     );
     // The command is drawn as something to type.
     expect(within(how).getByText('/crew').tagName).toBe('CODE');
+    // Q4-29: the empty state starts at the panel's edge too.
+    expect(how.parentElement).not.toHaveClass('px-3');
   });
 });
 
@@ -362,6 +463,8 @@ describe('the Access tab’s finished tasks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     forgetUnconfirmedRevocations();
+    // Past access is remembered in localStorage (Q4-12): each test starts with none.
+    window.localStorage.clear();
   });
 
   const hourAgo = () => Math.floor(Date.now() / 1000) - 3600;
@@ -411,6 +514,8 @@ describe('Workspace settings → Agent access', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     forgetUnconfirmedRevocations();
+    // Past access is remembered in localStorage (Q4-12): each test starts with none.
+    window.localStorage.clear();
   });
 
   it('lists every channel’s chats and tasks', async () => {

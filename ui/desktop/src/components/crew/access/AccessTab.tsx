@@ -5,6 +5,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { AccessList } from './AccessList';
 import { accessRows } from './accessRows';
 import { accessCopy } from './copy';
+import { usePastAccess } from './pastAccess';
 import { useAccessActions } from './useAccessActions';
 import { isUnconfirmedRevocation } from './useCrewGrants';
 import { useWorkspaceGrants } from './useWorkspaceGrants';
@@ -23,10 +24,15 @@ export interface AccessTabProps {
  * It has no heading of its own: the tab above it already says "Agent access", and its panel is
  * named by that tab, so a heading repeated the name on screen and to a screen reader (live QA
  * round 3, Q3-30).
+ *
+ * "Show past access" also holds the revokes this device remembers (`pastAccess.ts`): the daemon
+ * lists one grant per chat, so a chat granted again had lost its revoked row (live QA round 4,
+ * Q4-12). Its words start at the tab panel's own edge, as About's do (Q4-29): the list is `flush`.
  */
 export function AccessTab({ className }: AccessTabProps) {
-  const { snapshot, runs, channelId, channel } = useCrew();
+  const { snapshot, runs, channelId, channel, connectionId } = useCrew();
   const grants = useWorkspaceGrants();
+  const past = usePastAccess(connectionId);
   const { onOpen, onStop } = useAccessActions();
   const rows = useMemo(
     () =>
@@ -35,12 +41,17 @@ export function AccessTab({ className }: AccessTabProps) {
         runs,
         channelId,
         isUnconfirmed: isUnconfirmedRevocation,
+        // Only once the daemon's list is read: a remembered row is merged unless the list holds
+        // its run, which an unread list cannot say.
+        pastAccess:
+          connectionId && grants.status === 'loaded' ? { connectionId, entries: past } : undefined,
       }),
-    [grants.grants, snapshot, runs, channelId]
+    [grants.grants, grants.status, snapshot, runs, channelId, connectionId, past]
   );
   return (
     <div className={cn('flex flex-col gap-2', className)} data-testid="crew-access-tab">
       <AccessList
+        flush
         rows={rows}
         status={grants.status}
         error={grants.error}
