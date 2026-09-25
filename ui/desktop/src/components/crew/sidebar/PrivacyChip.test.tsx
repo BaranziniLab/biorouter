@@ -107,6 +107,8 @@ describe('PrivacyChip', () => {
     expect(pill).toContainElement(within(chip).getByTestId('privacy-badge'));
     expect(pill).toContainElement(within(chip).getByText('ucsf'));
     expect(Array.from(chip.children)).toEqual([pill]);
+    // No tooltip that repeats the badge's own words.
+    expect(chip.querySelector('[title]')).toBeNull();
     // Security state never animates: the shared press scale is overridden, not merely hidden.
     expect(chip).toHaveClass('active:scale-100');
     expect(chip.className).not.toContain('active:scale-[0.98]');
@@ -179,14 +181,22 @@ describe('PrivacyChip', () => {
     ],
     ['no verified snapshot', { snapshot: null }],
     ['no effective privacy', { effectivePrivacy: null }],
-  ])('reads "Checking privacy…" with no padlock and nothing to open: %s', (_, overrides) => {
+  ])('reads "Checking privacy…" with no padlock and nothing to open: %s', async (_, overrides) => {
+    const user = userEvent.setup();
     renderWithCrew(<PrivacyChip />, makeController(overrides));
     expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
-    // Its full words, and what it waits for, on hover: the row can truncate it (T-06, T-68).
-    const chip = document.querySelector('[data-crew-privacy="checking"]');
-    expect(chip).toHaveAttribute('title', sidebarCopy.chip.checkingHint);
+    // What it waits for, on hover, BELOW the row: never a native title, which the app's tooltip
+    // layer opened up over the workspace name (T-06, T-68, Q2-17).
+    const chip = document.querySelector('[data-crew-privacy="checking"]') as HTMLElement;
+    expect(chip).not.toHaveAttribute('title');
+    await user.hover(chip);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(sidebarCopy.chip.checkingHint);
+    expect(document.querySelector('[data-crew-privacy-tooltip]')).toHaveAttribute(
+      'data-side',
+      'bottom'
+    );
     expect(sidebarCopy.chip.checkingHint.startsWith(sidebarCopy.chip.checking.slice(0, -1))).toBe(
       true
     );
