@@ -17,6 +17,13 @@ import {
  * in always lands where the person is, never on the last row they arrowed past (Q2-46: it came
  * back to "+ Add channel", one Enter away from a duplicate channel).
  *
+ * ⚠ **Focus coming back to a control INSIDE a row also takes the stop back (Q3-56).** A team
+ * header's + and ⋯ share the header's `tabIndex`, so they are Tab stops only while the header is.
+ * Opening the team menu moves focus into a portal — out of the list — so the stop went to the
+ * current channel; Escape then put focus back on ⋯, now `tabindex="-1"` beside a `-1` + and
+ * header, and Shift+Tab skipped the whole rail to the privacy chip. `onFocus` on the container
+ * hands the stop to whichever row the focused element sits in, so the way back is the way in.
+ *
  * A row is an element carrying `data-crew-row={key}`, wrapped in (or equal to) an element
  * carrying `data-crew-row-item`, so a keypress on a control INSIDE a row's wrapper — a team
  * header's + or ⋯ — still moves from that row. Rows are read from the DOM in document order at
@@ -32,8 +39,18 @@ export interface RovingRows {
   /** Call from a row's `onFocus`, so the stop follows focus while it stays in the list. */
   onRowFocus(key: string): void;
   onKeyDown(event: KeyboardEvent<HTMLElement>): void;
+  /** Put on the container: focus landing anywhere in a row makes that row the stop (Q3-56). */
+  onFocus(event: FocusEvent<HTMLElement>): void;
   /** Put on the container: focus leaving the list hands the stop back to the preferred row. */
   onBlur(event: FocusEvent<HTMLElement>): void;
+}
+
+/** The key of the row `element` sits in (the row itself, or a control in its wrapper), if any. */
+export function rowKeyOf(element: Element, container: Element): string | null {
+  const item = element.closest(ROW_ITEM_SELECTOR);
+  if (!item || !container.contains(item)) return null;
+  const row = item.matches(ROW_SELECTOR) ? item : item.querySelector(ROW_SELECTOR);
+  return row?.getAttribute('data-crew-row') ?? null;
 }
 
 /**
@@ -78,6 +95,13 @@ export function useRovingRows(keys: readonly string[], preferredKey: string | nu
     rows[next]?.focus();
   }, []);
 
+  const onFocus = useCallback((event: FocusEvent<HTMLElement>) => {
+    const container = containerRef.current;
+    if (!container || !(event.target instanceof Element)) return;
+    const key = rowKeyOf(event.target, container);
+    if (key) setFocusedKey(key);
+  }, []);
+
   const onBlur = useCallback((event: FocusEvent<HTMLElement>) => {
     const container = containerRef.current;
     const next = event.relatedTarget;
@@ -90,6 +114,7 @@ export function useRovingRows(keys: readonly string[], preferredKey: string | nu
     tabIndexFor: (key) => (key === stop ? 0 : -1),
     onRowFocus: setFocusedKey,
     onKeyDown,
+    onFocus,
     onBlur,
   };
 }

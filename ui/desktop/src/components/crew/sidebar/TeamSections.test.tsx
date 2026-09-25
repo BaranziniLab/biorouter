@@ -573,6 +573,45 @@ describe('keyboard', () => {
     fireEvent.keyDown(plus, { key: 'ArrowDown' });
     expect(channelRow('general')).toHaveFocus();
   });
+
+  it('Shift+Tab from the team options, once its menu closes with Escape, walks back into the rail (Q3-56)', async () => {
+    const user = userEvent.setup();
+    // What sits before the rail in the real sidebar: the privacy chip on the status row.
+    renderWithCrew(
+      <SidebarAnnouncer>
+        <button type="button">Privacy: Private · ucsf</button>
+        <TeamSections />
+      </SidebarAnnouncer>,
+      makeController()
+    );
+    const lab = header('Analysis Lab, 4 channels');
+    const plus = screen.getByRole('button', { name: 'Create channel in Analysis Lab' });
+    const options = screen.getByRole('button', { name: 'Analysis Lab options' });
+    // Erin's steps: arrow to the team, Tab to its options, Enter, then Escape.
+    act(() => channelRow('methods').focus());
+    await user.keyboard('{Home}');
+    expect(lab).toHaveFocus();
+    await user.tab();
+    expect(plus).toHaveFocus();
+    await user.tab();
+    expect(options).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(options).toHaveFocus());
+
+    // Back the way it came — + and the team — never straight past the rail to the chip.
+    await user.tab({ shift: true });
+    expect(plus).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(lab).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Privacy: Private · ucsf' })).toHaveFocus();
+    // Having left, the stop is the current channel again (Q2-46).
+    expect(channelRow('methods').tabIndex).toBe(0);
+    expect(lab.tabIndex).toBe(-1);
+  });
 });
 
 describe('the channel context menu', () => {

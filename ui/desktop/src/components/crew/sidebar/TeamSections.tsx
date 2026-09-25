@@ -116,6 +116,7 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
       className="crew-sidebar-section"
       data-crew-sidebar-teams=""
       onKeyDown={roving.onKeyDown}
+      onFocus={roving.onFocus}
       onBlur={roving.onBlur}
     >
       {sections.map((section) => (
