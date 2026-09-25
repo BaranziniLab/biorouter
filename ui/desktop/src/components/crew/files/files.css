@@ -246,7 +246,24 @@
 }
 
 .crew-file-list-cards {
-  gap: 8px;
+  gap: 12px;
+}
+
+/* "In this channel": who shared the file and when, over its card (Q3-13). */
+.crew-file-shared {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crew-file-shared-by {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .crew-file-row {
@@ -294,6 +311,23 @@
   line-height: var(--text-supporting--line-height);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* A transfer row keeps at least 12 characters of the name: in the 360px pane
+   "Uploading 0% · 148 bytes" and Pause left "da…" (Q3-16). The name asks for
+   12ch before it gives way, and what does not fit beside it — the state and
+   Pause — moves to a second line, at the row's end, rather than eat the name. */
+.crew-file-row[data-transfer-state] > .crew-file-row-main {
+  flex-wrap: wrap;
+}
+
+.crew-file-row[data-transfer-state] .crew-file-row-name {
+  flex: 1 1 12ch;
+  min-width: min(12ch, 100%);
+}
+
+.crew-file-row[data-transfer-state] .crew-file-row-meta {
+  margin-inline-start: auto;
 }
 
 .crew-file-row .crew-file-row-progress {

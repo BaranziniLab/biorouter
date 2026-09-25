@@ -54,6 +54,11 @@ export interface CrewUpload {
    * this composer started that stopped before finishing (paused or failed).
    */
   chips: CrewTransfer[];
+  /**
+   * Every upload record of this channel on this computer, finished or not: what a draft file's
+   * checksum is read from once its upload completes (Q3-13).
+   */
+  uploads: CrewTransfer[];
   pause(transfer: CrewTransfer): Promise<void>;
   resume(transfer: CrewTransfer): Promise<void>;
   /**
@@ -326,6 +331,7 @@ export function useCrewUpload({
     reportError: setError,
     dismissError,
     chips,
+    uploads: channelUploads,
     pause,
     resume,
     forget,

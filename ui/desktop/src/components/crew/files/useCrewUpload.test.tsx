@@ -189,10 +189,10 @@ describe('Crew files dropped or pasted', () => {
     const data = dragData([file('counts.csv')]);
 
     fireEvent.dragEnter(zone, { dataTransfer: data });
-    expect(screen.getByText('Drop to share in #general')).toBeInTheDocument();
+    expect(screen.getByText('Drop to attach in #general')).toBeInTheDocument();
 
     fireEvent.drop(zone, { dataTransfer: data });
-    expect(screen.queryByText('Drop to share in #general')).toBeNull();
+    expect(screen.queryByText('Drop to attach in #general')).toBeNull();
     expect(await screen.findByRole('status')).toHaveTextContent(
       'A file window opened. Select counts.csv there and choose Open to share it.'
     );
@@ -210,7 +210,7 @@ describe('Crew files dropped or pasted', () => {
   it('ignores a drag that carries no files', () => {
     renderComposer(observedPublic);
     fireEvent.dragEnter(dropZone(), { dataTransfer: { types: ['text/plain'], files: [] } });
-    expect(screen.queryByText('Drop to share in #general')).toBeNull();
+    expect(screen.queryByText('Drop to attach in #general')).toBeNull();
   });
 
   it('says one file at a time when several are dropped', async () => {
@@ -297,6 +297,10 @@ describe('Crew files dropped or pasted', () => {
       clipboardData: { files: [file('image.png')] },
     });
     expect(await screen.findByRole('alert')).toHaveTextContent(filesCopy.notSaved);
+    // The main process's twin says the same: share it again, never "attach it" (Q3-25).
+    expect(filesCopy.notSaved).toBe(
+      'Crew can share saved files only. Save it as a file first, then share it again.'
+    );
     expect(mocks.beginTransfer).not.toHaveBeenCalled();
   });
 
@@ -325,7 +329,7 @@ describe('Crew files dropped or pasted', () => {
       .closest('[data-drop-zone="true"]') as HTMLElement;
     fireEvent.dragEnter(zone, { dataTransfer: dragData([file('counts.csv')]) });
     fireEvent.drop(zone, { dataTransfer: dragData([file('counts.csv')]) });
-    expect(screen.queryByText(/Drop to share/)).toBeNull();
+    expect(screen.queryByText(/Drop to attach/)).toBeNull();
     expect(mocks.beginTransfer).not.toHaveBeenCalled();
   });
 });

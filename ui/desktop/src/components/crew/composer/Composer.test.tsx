@@ -1,9 +1,18 @@
-import { act, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { crewActionCopy } from '../state/copy';
 import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/types';
+import { AttachmentIndexProvider, useAttachmentIndex } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
 import { crewTestController, CrewTestProvider, testChannel } from '../files/crewTestController';
 import { Composer } from './Composer';
@@ -255,7 +264,7 @@ describe('Crew composer', () => {
         removeReference,
       });
       const user = userEvent.setup();
-      await user.click(screen.getByRole('button', { name: 'Remove counts.csv' }));
+      await user.click(screen.getByRole('button', { name: 'Remove counts.csv from this message' }));
       expect(removeAttachment).toHaveBeenCalledWith('blob-1');
       await user.click(
         screen.getByRole('button', { name: 'Remove remote reference Remote results' })
@@ -268,6 +277,48 @@ describe('Crew composer', () => {
     it('renders no chips row for an empty draft', () => {
       renderComposer();
       expect(screen.queryByRole('list', { name: 'Attachments' })).toBeNull();
+    });
+
+    it('names what × removes, and says the uploaded copy stays on the server (Q3-14)', async () => {
+      renderComposer({
+        connection: {
+          id: 'connection-1',
+          name: 'Lab',
+          ssh_target: 'alice@52.33.141.141',
+          server_label: 'lab-server',
+        } as unknown as CrewController['connection'],
+        draft: { body: '', attachments: [{ id: 'blob-1', name: 'counts.csv' }], references: [] },
+      });
+      expect(composerCopy.removeFile('counts.csv')).toBe('Remove counts.csv from this message');
+      const remove = screen.getByRole('button', { name: 'Remove counts.csv from this message' });
+      await userEvent.setup().hover(remove);
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(
+        'Removes it from this message. The copy already uploaded stays on lab-server.'
+      );
+    });
+
+    it('says once, under a finished file, that Send is what shares it (Q3-14)', () => {
+      const { rerenderWith } = renderComposer({
+        draft: { body: '', attachments: [{ id: 'blob-1', name: 'counts.csv' }], references: [] },
+      });
+      expect(screen.getAllByText('Press Send to share it.')).toHaveLength(1);
+      rerenderWith({
+        draft: {
+          body: '',
+          attachments: [
+            { id: 'blob-1', name: 'counts.csv' },
+            { id: 'blob-2', name: 'plate.csv' },
+          ],
+          references: [],
+        },
+      });
+      expect(screen.queryByText('Press Send to share it.')).toBeNull();
+      expect(screen.getAllByText('Press Send to share them.')).toHaveLength(1);
+      // A server path alone is not a file waiting to be sent: no hint.
+      rerenderWith({
+        draft: { body: '', attachments: [], references: [{ id: 'r', label: 'Run' }] },
+      });
+      expect(screen.queryByText(/Press Send/)).toBeNull();
     });
 
     it('shows an upload on its way with its percent and a Pause control', async () => {
@@ -290,8 +341,155 @@ describe('Crew composer', () => {
       mocks.pauseTransfer.mockResolvedValue({});
       renderComposer();
       expect(await screen.findByText('42%')).toBeInTheDocument();
-      await userEvent.setup().click(screen.getByRole('button', { name: 'Pause counts.csv' }));
+      // Pause shows once the chip has been up a second (Q3-16).
+      const pause = await screen.findByRole(
+        'button',
+        { name: 'Pause counts.csv' },
+        { timeout: 2000 }
+      );
+      await userEvent.setup().click(pause);
       expect(mocks.pauseTransfer).toHaveBeenCalledWith('transfer-1');
+    });
+
+    it('shows a new upload as “Uploading…” with no 0% and no Pause for its first second (Q3-16)', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        mocks.listTransfers.mockResolvedValue([
+          {
+            id: 'transfer-2',
+            request_id: 'request-2',
+            connection_id: 'connection-1',
+            channel_id: 'channel-1',
+            direction: 'upload',
+            name: 'gina-assay.csv',
+            size: 100,
+            sha256: '',
+            offset: 0,
+            blob_id: null,
+            state: 'uploading',
+            error: null,
+          },
+        ]);
+        renderComposer();
+        expect(await screen.findByText(filesCopy.uploading)).toBeInTheDocument();
+        expect(screen.queryByText('0%')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Pause gina-assay.csv' })).toBeNull();
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+        expect(screen.getByText('0%')).toBeInTheDocument();
+        const pause = screen.getByRole('button', { name: 'Pause gina-assay.csv' });
+        // Named for the file; its tooltip says what it does, since a glyph alone read as "Paused?".
+        fireEvent.focus(pause);
+        expect(filesCopy.pauseUpload).toBe('Pause upload');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('a file already in the channel (Q3-13)', () => {
+    /** Mounts the composer beside a stand-in card that registers a file already in #general. */
+    function Registered({
+      blobId,
+      name,
+      sha256,
+      postedAt,
+    }: {
+      blobId: string;
+      name: string;
+      sha256: string;
+      postedAt: number;
+    }) {
+      const index = useAttachmentIndex();
+      // A card registers what it learned once it has loaded, as AttachmentCard does.
+      useEffect(
+        () => index?.register(blobId, { name, sha256, complete: true, postedAt }),
+        [index, blobId, name, sha256, postedAt]
+      );
+      return null;
+    }
+
+    function renderWithShared(overrides: Partial<CrewController>, shared: ReactNode) {
+      return render(
+        <CrewTestProvider controller={crewTestController(overrides)}>
+          <AttachmentIndexProvider>
+            {shared}
+            <Composer />
+          </AttachmentIndexProvider>
+        </CrewTestProvider>
+      );
+    }
+
+    const today = new Date();
+    const at = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 18, 54).getTime();
+
+    it('notes a same-named file under its chip, without blocking the send', () => {
+      renderWithShared(
+        {
+          draft: {
+            body: '',
+            attachments: [{ id: 'blob-2', name: 'gina-assay.csv' }],
+            references: [],
+          },
+        },
+        <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
+      );
+      expect(
+        screen.getByText(
+          'gina-assay.csv is already in #general (shared 6:54 PM). Remove this one if it’s the same file.'
+        )
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    });
+
+    it('notes a file with the same contents under another name, once its checksum is known', async () => {
+      mocks.listTransfers.mockResolvedValue([
+        {
+          id: 'transfer-7',
+          request_id: 'request-7',
+          connection_id: 'connection-1',
+          channel_id: 'channel-1',
+          direction: 'upload',
+          name: 'copy of assay.csv',
+          size: 100,
+          sha256: 'a'.repeat(64),
+          offset: 100,
+          blob_id: 'blob-2',
+          state: 'completed',
+          error: null,
+        },
+      ]);
+      renderWithShared(
+        {
+          draft: {
+            body: '',
+            attachments: [{ id: 'blob-2', name: 'copy of assay.csv' }],
+            references: [],
+          },
+        },
+        <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
+      );
+      expect(
+        await screen.findByText(/^copy of assay\.csv is already in #general \(shared 6:54 PM\)/)
+      ).toBeInTheDocument();
+    });
+
+    it('says nothing for a different file, or with no channel view around it', () => {
+      renderWithShared(
+        { draft: { body: '', attachments: [{ id: 'blob-2', name: 'other.csv' }], references: [] } },
+        <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
+      );
+      expect(screen.queryByText(/is already in #general/)).toBeNull();
+      cleanup();
+      renderComposer({
+        draft: {
+          body: '',
+          attachments: [{ id: 'blob-2', name: 'gina-assay.csv' }],
+          references: [],
+        },
+      });
+      expect(screen.queryByText(/is already in #general/)).toBeNull();
     });
   });
 
@@ -572,11 +770,11 @@ describe('Crew composer', () => {
       renderComposer(named());
       const file = await paste();
 
-      // While the dialog is up, the note says where to answer; nothing has been shared yet.
-      expect(screen.getByRole('status')).toHaveTextContent(filesCopy.confirmShare('counts.csv'));
-      expect(filesCopy.confirmShare('counts.csv')).toBe(
-        'To share counts.csv, choose Share in the dialog.'
-      );
+      // While the dialog is up, the note says where to answer; nothing has been shared yet. It
+      // names no file: a dropped shortcut resolves to its target in the dialog (Q3-25).
+      expect(screen.getByRole('status')).toHaveTextContent(filesCopy.confirmShare);
+      expect(filesCopy.confirmShare).toBe('To share it, choose Share in the dialog.');
+      expect(screen.getByRole('status')).not.toHaveTextContent('counts.csv');
       expect(share).toHaveBeenCalledTimes(1);
       const [sent, destination] = share.mock.calls[0];
       expect(sent).toBe(file);
@@ -605,7 +803,7 @@ describe('Crew composer', () => {
         { capability_id: 'cap-9', name: 'counts.csv', size: 3 }
       );
       expect(picker).not.toHaveBeenCalled();
-      expect(screen.queryByText(filesCopy.confirmShare('counts.csv'))).toBeNull();
+      expect(screen.queryByText(filesCopy.confirmShare)).toBeNull();
       expect(screen.queryByRole('alert')).toBeNull();
     });
 
@@ -783,6 +981,51 @@ describe('Crew composer', () => {
       renderComposer({ openPane });
       await userEvent.setup().click(screen.getByRole('button', { name: 'Ask my agent' }));
       expect(openPane).toHaveBeenCalledWith({ mode: 'agent' });
+    });
+
+    it('says whether the agent pane is open, and which element it opens (Q3-23)', async () => {
+      const closePane = vi.fn();
+      const openPane = vi.fn();
+      const controller = crewTestController({ openPane, closePane });
+      const view = render(
+        <CrewTestProvider controller={controller}>
+          <Composer agentPaneId="agent-pane" />
+        </CrewTestProvider>
+      );
+      const ask = screen.getByRole('button', { name: 'Ask my agent' });
+      expect(ask).toHaveAttribute('aria-expanded', 'false');
+      expect(ask).toHaveAttribute('aria-controls', 'agent-pane');
+
+      view.rerender(
+        <CrewTestProvider
+          controller={crewTestController({
+            openPane,
+            closePane,
+            ui: { dialog: null, pane: { mode: 'agent' } },
+          })}
+        >
+          <Composer agentPaneId="agent-pane" />
+        </CrewTestProvider>
+      );
+      expect(ask).toHaveAttribute('aria-expanded', 'true');
+      // Expanded, it collapses: the same press closes what it opened.
+      await userEvent.setup().click(ask);
+      expect(closePane).toHaveBeenCalledTimes(1);
+      expect(openPane).not.toHaveBeenCalled();
+
+      // Another pane (the channel details) is not the agent pane.
+      view.rerender(
+        <CrewTestProvider
+          controller={crewTestController({
+            openPane,
+            closePane,
+            ui: { dialog: null, pane: { mode: 'details', tab: 'about' } },
+          })}
+        >
+          <Composer agentPaneId="agent-pane" />
+        </CrewTestProvider>
+      );
+      expect(ask).toHaveAttribute('aria-expanded', 'false');
     });
 
     it('offers upload and server path from a real Attach menu', async () => {

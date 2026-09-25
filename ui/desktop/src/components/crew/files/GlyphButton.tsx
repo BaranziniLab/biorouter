@@ -8,16 +8,21 @@ import './files.css';
 
 /**
  * A glyph-only control inside a 24px chip (remove, pause, resume): a 16px target whose
- * accessible name is also its tooltip, per the spec's rule for glyph-only buttons. Focus is the
- * app's focused-control fill (D-15), not a ring: `.crew-chip-action:focus-visible` in `files.css`
- * restates it, because that file's unlayered muted ink would otherwise beat the base layer's.
+ * accessible name is also its tooltip, per the spec's rule for glyph-only buttons — unless
+ * `tooltip` says more than the name can, as the remove control's does ("…The copy already
+ * uploaded stays on lab-server."). Focus is the app's focused-control fill (D-15), not a ring:
+ * `.crew-chip-action:focus-visible` in `files.css` restates it, because that file's unlayered
+ * muted ink would otherwise beat the base layer's.
  */
 export function ChipAction({
   label,
+  tooltip,
   onClick,
   children,
 }: {
   label: string;
+  /** What the tooltip says, when it is not the name. */
+  tooltip?: string;
   onClick(): void;
   children: ReactNode;
 }) {
@@ -28,21 +33,21 @@ export function ChipAction({
           {children}
         </button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   );
 }
 
 /**
  * The `⋯` that opens a file row's menu: a ghost round 28px button named for the row ("More
- * actions for counts.csv"), with a tooltip in the same words. Render it inside a
- * `DropdownMenu`; it is that menu's trigger.
+ * actions for counts.csv"), with a tooltip in the same words. `which` tells two same-named rows
+ * apart (", 6:54 PM", Q3-13). Render it inside a `DropdownMenu`; it is that menu's trigger.
  */
 export const MoreActionsTrigger = forwardRef<
   HTMLButtonElement,
-  { name: string } & Omit<ComponentProps<typeof Button>, 'children' | 'name'>
->(function MoreActionsTrigger({ name, ...props }, ref) {
-  const label = filesCopy.fileActions(name);
+  { name: string; which?: string } & Omit<ComponentProps<typeof Button>, 'children' | 'name'>
+>(function MoreActionsTrigger({ name, which = '', ...props }, ref) {
+  const label = `${filesCopy.fileActions(name)}${which}`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>

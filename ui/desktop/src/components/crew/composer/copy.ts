@@ -19,8 +19,27 @@ export const composerCopy = {
   sending: 'Sending…',
   /** The chips row: what goes with the message. */
   chips: 'Attachments',
-  /** Pinned: the attachment chip's remove control. */
-  removeFile: (name: string) => `Remove ${name}`,
+  /**
+   * Pinned: the attachment chip's remove control. It takes the file out of THIS message; the
+   * upload itself stays on the server, which its tooltip says, because the broker cannot delete
+   * an uploaded file yet (Q3-14).
+   */
+  removeFile: (name: string) => `Remove ${name} from this message`,
+  removeFileHelp: (server: string) =>
+    `Removes it from this message. The copy already uploaded stays on ${server || 'the server'}.`,
+  /**
+   * Under the chips, once, while a finished file waits in the draft: a drop or a paste only
+   * attaches, and nothing reaches the channel until Send (Q3-14).
+   */
+  pressSend: (count: number) =>
+    count === 1 ? 'Press Send to share it.' : 'Press Send to share them.',
+  /**
+   * Under a chip whose file is already in the channel — the same name, or the same contents once
+   * its checksum is known (Q3-13). A note, not a question: sharing it again stays allowed.
+   * `channel` is the slug, `when` the earlier post's time.
+   */
+  alreadyShared: (name: string, channel: string, when: string) =>
+    `${name} is already in #${channel}${when ? ` (shared ${when})` : ''}. Remove this one if it’s the same file.`,
   /** Pinned: the server-path chip's remove control. */
   removeRef: (label: string) => `Remove remote reference ${label}`,
   archived: 'This channel is archived.',

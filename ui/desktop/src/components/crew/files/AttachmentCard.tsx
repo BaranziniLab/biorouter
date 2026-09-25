@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from '../../ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from '../../ui/dropdown-menu';
 import { Progress } from '../../ui/progress';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { Copy, Download, Eye, File, Fingerprint, Pause } from '../../icons/app-icons';
@@ -19,6 +14,8 @@ import {
   type CrewTransfer,
 } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
+import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
+import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attachmentIndex';
 import { filesCopy } from './copy';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
@@ -51,16 +48,37 @@ const failureText = (failure: unknown, fallback: string) =>
 
 /**
  * A shared file in a message: a 40px row with the file glyph, its name, its size in 1024 units,
- * a glyph-only **Save attachment** (the secure native save dialog), **Preview image** for the
- * image types the daemon previews, and `⋯` for Copy file ID, Copy SHA-256 and this computer's
- * download record (Pause while it moves, Resume… and Remove from list otherwise). A download
- * in progress draws a thin bar along the row's bottom edge.
+ * a glyph-only **Save {name}** (the secure native save dialog), **Preview {name}** for the image
+ * types the daemon previews, and `⋯`: Save {name}…, this computer's download record (Pause while
+ * it moves, Resume… and Remove from list otherwise), and last "Copy for support" ▸ Copy file ID
+ * and Copy SHA-256 (Q3-26) — never a menu of IDs only. A download in progress draws a thin bar
+ * along the row's bottom edge.
+ *
+ * Every control is named for the file, and when another loaded card has the same name, for its
+ * post time too ("Save counts.csv, 6:54 PM"), which the meta shows as well ("100 bytes · 6:54
+ * PM"): two same-named files were two identical cards (Q3-13). What the card learns goes into the
+ * channel view's attachment index, which is how it knows.
+ *
+ * `tabIndex`: in the timeline the controls are Tab stops only while their message is the active
+ * row, like the row's own actions (Q3-05); in the Files tab they always are.
  *
  * The metadata is asked for once per file. Download progress comes from the one shared
  * transfers poller, never from a timer of the card's own (L13), so a channel with fifty
  * attachments still polls once, and only while something moves.
  */
-export function AttachmentCard({ connectionId, blobId }: { connectionId: string; blobId: string }) {
+export function AttachmentCard({
+  connectionId,
+  blobId,
+  tabIndex,
+  postedAt = null,
+}: {
+  connectionId: string;
+  blobId: string;
+  /** The controls' Tab stop; absent, they are ordinary Tab stops. */
+  tabIndex?: number;
+  /** When the message carrying the file was posted (Unix milliseconds), when known. */
+  postedAt?: number | null;
+}) {
   const [metadata, setMetadata] = useState<CrewBlob | null>(null);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -70,6 +88,8 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
   const generation = useRef(0);
   const { transfers, refresh } = useCrewTransfers(connectionId);
   const { copy, region } = useCopyAnnouncer();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuCopy = useMenuCopy<'id' | 'sha'>(copy, setMenuOpen);
 
   useEffect(() => {
     let active = true;
@@ -157,11 +177,27 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
   };
 
   const name = metadata?.name || filesCopy.attachment;
+  useRegisterAttachment(
+    blobId,
+    metadata
+      ? {
+          name: metadata.name,
+          sha256: metadata.sha256,
+          complete: metadata.complete,
+          postedAt,
+        }
+      : null
+  );
+  const posted = useAttachmentWhich(blobId, name, metadata ? postedAt : null);
+  const which = filesCopy.which(posted);
   const state = download ? transferStatePresentation(download) : null;
   const downloading = Boolean(state?.active);
   const previewable = Boolean(metadata && PREVIEWABLE_MEDIA_TYPES.includes(metadata.media_type));
+  const saveDisabled = !metadata || working || downloading;
   const meta = [
     metadata ? formatBytes(metadata.size) : '',
+    // A namesake's own time, without the ", 1 of 2" its controls may carry.
+    posted ? postedLabel(postedAt) : '',
     state && state.key !== 'saved' ? state.word : '',
   ]
     .filter(Boolean)
@@ -181,14 +217,15 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
                 variant="ghost"
                 size="sm"
                 shape="round"
-                aria-label={filesCopy.saveAttachment}
-                disabled={!metadata || working || downloading}
+                aria-label={filesCopy.saveNamed(name, which)}
+                tabIndex={tabIndex}
+                disabled={saveDisabled}
                 onClick={save}
               >
                 <Download aria-hidden />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{filesCopy.saveTooltip(name)}</TooltipContent>
+            <TooltipContent>{filesCopy.saveNamed(name, which)}</TooltipContent>
           </Tooltip>
           {previewable ? (
             <Tooltip>
@@ -198,8 +235,9 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
                   variant="ghost"
                   size="sm"
                   shape="round"
-                  aria-label={filesCopy.previewImage}
+                  aria-label={filesCopy.previewNamed(name, which)}
                   aria-pressed={Boolean(preview)}
+                  tabIndex={tabIndex}
                   disabled={working && !preview}
                   onClick={() => void togglePreview()}
                 >
@@ -207,26 +245,21 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {preview ? filesCopy.hidePreview : filesCopy.previewImage}
+                {preview
+                  ? filesCopy.hidePreviewNamed(name, which)
+                  : filesCopy.previewNamed(name, which)}
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <DropdownMenu>
-            <MoreActionsTrigger name={name} />
+          <DropdownMenu open={menuOpen} onOpenChange={menuCopy.onOpenChange}>
+            <MoreActionsTrigger name={name} which={which} tabIndex={tabIndex} />
             <DropdownMenuContent align="end" className="crew-menu">
-              <DropdownMenuItem onSelect={() => void copy(blobId)}>
-                <Copy aria-hidden />
-                {filesCopy.copyFileId}
+              <DropdownMenuItem disabled={saveDisabled} onSelect={save}>
+                <Download aria-hidden />
+                {filesCopy.saveItem(name)}
               </DropdownMenuItem>
-              {metadata?.sha256 ? (
-                <DropdownMenuItem onSelect={() => void copy(metadata.sha256)}>
-                  <Fingerprint aria-hidden />
-                  {filesCopy.copySha}
-                </DropdownMenuItem>
-              ) : null}
               {download ? (
                 <>
-                  <DropdownMenuSeparator />
                   {downloading && state?.key !== 'pausing' ? (
                     <DropdownMenuItem
                       onSelect={() =>
@@ -248,6 +281,24 @@ export function AttachmentCard({ connectionId, blobId }: { connectionId: string;
                   />
                 </>
               ) : null}
+              <CopyForSupport label={filesCopy.copyForSupport}>
+                <DropdownMenuItem
+                  data-crew-copy-state={menuCopy.state('id')}
+                  onSelect={menuCopy.select('id', blobId)}
+                >
+                  <Copy aria-hidden />
+                  {menuCopy.label('id', filesCopy.copyFileId)}
+                </DropdownMenuItem>
+                {metadata?.sha256 ? (
+                  <DropdownMenuItem
+                    data-crew-copy-state={menuCopy.state('sha')}
+                    onSelect={menuCopy.select('sha', metadata.sha256)}
+                  >
+                    <Fingerprint aria-hidden />
+                    {menuCopy.label('sha', filesCopy.copySha)}
+                  </DropdownMenuItem>
+                ) : null}
+              </CopyForSupport>
             </DropdownMenuContent>
           </DropdownMenu>
         </span>

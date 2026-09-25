@@ -1,8 +1,9 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewTransfer } from '../crewTransfers';
 import { AttachmentCard, type CrewBlob } from './AttachmentCard';
+import { AttachmentIndexProvider } from './attachmentIndex';
 import { TRANSFER_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
@@ -80,7 +81,7 @@ describe('AttachmentCard', () => {
     mocks.beginTransfer.mockResolvedValue(null);
     render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
     await screen.findByText('counts.csv');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Save attachment' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
     expect(mocks.beginTransfer).toHaveBeenCalledWith({
       connection_id: 'connection-1',
       channel_id: 'channel-1',
@@ -94,27 +95,153 @@ describe('AttachmentCard', () => {
     installBlobs({ photo: { media_type: 'image/png', name: 'gel.png' } });
     const { unmount } = render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
     await screen.findByText('counts.csv');
-    expect(screen.queryByRole('button', { name: 'Preview image' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Preview / })).toBeNull();
     unmount();
 
     render(<AttachmentCard connectionId="connection-1" blobId="photo" />);
     await screen.findByText('gel.png');
-    expect(screen.getByRole('button', { name: 'Preview image' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview gel.png' })).toBeInTheDocument();
   });
 
-  it('copies the file ID and the SHA-256 from its menu and says so without a toast', async () => {
+  /** Opens the card's ⋯, then its "Copy for support" submenu, by keyboard as a person would. */
+  async function openSupportMenu(user: ReturnType<typeof userEvent.setup>, name = 'counts.csv') {
+    await user.click(screen.getByRole('button', { name: `More actions for ${name}` }));
+    const support = await screen.findByRole('menuitem', { name: 'Copy for support' });
+    act(() => support.focus());
+    await user.keyboard('{ArrowRight}');
+    return support;
+  }
+
+  it('keeps the file ID and the SHA-256 in “Copy for support”, and answers in the menu (Q3-26)', async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
     render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
     await screen.findByText('counts.csv');
+
+    // The menu is never one of IDs only: Save comes first, the IDs last and one step away.
     await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    const menu = await screen.findByRole('menu');
+    const top = Array.from(
+      menu.querySelectorAll(':scope > [role="menuitem"], :scope > [role="separator"]')
+    ).map((node) => (node.getAttribute('role') === 'separator' ? '—' : node.textContent));
+    expect(top).toEqual(['Save counts.csv…', '—', 'Copy for support']);
+    expect(within(menu).queryByRole('menuitem', { name: 'Copy file ID' })).toBeNull();
+    await user.keyboard('{Escape}');
+
+    await openSupportMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: 'Copy file ID' }));
     expect(writeText).toHaveBeenLastCalledWith('counts');
-    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    // "Copied" on the item itself until the menu closes, and said aloud.
+    expect(await screen.findByRole('menuitem', { name: 'Copied' })).toHaveAttribute(
+      'data-crew-copy-state',
+      'copied'
+    );
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+    expect(screen.getByText('Copied')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    await openSupportMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: 'Copy SHA-256' }));
     expect(writeText).toHaveBeenLastCalledWith('f'.repeat(64));
+  });
+
+  it('saves from ⋯ too, through the same secure dialog', async () => {
+    mocks.beginTransfer.mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save counts.csv…' }));
+    expect(mocks.beginTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'download', blob_id: 'counts' })
+    );
+  });
+
+  it('puts its controls in the Tab order only when told to (Q3-05)', async () => {
+    installBlobs({ photo: { media_type: 'image/png', name: 'gel.png' } });
+    const { rerender } = render(
+      <AttachmentCard connectionId="connection-1" blobId="photo" tabIndex={-1} />
+    );
+    await screen.findByText('gel.png');
+    const controls = () => [
+      screen.getByRole('button', { name: 'Save gel.png' }),
+      screen.getByRole('button', { name: 'Preview gel.png' }),
+      screen.getByRole('button', { name: 'More actions for gel.png' }),
+    ];
+    expect(controls().map((control) => control.tabIndex)).toEqual([-1, -1, -1]);
+    rerender(<AttachmentCard connectionId="connection-1" blobId="photo" tabIndex={0} />);
+    expect(controls().map((control) => control.tabIndex)).toEqual([0, 0, 0]);
+    // The Files tab passes none: ordinary Tab stops.
+    rerender(<AttachmentCard connectionId="connection-1" blobId="photo" />);
+    expect(controls().map((control) => control.tabIndex)).toEqual([0, 0, 0]);
+  });
+
+  describe('two files with the same name (Q3-13)', () => {
+    const today = new Date();
+    const at = (hour: number, minute: number, second = 0) =>
+      new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate(),
+        hour,
+        minute,
+        second
+      ).getTime();
+
+    it('names each card’s controls and meta with its own post time', async () => {
+      installBlobs({
+        first: { name: 'gina-assay.csv', size: 100 },
+        second: { name: 'gina-assay.csv', size: 100 },
+        other: { name: 'plate.csv', size: 100 },
+      });
+      render(
+        <AttachmentIndexProvider>
+          <AttachmentCard connectionId="connection-1" blobId="first" postedAt={at(18, 54)} />
+          <AttachmentCard connectionId="connection-1" blobId="second" postedAt={at(18, 56)} />
+          <AttachmentCard connectionId="connection-1" blobId="other" postedAt={at(18, 57)} />
+        </AttachmentIndexProvider>
+      );
+      expect(
+        await screen.findByRole('button', { name: 'Save gina-assay.csv, 6:54 PM' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Save gina-assay.csv, 6:56 PM' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'More actions for gina-assay.csv, 6:54 PM' })
+      ).toBeInTheDocument();
+      expect(screen.getByText('100 bytes · 6:54 PM')).toBeInTheDocument();
+      expect(screen.getByText('100 bytes · 6:56 PM')).toBeInTheDocument();
+      // A name of its own keeps its plain controls and meta.
+      expect(screen.getByRole('button', { name: 'Save plate.csv' })).toBeInTheDocument();
+      expect(screen.getByText('100 bytes')).toBeInTheDocument();
+    });
+
+    it('counts them when even the times read the same, and forgets a card that leaves', async () => {
+      installBlobs({
+        first: { name: 'gina-assay.csv' },
+        second: { name: 'gina-assay.csv' },
+      });
+      const { rerender } = render(
+        <AttachmentIndexProvider>
+          <AttachmentCard connectionId="connection-1" blobId="first" postedAt={at(18, 54, 1)} />
+          <AttachmentCard connectionId="connection-1" blobId="second" postedAt={at(18, 54, 40)} />
+        </AttachmentIndexProvider>
+      );
+      expect(
+        await screen.findByRole('button', { name: 'Save gina-assay.csv, 6:54 PM, 1 of 2' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Save gina-assay.csv, 6:54 PM, 2 of 2' })
+      ).toBeInTheDocument();
+      rerender(
+        <AttachmentIndexProvider>
+          <AttachmentCard connectionId="connection-1" blobId="first" postedAt={at(18, 54, 1)} />
+        </AttachmentIndexProvider>
+      );
+      expect(
+        await screen.findByRole('button', { name: 'Save gina-assay.csv' })
+      ).toBeInTheDocument();
+    });
   });
 
   it('draws download progress along the bottom edge and offers Pause while it moves', async () => {
@@ -123,7 +250,7 @@ describe('AttachmentCard', () => {
     render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
     const bar = await screen.findByRole('progressbar', { name: 'counts.csv: Downloading 25%' });
     expect(bar).toHaveAttribute('aria-valuenow', '25');
-    expect(screen.getByRole('button', { name: 'Save attachment' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeDisabled();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
@@ -154,7 +281,7 @@ describe('AttachmentCard', () => {
     mocks.beginTransfer.mockRejectedValue(new Error('The daemon refused this file selection.'));
     render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
     await screen.findByText('counts.csv');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Save attachment' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'The daemon refused this file selection.'
     );

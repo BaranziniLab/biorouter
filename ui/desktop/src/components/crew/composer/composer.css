@@ -98,15 +98,34 @@
   min-height: var(--crew-compose-rest-height);
 }
 
-/* The chips row: only rendered when there is something in it. */
+/* The chips row and the lines under it: only rendered when there is
+   something in it. */
+.crew-compose-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0 0 6px;
+}
+
 .crew-compose-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  margin: 0 0 6px;
+  margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* "Press Send to share it." and a file already in the channel (Q3-13,
+   Q3-14): quiet lines under the chips, never a banner, and never blocking. */
+.crew-compose-chip-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
 }
 
 .crew-compose-chip-item {

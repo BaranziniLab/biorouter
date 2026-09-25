@@ -167,15 +167,68 @@ describe('FilesTab', () => {
     expect(addAttachment).not.toHaveBeenCalled();
   });
 
-  it('leaves out an upload that is already in the composer', async () => {
+  it('lists the composer’s files as in your message, not sent yet, with nothing to press (Q3-03)', async () => {
     mocks.listTransfers.mockResolvedValue([
       transfer({ state: 'completed', offset: 2048, blob_id: 'blob-1' }),
     ]);
     renderTab({
       draft: { body: '', attachments: [{ id: 'blob-1', name: 'counts.csv' }], references: [] },
     });
-    expect(await screen.findByText(filesCopy.noFiles)).toBeInTheDocument();
+    const section = (
+      await screen.findByRole('heading', { name: 'In your message, not sent yet' })
+    ).closest('section') as HTMLElement;
+    expect(within(section).getByText('counts.csv')).toBeInTheDocument();
+    await waitFor(() => expect(within(section).getByText('2 KB')).toBeInTheDocument());
+    // The chip's × is the action; here there is none, and it is not also "Uploaded, not sent".
+    expect(within(section).queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('heading', { name: filesCopy.uploadedNotSent })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Attach counts.csv' })).toBeNull();
+    expect(screen.queryByText(filesCopy.noFiles)).toBeNull();
+  });
+
+  it('never calls a sent file “Uploaded, not sent”, or offers to attach it again (Q3-03)', async () => {
+    // After Send: the composer is empty, the upload record is still listed, and the message
+    // carrying the file has arrived.
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'completed', offset: 2048, blob_id: 'blob-1' }),
+    ]);
+    renderTab({ messages: [message({ id: 'm1', attachments: ['blob-1'] })] });
+    const section = (await screen.findByRole('heading', { name: 'In this channel' })).closest(
+      'section'
+    ) as HTMLElement;
+    expect(await within(section).findByText('shared.csv')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.listTransfers).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: filesCopy.uploadedNotSent })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Attach counts.csv' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: filesCopy.inYourMessage })).toBeNull();
+  });
+
+  it('says who shared each file in the channel and when (Q3-13)', async () => {
+    const posted = new Date();
+    posted.setHours(18, 54, 0, 0);
+    renderTab({
+      snapshot: {
+        ...crewTestController().snapshot!,
+        principals: [
+          { id: 'person-1', uid: 1000, username: 'alice', nickname: 'Alice' },
+          { id: 'person-2', uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+        ] as never,
+      },
+      messages: [
+        message({
+          id: 'm1',
+          actor_id: 'person-2',
+          attachments: ['blob-9'],
+          created_at: Math.floor(posted.getTime() / 1000),
+        }),
+      ],
+    });
+    const section = (await screen.findByRole('heading', { name: 'In this channel' })).closest(
+      'section'
+    ) as HTMLElement;
+    const row = (await within(section).findByText('shared.csv')).closest('li') as HTMLElement;
+    expect(row).toHaveTextContent(/Shared by Bob Lee.* · 6:54 PM/);
+    expect(row.textContent).not.toMatch(/person-2/);
   });
 
   it('lists the files and server paths shared in the loaded messages, once each', async () => {

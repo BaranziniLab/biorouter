@@ -65,9 +65,10 @@ describe('CrewFileDropZone', () => {
     expect(document.querySelectorAll('[data-drop-zone="true"]')).toHaveLength(1);
 
     fireEvent.dragEnter(timeline, { dataTransfer: files('counts.csv') });
-    expect(screen.getByText('Drop to share in #general')).toBeInTheDocument();
+    // A drop attaches to the message being written; Send is what shares it (Q3-14).
+    expect(screen.getByText('Drop to attach in #general')).toBeInTheDocument();
     fireEvent.dragLeave(timeline, { dataTransfer: files('counts.csv') });
-    expect(screen.queryByText('Drop to share in #general')).toBeNull();
+    expect(screen.queryByText('Drop to attach in #general')).toBeNull();
 
     fireEvent.drop(timeline, { dataTransfer: files('counts.csv') });
     await waitFor(() =>
@@ -95,9 +96,9 @@ describe('CrewFileDropZone', () => {
     fireEvent.dragEnter(screen.getByLabelText('Message #general'), {
       dataTransfer: files('counts.csv'),
     });
-    expect(screen.getByText('Drop to share in #general')).toBeInTheDocument();
+    expect(screen.getByText('Drop to attach in #general')).toBeInTheDocument();
     fireEvent.drop(screen.getByTestId('elsewhere'), { dataTransfer: files('counts.csv') });
-    expect(screen.queryByText('Drop to share in #general')).toBeNull();
+    expect(screen.queryByText('Drop to attach in #general')).toBeNull();
     expect(mocks.beginTransfer).not.toHaveBeenCalled();
   });
 
@@ -135,7 +136,7 @@ describe('CrewFileDropZone', () => {
       </CrewTestProvider>
     );
     fireEvent.dragEnter(screen.getByTestId('timeline'), { dataTransfer: files('counts.csv') });
-    expect(screen.queryByText(/Drop to share/)).toBeNull();
+    expect(screen.queryByText(/Drop to attach/)).toBeNull();
   });
 });
 
@@ -152,7 +153,7 @@ describe('the drop overlay (Q2-60)', () => {
     fireEvent.dragEnter(screen.getByTestId('timeline'), { dataTransfer: files('counts.csv') });
     const overlay = screen.getByTestId('crew-drop-overlay');
     expect(
-      within(overlay).getByText('Drop to share in #general').closest('.crew-drop-overlay-label')
+      within(overlay).getByText('Drop to attach in #general').closest('.crew-drop-overlay-label')
     ).not.toBeNull();
     // The messages stay in the document and in view under the tint.
     expect(screen.getByTestId('timeline')).toBeVisible();
@@ -193,7 +194,7 @@ describe('the channel stage’s drop zone (T-26)', () => {
 
     fireEvent.dragEnter(log, { dataTransfer: files('counts.csv') });
     expect(within(zone).getByTestId('crew-drop-overlay')).toHaveTextContent(
-      'Drop to share in #general'
+      'Drop to attach in #general'
     );
     fireEvent.drop(log, { dataTransfer: files('counts.csv') });
     expect(screen.queryByTestId('crew-drop-overlay')).toBeNull();

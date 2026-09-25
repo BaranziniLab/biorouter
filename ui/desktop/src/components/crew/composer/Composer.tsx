@@ -19,6 +19,7 @@ import { channelSlug } from '../identity';
 import { crewActionCopy } from '../state/copy';
 import type { DraftFile, DraftReference } from '../state/types';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
+import { postedLabel, useAttachmentIndexVersion } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
 import {
   CrewFileDropZone,
@@ -27,7 +28,7 @@ import {
   type DroppedFiles,
 } from '../files/FileDropZone';
 import { canShareDroppedFiles, useCrewUpload, type CrewShareNames } from '../files/useCrewUpload';
-import { workspaceTitle } from '../sidebar/sidebarView';
+import { serverLabel, workspaceTitle } from '../sidebar/sidebarView';
 import { AttachMenu } from './AttachMenu';
 import { ComposerChips } from './ComposerChips';
 import { composerCopy } from './copy';
@@ -80,6 +81,11 @@ export interface ComposerProps {
   note?: ReactNode;
   /** The textarea, for a layout that moves focus here (after joining, after creating a channel). */
   inputRef?: Ref<HTMLTextAreaElement>;
+  /**
+   * The element Ask my agent opens, for its `aria-controls`. The layout wraps the agent pane in
+   * it; absent, the toggle still says whether it is open (`aria-expanded`).
+   */
+  agentPaneId?: string;
 }
 
 /**
@@ -106,7 +112,7 @@ export interface ComposerProps {
  *
  * React authorizes nothing here: the daemon and broker decide every post and every upload.
  */
-export function Composer({ note, inputRef }: ComposerProps) {
+export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   const controller = useCrew();
   const {
     connectionId,
@@ -123,7 +129,9 @@ export function Composer({ note, inputRef }: ComposerProps) {
     isPending,
     error,
     openPane,
+    closePane,
     openDialog,
+    ui,
   } = controller;
   const ownsError = useCrewErrorSlot('composer');
   const expectedMode =
@@ -233,8 +241,9 @@ export function Composer({ note, inputRef }: ComposerProps) {
     if ((confirm || hasSecurePicker()) && path === '')
       return current.reportError(filesCopy.notSaved);
     const more = files.length > 1 ? filesCopy.oneAtATime : '';
+    // The dialog names the file itself — a dropped shortcut by its target — so this names none.
     const hint = confirm
-      ? filesCopy.confirmShare(first.name)
+      ? filesCopy.confirmShare
       : filesCopy.chooseInWindow(first.name, folderName(path));
     setDropHint([hint, more].filter(Boolean).join(' '));
     try {
@@ -254,6 +263,25 @@ export function Composer({ note, inputRef }: ComposerProps) {
     [accepting, name, takeFiles]
   );
   const enclosed = useCrewDropTarget(dropTarget);
+
+  // A draft file that is already in the channel, by name or by contents once its upload's
+  // checksum is known: a note under its chip, never a question (Q3-13). Read from the channel
+  // view's attachment index, which the loaded messages' cards fill.
+  const [attachmentIndex] = useAttachmentIndexVersion();
+  const duplicates: Record<string, string> = {};
+  if (attachmentIndex) {
+    for (const file of draft.attachments) {
+      const sha256 = upload.uploads.find((item) => item.blob_id === file.id)?.sha256 ?? '';
+      const match = attachmentIndex.existing(file.name, sha256, file.id);
+      if (match)
+        duplicates[file.id] = composerCopy.alreadyShared(
+          file.name,
+          name,
+          postedLabel(match.postedAt)
+        );
+    }
+  }
+  const agentOpen = ui.pane?.mode === 'agent';
 
   const composerError = ownsError && error?.source === 'composer' ? error : null;
   const notes = composerNote({
@@ -294,11 +322,15 @@ export function Composer({ note, inputRef }: ComposerProps) {
         attachments={draft.attachments}
         references={draft.references}
         upload={upload}
+        duplicates={duplicates}
+        server={serverLabel(controller.connection)}
         onRemoveAttachment={removeAttachment}
         onRemoveReference={removeReference}
         onSend={sendNow}
         posting={isPending('send')}
-        onAskAgent={() => openPane({ mode: 'agent' })}
+        agentOpen={agentOpen}
+        agentPaneId={agentPaneId}
+        onAskAgent={() => (agentOpen ? closePane() : openPane({ mode: 'agent' }))}
         onSharePath={() => openDialog({ kind: 'share-path' })}
         onPasteFiles={(files) => void takeFiles({ files, hasFolder: false })}
         inputRef={setInput}
@@ -408,10 +440,14 @@ interface ComposerCardProps {
   attachments: readonly DraftFile[];
   references: readonly DraftReference[];
   upload: ReturnType<typeof useCrewUpload>;
+  duplicates: Readonly<Record<string, string>>;
+  server: string;
   onRemoveAttachment(id: string): void;
   onRemoveReference(id: string): void;
   onSend(): void;
   posting: boolean;
+  agentOpen: boolean;
+  agentPaneId?: string;
   onAskAgent(): void;
   onSharePath(): void;
   onPasteFiles(files: File[]): void;
@@ -430,10 +466,14 @@ function ComposerCard({
   attachments,
   references,
   upload,
+  duplicates,
+  server,
   onRemoveAttachment,
   onRemoveReference,
   onSend,
   posting,
+  agentOpen,
+  agentPaneId,
   onAskAgent,
   onSharePath,
   onPasteFiles,
@@ -498,6 +538,8 @@ function ComposerCard({
         attachments={attachments}
         references={references}
         uploads={upload.chips}
+        duplicates={duplicates}
+        server={server}
         onRemoveAttachment={onRemoveAttachment}
         onRemoveReference={onRemoveReference}
         onPauseUpload={(transfer) => void upload.pause(transfer)}
@@ -524,7 +566,16 @@ function ComposerCard({
           onSharePath={onSharePath}
           uploading={upload.choosing}
         />
-        <Button type="button" variant="ghost" size="sm" onClick={onAskAgent}>
+        {/* A toggle for the agent pane: it says whether the pane is open, and which element it
+            opens, as the channel header's details toggle says it is pressed (Q3-23). */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-expanded={agentOpen}
+          aria-controls={agentPaneId}
+          onClick={onAskAgent}
+        >
           <Bot aria-hidden />
           {composerCopy.askAgent}
         </Button>

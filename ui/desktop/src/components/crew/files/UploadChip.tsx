@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Loader2, Pause, Play } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
@@ -31,13 +32,19 @@ export function ProgressRing({ percent }: { percent: number }) {
   );
 }
 
+/** How long an upload shows "Uploading…" before a number and Pause (Q3-16). */
+export const UPLOAD_SETTLE_MS = 1000;
+
 /**
  * An upload still on its way into the composer: `[counts.csv 42% ⏸]`.
  *
- * While it moves it shows the ring and a Pause glyph; while it starts or finishes, the one
- * spinner. One this composer started that stopped (paused, or failed with the reason on
- * hover) offers Resume, which reopens the secure picker for the same file. When it completes
- * the chip goes, and the file becomes an ordinary attachment chip.
+ * For its first second, and until it has moved 1%, it shows the one spinner and "Uploading…":
+ * a 100-byte file used to sit at an empty ring, "0%" and a pause glyph for a second or two, and
+ * read as paused (Q3-16). After that it shows the ring, the percent, and Pause (tooltip "Pause
+ * upload"); Pause never shows sooner, so a file that finishes in under a second never offers it.
+ * While it starts or finishes, the spinner. One this composer started that stopped (paused, or
+ * failed with the reason on hover) offers Resume, which reopens the secure picker for the same
+ * file. When it completes the chip goes, and the file becomes an ordinary attachment chip.
  */
 export function UploadChip({
   transfer,
@@ -49,10 +56,14 @@ export function UploadChip({
   onResume(transfer: CrewTransfer): void;
 }) {
   const presentation = transferStatePresentation(transfer);
+  const settled = useSettled(transfer.id);
   const moving = presentation.key === 'uploading';
-  const canPause = presentation.active && presentation.key !== 'pausing';
+  const percent = presentation.percent ?? 0;
+  // The first second, and while nothing has moved: a spinner and a word, never "0%".
+  const starting = moving && !settled && percent < 1;
+  const canPause = settled && presentation.active && presentation.key !== 'pausing';
   const canResume = presentation.key === 'paused' || presentation.key === 'failed';
-  const state = moving ? `${presentation.percent ?? 0}%` : presentation.word;
+  const state = starting ? filesCopy.uploading : moving ? `${percent}%` : presentation.word;
   return (
     <Badge
       variant="chip"
@@ -60,15 +71,19 @@ export function UploadChip({
       data-transfer-state={presentation.key}
       title={transfer.error ?? undefined}
     >
-      {moving ? (
-        <ProgressRing percent={presentation.percent ?? 0} />
+      {moving && !starting ? (
+        <ProgressRing percent={percent} />
       ) : presentation.active ? (
         <Loader2 className="crew-chip-icon animate-spin" aria-hidden />
       ) : null}
       <span className="min-w-0 truncate text-text-default">{transfer.name}</span>
       <span className="shrink-0 tabular-nums">{state}</span>
       {canPause ? (
-        <ChipAction label={filesCopy.pauseNamed(transfer.name)} onClick={() => onPause(transfer)}>
+        <ChipAction
+          label={filesCopy.pauseNamed(transfer.name)}
+          tooltip={filesCopy.pauseUpload}
+          onClick={() => onPause(transfer)}
+        >
           <Pause className="crew-chip-icon" aria-hidden />
         </ChipAction>
       ) : null}
@@ -79,4 +94,14 @@ export function UploadChip({
       ) : null}
     </Badge>
   );
+}
+
+/** Whether this upload's chip has been up for {@link UPLOAD_SETTLE_MS}. */
+function useSettled(id: string): boolean {
+  const [settled, setSettled] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(id), UPLOAD_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [id]);
+  return settled === id;
 }

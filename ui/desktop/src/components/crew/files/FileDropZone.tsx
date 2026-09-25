@@ -65,10 +65,11 @@ function readDrop(transfer: DataTransfer): DroppedFiles {
 /**
  * A region files can be dropped on: the channel, or the composer on its own.
  *
- * While files are dragged over it the zone shows where they will go ("Drop to share in
- * #general") on a translucent tint, so the messages stay in view; a drop hands the `File`
- * objects to the registered target, which asks for the native share confirmation (D-DROP) and
- * then uploads through the one transfer path. The zone never reads a file. It is marked `data-drop-zone` so
+ * While files are dragged over it the zone says what a drop does and where ("Drop to attach
+ * in #general") on a translucent tint, so the messages stay in view. A drop ATTACHES — the file
+ * joins the message being written and reaches the channel only on Send — so the words say
+ * attach, not share (Q3-14). A drop hands the `File` objects to the registered target, which asks
+ * for the native share confirmation (D-DROP) and then uploads through the one transfer path. The zone never reads a file. It is marked `data-drop-zone` so
  * the app-wide handler in `App.tsx` leaves its events to it; everything else still stops the
  * browser from navigating to a dropped file.
  *
@@ -176,7 +177,7 @@ export function CrewFileDropZone({
           <div className="crew-drop-overlay" data-testid="crew-drop-overlay">
             <span className="crew-drop-overlay-label">
               <Upload className="size-5" aria-hidden />
-              <span>{filesCopy.dropToShare(target.channelName)}</span>
+              <span>{filesCopy.dropToAttach(target.channelName)}</span>
             </span>
           </div>
         ) : null}
