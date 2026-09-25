@@ -7,7 +7,13 @@ import {
 } from '../api/grants';
 import { isRevocationUnconfirmed, isStaleDaemon, STALE_DAEMON_MESSAGE } from '../api/errors';
 import { accessCopy } from './copy';
-import { rememberConfirmedRevoke, type RevokedGrantInfo } from './pastAccess';
+import {
+  forgetRevokeWaiting,
+  forgetWaitingRevokes,
+  noteRevokeWaiting,
+  rememberConfirmedRevoke,
+  type RevokedGrantInfo,
+} from './pastAccess';
 
 /**
  * Chat and task grants, as the daemon lists them (ui-redesign-spec, "Revoke", RV-R1..R3).
@@ -51,6 +57,7 @@ const grantKey = (connectionId: string, sessionId: string) => `${connectionId}\n
 /** For tests: forget every unconfirmed revocation this window recorded. */
 export function forgetUnconfirmedRevocations(): void {
   unconfirmedRevocations.clear();
+  forgetWaitingRevokes();
 }
 
 /** Whether this window saw a revoke of this grant stop only on this device. */
@@ -164,7 +171,9 @@ export function revokeOutcomeFrom(failure: unknown): RevokeOutcome {
  *
  * `revoking` is the grant the person pressed Revoke on, when the surface has it: a confirmed revoke
  * of it is remembered for "Show past access" (`pastAccess.ts`, Q4-12), which the daemon's list
- * forgets once the chat is granted again. Display only; it changes nothing about the request.
+ * forgets once the chat is granted again. A 503 is remembered as waiting, and recorded when a
+ * later list says the daemon confirmed it (NEW-3). Display only; it changes nothing about the
+ * request.
  */
 export async function revokeGrant(
   connectionId: string,
@@ -179,8 +188,12 @@ export async function revokeGrant(
   } catch (failure) {
     outcome = revokeOutcomeFrom(failure);
   }
-  if (outcome.kind === 'revoked')
+  if (outcome.kind === 'revoked') {
+    forgetRevokeWaiting(connectionId, sessionId, answer?.run_id ?? revoking?.run_id);
     rememberConfirmedRevoke(connectionId, sessionId, revoking, answer);
+  } else if (outcome.kind === 'unconfirmed')
+    // Dated once a list says the daemon confirmed it with the workspace by itself (NEW-3).
+    noteRevokeWaiting(connectionId, sessionId, revoking);
   announceGrantsChanged({ connectionId, sessionId, change: outcome.kind });
   return outcome;
 }

@@ -2,7 +2,10 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { STALE_DAEMON_MESSAGE } from '../api/errors';
+import { listSessionGrants } from '../api/grants';
+import { accessRows, formatExpiry, splitAccessRows } from './accessRows';
 import { accessCopy } from './copy';
+import { readPastAccess } from './pastAccess';
 import {
   CREW_GRANTS_CHANGED_EVENT,
   announceGrantsChanged,
@@ -225,5 +228,166 @@ describe('useCrewGrants', () => {
 
     const unscoped = renderHook(() => useCrewGrants(['conn-1'], { cacheScope: {} }));
     expect(unscoped.result.current.status).toBe('loading');
+  });
+});
+
+/**
+ * Final polish NEW-3: "Show past access" dated only a revoke the daemon confirmed at once (a 200).
+ * One answered 503 and confirmed later by the daemon itself (F3's path) got no time — its row read
+ * plain "Revoked" — and once the chat was granted again the daemon's list replaced it, so the row
+ * was gone (live, runs f5c6dc10 and 2425afd9). Now the first list read that says `confirmed` for a
+ * run this window saw waiting records it, dated then, and the row outlives a new grant.
+ */
+describe('a revoke the daemon confirms later, in Show past access (NEW-3)', () => {
+  const T0 = Date.UTC(2026, 8, 25, 21, 13, 10);
+  const CONFIRMED_AT = T0 + 12_800;
+  const snapshot = {
+    teams: [{ id: 'team-1', name: 'Polish Lab' }],
+    channels: [{ id: 'channel-1', team_id: 'team-1', name: 'general' }],
+  };
+  const chat = (runId: string, overrides: Record<string, unknown> = {}) =>
+    row('chat-1', {
+      run_id: runId,
+      kind: 'chat',
+      session_name: 'Crew context check',
+      expires_at: Math.floor(T0 / 1000) + 3600,
+      ...overrides,
+    });
+  let answer: { grants: unknown[]; replaced_grants?: unknown[] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    window.localStorage.clear();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+    answer = { grants: [chat('run-1')] };
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections/conn-1/sessions/chat-1/revoke' && method === 'POST') {
+        answer = { grants: [chat('run-1', { expired: true, revocation: 'unconfirmed' })] };
+        throw new CrewHttpError(
+          'Stopped on this device. The workspace hasn’t confirmed yet.',
+          503,
+          'crew_revocation_unconfirmed'
+        );
+      }
+      if (path === '/connections/conn-1/grants') return answer;
+      return {};
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const pastRows = (grants: Awaited<ReturnType<typeof listSessionGrants>>) =>
+    splitAccessRows(
+      accessRows(grants, {
+        snapshot,
+        now: Date.now(),
+        pastAccess: { connectionId: 'conn-1', entries: readPastAccess('conn-1') },
+      })
+    ).old;
+
+  it('dates the revoke when a list first says confirmed, and keeps the row after a new grant', async () => {
+    const listed = await listSessionGrants('conn-1');
+    await expect(revokeGrant('conn-1', 'chat-1', listed[0])).resolves.toMatchObject({
+      kind: 'unconfirmed',
+    });
+    // While it waits, the list says so; nothing is recorded yet.
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toEqual([]);
+
+    // The daemon re-dials and the workspace confirms; the next read (the pane's watch) sees it.
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'confirmed' })] };
+    vi.setSystemTime(CONFIRMED_AT);
+    const confirmed = await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toMatchObject([
+      { session_id: 'chat-1', run_id: 'run-1', channel_id: 'channel-1', revoked_at: CONFIRMED_AT },
+    ]);
+    const time = formatExpiry(CONFIRMED_AT / 1000, CONFIRMED_AT);
+    expect(pastRows(confirmed).map((item) => [item.runId, item.statusLabel])).toEqual([
+      ['run-1', accessCopy.status.revokedAt(time)],
+    ]);
+
+    // Later reads do not move the time.
+    vi.setSystemTime(CONFIRMED_AT + 60_000);
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')[0].revoked_at).toBe(CONFIRMED_AT);
+
+    // The chat is granted again: the daemon lists only the new grant, and the old row stays.
+    answer = { grants: [chat('run-2')] };
+    const regranted = await listSessionGrants('conn-1');
+    expect(pastRows(regranted).map((item) => [item.runId, item.statusLabel])).toEqual([
+      ['run-1', accessCopy.status.revokedAt(time)],
+    ]);
+  });
+
+  it('dates one the daemon confirms after the chat was granted again (`replaced_grants`)', async () => {
+    const listed = await listSessionGrants('conn-1');
+    await revokeGrant('conn-1', 'chat-1', listed[0]);
+    // Granted again before the workspace answered: the earlier stop is kept as replaced.
+    answer = {
+      grants: [chat('run-2')],
+      replaced_grants: [chat('run-1', { expired: true, revocation: 'unconfirmed' })],
+    };
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toEqual([]);
+
+    answer = {
+      grants: [chat('run-2')],
+      replaced_grants: [chat('run-1', { expired: true, revocation: 'confirmed' })],
+    };
+    vi.setSystemTime(CONFIRMED_AT);
+    const grants = await listSessionGrants('conn-1');
+    // What the list resolves with is still only the chats' grants.
+    expect(grants.map((grant) => grant.run_id)).toEqual(['run-2']);
+    expect(readPastAccess('conn-1')).toMatchObject([{ run_id: 'run-1', revoked_at: CONFIRMED_AT }]);
+    expect(pastRows(grants).map((item) => item.runId)).toEqual(['run-1']);
+  });
+
+  it('dates a revoke made elsewhere that this window saw waiting', async () => {
+    // A terminal revoked it while offline: this window only ever read the list.
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'unconfirmed' })] };
+    await listSessionGrants('conn-1');
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'confirmed' })] };
+    vi.setSystemTime(CONFIRMED_AT);
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toMatchObject([{ run_id: 'run-1', revoked_at: CONFIRMED_AT }]);
+  });
+
+  it('never dates a revoke it did not see waiting, or one the workspace ended itself', async () => {
+    // Confirmed before this window ever looked: when is unknown, so no time is invented.
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'confirmed' })] };
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toEqual([]);
+
+    // Seen waiting, then ended by the workspace (D-1): nobody's revoke was confirmed.
+    answer = { grants: [chat('run-2', { expired: true, revocation: 'unconfirmed' })] };
+    await listSessionGrants('conn-1');
+    answer = { grants: [chat('run-2', { expired: true, revocation: 'ended_by_workspace' })] };
+    await listSessionGrants('conn-1');
+    answer = { grants: [chat('run-2', { expired: true, revocation: 'confirmed' })] };
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toEqual([]);
+  });
+
+  it('keeps a 200’s own time: a later list that says confirmed does not move it', async () => {
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path.endsWith('/revoke') && method === 'POST')
+        return { revoked: true, remote_revocation_confirmed: true, run_id: 'run-1' };
+      if (path === '/connections/conn-1/grants') return answer;
+      return {};
+    });
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'unconfirmed' })] };
+    const listed = await listSessionGrants('conn-1');
+    // Retry answered 200 at T0: recorded then.
+    await expect(revokeGrant('conn-1', 'chat-1', listed[0])).resolves.toEqual({
+      kind: 'revoked',
+    });
+    expect(readPastAccess('conn-1')).toMatchObject([{ run_id: 'run-1', revoked_at: T0 }]);
+    answer = { grants: [chat('run-1', { expired: true, revocation: 'confirmed' })] };
+    vi.setSystemTime(CONFIRMED_AT);
+    await listSessionGrants('conn-1');
+    expect(readPastAccess('conn-1')).toMatchObject([{ run_id: 'run-1', revoked_at: T0 }]);
   });
 });

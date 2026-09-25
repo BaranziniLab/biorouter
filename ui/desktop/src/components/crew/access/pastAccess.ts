@@ -167,6 +167,99 @@ export function rememberConfirmedRevoke(
   });
 }
 
+// ── A revoke the daemon confirmed later (final polish NEW-3) ──────────────────────────────────
+//
+// A revoke answered 503 stops the grant on this device, and the daemon then confirms it with the
+// workspace by itself once the connection is back (F3). Only a 200 used to be recorded above, so
+// that path — the one F3 created — got no time: its row read plain "Revoked", and once the chat was
+// granted again the daemon's list replaced it and "Show past access" forgot it (live, runs
+// f5c6dc10 and 2425afd9). Now every run this window sees waiting — its own 503, or a list that says
+// `revocation: unconfirmed` — is remembered here, and the first list read that says `confirmed`
+// records it, dated then: at most one list read (15 s while one is on screen) after the workspace
+// answered. Process memory on purpose: it is what this window saw, and a reload honestly forgets it.
+
+const waitingRevokes = new Map<string, RevokedGrantInfo>();
+/** A run's key; `runId` '' holds a 503 whose run the surface did not know (just after Allow). */
+const waitingKey = (connectionId: string, sessionId: string, runId = '') =>
+  `${connectionId}\n${sessionId}\n${runId}`;
+
+/** A revoke of this chat stopped on this device only (503): remember it until it is confirmed. */
+export function noteRevokeWaiting(
+  connectionId: string,
+  sessionId: string,
+  revoked: RevokedGrantInfo | null | undefined
+): void {
+  if (!connectionId || !sessionId) return;
+  waitingRevokes.set(waitingKey(connectionId, sessionId, revoked?.run_id ?? ''), {
+    ...(revoked ?? {}),
+  });
+}
+
+/** A revoke of this chat was confirmed at once (200) and recorded then: nothing waits for it. */
+export function forgetRevokeWaiting(connectionId: string, sessionId: string, runId?: string): void {
+  waitingRevokes.delete(waitingKey(connectionId, sessionId));
+  if (runId) waitingRevokes.delete(waitingKey(connectionId, sessionId, runId));
+}
+
+/** For tests: forget every revoke this window saw waiting. */
+export function forgetWaitingRevokes(): void {
+  waitingRevokes.clear();
+}
+
+const rowInfo = (row: CrewSessionGrant, seen: RevokedGrantInfo | undefined): RevokedGrantInfo => ({
+  run_id: row.run_id,
+  channel_id: row.channel_id,
+  session_name: row.session_name ?? seen?.session_name ?? null,
+  kind: row.kind ?? seen?.kind,
+  source_channels: row.source_channels.length ? row.source_channels : seen?.source_channels,
+});
+
+/**
+ * Read one connection's grant list as the daemon answered it: `grants`, one per chat, and
+ * `replaced`, the earlier stops the daemon keeps asking about after their chat was granted again
+ * (`replaced_grants`). A stopped run this window saw waiting is recorded once the list says the
+ * workspace confirmed it (NEW-3). A run the workspace ended itself was not revoked by anyone, so it
+ * is forgotten, never recorded as "Revoked". Display only; never throws.
+ */
+export function observeListedRevocations(
+  connectionId: string,
+  grants: readonly CrewSessionGrant[],
+  replaced: readonly CrewSessionGrant[] = [],
+  now = Date.now()
+): void {
+  try {
+    const rows: [CrewSessionGrant, boolean][] = [
+      ...grants.map((row): [CrewSessionGrant, boolean] => [row, true]),
+      ...replaced.map((row): [CrewSessionGrant, boolean] => [row, false]),
+    ];
+    for (const [row, current] of rows) {
+      if (!row.expired || row.connection_id !== connectionId) continue;
+      const byRun = waitingKey(connectionId, row.session_id, row.run_id);
+      // A 503 whose run was not known can only be the chat's current grant, never an earlier one.
+      const byChat = current ? waitingKey(connectionId, row.session_id) : null;
+      const seen = waitingRevokes.get(byRun) ?? (byChat ? waitingRevokes.get(byChat) : undefined);
+      if (row.revocation === 'unconfirmed') {
+        waitingRevokes.set(byRun, rowInfo(row, seen));
+        if (byChat) waitingRevokes.delete(byChat);
+        continue;
+      }
+      if (!seen) continue;
+      waitingRevokes.delete(byRun);
+      if (byChat) waitingRevokes.delete(byChat);
+      if (row.revocation !== 'confirmed') continue;
+      rememberConfirmedRevoke(
+        connectionId,
+        row.session_id,
+        rowInfo(row, seen),
+        { run_id: row.run_id, session_id: row.session_id },
+        now
+      );
+    }
+  } catch {
+    // Display only: a record that cannot be made is dropped.
+  }
+}
+
 /** Another window of this app wrote a past-access key (or cleared storage). */
 function onStorage(event: StorageEvent) {
   if (event.key === null || event.key.startsWith(STORAGE_PREFIX)) changed();

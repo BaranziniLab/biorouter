@@ -1,4 +1,5 @@
 import { CrewHttpError, crewHttp } from '../crewApi';
+import { observeListedRevocations } from '../access/pastAccess';
 import { CREW_REVOCATION_UNCONFIRMED, unexpectedCrewResponse } from './errors';
 import { isRecord, nullableNumber, nullableText, optionalText, stringArray } from './parse';
 
@@ -156,10 +157,24 @@ function grantFrom(row: unknown): CrewSessionGrant | null {
   return grant;
 }
 
+function rowsOf(result: unknown, list: 'grants' | 'replaced_grants', connectionId: string) {
+  const rows = isRecord(result) && Array.isArray(result[list]) ? result[list] : [];
+  return rows
+    .map(grantFrom)
+    .filter(
+      (grant): grant is CrewSessionGrant => grant !== null && grant.connection_id === connectionId
+    );
+}
+
 /**
  * The grants the daemon holds for one saved connection. A missing or malformed list reads as no
  * grants, and a malformed row is left out, because a row without a session or a connection could
  * only produce a Revoke aimed at nothing.
+ *
+ * Every answer is also shown to "Show past access" (`observeListedRevocations`), with the earlier
+ * stops the daemon still asks the workspace about (`replaced_grants`), so a revoke the daemon
+ * confirmed by itself after a 503 is dated when this window first reads it confirmed (NEW-3).
+ * Display only: what this resolves with is `grants`, exactly as before.
  */
 export async function listSessionGrants(
   connectionId: string,
@@ -171,12 +186,10 @@ export async function listSessionGrants(
     undefined,
     signal
   );
-  const rows = isRecord(result) && Array.isArray(result.grants) ? result.grants : [];
-  return rows
-    .map(grantFrom)
-    .filter(
-      (grant): grant is CrewSessionGrant => grant !== null && grant.connection_id === connectionId
-    );
+  const grants = rowsOf(result, 'grants', connectionId);
+  if (!signal?.aborted)
+    observeListedRevocations(connectionId, grants, rowsOf(result, 'replaced_grants', connectionId));
+  return grants;
 }
 
 /**
