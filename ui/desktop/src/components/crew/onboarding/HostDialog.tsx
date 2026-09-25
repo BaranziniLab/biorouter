@@ -20,6 +20,7 @@ import { previewInvitation, type CrewInvitationPreview } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
 import { connectionServer, isInstitutionId, sanitizeDisplayText } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
+import { focusIsLost } from '../state/focusReturn';
 import type { ErrorSource, PreparedDevice } from '../state/types';
 import { hostCopy, INSTALL_COMMANDS, joinCopy } from './copy';
 import {
@@ -695,6 +696,17 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (run.phase !== 'running') return;
     void stopHostRun(run.jobId).catch(() => undefined);
   };
+
+  // Stop leaves with the run: pressing it ends the run, and a run that ends by itself takes it too.
+  // Focus that was on it would fall to the page or the dialog's frame (Q2-20, Q2-27), so it goes to
+  // Start it for me, which stays. Only when focus is lost: a person who moved on keeps their place.
+  const runPhase = run.phase;
+  const lastRunPhase = useRef(runPhase);
+  useLayoutEffect(() => {
+    const left = lastRunPhase.current === 'running' && runPhase !== 'running';
+    lastRunPhase.current = runPhase;
+    if (left && focusIsLost()) startRef.current?.focus();
+  }, [runPhase]);
 
   // Keep the newest output in view as it arrives.
   const shownOutput = run.phase === 'idle' || run.phase === 'starting' ? '' : run.output;

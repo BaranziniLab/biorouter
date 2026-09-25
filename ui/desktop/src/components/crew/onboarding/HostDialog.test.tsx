@@ -903,6 +903,90 @@ describe('HostDialog', () => {
       expect(mocks.stopHostRun).toHaveBeenCalledWith('job-1');
     });
 
+    it.each([
+      [
+        'it was stopped',
+        {
+          state: 'failed',
+          error: {
+            code: 'crew_host_start_cancelled',
+            message:
+              'Stopped. Crew may have started on the server; run the commands yourself to check.',
+          },
+        },
+      ],
+      [
+        'the server refused the login',
+        {
+          state: 'failed',
+          error: { code: 'crew_ssh_failed', message: 'Biorouter couldn’t reach the server.' },
+        },
+      ],
+    ])(
+      'hands focus from Stop to Start it for me when the run ends because %s (Q2-20)',
+      async (_case, answer) => {
+        mocks.startHostRun.mockResolvedValue(run({ output: 'starting Crew…\n' }));
+        let respond: (status: unknown) => void = () => {};
+        mocks.readHostRun.mockReturnValue(
+          new Promise((resolve) => {
+            respond = resolve;
+          })
+        );
+        renderHost();
+        await toStart();
+        const start = screen.getByRole('button', { name: hostCopy.startForMe });
+        fireEvent.click(start);
+        // A keyboard user moves to Stop and presses it.
+        const stop = await screen.findByRole('button', { name: hostCopy.stop });
+        act(() => stop.focus());
+        fireEvent.click(stop);
+        expect(mocks.stopHostRun).toHaveBeenCalledWith('job-1');
+
+        // The next read answers that the run ended: Stop leaves with it, focus does not.
+        await waitFor(() => expect(mocks.readHostRun).toHaveBeenCalled(), { timeout: 3000 });
+        act(() => respond(run({ ...answer, output: 'starting Crew…\n' })));
+        await screen.findByTestId('crew-host-start-problem');
+        expect(screen.queryByRole('button', { name: hostCopy.stop })).toBeNull();
+        expect(start).toHaveFocus();
+        expect(start).not.toHaveAttribute('aria-disabled');
+      }
+    );
+
+    it('carries focus from Stop through the read to Create workspace when the run finishes', async () => {
+      mocks.startHostRun.mockResolvedValue(run({ output: 'starting Crew…\n' }));
+      let respond: (status: unknown) => void = () => {};
+      mocks.readHostRun.mockReturnValue(
+        new Promise((resolve) => {
+          respond = resolve;
+        })
+      );
+      let preview: (value: unknown) => void = () => {};
+      mocks.previewInvitation.mockReturnValue(
+        new Promise((resolve) => {
+          preview = resolve;
+        })
+      );
+      renderHost();
+      await toStart();
+      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      fireEvent.click(start);
+      const stop = await screen.findByRole('button', { name: hostCopy.stop });
+      act(() => stop.focus());
+
+      await waitFor(() => expect(mocks.readHostRun).toHaveBeenCalled(), { timeout: 3000 });
+      act(() =>
+        respond(run({ state: 'finished', exit_code: 0, result: { kind: 'found', text: LINE } }))
+      );
+      // Reading what it printed: Stop is gone, and focus waits on Start it for me.
+      expect(await screen.findByText(hostCopy.startReading)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: hostCopy.stop })).toBeNull();
+      expect(start).toHaveFocus();
+
+      await act(async () => preview(PREVIEW));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+      expect(screen.getByRole('button', { name: hostCopy.create })).toHaveFocus();
+    });
+
     it('starts nothing while a run is under way, however often it is pressed', async () => {
       mocks.startHostRun.mockResolvedValue(run());
       mocks.readHostRun.mockReturnValue(new Promise(() => {}));
