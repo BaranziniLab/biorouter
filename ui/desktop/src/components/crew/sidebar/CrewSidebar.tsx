@@ -25,8 +25,9 @@ export interface CrewSidebarProps {
  * sidebar ground, with a fixed top — the switcher band and the status row — a middle that scrolls
  * on its own, and the pinned You row.
  *
- * The middle holds, each only when it has something: Invitations and Waiting to join, the team
- * sections with "+ Add team", and the Agents slot. The column's 240px width belongs to the
+ * The middle holds, each only when it has something: Invitations, Waiting to join and — for the
+ * host — Joined, not in your teams (Q3-52), the team sections with "+ Add team", and the Agents
+ * slot. The column's 240px width belongs to the
  * layout (`.crew-sidebar` in `crew-app.css`); this component fills it.
  *
  * The team and channel rows are one roving-focus list, so Tab alone reaches only one of them;
