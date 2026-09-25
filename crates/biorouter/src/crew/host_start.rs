@@ -303,6 +303,8 @@ type RunState = (
 
 struct Job {
     preparation_id: String,
+    /// The login the person typed, to name in a sign-in refusal.
+    ssh_target: String,
     command: String,
     output: Mutex<Vec<u8>>,
     state: Mutex<RunState>,
@@ -428,6 +430,7 @@ fn failure(
     timed_out: bool,
     exit_code: Option<i32>,
     stderr: &str,
+    ssh_target: &str,
 ) -> Option<HostStartError> {
     if cancelled {
         return Some(HostStartError {
@@ -448,7 +451,7 @@ fn failure(
         let kind = transport::classify_exit(exit_code, stderr);
         HostStartError {
             code: kind.api_code().into(),
-            message: ssh_sentence(kind),
+            message: ssh_sentence(kind, stderr, ssh_target),
         }
     })
 }
@@ -511,7 +514,7 @@ fn watch(job: Arc<Job>, mut child: tokio::process::Child) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        match failure(cancelled, timed_out, exit_code, &stderr) {
+        match failure(cancelled, timed_out, exit_code, &stderr, &job.ssh_target) {
             Some(error) => job.finish(HostStartState::Failed, exit_code, None, Some(error)),
             None => {
                 let output = shown(
@@ -603,6 +606,7 @@ impl CrewManager {
         let job_id = uuid::Uuid::new_v4().to_string();
         let job = Arc::new(Job {
             preparation_id: request.preparation_id,
+            ssh_target: request.ssh_target,
             command,
             output: Mutex::new(Vec::new()),
             state: Mutex::new((HostStartState::Running, None, None, None)),
@@ -615,10 +619,23 @@ impl CrewManager {
     }
 }
 
-/// What to tell the person when `ssh` itself failed. The manual path is always the way on.
-fn ssh_sentence(kind: super::SshFailureKind) -> String {
+/// What to tell the person when `ssh` itself failed, from its classified kind, its (shown)
+/// stderr and the login it was asked to use. The manual path is always the way on.
+pub(super) fn ssh_sentence(kind: super::SshFailureKind, stderr: &str, ssh_target: &str) -> String {
     use super::SshFailureKind as Kind;
     match kind {
+        // Q3-63: a server that refused the key asked for nothing, so "asks for a password or
+        // a code" sent people looking for a prompt that never came.
+        Kind::AuthRequired if key_refused(stderr) => {
+            return match ssh_target.rsplit_once('@') {
+                Some((login, server)) if !login.is_empty() && !server.is_empty() => format!(
+                    "{server} didn't accept this computer's SSH key for {login}. Check the server login, or run the commands yourself in a terminal."
+                ),
+                _ => format!(
+                    "{ssh_target} didn't accept this computer's SSH key. Check the server login, or run the commands yourself in a terminal."
+                ),
+            };
+        }
         Kind::AuthRequired => "The server asks for a password or a code, so Biorouter can't sign in for you. Run the commands yourself in a terminal.",
         Kind::HostKeyUnknown => "This computer hasn't connected to the server before. Sign in once in a terminal to check its fingerprint, then try again.",
         Kind::HostKeyChanged => "The server's identity changed since this computer last connected. Check with the server's administrator before you continue.",
@@ -626,4 +643,23 @@ fn ssh_sentence(kind: super::SshFailureKind) -> String {
         Kind::BridgeMissing | Kind::Other => "SSH couldn't run the commands. Run them yourself in a terminal to see why.",
     }
     .to_owned()
+}
+
+/// Whether OpenSSH's last `Permission denied (…)` names the public-key method and neither of
+/// the two that ask a person something (`password`, `keyboard-interactive`): the server refused
+/// this computer's key and offered no prompt.
+fn key_refused(stderr: &str) -> bool {
+    let Some(methods) = stderr.lines().rev().find_map(|line| {
+        let line = line.to_lowercase();
+        let (_, offered) = line.split_once("permission denied (")?;
+        let (methods, _) = offered.split_once(')')?;
+        Some(methods.to_owned())
+    }) else {
+        return false;
+    };
+    let methods: Vec<&str> = methods.split(',').map(str::trim).collect();
+    methods.contains(&"publickey")
+        && !methods
+            .iter()
+            .any(|method| matches!(*method, "password" | "keyboard-interactive"))
 }

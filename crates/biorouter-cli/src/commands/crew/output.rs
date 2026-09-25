@@ -634,9 +634,11 @@ fn person_from(value: &Value) -> Person {
 }
 
 impl Person {
-    /// `"Display name" (@username)`, or `@username` when the two are equal; `always_both`
-    /// keeps both, as an authority decision needs.
-    fn label(&self, always_both: bool) -> String {
+    /// `"Display name" (@username)`, or `@username` when the two are equal (or there is no
+    /// display name). The username is on every label, so a decision about a person names them
+    /// exactly without repeating it as a quoted "display name" (Q3-63: `Removed "crew_frank"
+    /// (@crew_frank)`, with its isolates printed raw).
+    fn label(&self) -> String {
         let Some(username) = self.username.as_deref() else {
             return if self.active {
                 UNKNOWN_MEMBER
@@ -651,10 +653,9 @@ impl Person {
             .map(str::trim)
             .filter(|display| !display.is_empty());
         let mut label = match display {
-            Some(display) if always_both || display.to_lowercase() != username.to_lowercase() => {
+            Some(display) if display.to_lowercase() != username.to_lowercase() => {
                 format!("{} (@{})", quoted_name(display), safe_text(username))
             }
-            None if always_both => format!("{} (@{})", quoted_name(username), safe_text(username)),
             _ => format!("@{}", safe_text(username)),
         };
         if !self.active {
@@ -694,14 +695,15 @@ pub fn person_label(directory: &Directory, principal_id: &str, show_ids: bool) -
     Ctx::new(directory.clone(), show_ids, Clock::System).person(Some(principal_id))
 }
 
-/// Always `"Display name" (@username)`, even when equal: for remove, offer, revoke and other
-/// decisions about a person.
+/// The person a decision is about (remove, offer, revoke): `"Display name" (@username)` for a
+/// real display name, `@username` alone when the display name is the username (Q3-63), with
+/// the ID when asked.
 #[allow(dead_code)] // For the command layer's confirmations and refusals.
 pub fn authority_label(directory: &Directory, principal_id: &str, show_ids: bool) -> String {
     let label = directory
         .people
         .get(principal_id)
-        .map_or_else(|| UNKNOWN_MEMBER.to_owned(), |person| person.label(true));
+        .map_or_else(|| UNKNOWN_MEMBER.to_owned(), Person::label);
     Ctx::new(directory.clone(), show_ids, Clock::System).with_id(label, "ID", Some(principal_id))
 }
 
@@ -879,7 +881,7 @@ impl Ctx {
     fn person(&self, id: Option<&str>) -> String {
         let label = id
             .and_then(|id| self.dir.people.get(id))
-            .map_or_else(|| UNKNOWN_MEMBER.to_owned(), |person| person.label(false));
+            .map_or_else(|| UNKNOWN_MEMBER.to_owned(), |person| person.label());
         self.with_id(label, "ID", id)
     }
 
@@ -1001,7 +1003,7 @@ impl Ctx {
             .and_then(|id| self.dir.people.get(id))
             .cloned()
             .unwrap_or_else(|| person_from(principal));
-        let mut row = person.label(false);
+        let mut row = person.label();
         if self.is_actor(id) {
             row.push_str(" · you");
         }
@@ -1615,7 +1617,7 @@ impl Ctx {
             None => "the workspace".into(),
         };
         let person = self.with_id(
-            person_from(principal).label(false),
+            person_from(principal).label(),
             "ID",
             str_field(principal, "id"),
         );
@@ -2711,10 +2713,17 @@ mod tests {
         assert_eq!(blank, "@bob");
         let mut directory = Directory::default();
         directory.absorb(&json!([{"id":"p","username":"bob","nickname":"bob"}]));
+        // Q3-63: a decision names them the same way, without the username quoted as a name.
+        assert_eq!(authority_label(&directory, "p", false), "@bob");
+        let mut named = Directory::default();
+        named.absorb(&json!([{"id":"f","username":"crew_frank","nickname":"Frank Okafor"}]));
         assert_eq!(
-            authority_label(&directory, "p", false),
-            format!("{} (@bob)", q("bob"))
+            authority_label(&named, "f", false),
+            format!("{} (@crew_frank)", q("Frank Okafor"))
         );
+        let mut unnamed = Directory::default();
+        unnamed.absorb(&json!([{"id":"f","username":"crew_frank"}]));
+        assert_eq!(authority_label(&unnamed, "f", false), "@crew_frank");
         assert_eq!(person_label(&directory, "p", false), "@bob");
         assert_eq!(person_label(&directory, "p", true), "@bob [ID p]");
         assert_eq!(person_label(&directory, "missing", false), "Unknown member");

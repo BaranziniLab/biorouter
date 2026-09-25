@@ -244,6 +244,7 @@ fn write_fake_ssh(root: &Path, mode: &str) {
     let behaviour = match mode {
         "start" => "printf '%s\\n' '{\"workspace_id\":\"w\",\"started_pid\":42,\"invitation\":\"brcrew1:TOKEN\"}'\nprintf '%s\\n' 'note on stderr' >&2\nprintf '%s\\n' '{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}'\nexit 0".to_owned(),
         "auth" => "printf '%s\\n' 'crew_alice@lab-server: Permission denied (publickey,keyboard-interactive).' >&2\nexit 255".to_owned(),
+        "key" => "printf '%s\\n' 'crew_alice@lab-server: Permission denied (publickey).' >&2\nexit 255".to_owned(),
         "hang" => "sleep 30".to_owned(),
         other => panic!("{other}"),
     };
@@ -398,6 +399,66 @@ async fn a_server_that_wants_a_password_is_refused_with_why_and_never_prompts() 
         error.message
     );
     assert_eq!(done.result, None);
+}
+
+/// Q3-63: a login that refuses this computer's key asked for nothing, so the sentence says the
+/// key was refused and names the login, where it used to say the server wanted a password.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_that_refuses_the_key_says_so_and_names_the_login() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (manager, preparation, _env) = started(root.path(), "key").await;
+    let first = manager.start_host(request(&preparation)).await.unwrap();
+    let done = settled(&first.job_id).await;
+    assert_eq!(done.state, HostStartState::Failed);
+    let error = done.error.unwrap();
+    assert_eq!(error.code, "crew_ssh_auth_required");
+    assert_eq!(
+        error.message,
+        "lab-server didn't accept this computer's SSH key for crew_alice. Check the server login, or run the commands yourself in a terminal."
+    );
+}
+
+#[test]
+fn only_a_refused_key_with_no_prompt_offered_is_called_a_refused_key() {
+    use super::host_start::ssh_sentence;
+    use super::SshFailureKind as Kind;
+    let password = "The server asks for a password or a code, so Biorouter can't sign in for you. Run the commands yourself in a terminal.";
+    for (stderr, expected) in [
+        (
+            "crew_alice@lab-server: Permission denied (publickey).",
+            "lab-server didn't accept this computer's SSH key for crew_alice. Check the server login, or run the commands yourself in a terminal.",
+        ),
+        (
+            "Permission denied (publickey,gssapi-keyex,gssapi-with-mic).",
+            "lab-server didn't accept this computer's SSH key for crew_alice. Check the server login, or run the commands yourself in a terminal.",
+        ),
+        (
+            "crew_alice@lab-server: Permission denied (publickey,keyboard-interactive).",
+            password,
+        ),
+        ("Permission denied (publickey,password).", password),
+        ("Too many authentication failures", password),
+    ] {
+        assert_eq!(
+            ssh_sentence(Kind::AuthRequired, stderr, "crew_alice@lab-server"),
+            expected,
+            "{stderr}"
+        );
+    }
+    // An alias names no login of its own.
+    assert_eq!(
+        ssh_sentence(Kind::AuthRequired, "Permission denied (publickey).", "lab-server"),
+        "lab-server didn't accept this computer's SSH key. Check the server login, or run the commands yourself in a terminal."
+    );
+    // Other kinds keep their own sentence, whatever stderr says.
+    assert!(
+        ssh_sentence(Kind::Unreachable, "Permission denied (publickey).", "a@b")
+            .starts_with("Couldn't reach the server.")
+    );
 }
 
 #[cfg(unix)]

@@ -87,7 +87,9 @@ fn observation_error_text(code: &str) -> &'static str {
         }
         "observer_capacity_reached" => "Too many channels are being watched at once",
         "response_too_large" => "An update was too large to show",
-        "unauthorized" | "unknown_device" => "This computer isn't signed in to the workspace",
+        // Q3-63: the words `crew history` prints for the same refusal. Every observer read is
+        // signed, so this is a device the workspace does not know, never a sign-in to redo.
+        "unauthorized" | "unknown_device" => "This computer isn't a member of this workspace",
         "forbidden" | "access_denied" => "You no longer have access to what this view shows",
         "principal_revoked" => "You're no longer a member of this workspace",
         "privacy_denied" => "The workspace's privacy rules don't allow this view",
@@ -1115,6 +1117,18 @@ pub fn routes() -> Router {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_unknown_device_is_told_it_is_not_a_member_as_the_cli_says() {
+        // Q3-63: the observer said "isn't signed in" where `crew history` says "isn't a
+        // member" for the same refusal.
+        for code in ["unauthorized", "unknown_device"] {
+            assert_eq!(
+                observation_error_text(code),
+                "This computer isn't a member of this workspace"
+            );
+        }
+    }
 
     #[test]
     fn a_scope_change_says_only_that_access_to_a_channel_changed() {
