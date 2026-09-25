@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   cacheGet,
@@ -44,6 +53,65 @@ export interface ChatAccessPaneProps {
 }
 
 const chatRoute = (sessionId: string) => `/pair?resumeSessionId=${encodeURIComponent(sessionId)}`;
+
+/**
+ * Whether focus is where the details pane put it on opening — its own heading, or nowhere — and not
+ * somewhere the person has since moved it.
+ */
+function focusIsOnPaneHeading(from: HTMLElement): boolean {
+  const active = document.activeElement;
+  if (!active || active === document.body) return true;
+  const pane = from.closest('aside');
+  return Boolean(pane?.contains(active) && active.tagName === 'H2');
+}
+
+/** How long after the consent appears the pane's own heading focus is still redirected to Allow. */
+const ALLOW_FOCUS_WINDOW_MS = 1000;
+
+/**
+ * Focus Allow when the consent appears (live QA round 4, Q4-13). The details pane focuses its
+ * heading on opening, and after `/crew` + Enter the browser drew its default `outline: auto` box
+ * round it, which read as a text field. The consent's one action takes focus instead, but only
+ * from that heading (or from nowhere): focus the person moved elsewhere stays put.
+ *
+ * The pane focuses its heading in an effect that may run before or after the consent mounts (the
+ * grant list may still be loading), so both orders are covered: a check once this commit is done,
+ * and, for a short while, a redirect when the heading takes focus. A held Enter's repeats never
+ * press Allow: see {@link onAllowKeyDown}.
+ */
+function useFocusAllowOnConsent() {
+  const stop = useRef<(() => void) | null>(null);
+  useEffect(() => () => stop.current?.(), []);
+  return useCallback((button: HTMLButtonElement | null) => {
+    stop.current?.();
+    stop.current = null;
+    if (!button) return;
+    const move = () => {
+      if (button.isConnected && !button.disabled && focusIsOnPaneHeading(button)) button.focus();
+    };
+    const pane = button.closest('aside');
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target.tagName === 'H2') move();
+    };
+    pane?.addEventListener('focusin', onFocusIn);
+    const check = window.setTimeout(move, 0);
+    const done = window.setTimeout(() => stop.current?.(), ALLOW_FOCUS_WINDOW_MS);
+    stop.current = () => {
+      pane?.removeEventListener('focusin', onFocusIn);
+      window.clearTimeout(check);
+      window.clearTimeout(done);
+      stop.current = null;
+    };
+  }, []);
+}
+
+/**
+ * Allow is the consent, so only a deliberate press grants: the auto-repeat of an Enter still held
+ * from `/crew` (or from any earlier control) is not one.
+ */
+function onAllowKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  if ((event.key === 'Enter' || event.key === ' ') && event.repeat) event.preventDefault();
+}
 
 function knownTitle(name: string | null | undefined): string | null {
   return name && !isDefaultSessionName(name) ? chatTitleOf({ session_name: name }) : null;
@@ -128,6 +196,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const [revoking, setRevoking] = useState(false);
   const [outcome, setOutcome] = useState<RevokeOutcome | null>(null);
   const revokeButton = useRef<HTMLButtonElement>(null);
+  const allowButton = useFocusAllowOnConsent();
   const cachedTitle = useKnownChatTitle(sessionId);
 
   // A new pane intent (Review, Manage, Grant again, a row) or another chat starts fresh.
@@ -194,7 +263,20 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     if (!target) return;
     setConfirming(false);
     setRevoking(true);
-    const result = await grants.revoke(target, sessionId);
+    // For the past-access record (Q4-12): the listed grant, or, just after Allow here, what Allow
+    // granted — the daemon's answer names the run.
+    const result = await grants.revoke(
+      target,
+      sessionId,
+      listed || !granted
+        ? grant
+        : {
+            channel_id: channelId,
+            session_name: chat,
+            kind: 'chat',
+            source_channels: [channelId, ...consentExtras],
+          }
+    );
     setRevoking(false);
     setOutcome(result);
     if (result.kind === 'revoked') setGranted(false);
@@ -360,6 +442,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           {confirming ? (
             <InlineConfirm
               question={accessCopy.confirm(chat, destination)}
+              detail={accessCopy.confirmStops}
               confirmLabel={accessCopy.confirmRevoke}
               cancelLabel={accessCopy.confirmKeep}
               pending={revoking}
@@ -461,6 +544,8 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
               It takes the row's width instead, and its lines are centred. */}
           <Button
             key="crew-chat-access-allow"
+            ref={allowButton}
+            onKeyDown={onAllowKeyDown}
             type="submit"
             className="h-auto min-h-control-md w-full min-w-0 max-w-full whitespace-normal break-words py-1.5 text-center"
             disabled={controller.isPending('grant')}

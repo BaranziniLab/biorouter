@@ -137,7 +137,8 @@ export function crewConnectRequestOf(
  *
  * Every action opens the Chat access pane; none of them grants or revokes by itself. Arriving with
  * {@link chatAccessRouteState} presses that action once, as soon as there is one; arriving by
- * `/crew` presses it only for a chat with no grant (Q3-28). Renders nothing without `?sessionId=`.
+ * `/crew` presses it only for a chat with no grant (Q3-28). Renders nothing without `?sessionId=`,
+ * nor while the Chat access pane shows this chat (Q4-14).
  */
 export function ChatConnectNote({ className }: ChatConnectNoteProps) {
   const {
@@ -320,7 +321,11 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
     openPane,
   ]);
 
-  if (!grantSessionId || text === null) return null;
+  // The pane open for this chat already asks, or says, everything the note would, one control
+  // away: the note under the timeline made two prompts for one decision (live QA round 4, Q4-14).
+  // The pane is always for the channel shown (a channel switch closes it), so this is the same
+  // chat and channel. The intent above still runs: it is what keeps the pane open.
+  if (!grantSessionId || text === null || paneOpen) return null;
 
   const openAccess = () => openPane({ mode: 'chat-access', sessionId: grantSessionId });
 

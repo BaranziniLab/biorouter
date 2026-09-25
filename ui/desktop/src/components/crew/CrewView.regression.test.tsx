@@ -883,10 +883,8 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
     expect(await screen.findByLabelText('Message #general')).toHaveValue('');
 
-    // The note waits for the grants lookup; the mocked daemon holds none for this chat.
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Review access and posting permission' })
-    );
+    // The mocked daemon holds no grant for this chat, so `/crew` opened its consent by itself
+    // (Q3-28); while it is open the note's "Review access" is not drawn beside it (Q4-14).
     fireEvent.click(
       await screen.findByRole('button', { name: 'Allow this conversation to read and post here' })
     );

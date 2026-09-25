@@ -385,9 +385,17 @@ describe('/crew from a chat with no grant', () => {
     expect(await screen.findByRole('textbox', { name: 'Message #general' })).toBeInTheDocument();
     const pane = chatAccessPane();
     expect(pane).toHaveAttribute('data-state', 'open');
-    expect(await within(pane).findByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+    const allow = await within(pane).findByRole('button', { name: accessCopy.allow });
+    expect(allow).toBeInTheDocument();
     await settle();
     expect(controller?.ui.pane).toEqual({ mode: 'chat-access', sessionId: CHAT });
+    // Q4-13: focus is on Allow, not on the pane's heading, where the browser drew a box that read
+    // as a text field.
+    expect(allow).toHaveFocus();
+    expect(within(pane).getByRole('heading', { level: 2 })).not.toHaveFocus();
+    // Q4-14: no "Connect this chat to #general? [Review access]" strip beside the consent.
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
+    expect(screen.queryByText(accessCopy.noteNone(null, '#general'))).toBeNull();
     expect(
       mocked.crewHttp.mock.calls.filter(([path]) => String(path).endsWith('/grant'))
     ).toHaveLength(0);

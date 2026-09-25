@@ -1,4 +1,12 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { useState } from 'react';
@@ -8,6 +16,8 @@ import type { Session } from '../../../api';
 import { announceSessionName, cacheSet } from '../../../utils/sessionNameSync';
 import { CrewHttpError } from '../crewApi';
 import CrewView from '../CrewView';
+import { paneCopy } from '../pane/copy';
+import { DetailsPane } from '../pane/DetailsPane';
 import { useCrew } from '../state/CrewControllerContext';
 import { ChatAccessPane } from './ChatAccessPane';
 import {
@@ -91,10 +101,17 @@ function setup(fixture: Partial<DaemonFixture> & { grants?: () => unknown[] }) {
 const note = () => screen.getByTestId('crew-chat-connect-note');
 const pane = () => screen.getByTestId('pane');
 
+/**
+ * Open this chat's pane from the note's button — unless `/crew` already opened it (Q3-28), in which
+ * case the note is not drawn at all (Q4-14) and the open pane is the answer.
+ */
 async function openPaneFromNote(name: string | RegExp) {
   await screen.findByTestId('channel-ready');
-  const noteNode = await screen.findByTestId('crew-chat-connect-note');
-  fireEvent.click(await within(noteNode).findByRole('button', { name }));
+  await waitFor(() => {
+    if (screen.queryByTestId('pane')) return;
+    within(note()).getByRole('button', { name });
+  });
+  if (!screen.queryByTestId('pane')) fireEvent.click(within(note()).getByRole('button', { name }));
   await waitFor(() => expect(pane()).not.toHaveTextContent(accessCopy.noteChecking));
   return pane();
 }
@@ -110,10 +127,11 @@ describe('chat access: grant', () => {
     const grants: unknown[] = [];
     setup({ grants: () => grants });
 
-    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteNone(null, '#general')));
     // Q3-28: `/crew` from a chat with no grant opens the consent by itself.
     await waitFor(() => expect(pane()).toHaveTextContent('This chat will be able to'));
     const paneNode = pane();
+    // Q4-14: and the note does not ask the same question under the timeline meanwhile.
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
 
     expect(paneNode).toHaveTextContent('This chat will be able to');
     expect(paneNode).toHaveTextContent('Read #general');
@@ -138,15 +156,18 @@ describe('chat access: grant', () => {
     expect(within(pane()).queryByRole('button', { name: accessCopy.allow })).toBeNull();
     // L10: the pane says where Revoke lives instead of leaving on its own.
     expect(mocks.navigate).not.toHaveBeenCalled();
-    // The note follows the new grant without a poll.
-    await waitFor(() =>
-      expect(note()).toHaveTextContent(accessCopy.noteActive('Plot review', '#general'))
-    );
     // Once the new grant is listed, the badge reads as it will when the pane is reopened.
     await waitFor(() => expect(within(pane()).getByText(/^Active · ends \S/)).toBeInTheDocument());
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
 
     fireEvent.click(within(pane()).getByRole('button', { name: accessCopy.backToChat }));
     expect(mocks.navigate).toHaveBeenCalledWith('/pair?resumeSessionId=agent-1');
+
+    // The note follows the new grant without a poll, once the pane no longer says it.
+    fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
+    await waitFor(() =>
+      expect(note()).toHaveTextContent(accessCopy.noteActive('Plot review', '#general'))
+    );
   });
 
   it('sends the channels chosen under Advanced as extra context', async () => {
@@ -235,6 +256,9 @@ describe('chat access: an active grant', () => {
     const confirm = within(paneNode).getByRole('group', {
       name: 'Stop “Plot review” reading and posting in #general?',
     });
+    // Q4-15: the question says the whole chat stops, not only its posts here.
+    expect(confirm).toHaveTextContent(accessCopy.confirmStops);
+    expect(confirm).toHaveTextContent('This chat will stop until you grant access again.');
     expect(callsTo(mocks, REVOKE_PATH, 'POST')).toHaveLength(0);
     fireEvent.click(within(confirm).getByRole('button', { name: accessCopy.confirmRevoke }));
 
@@ -245,13 +269,13 @@ describe('chat access: an active grant', () => {
     await waitFor(() =>
       expect(callsTo(mocks, GRANTS_PATH, 'GET').length).toBeGreaterThan(listsBefore)
     );
+
+    fireEvent.click(within(pane()).getByRole('button', { name: accessCopy.done }));
+    await waitFor(() => expect(screen.queryByTestId('pane')).toBeNull());
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review')));
     expect(
       within(note()).getByRole('button', { name: accessCopy.noteGrantAgain })
     ).toBeInTheDocument();
-
-    fireEvent.click(within(pane()).getByRole('button', { name: accessCopy.done }));
-    await waitFor(() => expect(screen.queryByTestId('pane')).toBeNull());
 
     // Grant again reopens the consent for this chat.
     fireEvent.click(within(note()).getByRole('button', { name: accessCopy.noteGrantAgain }));
@@ -663,8 +687,10 @@ describe('chat access: /crew from a chat with no grant', () => {
     expect(await within(paneNode).findByText('“Greeting exchange” will be able to')).toBeVisible();
     expect(paneNode).toHaveTextContent('Read #general');
     expect(screen.getByTestId('channel-ready')).toHaveTextContent('general');
-    // The note still says what the chat can do, named, with its own button.
-    expect(note()).toHaveTextContent('Connect “Greeting exchange” to #general?');
+    // Q4-14: one prompt for one decision. The note's "Connect “Greeting exchange” to #general?
+    // [Review access]" is not drawn under the timeline while the pane asks the same question.
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
+    expect(screen.queryByText('Connect “Greeting exchange” to #general?')).toBeNull();
     expect(callsTo(mocks, '/connections/conn-1/sessions/chat-new/grant', 'POST')).toHaveLength(0);
 
     fireEvent.click(
@@ -756,12 +782,17 @@ describe('chat access: one hop lands on the grant’s channel', () => {
     expect(await within(paneNode).findByText('“Plot review” can')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods'));
     expect(paneNode).toHaveTextContent('Posts in #methods as Alice Chen (@alice)');
-    expect(note()).toHaveTextContent(accessCopy.noteActive('Plot review', '#methods'));
+    // The pane says it (Q4-14): the note is not drawn beside it.
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
     // Settled: the pane stays open.
     await act(async () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId('pane')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
+    await waitFor(() =>
+      expect(note()).toHaveTextContent(accessCopy.noteActive('Plot review', '#methods'))
+    );
   });
 
   it('reaches Allow for #methods in one hop from Grant access again', async () => {
@@ -848,5 +879,172 @@ describe('chat access: a finished task', () => {
     expect(await within(paneNode).findByText(accessCopy.paneTaskFinished)).toBeInTheDocument();
     expect(within(paneNode).queryByRole('button', { name: /^Allow/ })).toBeNull();
     expect(within(paneNode).getByRole('button', { name: accessCopy.openChat })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Q4-13 (live QA round 4): `/crew` + Enter opened the pane with focus on its heading, and the
+ * browser drew its default `outline: auto` box round it — Jack and Bob read it as a text field. The
+ * consent's one action, Allow, takes focus instead: only from that heading (or from nowhere), so
+ * focus the person moved elsewhere stays where they put it.
+ */
+describe('chat access: focus when the consent opens', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChatAccessIntents();
+  });
+
+  /** The real details pane, which focuses its heading when it opens, with the note beside it. */
+  function PaneLayout() {
+    const { channel, grantSessionId, openPane } = useCrew();
+    return (
+      <div>
+        {channel ? <ChatConnectNote /> : null}
+        {channel ? (
+          <button
+            type="button"
+            onClick={() => openPane({ mode: 'chat-access', sessionId: grantSessionId ?? '' })}
+          >
+            Open access
+          </button>
+        ) : null}
+        <DetailsPane agent={<div />} chatAccess={<ChatAccessPane />} />
+      </div>
+    );
+  }
+
+  const heading = () => document.querySelector<HTMLElement>('aside.crew-pane h2') ?? document.body;
+
+  /** A grant list that answers only when the test says so. */
+  function heldGrants() {
+    let release: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    installDaemon(mocks, { grants: () => [] });
+    const route = mocks.crewHttp.getMockImplementation();
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
+      if (path === GRANTS_PATH && method === 'GET') {
+        await ready;
+        return { grants: [] };
+      }
+      return route?.(path, method, body);
+    });
+    return () => act(async () => release());
+  }
+
+  it('puts focus on Allow, not on the heading, when /crew opens the consent', async () => {
+    rememberChat('chat-new', 'Greeting exchange');
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(PaneLayout, '/crew?sessionId=chat-new');
+
+    const allow = await screen.findByRole('button', {
+      name: accessCopy.allowChat('Greeting exchange', '#general'),
+    });
+    await waitFor(() => expect(allow).toHaveFocus());
+    expect(heading()).not.toHaveFocus();
+    expect(heading()).toHaveTextContent(paneCopy.chatAccessTitle);
+    // Q4-14 in the real layout: no strip asks the same question while the pane does.
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
+    // Focus is not a consent.
+    expect(callsTo(mocks, '/connections/conn-1/sessions/chat-new/grant', 'POST')).toHaveLength(0);
+  });
+
+  it('moves focus from the heading once a slow grant list lets the consent appear', async () => {
+    const release = heldGrants();
+    renderWithController(PaneLayout, '/crew?sessionId=chat-slow');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
+    await waitFor(() => expect(heading()).toHaveFocus());
+    expect(screen.getByTestId('crew-chat-access-pane')).toHaveTextContent(accessCopy.noteChecking);
+
+    await release();
+    const allow = await screen.findByRole('button', { name: accessCopy.allow });
+    await waitFor(() => expect(allow).toHaveFocus());
+  });
+
+  it('leaves focus where the person moved it before the consent appeared', async () => {
+    const release = heldGrants();
+    renderWithController(PaneLayout, '/crew?sessionId=chat-slow');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
+    await waitFor(() => expect(heading()).toHaveFocus());
+    const close = screen.getByRole('button', { name: paneCopy.closeChatAccess });
+    act(() => close.focus());
+
+    await release();
+    const allow = await screen.findByRole('button', { name: accessCopy.allow });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(close).toHaveFocus();
+    expect(allow).not.toHaveFocus();
+  });
+
+  it('never presses Allow with the repeats of a held Enter', async () => {
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(PaneLayout, '/crew?sessionId=chat-held');
+    const allow = await screen.findByRole('button', { name: accessCopy.allow });
+
+    const held = createEvent.keyDown(allow, { key: 'Enter', repeat: true });
+    fireEvent(allow, held);
+    expect(held.defaultPrevented).toBe(true);
+    const deliberate = createEvent.keyDown(allow, { key: 'Enter' });
+    fireEvent(allow, deliberate);
+    expect(deliberate.defaultPrevented).toBe(false);
+  });
+});
+
+/**
+ * Q4-14 (live QA round 4): "Connect '{chat}' to #general? [Review access]" stayed under the
+ * timeline while the consent for the same decision was open: two prompts for one decision.
+ */
+describe('chat access: the note while the pane is open', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChatAccessIntents();
+  });
+
+  function OtherChatLayout() {
+    const { channel, openPane, ui } = useCrew();
+    return (
+      <div>
+        {channel ? <ChatConnectNote /> : null}
+        {channel ? (
+          <button
+            type="button"
+            onClick={() => openPane({ mode: 'chat-access', sessionId: 'another-chat' })}
+          >
+            Open another chat
+          </button>
+        ) : null}
+        {ui.pane?.mode === 'chat-access' ? (
+          <aside data-testid="pane">
+            <ChatAccessPane />
+          </aside>
+        ) : null}
+      </div>
+    );
+  }
+
+  it('keeps this chat’s note while the pane shows another chat', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ expired: true })] });
+    renderWithController(OtherChatLayout);
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review')));
+    fireEvent.click(screen.getByRole('button', { name: 'Open another chat' }));
+    await screen.findByTestId('pane');
+    expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review'));
+  });
+
+  it('hides the note while its own pane is open, and brings it back when the pane closes', async () => {
+    installDaemon(mocks, { grants: () => [grantRow({ expired: true })] });
+    renderWithController(Layout);
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review')));
+    fireEvent.click(within(note()).getByRole('button', { name: accessCopy.noteGrantAgain }));
+    expect(await within(pane()).findByText(accessCopy.paneRevoked('Plot review'))).toBeVisible();
+    expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
+    await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review')));
   });
 });
