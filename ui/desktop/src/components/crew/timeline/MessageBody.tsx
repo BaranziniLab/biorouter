@@ -129,31 +129,58 @@ function fenceLanguage(code: HastLike | null): string {
 /**
  * Whether an element is wider inside than it is shown, now and after any resize of it or of its
  * first child (the table or the code). Where there is no `ResizeObserver` (jsdom) it is measured
- * once. The answer decides only whether the box is a scrollable region a keyboard can reach.
+ * once. The answer decides whether the box is a scrollable region a keyboard can reach.
+ *
+ * `more`: there is content past its right edge right now — it overflows and is not scrolled to
+ * the end. That is the one measurement, taken again on every scroll, behind the box's
+ * `data-overflow` and so its right-edge fade: macOS hides overlay scrollbars, so a table that
+ * ended at "Growth ratio (od600_t4 / od60" gave no sign it went on (Q3-18). At the end the fade
+ * goes, so the last column is never dimmed.
  */
-function useOverflowsSideways<T extends HTMLElement>(): [(node: T | null) => void, boolean] {
+function useOverflowsSideways<T extends HTMLElement>(): [
+  (node: T | null) => void,
+  { overflows: boolean; more: boolean },
+] {
   const [node, setNode] = useState<T | null>(null);
-  const [overflows, setOverflows] = useState(false);
+  const [state, setState] = useState({ overflows: false, more: false });
   useLayoutEffect(() => {
     if (!node) return;
-    const measure = () => setOverflows(node.scrollWidth > node.clientWidth + 1);
+    const measure = () => {
+      const overflows = node.scrollWidth > node.clientWidth + 1;
+      const more = overflows && node.scrollLeft + node.clientWidth < node.scrollWidth - 1;
+      setState((current) =>
+        current.overflows === overflows && current.more === more ? current : { overflows, more }
+      );
+    };
     measure();
-    if (typeof ResizeObserver !== 'function') return;
+    node.addEventListener('scroll', measure, { passive: true });
+    if (typeof ResizeObserver !== 'function') {
+      return () => node.removeEventListener('scroll', measure);
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     if (node.firstElementChild) observer.observe(node.firstElementChild);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      node.removeEventListener('scroll', measure);
+    };
   }, [node]);
-  return [setNode, overflows];
+  return [setNode, state];
 }
 
-/** The attributes that make a scrolling box a region a keyboard can reach, when it scrolls. */
-function scrollRegion(overflows: boolean, name: string) {
-  return overflows ? { role: 'region', 'aria-label': name, tabIndex: 0 } : {};
+/**
+ * The attributes of a box that may scroll sideways: when it scrolls, a region a keyboard can
+ * reach, named; while there is more to its right, `data-overflow` for the fade (`timeline.css`).
+ */
+function scrollRegion({ overflows, more }: { overflows: boolean; more: boolean }, name: string) {
+  return {
+    ...(overflows ? { role: 'region', 'aria-label': name, tabIndex: 0 } : {}),
+    'data-overflow': more ? 'true' : undefined,
+  };
 }
 
 function CodeBlock({ text, language }: { text: string; language: string }) {
-  const [measure, overflows] = useOverflowsSideways<HTMLPreElement>();
+  const [measure, overflow] = useOverflowsSideways<HTMLPreElement>();
   return (
     <div className="crew-md-code">
       <div className="crew-md-code-head">
@@ -165,7 +192,7 @@ function CodeBlock({ text, language }: { text: string; language: string }) {
       <pre
         ref={measure}
         className="crew-md-code-body"
-        {...scrollRegion(overflows, timelineCopy.codeRegion(language))}
+        {...scrollRegion(overflow, timelineCopy.codeRegion(language))}
       >
         <code>{text}</code>
       </pre>
@@ -191,10 +218,10 @@ function headerCells(node: unknown): string[] {
 }
 
 function TableScroll({ node, children }: { node: unknown; children?: ReactNode }) {
-  const [measure, overflows] = useOverflowsSideways<HTMLDivElement>();
+  const [measure, overflow] = useOverflowsSideways<HTMLDivElement>();
   const name = timelineCopy.tableNamed(headerCells(node).join(', '));
   return (
-    <div ref={measure} className="crew-md-table-scroll" {...scrollRegion(overflows, name)}>
+    <div ref={measure} className="crew-md-table-scroll" {...scrollRegion(overflow, name)}>
       <table className="crew-md-table">{children}</table>
     </div>
   );

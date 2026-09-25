@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -11,13 +12,13 @@ import {
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { Bot, Loader2, MoreHorizontal } from '../../icons/app-icons';
-import { PersonName, personLabel } from '../identity';
+import { identityCopy, PersonName, personLabel } from '../identity';
 import type { CrewMessage } from '../crewApi';
 import { timelineCopy } from './copy';
 import type { TimelineGroup, TimelineMessageEntry, TimelineTraceEntry } from './groupMessages';
 import { MessageBody } from './MessageBody';
-import { CopyIconButton, useMenuCopy, useTimelineCopy } from './TimelineCopy';
-import { useTimeline } from './TimelineContext';
+import { CopyForSupport, CopyIconButton, useMenuCopy, useTimelineCopy } from './TimelineCopy';
+import { useTimeline, type OwnAgentChat } from './TimelineContext';
 import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
 
 /**
@@ -26,9 +27,10 @@ import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
  * the row's floating actions. An agent's folded tool updates are a row too.
  *
  * Every row is reached with the arrow keys (`data-crew-row`, focused by
- * script), and only the active row's actions are Tab stops. The actions are
- * revealed on hover and focus-within, and always shown without a hover pointer
- * (`timeline.css`).
+ * script), and only the active row's controls are Tab stops: its actions, the
+ * link to its agent's chat, and — through the attachments slot's `active` — its
+ * file cards (Q3-05). The actions are revealed on hover and focus-within, and
+ * always shown without a hover pointer (`timeline.css`).
  *
  * A row is a `group` named by its author and its own time, so a focused row
  * reads as whose message it is and when — a continuation included, whose
@@ -85,29 +87,74 @@ export function AuthorAvatar({ group }: { group: TimelineGroup }) {
   );
 }
 
+/**
+ * The viewer's own agent's post, when one of the viewer's chats posted it (Q3-22): "Your agent ·
+ * {chat title}", the title opening that chat. It is looked up by the group's run among the
+ * viewer's OWN grants, and only for a group the viewer's agent wrote, so another person's agent
+ * is never named by their chat: it stays "{name}'s agent".
+ */
+function useOwnAgentChat(group: TimelineGroup): OwnAgentChat | null {
+  const { viewerId, ownAgentChats } = useTimeline();
+  if (!group.agent || !group.runId || viewerId === null || group.authorId !== viewerId) return null;
+  return ownAgentChats.get(group.runId) ?? null;
+}
+
+function AgentChatHead({ chat, tabIndex }: { chat: OwnAgentChat; tabIndex: number }) {
+  const { readOnly } = useTimeline();
+  const navigate = useNavigate();
+  return (
+    <>
+      <span className="crew-message-author-lead text-label">{identityCopy.yourAgent}</span>
+      {identityCopy.separator}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="crew-message-agent-chat text-label"
+            tabIndex={tabIndex}
+            disabled={readOnly}
+            onClick={() => navigate(`/pair?resumeSessionId=${encodeURIComponent(chat.sessionId)}`)}
+          >
+            <bdi>{chat.title}</bdi>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{timelineCopy.openAgentChat(chat.title)}</TooltipContent>
+      </Tooltip>
+    </>
+  );
+}
+
 function HeadMeta({
   group,
   time,
   restricted,
   ids,
+  tabIndex,
 }: {
   group: TimelineGroup;
   time: Date;
   restricted: boolean;
   ids: GroupLabelIds;
+  /** The row's controls' Tab stop: 0 on the active row only. */
+  tabIndex: number;
 }) {
   const { dir, viewerId } = useTimeline();
+  const chat = useOwnAgentChat(group);
   const date = spokenDate(time);
   return (
     <div className="crew-message-meta">
       <span id={ids.author} className="crew-message-author">
-        <PersonName
-          person={group.authorId}
-          context="header"
-          dir={dir}
-          agent={group.agent}
-          you={group.agent && group.authorId === viewerId}
-        />
+        {chat ? (
+          <AgentChatHead chat={chat} tabIndex={tabIndex} />
+        ) : (
+          <PersonName
+            person={group.authorId}
+            context="header"
+            dir={dir}
+            agent={group.agent}
+            you={group.agent && group.authorId === viewerId}
+          />
+        )}
       </span>
       {group.agent && <Badge tone="neutral">{timelineCopy.agentBadge}</Badge>}
       <Tooltip>
@@ -162,11 +209,12 @@ function GutterTime({ time, id }: { time: Date; id: string }) {
 }
 
 /**
- * Copy text, then ⋯ → Copy text and Copy message ID. The ID lives only behind
- * this menu, and the menu never holds the ID alone: a whole menu for one
- * machine string reads as the message's only other action. Both controls are
- * named for the message they act on. A copy from the menu answers in the menu:
- * the item reads "Copied" and the menu closes 600ms later (Q2-34).
+ * Copy text, then ⋯ → Copy text and, last, "Copy for support" ▸ Copy message ID
+ * (Q3-26). The ID lives only behind that submenu, and the menu never holds the
+ * ID alone: a whole menu for one machine string reads as the message's only
+ * other action. Both controls are named for the message they act on. A copy
+ * from the menu answers in the menu: the item reads "Copied" and the menu
+ * closes 600ms later (Q2-34).
  */
 function RowActions({
   message,
@@ -217,12 +265,14 @@ function RowActions({
           >
             {menuCopy.label('text', timelineCopy.copyText)}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            data-crew-copy-state={menuCopy.state('id')}
-            onSelect={menuCopy.select('id', message.id)}
-          >
-            {menuCopy.label('id', timelineCopy.copyMessageId)}
-          </DropdownMenuItem>
+          <CopyForSupport>
+            <DropdownMenuItem
+              data-crew-copy-state={menuCopy.state('id')}
+              onSelect={menuCopy.select('id', message.id)}
+            >
+              {menuCopy.label('id', timelineCopy.copyMessageId)}
+            </DropdownMenuItem>
+          </CopyForSupport>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -240,6 +290,8 @@ export function MessageRow({
 }) {
   const { activeRow, setActiveRow, renderAttachments, arriving } = useTimeline();
   const { message } = entry;
+  const active = activeRow === entry.key;
+  const tabIndex = active ? 0 : -1;
   const ownTime = useId();
   const timeId = entry.head ? ids.time : ownTime;
   const who = useAuthorLabel(group);
@@ -271,19 +323,20 @@ export function MessageRow({
       </div>
       <div className="crew-message-main">
         {entry.head ? (
-          <HeadMeta group={group} time={entry.time} restricted={entry.restrictedMarker} ids={ids} />
+          <HeadMeta
+            group={group}
+            time={entry.time}
+            restricted={entry.restrictedMarker}
+            ids={ids}
+            tabIndex={tabIndex}
+          />
         ) : (
           entry.restrictedMarker && <RestrictedMarker />
         )}
         <MessageBody body={message.body} />
-        {renderAttachments?.(message)}
+        {renderAttachments?.(message, { active })}
       </div>
-      <RowActions
-        message={message}
-        tabIndex={activeRow === entry.key ? 0 : -1}
-        who={who}
-        time={when}
-      />
+      <RowActions message={message} tabIndex={tabIndex} who={who} time={when} />
     </div>
   );
 }
@@ -298,7 +351,7 @@ export function TraceRow({
   entry: TimelineTraceEntry;
   ids: GroupLabelIds;
 }) {
-  const { setActiveRow, arriving } = useTimeline();
+  const { activeRow, setActiveRow, arriving } = useTimeline();
   const first = entry.messages[0];
   const ownTime = useId();
   const timeId = entry.head ? ids.time : ownTime;
@@ -321,7 +374,15 @@ export function TraceRow({
         )}
       </div>
       <div className="crew-message-main">
-        {entry.head && <HeadMeta group={group} time={entry.time} restricted={false} ids={ids} />}
+        {entry.head && (
+          <HeadMeta
+            group={group}
+            time={entry.time}
+            restricted={false}
+            ids={ids}
+            tabIndex={activeRow === entry.key ? 0 : -1}
+          />
+        )}
         <Disclosure
           label={timelineCopy.showDetails}
           summary={timelineCopy.detailsSummary(entry.messages.length)}
@@ -345,12 +406,43 @@ export function TraceRow({
  * the log. It is inert and hidden from assistive technology — the real message
  * is announced by the log when it arrives, and this row then goes in the same
  * render, so the words are never shown twice.
+ *
+ * `head`: it carries the viewer's own avatar and name, as the message will once
+ * it lands. Without them it sat under the previous person's message and read as
+ * theirs for a second (Q3-20). The timeline leaves the head off only where the
+ * delivered message would itself continue the viewer's own group.
  */
-export function PendingPostRow({ body }: { body: string }) {
+export function PendingPostRow({ body, head }: { body: string; head: boolean }) {
+  const { dir, viewerId } = useTimeline();
+  const showHead = head && viewerId !== null;
+  const person = viewerId !== null ? dir.byId(viewerId) : undefined;
   return (
-    <div className="crew-message-row crew-pending-row" data-pending="true" aria-hidden="true" inert>
-      <div className="crew-message-gutter" />
+    <div
+      className="crew-message-row crew-pending-row"
+      data-pending="true"
+      data-head={showHead ? 'true' : undefined}
+      aria-hidden="true"
+      inert
+    >
+      <div className="crew-message-gutter">
+        {showHead && (
+          <Avatar
+            size={32}
+            shape="circle"
+            fallback={person ? person.avatar : '?'}
+            name={person?.displayName}
+            username={person?.username}
+          />
+        )}
+      </div>
       <div className="crew-message-main">
+        {showHead && viewerId !== null && (
+          <div className="crew-message-meta">
+            <span className="crew-message-author">
+              <PersonName person={viewerId} context="header" dir={dir} tooltip={false} />
+            </span>
+          </div>
+        )}
         {body.trim() && <MessageBody body={body} />}
         <p className="crew-pending-status text-supporting text-text-muted">
           <Loader2 aria-hidden className="crew-pending-spinner animate-spin" />

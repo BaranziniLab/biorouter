@@ -19,4 +19,5 @@ export {
   type TimelineTask,
 } from './groupMessages';
 export { CrewMarkdown, MessageBody, safeExternalHref } from './MessageBody';
+export type { AttachmentSlotState, OwnAgentChat, RenderAttachments } from './TimelineContext';
 export { AUTO_READ_DWELL_MS, AUTO_READ_MIN_INTERVAL_MS } from './useAutoMarkRead';

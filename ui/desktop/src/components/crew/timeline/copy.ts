@@ -56,6 +56,11 @@ export const timelineCopy = {
    */
   timeInMinute: (time: string, index: number, count: number) => `${time}, ${index} of ${count}`,
   copyMessageId: 'Copy message ID',
+  /**
+   * The submenu every menu keeps its machine-ID copies in, last and after a separator (Q3-26):
+   * a person's own copies stay at the top level, and an ID is one step further away.
+   */
+  copyForSupport: 'Copy for support',
   moreActions: 'More actions',
   moreActionsFor: (who: string, time: string) => `More actions for ${who}’s message, ${time}`,
   /** Pinned: what the copy control itself says for two seconds after a copy. */
@@ -93,6 +98,20 @@ export const timelineCopy = {
   /** Pinned. */
   viewingEarlier: 'Viewing earlier messages',
   jumpToLatest: 'Jump to latest',
+  /**
+   * The live pill, when messages arrived below while the reader was scrolled up (Q3-27): how many,
+   * so the pill says what it would take them to. The arrow is the pill's glyph, after the words.
+   */
+  newMessages: (count: number) => `${count} new ${count === 1 ? 'message' : 'messages'}`,
+  /** Read after the count, so the button still says what it does. */
+  newMessagesAction: ', jump to latest',
+
+  /**
+   * The head of the viewer's own agent's post, when a chat of theirs posted it (Q3-22): "Your
+   * agent" and then the chat's title, which opens that chat. Only the viewer's own grants carry a
+   * title, so another person's agent is never named by their chat.
+   */
+  openAgentChat: (title: string) => `Open ${title}`,
 
   taskOpen: 'Open',
   taskOpenLabel: 'Open agent conversation',

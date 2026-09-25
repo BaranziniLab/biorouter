@@ -9,6 +9,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { timelineCopy } from './copy';
 import { HISTORY_PAGE_SIZE } from './groupMessages';
 import { PENDING_POST_TIMEOUT_MS, Timeline } from './Timeline';
+import type { AttachmentSlotState } from './TimelineContext';
 import { TimelineCopyProvider, useTimelineCopy } from './TimelineCopy';
 import { SKELETON_DELAY_MS } from './TimelineSkeleton';
 import {
@@ -315,7 +316,8 @@ describe('the log', () => {
     // The agent tile is square with the Bot glyph; a person's is a circle with initials.
     expect(mine.querySelector('[data-slot="avatar"]')).toHaveAttribute('data-shape', 'square');
     expect(human.querySelector('[data-slot="avatar"]')).toHaveAttribute('data-shape', 'circle');
-    expect(human.querySelector('[data-slot="avatar"]')).toHaveTextContent('BL');
+    // One initial at every avatar size (Q3-62).
+    expect(human.querySelector('[data-slot="avatar"]')).toHaveTextContent(/^B$/);
   });
 
   it('names a former author from the names their messages came with, not as “Unknown member”', () => {
@@ -378,9 +380,34 @@ describe('the log', () => {
     );
     expect(screen.getByRole('separator', { name: 'June 3, 2025' })).toBeInTheDocument();
     const newLine = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    // The first unread message is its day's first: "New" rides the day's band, in accent.
+    const band = document.querySelector<HTMLElement>(".crew-day-label[data-new='true']")!;
+    expect(band).toHaveAttribute('role', 'separator');
+    expect(within(band).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
+    expect(band.outerHTML).not.toMatch(/danger/);
+    // The line sits right before the unread message.
+    const fresh = screen.getByText('fresh');
+    expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('draws the New line in accent mid-day, before the first unread message', () => {
+    const messages = [
+      message({ id: 'a', sequence: 's1', at: new Date(2026, 8, 22, 9, 0) }),
+      message({ id: 'b', sequence: 's2', at: new Date(2026, 8, 22, 9, 30), body: 'fresh' }),
+    ];
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages,
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 's1' },
+          unread: { [ID.general]: 1 },
+        }),
+      })
+    );
+    const newLine = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
     expect(within(newLine).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
     expect(newLine.outerHTML).not.toMatch(/danger/);
-    // The line sits right before the unread message.
     const fresh = screen.getByText('fresh');
     expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -400,13 +427,16 @@ describe('the log', () => {
         }),
       })
     );
-    // One rule, not two 30px apart: the day's own, in accent, named as the New line.
-    const newLine = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
-    expect(newLine).toHaveClass('crew-day-rule');
-    expect(newLine).toHaveAttribute('data-new', 'true');
-    expect(within(newLine).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
+    // One line, not two 30px apart: the day's own band, its hairline in accent with "New" at its
+    // end. A screen reader meets "New messages" once, right before the day.
+    const band = document.querySelector<HTMLElement>(".crew-day-label[data-new='true']")!;
+    expect(band).toHaveAttribute('role', 'separator');
+    expect(band).toHaveAccessibleName(/^(Today|Yesterday|\w+day, September 22)$/);
+    expect(within(band).getByText(timelineCopy.newLine)).toHaveClass('text-text-accent');
     expect(document.querySelector('.crew-new-divider')).toBeNull();
     expect(screen.getAllByRole('separator', { name: timelineCopy.newLineLabel })).toHaveLength(1);
+    const newLine = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(newLine.compareDocumentPosition(band) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const fresh = screen.getByText('fresh');
     expect(newLine.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -471,6 +501,76 @@ describe('the log', () => {
     expect(screen.getByText('files for see file')).toBeInTheDocument();
   });
 
+  it('tells the attachments slot whether its row is the active one, so its controls are Tab stops only then (Q3-05)', () => {
+    const renderAttachments = vi.fn((item: CrewMessage, slot: AttachmentSlotState) => (
+      <button type="button" tabIndex={slot.active ? 0 : -1}>{`Save ${item.body}`}</button>
+    ));
+    const messages = [
+      message({ id: 'f1', body: 'one.csv', attachments: ['b1'] }),
+      message({ id: 'f2', body: 'two.csv', actor_id: ID.carol, attachments: ['b2'] }),
+    ];
+    renderWithController(
+      <Timeline renderAttachments={renderAttachments} />,
+      makeController({ messages })
+    );
+    const save = (name: string) => screen.getByRole('button', { name: `Save ${name}` });
+    expect(save('one.csv').tabIndex).toBe(-1);
+    expect(save('two.csv').tabIndex).toBe(-1);
+
+    const log = screen.getByRole('log');
+    act(() => log.focus());
+    fireEvent.keyDown(log, { key: 'ArrowUp' });
+    expect(save('two.csv').tabIndex).toBe(0);
+    expect(save('one.csv').tabIndex).toBe(-1);
+
+    // A pointer focus on a card's control makes its row the active one.
+    act(() => save('one.csv').focus());
+    expect(save('one.csv').tabIndex).toBe(0);
+    expect(save('two.csv').tabIndex).toBe(-1);
+  });
+
+  describe('the viewer’s own agent, posting from one of their chats (Q3-22)', () => {
+    const chats = new Map([[ID.run, { title: 'Assay results summary', sessionId: ID.session }]]);
+
+    it('heads its posts “Your agent · {chat title}”, the title opening that chat', async () => {
+      const messages = [
+        message({ id: 'mine', actor_id: ID.alice, run_id: ID.run, body: 'Summary posted.' }),
+      ];
+      renderWithController(<Timeline ownAgentChats={chats} />, makeController({ messages }));
+      const [post] = screen.getAllByRole('article');
+      expect(post).toHaveTextContent(
+        `${identityCopy.yourAgent} · Assay results summary${timelineCopy.agentBadge}`
+      );
+      expect(post).not.toHaveTextContent('@alice');
+      const open = within(post).getByRole('button', { name: 'Assay results summary' });
+      // In the Tab order only on the active row, like the row's other controls.
+      expect(open.tabIndex).toBe(-1);
+      await userEvent.setup(pointerAnywhere).click(open);
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        `/pair?resumeSessionId=${encodeURIComponent(ID.session)}`
+      );
+      // The row is still named by who posted and when.
+      expect(
+        screen.getByRole('group', { name: /^Your agent · Assay results summary/ })
+      ).toBeInTheDocument();
+    });
+
+    it('never names another person’s agent by a chat, even one listed under its run', () => {
+      // A run ID that another person's agent posted under can never be one of the viewer's
+      // grants; if a map held it anyway, the head would still read as that person's agent.
+      const messages = [
+        message({ id: 'theirs', actor_id: ID.bob, run_id: ID.run, body: 'Plot attached.' }),
+        message({ id: 'task', actor_id: ID.alice, run_id: ID.runB, body: 'Task: plot' }),
+      ];
+      renderWithController(<Timeline ownAgentChats={chats} />, makeController({ messages }));
+      const [theirs, task] = screen.getAllByRole('article');
+      expect(theirs).toHaveTextContent(`Bob Lee's agent @bob${timelineCopy.agentBadge}`);
+      expect(theirs).not.toHaveTextContent('Assay results summary');
+      // The viewer's agent under a run with no titled chat keeps the plain head.
+      expect(task).toHaveTextContent(`${identityCopy.yourAgent} @alice${timelineCopy.agentBadge}`);
+    });
+  });
+
   it('renders no machine ID anywhere in its DOM', () => {
     const uuid = (n: number) => `0000000${n}-0000-4000-8000-00000000000${n}`;
     const messages = [
@@ -525,6 +625,12 @@ describe('copying', () => {
   const moreButton = () => screen.getByRole('button', { name: /^More actions for Bob Lee’s/ });
   const liveStatus = () =>
     screen.getAllByRole('status').find((node) => node.getAttribute('aria-live') === 'polite');
+  /** Into ⋯'s "Copy for support" submenu, by keyboard, as a person would. */
+  async function openSupport(user: ReturnType<typeof userEvent.setup>) {
+    const support = await screen.findByRole('menuitem', { name: timelineCopy.copyForSupport });
+    act(() => support.focus());
+    await user.keyboard('{ArrowRight}');
+  }
 
   it('copies the text and, from ⋯, the message ID, and says so without a toast', async () => {
     renderWithController(
@@ -537,6 +643,7 @@ describe('copying', () => {
     await waitFor(() => expect(liveStatus()).toHaveTextContent(timelineCopy.copied));
 
     await user.click(moreButton());
+    await openSupport(user);
     await user.click(await screen.findByRole('menuitem', { name: timelineCopy.copyMessageId }));
     expect(writeText).toHaveBeenLastCalledWith('msg-7');
     expect(document.querySelector('.Toastify')).toBeNull();
@@ -568,6 +675,7 @@ describe('copying', () => {
     );
     const { user, writeText } = setupWithClipboard();
     await user.click(moreButton());
+    await openSupport(user);
     await user.click(await screen.findByRole('menuitem', { name: timelineCopy.copyMessageId }));
     expect(writeText).toHaveBeenLastCalledWith('msg-9');
     const item = await screen.findByRole('menuitem', { name: timelineCopy.copied });
@@ -576,15 +684,23 @@ describe('copying', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
   });
 
-  it('never gives ⋯ a menu that holds only the message ID', async () => {
+  it('never gives ⋯ a menu that holds only the message ID, and keeps the ID in “Copy for support” (Q3-26)', async () => {
     renderWithController(
       <Timeline />,
       makeController({ messages: [message({ id: 'msg-8', body: 'Plot it.' })] })
     );
     const { user, writeText } = setupWithClipboard();
     await user.click(moreButton());
-    const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
-    expect(items).toEqual([timelineCopy.copyText, timelineCopy.copyMessageId]);
+    const menu = await screen.findByRole('menu');
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map(
+      (node) => (node.getAttribute('role') === 'separator' ? '—' : node.textContent)
+    );
+    // The person's copy first; the machine string last, after a separator, one step away.
+    expect(items).toEqual([timelineCopy.copyText, '—', timelineCopy.copyForSupport]);
+    expect(screen.getByRole('menuitem', { name: timelineCopy.copyForSupport })).toHaveAttribute(
+      'aria-haspopup',
+      'menu'
+    );
     await user.click(screen.getByRole('menuitem', { name: timelineCopy.copyText }));
     expect(writeText).toHaveBeenLastCalledWith('Plot it.');
   });
@@ -851,6 +967,31 @@ describe('a post on its way (T-37)', () => {
     expect(sending()).toBeNull();
     // Delivered in the same render the stand-in goes: the words are never on screen twice.
     expect(screen.getAllByText(sent)).toHaveLength(1);
+  });
+
+  it('shows who is sending: the viewer’s avatar and name, not under the previous person (Q3-20)', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    const row = sending()?.closest('.crew-pending-row') as HTMLElement;
+    // "Morning." is Bob's; the post on its way heads a group of its own, as Alice.
+    expect(row).toHaveAttribute('data-head', 'true');
+    expect(row).toHaveTextContent('Alice Chen');
+    // Her own avatar: one initial, as every avatar (Q3-62), in a circle beside her name.
+    expect(row.querySelector('[data-slot="avatar"]')).toHaveAttribute('data-shape', 'circle');
+    expect(row.querySelector('[data-slot="avatar"]')).toHaveTextContent('A');
+  });
+
+  it('continues the viewer’s own group without a second head, as the message will', () => {
+    const mine = message({ id: 'm-mine', actor_id: ID.alice, body: 'First.', at: new Date() });
+    const idle = makeController({ messages: [mine], draft: draft(sent) });
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+    view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
+    const row = sending()?.closest('.crew-pending-row') as HTMLElement;
+    expect(row).not.toHaveAttribute('data-head');
+    expect(row).not.toHaveTextContent('Alice Chen');
   });
 
   it('shows nothing for a post the broker refused: the composer keeps the words and says why', () => {
@@ -1320,6 +1461,42 @@ describe('following a full live tail', () => {
     expect(viewport().scrollTop).toBe(2_000);
     expect(controller.markRead).not.toHaveBeenCalled();
   });
+
+  it('says how many messages arrived below while the reader was scrolled up (Q3-27)', () => {
+    const tail = page(HISTORY_PAGE_SIZE);
+    const controller = makeController({ messages: tail });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    place(2_000);
+    fireEvent.scroll(viewport());
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    const later = [
+      postedNow({ id: 'l1', body: 'one' }),
+      postedNow({ id: 'l2', body: 'two', actor_id: ID.carol }),
+      // The viewer's own post, and an agent's tool update, are not "new messages".
+      postedNow({ id: 'l3', body: 'mine', actor_id: ID.alice }),
+      postedNow({ id: 'l4', body: 'Using crew__request', actor_id: ID.bob, run_id: ID.runB }),
+    ];
+    rerenderWith({ ...controller, messages: [...tail, ...later].slice(-HISTORY_PAGE_SIZE) });
+    const pill = screen.getByRole('button', { name: '2 new messages, jump to latest' });
+    expect(pill).toHaveTextContent(timelineCopy.newMessages(2));
+    expect(timelineCopy.newMessages(1)).toBe('1 new message');
+
+    rerenderWith({
+      ...controller,
+      messages: [...tail, ...later, postedNow({ id: 'l5', body: 'three' })].slice(
+        -HISTORY_PAGE_SIZE
+      ),
+    });
+    expect(
+      screen.getByRole('button', { name: '3 new messages, jump to latest' })
+    ).toBeInTheDocument();
+
+    // Jumping clears the count with the pill.
+    fireEvent.click(screen.getByRole('button', { name: /new messages/ }));
+    expect(screen.queryByRole('button', { name: /new messages/ })).toBeNull();
+  });
 });
 
 describe('automatic mark-read', () => {
@@ -1598,19 +1775,54 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     return css.slice(at, css.indexOf('}', at));
   };
 
-  it('keeps the hover toolbar off the New label, on its own line or on the day rule (T-56)', () => {
+  it('keeps the hover toolbar off the New label and off the day band above it (T-56)', () => {
     // Both selectors share one rule; the stylesheet may wrap them across lines.
     const flat = css.replace(/\s+/g, ' ');
     expect(flat).toContain(
-      ".crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions, .crew-day-label[data-new='true'] + .crew-message-group > .crew-message-row:first-child > .crew-row-actions { top: 4px; }"
+      '.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions, .crew-day-label + .crew-message-group > .crew-message-row:first-child > .crew-row-actions { top: 4px; }'
     );
   });
 
-  it('rings the sticky day pill with the canvas, and never makes the New line sticky (Q2-53)', () => {
-    expect(rule('.crew-day-pill')).toMatch(/0 0 0 4px var\(--background-canvas\)/);
+  it('rides the day on a full-width band that hides a line whole, never a pill over it (Q3-19)', () => {
+    const band = rule('.crew-day-label');
+    expect(band).toMatch(/position: sticky;/);
+    expect(band).toMatch(/top: 0;/);
+    expect(band).toMatch(/height: 28px;/);
+    // The column's own 16px gutters too, so no word is cut at the band's edge.
+    expect(band).toMatch(/margin: 10px -16px 4px;/);
+    expect(band).toMatch(/background-color: var\(--background-default\);/);
+    expect(band).toMatch(/border-bottom: 1px solid var\(--border-subtle\);/);
+    // The scroller's top fade takes only the band's padding, never the 28px with the name.
+    expect(band).toMatch(/padding: var\(--scroll-fade-top\) 16px 0;/);
+    expect(rule('.crew-day-pill')).not.toMatch(/box-shadow|border-radius/);
+    // Forced colours keep the band's ground and its line.
+    const forced = css.slice(css.indexOf('@media (forced-colors: active)'));
+    expect(forced).toMatch(
+      /\.crew-day-label \{\s*border-bottom: 1px solid CanvasText;\s*background-color: Canvas;/
+    );
+    // The New line stays in the flow; only the day's band rides the top.
     expect(rule('.crew-new-divider')).not.toMatch(/sticky/);
-    expect(rule(".crew-day-rule[data-new='true']")).not.toMatch(/sticky/);
-    expect(rule(".crew-day-rule[data-new='true']")).toMatch(/var\(--accent-bar\)/);
+    expect(rule(".crew-day-label[data-new='true']")).toMatch(/var\(--accent-bar\)/);
+  });
+
+  it('rings a focused row, keeping its fill: the fill alone was 1.3:1 (Q3-21)', () => {
+    const focused = rule('.crew-message-row:focus-visible');
+    expect(focused).toMatch(/outline: 2px solid var\(--ring\);/);
+    expect(focused).toMatch(/outline-offset: -2px;/);
+    expect(focused).toMatch(/background-color: var\(--background-focus\);/);
+    expect(rule('.crew-task-row:focus-visible')).toMatch(/outline: 2px solid var\(--ring\);/);
+  });
+
+  it('sets the head’s author names at 600, and only the names (Q3-24)', () => {
+    expect(
+      rule(".crew-message-author [data-person-part='name'],\n.crew-message-author-lead")
+    ).toMatch(/font-weight: 600;/);
+  });
+
+  it('fades a table or code block that has more to its right, and not at the end (Q3-18)', () => {
+    expect(
+      rule(".crew-md-code-body[data-overflow='true'],\n.crew-md-table-scroll[data-overflow='true']")
+    ).toMatch(/mask-image: linear-gradient\(to right, black calc\(100% - 40px\), transparent\);/);
   });
 
   it('never splits a table heading or a number, and draws horizontal rules only (Q2-52)', () => {

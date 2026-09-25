@@ -52,56 +52,53 @@
 }
 
 /* ── Days ────────────────────────────────────────────────────────────────────
-   Each day is its own section, so its sticky pill rides only while the day is
-   on screen. The pill sits over the hairline and masks it with the canvas. */
+   Each day is its own section, so its sticky band rides only while the day is
+   on screen.
+
+   The band (Q3-19): the whole column wide — the column's own 16px gutters
+   included — on the page's ground, with a hairline under it and the day's name
+   in the middle. A pill riding over a line covered only the middle of it
+   ("colum[Today]ies"); the band hides a line scrolling under it whole. It rides
+   at the very top of the viewport, and its top `--scroll-fade-top` is padding
+   that the scroller's top fade may take (`.biorouter-scroll-fade-top`), so the
+   28px that carries the name is never faded. It does not move by itself. */
 .crew-day {
   position: relative;
 }
 
-.crew-day-rule {
-  height: 1px;
-  margin-top: 20px;
-  background-color: var(--border-subtle);
-}
-
 .crew-day-label {
   position: sticky;
-  top: 8px;
+  top: 0;
   z-index: 2;
-  display: flex;
-  justify-content: center;
-  margin-top: -11px;
-  margin-bottom: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  height: 28px;
+  margin: 10px -16px 4px;
+  padding: var(--scroll-fade-top) 16px 0;
+  box-sizing: content-box;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--background-default);
   pointer-events: none;
 }
 
 .crew-day-pill {
-  padding: 2px 10px;
-  border-radius: var(--radius-inner);
-  background-color: var(--background-canvas);
-  /* Its hairline, then a 4px ring of the canvas: riding over a line of text,
-     the words stop short of the pill instead of running into its edge (Q2-53). */
-  box-shadow:
-    var(--inset-hairline),
-    0 0 0 4px var(--background-canvas);
+  grid-column: 2;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-/* The New line on the day's own rule (Q2-53): the first unread message is the
-   day's first, so the rule turns the accent and carries "New" at its end, on
-   the canvas so the line stops short of it. Never sticky: only the pill rides
-   the top of the log. */
-.crew-day-rule[data-new='true'] {
-  position: relative;
-  background-color: var(--accent-bar);
+/* The New line on the day's own band (Q2-53): the first unread message is the
+   day's first, so the hairline turns the accent and carries "New" at its end.
+   Everything of the day under the band is new, so it may ride with it. */
+.crew-day-label[data-new='true'] {
+  border-bottom-color: var(--accent-bar);
 }
 
-.crew-day-rule-new {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  padding-inline-start: 8px;
-  background-color: var(--background-canvas);
-  transform: translateY(-50%);
+.crew-day-new {
+  grid-column: 3;
+  justify-self: end;
 }
 
 /* ── The New line ────────────────────────────────────────────────────────── */
@@ -145,9 +142,12 @@
   background-color: var(--overlay-hover);
 }
 
-/* Focus is a fill, never a ring (D-15). A row is focused by the arrow keys. */
+/* A row is focused by the arrow keys. The focus fill alone measured 1.3:1
+   (light) and 1.4:1 (dark) against the page, under the 3:1 a focus indicator
+   needs, so the focused row also takes a 2px ring inside its edge (Q3-21). */
 .crew-message-row:focus-visible {
-  outline: none;
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
   background-color: var(--background-focus);
 }
 
@@ -193,6 +193,49 @@
 
 .crew-message-author {
   min-width: 0;
+}
+
+/* The author's name reads as the head of the group: 600 against the 400 body.
+   500 was barely heavier than the words under it (Q3-24). Only the name — the
+   muted @handle beside it stays the body's weight. */
+.crew-message-author [data-person-part='name'],
+.crew-message-author-lead {
+  font-weight: 600;
+}
+
+/* "Your agent · {chat title}" (Q3-22): the title opens the chat that posted.
+   Link-like, in the default ink, so it reads as part of the head and not as an
+   accent call to action. A raw button, so the focus fill is restated here: this
+   unlayered ink would otherwise beat the base layer's. */
+.crew-message-agent-chat {
+  min-width: 0;
+  padding: 0 2px;
+  margin-inline: -2px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background-color: transparent;
+  color: var(--text-default);
+  font-weight: 500;
+  text-align: start;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.crew-message-agent-chat:hover {
+  text-decoration-color: var(--text-default);
+}
+
+.crew-message-agent-chat:focus-visible {
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+.crew-message-agent-chat:disabled {
+  cursor: default;
+  text-decoration: none;
 }
 
 .crew-message-body {
@@ -243,12 +286,10 @@
 }
 
 /* Right under the New line, the cluster would sit on its "New" label: it
-   drops inside the row instead. The same under a day rule that carries "New". */
+   drops inside the row instead. The same right under a day's band, which it
+   would otherwise poke into. */
 .crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions,
-.crew-day-label[data-new='true']
-  + .crew-message-group
-  > .crew-message-row:first-child
-  > .crew-row-actions {
+.crew-day-label + .crew-message-group > .crew-message-row:first-child > .crew-row-actions {
   top: 4px;
 }
 
@@ -376,6 +417,16 @@
   box-shadow: inset 0 0 0 1px var(--border-accent);
 }
 
+/* A table or code block with more to its right fades out at its right edge
+   (Q3-18): macOS hides overlay scrollbars, so a clipped column gave no sign
+   that the box scrolls. `data-overflow` is set while there is more to the
+   right and dropped at the scroll end, so the last column is never dimmed. A
+   mask paints nothing — `black` is alpha — so the fade is right on any ground. */
+.crew-md-code-body[data-overflow='true'],
+.crew-md-table-scroll[data-overflow='true'] {
+  mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
+}
+
 .crew-md-list {
   padding-left: 1.5em;
   list-style: disc outside;
@@ -500,7 +551,8 @@
 }
 
 .crew-task-row:focus-visible {
-  outline: none;
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
   background-color: var(--background-focus);
 }
 
@@ -665,6 +717,22 @@
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* ── Forced colours ─────────────────────────────────────────────────────────
+   The day band keeps its ground and its line, so it still hides the text under
+   it and still reads as a divider (Q3-19); the table's fade would only hide
+   ink there, so it goes. */
+@media (forced-colors: active) {
+  .crew-day-label {
+    border-bottom: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  .crew-md-code-body[data-overflow='true'],
+  .crew-md-table-scroll[data-overflow='true'] {
+    mask-image: none;
   }
 }
 

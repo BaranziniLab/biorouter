@@ -7,7 +7,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
@@ -18,7 +17,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { runStatusPresentation, type RunStatusPresentation } from '../state/crewStatus';
 import { timelineCopy } from './copy';
 import type { TimelineTask } from './groupMessages';
-import { useMenuCopy, useTimelineCopy } from './TimelineCopy';
+import { CopyForSupport, useMenuCopy, useTimelineCopy } from './TimelineCopy';
 import { useTimeline } from './TimelineContext';
 
 /**
@@ -26,8 +25,9 @@ import { useTimeline } from './TimelineContext';
  * D-17): a square agent tile, "Your agent · {status word}", the task's first
  * line muted beneath, the one inline action, a visible Stop while the task can
  * be stopped, and ⋯: Show in chat history, Copy error (when there is one), a
- * separator, then Copy task ID — the person's actions first, the machine string
- * last (Q2-62). A copy answers in the menu ("Copied", then it closes).
+ * separator, then "Copy for support" ▸ Copy task ID — the person's actions
+ * first, the machine string last and one step away (Q2-62, Q3-26). A copy
+ * answers in the menu ("Copied", then it closes).
  *
  * It sits under the task's result, or under the task's post until a result
  * lands, never between the two (`groupMessages`, Q2-62).
@@ -171,13 +171,14 @@ export function TaskStatusRow({ task }: { task: TimelineTask }) {
                 {menuCopy.label('error', timelineCopy.taskCopyError)}
               </DropdownMenuItem>
             )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              data-crew-copy-state={menuCopy.state('id')}
-              onSelect={menuCopy.select('id', run.run_id)}
-            >
-              {menuCopy.label('id', timelineCopy.taskCopyId)}
-            </DropdownMenuItem>
+            <CopyForSupport>
+              <DropdownMenuItem
+                data-crew-copy-state={menuCopy.state('id')}
+                onSelect={menuCopy.select('id', run.run_id)}
+              >
+                {menuCopy.label('id', timelineCopy.taskCopyId)}
+              </DropdownMenuItem>
+            </CopyForSupport>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

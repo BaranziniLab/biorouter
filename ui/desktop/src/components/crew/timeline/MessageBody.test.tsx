@@ -159,6 +159,28 @@ describe('markdown', () => {
       }
     });
 
+    it('marks a box with more to its right for the fade, and drops it at the scroll end (Q3-18)', () => {
+      layoutWidths(false);
+      const { container, unmount } = render(<MessageBody body={TABLE} />);
+      // A table that fits never fades.
+      expect(container.querySelector('.crew-md-table-scroll')).not.toHaveAttribute('data-overflow');
+      unmount();
+
+      layoutWidths(true);
+      render(<MessageBody body={TABLE} />);
+      const region = screen.getByRole('region', { name: 'Table: Sample, od600_t0' });
+      expect(region).toHaveAttribute('data-overflow', 'true');
+      // Scrolled to the end: 500 + 400 = 900, the last column in full, so no fade over it.
+      region.scrollLeft = 500;
+      fireEvent.scroll(region);
+      expect(region).not.toHaveAttribute('data-overflow');
+      // Still a region a keyboard can scroll back in.
+      expect(region).toHaveAttribute('tabindex', '0');
+      region.scrollLeft = 120;
+      fireEvent.scroll(region);
+      expect(region).toHaveAttribute('data-overflow', 'true');
+    });
+
     it('does the same for a code block, named for its language', () => {
       layoutWidths(false);
       const { container, unmount } = render(<MessageBody body={'```r\nsum(x)\n```'} />);

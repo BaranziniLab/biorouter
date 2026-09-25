@@ -8,7 +8,6 @@ import {
   type FocusEvent,
   type KeyboardEvent,
   type MutableRefObject,
-  type ReactNode,
 } from 'react';
 import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
@@ -22,8 +21,10 @@ import { timelineCopy } from './copy';
 import { DayDivider } from './DayDivider';
 import {
   canBePageBefore,
+  GROUP_GAP_MS,
   groupMessages,
   HISTORY_PAGE_SIZE,
+  isTraceMessage,
   keepUnchangedGroups,
   newLineBeforeId,
   newLineDecided,
@@ -39,7 +40,12 @@ import { MessageGroup } from './MessageGroup';
 import { PendingPostRow } from './MessageRow';
 import { NewDivider } from './NewDivider';
 import { TaskStatusRow } from './TaskStatusRow';
-import { TimelineContextProvider, type TimelineContextValue } from './TimelineContext';
+import {
+  TimelineContextProvider,
+  type OwnAgentChat,
+  type RenderAttachments,
+  type TimelineContextValue,
+} from './TimelineContext';
 import { TimelineCopyProvider } from './TimelineCopy';
 import { TimelineSkeleton } from './TimelineSkeleton';
 import { messageTime } from './timelineTime';
@@ -83,8 +89,16 @@ export interface TimelineProps {
   /**
    * Attachments and server paths under a message body. The files area renders
    * them. Pass a stable callback (`useCallback`): a new one re-renders every row.
+   * It is told whether its row is the active one, so its controls are Tab stops
+   * only then (Q3-05).
    */
-  renderAttachments?: (message: CrewMessage) => ReactNode;
+  renderAttachments?: RenderAttachments;
+  /**
+   * The viewer's own chats that hold Crew access, by the run they post as: those
+   * posts read "Your agent · {chat title}" (Q3-22). The layout builds it from
+   * this device's grants, so it holds only the viewer's chats. Pass a stable map.
+   */
+  ownAgentChats?: ReadonlyMap<string, OwnAgentChat>;
   /**
    * A task to bring into view and wash with the highlight once (a new task,
    * "Show task in channel", an Agents row). Cleared by `onHighlightDone`.
@@ -96,6 +110,21 @@ export interface TimelineProps {
 }
 
 const NO_IDS: ReadonlySet<string> = new Set<string>();
+const NO_AGENT_CHATS: ReadonlyMap<string, OwnAgentChat> = new Map();
+
+/**
+ * Whether a post the viewer sends now would land in the group the log ends with: their own
+ * message (as a person, not their agent), within the grouping window. Only then does the
+ * "Sending…" row go without the viewer's avatar and name (Q3-20).
+ */
+function continuesOwnGroup(days: readonly TimelineDay[], viewerId: string | null, now: number) {
+  if (viewerId === null) return false;
+  const lastDay = days[days.length - 1];
+  const last = lastDay?.items[lastDay.items.length - 1];
+  if (!last || last.kind !== 'group' || last.agent || last.authorId !== viewerId) return false;
+  const lastEntry = last.entries[last.entries.length - 1];
+  return Boolean(lastEntry) && now - lastEntry.time.getTime() <= GROUP_GAP_MS;
+}
 
 /**
  * How long a "Sending…" row waits for the observer to deliver its message
@@ -292,6 +321,7 @@ function ChannelTimeline({
   view,
   readOnly = false,
   renderAttachments,
+  ownAgentChats = NO_AGENT_CHATS,
   highlightRunId = null,
   onHighlightDone,
   className,
@@ -340,10 +370,15 @@ function ChannelTimeline({
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(true);
   const [unseenBelow, setUnseenBelow] = useState(false);
+  /** How many messages from others arrived below while the reader was scrolled up (Q3-27). */
+  const [unseenCount, setUnseenCount] = useState(0);
   const onScrollChange = useCallback((atBottom: boolean) => {
     followingRef.current = atBottom;
     setFollowing(atBottom);
-    if (atBottom) setUnseenBelow(false);
+    if (atBottom) {
+      setUnseenBelow(false);
+      setUnseenCount(0);
+    }
   }, []);
   const anchorBottom = useCallback(() => followingRef.current, []);
 
@@ -480,8 +515,16 @@ function ChannelTimeline({
     const ids = known.current.ids;
     const added = messages.filter((message) => !ids.has(message.id));
     added.forEach((message) => ids.add(message.id));
-    if (added.length > 0 && !followingRef.current && historyBefore === null) setUnseenBelow(true);
-  }, [messages, pageReady, loadKey, historyBefore]);
+    if (added.length > 0 && !followingRef.current && historyBefore === null) {
+      setUnseenBelow(true);
+      // What the pill counts is what a person would call a new message: not their own post, and
+      // not an agent's folded tool update.
+      const counted = added.filter(
+        (message) => !isTraceMessage(message) && !(message.actor_id === viewerId && !message.run_id)
+      ).length;
+      if (counted > 0) setUnseenCount((count) => count + counted);
+    }
+  }, [messages, pageReady, loadKey, historyBefore, viewerId]);
 
   // ── Opening at the newest message ───────────────────────────────────────
   // A channel (and an older page) opens at its newest message. A reload that
@@ -601,6 +644,7 @@ function ChannelTimeline({
   // ── The post between Send and its arrival ───────────────────────────────
   const pendingPost = usePendingPost(crew, messages, viewerId);
   const showPending = pendingPost !== null && !readOnly && historyBefore === null;
+  const pendingHead = showPending && !continuesOwnGroup(days, viewerId, Date.now());
 
   // ── Keyboard: ↑/↓ move between rows, Home/End to the ends ────────────────
   // The active row's actions are Tab stops only while focus is inside the log. Once focus leaves
@@ -642,6 +686,7 @@ function ChannelTimeline({
       viewerId,
       readOnly,
       renderAttachments,
+      ownAgentChats,
       activeRow,
       setActiveRow,
       arriving: arrivingSet,
@@ -654,6 +699,7 @@ function ChannelTimeline({
       viewerId,
       readOnly,
       renderAttachments,
+      ownAgentChats,
       activeRow,
       arrivingSet,
       registerTaskRow,
@@ -738,7 +784,7 @@ function ChannelTimeline({
                     ))}
                   </section>
                 ))}
-                {showPending && <PendingPostRow body={pendingPost.body} />}
+                {showPending && <PendingPostRow body={pendingPost.body} head={pendingHead} />}
               </div>
             </div>
           </ScrollArea>
@@ -747,11 +793,13 @@ function ChannelTimeline({
               <JumpPill
                 mode={pill}
                 disabled={readOnly}
+                count={pill === 'live' ? unseenCount : 0}
                 onJump={
                   pill === 'history'
                     ? crew.jumpToLatest
                     : () => {
                         setUnseenBelow(false);
+                        setUnseenCount(0);
                         scrollToBottom(
                           scroller.current,
                           prefersReducedMotion() ? 'auto' : 'smooth'

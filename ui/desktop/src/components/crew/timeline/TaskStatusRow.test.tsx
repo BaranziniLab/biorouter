@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { identityCopy } from '../identity';
@@ -135,7 +135,14 @@ describe('task status rows', () => {
     expect(screen.getByRole('button', { name: timelineCopy.taskStopAgain })).toBeDisabled();
   });
 
-  it('keeps chat history, the error and then the task ID behind ⋯, in that order (Q2-62)', async () => {
+  /** Into ⋯'s "Copy for support" submenu, by keyboard, as a person would. */
+  async function openSupport(user: ReturnType<typeof userEvent.setup>) {
+    const support = await screen.findByRole('menuitem', { name: timelineCopy.copyForSupport });
+    act(() => support.focus());
+    await user.keyboard('{ArrowRight}');
+  }
+
+  it('keeps chat history, the error and then the task ID behind ⋯, in that order (Q2-62, Q3-26)', async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText');
     const { row } = renderTask('failed', { error: 'Model refused the request.' });
@@ -144,15 +151,23 @@ describe('task status rows', () => {
 
     await user.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
     const menu = await screen.findByRole('menu');
-    // The person's actions first, a separator, then the machine string.
+    // The person's actions first, a separator, then the machine string — in "Copy for support",
+    // one step away, so the everyday menu never leads with an ID.
     expect(
       Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map((node) =>
         node.getAttribute('role') === 'separator' ? '—' : node.textContent
       )
-    ).toEqual(['Show in chat history', timelineCopy.taskCopyError, '—', timelineCopy.taskCopyId]);
+    ).toEqual([
+      'Show in chat history',
+      timelineCopy.taskCopyError,
+      '—',
+      timelineCopy.copyForSupport,
+    ]);
+    expect(within(menu).queryByRole('menuitem', { name: timelineCopy.taskCopyId })).toBeNull();
 
     // A copy answers in the menu, which then closes by itself.
-    await user.click(screen.getByRole('menuitem', { name: timelineCopy.taskCopyId }));
+    await openSupport(user);
+    await user.click(await screen.findByRole('menuitem', { name: timelineCopy.taskCopyId }));
     expect(writeText).toHaveBeenLastCalledWith(ID.run);
     expect(await screen.findByRole('menuitem', { name: timelineCopy.copied })).toHaveAttribute(
       'data-crew-copy-state',
@@ -171,8 +186,10 @@ describe('task status rows', () => {
   });
 
   it('offers Copy error only when there is an error', async () => {
+    const user = userEvent.setup();
     const { row } = renderTask('completed');
-    await userEvent.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
+    await user.click(within(row).getByRole('button', { name: timelineCopy.taskMoreActions }));
+    await openSupport(user);
     expect(
       await screen.findByRole('menuitem', { name: timelineCopy.taskCopyId })
     ).toBeInTheDocument();

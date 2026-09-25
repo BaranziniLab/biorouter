@@ -9,6 +9,12 @@ import {
   type ReactNode,
 } from 'react';
 import { Button } from '../../ui/button';
+import {
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { Check, Copy, X } from '../../icons/app-icons';
 import { cn } from '../../../utils';
@@ -175,6 +181,33 @@ export function useMenuCopy<Item extends string>(
     state: (item: Item): 'copied' | 'failed' | undefined =>
       outcome?.item === item ? (outcome.copied ? 'copied' : 'failed') : undefined,
   };
+}
+
+/**
+ * The one place a menu keeps its machine-ID copies (Q3-26): a separator, then a "Copy for support"
+ * submenu holding those items and nothing else, as the LAST thing in the menu. A person's own
+ * copies (Copy text, Copy channel name, Copy error) stay at the top level; an ID is what someone
+ * reads out to support, so it is one deliberate step away and never the menu's first answer.
+ *
+ * The items inside answer as any copy item does (`useMenuCopy`): the chosen one reads "Copied"
+ * until the whole menu closes, which unmounts this submenu with it.
+ */
+export function CopyForSupport({
+  children,
+  label = timelineCopy.copyForSupport,
+}: {
+  children: ReactNode;
+  label?: string;
+}) {
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger data-crew-copy-for-support="">{label}</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent>{children}</DropdownMenuSubContent>
+      </DropdownMenuSub>
+    </>
+  );
 }
 
 /** The outcome of this control's last copy, for two seconds. */
