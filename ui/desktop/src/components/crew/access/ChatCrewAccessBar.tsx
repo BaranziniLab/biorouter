@@ -114,7 +114,9 @@ export interface ChatCrewAccessBarProps {
  *   connected and where the control that ends it lives.
  * - **Offline:** the grant stands but its Crew connection is down, so the next turn would fail as
  *   a model error (Q2-08). A neutral note says so, with **Connect in Crew**, which connects and
- *   lands on the chat's channel (Q3-08). Nothing is held. The chat notices the outage while it is
+ *   lands on the chat's channel (Q3-08), and **Revoke access**, which needs no connection: the
+ *   grant stops on this device at once and the workspace confirms it by itself later (F3). Nothing
+ *   is held. The chat notices the outage while it is
  *   watched: `useChatCrewAccess` re-reads the connections while it holds a grant (Q3-04). When the
  *   cause is the network, which the daemon retries by itself, it says Crew will reconnect when the
  *   network is back, with **Connect now** (Q4-06).
@@ -296,25 +298,73 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     );
   }
 
+  // What a revoke came to, and its inline question: the same in the offline bar and the live one.
+  const outcomeNote = outcome ? (
+    <RevokeResultNote
+      outcome={outcome}
+      chat={chat}
+      retrying={revoking}
+      confirmation={access.connectionUp ? 'confirming' : 'offline'}
+      onRetry={() => void revoke()}
+    />
+  ) : null;
+  const revokeQuestion = (
+    <InlineConfirm
+      question={accessCopy.confirm(chat, destination)}
+      detail={accessCopy.confirmStops}
+      confirmLabel={accessCopy.confirmRevoke}
+      cancelLabel={accessCopy.confirmKeep}
+      pending={revoking}
+      onConfirm={() => void revoke()}
+      onCancel={() => {
+        setConfirming(false);
+        window.setTimeout(() => revokeButton.current?.focus(), 0);
+      }}
+    />
+  );
+  // A real button, not ghost text beside a chip that also means "manage access".
+  const revokeControl = (
+    <Button
+      ref={revokeButton}
+      type="button"
+      variant="secondary"
+      size="sm"
+      disabled={revoking}
+      onClick={() => setConfirming(true)}
+    >
+      {accessCopy.revokeButton}
+    </Button>
+  );
+
   if (access.state === 'offline') {
     // A network drop is dialled again by the daemon itself once the network is back (Q4-01), so
     // the bar says so and its button is an offer, not a requirement (Q4-06). Every other cause —
     // sign-in, a host key, a membership that ended, a Disconnect — keeps "until you connect".
+    //
+    // Revoke stays here while offline (final polish, observation (a)): it needs no connection.
+    // The daemon stops the grant on this device at once (a 503, "Stopped on this device") and
+    // confirms it with the workspace by itself once the connection is back (F3). Without it the
+    // chat offered only Connect, and stopping the chat meant going to Crew first.
     const network = access.offlineCause === 'network';
     return (
       <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
+        {outcomeNote}
         <Note
           tone="neutral"
           role="status"
           testId="crew-chat-access-offline"
           action={
-            <Button type="button" variant="secondary" size="sm" onClick={connectInCrew}>
-              {network ? accessCopy.chatConnectNow : accessCopy.chatConnectInCrew}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={connectInCrew}>
+                {network ? accessCopy.chatConnectNow : accessCopy.chatConnectInCrew}
+              </Button>
+              {confirming || outcome ? null : revokeControl}
+            </div>
           }
         >
           {network ? accessCopy.chatOfflineNetwork : accessCopy.chatOffline(destination)}
         </Note>
+        {confirming ? revokeQuestion : null}
       </div>
     );
   }
@@ -323,28 +373,9 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
 
   return (
     <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
-      {outcome ? (
-        <RevokeResultNote
-          outcome={outcome}
-          chat={chat}
-          retrying={revoking}
-          confirmation={access.connectionUp ? 'confirming' : 'offline'}
-          onRetry={() => void revoke()}
-        />
-      ) : null}
+      {outcomeNote}
       {confirming ? (
-        <InlineConfirm
-          question={accessCopy.confirm(chat, destination)}
-          detail={accessCopy.confirmStops}
-          confirmLabel={accessCopy.confirmRevoke}
-          cancelLabel={accessCopy.confirmKeep}
-          pending={revoking}
-          onConfirm={() => void revoke()}
-          onCancel={() => {
-            setConfirming(false);
-            window.setTimeout(() => revokeButton.current?.focus(), 0);
-          }}
-        />
+        revokeQuestion
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <Tooltip>
@@ -363,19 +394,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
             </TooltipTrigger>
             <TooltipContent side="top">{accessCopy.chatChipTip(destination)}</TooltipContent>
           </Tooltip>
-          {outcome ? null : (
-            // A real button, not ghost text beside a chip that also means "manage access".
-            <Button
-              ref={revokeButton}
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={revoking}
-              onClick={() => setConfirming(true)}
-            >
-              {accessCopy.revokeButton}
-            </Button>
-          )}
+          {outcome ? null : revokeControl}
         </div>
       )}
     </div>

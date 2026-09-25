@@ -508,8 +508,10 @@ describe('a chat whose Crew connection is offline', () => {
     expect(screen.getByTestId('hold')).toHaveTextContent('none');
     // The grant still stands, so the extension menu keeps Crew switched on.
     expect(screen.getByTestId('published')).toHaveTextContent('active');
-    // Not the connected chip, and no Revoke beside a connection that cannot carry it.
+    // Not the connected chip. Revoke stays, beside Connect: it needs no connection (final polish,
+    // observation (a)).
     expect(screen.queryByRole('button', { name: /^Crew · / })).toBeNull();
+    expect(within(note).getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
 
     // Q3-08: one click, as its label says. Crew connects the grant's connection on arrival and
     // opens this chat's access on its channel: the route carries both.
@@ -658,6 +660,59 @@ describe('a chat whose Crew connection is offline', () => {
     expect(offlineCauseOf(undefined, false)).toBe('other');
   });
 
+  /**
+   * Final polish, observation (a): while Crew was offline the chat's own bar offered only Connect
+   * in Crew, so stopping the chat meant going to Crew first. A revoke needs no connection — the
+   * daemon stops the grant on this device at once and confirms it with the workspace by itself once
+   * the connection is back (F3) — so the offline bar offers Revoke access, asks inline, and then
+   * says "Stopped on this device" without telling the person to reconnect.
+   */
+  it('offers Revoke while offline: stopped here at once, confirmed later with no click', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    let expired = false;
+    installDaemon({
+      connections: [{ ...connection, status: 'disconnected' }],
+      grants: () => [
+        grantRow({
+          session_id: 'chat-1',
+          expired,
+          ...(expired ? { revocation: 'unconfirmed' } : {}),
+        }),
+      ],
+      revoke: () => {
+        expired = true;
+        throw new CrewHttpError(
+          'Stopped on this device. The workspace hasn’t confirmed yet; Biorouter confirms it by itself when the connection is back.',
+          503,
+          'crew_revocation_unconfirmed'
+        );
+      },
+    });
+    renderChat();
+
+    const note = await screen.findByTestId('crew-chat-access-offline');
+    fireEvent.click(within(note).getByRole('button', { name: accessCopy.revokeButton }));
+    const question = screen.getByTestId('crew-access-inline-confirm');
+    expect(question).toHaveTextContent(accessCopy.confirm('Plot review', '#general'));
+    fireEvent.click(within(question).getByRole('button', { name: accessCopy.confirmRevoke }));
+
+    await waitFor(() =>
+      expect(
+        mocks.crewHttp.mock.calls.some(
+          ([path, method]) =>
+            path === '/connections/conn-1/sessions/chat-1/revoke' && method === 'POST'
+        )
+      ).toBe(true)
+    );
+    // Stopped here at once: the chat is held, and it says the workspace confirms by itself.
+    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
+    expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+    expect(screen.queryByText(/reconnect and retry/i)).toBeNull();
+    // Revoking is not connecting: nothing navigated to Crew.
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
   it('reads as connected once the connection is back', async () => {
     let status = 'disconnected';
     installDaemon({
@@ -740,7 +795,9 @@ describe('an open chat notices a Crew outage while it is watched', () => {
 
     const note = await screen.findByTestId('crew-chat-access-offline');
     expect(note).toHaveTextContent(accessCopy.chatOffline('#general'));
-    expect(screen.queryByRole('button', { name: accessCopy.revokeButton })).toBeNull();
+    // The connected chip goes; Revoke stays, in the offline note (observation (a)).
+    expect(screen.queryByRole('button', { name: accessCopy.chatChipName('#general') })).toBeNull();
+    expect(within(note).getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
     expect(screen.getByTestId('state')).toHaveTextContent('offline');
     // Only the connections were read again: the grant list is not polled.
     expect(grantLists()).toHaveLength(grantsRead);
