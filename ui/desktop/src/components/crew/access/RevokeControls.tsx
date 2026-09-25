@@ -1,4 +1,12 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2 } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
@@ -72,9 +80,17 @@ export function InlineConfirm({
 
 /**
  * The workspace confirmed a revoke this view saw waiting for it (F3): the daemon asked again by
- * itself once the connection was back. A status, not an alert — nothing is wrong any more.
+ * itself once the connection was back. A status, not an alert — nothing is wrong any more. With
+ * `onDismiss` it carries its own Dismiss: it stays until the person dismisses it or leaves the
+ * surface that shows it (final polish NEW-4).
  */
-export function RevocationConfirmedNote({ className }: { className?: string }) {
+export function RevocationConfirmedNote({
+  className,
+  onDismiss,
+}: {
+  className?: string;
+  onDismiss?: () => void;
+}) {
   return (
     <Note
       tone="success"
@@ -82,6 +98,19 @@ export function RevocationConfirmedNote({ className }: { className?: string }) {
       role="status"
       className={className}
       testId="crew-access-confirmed"
+      action={
+        onDismiss ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={accessCopy.confirmedDismissName}
+            onClick={onDismiss}
+          >
+            {accessCopy.confirmedDismiss}
+          </Button>
+        ) : undefined
+      }
     >
       {accessCopy.confirmed}
     </Note>
@@ -89,20 +118,64 @@ export function RevocationConfirmedNote({ className }: { className?: string }) {
 }
 
 /**
- * Whether a revoke this view saw waiting for the workspace has since been confirmed (F3): true
+ * What a view saw of each revoke, per scope: `waited` once it saw the revoke waiting for the
+ * workspace, `dismissed` once the person dismissed its "Confirmed." note. Keyed by the scope object
+ * the caller names — the Chat access pane's intent — so it outlives a remount of the same surface,
+ * and goes with it: a closed pane, or one opened anew, is a new intent and starts over.
+ */
+const confirmationMarks = new WeakMap<object, Map<string, 'waited' | 'dismissed'>>();
+
+function marksFor(scope: object): Map<string, 'waited' | 'dismissed'> {
+  let marks = confirmationMarks.get(scope);
+  if (!marks) {
+    marks = new Map();
+    confirmationMarks.set(scope, marks);
+  }
+  return marks;
+}
+
+export interface ConfirmedAfterWait {
+  /** Show "Confirmed.": this view saw the revoke waiting, and the daemon now says confirmed. */
+  shown: boolean;
+  /** The person dismissed the note: it does not come back for this revoke in this scope. */
+  dismiss(): void;
+}
+
+/**
+ * Whether a revoke this view saw waiting for the workspace has since been confirmed (F3): shown
  * from the moment `unconfirmed` turns false while `confirmed` holds, for the same `key` (a grant's
- * run). A new key starts over, so a revoke confirmed at once (a 200) never shows it.
+ * run), until the person dismisses it. A new key starts over, so a revoke confirmed at once (a 200)
+ * never shows it.
+ *
+ * `scope` is what the memory lives as long as (final polish NEW-4). Live, "Confirmed." was on
+ * screen for seven seconds: when Crew reconnected, the offline screen gave way to the channel, the
+ * pane's body mounted again, and component state forgot it had ever waited. The Chat access pane
+ * passes its pane intent, which lives across that remount and ends when the person closes the pane
+ * or opens another. Without a scope the memory is this mount's own.
  */
 export function useConfirmedAfterWait(
   key: string | null,
   unconfirmed: boolean,
-  confirmed: boolean
-): boolean {
-  const [waitedFor, setWaitedFor] = useState<string | null>(null);
+  confirmed: boolean,
+  scope?: object | null
+): ConfirmedAfterWait {
+  const [own] = useState<object>(() => ({}));
+  const holder = scope ?? own;
+  const [, changed] = useState(0);
   useEffect(() => {
-    if (key && unconfirmed) setWaitedFor(key);
-  }, [key, unconfirmed]);
-  return Boolean(key) && waitedFor === key && !unconfirmed && confirmed;
+    if (!key || !unconfirmed) return;
+    const marks = marksFor(holder);
+    if (marks.get(key) === 'waited') return;
+    marks.set(key, 'waited');
+    changed((value) => value + 1);
+  }, [key, unconfirmed, holder]);
+  const dismiss = useCallback(() => {
+    if (!key) return;
+    marksFor(holder).set(key, 'dismissed');
+    changed((value) => value + 1);
+  }, [key, holder]);
+  const mark = key ? confirmationMarks.get(holder)?.get(key) : undefined;
+  return { shown: Boolean(key) && mark === 'waited' && !unconfirmed && confirmed, dismiss };
 }
 
 /**

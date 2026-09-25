@@ -239,6 +239,14 @@ describe('the Access tab', () => {
       expect(await screen.findByText(accessCopy.confirmed)).toBeInTheDocument();
       expect(screen.queryByText(accessCopy.confirming)).toBeNull();
       expect(screen.queryByTestId('crew-access-unconfirmed')).toBeNull();
+
+      // It stays until the person dismisses it (NEW-4), then goes for good.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2 * UNCONFIRMED_REVOKE_WATCH_MS);
+      });
+      const note = screen.getByTestId('crew-access-confirmed');
+      fireEvent.click(within(note).getByRole('button', { name: accessCopy.confirmedDismissName }));
+      await waitFor(() => expect(screen.queryByTestId('crew-access-confirmed')).toBeNull());
     } finally {
       vi.useRealTimers();
     }

@@ -284,8 +284,9 @@ export function AccessList({
         </Note>
       ) : null}
       {result && confirmedSince(result, rows) ? (
-        // The daemon confirmed the 503 with the workspace by itself once it was back (F3).
-        <RevocationConfirmedNote />
+        // The daemon confirmed the 503 with the workspace by itself once it was back (F3). It stays
+        // until the person dismisses it (NEW-4).
+        <RevocationConfirmedNote onDismiss={() => setResult(null)} />
       ) : result ? (
         <RevokeResultNote
           outcome={result.outcome}

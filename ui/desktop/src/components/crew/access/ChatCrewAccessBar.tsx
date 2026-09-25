@@ -267,8 +267,8 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
             confirmation={access.connectionUp ? 'confirming' : 'offline'}
             onRetry={() => void revoke()}
           />
-        ) : confirmedAfterWait ? (
-          <RevocationConfirmedNote />
+        ) : confirmedAfterWait.shown ? (
+          <RevocationConfirmedNote onDismiss={confirmedAfterWait.dismiss} />
         ) : null}
         <Note
           tone="neutral"

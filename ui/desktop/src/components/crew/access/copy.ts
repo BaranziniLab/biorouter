@@ -106,6 +106,9 @@ export const accessCopy = {
   confirming: 'Stopped on this device. Confirming with the workspace…',
   /** The workspace confirmed a revoke this view saw waiting (F3). */
   confirmed: 'Confirmed. The workspace has stopped this chat’s access too.',
+  /** The note stays until the person is done with it (NEW-4). */
+  confirmedDismiss: 'Dismiss',
+  confirmedDismissName: 'Dismiss the confirmation',
   notRevoked: 'Not revoked. This chat can still read and post.',
   retry: 'Retry',
   done: 'Done',

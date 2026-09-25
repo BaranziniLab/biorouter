@@ -234,10 +234,14 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     (listedGrant !== null &&
       sessionGrantState(listedGrant) !== 'active' &&
       revocationUnconfirmed(listedGrant));
+  // Remembered for the pane's intent, not this mount (NEW-4): the body mounts again when Crew
+  // reconnects and the offline screen gives way to the channel, and "Confirmed." stays until the
+  // person dismisses it or leaves the pane.
   const confirmedAfterWait = useConfirmedAfterWait(
     listedGrant?.run_id ?? null,
     listedWaiting,
-    listedConfirmed
+    listedConfirmed,
+    intent
   );
 
   if (!sessionId) {
@@ -553,7 +557,9 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         ? accessCopy.paneRevoked(chat)
         : null;
 
-  const confirmedNote = confirmedAfterWait ? <RevocationConfirmedNote /> : null;
+  const confirmedNote = confirmedAfterWait.shown ? (
+    <RevocationConfirmedNote onDismiss={confirmedAfterWait.dismiss} />
+  ) : null;
 
   if (!canGrant) {
     return (
