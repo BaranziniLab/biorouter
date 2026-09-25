@@ -1515,8 +1515,30 @@ impl CrewManager {
         if let Some(unchanged) = self.unchanged_by(id, &input).await? {
             return Ok(unchanged);
         }
+        // P-1: a save that would be refused is refused while the bridge is still up.
+        self.refusal_before_saving(id, &input).await?;
         self.disconnect_locked(id).await?;
         self.save_inner(Some(id), input).await
+    }
+    /// The refusal saving `input` over `id` would meet, if any, asked before anything changes:
+    /// the save's own checks — an institution that does not normalize, a private connection
+    /// with no institution, aliases whose institutions differ, a prepared identity on an
+    /// edit — run against a copy of the saved registry as it is now (D8), which is then
+    /// thrown away. Only [`Self::validate_connection`]'s refusals were asked early before, so
+    /// these dropped a working bridge for an edit that changed nothing (P-1). Saving itself
+    /// checks again, so another process's save in between is still judged by the save.
+    async fn refusal_before_saving(&self, id: &str, input: &SaveConnection) -> Result<()> {
+        let mut input = input.clone();
+        input.institution_id = input
+            .institution_id
+            .as_deref()
+            .map(institution::normalize)
+            .transpose()?;
+        self.update_registry(|registry| {
+            let mut trial = registry.clone();
+            self.save_edit(&mut trial, Some(id), input).map(drop)
+        })
+        .await
     }
     /// The connection `id` as it stands, when saving `input` over it would change nothing
     /// the save decides: every setting the person gave, the privacy mode and the institution

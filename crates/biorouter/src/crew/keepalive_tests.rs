@@ -2709,14 +2709,40 @@ async fn saving_a_connection_unchanged_changes_nothing() {
     let cap = CallCapability::for_test(ProviderTier::Private, true);
     f.manager.check_dispatch(WORKER, &cap).await.unwrap();
 
-    // A refused edit changes nothing either, the bridge included.
+    // A refused edit changes nothing either, the bridge included: whether the input itself is
+    // refused, or the save refuses it against what is saved — an institution that does not
+    // normalize, or a private connection with no institution. Those two used to drop the
+    // bridge first and refuse after.
     let mut refused = same(&before, before.mode);
     refused.ssh_target = "bad target;".into();
     assert!(f.manager.update(CONNECTION_ID, refused).await.is_err());
+    let mut unnormalized = same(&before, before.mode);
+    unnormalized.institution_id = Some("not an institution!".into());
+    assert!(f
+        .manager
+        .update(CONNECTION_ID, unnormalized)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("canonical institution ID"));
     assert_eq!(
-        f.manager.connection(CONNECTION_ID).await.unwrap().status,
-        "connected"
+        f.manager
+            .update(CONNECTION_ID, same(&before, ClusterMode::Private))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "Choose this private SSH connection's institution before saving"
     );
+    let after = f.manager.connection(CONNECTION_ID).await.unwrap();
+    assert_eq!(after.status, "connected");
+    assert_eq!(after.policy_epoch, before.policy_epoch);
+    assert_eq!(after.mode, before.mode);
+    assert!(Arc::ptr_eq(
+        &bridge,
+        &f.manager.transport(CONNECTION_ID).await.unwrap()
+    ));
+    assert_eq!(spawns(&f.root), 1, "a refused edit dropped the bridge");
+    f.manager.check_dispatch(WORKER, &cap).await.unwrap();
 
     // Another process renamed it since this one loaded (D8): saving the name this process
     // still holds is a change to the saved connection, not a no-op, and is saved as one.
