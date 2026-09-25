@@ -2911,25 +2911,9 @@ impl CrewManager {
                 revocation: None,
             };
             // Recorded here even when the save fails, as it always was: the abandon below
-            // then finds it and stops it here too. A stop of the chat's earlier grant that the
-            // workspace has not confirmed is kept, never replaced away, and asked about again
-            // now, while the connection is known to be up (F3).
-            let mut kept = None;
-            let recorded = self
-                .update_registry_keeping(|r| {
-                    if let Some(previous) = r.scopes.insert(session.into(), scope) {
-                        let connection = previous.connection_id.clone();
-                        if r.keep_replaced(session, previous) {
-                            kept = Some(connection);
-                        }
-                    }
-                    Ok(())
-                })
-                .await;
-            if let Some(connection) = kept {
-                self.schedule_revocation_retries(&connection);
-            }
-            recorded??;
+            // then finds it and stops it here too. An unconfirmed stop of the chat's earlier
+            // grant is kept and asked about again (F3).
+            self.record_grant(session, scope).await?;
             // A new task starts from nothing read, even under a chat ID used before.
             self.forget_run_reads(session);
             let context = self

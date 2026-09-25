@@ -492,6 +492,10 @@ export const disconnect = <ThrowOnError extends boolean = false>(options: Option
  * a grant recorded before that was kept.
  *
  * All three are display only: revoking still decides on the registry and the ledger.
+ *
+ * `replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,
+ * F3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a
+ * different conversation, whose title would mislabel the grant.
  */
 export const crewProfileGrants = <ThrowOnError extends boolean = false>(options: Options<CrewProfileGrantsData, ThrowOnError>) => (options.client ?? client).get<CrewProfileGrantsResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/grants', ...options });
 
@@ -550,8 +554,9 @@ export const crewProfileContext = <ThrowOnError extends boolean = false>(options
  *
  * - 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped
  * here and confirmed by the workspace. `run` is the workspace's revoked run.
- * - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. Retrying asks
- * the workspace again.
+ * - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon
+ * asks the workspace again by itself at every reconnect until it confirms (F3), and the
+ * grants list says when it has; retrying asks at once.
  * - 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500
  * [`REVOCATION_NOT_SAVED`]: not revoked, or not durably.
  *

@@ -19395,6 +19395,9 @@ mod deleted_chat_side_rows_tests {
             // SCOPE-BIND: a deleted chat's Crew grant is not the next chat's under the
             // id — `CrewManager::standing`
             "biorouter/src/crew/scope_binding_tests.rs",
+            // F3: a deleted chat's unconfirmed Crew revocation survives the id being
+            // reissued — `Registry::keep_replaced` from `prune_stale_grant`
+            "biorouter/src/crew/keepalive_tests.rs",
         ];
         let seam = "forget_minted_session_ids_for_test";
         let mut offenders = Vec::new();

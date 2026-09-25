@@ -2393,7 +2393,7 @@
           "Crew"
         ],
         "summary": "The chats and tasks holding a grant on this connection (RV-D2). Each row adds, to what",
-        "description": "the Crew registry records:\n\n- `kind`: `task` when the grant is one of this device's ledger tasks (the ledger holds its\nsession and its current run), else `chat`; `null` when the ledger could not be read, so\nthe list still answers while the task ledger is unavailable.\n- `session_name`: the conversation's title, or `null` when the conversation is gone or\nuntitled.\n- `expires_at`: when the workspace ends the grant on its own, from grant time; `null` for\na grant recorded before that was kept.\n\nAll three are display only: revoking still decides on the registry and the ledger.",
+        "description": "the Crew registry records:\n\n- `kind`: `task` when the grant is one of this device's ledger tasks (the ledger holds its\nsession and its current run), else `chat`; `null` when the ledger could not be read, so\nthe list still answers while the task ledger is unavailable.\n- `session_name`: the conversation's title, or `null` when the conversation is gone or\nuntitled.\n- `expires_at`: when the workspace ends the grant on its own, from grant time; `null` for\na grant recorded before that was kept.\n\nAll three are display only: revoking still decides on the registry and the ledger.\n\n`replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,\nF3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a\ndifferent conversation, whose title would mislabel the grant.",
         "operationId": "crew_profile_grants",
         "parameters": [
           {
@@ -2891,7 +2891,7 @@
           "Crew"
         ],
         "summary": "Revoke a chat's or task's grant (RV-D1, RV-D3). The grant stops on this device first,",
-        "description": "and is saved, before the workspace is asked; so:\n\n- 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped\nhere and confirmed by the workspace. `run` is the workspace's revoked run.\n- 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. Retrying asks\nthe workspace again.\n- 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500\n[`REVOCATION_NOT_SAVED`]: not revoked, or not durably.\n\nA ledger task's session is stopped through the task cancel path, so its ledger entry reads\n`cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds\n`task_status`. The request body, if any, is ignored.",
+        "description": "and is saved, before the workspace is asked; so:\n\n- 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped\nhere and confirmed by the workspace. `run` is the workspace's revoked run.\n- 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon\nasks the workspace again by itself at every reconnect until it confirms (F3), and the\ngrants list says when it has; retrying asks at once.\n- 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500\n[`REVOCATION_NOT_SAVED`]: not revoked, or not durably.\n\nA ledger task's session is stopped through the task cancel path, so its ledger entry reads\n`cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds\n`task_status`. The request body, if any, is ignored.",
         "operationId": "crew_profile_revoke",
         "parameters": [
           {

@@ -133,6 +133,30 @@ impl CrewManager {
         runtime.spawn(revocation_retries(manager, id.to_owned(), token));
     }
 
+    /// Record `scope` as `session`'s grant, in memory even when the saved registry cannot be
+    /// written (the error returned is then the file's). A stop of the chat's earlier grant that
+    /// the workspace has not confirmed is kept, never replaced away ([`Registry::keep_replaced`]),
+    /// and asked about again now, while the connection is known to be up — whether or not the
+    /// save succeeded, since the stop holds here either way (F3).
+    pub(super) async fn record_grant(&self, session: &str, scope: Scope) -> anyhow::Result<()> {
+        let mut kept = None;
+        let recorded = self
+            .update_registry_keeping(|r| {
+                if let Some(previous) = r.scopes.insert(session.into(), scope) {
+                    let connection = previous.connection_id.clone();
+                    if r.keep_replaced(session, previous) {
+                        kept = Some(connection);
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        if let Some(connection) = kept {
+            self.schedule_revocation_retries(&connection);
+        }
+        recorded?
+    }
+
     fn revocation_retry_armed(&self, id: &str, token: u64) -> bool {
         self.revocation_retries
             .lock()
