@@ -18,7 +18,14 @@ import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { previewInvitation, type CrewInvitationPreview } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
-import { connectionServer, isInstitutionId, sanitizeDisplayText } from '../identity';
+import {
+  connectionServer,
+  institutionLabel,
+  isInstitutionId,
+  sanitizeDisplayText,
+  type KnownInstitution,
+} from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { focusIsLost } from '../state/focusReturn';
 import type { ErrorSource, PreparedDevice } from '../state/types';
@@ -44,7 +51,6 @@ import {
 import { updateJoinContext, useJoinContext } from './joinContext';
 import { advancedInvalid, WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import {
-  connectionServerLabel,
   groupWorkspaceFingerprint,
   hostStartCommands,
   isWorkspaceName,
@@ -90,14 +96,14 @@ type PasteOutcome =
   | { kind: 'stale' }
   | { kind: 'failed'; message: string };
 
-function problemText(output: Extract<StartOutput, { kind: 'problem' }>): string {
+function problemText(output: Extract<StartOutput, { kind: 'problem' }>, server: string): string {
   switch (output.problem) {
     case 'starting':
       return hostCopy.pasteStarting;
     case 'cut-off':
       return hostCopy.pasteCutOff;
     case 'not-installed':
-      return hostCopy.pasteNotInstalled;
+      return hostCopy.pasteNotInstalled(server);
     case 'server-error':
       return hostCopy.pasteServerError(sanitizeDisplayText(output.detail) || hostCopy.bad);
   }
@@ -105,12 +111,16 @@ function problemText(output: Extract<StartOutput, { kind: 'problem' }>): string 
 
 /**
  * Read a paste: find what the daemon reads inside the terminal text (`readStartOutput`), then ask
- * the daemon. Nothing is saved.
+ * the daemon. Nothing is saved. `server` is the dialog's word for the server, for the sentences.
  */
-async function readPaste(pasted: string, signal?: AbortSignal): Promise<PasteOutcome> {
+async function readPaste(
+  pasted: string,
+  server: string,
+  signal?: AbortSignal
+): Promise<PasteOutcome> {
   const output = readStartOutput(pasted);
   if (!output) return { kind: 'bad', message: hostCopy.bad };
-  if (output.kind === 'problem') return { kind: 'bad', message: problemText(output) };
+  if (output.kind === 'problem') return { kind: 'bad', message: problemText(output, server) };
   try {
     const preview = signal
       ? await previewInvitation(output.text, {}, signal)
@@ -183,12 +193,12 @@ type StartRun =
   | { phase: 'problem'; output: string; message: string };
 
 /** The sentence for what a finished run printed when it was not Crew's answer. */
-function startProblemText(problem: string, detail: string | null): string {
+function startProblemText(problem: string, detail: string | null, server: string): string {
   switch (problem) {
     case 'starting':
       return hostCopy.startStarting;
     case 'not_installed':
-      return hostCopy.pasteNotInstalled;
+      return hostCopy.pasteNotInstalled(server);
     case 'server_error':
       return hostCopy.pasteServerError(sanitizeDisplayText(detail) || hostCopy.startUnreadable);
     default:
@@ -196,10 +206,20 @@ function startProblemText(problem: string, detail: string | null): string {
   }
 }
 
-/** The one institution the configured providers name, when there is exactly one. */
-function useSingleInstitution(open: boolean): string | null {
+/**
+ * The institutions the configured providers name: `single`, the one ID when there is exactly one
+ * (the Institution field's default), and `known`, with the names they publish, so `ucsf` reads as
+ * "UCSF" wherever the dialog writes it in a sentence (Q4-47).
+ */
+function useConfiguredInstitutions(open: boolean): {
+  single: string | null;
+  known: readonly KnownInstitution[];
+} {
   const { getProviders } = useConfig();
-  const [institution, setInstitution] = useState<string | null>(null);
+  const [state, setState] = useState<{ single: string | null; known: KnownInstitution[] }>({
+    single: null,
+    known: [],
+  });
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -207,22 +227,26 @@ function useSingleInstitution(open: boolean): string | null {
       .then((providers) => {
         if (cancelled || !Array.isArray(providers)) return;
         const ids = new Set<string>();
+        const known: KnownInstitution[] = [];
         for (const provider of providers) {
           if (!provider?.is_configured) continue;
           const affiliation = readProviderAffiliation(provider);
           if (affiliation?.kind !== 'institutions') continue;
-          for (const { id } of affiliation.institutions) if (isInstitutionId(id)) ids.add(id);
+          for (const institution of affiliation.institutions) {
+            known.push(institution);
+            if (isInstitutionId(institution.id)) ids.add(institution.id);
+          }
         }
-        if (ids.size === 1) setInstitution([...ids][0]);
+        setState({ single: ids.size === 1 ? [...ids][0] : null, known });
       })
       .catch(() => {
-        // Only a default: without the provider list the field starts empty.
+        // Only a default: without the provider list the field starts empty, and IDs read as IDs.
       });
     return () => {
       cancelled = true;
     };
   }, [open, getProviders]);
-  return institution;
+  return state;
 }
 
 export interface HostDialogProps {
@@ -264,7 +288,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const mounted = useMounted();
   const formId = useId();
   const { errors, validate, formProps } = useFormValidation();
-  const suggestedInstitution = useSingleInstitution(open);
+  const { single: suggestedInstitution, known: knownInstitutions } =
+    useConfiguredInstitutions(open);
   // The controller as it stands now, for work that continues after an await.
   const latest = useRef(crew);
   useEffect(() => {
@@ -327,6 +352,12 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [ownerUid, setOwnerUid] = useState('');
   const [workspaceKey, setWorkspaceKey] = useState('');
   const [pinned, setPinned] = useState<PinnedWorkspace | null>(null);
+  /**
+   * The server word the dialog settled on when it left step 1 (or, resuming, when it opened): it
+   * keeps it for its life, so Create never flips "wong-lab on 52.33.141.141" to "on lab-server"
+   * halfway through (Q4-34). Null on step 1, where it follows the login being typed.
+   */
+  const [serverWord, setServerWord] = useState<string | null>(null);
 
   // Create
   const [phase, setPhase] = useState<CreatePhase>('idle');
@@ -342,6 +373,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (resumeContext.hostSetup && crew.connection) {
       setResumeId(crew.connectionId);
       setSavedId(crew.connectionId);
+      setServerWord(serverLabel(crew.connection) || null);
       setStep('create');
     }
   }, [open, resumeContext.hostSetup, crew.connection, crew.connectionId]);
@@ -360,15 +392,19 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const workspaceLabel =
     slug || sanitizeDisplayText(resumeContext.workspaceName) || resumeConnection?.name || '';
   const loginForServer = resumeConnection?.ssh_target ?? serverLogin.trim();
-  // What to call the server (D-ALIAS): once the connection is saved, the daemon's name for it (the
-  // host's own SSH alias for the address, when one maps to it); before that, the login's host as
-  // typed, which is already the alias when the host typed one.
+  // What to call the server (D-ALIAS): the login's host as typed on step 1 (already the alias when
+  // the host typed one), kept from there on for the dialog's life (Q4-34). A resumed setup opened
+  // on the saved connection's own name for it. Once the connection is saved, the daemon's name for
+  // the server (`serverLabel`: the host's SSH alias for the address, when one maps to it) is what
+  // every surface after the dialog says; where it differs, Create says how the two relate.
   const savedConnection =
     resumeConnection ?? crew.connections.find((item) => item.id === savedId) ?? null;
-  const server =
-    connectionServerLabel(savedConnection) ||
-    connectionServer({ id: '', ssh_target: loginForServer }) ||
-    loginForServer;
+  const typedServer = connectionServer({ id: '', ssh_target: loginForServer }) || loginForServer;
+  const server = (step !== 'name' && serverWord) || typedServer;
+  const savedServer = savedConnection ? serverLabel(savedConnection) : '';
+  const serverAlias =
+    savedServer && server && savedServer !== server ? hostCopy.serverAlias(savedServer) : null;
+  const foundServer = server || hostCopy.theServer;
   // Once bootstrapped the workspace exists: waiting for its first verified view never traps the
   // person in the dialog, so `verifying` (like the label question) is not busy.
   const busy =
@@ -473,6 +509,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       : crew.connection?.institution_id && isInstitutionId(crew.connection.institution_id)
         ? crew.connection.institution_id
         : null;
+  // How the label reads in the question's words: "UCSF", never `ucsf` (Q4-47). The ID written is
+  // still `labelInstitution`.
+  const labelName = institutionLabel(labelInstitution, knownInstitutions) ?? labelInstitution ?? '';
 
   useEffect(() => {
     if (phase !== 'verifying') return;
@@ -512,6 +551,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     setPrepared(result);
     // A run from an earlier visit to Start described the login as it was then.
     setRun({ phase: 'idle' });
+    // The word step 1 showed is the dialog's from here on (Q4-34).
+    setServerWord(typedServer || null);
     setStep('start');
     // Continue leaves with the Name step's footer; the Start step's own action takes focus.
     setFocusNext('start');
@@ -636,11 +677,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       return;
     }
     if (status.result.kind === 'problem') {
-      runProblem(startProblemText(status.result.problem, status.result.detail), status.output);
+      runProblem(
+        startProblemText(status.result.problem, status.result.detail, foundServer),
+        status.output
+      );
       return;
     }
     setRun({ phase: 'reading', output: status.output });
-    const outcome = await readPaste(status.result.text);
+    const outcome = await readPaste(status.result.text, foundServer);
     if (!mounted.current) return;
     switch (outcome.kind) {
       case 'found':
@@ -734,7 +778,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (step !== 'start' || !pasted.trim()) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      void readPaste(pasted, controller.signal).then((outcome) => {
+      void readPaste(pasted, foundServer, controller.signal).then((outcome) => {
         if (controller.signal.aborted || !mounted.current) return;
         applyOutcome(outcome, pasted);
       });
@@ -745,7 +789,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     };
     cancelCheck.current = cancel;
     return cancel;
-  }, [pasted, step, mounted, applyOutcome]);
+  }, [pasted, step, mounted, applyOutcome, foundServer]);
 
   useLayoutEffect(() => {
     if (!focusTyped || parse !== 'stale') return;
@@ -772,7 +816,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
     cancelCheck.current();
     setParse('reading');
-    const outcome = await readPaste(pasted);
+    const outcome = await readPaste(pasted, foundServer);
     if (!mounted.current) return;
     if (outcome.kind === 'failed') {
       setParse('idle');
@@ -916,7 +960,6 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         </span>
       </>
     );
-  const foundServer = server || hostCopy.theServer;
 
   const footer = (() => {
     if (step === 'label') {
@@ -932,7 +975,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             {hostCopy.labelLater}
           </Button>
           <Button type="submit" form={formId} disabled={crew.isPending('mutate:policy.set')}>
-            {hostCopy.labelSet(labelInstitution ?? '')}
+            {hostCopy.labelSet(labelName)}
           </Button>
         </>
       );
@@ -957,7 +1000,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             type="button"
             variant="secondary"
             disabled={busy || runActive}
-            onClick={() => setStep(back)}
+            onClick={() => {
+              // Back on step 1, the server word follows the login again.
+              if (back === 'name') setServerWord(null);
+              setStep(back);
+            }}
           >
             {hostCopy.back}
           </Button>
@@ -995,11 +1042,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       }}
       size="lg"
       purpose={busy ? 'required' : 'form'}
-      title={
-        step === 'label'
-          ? hostCopy.labelTitle(workspaceLabel, labelInstitution ?? '')
-          : hostCopy.title
-      }
+      title={step === 'label' ? hostCopy.labelTitle(workspaceLabel, labelName) : hostCopy.title}
       subtitle={subtitle}
       scrollBody
       // A dialog portals outside `.crew-app`: the class carries Crew's focused-field edge to it
@@ -1321,7 +1364,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       ) : null}
                     </div>
                   </Disclosure>
-                  <Disclosure label={hostCopy.notInstalled}>
+                  <Disclosure label={hostCopy.notInstalled(foundServer)}>
                     <CopyField multiline label={hostCopy.installLabel} value={INSTALL_COMMANDS} />
                   </Disclosure>
                   <p className="text-supporting text-text-muted">{hostCopy.consequence}</p>
@@ -1333,6 +1376,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   <h3 className="text-label text-text-default">
                     {hostCopy.createHeading(workspaceLabel, server)}
                   </h3>
+                  {serverAlias ? (
+                    <p
+                      className="text-supporting text-text-muted"
+                      data-testid="crew-host-server-alias"
+                    >
+                      {serverAlias}
+                    </p>
+                  ) : null}
                   {pinned?.fingerprint ? (
                     <div className="crew-onboard-field">
                       <span className="text-supporting text-text-muted">
@@ -1365,8 +1416,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {step === 'label' ? (
                 // What the label does, and what Not now leaves open (Q3-45).
                 <div className="crew-onboard-stack">
+                  {/* Step 1 asked for the institution already: say what that set, and what this
+                      sets that it did not (Q4-47). */}
+                  <p className="text-body text-text-default" data-testid="crew-host-label-why">
+                    {hostCopy.labelWhy(workspaceLabel, labelName)}
+                  </p>
                   <p className="text-body text-text-default">
-                    {hostCopy.labelEffect(workspaceLabel, labelInstitution ?? '')}
+                    {hostCopy.labelEffect(workspaceLabel, labelName)}
                   </p>
                   <p id={labelLaterId} className="text-supporting text-text-muted">
                     {hostCopy.labelLaterHelper(workspaceLabel)}

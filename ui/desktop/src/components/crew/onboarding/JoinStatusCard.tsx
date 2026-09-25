@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import { Clock, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Note } from '../../ui/note';
-import { Progress } from '../../ui/progress';
+import { SecretInput } from '../../ui/secret-input';
 import {
   claimJoin,
   CREW_NOT_CONNECTED,
@@ -22,13 +30,14 @@ import {
   type CrewPerson,
 } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { crewActionCopy } from '../state/copy';
 import { failureMessage } from '../state/observationFailure';
 import { connectionVerifiedThisSession } from '../state/useCrewConnections';
 import { joinStateCopy, legacyJoinCopy } from './copy';
 import { useMounted } from './fields';
 import { forgetJoinClaim, readJoinClaim, updateJoinClaim, useJoinClaim } from './joinClaimState';
 import { readJoinContext, updateJoinContext, useJoinContext } from './joinContext';
-import { firstName, membershipEnded, sshUsername } from './joinText';
+import { firstName, invitationExpiry, membershipEnded, sshUsername } from './joinText';
 import { LegacyJoinForm } from './LegacyJoinForm';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 
@@ -430,15 +439,22 @@ export function JoinStatusCard() {
   // A connect the card started is running, whichever mount started it.
   const reconnecting = link === 'reconnecting' || claimState.connecting;
 
-  // The token path, folded under "Having trouble joining?". It opens on its condition ("If Alice
-  // asks for it, send this instead:") with the device key folded again, so it never reads as a
-  // second thing to send after the code (T-35, Q2-35). It names the host as the card's sentences
-  // do (Q3-46).
+  // "Having trouble joining?", folded (Q4-43): while a code is out it first says that waiting is
+  // normal; then the join request, on its condition and behind Show; then the token path behind
+  // its own quiet link. It never reads as a second thing to send after the code (T-35, Q2-35), and
+  // names the host as the card's sentences do (Q3-46).
+  const waitingForHost = status?.status === 'invited' || status?.status === 'code_mismatch';
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
-      <LegacyJoinForm workspace={workspace} username={username || null} host={first} />
+      <TroubleJoining
+        workspace={workspace}
+        username={username || null}
+        host={first}
+        reassure={waitingForHost}
+      />
     </Disclosure>
   );
+  const expiry = invitationExpiry(status?.expires_at);
   // This computer was a member and the workspace no longer admits it: removed, not "not yet"
   // invited (Q3-50). Seen verified this session, or the daemon recorded the membership's end.
   const removed = connectionVerifiedThisSession(connectionId) || membershipEnded(connection);
@@ -488,9 +504,21 @@ export function JoinStatusCard() {
           // Copy what is shown, dashes and all (T-36): the host's code field takes it either way.
           <CopyField size="code" value={groupDeviceCode(code)} label={joinStateCopy.codeLabel} />
         ) : null}
-        <Progress indeterminate aria-labelledby={waitingId} />
-        <p id={waitingId} className="text-supporting text-text-muted">
-          {joinStateCopy.waiting(first)}
+        {/* A wait on a person, possibly for hours: a still clock, never a bar that sweeps as if
+            the computer were working on it (Q4-46). */}
+        <p
+          id={waitingId}
+          className="crew-onboard-wait text-supporting text-text-muted"
+          data-testid="crew-join-waiting"
+        >
+          <Clock aria-hidden className="crew-onboard-wait-icon" />
+          <span>{joinStateCopy.waiting(first)}</span>
+        </p>
+        <p className="text-supporting text-text-muted" data-testid="crew-join-wait-note">
+          {expiry
+            ? `${expiry.expired ? joinStateCopy.expiredNow : joinStateCopy.expires(expiry.when)} `
+            : null}
+          {joinStateCopy.closeNote(first, workspace)}
         </p>
         {otherWays}
       </SetupCard>
@@ -585,5 +613,144 @@ export function JoinStatusCard() {
         </div>
       ) : null}
     </SetupScreen>
+  );
+}
+
+/**
+ * What "Having trouble joining?" holds (Q4-43), one mechanism at a time:
+ *
+ * 1. While a code is out (`reassure`): waiting is normal, and how the host lets them in.
+ * 2. "If Alice asks for a join request:" with the request — the person's username and this
+ *    computer's public device key, never a secret — in a `CopyField` behind **Show the join
+ *    request**.
+ * 3. **Alice sent me a token instead**, a quiet link that reveals the token field and **Join with a
+ *    token**. The field stays masked: a token is a credential. The broker decides (`auth.enroll`),
+ *    exactly as the token-only path (`LegacyJoinForm`) sends it.
+ */
+function TroubleJoining({
+  workspace,
+  username,
+  host,
+  reassure,
+}: {
+  workspace: string;
+  username: string | null;
+  /** The host, as the card's sentences name them ("Alice", `@alice`, or "your host"). */
+  host: string;
+  reassure: boolean;
+}) {
+  const crew = useCrew();
+  const mounted = useMounted();
+  const publicKey = crew.connection?.public_key ?? '';
+  const connectionId = crew.connectionId;
+  const [requestShown, setRequestShown] = useState(false);
+  const [tokenShown, setTokenShown] = useState(false);
+  const [token, setToken] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestId = useId();
+  const tokenFieldRef = useRef<HTMLInputElement>(null);
+
+  // The link leaves as the field arrives: put focus in the field rather than on the page.
+  const [focusToken, setFocusToken] = useState(false);
+  useLayoutEffect(() => {
+    if (!focusToken || !tokenShown) return;
+    setFocusToken(false);
+    tokenFieldRef.current?.focus();
+  }, [focusToken, tokenShown]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (pending || !token.trim()) return;
+    setPending(true);
+    setError(null);
+    try {
+      await crew.request(
+        'auth.enroll',
+        { invitation: token.trim(), public_key: publicKey },
+        { mutation: true }
+      );
+      if (!mounted.current) return;
+      setToken('');
+      updateJoinContext(connectionId, { joining: false });
+      crew.setJoinStatus('joined');
+      await crew.refresh();
+    } catch (failure) {
+      if (mounted.current) setError(failureMessage(failure, crewActionCopy.actionFallback));
+    } finally {
+      if (mounted.current) setPending(false);
+    }
+  };
+
+  return (
+    <div className="crew-onboard-stack" data-testid="crew-join-trouble">
+      {reassure ? (
+        <p className="text-body text-text-default">{joinStateCopy.troubleWaiting(host)}</p>
+      ) : null}
+      {publicKey ? (
+        <>
+          <p className="text-body text-text-default">{joinStateCopy.otherBody(host)}</p>
+          <div className="crew-onboard-row">
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0"
+              aria-expanded={requestShown}
+              aria-controls={requestShown ? requestId : undefined}
+              onClick={() => setRequestShown((shown) => !shown)}
+            >
+              {requestShown ? legacyJoinCopy.hideRequest : legacyJoinCopy.showJoinRequest}
+            </Button>
+          </div>
+          {requestShown ? (
+            <div id={requestId}>
+              <CopyField
+                multiline
+                label={legacyJoinCopy.requestLabel}
+                value={legacyJoinCopy.request(workspace, username, publicKey)}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {tokenShown ? (
+        <form className="crew-onboard-stack" onSubmit={(event) => void submit(event)}>
+          <SecretInput
+            ref={tokenFieldRef}
+            aria-label={legacyJoinCopy.tokenName}
+            revealLabel={legacyJoinCopy.tokenPlaceholder.toLowerCase()}
+            placeholder={legacyJoinCopy.tokenPlaceholder}
+            required
+            disabled={pending}
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+          />
+          <div className="crew-onboard-actions">
+            <Button type="submit" disabled={pending || !token.trim()}>
+              {pending ? legacyJoinCopy.submitting : legacyJoinCopy.submitToken}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="crew-onboard-row">
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto p-0 text-text-muted"
+            onClick={() => {
+              setTokenShown(true);
+              setFocusToken(true);
+            }}
+          >
+            {joinStateCopy.tokenInstead(host)}
+          </Button>
+        </div>
+      )}
+      {error ? (
+        <Note tone="danger" role="alert">
+          {error}
+        </Note>
+      ) : null}
+    </div>
   );
 }

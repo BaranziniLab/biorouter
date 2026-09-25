@@ -2,8 +2,13 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewController } from '../state/types';
 import { checklistCopy } from './copy';
-import { nameOfferDismissedKey, readJoinContext, resetJoinContextForTests } from './joinContext';
-import { SetupChecklist } from './SetupChecklist';
+import {
+  dismissNameOffer,
+  nameOfferDismissedKey,
+  readJoinContext,
+  resetJoinContextForTests,
+} from './joinContext';
+import { resetSetupChecklistForTests, SetupChecklist } from './SetupChecklist';
 import { fakeConnection, fakeSnapshot, makeCrew, renderWithCrew } from './testCrew';
 
 const connection = fakeConnection({ id: 'conn-host', ssh_target: 'henry@lab-server' });
@@ -47,6 +52,7 @@ function hostCrew(overrides: Partial<CrewController> = {}) {
 
 beforeEach(() => {
   resetJoinContextForTests();
+  resetSetupChecklistForTests();
   localStorage.clear();
 });
 
@@ -159,5 +165,83 @@ describe('SetupChecklist: the host’s name (Q3-51)', () => {
     });
     expect(compact.request).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toMatch(/Your name/);
+  });
+});
+
+describe('SetupChecklist: the name row keeps the card’s shape (Q4-48)', () => {
+  it('ticks the row the moment Use saved, before the workspace names the host', async () => {
+    const crew = hostCrew();
+    renderWithCrew(<SetupChecklist force />, crew);
+    const offer = await screen.findByText(checklistCopy.name('Henry Ito'));
+    const rows = screen.getAllByRole('listitem');
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toContainElement(offer);
+
+    fireEvent.click(within(rows[0]).getByRole('button', { name: checklistCopy.useName }));
+    await waitFor(() => expect(readJoinContext('conn-host').suggestName).toBe(false));
+    // The snapshot still says crew_henry: the row does not vanish (the card jumped 20px when it
+    // did), it ticks with the name that was saved.
+    const after = screen.getAllByRole('listitem');
+    expect(after).toHaveLength(4);
+    expect(after[0]).toHaveAttribute('data-done', 'true');
+    expect(after[0]).toHaveTextContent(checklistCopy.nameSet('Henry Ito'));
+    expect(within(after[0]).queryByRole('button')).toBeNull();
+  });
+
+  it('keeps the ticked row when the checklist mounts again after Use', async () => {
+    const crew = hostCrew();
+    const view = renderWithCrew(<SetupChecklist force />, crew);
+    fireEvent.click(await screen.findByRole('button', { name: checklistCopy.useName }));
+    await waitFor(() => expect(readJoinContext('conn-host').suggestName).toBe(false));
+    // Saving refreshes the workspace, and the main area can pass through a view with no snapshot:
+    // the checklist unmounts and comes back with the named host.
+    view.unmount();
+    renderWithCrew(<SetupChecklist force />, hostCrew({ snapshot: hostSnapshot('Henry Ito') }));
+    const first = screen.getAllByRole('listitem')[0];
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+    expect(first).toHaveAttribute('data-done', 'true');
+    expect(first).toHaveTextContent(checklistCopy.nameSet('Henry Ito'));
+  });
+
+  it('keeps the offer open, untouched, when Use failed', async () => {
+    const crew = hostCrew({
+      mutate: vi.fn().mockRejectedValue(new Error('offline')) as CrewController['mutate'],
+    });
+    const view = renderWithCrew(<SetupChecklist force />, crew);
+    fireEvent.click(await screen.findByRole('button', { name: checklistCopy.useName }));
+    await waitFor(() => expect(crew.mutate).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // A failed save never counts as a Use: answering the offer elsewhere later leaves no tick.
+    act(() => dismissNameOffer('conn-host'));
+    view.update({});
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
+    expect(document.body.textContent).not.toMatch(/Your name/);
+  });
+});
+
+describe('SetupChecklist: the server’s two names (Q4-34)', () => {
+  it('says what the SSH settings call the address the host typed', () => {
+    const aliased = {
+      ...fakeConnection({ id: 'conn-host', ssh_target: 'iris@52.33.141.141' }),
+      server_label: 'lab-server',
+    };
+    renderWithCrew(
+      <SetupChecklist force />,
+      hostCrew({
+        connection: aliased,
+        connections: [aliased],
+        snapshot: hostSnapshot('Henry Ito'),
+      })
+    );
+    expect(screen.getByTestId('crew-setup-server-alias')).toHaveTextContent(
+      checklistCopy.serverAlias('ito-lab', '52.33.141.141', 'lab-server')
+    );
+  });
+
+  it('says nothing when the server has one name', () => {
+    renderWithCrew(<SetupChecklist force />, hostCrew({ snapshot: hostSnapshot('Henry Ito') }));
+    expect(screen.queryByTestId('crew-setup-server-alias')).toBeNull();
   });
 });

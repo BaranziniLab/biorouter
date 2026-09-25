@@ -78,6 +78,27 @@
   color: var(--text-danger);
 }
 
+/* The connecting card's title holds keyboard focus while the Connect that
+   started it is gone (Q4-09), so a key pressed then starts from the card, not
+   from the top of the page. It is only a place to stand (`tabindex="-1"`, never
+   a Tab stop), so it draws no ring: nothing here can be activated. */
+.crew-onboard-focus-hold:focus,
+.crew-onboard-focus-hold:focus-visible {
+  outline: none;
+}
+
+/* The offline screen's Connect with, under it after a failed attempt, when it
+   last tried and why (Q4-07): one centred column inside the empty state's
+   action row, as wide as its description. */
+.crew-onboard-offline-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 384px;
+  min-width: 0;
+}
+
 .crew-onboard-stack {
   display: flex;
   flex-direction: column;
@@ -230,6 +251,53 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+
+/* The invitation's privacy as ONE chip, `🔒 Private · UCSF` (Q4-28): the
+   institution inside the badge's own fill, exactly as Settings → Privacy and
+   the sidebar draw it (`.crew-settings-privacy-badge`). The inner
+   `PrivacyBadge` keeps its geometry and fill (the same token), so the two read
+   as one pill; this box supplies the fill under the institution and the end
+   inset. Security state: never animated. */
+.crew-onboard-privacy-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-onboard-privacy-chip-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* "Waiting for Alice to let you in…" beside a still clock (Q4-46): a wait on a
+   person, which can take hours, never a bar that sweeps as if the computer
+   were working. Nothing here animates. */
+.crew-onboard-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crew-onboard-wait-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 .crew-onboard-radios {

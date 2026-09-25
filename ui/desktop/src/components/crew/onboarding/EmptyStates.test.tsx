@@ -1,7 +1,11 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Channel } from '../crewApi';
 import { buildPeopleDirectory } from '../identity';
+import type { ConnectFailureKind } from '../state/connectFailure';
+import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { ChannelIntro } from '../timeline/ChannelIntro';
 import { checklistCopy, emptyCopy, INSTALL_COMMANDS, notSetUpCopy, welcomeCopy } from './copy';
@@ -11,13 +15,21 @@ import {
   NoChannelState,
   NoTeamState,
   OfflineState,
+  resetConnectAttemptsForTests,
   SignInNeededState,
 } from './EmptyStates';
+import { attemptTime } from './joinText';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { NotSetUpPane } from './NotSetUpPane';
 import { OnboardingScreen, ONBOARDING_SCREENS } from './OnboardingScreen';
 import { SetupChecklist } from './SetupChecklist';
-import { fakeConnection, fakeSnapshot, makeCrew, renderWithCrew } from './testCrew';
+import {
+  fakeConnection,
+  fakeSnapshot,
+  makeCrew,
+  renderWithCrew,
+  type CrewRender,
+} from './testCrew';
 import { Welcome } from './Welcome';
 
 vi.mock('../../InAppTerminalDock', () => ({ default: () => <div /> }));
@@ -30,6 +42,7 @@ function crewWith(overrides: Partial<CrewController> = {}) {
 
 beforeEach(() => {
   resetJoinContextForTests();
+  resetConnectAttemptsForTests();
   localStorage.clear();
 });
 
@@ -155,6 +168,177 @@ describe('connection states', () => {
       await waitFor(() => expect(crew.connect).toHaveBeenCalled());
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(button).toHaveFocus();
+    });
+  });
+
+  describe('Connect never leaves focus on the page while it connects (Q4-09)', () => {
+    /** The main area as the layout draws it: the onboarding screen, or the channel. */
+    function MainArea() {
+      const { screen: current } = useCrew();
+      if (current === 'channel') {
+        return (
+          <div className="crew-app">
+            <h1>
+              <button type="button"># general</button>
+            </h1>
+          </div>
+        );
+      }
+      return <OnboardingScreen />;
+    }
+
+    it('holds focus on the connecting card, then lands on the channel', async () => {
+      let finish!: () => void;
+      const connect = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const view = renderWithCrew(
+        <MainArea />,
+        crewWith({
+          connection: fakeConnection({ status: 'disconnected' }),
+          screen: 'offline',
+          connect,
+        })
+      );
+      const button = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      button.focus();
+      fireEvent.click(button);
+      // Connect leaves with the offline screen; the connecting card replaces it in one commit.
+      view.update({ screen: 'connecting' });
+      const title = screen.getByText(emptyCopy.connecting('hpc.ucsf.edu'));
+      expect(document.activeElement).not.toBe(document.body);
+      expect(title).toHaveFocus();
+      // A place to stand, not a Tab stop, and inside the card's heading.
+      expect(title).toHaveAttribute('tabindex', '-1');
+      expect(title.closest('h2')).not.toBeNull();
+
+      await act(async () => finish());
+      view.update({ screen: 'channel' });
+      await waitFor(() => expect(screen.getByRole('button', { name: '# general' })).toHaveFocus());
+    });
+
+    it('lands on the channel even when the connect settles after the channel opened', async () => {
+      let finish!: () => void;
+      const connect = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const view = renderWithCrew(
+        <MainArea />,
+        crewWith({
+          connection: fakeConnection({ status: 'disconnected' }),
+          screen: 'offline',
+          connect,
+        })
+      );
+      const button = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      button.focus();
+      fireEvent.click(button);
+      view.update({ screen: 'connecting' });
+      view.update({ screen: 'channel' });
+      await act(async () => finish());
+      await waitFor(() => expect(screen.getByRole('button', { name: '# general' })).toHaveFocus());
+    });
+
+    it('takes no focus from a control that still has it', () => {
+      const elsewhere = document.createElement('button');
+      elsewhere.setAttribute('data-test-landing', '');
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+      renderWithCrew(<ConnectingCard />, crewWith());
+      expect(elsewhere).toHaveFocus();
+      elsewhere.remove();
+    });
+
+    it('draws no ring on the title that holds focus (authored CSS)', () => {
+      const css = readFileSync(join(__dirname, 'onboarding.css'), 'utf8');
+      const rule = css.match(/\.crew-onboard-focus-hold:focus[^{]*\{([^}]*)\}/);
+      expect(rule?.[1]).toMatch(/outline:\s*none/);
+    });
+  });
+
+  describe('the offline card says when Connect last tried (Q4-07, Q4-06)', () => {
+    const offline = fakeConnection({ status: 'disconnected' });
+
+    /** One Connect that fails: offline → connecting → offline with the failure recorded. */
+    function attempt(view: CrewRender, at: number, kind: ConnectFailureKind) {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(at);
+      view.update({ screen: 'connecting' });
+      view.update({
+        screen: 'offline',
+        lastConnectFailure: { kind, message: 'Crew SSH failure' },
+      });
+      now.mockRestore();
+    }
+
+    it('says nothing before any attempt failed', () => {
+      renderWithCrew(<OnboardingScreen />, crewWith({ connection: offline, screen: 'offline' }));
+      expect(screen.queryByTestId('crew-offline-tried')).toBeNull();
+    });
+
+    it('names the time and the reason, and changes on every attempt', () => {
+      const view = renderWithCrew(
+        <OnboardingScreen />,
+        crewWith({ connection: offline, screen: 'offline' })
+      );
+      const first = new Date(2026, 8, 25, 9, 41, 7).getTime();
+      attempt(view, first, 'unreachable');
+      const line = screen.getByTestId('crew-offline-tried');
+      expect(line).toHaveTextContent(
+        `Tried again at ${attemptTime(first)}. Couldn’t reach hpc.ucsf.edu. ${emptyCopy.keepsTrying}`
+      );
+      // Connect hears it too: focus lands back on it after the attempt.
+      expect(
+        screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })
+      ).toHaveAccessibleDescription(line.textContent ?? '');
+
+      // A repeat click 20 seconds later that fails the same way visibly did something.
+      const second = first + 20_000;
+      attempt(view, second, 'unreachable');
+      expect(screen.getByTestId('crew-offline-tried')).toHaveTextContent(
+        `Tried again at ${attemptTime(second)}.`
+      );
+      expect(attemptTime(second)).not.toBe(attemptTime(first));
+    });
+
+    it('says Crew keeps trying only for a failure the daemon retries', () => {
+      const view = renderWithCrew(
+        <OnboardingScreen />,
+        crewWith({ connection: offline, screen: 'offline' })
+      );
+      attempt(view, Date.now(), 'ssh_failed');
+      expect(screen.getByTestId('crew-offline-tried')).toHaveTextContent(emptyCopy.keepsTrying);
+
+      // A sign-in or host-key failure is final until a person acts: never "keeps trying".
+      const base = view.crew();
+      cleanup();
+      for (const kind of ['auth_required', 'host_key_unknown', 'unknown'] as const) {
+        renderWithCrew(<OfflineState />, {
+          ...base,
+          lastConnectFailure: { kind, message: 'Crew SSH failure' },
+        });
+        const line = screen.getByTestId('crew-offline-tried');
+        expect(line).toHaveTextContent(/^Tried again at /);
+        expect(line).not.toHaveTextContent(emptyCopy.keepsTrying);
+        cleanup();
+      }
+    });
+
+    it('reports an attempt that failed while the offline screen stayed', async () => {
+      const crew = crewWith({
+        connection: offline,
+        lastConnectFailure: { kind: 'unreachable', message: 'Crew SSH failure' },
+      });
+      renderWithCrew(<OfflineState />, crew);
+      fireEvent.click(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') }));
+      expect(
+        await screen.findByText(new RegExp(`Couldn’t reach hpc.ucsf.edu`))
+      ).toBeInTheDocument();
     });
   });
 

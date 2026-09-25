@@ -555,7 +555,7 @@ describe('HostDialog', () => {
     [
       'biorouter-crew is missing',
       'bash: /home/alice/.local/bin/biorouter-crew: No such file or directory',
-      hostCopy.pasteNotInstalled,
+      hostCopy.pasteNotInstalled('hpc.ucsf.edu'),
     ],
   ])('says exactly what is wrong when %s, before Continue', async (_case, paste, message) => {
     renderHost();
@@ -647,6 +647,65 @@ describe('HostDialog', () => {
     expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
   });
 
+  it('asks to mark the workspace in the institution’s own name, and says why it asks again (Q4-47)', async () => {
+    // The configured provider publishes "UCSF" for `ucsf`.
+    mocks.getProviders.mockResolvedValue([
+      {
+        name: 'versa',
+        is_configured: true,
+        affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+      },
+    ]);
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'private',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    // Title, body and button all say "UCSF", as every chip does, never `ucsf`.
+    expect(
+      await screen.findByRole('dialog', { name: 'Mark lab-data as a UCSF workspace?' })
+    ).toBeInTheDocument();
+    // Step 1 already asked: say what that set, and what this sets that it did not.
+    expect(screen.getByTestId('crew-host-label-why')).toHaveTextContent(
+      'Step 1 set UCSF for your connection on this computer. This sets it for lab-data itself, for everyone who works there.'
+    );
+    expect(
+      screen.getByText(
+        'Agents working in lab-data can then use only models approved for UCSF. This can’t be undone.'
+      )
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bucsf\b/);
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as UCSF' }));
+    // The label written is still the canonical ID.
+    await waitFor(() =>
+      expect(view.crew().mutate).toHaveBeenCalledWith('policy.set', {
+        mode: 'private',
+        institution_id: 'ucsf',
+      })
+    );
+  });
+
   it('closes on an observation error that arose while verifying, for the connection bar to explain', async () => {
     const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
     const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
@@ -692,7 +751,7 @@ describe('HostDialog', () => {
       expect(hostCopy.advancedSummary).toBe(joinCopy.advancedSummary);
       expect(hostCopy.advancedSummary).not.toMatch(/agent|Port|SSH/);
       const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
-      expect(row).toHaveAccessibleDescription('No work folder · agent commands off');
+      expect(row).toHaveAccessibleDescription('off');
       fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
       expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
       fireEvent.click(row);
@@ -727,6 +786,71 @@ describe('HostDialog', () => {
       };
       renderHost({ connectionId: 'conn-1', connection, connections: [connection] });
       expect(await screen.findByText(hostCopy.createHeading('lab', 'lab-server'))).toBeVisible();
+      // One name from the start: nothing to explain.
+      expect(screen.queryByTestId('crew-host-server-alias')).toBeNull();
+    });
+
+    it('keeps the server word step 1 showed through Create, and explains the alias (Q4-34)', async () => {
+      const connectDone = deferred();
+      const connect = vi.fn(() => connectDone.promise);
+      // The host typed the address; their SSH config calls it lab-server.
+      const saved = {
+        ...fakeConnection({
+          id: 'conn-host',
+          ssh_target: 'iris@52.33.141.141',
+          status: 'disconnected',
+        }),
+        server_label: 'lab-server',
+      };
+      const view = renderHost({ connect, saveConnection: vi.fn().mockResolvedValue(saved) });
+      fireEvent.change(screen.getByLabelText(hostCopy.workspaceName), {
+        target: { value: 'Wong Lab' },
+      });
+      fireEvent.change(screen.getByLabelText(hostCopy.serverLogin), {
+        target: { value: 'iris@52.33.141.141' },
+      });
+      await waitFor(() => expect(screen.getByLabelText(joinCopy.institution)).toHaveValue('ucsf'));
+      expect(
+        screen.getByRole('button', { name: joinCopy.agentHeading('52.33.141.141') })
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      await screen.findByText(hostCopy.startHeading('52.33.141.141'));
+      // The step-2 fold names the situation and the server, not a program (Q4-37).
+      expect(
+        screen.getByRole('button', { name: hostCopy.notInstalled('52.33.141.141') })
+      ).toHaveTextContent('Crew isn’t on 52.33.141.141 yet?');
+      expect(document.body.textContent).not.toMatch(/biorouter-crew isn’t installed/);
+      runItYourself();
+      fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      const heading = await screen.findByText(hostCopy.createHeading('wong-lab', '52.33.141.141'));
+      expect(screen.queryByTestId('crew-host-server-alias')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+      await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+      // Saved: the daemon now calls the server lab-server. While Create runs, the heading keeps
+      // the word it had (it flipped to "on lab-server" mid-Create), and one line relates the two.
+      view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+      await waitFor(() => expect(connect).toHaveBeenCalled());
+      expect(heading).toHaveTextContent('wong-lab on 52.33.141.141');
+      expect(screen.queryByText(hostCopy.createHeading('wong-lab', 'lab-server'))).toBeNull();
+      expect(screen.getByTestId('crew-host-server-alias')).toHaveTextContent(
+        'Your SSH settings call this server lab-server.'
+      );
+    });
+
+    it('follows the login again after Back to step 1', async () => {
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.back }));
+      fireEvent.change(screen.getByLabelText(hostCopy.serverLogin), {
+        target: { value: 'alice@lab-server' },
+      });
+      expect(
+        screen.getByRole('button', { name: joinCopy.agentHeading('lab-server') })
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      expect(await screen.findByText(hostCopy.startHeading('lab-server'))).toBeInTheDocument();
     });
   });
 
@@ -832,7 +956,7 @@ describe('HostDialog', () => {
       [
         'biorouter-crew is missing',
         { state: 'finished', result: { kind: 'problem', problem: 'not_installed' } },
-        hostCopy.pasteNotInstalled,
+        hostCopy.pasteNotInstalled('hpc.ucsf.edu'),
       ],
       [
         'Crew was still starting',

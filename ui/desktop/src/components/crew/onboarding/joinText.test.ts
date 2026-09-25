@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { joinerPerson, personFromProjection } from '../identity';
 import {
+  attemptTime,
+  brokerTime,
   connectionServerLabel,
   CREW_MEMBERSHIP_ENDED,
   firstName,
   groupWorkspaceFingerprint,
   hostKeyFingerprints,
   hostStartCommands,
+  invitationExpiry,
   isUnknownDeviceFailure,
   isWorkspaceName,
   membershipEnded,
@@ -258,5 +261,44 @@ describe('membershipEnded (Q3-50)', () => {
     expect(membershipEnded({ id: 'c', last_error_code: null })).toBe(false);
     expect(membershipEnded(null)).toBe(false);
     expect(membershipEnded(undefined)).toBe(false);
+  });
+});
+
+describe('invitation expiry (Q4-36, Q4-46)', () => {
+  const format = (date: Date) =>
+    new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(date);
+
+  it('reads the broker’s Unix seconds, and a milliseconds value as it is', () => {
+    // 2026-09-26T08:41:00Z, as `now() + 86400` writes it.
+    const seconds = 1_790_412_060;
+    expect(brokerTime(seconds)?.getTime()).toBe(seconds * 1000);
+    expect(brokerTime(seconds * 1000)?.getTime()).toBe(seconds * 1000);
+    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, null, undefined])
+      expect(brokerTime(value)).toBeNull();
+  });
+
+  it('writes when it expires as "Sat 1:41 AM", and whether that has passed', () => {
+    const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+    const later = Math.floor(now / 1000) + 86_400;
+    expect(invitationExpiry(later, now)).toEqual({
+      when: format(new Date(later * 1000)),
+      expired: false,
+    });
+    const earlier = Math.floor(now / 1000) - 60;
+    expect(invitationExpiry(earlier, now)?.expired).toBe(true);
+    expect(invitationExpiry(null, now)).toBeNull();
+    expect(invitationExpiry(undefined, now)).toBeNull();
+  });
+});
+
+describe('attemptTime (Q4-07)', () => {
+  it('carries seconds, so two attempts in one minute read differently', () => {
+    const first = new Date(2026, 8, 25, 9, 41, 7).getTime();
+    expect(attemptTime(first)).not.toBe(attemptTime(first + 20_000));
+    expect(attemptTime(first)).toMatch(/41.*07/);
   });
 });

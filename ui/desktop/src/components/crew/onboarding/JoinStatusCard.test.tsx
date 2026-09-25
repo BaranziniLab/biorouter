@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CREW_NOT_CONNECTED } from '../api/join';
 import { CrewHttpError, type CrewConnection } from '../crewApi';
@@ -146,9 +146,9 @@ describe('JoinStatusCard', () => {
     expect(screen.getByText(joinStateCopy.sendCode('Alice'))).toBeInTheDocument();
     expect(screen.getByText('7QK2-M9XA-3JTP-WZ4D')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/ZZZZ|YYYY/);
-    expect(
-      screen.getByRole('progressbar', { name: joinStateCopy.waiting('Alice') })
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('crew-join-waiting')).toHaveTextContent(
+      joinStateCopy.waiting('Alice')
+    );
     expect(crew.setJoinStatus).toHaveBeenCalledWith('invited');
 
     // Copy takes what is shown: the daemon's code, grouped with its dashes (T-36). One noun for one
@@ -248,7 +248,7 @@ describe('JoinStatusCard', () => {
 
   it('folds the token path behind "Having trouble joining?", and says when it is needed', async () => {
     answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE });
-    renderCard();
+    const { crew } = renderCard();
     const trouble = await screen.findByRole('button', { name: 'Having trouble joining?' });
     expect(trouble).toHaveAttribute('aria-expanded', 'false');
     // Folded: no second join form, token field or device key competes with the code.
@@ -257,29 +257,122 @@ describe('JoinStatusCard', () => {
     expect(document.body.textContent).not.toMatch(/Device key/);
 
     fireEvent.click(trouble);
-    // Opened, it starts from its condition, never "Send this join request to your host" (Q2-35),
-    // and names the host as the card's own sentences do ("Send Alice this code"), not `@alice`
-    // beside a card that says "Alice Chen (@alice)" (Q3-46).
-    expect(screen.getByText(joinStateCopy.otherBody('Alice'))).toBeInTheDocument();
-    expect(screen.getByText('If Alice asks for it, send this instead:')).toBeInTheDocument();
+    const section = screen.getByTestId('crew-join-trouble');
+    const lines = within(section).getAllByText(/./, { selector: 'p' });
+    // Waiting is the normal state, said first (Q4-43), true to how the host lets them in.
+    expect(lines[0]).toHaveTextContent(
+      'Alice hasn’t let you in yet. That’s normal: Alice lets you in by entering your code in Crew.'
+    );
+    // Then the join request, introduced as what it is, never "send this instead:" before a link
+    // (Q4-43), never "Send this join request to your host" (Q2-35), and naming the host as the
+    // card's own sentences do (Q3-46).
+    expect(lines[1]).toHaveTextContent('If Alice asks for a join request:');
     expect(screen.queryByText(legacyJoinCopy.sendRequest)).toBeNull();
-    // The 64-character device key stays folded behind a control that says what it shows (Q3-48).
+    // The 64-character device key stays folded behind Show (Q3-48).
     expect(document.body.textContent).not.toMatch(/Device key/);
-    const show = screen.getByRole('button', { name: 'Show the join request for Alice' });
+    const show = within(section).getByRole('button', { name: legacyJoinCopy.showJoinRequest });
     expect(show).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(show);
-    expect(screen.getByRole('button', { name: legacyJoinCopy.hideRequest })).toHaveAttribute(
-      'aria-expanded',
-      'true'
-    );
+    expect(
+      within(section).getByRole('button', { name: legacyJoinCopy.hideRequest })
+    ).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText(new RegExp(`Device key: ${DEVICE_KEY}`))).toBeInTheDocument();
-    // The token field says it is only for a token the host sent.
+
+    // The token path is a second mechanism: behind its own quiet link, with no masked field or
+    // "Join with a token" until the person says the host sent one (Q4-43).
+    expect(screen.queryByLabelText('Enrollment invitation')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Join with a token' })).toBeNull();
+    fireEvent.click(
+      within(section).getByRole('button', { name: joinStateCopy.tokenInstead('Alice') })
+    );
     const token = screen.getByLabelText('Enrollment invitation');
-    expect(token).toHaveAccessibleDescription('Only if Alice sent you a token.');
+    // The link left as the field arrived: focus is in the field, not on the page.
+    expect(token).toHaveFocus();
+    // Still a credential: masked.
+    expect(token).toHaveAttribute('type', 'password');
     // Someone who already pressed Join is not offered "Join workspace" again: the button names
     // the other way in (Q3-48).
     expect(screen.queryByRole('button', { name: 'Join workspace' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Join with a token' })).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Join with a token' });
+    expect(submit).toBeDisabled();
+    fireEvent.change(token, { target: { value: 'token-123' } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(crew.request).toHaveBeenCalledWith(
+        'auth.enroll',
+        { invitation: 'token-123', public_key: DEVICE_KEY },
+        { mutation: true }
+      )
+    );
+    await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('joined'));
+    expect(readJoinContext('conn-1').joining).toBe(false);
+  });
+
+  it('keeps the reassurance for a person with a code out, not for one who is not invited', async () => {
+    answerJoin({ status: 'not_invited' });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: joinStateCopy.other }));
+    // Nobody is letting them in: only the two other ways remain.
+    expect(screen.queryByText(/hasn’t let you in yet/)).toBeNull();
+    expect(screen.getByText(joinStateCopy.otherBody('your host'))).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: joinStateCopy.tokenInstead('your host') })
+    ).toBeInTheDocument();
+  });
+
+  it('waits on a person without animating, and says the app can close and when it expires (Q4-46)', async () => {
+    // Unix seconds, as the broker writes them: a day from now.
+    const expiresAt = Math.floor(Date.now() / 1000) + 86_400;
+    answerJoin({
+      status: 'invited',
+      code: LOCAL_CODE,
+      inviter: ALICE,
+      workspace_name: 'lab',
+      expires_at: expiresAt,
+    });
+    renderCard();
+    const waiting = await screen.findByTestId('crew-join-waiting');
+    expect(waiting).toHaveTextContent(joinStateCopy.waiting('Alice'));
+    // No indeterminate progress for a wait on a person: no progress bar, no spinner, no sweep.
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(document.querySelector('.crew-onboard-spinner')).toBeNull();
+    expect(document.querySelector('[class*="progress"]')).toBeNull();
+    const when = new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(expiresAt * 1000));
+    expect(screen.getByTestId('crew-join-wait-note')).toHaveTextContent(
+      `${joinStateCopy.expires(when)} ${joinStateCopy.closeNote('Alice', 'lab')}`
+    );
+    // The still clock is authored CSS that never animates.
+    const css = readFileSync(join(__dirname, 'onboarding.css'), 'utf8');
+    const rules = css.match(/\.crew-onboard-wait[^{]*\{[^}]*\}/g) ?? [];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/animation|transition/);
+  });
+
+  it('says an invitation whose time passed has expired, before the next poll says so', async () => {
+    answerJoin({
+      status: 'invited',
+      code: LOCAL_CODE,
+      inviter: ALICE,
+      workspace_name: 'lab',
+      expires_at: Math.floor(Date.now() / 1000) - 60,
+    });
+    renderCard();
+    expect(await screen.findByTestId('crew-join-wait-note')).toHaveTextContent(
+      joinStateCopy.expiredNow
+    );
+  });
+
+  it('leaves out the expiry when the status names none', async () => {
+    answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE, workspace_name: 'lab' });
+    renderCard();
+    expect(await screen.findByTestId('crew-join-wait-note')).toHaveTextContent(
+      joinStateCopy.closeNote('Alice', 'lab')
+    );
+    expect(screen.getByTestId('crew-join-wait-note')).not.toHaveTextContent(/expire/);
   });
 
   it('opens straight on the token path when the probe already found it', () => {

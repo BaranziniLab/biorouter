@@ -300,3 +300,45 @@ export function sshLoginCommand(input: {
 export function isUnknownDeviceFailure(message: string | null | undefined): boolean {
   return typeof message === 'string' && /\bunknown device\b/i.test(message);
 }
+
+/**
+ * A broker timestamp as a `Date`. The broker writes Unix seconds (`now()` in
+ * `biorouter-crew/src/broker.rs`, documented on `CrewJoinStatus.expires_at`); a value already in
+ * milliseconds (past the year 33658 as seconds) is taken as it is, so a future daemon that sends
+ * milliseconds is not shown a date forty thousand years out. Null for anything not a finite,
+ * positive number.
+ */
+export function brokerTime(value: number | null | undefined): Date | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return new Date(value > 1e12 ? value : value * 1000);
+}
+
+/**
+ * When an invitation stops working, in the words every Crew surface uses (Q4-36): "Sat 1:41 AM",
+ * and whether that has already passed. Null when the status names no expiry.
+ */
+export function invitationExpiry(
+  expiresAt: number | null | undefined,
+  now: number = Date.now()
+): { when: string; expired: boolean } | null {
+  const date = brokerTime(expiresAt);
+  if (!date) return null;
+  const when = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+  return { when, expired: date.getTime() <= now };
+}
+
+/**
+ * A clock time to the second, for a line that must change on every attempt ("Tried again at
+ * 9:41:07 AM", Q4-07): two attempts in one minute would otherwise read the same.
+ */
+export function attemptTime(at: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(at));
+}

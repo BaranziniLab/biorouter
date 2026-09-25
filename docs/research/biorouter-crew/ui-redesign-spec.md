@@ -698,7 +698,7 @@ rows — Confirm the institution (**Set institution to {id}…**), Create a team
 
 | Join status | Card | Action |
 |---|---|---|
-| `invited` | "Alice Chen (@alice) invited you to lab." "Send Alice this code:" a large `CopyField` holding the 16-character device code (`7QK2-M9XA-3JTP-WZ4D`), then an indeterminate `Progress` and "Waiting for Alice to let you in…" | Copy |
+| `invited` | "Alice Chen (@alice) invited you to lab." "Send Alice this code:" a large `CopyField` holding the 16-character device code (`7QK2-M9XA-3JTP-WZ4D`), then a still clock beside "Waiting for Alice to let you in…" (a wait on a person, so nothing animates: see the motion table), "This invitation expires {when}." and "You can close Biorouter…" | Copy |
 | `approved` | "Joining lab…" (the daemon sends `auth.join` by itself; pressing Join lab was the consent) | — |
 | `code_mismatch` | "The code Alice entered doesn't match this computer. Send it again:" and the same `CopyField` | Copy |
 | `not_invited` | "You're not in lab yet." "Ask Alice Chen (@alice) to invite @bob. This page updates by itself." A `CopyField` holding "Hi Alice, please invite @bob to lab in Crew." | Copy |
@@ -1712,7 +1712,7 @@ the shared `main.css` blocks, and every infinite loop declares its static rest s
 | Jump pill, history pill | opacity + 4px rise | `--dur-fast-max` | `--dur-fast` | fade only |
 | Highlight of a task row (new task, Show task in channel, Agents row jump) | `--overlay-selected` wash fading to transparent | `calc(var(--dur-slow) * 3)` on `--ease-out` | — | shown, then removed with no transition |
 | Verifying dim | timeline opacity 1 → 0.6 | `--dur-fast` | `--dur-fast` | instant |
-| Spinner (Connecting…, Uploading, waiting for host) | the one spinner, 700ms linear rotation | loop | — | static arc |
+| Spinner (Connecting…, Uploading; never a wait on a person, such as the host letting you in) | the one spinner, 700ms linear rotation | loop | — | static arc |
 | `StatusDot live` | 2px halo, 2s period (design.md §4.16) | loop | — | static dot |
 | Running task word | the tool-call running text pulse | loop | — | static |
 | Skeletons | the `Skeleton` pulse, shown only after 150ms | loop | — | flat fill |

@@ -37,26 +37,33 @@ export const joinCopy = {
   fingerprintCheck: 'Check this invitation (optional)',
   /**
    * After "Fingerprint 6682 327B A040 C709.": what it is for, and how the joiner can actually check
-   * it. The host reads theirs from Crew; the joiner cannot see the host's screen (Q2-04).
+   * it. The host reads it from Crew; the joiner cannot see the host's screen (Q2-04). The host is
+   * named, never "they" or "theirs" (Q3-36, Q4-45).
    */
   fingerprintHelper: (host: string) =>
-    `This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask ${host} to read theirs from Crew (their workspace menu shows it).`,
+    `This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask ${host} to read the fingerprint from Crew (${host}’s workspace menu shows it).`,
   username: (server: string) => `Your username on ${server}`,
   usernameFallback: 'Your username on the server',
   /**
-   * The folded privacy line (Q2-36). It names what the choice governs, the AI models ("Models"
-   * alone read as something about the person or the lab, Q3-49), because "You'll join as Private"
-   * read as an identity. `institution` is already formatted for display.
+   * The folded privacy line (Q2-36). It says what the choice is FOR — which AI can read the
+   * workspace through this connection — because "AI models: …" left a first-day joiner unsure
+   * whether it was about their chats, the lab or their agent (Q3-49, Q4-44), and "You'll join as
+   * Private" read as an identity. `institution` is already formatted for display.
    */
-  privacyLine: (mode: 'private' | 'public', institution: string | null) =>
+  privacyLine: (mode: 'private' | 'public', institution: string | null, workspace: string) =>
     mode === 'public'
-      ? 'AI models: public allowed for public-safe work'
+      ? `Which AI can read ${workspace}: public models allowed for public-safe work`
       : institution
-        ? `AI models: private and ${institution}-approved only`
-        : 'AI models: private and institution-approved only',
+        ? `Which AI can read ${workspace}: private, ${institution}-approved models only`
+        : `Which AI can read ${workspace}: private, institution-approved models only`,
   /** The join line while the invitation states no privacy and the person hasn't chosen one. */
   privacyChoose: 'Choose which AI models may work here: Private or Public.',
   change: 'Change',
+  /**
+   * The joiner's way to change it, inside Advanced (Q4-44): the host's policy decides what the
+   * workspace allows, so an accent Change on the direct path to Join invited a click nobody needed.
+   */
+  privacyChange: (workspace: string) => `Change which AI can read ${workspace}…`,
   /** Folds the open privacy choice back into its one-line summary. */
   privacyDone: 'Done',
   /**
@@ -112,12 +119,14 @@ export const joinCopy = {
   advancedSummary: 'server connection details',
   /**
    * The agent's permissions on the server, in their own labelled row outside Advanced (Q2-37): a
-   * permission to run commands on a lab server is not an SSH setting.
+   * permission to run commands on a lab server is not an SSH setting. Whose agent, and one state
+   * word beside it while folded — "Your agent on lab-server: off" (Q4-44) — rather than three
+   * unfamiliar ideas on one line.
    */
-  agentHeading: (server: string) => `Agent on ${server}`,
+  agentHeading: (server: string) => `Your agent on ${server}:`,
   /** The row's state while folded; off unless the person turned it on. */
   agentSummary: (folder: string, commands: boolean) =>
-    `${folder || 'No work folder'} · agent commands ${commands ? 'on' : 'off'}`,
+    folder ? (commands ? `can use ${folder} and run commands there` : `can use ${folder}`) : 'off',
   serverLogin: 'Server login',
   serverLoginHelper: (defaultLogin: string) =>
     `An SSH alias from your SSH config, instead of ${defaultLogin}.`,
@@ -169,6 +178,19 @@ export const joinStateCopy = {
    */
   codeLabel: 'your code',
   waiting: (first: string) => `Waiting for ${first} to let you in…`,
+  /**
+   * Under the wait (Q4-46): the wait is on a person and can take hours, and nothing here needs the
+   * app open. The host enters the code whenever they get to it and the broker records it; this
+   * computer's code comes from its saved key, so it stays the same; and the join finishes by
+   * itself the next time this connection is connected (the join probe finds the approval and
+   * claims it). A reopened app starts with the connection offline, so the one step is Connect.
+   */
+  closeNote: (first: string, workspace: string) =>
+    `You can close Biorouter: ${first} can still let you in with the same code. Next time, open Crew and connect to ${workspace}.`,
+  /** The join status's `expires_at`, as "Sat 1:41 AM" (Q4-36). */
+  expires: (when: string) => `This invitation expires ${when}.`,
+  /** The same once that time has passed, before the next poll says `expired`. */
+  expiredNow: 'This invitation has expired.',
   approved: (workspace: string) => `Joining ${workspace}…`,
   approvedDevice: (workspace: string) => `Adding this computer to ${workspace}…`,
   mismatchCode: (first: string) =>
@@ -197,10 +219,19 @@ export const joinStateCopy = {
   /** The legacy token path, collapsed: it is needed only when the host says so. */
   other: 'Having trouble joining?',
   /**
-   * The condition first, so the join request never reads as a second thing to send after the code
-   * (Q2-35).
+   * The first thing "Having trouble joining?" says while the code is out (Q4-43): waiting is the
+   * normal state, not trouble. True to the mechanism: the host lets the person in by entering the
+   * code they were sent (`letInCopy.helper`), not by seeing it.
    */
-  otherBody: (host: string) => `If ${host} asks for it, send this instead:`,
+  troubleWaiting: (host: string) =>
+    `${host} hasn’t let you in yet. That’s normal: ${host} lets you in by entering your code in Crew.`,
+  /**
+   * The condition first, so the join request never reads as a second thing to send after the code
+   * (Q2-35), and named for what it introduces (Q4-43): "send this instead:" led into a link.
+   */
+  otherBody: (host: string) => `If ${host} asks for a join request:`,
+  /** The token path, behind its own quiet link (Q4-43): only a host who sent one makes it needed. */
+  tokenInstead: (host: string) => `${host} sent me a token instead`,
   pollFailed: 'Crew couldn’t check your invitation. It tries again by itself.',
   claimFailed: 'Joining didn’t finish.',
   retry: 'Try again',
@@ -224,6 +255,8 @@ export const legacyJoinCopy = {
    * what is shown and for whom (Q3-48).
    */
   showRequest: (host: string) => `Show the join request for ${host}`,
+  /** Under "If Alice asks for a join request:", which already names whom it is for (Q4-43). */
+  showJoinRequest: 'Show the join request',
   hideRequest: 'Hide the join request',
   /** The accessible name of the token field (pinned). */
   tokenName: 'Enrollment invitation',
@@ -316,7 +349,11 @@ export const hostCopy = {
   sshCommandLabel: 'sign-in command',
   confirmServer:
     'If your terminal asks you to confirm the server, compare the fingerprint with the one from your IT team. Type yes only if they match.',
-  notInstalled: 'biorouter-crew isn’t installed yet?',
+  /**
+   * Folded under the start commands (Q4-37): named for the situation the host is in, not for a
+   * program they have never heard of. The content is the same install commands.
+   */
+  notInstalled: (server: string) => `Crew isn’t on ${server} yet?`,
   installLabel: 'install commands',
   consequence: 'Anyone who can sign in to this server can see the workspace name.',
   bad: 'That isn’t what Crew prints. Copy everything after the command ran and paste again.',
@@ -328,8 +365,8 @@ export const hostCopy = {
     'Crew was still starting when this was printed. Wait a few seconds, run the last command again and paste what it prints.',
   pasteCutOff:
     'The paste stops partway through what Crew printed. Copy the whole line, from { to }, and paste again.',
-  pasteNotInstalled:
-    'biorouter-crew isn’t installed on the server yet. Open “biorouter-crew isn’t installed yet?” below.',
+  pasteNotInstalled: (server: string) =>
+    `Crew isn’t installed on ${server} yet. Open “Crew isn’t on ${server} yet?” below.`,
   pasteServerError: (detail: string) => `Crew on the server said: ${detail}`,
   /** A paste the daemon read, but whose preview lacks the details a new workspace pins. */
   detailsMissing:
@@ -342,6 +379,12 @@ export const hostCopy = {
   createHeading: (workspace: string, server: string) => `${workspace} on ${server}`,
   createBody: (workspace: string) =>
     `Creating ${workspace} makes this computer its first admin device.`,
+  /**
+   * Once the connection is saved and the daemon's name for its server differs from the one this
+   * dialog has been using (Q4-34): the dialog keeps its word, and this says how the two relate —
+   * the words Connection settings uses. Every surface after the dialog uses `label`.
+   */
+  serverAlias: (label: string) => `Your SSH settings call this server ${label}.`,
   /**
    * The host's own fingerprint: what a joiner may ask them to read out (Q2-04). The joiner's Join
    * dialog tells them to ask, and the workspace menu shows it after this dialog closes.
@@ -357,7 +400,16 @@ export const hostCopy = {
   // (`enforce_institution_policy`, `institution::admission`), an unlabelled one admits no agent at
   // all ("unlabelled private workspaces allow human collaboration only"), and `policy.set` refuses
   // to change or clear the label once set. The composer's institution note shares these words.
+  // `id` is the institution as it reads (`institutionLabel`: "UCSF", Q4-47); the label written is
+  // still the canonical ID.
   labelTitle: (workspace: string, id: string) => `Mark ${workspace} as a ${id} workspace?`,
+  /**
+   * Why it asks again (Q4-47). Step 1's Institution is saved on this computer's connection
+   * (`institution_id` on the saved connection: which models this computer's agent may use there);
+   * this writes the workspace's own label with `policy.set`, which every member's agent is held to.
+   */
+  labelWhy: (workspace: string, institution: string) =>
+    `Step 1 set ${institution} for your connection on this computer. This sets it for ${workspace} itself, for everyone who works there.`,
   /** Workspace-free, for the composer's note, whose title names the workspace. */
   labelBody:
     'Agents working here can then use only models approved for that institution. This can’t be undone.',
@@ -379,6 +431,12 @@ export const checklistCopy = {
    */
   name: (name: string) => `Your name: Use “${name}”?`,
   nameSet: (name: string) => `Your name: ${name}`,
+  /**
+   * Under the title when the daemon's name for the server differs from its address (Q4-34): the
+   * host typed the address, and every surface from here on says the alias.
+   */
+  serverAlias: (workspace: string, address: string, label: string) =>
+    `${workspace} is on ${address}, which your SSH settings call ${label}.`,
   useName: nameSuggestionCopy.use,
   editName: nameSuggestionCopy.edit,
   institution: 'Confirm the institution',
@@ -451,6 +509,35 @@ export const emptyCopy = {
   offlineTitle: (workspace: string) => `${workspace} is offline`,
   offlineBody: 'Connect to see your channels.',
   offlineAction: (workspace: string) => `Connect to ${workspace}`,
+  /**
+   * Under Connect after a connect of this connection failed (Q4-07): a repeat click that fails the
+   * same way still visibly did something. `time` carries seconds for exactly that reason.
+   */
+  triedAgain: (time: string, reason: string) => `Tried again at ${time}. ${reason}.`,
+  /** The failure's reason, by kind, as a clause (no final period). */
+  failureReason: (kind: string, server: string) => {
+    switch (kind) {
+      case 'unreachable':
+        return `Couldn’t reach ${server}`;
+      case 'auth_required':
+        return `${server} asked you to sign in`;
+      case 'host_key_unknown':
+      case 'host_key_changed':
+      case 'workspace_identity_mismatch':
+        return `Crew couldn’t verify ${server}`;
+      case 'bridge_missing':
+      case 'handoff_failed':
+        return `Crew isn’t running for you on ${server}`;
+      default:
+        return 'It didn’t connect';
+    }
+  },
+  /**
+   * For a network failure only (Q4-06): the daemon re-dials a connection a network failure took
+   * down, for up to an hour (D-KEEPALIVE, Q4-01). Never said for a sign-in or host-key failure,
+   * which nothing retries by itself.
+   */
+  keepsTrying: 'Crew keeps trying by itself while the network is down.',
   signInTitle: (host: string) => `Sign in to ${host}`,
   signInBody: 'The server needs your password or a verification code.',
   signInAction: 'Sign in',
