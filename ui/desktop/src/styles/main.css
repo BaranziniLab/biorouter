@@ -965,13 +965,15 @@
   --sidebar-ring: var(--ring);
 
   /* Person avatar hues (D-AVATAR): the same hues as a deep fill under a pale
-     ink, 7.5–7.9:1. Mirrored in each `themes/*.theme.mjs`. */
+     ink, 7.4–7.9:1. Mirrored in each `themes/*.theme.mjs`. Orange (2) and
+     amber (3) are calmer than the rest (QA Q3-61: brown and olive at full
+     chroma); the theme files record why the pair is not Carol's exact one. */
   --avatar-hue-1-bg: #6b302d;
   --avatar-hue-1-fg: #feddda;
-  --avatar-hue-2-bg: #65380a;
-  --avatar-hue-2-fg: #fee0c9;
-  --avatar-hue-3-bg: #524402;
-  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
   --avatar-hue-4-bg: #245127;
   --avatar-hue-4-fg: #d4efd4;
   --avatar-hue-5-bg: #01504d;
@@ -1179,10 +1181,10 @@
   --sidebar-ring: #a5a39d;
   --avatar-hue-1-bg: #6b302d;
   --avatar-hue-1-fg: #feddda;
-  --avatar-hue-2-bg: #65380a;
-  --avatar-hue-2-fg: #fee0c9;
-  --avatar-hue-3-bg: #524402;
-  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
   --avatar-hue-4-bg: #245127;
   --avatar-hue-4-fg: #d4efd4;
   --avatar-hue-5-bg: #01504d;
@@ -1369,10 +1371,10 @@
   --sidebar-ring: #a5a39d;
   --avatar-hue-1-bg: #6b302d;
   --avatar-hue-1-fg: #feddda;
-  --avatar-hue-2-bg: #65380a;
-  --avatar-hue-2-fg: #fee0c9;
-  --avatar-hue-3-bg: #524402;
-  --avatar-hue-3-fg: #efe7c5;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
   --avatar-hue-4-bg: #245127;
   --avatar-hue-4-fg: #d4efd4;
   --avatar-hue-5-bg: #01504d;
@@ -1971,6 +1973,26 @@
 input[type='radio']:focus-visible ~ [data-radio-ring] {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* The ring itself (QA Q3-58). It was `--border-emphasized`, ink at 24%, which
+ * measured 1.6:1 on white — under the 3:1 a control's boundary owes (WCAG
+ * 1.4.11), so an unchecked radio read as a faint smudge beside its label. At
+ * rest it is now `--text-muted`, which `check-contrast.mjs` holds to 4.5:1 on
+ * every text ground and `focusFallback.test.ts` measures on every ground a
+ * dialog paints, in all six scopes; checked, the accent edge as before.
+ *
+ * ⚠ The rest rule is a BARE `[data-radio-ring]` (0,1,0) on purpose. The
+ * forced-colours block at the end of this file redraws the ring with the same
+ * selectors in system colours and wins by coming later; a heavier selector here
+ * (`input ~ [data-radio-ring]`) would out-rank its `CanvasText` rule and paint
+ * this token under `forced-color-adjust: none` in High Contrast. */
+[data-radio-ring] {
+  border-color: var(--text-muted);
+}
+
+input[type='radio']:checked ~ [data-radio-ring] {
+  border-color: var(--border-accent);
 }
 
 /* Motion is short and informative. Everything animated must null out here —
@@ -6118,6 +6140,27 @@ code [class~='token'] {
      shape. Every button gets the system button edge. */
   [data-slot='button'] {
     border: 1px solid ButtonText;
+  }
+
+  /* …except a LINK-style button, which has no box to give back (QA Q3-59).
+     Its call sites write `h-auto p-0` so it sits in a line of text, and the
+     edge above then ran straight through its glyphs: the privacy popover's
+     "Make my connection public…" and "Privacy…" lost their first and last
+     letters. So it is drawn the way forced colours draw a link — LinkText,
+     underlined, no border — and its focus stays the Highlight outline every
+     control gets from the blocks above, 2px outside the text.
+
+     The hook is the link variant's own class token: `Button` writes no
+     variant attribute, and `underline-offset-4` appears in the link variant
+     and in no other (`focusFallback.test.ts` pins both). */
+  [data-slot='button'][class~='underline-offset-4'] {
+    border: 0 none;
+    color: LinkText;
+    text-decoration-line: underline;
+  }
+
+  [data-slot='button'][class~='underline-offset-4']:disabled {
+    color: GrayText;
   }
 
   /* A tooltip is an inverse fill with no border: its text floated over the

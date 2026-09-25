@@ -271,13 +271,19 @@ export default {
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
       // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and
-      // ink L 0.925, a step off every dark ground; ink 7.5–7.9:1 on its fill.
+      // ink L 0.925, a step off every dark ground; ink 7.4–7.9:1 on its fill.
+      // Orange and amber are calmer than the rest (QA Q3-61): at full chroma
+      // they read as brown and olive beside indigo, teal and plum. They sit at
+      // chroma 0.073 / 0.058 (OKLCH 58° / 85°), which is Carol's measured pair
+      // with orange nudged 5° toward red, because her pair measured ΔE00 7.4
+      // apart and `check-contrast.mjs` holds every two fills 8 apart; this pair
+      // is 10.0. Disc on the dark canvas 1.89 and 2.01; ink 7.88 and 7.45:1.
       'avatar-hue-1-bg': '#6b302d', // red
       'avatar-hue-1-fg': '#feddda',
-      'avatar-hue-2-bg': '#65380a', // orange
-      'avatar-hue-2-fg': '#fee0c9',
-      'avatar-hue-3-bg': '#524402', // amber
-      'avatar-hue-3-fg': '#efe7c5',
+      'avatar-hue-2-bg': '#623a19', // orange
+      'avatar-hue-2-fg': '#fbe2cc',
+      'avatar-hue-3-bg': '#564520', // amber
+      'avatar-hue-3-fg': '#f1e6c9',
       'avatar-hue-4-bg': '#245127', // green
       'avatar-hue-4-fg': '#d4efd4',
       'avatar-hue-5-bg': '#01504d', // teal

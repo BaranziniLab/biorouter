@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import * as themeTokens from '../../scripts/lib/theme-tokens.mjs';
 
 /**
  * Two focus defects from the Crew live QA round (2026-09-24), asserted at the
@@ -477,6 +478,163 @@ describe('painted shapes survive forced colours, and a radio shows focus (Q2-11,
     expect(source('components', 'ui', 'dropdown-menu.tsx')).toContain(
       'data-slot="dropdown-menu-separator"'
     );
+  });
+});
+
+/**
+ * The token maths `check-contrast.mjs` runs, over the same scopes it discovers: the stylesheet's
+ * families × light/dark, resolved through their `var()` chains. One implementation, two
+ * consumers; `buildScopes` / `resolveHex` are not in the module's `.d.mts`, so they are typed
+ * here, where they are used.
+ */
+type Scope = { decls: Record<string, string>; theme: Record<string, string> };
+const tokens = themeTokens as unknown as {
+  buildScopes(css: string): Record<string, Scope>;
+  resolveHex(name: string, scope: Scope): string | null;
+  contrast(a: string, b: string): number;
+  blend(fillHex: string, alpha: number, groundHex: string): string;
+  hexToLab(hex: string): [number, number, number];
+};
+const SCOPES = tokens.buildScopes(CSS);
+
+/**
+ * Q3-58, Q3-59 (live QA round 3). The unchecked radio's ring was ink at 24% — 1.6:1 on white —
+ * and in forced colours every link-style button got the system button edge with no padding, so
+ * the line ran through its first and last letters ("Make my connection public…", "Privacy…").
+ */
+describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-59)', () => {
+  const FORCED = '@media (forced-colors: active)';
+  const top = (selector: string) => {
+    const found = RULES.filter((r) => r.selector === selector && r.context.length === 0);
+    expect(found, `expected exactly one top-level rule for ${selector}`).toHaveLength(1);
+    return found[0];
+  };
+  const forcedRule = (selector: string) => {
+    const found = RULES.filter(
+      (r) => r.context.join(' ') === FORCED && squash(r.selector) === squash(selector)
+    );
+    expect(found, `expected exactly one forced-colours rule for ${selector}`).toHaveLength(1);
+    return found[0];
+  };
+
+  it('paints the resting ring in --text-muted and the checked one in the accent edge', () => {
+    const rest = top('[data-radio-ring]');
+    expect(rest.body.replace(/\s+/g, ' ')).toContain('border-color: var(--text-muted)');
+    expect(isLayered(rest)).toBe(false);
+    const checked = top("input[type='radio']:checked ~ [data-radio-ring]");
+    expect(checked.body.replace(/\s+/g, ' ')).toContain('border-color: var(--border-accent)');
+    // Nothing else outside forced colours colours the ring — no heavier rule taking it back.
+    const colouring = RULES.filter(
+      (r) =>
+        r.context.length === 0 &&
+        r.selector.includes('[data-radio-ring]') &&
+        /border-color/.test(r.body)
+    );
+    expect(colouring.map((r) => r.selector).sort()).toEqual(
+      ['[data-radio-ring]', "input[type='radio']:checked ~ [data-radio-ring]"].sort()
+    );
+  });
+
+  // Forced colours redraw the ring with the SAME selectors and win by coming later; a heavier
+  // rest selector would out-rank `CanvasText` and paint the token under forced-color-adjust: none.
+  it('lets the forced-colours ring win: same selectors, later in the file', () => {
+    expect(forcedRule('[data-radio-ring]').index).toBeGreaterThan(top('[data-radio-ring]').index);
+    const checked = "input[type='radio']:checked ~ [data-radio-ring]";
+    expect(forcedRule(checked).index).toBeGreaterThan(top(checked).index);
+  });
+
+  it('measures at least 3:1 against every ground, in all six scopes', () => {
+    const grounds = [
+      '--background-app',
+      '--background-canvas',
+      '--background-default',
+      '--background-card',
+      '--background-muted',
+      '--background-medium',
+      '--background-well',
+      '--sidebar',
+    ];
+    expect(Object.keys(SCOPES)).toHaveLength(6);
+    const shortfalls: string[] = [];
+    for (const [name, scope] of Object.entries(SCOPES)) {
+      const ring = tokens.resolveHex('--text-muted', scope);
+      expect(ring, `${name}: --text-muted resolves`).toBeTruthy();
+      for (const ground of grounds) {
+        const hex = tokens.resolveHex(ground, scope);
+        expect(hex, `${name}: ${ground} resolves`).toBeTruthy();
+        const ratio = tokens.contrast(ring!, hex!);
+        if (ratio < 3) shortfalls.push(`${name}: ${ground} ${ratio.toFixed(2)}:1`);
+      }
+    }
+    expect(shortfalls).toEqual([]);
+    // The token it replaced, for the record: under 3:1, which is why it went.
+    expect(tokens.contrast(tokens.blend('#2a2520', 0.24, '#ffffff'), '#ffffff')).toBeLessThan(3);
+  });
+
+  it('draws a link-style button as a link in forced colours: no edge through its text', () => {
+    const link = forcedRule("[data-slot='button'][class~='underline-offset-4']");
+    const body = link.body.replace(/\s+/g, ' ');
+    expect(isLayered(link)).toBe(false);
+    expect(body).toContain('border: 0 none');
+    expect(body).toContain('color: LinkText');
+    expect(body).toContain('text-decoration-line: underline');
+    // It out-ranks the every-button edge (0,2,0 over 0,1,0) and sits after it too.
+    expect(link.index).toBeGreaterThan(forcedRule("[data-slot='button']").index);
+    expect(forcedRule("[data-slot='button'][class~='underline-offset-4']:disabled").body).toMatch(
+      /color:\s*GrayText/
+    );
+    // Its focus is the OS ring every control gets: nothing here takes the outline away.
+    expect(body).not.toMatch(/outline/);
+  });
+
+  // `Button` writes no variant attribute, so the rule keys on the link variant's own class token.
+  // If another variant gained it, that variant would lose its edge; if the link variant lost it,
+  // the edge would cut the text again.
+  it('keys on a class token only the link variant carries', () => {
+    const button = readFileSync(join(HERE, '..', 'components', 'ui', 'button.tsx'), 'utf8');
+    const variants = button.slice(button.indexOf('variant: {'), button.indexOf('size: {'));
+    const entries = [...variants.matchAll(/^\s+(\w+):\s*\n?\s*'([^']*)'/gm)].map((m) => ({
+      name: m[1],
+      classes: m[2].split(/\s+/),
+    }));
+    expect(entries.map((e) => e.name)).toEqual([
+      'default',
+      'destructive',
+      'outline',
+      'secondary',
+      'ghost',
+      'link',
+    ]);
+    for (const entry of entries) {
+      expect(entry.classes.includes('underline-offset-4'), entry.name).toBe(entry.name === 'link');
+    }
+  });
+});
+
+/**
+ * Q3-61 (live QA round 3). In dark, avatar hues 2 (orange) and 3 (amber) were the two loudest
+ * fills in the set — CIELAB chroma 38 and 37 against 22–33 for the other six — and read as brown
+ * and olive beside the calm indigo, teal and plum. They now sit inside the others' range, in all
+ * three families. (`check-contrast.mjs` separately holds every ink to 4.5:1 and every two fills
+ * ΔE00 8 apart.)
+ */
+describe('the dark avatar hues are equally calm (Q3-61)', () => {
+  const chroma = (hex: string) => {
+    const [, a, b] = tokens.hexToLab(hex);
+    return Math.hypot(a, b);
+  };
+
+  it('keeps orange and amber within the chroma of the other six, in every dark scope', () => {
+    const dark = Object.entries(SCOPES).filter(([name]) => name.endsWith(':dark'));
+    expect(dark).toHaveLength(3);
+    for (const [name, scope] of dark) {
+      const fill = (n: number) => tokens.resolveHex(`--avatar-hue-${n}-bg`, scope)!;
+      const others = [1, 4, 5, 6, 7, 8].map((n) => chroma(fill(n)));
+      const ceiling = Math.max(...others);
+      for (const n of [2, 3]) {
+        expect(chroma(fill(n)), `${name}: hue ${n} (${fill(n)})`).toBeLessThanOrEqual(ceiling);
+      }
+    }
   });
 });
 

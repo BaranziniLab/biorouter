@@ -59,23 +59,27 @@ const CustomRadio = ({
             disabled={disabled}
             className="peer sr-only"
           />
-          {/* `--border-emphasized` is the interactive-border token (§3.2) — ink at
-              24%, derived per family — replacing a neutral that each family had to
-              author and that drifted against the surface it sat on.
+          {/* The ring's COLOUR is authored in main.css, not written here (QA Q3-58).
+              It used to be `border-border-emphasized` — ink at 24% — which measured
+              1.6:1 on white: under the 3:1 a control's boundary owes, so an
+              unchecked radio was a faint smudge. main.css now paints it
+              `--text-muted` at rest (≥ 4.5:1 on every ground, `check-contrast.mjs`)
+              and `--border-accent` when checked, unlayered so no utility can pull
+              it back to the faint token, and `focusFallback.test.ts` measures it
+              in all six scopes.
 
               `data-radio-ring` / `data-radio-dot` are selector hooks for main.css
               (Q2-11): the input above is sr-only, so its focus was drawn on an
               invisible pixel, and the dot is a fill that forced colours erase.
-              main.css rings the RING when the input is :focus-visible and redraws
-              ring and dot in system colours under forced colours. The rules key on
-              these attributes and on the input being a preceding sibling, so keep
-              the input first and all three in this one box. */}
+              main.css colours the ring, rings the RING when the input is
+              :focus-visible, and redraws ring and dot in system colours under
+              forced colours. The rules key on these attributes and on the input
+              being a preceding sibling, so keep the input first and all three in
+              this one box. */}
           <span
             data-radio-ring=""
             aria-hidden="true"
-            className="pointer-events-none absolute inset-[1px] rounded-full border-[1.5px] border-border-emphasized
-                      transition-colors
-                      peer-checked:border-border-accent"
+            className="pointer-events-none absolute inset-[1px] rounded-full border-[1.5px] transition-colors"
           />
           <span
             data-radio-dot=""

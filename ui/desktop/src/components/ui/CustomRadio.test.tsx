@@ -104,6 +104,22 @@ describe('CustomRadio', () => {
     );
   });
 
+  /**
+   * Q3-58 (live QA round 3). The unchecked ring was `border-border-emphasized`, ink at 24%:
+   * 1.6:1 on white, under the 3:1 a control's boundary owes. Its colour is now authored in
+   * main.css (`--text-muted` at rest, `--border-accent` checked), measured in all six scopes in
+   * `styles/focusFallback.test.ts`. A colour utility left on the span would be dead code at best,
+   * and the faint token again the day the authored rule moved into a layer.
+   */
+  it('leaves the ring’s colour to main.css, and never the faint 24% ink', () => {
+    render(<Group />);
+    const { ring } = hooks(screen.getByRole('radio', { name: 'Private' }));
+    const classes = ring!.className.split(/\s+/);
+    expect(classes).toContain('border-[1.5px]');
+    expect(classes.filter((c) => /(^|:)border-(?!\[)/.test(c))).toEqual([]);
+    expect(ring!.className).not.toContain('border-emphasized');
+  });
+
   it('dims but keeps the hooks when disabled, for the GrayText forced-colours rule', () => {
     render(
       <CustomRadio
