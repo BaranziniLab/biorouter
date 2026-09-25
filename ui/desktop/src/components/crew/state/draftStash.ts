@@ -1,3 +1,4 @@
+import { useCallback, useSyncExternalStore } from 'react';
 import type { DraftScope } from './observationFailure';
 
 /**
@@ -15,6 +16,8 @@ import type { DraftScope } from './observationFailure';
  *      over `DRAFT_STASH_MAX_BODY_BYTES` is not kept at all rather than cut short.
  *    - A draft with no verified scope for its own channel is not kept: it could not be checked
  *      before it came back.
+ *    - The rail marks a channel that holds one (Q3-09) through `useChannelHasDraft`: whether a
+ *      body is kept, never the body itself.
  * 2. **The last channel** the person chose, per connection: the channel ID only, in memory and in
  *    `localStorage` (`crew:lastChannel:<connectionId>`), so Crew reopens where they were instead
  *    of on the team's first channel. It only ever picks among the channels a verified view offers.
@@ -32,9 +35,31 @@ export interface StashedDraft {
 }
 
 const drafts = new Map<string, StashedDraft>();
+const draftListeners = new Set<() => void>();
 
 function draftKey(connectionId: string, channelId: string): string {
   return `${connectionId}\n${channelId}`;
+}
+
+function notifyDrafts(): void {
+  for (const listener of [...draftListeners]) listener();
+}
+
+/** Call `listener` whenever a kept draft is added or goes. Returns the unsubscribe. */
+export function subscribeDrafts(listener: () => void): () => void {
+  draftListeners.add(listener);
+  return () => {
+    draftListeners.delete(listener);
+  };
+}
+
+/** Whether `channelId` on `connectionId` holds a kept unsent draft (its text only). */
+export function useChannelHasDraft(connectionId: string, channelId: string): boolean {
+  const read = useCallback(
+    () => Boolean(connectionId && channelId && drafts.has(draftKey(connectionId, channelId))),
+    [connectionId, channelId]
+  );
+  return useSyncExternalStore(subscribeDrafts, read, read);
 }
 
 function bodyBytes(body: string): number {
@@ -57,14 +82,18 @@ export function stashDraft(
   if (!connectionId || !channelId || !body.trim()) return;
   if (!scope || scope.connectionId !== connectionId || scope.channel?.id !== channelId) return;
   const key = draftKey(connectionId, channelId);
-  drafts.delete(key);
-  if (bodyBytes(body) > DRAFT_STASH_MAX_BODY_BYTES) return;
+  const replaced = drafts.delete(key);
+  if (bodyBytes(body) > DRAFT_STASH_MAX_BODY_BYTES) {
+    if (replaced) notifyDrafts();
+    return;
+  }
   drafts.set(key, { body, scope });
   while (drafts.size > DRAFT_STASH_MAX_ENTRIES) {
     const oldest = drafts.keys().next().value;
     if (oldest === undefined) break;
     drafts.delete(oldest);
   }
+  notifyDrafts();
 }
 
 /** The kept draft of a channel, if any, without taking it. */
@@ -79,13 +108,13 @@ export function takeStashedDraft(
 ): StashedDraft | undefined {
   const key = draftKey(connectionId, channelId);
   const entry = drafts.get(key);
-  drafts.delete(key);
+  if (drafts.delete(key)) notifyDrafts();
   return entry;
 }
 
 /** Forget the kept draft of one channel (it was sent, or the channel was lost). */
 export function forgetStashedDraft(connectionId: string, channelId: string): void {
-  drafts.delete(draftKey(connectionId, channelId));
+  if (drafts.delete(draftKey(connectionId, channelId))) notifyDrafts();
 }
 
 /**
@@ -97,11 +126,14 @@ export function forgetConnectionDrafts(
   keep?: (channelId: string) => boolean
 ): void {
   const prefix = `${connectionId}\n`;
+  let changed = false;
   for (const key of [...drafts.keys()]) {
     if (!key.startsWith(prefix)) continue;
     if (keep?.(key.slice(prefix.length))) continue;
     drafts.delete(key);
+    changed = true;
   }
+  if (changed) notifyDrafts();
 }
 
 /** How many drafts are kept. For tests and diagnostics; never shown. */
@@ -180,7 +212,9 @@ export function resetBetweenTests(reset: () => void): void {
  * in storage).
  */
 export function resetDraftStashForTests(): void {
+  const had = drafts.size > 0;
   drafts.clear();
+  if (had) notifyDrafts();
   for (const connectionId of [...lastChannels.keys()]) forgetLastChannel(connectionId);
   try {
     const stale: string[] = [];

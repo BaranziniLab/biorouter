@@ -88,6 +88,12 @@ export const crewObservationCopy = {
   updateTooLarge: (workspace: string) => `An update from ${workspace} was too large to show.`,
 } as const;
 
+/** The unsent drafts a channel keeps while the person is elsewhere (Q2-07, Q3-09). */
+export const crewDraftCopy = {
+  /** Added to a rail row's accessible name when its channel holds a kept draft. */
+  rowSuffix: ', draft',
+} as const;
+
 export const crewActionCopy = {
   actionFallback: 'Crew could not complete that action.',
   sendPrivacyUnverified: 'Refresh the workspace to verify connection privacy before sending.',

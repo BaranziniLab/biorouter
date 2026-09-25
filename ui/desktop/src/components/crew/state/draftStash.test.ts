@@ -1,3 +1,4 @@
+import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DRAFT_STASH_MAX_BODY_BYTES,
@@ -12,7 +13,9 @@ import {
   stashDraft,
   stashedDraft,
   stashedDraftCount,
+  subscribeDrafts,
   takeStashedDraft,
+  useChannelHasDraft,
 } from './draftStash';
 import type { DraftScope } from './observationFailure';
 
@@ -172,5 +175,68 @@ describe('the last channel', () => {
     forgetLastChannel('conn-1');
     expect(rememberedLastChannel('conn-1')).toBeNull();
     expect(window.localStorage.getItem(`${LAST_CHANNEL_STORAGE_PREFIX}conn-1`)).toBeNull();
+  });
+});
+
+describe('what the rail reads: whether a channel holds a draft (Q3-09)', () => {
+  it('tells subscribers each time a kept draft is added or goes, and only then', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeDrafts(listener);
+
+    stashDraft('conn-1', 'general', 'half-written', scope('general'));
+    expect(listener).toHaveBeenCalledTimes(1);
+    // Nothing kept: an empty body, or no verified scope of its own channel.
+    stashDraft('conn-1', 'methods', '   ', scope('methods'));
+    stashDraft('conn-1', 'methods', 'no scope', null);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    stashDraft('conn-1', 'methods', 'two', scope('methods'));
+    expect(listener).toHaveBeenCalledTimes(2);
+    takeStashedDraft('conn-1', 'general');
+    expect(listener).toHaveBeenCalledTimes(3);
+    // Taking or forgetting what is not kept changes nothing.
+    takeStashedDraft('conn-1', 'general');
+    forgetStashedDraft('conn-1', 'general');
+    forgetConnectionDrafts('conn-2');
+    expect(listener).toHaveBeenCalledTimes(3);
+    forgetStashedDraft('conn-1', 'methods');
+    expect(listener).toHaveBeenCalledTimes(4);
+
+    stashDraft('conn-1', 'general', 'again', scope('general'));
+    forgetConnectionDrafts('conn-1');
+    expect(listener).toHaveBeenCalledTimes(6);
+
+    // An oversized body replaces a kept one by removing it.
+    stashDraft('conn-1', 'general', 'small', scope('general'));
+    stashDraft('conn-1', 'general', 'x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1), scope('general'));
+    expect(listener).toHaveBeenCalledTimes(8);
+    expect(stashedDraft('conn-1', 'general')).toBeUndefined();
+
+    unsubscribe();
+    stashDraft('conn-1', 'general', 'after', scope('general'));
+    expect(listener).toHaveBeenCalledTimes(8);
+  });
+
+  it('answers per connection and channel, and follows the stash', () => {
+    const { result, rerender } = renderHook(
+      ({ connectionId, channelId }) => useChannelHasDraft(connectionId, channelId),
+      { initialProps: { connectionId: 'conn-1', channelId: 'general' } }
+    );
+    expect(result.current).toBe(false);
+
+    act(() => stashDraft('conn-1', 'general', 'half-written', scope('general')));
+    expect(result.current).toBe(true);
+
+    rerender({ connectionId: 'conn-2', channelId: 'general' });
+    expect(result.current).toBe(false);
+    rerender({ connectionId: 'conn-1', channelId: 'methods' });
+    expect(result.current).toBe(false);
+    rerender({ connectionId: '', channelId: 'general' });
+    expect(result.current).toBe(false);
+
+    rerender({ connectionId: 'conn-1', channelId: 'general' });
+    expect(result.current).toBe(true);
+    act(() => forgetStashedDraft('conn-1', 'general'));
+    expect(result.current).toBe(false);
   });
 });
