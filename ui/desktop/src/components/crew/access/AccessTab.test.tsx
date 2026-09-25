@@ -11,7 +11,7 @@ import {
   renderWithController,
   type DaemonFixture,
 } from './testing';
-import { pastAccessStorageKey, readPastAccess } from './pastAccess';
+import { pastAccessStorageKey, readPastAccess, rememberPastAccess } from './pastAccess';
 import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
 import { WorkspaceAgentAccess } from './WorkspaceAgentAccess';
 
@@ -73,6 +73,24 @@ function TabLayout() {
 function WorkspaceLayout() {
   const { snapshot } = useCrew();
   return snapshot ? <WorkspaceAgentAccess /> : null;
+}
+
+/** The channel's Access tab and Workspace settings' Agent access, side by side. */
+function BothLayout() {
+  const { channel } = useCrew();
+  return channel ? (
+    <>
+      <AccessTab />
+      <WorkspaceAgentAccess />
+    </>
+  ) : null;
+}
+
+/** The rows under one surface's "Show past access (n)", opened. */
+async function pastRows(surface: HTMLElement, count: number) {
+  fireEvent.click(await within(surface).findByRole('button', { name: accessCopy.showOld(count) }));
+  const list = within(surface).getByRole('list', { name: accessCopy.oldListName });
+  return within(list).getAllByTestId('crew-access-row');
 }
 
 function setup(fixture: Partial<DaemonFixture>, layout = TabLayout) {
@@ -527,6 +545,104 @@ describe('Workspace settings → Agent access', () => {
     ).toBeInTheDocument();
     expect(await rowFor('Plot review')).toBeInTheDocument();
     expect(await rowFor(accessCopy.yourTask)).toBeInTheDocument();
+  });
+
+  /**
+   * Q4-12 (live QA round 4), in Workspace settings too: its list is built on the same rows as the
+   * Access tab, so a chat revoked and granted again keeps its revoked row here as well.
+   */
+  it('keeps a revoked grant under past access after the chat is granted again', async () => {
+    const state = { run: 'run-1', revoked: false };
+    setup(
+      {
+        grants: () => [
+          grantRow({ run_id: state.run, expired: state.revoked }),
+          ...workspaceGrants()().slice(1),
+        ],
+        revoke: (sessionId) => {
+          state.revoked = true;
+          return {
+            revoked: true,
+            remote_revocation_confirmed: true,
+            session_id: sessionId,
+            run_id: 'run-1',
+          };
+        },
+      },
+      WorkspaceLayout
+    );
+    const chat = await rowFor('Plot review');
+    fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
+    fireEvent.click(within(chat).getByRole('button', { name: accessCopy.confirmRevoke }));
+    expect(await screen.findByText(accessCopy.revoked('Plot review'))).toBeInTheDocument();
+    // The daemon still lists the revoked run: one row for it, not two.
+    expect(await screen.findByRole('button', { name: accessCopy.showOld(3) })).toBeInTheDocument();
+    expect(readPastAccess('conn-1')).toEqual([
+      expect.objectContaining({ session_id: 'agent-1', run_id: 'run-1', channel_id: 'channel-1' }),
+    ]);
+
+    state.run = 'run-2';
+    state.revoked = false;
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'agent-1', change: 'granted' })
+    );
+    await waitFor(async () =>
+      expect(await rowFor('Plot review')).toHaveAttribute('data-access-status', 'active')
+    );
+    const rows = await pastRows(screen.getByTestId('crew-workspace-agent-access'), 3);
+    const revoked = rows.find((row) => within(row).queryByText('Plot review'));
+    expect(revoked, 'the remembered Plot review row').toBeDefined();
+    expect(revoked).toHaveAttribute('data-access-status', 'revoked');
+    expect(revoked).toHaveTextContent(accessCopy.status.revoked);
+    expect(revoked).toHaveTextContent('#general');
+    expect(within(revoked as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+  });
+
+  /**
+   * The finding behind round 2 of the Q4-12 fix: the channel's tab showed a remembered revoke and
+   * Workspace settings did not, so the two lists disagreed about the same chat. Workspace settings
+   * has no channel filter, so it also holds the remembered revokes of other channels.
+   */
+  it('agrees with the channel’s Access tab about remembered revokes', async () => {
+    const revokedAt = Date.now() - 60_000;
+    // Revoked on this device earlier, then granted again: the daemon lists the newer runs.
+    rememberPastAccess('conn-1', {
+      session_id: 'agent-1',
+      run_id: 'run-0',
+      session_name: 'Plot review',
+      channel_id: 'channel-1',
+      revoked_at: revokedAt,
+    });
+    rememberPastAccess('conn-1', {
+      session_id: 'methods-chat',
+      run_id: 'run-9',
+      session_name: 'Methods chat',
+      channel_id: 'channel-2',
+      source_channels: ['channel-2'],
+      revoked_at: revokedAt,
+    });
+    setup({}, BothLayout);
+    const tab = await screen.findByTestId('crew-access-tab');
+    const workspace = screen.getByTestId('crew-workspace-agent-access');
+
+    const inTab = await pastRows(tab, 3);
+    const inWorkspace = await pastRows(workspace, 4);
+    const remembered = (rows: HTMLElement[], title: string) =>
+      rows.find(
+        (row) =>
+          within(row).queryByText(title) && row.getAttribute('data-access-status') === 'revoked'
+      );
+    for (const rows of [inTab, inWorkspace]) {
+      const plot = remembered(rows, 'Plot review');
+      expect(plot, 'the remembered Plot review row').toBeDefined();
+      expect(plot).toHaveTextContent('#general');
+    }
+    // Every row the channel's tab holds under past access, Workspace settings holds too.
+    const titles = (rows: HTMLElement[]) => rows.map((row) => row.textContent);
+    expect(titles(inWorkspace)).toEqual(expect.arrayContaining(titles(inTab)));
+    // #methods' remembered revoke is outside this channel, and only there.
+    expect(remembered(inTab, 'Methods chat')).toBeUndefined();
+    expect(remembered(inWorkspace, 'Methods chat')).toHaveTextContent('#methods');
   });
 
   it('names the workspace when nothing has access', async () => {

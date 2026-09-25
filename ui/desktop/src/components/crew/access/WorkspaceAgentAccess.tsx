@@ -5,6 +5,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { AccessList } from './AccessList';
 import { accessRows } from './accessRows';
 import { accessCopy } from './copy';
+import { usePastAccess } from './pastAccess';
 import { useAccessActions } from './useAccessActions';
 import { isUnconfirmedRevocation } from './useCrewGrants';
 import { useWorkspaceGrants } from './useWorkspaceGrants';
@@ -18,16 +19,31 @@ export interface WorkspaceAgentAccessProps {
  * Workspace settings → Agent access: every chat and task with access anywhere in this workspace —
  * the same rows and actions as the Access tab, without its channel filter. The content of the
  * Workspace settings dialog's Agent access tab slot.
+ *
+ * "Show past access" holds the revokes this device remembers (`pastAccess.ts`), exactly as the
+ * Access tab's does: the daemon lists one grant per chat, so without them a chat revoked and
+ * granted again lost its revoked row here while the channel's tab still showed it (live QA round
+ * 4, Q4-12).
  */
 export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
-  const { snapshot, runs, labels, connection } = useCrew();
+  const { snapshot, runs, labels, connection, connectionId } = useCrew();
   const grants = useWorkspaceGrants();
+  const past = usePastAccess(connectionId);
   const headingId = useId();
   const { onOpen, onStop } = useAccessActions();
   const dir = usePeopleDirectory(snapshot, labels as DaemonPersonLabels | null);
   const rows = useMemo(
-    () => accessRows(grants.grants, { snapshot, runs, isUnconfirmed: isUnconfirmedRevocation }),
-    [grants.grants, snapshot, runs]
+    () =>
+      accessRows(grants.grants, {
+        snapshot,
+        runs,
+        isUnconfirmed: isUnconfirmedRevocation,
+        // Only once the daemon's list is read, as in the Access tab: a remembered row is merged
+        // unless the list holds its run, which an unread list cannot say.
+        pastAccess:
+          connectionId && grants.status === 'loaded' ? { connectionId, entries: past } : undefined,
+      }),
+    [grants.grants, grants.status, snapshot, runs, connectionId, past]
   );
   const workspace = snapshot
     ? workspaceName(snapshot.workspace, dir.host)
