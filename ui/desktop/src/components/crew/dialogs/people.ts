@@ -1,4 +1,5 @@
 import type { Invitation, PendingJoin, Snapshot } from '../crewApi';
+import { expiryCopy } from './copy';
 import {
   channelName,
   cleanName,
@@ -28,6 +29,31 @@ export function firstName(person: CrewPerson | null | undefined): string {
       : (person.serverName ?? '');
   const first = cleanName(name).split(' ')[0];
   return first || `@${person.username}`;
+}
+
+/** How an invitation's expiry is written: weekday and time, in the person's own locale. */
+const EXPIRY_FORMAT: Intl.DateTimeFormatOptions = {
+  weekday: 'short',
+  hour: 'numeric',
+  minute: '2-digit',
+};
+
+/**
+ * An invitation's expiry in the shared wording (QA Q4-36): "expires Sat 1:41 AM", or "expired"
+ * once past. `expiresAt` is in Unix SECONDS, as the broker sends it (`now()` is `as_secs`; a live
+ * `expires_at` read 1790415465). `expired` is the broker's own word, which wins over the clock.
+ * Null when there is no expiry to state.
+ */
+export function expiryPhrase(
+  expiresAt: number | null | undefined,
+  expired = false,
+  nowMs = Date.now()
+): string | null {
+  if (expired) return expiryCopy.expired;
+  if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  const at = expiresAt * 1000;
+  if (at <= nowMs) return expiryCopy.expired;
+  return expiryCopy.expires(new Intl.DateTimeFormat(undefined, EXPIRY_FORMAT).format(new Date(at)));
 }
 
 /** Invitations that still stand: not expired by the broker's word or by the clock. */

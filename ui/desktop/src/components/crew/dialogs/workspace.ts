@@ -9,6 +9,7 @@ import {
   workspaceName,
   type PeopleDirectory,
 } from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 
@@ -87,8 +88,17 @@ export interface DialogView {
   workspace: string;
   /** What a typed confirmation asks for: the workspace's own name. */
   phrase: string;
-  /** The server the selected connection reaches, without its `user@`. */
+  /**
+   * The server as the person names it on screen (D-ALIAS): the daemon's `server_label` — their own
+   * SSH alias for the address, such as `lab-server` — else the address's host. Every dialog says
+   * this one word for the server (QA Q4-34); menus and the sidebar say the same.
+   */
   server: string;
+  /**
+   * The server's address as saved, without its `user@`: `52.33.141.141`. Shown only where it is
+   * copied (Settings → General) or edited (Connection settings), never as the server's name.
+   */
+  address: string;
 }
 
 export function useDialogView(connectionId?: string): DialogView {
@@ -106,5 +116,13 @@ export function useDialogView(connectionId?: string): DialogView {
     [crew.connections, id, snapshot, dir]
   );
   const saved = crew.connections.find((item) => item.id === id) ?? null;
-  return { crew, snapshot, dir, workspace, phrase, server: connectionServer(saved) };
+  return {
+    crew,
+    snapshot,
+    dir,
+    workspace,
+    phrase,
+    server: serverLabel(saved),
+    address: connectionServer(saved),
+  };
 }

@@ -4,8 +4,14 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { STALE_DAEMON_MESSAGE } from '../api/errors';
-import { inviteCopy } from './copy';
-import { installResizeObserverStub, renderWithCrew, requestsFor } from './dialogsTestHarness';
+import type { CrewConnection } from '../crewApi';
+import { expiryCopy, inviteCopy } from './copy';
+import {
+  connection,
+  installResizeObserverStub,
+  renderWithCrew,
+  requestsFor,
+} from './dialogsTestHarness';
 import { InvitePeopleDialog, withoutLeadingAt } from './InvitePeopleDialog';
 
 const mocks = vi.hoisted(() => ({ crewHttp: vi.fn() }));
@@ -19,9 +25,24 @@ installResizeObserverStub();
 const LINE = 'brcrew1:eyJ2IjoxLCJ3b3Jrc3BhY2VfaWQiOiIuLi4ifQ';
 const MESSAGE = `Join lab on Crew.\nIn Biorouter, open Crew, choose Join a workspace, and paste this whole message.\n${LINE}`;
 
-function renderInvite(refuse?: string) {
+/** A day from now, in the broker's unit: Unix seconds. */
+const EXPIRES_AT = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+
+/** The contract's expiry wording, spelled out here rather than read from the code under test. */
+const expiresText = (seconds: number) =>
+  `expires ${new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(seconds * 1000))}`;
+
+function renderInvite(
+  refuse?: string,
+  options: { connections?: CrewConnection[]; expiresAt?: number } = {}
+) {
   const onClose = vi.fn();
   const view = renderWithCrew(<InvitePeopleDialog onClose={onClose} />, {
+    connections: options.connections,
     request: (method, params) => {
       if (method !== 'enrollment.invite') return {};
       // What the daemon answers a broker refusal with: its text, as `CrewHttpError.message`.
@@ -32,7 +53,7 @@ function renderInvite(refuse?: string) {
         full_name: 'Bob Lee',
         add_device: params.add_device === true,
         join_id: 'join-1',
-        expires_at: 1,
+        expires_at: options.expiresAt ?? EXPIRES_AT,
       };
     },
   });
@@ -122,9 +143,7 @@ describe('InvitePeopleDialog', () => {
     renderInvite();
     await invite('bob');
     const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: inviteCopy.installed('bob', 'hpc.example.edu') })
-    );
+    fireEvent.click(within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') }));
     const commands = await within(dialog).findByRole('button', {
       name: `Copy ${inviteCopy.installCommandsLabel}`,
     });
@@ -179,10 +198,85 @@ describe('InvitePeopleDialog', () => {
     );
     expect(dialog).toHaveTextContent(LINE);
     expect(
-      within(dialog).getByRole('button', { name: inviteCopy.installed('bob', 'hpc.example.edu') })
+      within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') })
     ).toBeInTheDocument();
-    expect(within(dialog).getByText(inviteCopy.nextStep('Bob'))).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(inviteCopy.nextStep('Bob'), { exact: false })
+    ).toBeInTheDocument();
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
+  });
+
+  it('names the server as the person does, never by its address (QA Q4-34)', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_iris@52.33.141.141',
+      server_label: 'lab-server',
+    } as CrewConnection;
+    renderInvite(undefined, { connections: [labelled] });
+    const username = await screen.findByLabelText('Username');
+    expect(username).toHaveAttribute('placeholder', 'their login on lab-server');
+    expect(username).toHaveAccessibleDescription(
+      'The name they sign in to lab-server with; yours is @alice.'
+    );
+    fireEvent.click(screen.getByRole('button', { name: inviteCopy.legacy.toggle }));
+    expect(
+      await screen.findByLabelText(inviteCopy.legacy.userId('lab-server'))
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('52.33.141.141');
+
+    await invite('bob');
+    const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
+    fireEvent.click(within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') }));
+    expect(
+      await within(dialog).findByText(inviteCopy.installLead('bob', 'lab-server'))
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('52.33.141.141');
+  });
+
+  it('says when the invitation expires, after what to do next (QA Q4-36)', async () => {
+    renderInvite();
+    await invite('bob');
+    const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
+    const next = await within(dialog).findByText(inviteCopy.nextStep('Bob'), { exact: false });
+    expect(next).toHaveTextContent(
+      `${inviteCopy.nextStep('Bob')} This invitation ${expiresText(EXPIRES_AT)}.`
+    );
+    // The broker's unit is seconds: read as milliseconds, a day from now would be January 1970.
+    expect(next.textContent).not.toMatch(/expired/);
+  });
+
+  it('says an invitation that has already run out is expired, not a time in the past', async () => {
+    renderInvite(undefined, { expiresAt: Math.floor(Date.now() / 1000) - 60 });
+    await invite('bob');
+    const next = await screen.findByText(inviteCopy.nextStep('Bob'), { exact: false });
+    expect(next).toHaveTextContent(`This invitation ${expiryCopy.expired}.`);
+  });
+
+  it('keeps what only IT can answer collapsed, in the joiner’s words (QA Q4-37)', async () => {
+    renderInvite();
+    // Nothing asks the host which Biorouter the joiner runs.
+    expect(inviteCopy.legacy.toggle).toBe('Other ways to invite (older Biorouter)');
+    const other = await screen.findByRole('button', { name: inviteCopy.legacy.toggle });
+    expect(other).toHaveAttribute('aria-expanded', 'false');
+    await invite('bob');
+    const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
+    // What the joiner's Crew says when it isn't set up for them, as a heading to open if needed.
+    expect(inviteCopy.installed('Bob')).toBe('If Bob sees “Crew isn’t set up”');
+    const disclosure = within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    expect(within(dialog).queryByText(/~\/\.local\/bin/)).toBeNull();
+    expect(dialog.textContent).not.toMatch(/Is Crew installed|older version/);
+    fireEvent.click(disclosure);
+    // One sentence, then the commands to copy.
+    expect(
+      await within(dialog).findByText(inviteCopy.installLead('bob', 'hpc.example.edu'))
+    ).toBeInTheDocument();
+    expect(inviteCopy.installLead('bob', 'hpc.example.edu')).toBe(
+      'Send this to whoever runs hpc.example.edu, to run in @bob’s account:'
+    );
+    expect(
+      within(dialog).getByRole('button', { name: `Copy ${inviteCopy.installCommandsLabel}` })
+    ).toBeInTheDocument();
   });
 
   it('says a stale background service plainly when the message cannot be built', async () => {

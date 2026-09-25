@@ -27,7 +27,6 @@ import {
   personLabel,
   type CrewPerson,
 } from '../identity';
-import { connectionServerLabel } from '../onboarding/joinText';
 import { sidebarCopy } from '../sidebar/copy';
 import { useKnownInstitutions } from '../sidebar/sidebarView';
 import { useFocusReturn } from '../state/focusReturn';
@@ -272,11 +271,11 @@ function Section({
 }
 
 function GeneralTab({ view }: { view: DialogView }) {
-  const { crew, dir, snapshot, server } = view;
+  const { crew, dir, snapshot, server, address } = view;
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
   // The server as the person names it (D-ALIAS), with its address beside it to copy: "lab-server ·
-  // 52.33.141.141 [Copy]" (QA Q3-39). The alias alone where it IS the address.
-  const alias = connectionServerLabel(savedConnection(view));
+  // 52.33.141.141 [Copy]" (QA Q3-39). The name alone where it IS the address. This is the one
+  // place outside Connection settings that shows the address (QA Q4-34).
   return (
     <div className="flex flex-col">
       <div className="biorouter-settings-list">
@@ -284,17 +283,17 @@ function GeneralTab({ view }: { view: DialogView }) {
           <PersonName person={dir.host} context="inline" dir={dir} />
         </Row>
         <Row label={copy.server}>
-          {alias && alias !== server ? (
+          {server && server !== address ? (
             <>
               <span className="shrink-0 whitespace-nowrap" translate="no">
-                {alias}
+                {server}
               </span>
               <span aria-hidden="true">·</span>
             </>
           ) : null}
-          {server ? (
+          {address ? (
             <CopyField
-              value={server}
+              value={address}
               label={copy.serverAddress}
               truncate="end"
               className="min-w-0"

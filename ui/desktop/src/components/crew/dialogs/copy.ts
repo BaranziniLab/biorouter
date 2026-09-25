@@ -146,10 +146,14 @@ export const inviteCopy = {
   invited: 'invited',
   sendInvitation: (first: string) => `Send ${first} this invitation:`,
   invitationLabel: 'invitation message',
-  installed: (username: string, server: string) =>
-    `Is Crew installed for @${username} on ${server}?`,
+  /**
+   * Collapsed under the result: what to do if the joiner's Crew says it isn't set up — in the words
+   * the joiner's screen uses (`notSetUpCopy.title`), not a question only IT can answer (QA Q4-37).
+   */
+  installed: (first: string) => `If ${first} sees “Crew isn’t set up”`,
+  /** One sentence, then the commands: who to send them to, and whose account they install into. */
   installLead: (username: string, server: string) =>
-    `Crew runs from ~/.local/bin/biorouter-crew in each person’s own account. If Crew is installed on ${server} for everyone, @${username} copies it there with these commands; if not, ask your IT team to install it:`,
+    `Send this to whoever runs ${server || 'the server'}, to run in @${username}’s account:`,
   /** Runnable as written: copies the server-wide install, with no placeholder path (QA T-44). */
   installCommands: [
     'mkdir -p "$HOME/.local/bin"',
@@ -159,6 +163,8 @@ export const inviteCopy = {
   installCommandsLabel: 'install commands',
   nextStep: (first: string) =>
     `When ${first} sends you a code, choose Let in… next to their name in the sidebar.`,
+  /** After `nextStep`: when the invitation runs out (QA Q4-36). `phrase` is `expiryPhrase`'s. */
+  expires: (phrase: string) => `This invitation ${phrase}.`,
   done: 'Done',
   /** After an invitation, start again with an empty field (QA T-44). */
   inviteAnother: 'Invite another',
@@ -175,7 +181,8 @@ export const inviteCopy = {
       `Invite @${canonical} instead: that’s the account’s exact name.`,
   },
   legacy: {
-    toggle: 'Invite someone using an older version of Biorouter',
+    /** Nothing the host can know about the joiner's version, asked as a question (QA Q4-37). */
+    toggle: 'Other ways to invite (older Biorouter)',
     joinRequest: 'Their join request',
     joinRequestPlaceholder: 'Paste the join request they sent you',
     joinRequestInvalid: 'This join request has no device key. Ask them to copy it again.',
@@ -188,6 +195,15 @@ export const inviteCopy = {
     sendToken: (first: string) => `Send this to ${first}. It works once and expires in an hour.`,
     someone: 'them',
   },
+} as const;
+
+/**
+ * An invitation's expiry, the one wording the Invite result, Let in and the sidebar share (QA
+ * Q4-36): "expires Sat 1:41 AM", or "expired" once past.
+ */
+export const expiryCopy = {
+  expires: (when: string) => `expires ${when}`,
+  expired: 'expired',
 } as const;
 
 export const letInCopy = {

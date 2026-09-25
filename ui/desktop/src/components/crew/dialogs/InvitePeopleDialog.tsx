@@ -14,7 +14,7 @@ import type { ErrorSource } from '../state/types';
 import { inviteCopy as copy } from './copy';
 import { AdornedInput, DialogErrorNote, Field, helpId, useDialogError } from './fields';
 import { enrollmentInviteFrom, legacyTokenFrom, parseJoinRequest } from './joinRequest';
-import { firstName } from './people';
+import { expiryPhrase, firstName } from './people';
 import { inviteRefusal, newRouteFailureText, refusalText } from './refusals';
 import { useDialogView } from './workspace';
 
@@ -52,6 +52,10 @@ export interface InvitePeopleDialogProps {
  * Nothing is looked up per keystroke (a name lookup can block the broker on LDAP). A refusal says
  * why in the copy deck's words where it has them, and offers the account's exact spelling rather
  * than accepting a near miss. Older brokers keep the token path under its own disclosure.
+ *
+ * The server is named as the person names it — "their login on lab-server", never its address
+ * (QA Q4-34). The result says when the invitation expires (QA Q4-36), and what to do if the joiner
+ * sees "Crew isn't set up" stays collapsed, with nothing to decide about it now (QA Q4-37).
  */
 export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
   const { crew, dir, workspace, server } = useDialogView();
@@ -127,6 +131,8 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
   if (result) {
     const person = joinerPerson(result.username, result.full_name);
     const first = firstName(person);
+    // When the invitation runs out, after what to do next (QA Q4-36).
+    const expires = expiryPhrase(result.expires_at);
     return (
       <ModalShell
         open
@@ -183,7 +189,9 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               </Note>
             )}
           </div>
-          <Disclosure label={copy.installed(result.username, server)}>
+          {/* What to do if the joiner's Crew says it isn't set up: collapsed, in the joiner's own
+              words, and handed to whoever runs the server (QA Q4-37). */}
+          <Disclosure label={copy.installed(first)}>
             <div className="flex flex-col gap-2 pt-2">
               <p className="text-supporting text-text-muted">
                 {copy.installLead(result.username, server)}
@@ -198,7 +206,10 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               />
             </div>
           </Disclosure>
-          <p className="text-supporting text-text-muted">{copy.nextStep(first)}</p>
+          <p className="text-supporting text-text-muted">
+            {copy.nextStep(first)}
+            {expires ? ` ${copy.expires(expires)}` : null}
+          </p>
         </div>
       </ModalShell>
     );
