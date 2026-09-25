@@ -8,6 +8,7 @@ import { Switch } from '../../ui/switch';
 import { Copy } from '../../icons/app-icons';
 import type { CrewConnection } from '../crewApi';
 import { connectionServer, isInstitutionId } from '../identity';
+import { useInitialFocus } from '../onboarding/fields';
 import { connectionServerLabel } from '../onboarding/joinText';
 import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
@@ -149,7 +150,9 @@ export interface ConnectionSettingsDialogProps {
  * - "Your server login" keeps the saved target — it is what connects — and says what the person's
  *   own SSH settings call that server when everywhere else shows the alias (QA Q3-39).
  * - It opens with the caret at the end of the connection's name, not the whole name selected, so
- *   the first key typed adds to the name rather than replacing it (QA Q3-43).
+ *   the first key typed adds to the name rather than replacing it (QA Q3-43), and the name keeps
+ *   that focus while the menu that opened the dialog finishes closing (`useInitialFocus`): opened
+ *   with the pointer, focus used to drop to `<body>` a quarter of a second later (QA Q4-33).
  */
 export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSettingsDialogProps) {
   const { crew } = useDialogView(connectionId);
@@ -194,6 +197,8 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   // Once, as the dialog opens: the caret at the end of the name. The dialog's own first-field focus
   // selects the whole name, which the first key typed then replaced (QA Q3-43).
   const caretPlaced = React.useRef(false);
+  const nameRef = React.useRef<HTMLInputElement>(null);
+  useInitialFocus(nameRef, true);
   const placeCaretAtEnd = (event: React.FocusEvent<HTMLInputElement>) => {
     if (caretPlaced.current) return;
     caretPlaced.current = true;
@@ -295,6 +300,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
         <Field id={ids.name} label={copy.name}>
           <Input
             id={ids.name}
+            ref={nameRef}
             // Focused by React as it mounts, before the dialog's focus scope would move focus to
             // the first field and select it, so the caret goes where `placeCaretAtEnd` puts it.
             autoFocus

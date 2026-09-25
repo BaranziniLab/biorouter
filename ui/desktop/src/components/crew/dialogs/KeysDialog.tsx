@@ -6,6 +6,7 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { FileText, KeyRound, Lock } from '../../icons/app-icons';
 import type { CrewConnection, CrewDevice } from '../crewApi';
+import { useInitialFocus } from '../onboarding/fields';
 import type { ErrorSource } from '../state/types';
 import { keysCopy as copy } from './copy';
 import { DialogErrorNote } from './fields';
@@ -122,7 +123,9 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
  * send them to review it: each device's fingerprint, and under it, on its own left-aligned line,
  * when and how it was added (QA Q3-41). When this computer is the only device, that line sits under
  * its fingerprint above and nothing repeats the fingerprint. The dialog opens on Done: it is read,
- * not filled in, and the first key must not copy anything.
+ * not filled in, and the first key must not copy anything. Done keeps that focus while the menu
+ * that opened the dialog finishes closing (`useInitialFocus`): opened with the pointer from the You
+ * menu, focus used to drop to `<body>` a quarter of a second later (QA Q4-33).
  */
 export function KeysDialog({ onClose }: KeysDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -140,6 +143,8 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
   // The account's one device is this computer: its fingerprint is already in the box above.
   const onlyThisDevice =
     thisDevice !== null && devices.length === 1 && devices[0].fingerprint === thisDevice;
+  const doneRef = React.useRef<HTMLButtonElement>(null);
+  useInitialFocus(doneRef, true);
 
   const readStatus = React.useCallback(async () => {
     const generation = ++reads.current;
@@ -196,7 +201,7 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
       purpose="info"
       title={copy.title}
       footer={
-        <Button autoFocus onClick={onClose}>
+        <Button ref={doneRef} autoFocus onClick={onClose}>
           {copy.done}
         </Button>
       }

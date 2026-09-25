@@ -501,6 +501,29 @@ describe('Edit profile (QA Q3-42, Q3-43)', () => {
     expect(screen.queryByText(profileCopy.prefilled('lab-server'))).toBeNull();
   });
 
+  it('opens with the caret at the end of the name, like Connection settings (QA Q4-41)', async () => {
+    renderWithCrew(<EditProfileDialog onClose={vi.fn()} />, {
+      snapshot: makeSnapshot({ actor: bob, principals: [alice, bob] }),
+    });
+    const name = (await screen.findByLabelText(profileCopy.displayName)) as HTMLInputElement;
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(name).toHaveValue('Bob Lee');
+    // Selected, the first key typed replaced the whole name.
+    expect(name.selectionStart).toBe('Bob Lee'.length);
+    expect(name.selectionEnd).toBe('Bob Lee'.length);
+    // The menu that opened it can drop focus to <body> as it closes: the name takes it back.
+    act(() => name.blur());
+    await waitFor(() => expect(name).toHaveFocus());
+  });
+
+  it('does not spell-check Initials (QA Q4-41)', async () => {
+    renderProfile();
+    expect(await screen.findByLabelText(profileCopy.initials)).toHaveAttribute(
+      'spellcheck',
+      'false'
+    );
+  });
+
   it('shows the initial the avatar will derive, until the person types their own', async () => {
     renderProfile();
     const name = await screen.findByLabelText(profileCopy.displayName);

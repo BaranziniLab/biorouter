@@ -1,9 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../ui/dropdown-menu';
 import { keysCopy } from './copy';
-import { alice, connection, makeSnapshot, renderWithCrew } from './dialogsTestHarness';
+import {
+  alice,
+  connection,
+  installResizeObserverStub,
+  makeSnapshot,
+  renderWithCrew,
+} from './dialogsTestHarness';
 import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { CREDENTIAL_BACKENDS, KeysDialog, keysErrorText, STATUS_PATIENCE_MS } from './KeysDialog';
 
@@ -12,6 +26,8 @@ import { CREDENTIAL_BACKENDS, KeysDialog, keysErrorText, STATUS_PATIENCE_MS } fr
  * (`crew:credentials`). QA Q2-02: the daemon started reporting `backend: "file"`, the main process
  * refused it, and the dialog showed Electron's raw "Error invoking remote method…" in red forever.
  */
+
+installResizeObserverStub();
 
 const SRC = join(__dirname, '../../..');
 const IPC_REFUSAL =
@@ -218,5 +234,39 @@ describe('KeysDialog, the layout (QA Q3-41)', () => {
       expect(meta).toHaveAttribute('data-crew-device-meta');
       expect(meta).not.toHaveClass('text-right');
     }
+  });
+});
+
+/** A menu whose one item opens the dialog, as the You row's menu opens Keys and security. */
+function OpenFromMenu({ children }: { children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger>You</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={() => setOpen(true)}>{keysCopy.title}…</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {open ? children(() => setOpen(false)) : null}
+    </>
+  );
+}
+
+describe('KeysDialog, opened from a menu with the pointer (QA Q4-33)', () => {
+  it('keeps focus on Done while the menu that opened it closes', async () => {
+    credentials.mockResolvedValue({ backend: 'keyring', initialized: true, locked: false });
+    const user = userEvent.setup();
+    renderWithCrew(<OpenFromMenu>{(close) => <KeysDialog onClose={close} />}</OpenFromMenu>);
+    await user.click(screen.getByRole('button', { name: 'You' }));
+    await user.click(await screen.findByRole('menuitem', { name: `${keysCopy.title}…` }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    const done = await screen.findByRole('button', { name: keysCopy.done });
+    await waitFor(() => expect(done).toHaveFocus());
+    // The closing menu drops focus to <body> a moment later in the app (218–271 ms, Carol R4-3):
+    // the dialog takes it back rather than leaving the person nowhere.
+    act(() => done.blur());
+    expect(document.activeElement).toBe(document.body);
+    await waitFor(() => expect(done).toHaveFocus());
   });
 });

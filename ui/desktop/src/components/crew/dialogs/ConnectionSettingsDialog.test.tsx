@@ -1,5 +1,13 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../ui/dropdown-menu';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { ConnectionSettingsDialog } from './ConnectionSettingsDialog';
 import { confirmCopy, connectionSettingsCopy } from './copy';
@@ -44,6 +52,42 @@ describe('ConnectionSettingsDialog', () => {
     const name = (await screen.findByLabelText('Connection name')) as HTMLInputElement;
     await waitFor(() => expect(name).toHaveFocus());
     // Selected, the first key typed replaced the whole name.
+    expect(name.selectionStart).toBe('chen-lab'.length);
+    expect(name.selectionEnd).toBe('chen-lab'.length);
+  });
+
+  it('keeps focus on the name, caret at the end, when a menu opened it with the pointer (QA Q4-33)', async () => {
+    const saved = { ...connection, name: 'chen-lab' };
+    function OpenFromMenu() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <>
+          <DropdownMenu>
+            <DropdownMenuTrigger>Workspace</DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onSelect={() => setOpen(true)}>
+                Connection settings…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {open ? (
+            <ConnectionSettingsDialog connectionId={saved.id} onClose={() => setOpen(false)} />
+          ) : null}
+        </>
+      );
+    }
+    const user = userEvent.setup();
+    renderWithCrew(<OpenFromMenu />, { connections: [saved] });
+    await user.click(screen.getByRole('button', { name: 'Workspace' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Connection settings…' }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    const name = (await screen.findByLabelText('Connection name')) as HTMLInputElement;
+    await waitFor(() => expect(name).toHaveFocus());
+    // The closing menu drops focus to <body> a moment later in the app (Carol R4-3): the dialog
+    // takes it back, and the caret is still where the person expects it.
+    act(() => name.blur());
+    expect(document.activeElement).toBe(document.body);
+    await waitFor(() => expect(name).toHaveFocus());
     expect(name.selectionStart).toBe('chen-lab'.length);
     expect(name.selectionEnd).toBe('chen-lab'.length);
   });

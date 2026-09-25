@@ -5,6 +5,7 @@ import { Input } from '../../ui/input';
 import { avatarInitials } from '../../ui/avatar';
 import { isRecord } from '../api/parse';
 import { displayNameIsUsername, usableName } from '../identity';
+import { useInitialFocus } from '../onboarding/fields';
 import { connectionServerLabel } from '../onboarding/joinText';
 import type { ErrorSource } from '../state/types';
 import { profileCopy as copy } from './copy';
@@ -35,6 +36,11 @@ export interface EditProfileDialogProps {
  * account on {server}. Save to use it." — so a prefilled name never reads as one already in use,
  * and Initials shows the initial the avatar will derive from it until the person types their own
  * (QA Q3-43). The dialog is the forms' width, 480, like Keys, Connection settings and Join (Q3-42).
+ *
+ * It opens with the caret at the end of the name, as Connection settings does, not the whole name
+ * selected — the first key typed then added to the name instead of replacing it — and the name
+ * keeps that focus while the menu that opened the dialog finishes closing (QA Q4-41, Q4-33).
+ * Initials, like the name, is not a word to spell-check (QA Q4-41).
  */
 export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
   const { crew, dir } = useDialogView();
@@ -50,6 +56,16 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
   const [suggestion, setSuggestion] = React.useState<string | null>(null);
   const problem = displayNameProblem(name);
   const nameRef = useCustomValidity<HTMLInputElement>(problem);
+  useInitialFocus(nameRef, true);
+  // Once, as the dialog opens: the caret at the end of the name (QA Q4-41). The dialog's own
+  // first-field focus selected the whole name, which the first key typed then replaced.
+  const caretPlaced = React.useRef(false);
+  const placeCaretAtEnd = (event: React.FocusEvent<HTMLInputElement>) => {
+    if (caretPlaced.current) return;
+    caretPlaced.current = true;
+    const input = event.currentTarget;
+    input.setSelectionRange(input.value.length, input.value.length);
+  };
   const saving = crew.isPending(KEY);
   const request = crew.request;
 
@@ -121,6 +137,10 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
           <Input
             id={nameId}
             ref={nameRef}
+            // Focused by React as it mounts, before the dialog's focus scope would focus the first
+            // field and select it, so the caret goes where `placeCaretAtEnd` puts it.
+            autoFocus
+            onFocus={placeCaretAtEnd}
             required
             autoComplete="name"
             // A name is not a word to correct: "crew_erin" drew a red squiggle (QA Q2-30).
@@ -155,6 +175,8 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
             id={initialsId}
             maxLength={12}
             autoComplete="off"
+            // Initials are not a word to correct: "AC" drew a red squiggle (QA Q4-41).
+            spellCheck={false}
             placeholder={derivedInitials || undefined}
             value={initials}
             onChange={(event) => setInitials(event.target.value)}
