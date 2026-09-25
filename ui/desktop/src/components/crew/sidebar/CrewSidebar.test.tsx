@@ -9,6 +9,7 @@ import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext'
 import { crewStatusCopy } from '../state/copy';
 import { CrewSidebar } from './CrewSidebar';
 import { sidebarCopy } from './copy';
+import { MENU_COPY_CLOSE_MS, MENU_COPY_FAILED_MS } from './menuCopy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import {
   alice,
@@ -175,65 +176,192 @@ describe('CrewSidebar', () => {
 
 describe('the workspace menu’s fingerprint Copy (Q4-49)', () => {
   const KEY = '9dacd3e46f083a8a5b76c22ba7c39d939c81538ed20c6ee33e46c9d92931cad3';
+  const wm = sidebarCopy.workspaceMenu;
 
-  async function openMenu() {
+  function renderKeyed(overrides: Parameters<typeof makeController>[0] = {}) {
     const keyed = { ...connection, workspace_public_key: KEY };
     renderWithCrew(
       <SidebarAnnouncer>
         <CrewSidebar />
       </SidebarAnnouncer>,
-      makeController({ connection: keyed, connections: [keyed] })
+      makeController({ connection: keyed, connections: [keyed], ...overrides })
     );
     const user = userEvent.setup();
     // After `setup()`, which installs its own clipboard.
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
-    await user.click(screen.getByRole('button', { name: /^Fixture/ }));
+    const trigger = screen.getByRole('button', { name: /^Fixture/ });
+    return { user, writeText, trigger };
+  }
+
+  async function openMenu() {
+    const { user, writeText, trigger } = renderKeyed();
+    await user.click(trigger);
     const menu = await screen.findByRole('menu');
-    const item = await within(menu).findByRole('menuitem', {
-      name: sidebarCopy.workspaceMenu.copyFingerprintLabel,
+    const item = await within(menu).findByRole('menuitem', { name: wm.copyFingerprintLabel });
+    return { user, menu, item, writeText, trigger };
+  }
+
+  /**
+   * Opens the menu from the keyboard once the fingerprint is known — it is computed when the
+   * sidebar mounts, long before anyone opens the menu, which is the state the defect lived in.
+   */
+  async function openFromKeyboard(
+    key: string,
+    overrides: Parameters<typeof makeController>[0] = {}
+  ) {
+    const { user, trigger } = renderKeyed(overrides);
+    await user.click(trigger);
+    await within(await screen.findByRole('menu')).findByRole('menuitem', {
+      name: wm.copyFingerprintLabel,
     });
-    return { user, menu, item, writeText };
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await user.keyboard(key);
+    const menu = await screen.findByRole('menu');
+    const copyItem = within(menu).getByRole('menuitem', { name: wm.copyFingerprintLabel });
+    return { user, menu, copyItem, trigger };
   }
 
   it('sits on the fingerprint’s own line and copies the whole fingerprint, as host step 3 does', async () => {
     const { user, menu, item, writeText } = await openMenu();
     const line = menu.querySelector('[data-crew-menu-fingerprint]') as HTMLElement;
     expect(line).toContainElement(item);
-    expect(item).toHaveTextContent(sidebarCopy.workspaceMenu.copyFingerprint);
+    expect(item).toHaveTextContent(wm.copyFingerprint);
     await user.click(item);
     const full = await workspaceKeyFingerprint(KEY);
     expect(full).toMatch(/^[0-9a-f]{64}$/);
     expect(writeText).toHaveBeenCalledWith(full);
-    // It answers on the item, and the menu stays open with it.
-    await waitFor(() =>
-      expect(item).toHaveAccessibleName(sidebarCopy.workspaceMenu.copiedFingerprint)
-    );
-    expect(item).toHaveTextContent(sidebarCopy.workspaceMenu.copiedFingerprint);
+    // It answers on the item, in the menu that is still open…
+    await waitFor(() => expect(item).toHaveAccessibleName(wm.copiedFingerprint));
+    expect(item).toHaveTextContent(wm.copiedFingerprint);
     expect(item).toHaveAttribute('data-crew-copy-state', 'copied');
-    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(screen.getByRole('menu')).toBe(menu);
     expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
       sidebarCopy.clipboard.copied
     );
   });
 
-  it('is reached with the arrow keys, and leaves the menu’s description the header’s facts', async () => {
-    const { menu, item } = await openMenu();
-    // A real menu item, so the roving focus reaches it; static text in a menu is skipped.
-    expect(item).toHaveAttribute('role', 'menuitem');
+  it('then closes the menu like every sidebar menu’s copy, still saying "Copied" (Q3-57)', async () => {
+    const { user, item, trigger } = await openMenu();
+    await user.click(item);
+    await waitFor(() => expect(item).toHaveAttribute('data-crew-copy-state', 'copied'));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), {
+      timeout: MENU_COPY_CLOSE_MS + 1000,
+    });
+    // To the end of the exit, never "Copy" again as if the copy had been undone.
+    expect(item).toHaveTextContent(wm.copiedFingerprint);
+    await waitFor(() => expect(trigger).toHaveFocus());
+    // Opening the menu again gives the item its own word back.
+    await user.click(trigger);
+    const again = await screen.findByRole('menu');
+    const fresh = within(again).getByRole('menuitem', { name: wm.copyFingerprintLabel });
+    expect(fresh).toHaveTextContent(wm.copyFingerprint);
+    expect(fresh).toHaveAttribute('data-crew-copy-state', 'idle');
+  });
+
+  it('says so on the item when the clipboard refuses, and the menu stays for another try', async () => {
+    const { user, menu, item, writeText } = await openMenu();
+    writeText.mockRejectedValue(new Error('denied'));
+    await user.click(item);
+    await waitFor(() => expect(item).toHaveAccessibleName(wm.copyFingerprintFailed));
+    expect(item).toHaveAttribute('data-crew-copy-state', 'failed');
+    expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
+      sidebarCopy.clipboard.failed
+    );
+    await new Promise((resolve) => setTimeout(resolve, MENU_COPY_CLOSE_MS + 100));
+    expect(screen.getByRole('menu')).toBe(menu);
+    await waitFor(() => expect(item).toHaveAccessibleName(wm.copyFingerprintLabel), {
+      timeout: MENU_COPY_FAILED_MS + 1000,
+    });
+    expect(screen.getByRole('menu')).toBe(menu);
+  });
+
+  it('leaves the menu’s description the header’s facts', async () => {
+    const { menu } = await openMenu();
     const description = menu.getAttribute('aria-describedby') ?? '';
     expect(description).not.toBe('');
     expect(menu).toHaveAccessibleDescription(expect.stringContaining('Fingerprint'));
     expect(menu).not.toHaveAccessibleDescription(expect.stringMatching(/Copy|Copied/));
   });
 
-  it('says so on the item when the clipboard refuses', async () => {
-    const { user, item, writeText } = await openMenu();
-    writeText.mockRejectedValue(new Error('denied'));
-    await user.click(item);
+  // Round 2: the Copy is the menu's first item in DOM order, so Radix's first-item rule put a
+  // keyboard user on it ahead of every action.
+  it.each([
+    ['Enter', '{Enter}'],
+    ['Space', ' '],
+    ['ArrowDown', '{ArrowDown}'],
+  ])(
+    'is not where the keyboard lands: %s on the switcher focuses the host’s first action',
+    async (_, key) => {
+      const { menu, copyItem } = await openFromKeyboard(key);
+      const invite = within(menu).getByRole('menuitem', { name: wm.invite('Fixture') });
+      await waitFor(() => expect(invite).toHaveFocus());
+      expect(copyItem).not.toHaveFocus();
+      expect(copyItem).not.toHaveAttribute('data-highlighted');
+    }
+  );
+
+  it('lands a member on People…, their first action', async () => {
+    const { menu } = await openFromKeyboard('{Enter}', { isHost: false });
     await waitFor(() =>
-      expect(item).toHaveAccessibleName(sidebarCopy.workspaceMenu.copyFingerprintFailed)
+      expect(within(menu).getByRole('menuitem', { name: wm.people })).toHaveFocus()
     );
-    expect(item).toHaveAttribute('data-crew-copy-state', 'failed');
+  });
+
+  it('is reached with ArrowUp from the first action, where it is drawn, and left with ArrowDown', async () => {
+    const { user, menu, copyItem } = await openFromKeyboard('{Enter}');
+    const invite = within(menu).getByRole('menuitem', { name: wm.invite('Fixture') });
+    await waitFor(() => expect(invite).toHaveFocus());
+    await user.keyboard('{ArrowUp}');
+    await waitFor(() => expect(copyItem).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    await waitFor(() => expect(invite).toHaveFocus());
+  });
+
+  it.each(['{Home}', '{PageUp}'])('%s goes to the first action, not to the Copy', async (key) => {
+    const { user, menu, copyItem } = await openFromKeyboard('{Enter}');
+    const invite = within(menu).getByRole('menuitem', { name: wm.invite('Fixture') });
+    await waitFor(() => expect(invite).toHaveFocus());
+    await user.keyboard('{ArrowDown}{ArrowDown}');
+    await waitFor(() =>
+      expect(within(menu).getByRole('menuitem', { name: wm.privacy })).toHaveFocus()
+    );
+    await user.keyboard(key);
+    await waitFor(() => expect(invite).toHaveFocus());
+    // From the Copy itself, too.
+    await user.keyboard('{ArrowUp}');
+    await waitFor(() => expect(copyItem).toHaveFocus());
+    await user.keyboard(key);
+    await waitFor(() => expect(invite).toHaveFocus());
+  });
+
+  it('sends ArrowDown in a pointer-opened menu to the first action, and lets the pointer rest on the Copy', async () => {
+    const { user, menu, item } = await openMenu();
+    // A pointer-opened menu focuses no item.
+    expect(menu).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    const invite = within(menu).getByRole('menuitem', { name: wm.invite('Fixture') });
+    await waitFor(() => expect(invite).toHaveFocus());
+    // The pointer, though, goes where it is put.
+    await user.hover(item);
+    await waitFor(() => expect(item).toHaveFocus());
+    // End still goes to the last item.
+    await user.keyboard('{End}');
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: wm.add })).toHaveFocus());
+  });
+
+  it('keeps Radix’s own first item wherever the Copy is not shown', async () => {
+    renderWithCrew(<CrewSidebar />);
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('button', { name: /^Fixture/ });
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: wm.copyFingerprintLabel })).toBeNull();
+    await waitFor(() =>
+      expect(within(menu).getByRole('menuitem', { name: wm.invite('Fixture') })).toHaveFocus()
+    );
   });
 });
 

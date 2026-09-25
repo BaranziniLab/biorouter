@@ -4,6 +4,7 @@ import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
+import { useMenuCopyItem } from './menuCopy';
 import { useSidebarView } from './sidebarView';
 import { WorkspaceMenu } from './WorkspaceMenu';
 import './crew-sidebar.css';
@@ -33,6 +34,9 @@ export function isTruncated(element: HTMLElement | null): boolean {
  * The name keeps at least 10ch before it truncates, and when it does, the full name is in a
  * tooltip that opens to the RIGHT, never down over the status row (Q2-17: it sat over "Updates
  * unavailable"). A name that fits gets no tooltip at all: it would only repeat itself.
+ *
+ * The menu's open state lives here, with the fingerprint Copy's, so a landed copy closes the menu
+ * the way every sidebar menu's copy does (Q3-57, Q4-49).
  */
 export function WorkspaceSwitcher() {
   const crew = useCrew();
@@ -40,10 +44,12 @@ export function WorkspaceSwitcher() {
   const name = crew.connection ? title : '';
   const nameRef = useRef<HTMLSpanElement>(null);
   const [tipOpen, setTipOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const fingerprintCopy = useMenuCopyItem(setMenuOpen);
 
   return (
     <div className="crew-sidebar-band" data-crew-band="switcher">
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={fingerprintCopy.onOpenChange}>
         <Tooltip
           open={tipOpen}
           onOpenChange={(next) => setTipOpen(next && Boolean(name) && isTruncated(nameRef.current))}
@@ -70,7 +76,7 @@ export function WorkspaceSwitcher() {
             </TooltipContent>
           )}
         </Tooltip>
-        {crew.connection && <WorkspaceMenu title={name} />}
+        {crew.connection && <WorkspaceMenu title={name} fingerprintCopy={fingerprintCopy} />}
       </DropdownMenu>
     </div>
   );

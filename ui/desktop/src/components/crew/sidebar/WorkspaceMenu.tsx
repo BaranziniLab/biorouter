@@ -1,6 +1,13 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  type FocusEvent,
+  type KeyboardEvent,
+} from 'react';
 import { Check, Copy, LoaderCircle } from '../../icons/app-icons';
-import { COPY_FIELD_FEEDBACK_MS } from '../../ui/copy-field';
 import {
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -21,6 +28,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
+import { useMenuCopyItem, type MenuCopyItem, type MenuCopyState } from './menuCopy';
 import { useSidebarAnnounce, writeClipboard } from './SidebarAnnouncer';
 import { serverLabel, usePendingHost, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
@@ -114,7 +122,16 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   away for that reason), and in the menu it would sit unexplained beside "Your code doesn't
  *   change."; before verification there is nothing for it to confirm. It carries a small Copy
  *   (Q4-49), as host step 3 does — step 3 says "Your workspace menu shows it too", and selecting
- *   text inside a menu is not something a person tries — see {@link FingerprintCopy}.
+ *   text inside a menu is not something a person tries — see {@link FingerprintCopy}. It answers
+ *   with every sidebar menu copy's timing (Q3-57, `useMenuCopyItem`): "Copied", then the menu
+ *   closes; a refused copy reads "Couldn't copy" and the menu stays. So the menu's open state is
+ *   the switcher's, beside the Copy's, as the You row holds its menu's.
+ * - That Copy is never where the keyboard lands (Q4-49 round 2). It is the menu's first item in
+ *   DOM order, because it is drawn on the header's fingerprint line, so Radix's first-item rule
+ *   (a keyboard open, Home, PageUp, ArrowDown from the menu itself) would put a person on "Copy
+ *   workspace fingerprint" ahead of every action. Those land on the first action instead
+ *   ({@link useFirstStopSkipsHeaderCopy}); ArrowUp from there reaches the Copy, in the order it is
+ *   drawn.
  * - While a join waits for the host, Reconnect and Disconnect each say what they do and that the
  *   code already sent survives it (Q2-43, Q3-47): "Try the connection again. Your code doesn't
  *   change." and "Stop waiting for now. {host} can still let you in with the same code." The code
@@ -133,7 +150,14 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   shows only the last verified copy. React authorizes nothing: the daemon and broker decide
  *   every action these open.
  */
-export function WorkspaceMenu({ title }: { title: string }) {
+export function WorkspaceMenu({
+  title,
+  fingerprintCopy,
+}: {
+  title: string;
+  /** The Copy's state, owned by the switcher with the menu's open state so a copy can close it. */
+  fingerprintCopy?: MenuCopyItem;
+}) {
   const crew = useCrew();
   const { dir, verified } = useSidebarView(crew);
   const {
@@ -153,7 +177,10 @@ export function WorkspaceMenu({ title }: { title: string }) {
   const keptId = useId();
   const fingerprintHex = useWorkspaceKeyFingerprint(connection?.workspace_public_key);
   const copyLabelId = useId();
-  const fingerprintCopy = useFingerprintCopy();
+  const { announce } = useSidebarAnnounce();
+  const ownCopy = useMenuCopyItem(keepOpen);
+  const copyItem = fingerprintCopy ?? ownCopy;
+  const firstStop = useFirstStopSkipsHeaderCopy();
   if (!connection) return null;
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
@@ -167,12 +194,20 @@ export function WorkspaceMenu({ title }: { title: string }) {
     fingerprintHex && status === 'connected' ? groupedFingerprint(fingerprintHex) : '';
   const joining = status === 'not-joined';
 
+  const copyFingerprint = async (value: string) => {
+    const copied = await copyItem.run(() => writeClipboard(value));
+    announce(copied ? sidebarCopy.clipboard.copied : sidebarCopy.clipboard.failed);
+  };
+
   return (
     <DropdownMenuContent
       align="start"
       className="w-72"
       data-crew-menu="workspace"
       aria-describedby={reason ? `${headerId} ${reasonId}` : headerId}
+      ref={firstStop.ref}
+      onFocus={firstStop.onFocus}
+      onKeyDownCapture={firstStop.onKeyDownCapture}
     >
       <div id={headerId} className="crew-sidebar-menu-header" data-crew-menu-header="">
         <span className="crew-sidebar-truncate text-label text-text-default">{title}</span>
@@ -227,8 +262,8 @@ export function WorkspaceMenu({ title }: { title: string }) {
             </span>
             <FingerprintCopy
               labelId={copyLabelId}
-              state={fingerprintCopy.state}
-              onCopy={() => void fingerprintCopy.run(fingerprintHex)}
+              state={copyItem.state}
+              onCopy={() => void copyFingerprint(fingerprintHex)}
             />
           </span>
         )}
@@ -240,7 +275,7 @@ export function WorkspaceMenu({ title }: { title: string }) {
         // The Copy's name, outside the header: the header is the menu's description, and a name
         // inside it would add "Copy workspace fingerprint" to what the menu is described as.
         <span id={copyLabelId} hidden>
-          {fingerprintCopyLabel(fingerprintCopy.state)}
+          {fingerprintCopyLabel(copyItem.state)}
         </span>
       )}
       <DropdownMenuSeparator />
@@ -362,10 +397,11 @@ export function WorkspaceMenu({ title }: { title: string }) {
   );
 }
 
-type FingerprintCopyState = 'idle' | 'copied' | 'failed';
+/** A workspace menu rendered without its switcher has no menu state to close; the Copy still answers. */
+const keepOpen = () => {};
 
 /** The Copy's accessible name: what it copies, then what became of the copy. */
-function fingerprintCopyLabel(state: FingerprintCopyState): string {
+function fingerprintCopyLabel(state: MenuCopyState): string {
   return state === 'copied'
     ? copy.copiedFingerprint
     : state === 'failed'
@@ -373,32 +409,99 @@ function fingerprintCopyLabel(state: FingerprintCopyState): string {
       : copy.copyFingerprintLabel;
 }
 
+/** Keys that send Radix to a menu's first item from one of its items. */
+const FIRST_FROM_ITEM: ReadonlySet<string> = new Set(['Home', 'PageUp']);
+/** …and from the menu itself, which holds focus after a pointer opened it. */
+const FIRST_FROM_MENU: ReadonlySet<string> = new Set(['Home', 'PageUp', 'ArrowDown']);
+
 /**
- * The fingerprint Copy's state (Q4-49). It answers on the control for as long as a `CopyField`
- * does, then reads Copy again, and says the same thing politely. The menu stays open — the answer
- * is on the item — and since the switcher owns the menu's open state, nothing here closes it.
+ * Where the menu's first stop goes instead of the header's Copy: the first enabled item after it,
+ * in this menu (a submenu's items are portalled elsewhere). `null` when the Copy is not shown —
+ * then nothing here intervenes and Radix's own rule stands.
  */
-function useFingerprintCopy() {
-  const { announce } = useSidebarAnnounce();
-  const [state, setState] = useState<FingerprintCopyState>('idle');
-  const timer = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    []
+function firstActionAfterHeaderCopy(content: HTMLElement | null): HTMLElement | null {
+  if (!content?.querySelector('[data-crew-copy-fingerprint]')) return null;
+  const items = Array.from(content.querySelectorAll<HTMLElement>('[role^="menuitem"]'));
+  return (
+    items.find(
+      (item) =>
+        item.closest('[data-radix-menu-content]') === content &&
+        !item.hasAttribute('data-crew-copy-fingerprint') &&
+        !item.hasAttribute('data-disabled')
+    ) ?? null
   );
-  const run = async (value: string) => {
-    const copied = await writeClipboard(value);
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    setState(copied ? 'copied' : 'failed');
-    announce(copied ? sidebarCopy.clipboard.copied : sidebarCopy.clipboard.failed);
-    timer.current = window.setTimeout(() => {
-      timer.current = null;
-      setState('idle');
-    }, COPY_FIELD_FEEDBACK_MS);
+}
+
+/**
+ * Keeps the header's fingerprint Copy from being the menu's first stop (Q4-49 round 2).
+ *
+ * Radix sends focus to a menu's first item in DOM order when the keyboard opens it (its entry
+ * focus), and on Home or PageUp, or ArrowDown while the menu itself holds focus. Here that item is
+ * the Copy on the header's fingerprint line, so Enter on the switcher put a keyboard or
+ * screen-reader user on "Copy workspace fingerprint" instead of "Invite people to {workspace}…"
+ * or "People…". Each of those goes to the first action instead; ArrowUp from it still reaches the
+ * Copy, where it is drawn. The Copy keeps its place in the DOM, so the order the arrows walk is
+ * the order a person sees.
+ *
+ * - The keys are taken in the capture phase, before the item's roving handler (which moves focus
+ *   on a timer) or the menu's own sees them.
+ * - The entry focus cannot be cancelled from here — `DropdownMenuContent` does not take Radix's
+ *   `onEntryFocus` — so it is recognised as it lands: focus reaching the Copy from the menu itself,
+ *   while the keyboard is in use, before any key has gone down inside this menu. That is Radix's
+ *   own condition for an entry focus: `Menu` focuses the first item only while a key was pressed
+ *   since the last pointer down or move (its `isUsingKeyboardRef`, tracked here the same way). The
+ *   pointer resting on the Copy is not it (the pointer moved), and neither is typeahead (a key went
+ *   down in the menu). Focus moves on within the same task, before anything is painted or read.
+ */
+function useFirstStopSkipsHeaderCopy() {
+  const usingKeyboard = useRef(false);
+  const keyInMenu = useRef(false);
+  useEffect(() => {
+    const onPointer = () => {
+      usingKeyboard.current = false;
+    };
+    const onKeyDown = () => {
+      usingKeyboard.current = true;
+      document.addEventListener('pointerdown', onPointer, { capture: true, once: true });
+      document.addEventListener('pointermove', onPointer, { capture: true, once: true });
+    };
+    document.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, { capture: true });
+      document.removeEventListener('pointerdown', onPointer, { capture: true });
+      document.removeEventListener('pointermove', onPointer, { capture: true });
+    };
+  }, []);
+
+  // The content mounts afresh each time the menu opens: no key has gone down in it yet.
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    if (node) keyInMenu.current = false;
+  }, []);
+
+  const onFocus = (event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (!target.hasAttribute('data-crew-copy-fingerprint')) return;
+    if (event.relatedTarget !== event.currentTarget) return;
+    if (!usingKeyboard.current || keyInMenu.current) return;
+    firstActionAfterHeaderCopy(event.currentTarget)?.focus({ preventScroll: true });
   };
-  return { state, run };
+
+  const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>) => {
+    const menu = event.currentTarget;
+    const target = event.target as HTMLElement;
+    // A key in the Add a workspace submenu reaches here through the React tree; it is its own.
+    if (target.closest('[data-radix-menu-content]') !== menu) return;
+    keyInMenu.current = true;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const keys = target === menu ? FIRST_FROM_MENU : FIRST_FROM_ITEM;
+    if (!keys.has(event.key)) return;
+    const action = firstActionAfterHeaderCopy(menu);
+    if (!action) return;
+    event.preventDefault();
+    action.focus();
+  };
+
+  return { ref, onFocus, onKeyDownCapture };
 }
 
 /**
@@ -407,7 +510,8 @@ function useFingerprintCopy() {
  * as a compact control on the fingerprint's own line. It copies the whole fingerprint, the value
  * host step 3's Copy copies; the line shows its first 16 digits, grouped. Its name comes from a
  * label outside the header (`labelId`), and its visible word is hidden from the accessibility tree,
- * so the menu's description — the header — does not end in "Copy". Selecting it keeps the menu open.
+ * so the menu's description — the header — does not end in "Copy". Selecting it does not close
+ * the menu there and then: the item answers first, and `useMenuCopyItem` closes it.
  */
 function FingerprintCopy({
   labelId,
@@ -415,7 +519,7 @@ function FingerprintCopy({
   onCopy,
 }: {
   labelId: string;
-  state: FingerprintCopyState;
+  state: MenuCopyState;
   onCopy(): void;
 }) {
   return (
@@ -425,7 +529,7 @@ function FingerprintCopy({
       data-crew-copy-fingerprint=""
       data-crew-copy-state={state}
       onSelect={(event) => {
-        // Stay open: the item itself shows whether the copy landed.
+        // Not yet: the item shows whether the copy landed, then a landed copy closes the menu.
         event.preventDefault();
         onCopy();
       }}
