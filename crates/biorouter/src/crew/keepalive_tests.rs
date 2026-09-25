@@ -1008,10 +1008,11 @@ async fn a_run_that_read_only_the_earlier_copy_says_a_newer_one_was_not_read() {
     f.manager.forget_run_reads(WORKER);
     f.manager.note_run_context(
         WORKER,
+        "context.manifest",
         &json!({"messages": [
-            {"created_at": 30, "attachments": ["blob-new"]},
-            {"created_at": 20, "attachments": ["blob-outside"]},
-            {"created_at": 10, "attachments": ["blob-old"]},
+            {"id": "m3", "sequence": "m3", "created_at": 30, "attachments": ["blob-new"]},
+            {"id": "m2", "sequence": "m2", "created_at": 20, "attachments": ["blob-outside"]},
+            {"id": "m1", "sequence": "m1", "created_at": 10, "attachments": ["blob-old"]},
         ]}),
     );
     f.manager
