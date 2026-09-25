@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { Bot } from '../icons/app-icons';
-import { AVATAR_HUE_COUNT, Avatar, avatarHue, avatarInitials, avatarTextLimit } from './avatar';
+import {
+  AVATAR_HUE_COUNT,
+  AVATAR_PAIR_MIN_SIZE,
+  Avatar,
+  avatarHue,
+  avatarInitials,
+  avatarTextLimit,
+} from './avatar';
 
 const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 const THEME_CONTRACT = readFileSync(
@@ -16,14 +23,14 @@ const tile = (container: HTMLElement) =>
 
 describe('avatarInitials — the one fallback rule (L16)', () => {
   it.each([
-    ['Alice Chen', 'alice', 'AC'],
+    ['Alice Chen', 'alice', 'A'],
     ['alice', 'alice', 'A'],
-    ['Mary Ann Smith', 'msmith', 'MA'],
-    ['  Bob   Lee  ', 'bob', 'BL'],
-    ['élodie durand', 'edurand', 'ÉD'],
-    ['李 小龙', 'xli', '李小'],
-    ['(Sam) Park', 'spark', 'SP'],
-  ])('takes up to two word initials from %j', (name, username, expected) => {
+    ['Mary Ann Smith', 'msmith', 'M'],
+    ['  Bob   Lee  ', 'bob', 'B'],
+    ['élodie durand', 'edurand', 'É'],
+    ['李 小龙', 'xli', '李'],
+    ['(Sam) Park', 'spark', 'S'],
+  ])('takes the first word’s initial from %j', (name, username, expected) => {
     expect(avatarInitials(name, username)).toBe(expected);
   });
 
@@ -88,22 +95,25 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
     expect(avatarInitials('bobad.ucsf.edu', 'bob@ad.ucsf.edu')).toBe('B');
     expect(avatarInitials('BobAD.ucsf.edu', 'bob@ad.ucsf.edu')).toBe('B');
     expect(avatarInitials('crew_bobad.ucsf.edu', 'crew_bob@ad.ucsf.edu')).toBe('B');
-    expect(avatarInitials(null, 'bob@ad.ucsf.edu')).toBe('BO');
+    expect(avatarInitials(null, 'bob@ad.ucsf.edu')).toBe('B');
     expect(avatarInitials(null, 'crew_bob@ad.ucsf.edu')).toBe('B');
     expect(avatarInitials(null, 'alice.chen@ucsf.edu')).toBe('C');
-    expect(avatarInitials('', 'bob\uFF20ad.ucsf.edu')).toBe('BO');
+    expect(avatarInitials('', 'bob\uFF20ad.ucsf.edu')).toBe('B');
     for (const username of ['bob@ad.ucsf.edu', 'alice@ad.ucsf.edu', 'alice.chen@ucsf.edu']) {
       expect(avatarInitials(username.replace('@', ''), username)).not.toBe('E');
       expect(avatarInitials(null, username)).not.toMatch(/^E/);
     }
   });
 
-  it('still gives a real display name two initials, separators and all', () => {
-    expect(avatarInitials('Alice Chen', 'crew_alice')).toBe('AC');
-    expect(avatarInitials('Carol Nguyen', 'crew_carol')).toBe('CN');
-    expect(avatarInitials('Mary-Jane Watson', 'mjw')).toBe('MW');
-    expect(avatarInitials('J.R.R. Tolkien', 'jrrt')).toBe('JT');
-    expect(avatarInitials('Bob Lee', 'bob@ad.ucsf.edu')).toBe('BL');
+  it('reads a real display name by its first word, separators and all', () => {
+    expect(avatarInitials('Alice Chen', 'crew_alice')).toBe('A');
+    expect(avatarInitials('Carol Nguyen', 'crew_carol')).toBe('C');
+    expect(avatarInitials('Mary-Jane Watson', 'mjw')).toBe('M');
+    expect(avatarInitials('J.R.R. Tolkien', 'jrrt')).toBe('J');
+    expect(avatarInitials('Bob Lee', 'bob@ad.ucsf.edu')).toBe('B');
+    // The name the person chose, not their username, gives the letter.
+    expect(avatarInitials('Zoe Adams', 'crew_alice')).toBe('Z');
+    expect(avatarInitials('Henry Ito', 'hito@ad.ucsf.edu')).toBe('H');
   });
 
   /**
@@ -121,13 +131,14 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
     expect(avatarInitials(name, username)).toBe(expected);
   });
 
-  it('falls back to the first two letters of an unseparated username', () => {
-    expect(avatarInitials('', 'bob')).toBe('BO');
-    expect(avatarInitials(null, 'bob')).toBe('BO');
-    expect(avatarInitials('🧬 🔬', 'alice')).toBe('AL');
-    expect(avatarInitials(undefined, '@x9')).toBe('X9');
+  it('falls back to the first letter of an unseparated username', () => {
+    expect(avatarInitials('', 'bob')).toBe('B');
+    expect(avatarInitials(null, 'bob')).toBe('B');
+    expect(avatarInitials('🧬 🔬', 'alice')).toBe('A');
+    expect(avatarInitials(undefined, '@x9')).toBe('X');
+    expect(avatarInitials(undefined, '9lives')).toBe('9');
     // One lettered part is not a separated handle.
-    expect(avatarInitials(null, 'crew_')).toBe('CR');
+    expect(avatarInitials(null, 'crew_')).toBe('C');
   });
 
   it('reads a separated username the same way as a separated display name', () => {
@@ -140,13 +151,45 @@ describe('avatarInitials — the one fallback rule (L16)', () => {
   it('yields nothing rather than an ID-like placeholder when there is nothing to read', () => {
     expect(avatarInitials('', '')).toBe('');
     expect(avatarInitials(null, null)).toBe('');
+    expect(avatarInitials('🧬', '___')).toBe('');
+  });
+
+  /**
+   * Q3-62: the rule itself gives one character, so no caller — a tile of any
+   * size, or anything that borrows the rule later — can show a person as "HI"
+   * in one place and "H" in another.
+   */
+  it('gives one character for every shape of name', () => {
+    const names: Array<[string | null | undefined, string | null]> = [
+      ['Henry Ito', 'crew_henry'],
+      ['Gina Rossi', 'crew_gina'],
+      ['Mary Ann Smith', 'msmith'],
+      ['李 小龙', 'xli'],
+      ['E\u0301lodie Durand', 'ed'],
+      ['crew_bob', 'crew_bob'],
+      ['bobad.ucsf.edu', 'bob@ad.ucsf.edu'],
+      [null, 'bob'],
+      [null, 'bob@ad.ucsf.edu'],
+      ['🧬 🔬', 'alice'],
+      [undefined, '@x9'],
+    ];
+    for (const [name, username] of names) {
+      // One letter or digit, with the marks that belong to it.
+      expect(avatarInitials(name, username)).toMatch(/^[\p{L}\p{N}]\p{M}*$/u);
+    }
+  });
+
+  it('stays one character when upper-casing spells the letter as two', () => {
+    // U+FB01 is one letter that upper-cases to "FI".
+    expect('\uFB01'.toLocaleUpperCase()).toBe('FI');
+    expect(avatarInitials('\uFB01ona Smith', 'fsmith')).toBe('F');
   });
 });
 
 describe('Avatar', () => {
-  it('shows derived initials and is decorative by default', () => {
+  it('shows the derived initial and is decorative by default', () => {
     const { container } = render(<Avatar name="Alice Chen" username="alice" />);
-    expect(tile(container)).toHaveTextContent('AC');
+    expect(tile(container).textContent).toBe('A');
     expect(tile(container)).toHaveAttribute('aria-hidden', 'true');
     expect(screen.queryByRole('img')).toBeNull();
   });
@@ -165,7 +208,7 @@ describe('Avatar', () => {
     expect(tile(container)).toHaveTextContent(/^Al$/);
     // A blank choice is no choice.
     rerender(<Avatar fallback="   " name="Alice Chen" />);
-    expect(tile(container)).toHaveTextContent(/^AC$/);
+    expect(tile(container)).toHaveTextContent(/^A$/);
   });
 
   it('draws an icon in place of letters for an agent', () => {
@@ -173,12 +216,12 @@ describe('Avatar', () => {
       <Avatar shape="square" icon={<Bot data-testid="bot" />} name="Alice Chen" />
     );
     expect(screen.getByTestId('bot')).toBeInTheDocument();
-    expect(tile(container)).not.toHaveTextContent('AC');
+    expect(tile(container).textContent).toBe('');
   });
 
   it('is a named image when given a label', () => {
     render(<Avatar name="Bob Lee" label="Bob Lee (@bob)" />);
-    expect(screen.getByRole('img', { name: 'Bob Lee (@bob)' })).toHaveTextContent('BL');
+    expect(screen.getByRole('img', { name: 'Bob Lee (@bob)' })).toHaveTextContent(/^B$/);
   });
 
   it('defaults to a 32px circle and carries size, shape and ring as hooks', () => {
@@ -223,30 +266,45 @@ describe('Avatar', () => {
 });
 
 /**
- * Q2-70: Carol's "CN" sat in a 20px circle in the header's member stack, where
- * two 11px capitals meet the circle's edge and the next tile overlaps the last
- * 4px, so it read "Cɴ". A 20px tile holds one character; 24 and 32 keep two.
+ * Q3-62 (carol R3-10, gina F13, henry F7): the header's member stack draws a
+ * person at 20px, member rows at 24px and messages at 32px. A 20px tile holds
+ * one character (Q2-70: "CN" read as "Cɴ"), so the three showed Henry as "H",
+ * "HI" and "HI" — one person, two identities side by side. A derived initial is
+ * now one letter everywhere; only a pair the person chose shows in full, and
+ * only at 28px and above.
  */
-describe('Avatar at 20px', () => {
-  it('holds one character at 20px and below, two above', () => {
-    expect(avatarTextLimit(20)).toBe(1);
+describe('Avatar — one person, one initial at every size (Q3-62)', () => {
+  const SIZES = [20, 24, 32] as const;
+
+  it('shows a chosen pair in full at 28px and above, and its first character below', () => {
+    expect(AVATAR_PAIR_MIN_SIZE).toBe(28);
     expect(avatarTextLimit(16)).toBe(1);
-    expect(avatarTextLimit(24)).toBe(2);
+    expect(avatarTextLimit(20)).toBe(1);
+    expect(avatarTextLimit(24)).toBe(1);
+    expect(avatarTextLimit(27)).toBe(1);
+    expect(avatarTextLimit(28)).toBe(2);
     expect(avatarTextLimit(32)).toBe(2);
   });
 
-  it('draws the first initial alone at 20px and both at 24 and 32', () => {
-    const { container, rerender } = render(
-      <Avatar size={20} name="Carol Nguyen" username="crew_carol" />
-    );
-    expect(tile(container)).toHaveTextContent(/^C$/);
-    for (const size of [24, 32] as const) {
-      rerender(<Avatar size={size} name="Carol Nguyen" username="crew_carol" />);
-      expect(tile(container)).toHaveTextContent(/^CN$/);
+  it('draws Henry as "H" and Gina as "G" in the header stack, member rows and messages', () => {
+    for (const [name, username, initial] of [
+      ['Henry Ito', 'crew_henry', 'H'],
+      ['Gina Rossi', 'crew_gina', 'G'],
+      ['Carol Nguyen', 'crew_carol', 'C'],
+    ] as const) {
+      const drawn = SIZES.map((size) => {
+        const { container, unmount } = render(
+          <Avatar size={size} name={name} username={username} />
+        );
+        const text = tile(container).textContent;
+        unmount();
+        return text;
+      });
+      expect(drawn).toEqual([initial, initial, initial]);
     }
   });
 
-  it('draws one letter at 20px for every shape of name', () => {
+  it('draws the same one letter at every size for every shape of name', () => {
     for (const [name, username, expected] of [
       ['Alice Chen', 'crew_alice', 'A'],
       ['crew_bob', 'crew_bob', 'B'],
@@ -255,20 +313,43 @@ describe('Avatar at 20px', () => {
       ['élodie durand', 'edurand', 'É'],
       ['李 小龙', 'xli', '李'],
       ['E\u0301lodie Durand', 'ed', '\u00c9'],
+      ['\uFB01ona Smith', 'fsmith', 'F'],
     ] as const) {
-      const { container, unmount } = render(<Avatar size={20} name={name} username={username} />);
-      expect(tile(container).textContent).toBe(expected);
-      unmount();
+      for (const size of SIZES) {
+        const { container, unmount } = render(
+          <Avatar size={size} name={name} username={username} />
+        );
+        expect(tile(container).textContent).toBe(expected);
+        unmount();
+      }
     }
   });
 
-  it('clamps a chosen avatar to its first character at 20px, keeping an emoji whole', () => {
+  it('shows a chosen pair in full at 32px and its first character at 20 and 24', () => {
     const { container, rerender } = render(<Avatar size={20} fallback="CN" name="Carol Nguyen" />);
     expect(tile(container).textContent).toBe('C');
-    rerender(<Avatar size={20} fallback="🧑‍🔬🧬" name="Carol Nguyen" />);
-    expect(tile(container).textContent).toBe('🧑‍🔬');
     rerender(<Avatar size={24} fallback="CN" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('C');
+    rerender(<Avatar size={32} fallback="CN" name="Carol Nguyen" />);
     expect(tile(container).textContent).toBe('CN');
+    // Still clamped to what the tile holds: a long choice cannot overflow it.
+    rerender(<Avatar size={32} fallback="Carol" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('Ca');
+  });
+
+  it('keeps a chosen emoji whole at every size', () => {
+    const { container, rerender } = render(
+      <Avatar size={20} fallback="🧑‍🔬🧬" name="Carol Nguyen" />
+    );
+    expect(tile(container).textContent).toBe('🧑‍🔬');
+    rerender(<Avatar size={24} fallback="🧑‍🔬🧬" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('🧑‍🔬');
+    rerender(<Avatar size={32} fallback="🧑‍🔬🧬" name="Carol Nguyen" />);
+    expect(tile(container).textContent).toBe('🧑‍🔬🧬');
+    for (const size of SIZES) {
+      rerender(<Avatar size={size} fallback="🧬" name="Carol Nguyen" />);
+      expect(tile(container).textContent).toBe('🧬');
+    }
   });
 
   it('still draws an agent’s glyph at 20px', () => {

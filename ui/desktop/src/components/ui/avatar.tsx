@@ -10,8 +10,8 @@ export interface AvatarProps {
   /**
    * What the person chose to be shown as — an emoji or their own initials
    * (`profile.update {avatar}`). Wins over derived initials when non-blank, and
-   * is clamped to what the tile holds ({@link avatarTextLimit}: two characters,
-   * one at 20px) so a long choice cannot overflow it.
+   * is clamped to what the tile holds ({@link avatarTextLimit}: two characters
+   * at 28px and above, the first one below) so a long choice cannot overflow it.
    */
   fallback?: string | null;
   /** The display name the initials are taken from. */
@@ -24,9 +24,9 @@ export interface AvatarProps {
   /** An image, when one exists. The fallback shows until it loads, and if it fails. */
   src?: string;
   /**
-   * 20, 24 or 32px. At 20 the tile holds ONE character — the first initial, or
-   * the first of a chosen pair — because two do not fit a 20px circle, and a
-   * stack overlaps its right edge besides (Q2-70: "CN" read as "Cɴ").
+   * 20, 24 or 32px. The size never changes a derived initial: it is one letter
+   * everywhere, so a person reads the same in a header stack, a member row and a
+   * message (Q3-62). It only clamps a chosen avatar ({@link avatarTextLimit}).
    */
   size?: AvatarSize;
   /**
@@ -79,7 +79,6 @@ function graphemes(text: string): string[] {
 const HANDLE_SEPARATOR = /[_.-]+/u;
 const WORD_SEPARATOR = /\s+/u;
 const LEADING_LETTER = /^\p{L}/u;
-const LETTER_OR_DIGIT = /[\p{L}\p{N}]\p{M}*/gu;
 const HANDLE_MARK = /[@#]/u;
 /** `@` and its compatibility forms, fullwidth `＠` and small `﹫`. */
 const AT_SIGN = /[@\uFE6B\uFF20]/u;
@@ -140,43 +139,39 @@ function separatedHandleLetter(word: string): string | null {
 }
 
 /**
- * THE avatar fallback rule (L16 — the old view had two that disagreed).
+ * THE avatar fallback rule (L16 — the old view had two that disagreed): ONE
+ * letter, at every size (Q3-62).
  *
- * - A display name the person chose is read as written, whatever joins its
- *   parts. Two or more words give the first letters of the first two ("Alice
- *   Chen" → "AC", "Mary-Jane Watson" → "MW"); one word gives its first letter
- *   ("Jean-Luc" → "J", "A.J." → "A", "st.john" → "S").
+ * It used to give a two-word name two letters, which a 20px tile could not hold
+ * (Q2-70), so the header stack showed "H" and the member rows and messages
+ * "HI" — one person, two identities side by side. A person now reads the same
+ * everywhere, as they do in Slack.
+ *
+ * - A display name the person chose is read as written: the first letter of
+ *   its first word, whatever joins that word's parts ("Alice Chen" → "A",
+ *   "Mary-Jane Watson" → "M", "Jean-Luc" → "J", "A.J." → "A", "st.john" → "S").
  * - A display name that only repeats the username is not a choice, so the
  *   username is read instead — its account part, never an SSSD realm
  *   (`bob@ad.ucsf.edu` → "bob"). A handle joined by `_`, `.` or `-` gives the
  *   first letter of its last part ("crew_alice" → "A", "crew_bob@ad.ucsf.edu"
  *   → "B"); anything else its first letter ("bob@ad.ucsf.edu" → "B").
  * - With no letter in the display name at all, the username is read the same
- *   way, except that an unseparated one gives its first two letters ("bob" →
- *   "BO").
+ *   way ("bob" → "B", "crew_bob" → "B").
  *
- * Upper-cased; '' when neither yields a letter.
+ * Upper-cased, and still one character when upper-casing spells a letter as
+ * two ("ﬁ" → "FI" → "F"); '' when neither yields a letter.
  */
 export function avatarInitials(name?: string | null, username?: string | null): string {
   const shown = (name ?? '').normalize('NFC').trim();
   const handle = (username ?? '').normalize('NFC').trim();
   const words = shown.split(WORD_SEPARATOR).filter((word) => firstLetter(word).length > 0);
-
-  if (words.length > 0 && !repeatsUsername(shown, handle)) {
-    const initials =
-      words.length >= 2 ? firstLetter(words[0]) + firstLetter(words[1]) : firstLetter(words[0]);
-    return initials.toLocaleUpperCase();
-  }
+  const chosen = words.length > 0 && !repeatsUsername(shown, handle);
 
   const account = accountName(handle);
-  const separated = separatedHandleLetter(account);
-  if (separated) return separated.toLocaleUpperCase();
-  // A name that repeats the username reads as one letter, as any one-word name
-  // does; no name at all reads as the username's first two.
-  const fromUsername = (account.match(LETTER_OR_DIGIT) ?? [])
-    .slice(0, words.length > 0 ? 1 : 2)
-    .join('');
-  return (fromUsername || (words.length > 0 ? firstLetter(words[0]) : '')).toLocaleUpperCase();
+  const letter = chosen
+    ? firstLetter(words[0])
+    : separatedHandleLetter(account) || firstLetter(account) || firstLetter(words[0] ?? '');
+  return graphemes(letter.toLocaleUpperCase())[0] ?? '';
 }
 
 /**
@@ -230,13 +225,19 @@ export function avatarHue(username?: string | null): number | null {
   return (hash & 0x7) + 1;
 }
 
+/** The smallest tile that shows a chosen pair in full (Q3-62). */
+export const AVATAR_PAIR_MIN_SIZE = 28;
+
 /**
- * How many characters a tile of this size holds: one at 20px and below, two
- * above. Two 11px capitals are ~15px wide, which a 20px circle cuts at its
- * edges, and a member stack lays the next tile over the last 4px (Q2-70).
+ * How many characters of a CHOSEN avatar a tile of this size shows: both at
+ * {@link AVATAR_PAIR_MIN_SIZE} (28px) and above, the first below. Two 11px
+ * capitals are ~15px wide, which a 20px circle cuts at its edges and a member
+ * stack overlaps by 4px (Q2-70), and a 24px member row showed "HI" beside a
+ * 20px header's "H" (Q3-62). A derived initial is one letter at every size
+ * ({@link avatarInitials}) and is not clamped here.
  */
 export function avatarTextLimit(size: number): 1 | 2 {
-  return size <= 20 ? 1 : 2;
+  return size >= AVATAR_PAIR_MIN_SIZE ? 2 : 1;
 }
 
 /**
@@ -262,9 +263,9 @@ export function Avatar({
   className,
 }: AvatarProps) {
   const chosen = (fallback ?? '').trim();
-  const text = graphemes(chosen || avatarInitials(name, username))
-    .slice(0, avatarTextLimit(size))
-    .join('');
+  const text = chosen
+    ? graphemes(chosen).slice(0, avatarTextLimit(size)).join('')
+    : avatarInitials(name, username);
   const hue = shape === 'circle' && !icon ? avatarHue(username) : null;
   const named = typeof label === 'string' && label.trim().length > 0;
 
