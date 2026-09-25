@@ -1,5 +1,9 @@
 # Crew validation report
 
+> **What this is.** The append-only record of Crew validation: exact build and check commands, test counts, artifact hashes and live-run results, each under the revision it ran on, from the first checks on 2026-09-22 to the UI redesign campaign's close-out on 2026-09-25.
+> **Status:** Current, append-only. Each section is a historical record of its own run; a later section never re-qualifies an earlier one, and the newest section is last.
+> **Audience:** Maintainers and reviewers checking what was measured on which build, and testers resuming Crew acceptance.
+
 The initial validation below ran in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`
 on branch `codex/biorouter-crew`, with Rust revision `26f2a496` and then-HEAD
 `8f2ea8df5778e7e8c4e8b08e62bcd31d6bcdbf57`. Later sections identify their own
@@ -2704,3 +2708,179 @@ The earlier e53 channel catch-up to 117 items took approximately 75–90 seconds
 The new CLI helper behavioral test passes (one test covering same identity, fresh provider, fresh model, missing metadata, temperature identity and mismatch); the marked-binding factory suite passes 18 tests. The existing queued-derived-frame authority regression passes once in the server library and once in the daemon harness: these are duplicate compilation contexts, not two unique cases. The new live fairness case is added but ignored/unexecuted because it requires a disposable ACL fixture; no live fairness pass is claimed.
 
 All product diffs are independently reviewed without findings. Final `just check-everything` exits 0 at `2026-09-24T00:41:39Z`, receipt `/private/tmp/crew-check-everything-resume-observer-final-20260923T1845Z.receipt`. These uncommitted fixes are source-tested and ready for the root commit, with new native build and runtime replay still pending. Earlier e53 live results are not reassigned to them.
+
+## Crew UI redesign campaign, 2026-09-24 to 2026-09-25
+
+This section records the gates, builds and live runs of the resumed scope's acceptance (plan §16),
+from the integrate-verify pass to the close-out on the final build `461f7899`. It ran in the same
+worktree on branch `codex/biorouter-crew`. The live results, with every ID and hash, are in the
+[redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md); this section keeps the
+commands, counts and artifact identities. Raw logs are local: the round gates' under the
+coordinator session's scratchpad `gates/`, the stage's under `/private/tmp/crew-ui-redesign/live/`.
+
+### Checkpoints before the live rounds
+
+- **Integrate-verify, `1ec9eb8b`:** all 29 gate commands exited 0 on a clean worktree (details and
+  counts in the [handoff](handoff-2026-09-24.md#integrate-verify-pass-2026-09-24)). Measured after it,
+  the unfiltered `cargo test -p biorouter --lib` failed one test,
+  `utils::tests::the_untrusted_label_sanitizer_is_defined_exactly_once`.
+- **`8c3a8888`** merged `origin/main` (1.91.2). The only lockfile gap was `biorouter-crew`'s own
+  1.91.1 → 1.91.2 entry, which had made every `--locked` hosted job fail on the PR merge ref.
+- **`5959ebdc`** made the SSH detail sanitizer use the one drop set. At that commit
+  `cargo test --workspace --lib --bins` exited 0, and hosted Rust, Frontend, Apps smoke and both
+  commit-message checks passed. Computer Use native payloads failed only on the Windows UI
+  Automation scroll assertion, a failure also seen on earlier heads with unchanged Copilot source;
+  its jobs were re-run and the re-run result is not recorded here. Source: the coordinator's local notes.
+
+### Local gates per round
+
+Each round's gate ran on a clean worktree whose HEAD did not move, under hermit, before that round's
+redeploy. Rounds 2–4 reported `ALL_GREEN`.
+
+| Gate | Round 2 `5b079379` | Round 3 `ac02e57a` | Round 4 `b1c87edc` |
+|---|---|---|---|
+| `cargo build -j 8 -p biorouter-cli -p biorouter-server --bin biorouter --bin biorouterd` | rc 0 | rc 0, no warnings | rc 0 |
+| `./scripts/clippy-lint.sh`, `cargo fmt --check` | rc 0, rc 0 | rc 0, rc 0 | rc 0, rc 0 |
+| `cargo test -j 8 -p biorouter-crew` (feature off by default then) | rc 0 | 103 passed | rc 0 |
+| same with `--features join-by-name` | rc 0 (`join_contract` 39) | 143 passed | rc 0 (`join_contract` 39) |
+| `cargo test -j 8 --workspace --lib --bins` | 8382 passed, 0 failed, 10 ignored | 8427 passed, 0 failed, 10 ignored | 8483 passed, 0 failed, 10 ignored |
+| `biorouter-server --test` `crew_join_routes`, `crew_session_revoke_routes`, `crew_transfer_authority`, `crew_transfer_filesystem`, `privacy_toggle_config` | 13, 10, 10, 9, 18 | 13, 10, 10, 9, 18 | 13, 10, 10, 9, 18 |
+| `biorouter --test` `crew_credentials_contract`, `privacy_capability`, `privacy_disclosure_toggle`, `privacy_guard_wiring`, `privacy_spawn_classification`, `privacy_toggle` | 2, 4, 1, 3, 1, 4 | 2, 4, 1, 3, 1, 4 | 2, 4, 1, 3, 1, 4 |
+| `biorouter-mcp --test no_console_window_census` | 20 | 20 | 20 |
+| `biorouter-mcp --lib -- secret_guard h1_` | — | — | 52 |
+| `just generate-openapi`, then `git diff --stat` on `ui/desktop/openapi.json` and `ui/desktop/src/api`; `scripts/check-openapi-schema.sh` | no drift; rc 0 | no drift; rc 0 | no drift; rc 0 |
+| `npm run lint:check` | rc 0 (590 contrast assertions) | rc 0 (884) | rc 0 |
+| `npm run format:check` | rc 0 | rc 0 | rc 0 |
+| `npm run test:run` | 662 files, 8209 passed, 19 skipped | 678 files, 8707 passed, 19 skipped | 686 files, 8948 passed, 19 skipped |
+| `scripts/check-version-consistency.sh` | 1.91.2 | 1.91.2 | 1.91.2 |
+
+Round 1 ran on `5959ebdc`, whose gate evidence is the checkpoint above.
+
+### Closeout gate logs at `461f7899`
+
+The close-out's gate runner wrote its logs from 13:05Z to 13:58Z on 2026-09-25, after `461f7899`
+was committed (12:56Z) and before the redeploy found the same clean HEAD (14:00:58Z). The runner's
+own verdict is not in any file this record could read, so the counts below come from its logs.
+
+| Command | Result in the log |
+|---|---|
+| `cargo build -j 8 -p biorouter-cli -p biorouter-server --bin biorouter --bin biorouterd` | Finished in 8 m 29 s |
+| `./scripts/clippy-lint.sh` | rc 0; baseline clippy and banned-TLS checks pass |
+| `cargo fmt --check` | no output |
+| `cargo test -j 8 -p biorouter-crew` (default features, now including `join-by-name`) | 143 passed, 0 failed: unit 13, `adversarial_contract` 4, `broker_contract` 28, `cursor_contract` 4, `direct_add_contract` 9, `join_contract` 39, `journal_key_order` 1, `legacy_invite_contract` 4, `name_rules_contract` 18, `naming_contract` 21, `system_account_contract` 2 (`journal_fault_contract` selects 0 on macOS) |
+| `cargo test -j 8 -p biorouter-crew --no-default-features` | 103 passed, 0 failed |
+| `cargo test -j 8 --workspace --lib --bins --no-fail-fast` | 8516 passed, 0 failed, 10 ignored; rc 0 |
+| `biorouter-server` integration binaries (as in the rounds) | 13, 10, 10, 9, 18 |
+| `biorouter` integration binaries (as in the rounds) | 2, 4, 1, 3, 1, 4 |
+| `biorouter-mcp --test no_console_window_census` | 20 |
+| `biorouter-mcp --lib -- secret_guard h1_` | 55 passed, 1653 filtered out |
+| `just generate-openapi` | **failed**: `rustc-LLVM ERROR: IO failure on output stream: No space left on device` |
+| direct schema generation, `npm run generate-api`, `scripts/check-openapi-schema.sh` | schema written; client generated; "OpenAPI schema is up-to-date" |
+| `npm run lint:check` | OK; 884 contrast assertions |
+| `npm run format:check` | "All matched files use Prettier code style!" |
+| `npm run test:run` | 691 files, 9175 passed, 19 skipped |
+| `scripts/check-version-consistency.sh`, `scripts/check-brand-consistency.sh` | 1.91.2 everywhere; brand consistent |
+| `python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement` (CI's subset) | 473 files, 0 findings |
+| `scripts/verify-docs.sh` | fails on `.html` files under `docs/design/` and on the word checks; the same checks fail on a copy of `main`, so the failure predates this branch |
+
+The `git diff --stat` drift check after regeneration is not in the logs. The disk was full at the
+time; the redeploy freed it at 14:01Z (below).
+
+### Stage builds and broker upgrades
+
+Every round froze its artifacts from one clean commit: the native pair with
+`cargo build -j 8 -p biorouter-cli -p biorouter-server --bin biorouter --bin biorouterd` copied to
+new mode-0555 inodes with a manifest and the six version and help probes; the Linux x86_64 broker in
+`rust:1.92-bullseye` with
+`cargo clean --locked --release -p biorouter-crew --target x86_64-unknown-linux-gnu && cargo build --release --locked -p biorouter-crew --bin biorouter-crew --features join-by-name --target x86_64-unknown-linux-gnu`,
+checked for glibc (maximum 2.30), the `join_by_name_v1` and `direct_add_v1` markers and runtime on
+ubuntu:24.04 and debian-11; and the renderer with `npm run build:e2e` (node v24.10.0, npm 11.6.1).
+
+| Round | Native `biorouter` / `biorouterd` | Linux broker | Renderer `index.html` |
+|---|---|---|---|
+| 1 `5959ebdc` | `62660f8d…8ede` / `569a6d85…6aec` | `f8cc4fe7…8afa` | `738a3110…2418` |
+| 2 `5b079379` | `6414bf7ed46fb1eb956da01367f378ff6854731d3176e674d3bd9cdbf40426b1` / `0cfb288a1cd40b3a01c11511622661d96abfdd53faf5ccf8f5eb5aa72fb2ecc1` | `59ceaf921724cdbc46db57c80aff4d3b6c16a45e562959948f7af5409a11cfdc` | `39a6c6edb052be854c1d984789ec2018f702911e6703eaac975794599a78481c` |
+| 3 `ac02e57a` | `7dd362b4d982b9c13f8eddb70278ad7c2645ab073a50ab4215e908183dd89c39` / `5dd7f28458285bc1029ea48427ad772bba01f65ad45d625c2490b120b99c15af` | `f3c1e19b6f2709962c3e6e74a3430734752f8e3990b2a8cd29bfbf00bd9d158f` | `e5634351ce7e777a7097e14eb05ac871a4a4749622602703b6d07f7b8a2d9b64` |
+| 4 `b1c87edc` | `13636d2586531ef9adb9539d8437198d51e4ecec3b7ec50d7441fc92d9580d50` / `e2a4d7c94eee7cfd551db17a1117baff8872427e2fc1220fe7065b4c32eef99e` | `f3c1e19b…d158f` (`cmp`-identical to round 3) | `6d05924aab0302417d3773d6d763cae608eafe7977300898e9554b0c38e9cebe` |
+| Final `461f7899` | `ef845bcafb76788e22580fea86a93467ef0b1d61e396e9ba972a2c684c5e90c6` / `f79ed54654f918e44b714af3255c6b127e827e46c3a2feb2f8de6bb09bc9ab51` | `2d08981b29d15ea3cfbb52af7c0d4e0e006c22bd094c234ebff5b0d4c3657ec1` | `08f573c9601ab74c97b025d1eeaa880fa126e332caa42a7c860e694f6e848e3d` |
+
+At the final build a second broker build with `--features` dropped was byte-identical to the first,
+`cargo metadata` gave `default = ["join-by-name"]`, and `cargo tree -e features` showed the feature
+absent only with `--no-default-features`. `scripts/check-crew-broker-join.sh` passed on the built broker.
+
+Each redeploy installed the new broker as each user over that user's own key (upload, sha256 check,
+`chmod 0555`, the old binary kept as `.prev`, atomic `mv`), stopped every app and daemon, restarted
+each running broker as its owner with identical `serve` arguments, and compared the journal and an
+owner-side `hello` before and after. Every journal was byte-identical across its restart:
+
+| Restart | chen-lab | foreign-lab | ito-lab | wong-lab |
+|---|---|---|---|---|
+| Round 2 | 92 lines, 87,471 B, `bc159b66…c16b` | 6, 5,167 B, `0ccd24ed…aac3` | — | — |
+| Round 3 | 170, 176,179 B, `4a646f5c40b2…` | 35, 34,690 B, `250087fb163d…` | — | — |
+| Round 4 | 223, 239,140 B, `82621129130896e3…` | 57, 57,320 B, `166d9cf873e33ccd…` | 39, 44,794 B, `6dbf2fb69ff66a75…` | — |
+| Final | 233, 250,584 B, `49c92c76aee6a161…` | 67, 67,845 B, `e9d294d796142a44…` | 67, 81,895 B, `2a2802bd765b483e…` | 35, 40,760 B, `9a8c69e58c199d44…` |
+
+The owner-side `hello` changed only its PID each time. Round 2 added exactly `direct_add_v1` to the
+capabilities; from round 3 on they were unchanged:
+`human_chat, signed_devices, resumable_blobs, scoped_runs, human_names_v1, unique_names_v1, direct_add_v1, join_by_name_v1`.
+Semantic snapshots through the old and new CLI matched in every part, raw digests included. After
+each reconnect every remote `biorouter-crew` process ran the new binary (15 processes at the final
+build: four brokers and eleven bridges).
+
+### Live QA rounds
+
+Four rounds of fresh novice critics, security and accessibility critics ran on the builds above; the
+task tables, security results and the brand-new host and joiner pairs are in the
+[redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md#live-qa-rounds).
+
+| Round | Build | Novice tasks unaided | P0 / P1 / P2 |
+|---|---|---|---|
+| 1 | `5959ebdc` | 15 of 38 (39%) | 5 / 23 / 41 |
+| 2 | `5b079379` | 28 of 49 (57%) | 0 / 16 / 62 |
+| 3 | `ac02e57a` | 51 of 60 (85%) | 0 / 5 / 58 |
+| 4 | `b1c87edc` | 51 of 56 (91%) | 0 / 3 / 54 |
+
+### Final acceptance lanes on `461f7899`
+
+Every lane checked the build in place before it started (clean HEAD, daemons on
+`native-461f7899/biorouterd` by `lsof`, renderers on `index-C2JhvNFw.js`, brokers `2d08981b…` by
+`/proc/<pid>/exe`) and ran every CLI call through the frozen CLI with `--no-start` and the profile's
+approval key on stdin, never printed.
+
+| Lane | Window (UTC) | Commands and counts | Verdict |
+|---|---|---|---|
+| Three users, three files, three agents | 14:26–14:37 | Three CDP drops; three **Ask my agent** runs (6–8 s each); `crew --connection chen-lab --expected-mode private --no-start --approval-key-stdin files download <blob> --output …` ×3; `tasks list`, `tasks show`, `grants list` per person; read-only `sha256sum` of the host blobs as `crew_alice`; chen-lab journal 233 → 283 lines by 14:33:13Z, other lanes' records interleaved | 7 of 7 PASS |
+| Revoke end to end | 14:26–14:47 | Five GUI grants and revokes on Gina's chat `20260925_6` (ito-lab journal seq 68–83); revoke HTTP captured by a pass-through `fetch` wrapper, later removed; three exact-PID bridge kills; Gina's SSH config pointed at a closed port 14:41:01–14:42:19Z and restored byte-identical | Core PASS; A/A′ N/A; B PASS; 5 findings |
+| Denial matrix | 14:28–14:51 | 68 unix-socket requests, 84 CLI invocations, 31 renderer page-script requests, 25 daemon snapshots, 35 journal digests | a, c, e, f PASS; b partial; d FAIL (wording) |
+| Institution gate | 14:28–14:37 | `crew --connection foreign-lab --expected-mode private --expected-policy-epoch 4 --expected-workspace-policy-epoch 12 tasks start general --provider versa_azure --model gpt-5.5-2026-04-24 --allow-posting` and `grants grant 20260925_1 general`, each exit 1; recorder 0 B at five checks; foreign journal `e9d294d7…9a14` unchanged at six probes | PASS; 5c NOT RUN |
+| Round-4 P1 re-check | 14:26–14:54 | Two outages of Erin's bridge (SSH config override plus an exact-PID kill, restored byte-identical, sha256 `78a2d6b1…`); UI sampled every 250 ms; Jack's window at 1048 × 760 | 4 of 4 PASS; NEW-1 |
+| Mixed GUI and CLI | 14:58–15:11 | `channels create g11-mixed --team 'Analysis Lab'`; `members add @crew_carol --channel '#g11-mixed'`; `send '#g11-mixed' --text …`; `files upload '#g11-mixed' <file>`; `send g11-mixed --attachment <blob>`; `watch '#g11-mixed'` and a stream-JSON watch; `members` in text, `--show-ids` and JSON; the lane's chen-lab journal records lie between seq 291 (channel create) and 323 (M5), interleaved with the fairness lane's | 11 of 11 PASS |
+| Fairness and self-test | 14:57–15:08 | `cargo test -j 8 -p biorouter-server --lib routes::crew_observation::live_acceptance::real_source_acl_revocation_clears_enqueued_and_waiting_observer_frames -- --ignored --exact --nocapture`: 1 passed, 877 filtered out, 1.45 s, test binary `49386ed1…1021`; self-test `run --resume --session-id 20260923_11 --text … --output-format text` exit 0, 14 new rows (6 shell calls and responses), outputs byte-identical to the manifest's captures | Both PASS |
+
+### Environment interventions during the close-out
+
+- **Disk full.** At 14:01Z the data volume had 119–199 MiB free, which failed the first native freeze
+  (and is the likely cause of the gate's `generate-openapi` failure). This worktree's own
+  `target/debug/incremental` (199 GiB, cargo's incremental cache, no cargo running) was deleted,
+  leaving about 145 GiB free.
+- **Duplicate React.** The first final `build:e2e` bundled five React copies because of a git-ignored
+  symlink `ui/desktop/node_modules/node_modules → ui/desktop/node_modules` and Forge's
+  `resolve.preserveSymlinks: true`. The symlink was removed; the rebuild's `main.js` and `preload.js`
+  were byte-identical and its entry chunk held one React copy.
+- **Profile toolchains.** Four QA profiles (erin, frank, henry, jack) held rustup toolchains without a
+  manifest, left by interrupted installs that the app's own `rustc -vV` probe had started. The broken
+  directories were moved aside and a complete 1.92 toolchain cloned in; afterwards every app logged
+  "All dependencies present".
+
+### Not established by this section
+
+Hosted CI on `461f7899`, Windows and Linux desktops, MFA and jump hosts, load, storage faults, the
+daemon's worker allowlist exercised by a model, and the real native share confirmation in the GUI
+lanes. The fixture's teardown receipts are added to the evidence record by the close-out's Finish phase.
+
+## Related documentation
+
+- [Implementation status](implementation-status.md) — the ledger each section here feeds
+- [Redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md) — the live results of the campaign recorded above, with IDs and hashes
+- [Resume handoff](handoff-2026-09-24.md) — the integrate-verify gate and the close-out handoff
+- [Regression coverage map](regression-coverage-map.md) — which suites pin which invariants

@@ -4,11 +4,14 @@ Start with the [comprehensive implementation plan](implementation-plan.md), revi
 
 Work resumed on 2026-09-23 with two more acceptance requirements, recorded in [plan §16](implementation-plan.md#16-resumed-scope-gui-redesign-and-human-readable-identity-2026-09-23): a Slack-like desktop redesign ([UI redesign specification](ui-redesign-spec.md)) and people, teams and channels addressed by name instead of machine ID, with joining by invitation and device code ([naming design](naming-design.md)). The [resume handoff](handoff-2026-09-24.md) carries live package status and the dated decisions log; the [status ledger](implementation-status.md) records what has been measured.
 
+Close-out, 2026-09-25: every §16 package is implemented, and acceptance ran as four live QA rounds with fresh novice critics (unaided task rate 39% → 57% → 85% → 91%) and seven evidence-grade lanes on the final build `461f7899`. The [redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md) records what passed, the one failed assertion and what remains unverified; the [handoff's close-out section](handoff-2026-09-24.md#close-out-handoff-2026-09-25) lists what is deferred and the security-sensitive commits that need human review before merge.
+
 | Artifact | Contents |
 |---|---|
 | [Implementation plan](implementation-plan.md) | Architecture, data/protocol/storage contracts, permissions, UI, deployment, phased implementation and acceptance gates |
 | [Acceptance status](implementation-status.md) | Feature-by-service/interface parity ledger, G01–G15 release gates, remaining blockers and artifact provenance |
-| [Resume handoff](handoff-2026-09-24.md) | Live status of the resumed campaign (work-package progress, workstreams, decisions log) above the 2026-09-24 pause receipts it supersedes in part |
+| [Resume handoff](handoff-2026-09-24.md) | The close-out handoff (what is done, final artifacts, gates, deferred items, human-review list, how to resume), then the campaign record (work-package progress, workstreams, decisions log) above the 2026-09-24 pause receipts it supersedes in part |
+| [Redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md) | The redesign and naming campaign's four live QA rounds, per-round security results, the seven final acceptance lanes on `461f7899` with IDs and hashes, fixture provenance and what remains unverified |
 | [Naming design](naming-design.md) | How people, workspaces, teams and channels are named instead of numbered: display rules, name keys, uniqueness, the daemon resolver, joining by invitation and device code; decisions D1–D17, slices S0–S4 |
 | [UI redesign specification](ui-redesign-spec.md) | The Slack-like Crew desktop GUI: layout, every screen mapped from the old UI, component architecture, copy deck, identity display, revoke, privacy, motion, accessibility and test migration |
 | [Broker protocol](protocol-contract.md) | Wire contract of the remote broker: transport and identity, `hello` v1 and v2, collaboration methods, names, joining by invitation and device code, attachments, owned-agent grants, durability and rootless setup |
