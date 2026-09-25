@@ -73,6 +73,11 @@ interface Summary {
  * Never a dead end (QA Q2-22): someone who may not add people here is told who may; with no one left
  * to add, the dialog lists who is already in, names the workspace's invitees who have not joined,
  * offers the next step, and shows one Done — no disabled Add.
+ *
+ * For a team, someone who may not add people there gets the team's member list instead (QA Q3-44):
+ * "Members of {team}", the members first — host, you, then by name — then, muted, who may add
+ * people, and one Done. It is what the team menu's "Members of {team}…" opens, for everyone; the
+ * owner and the host see the Add people dialog there.
  */
 export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogProps) {
   const { crew, snapshot, dir, workspace } = useDialogView();
@@ -121,6 +126,11 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
   const ownerId = target === 'team' ? team?.created_by : channel?.owner_id;
   const owner = ownerId ? dir.byId(ownerId) : null;
   const mayAdd = !ownerId || ownerId === dir.me?.id || (directAdd && dir.viewerIsHost);
+  // A team's member list, for someone who may not add people to it (QA Q3-44).
+  const membersView = target === 'team' && !mayAdd;
+  const onlyWho = directAdd
+    ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
+    : copy.onlyOwner(owner ? `@${owner.username}` : null, place);
 
   const isChecked = (choice: ChannelChoice) =>
     choice.always || (checked[choice.id] ?? choice.checked);
@@ -293,11 +303,7 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
 
   // A body that is only a message is the dialog's description (QA Q2-28).
   const message: { text: string; action?: React.ReactNode } | null = !mayAdd
-    ? {
-        text: directAdd
-          ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
-          : copy.onlyOwner(owner ? `@${owner.username}` : null, place),
-      }
+    ? { text: onlyWho }
     : offered.length === 0
       ? emptyState()
       : null;
@@ -333,7 +339,9 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
       title={
         target === 'channel'
           ? copy.titleChannel(channelName(channel))
-          : copy.titleTeam(teamName(team))
+          : membersView
+            ? copy.membersOf(teamName(team))
+            : copy.titleTeam(teamName(team))
       }
       describedBy={message ? noteId : undefined}
       footer={footer}
@@ -350,7 +358,16 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
             </Note>
           ) : null}
         </div>
-        {message ? (
+        {membersView ? (
+          <>
+            {/* The list first: it is what this dialog is for here. Who may add people follows,
+                muted, as its description. */}
+            <MemberList place={place} people={members} dir={dir} label={copy.membersOf(place)} />
+            <p id={noteId} className="text-supporting text-text-muted">
+              {onlyWho}
+            </p>
+          </>
+        ) : message ? (
           <>
             <Note tone="neutral" action={message.action}>
               <span id={noteId}>{message.text}</span>
@@ -401,45 +418,55 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
   );
 }
 
-/** Who is in the team or channel already: host, then you, then by name. */
+/**
+ * Who is in the team or channel already: host, then you, then by name. Under its caps "Already in
+ * {place}" label; with `label`, the dialog's title already names it, so the list is named without
+ * a second heading (QA Q3-44).
+ */
 function MemberList({
   place,
   people,
   dir,
+  label,
 }: {
   place: string;
   people: readonly CrewPerson[];
   dir: ReturnType<typeof useDialogView>['dir'];
+  label?: string;
 }) {
   const headingId = React.useId();
   if (people.length === 0) return null;
+  const list = (
+    <ul role="list" aria-label={label} className="crew-person-checklist flex min-w-0 flex-col">
+      {people.map((person) => (
+        <li
+          key={person.id ?? person.username}
+          className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
+        >
+          <Avatar
+            size={20}
+            fallback={person.avatar}
+            name={person.displayName}
+            username={person.username}
+          />
+          <PersonName
+            person={person}
+            context="header"
+            dir={dir}
+            you={person.isYou}
+            className="min-w-0 flex-1 truncate"
+          />
+        </li>
+      ))}
+    </ul>
+  );
+  if (label) return list;
   return (
     <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-1.5">
       <h3 id={headingId} className="text-caps text-text-muted">
         {copy.alreadyInPlace(place)}
       </h3>
-      <ul role="list" className="crew-person-checklist flex min-w-0 flex-col">
-        {people.map((person) => (
-          <li
-            key={person.id ?? person.username}
-            className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
-          >
-            <Avatar
-              size={20}
-              fallback={person.avatar}
-              name={person.displayName}
-              username={person.username}
-            />
-            <PersonName
-              person={person}
-              context="header"
-              dir={dir}
-              you={person.isYou}
-              className="min-w-0 flex-1 truncate"
-            />
-          </li>
-        ))}
-      </ul>
+      {list}
     </section>
   );
 }

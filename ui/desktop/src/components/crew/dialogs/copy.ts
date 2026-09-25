@@ -327,6 +327,8 @@ export const nameRuleCopy = {
 export const addPeopleCopy = {
   titleChannel: (channel: string) => `Add people to ${channel}`,
   titleTeam: (team: string) => `Add people to ${team}`,
+  /** The same dialog for someone who may not add people to the team: its member list (QA Q3-44). */
+  membersOf: (team: string) => `Members of ${team}`,
   person: 'Person',
   search: 'Search by name or @username',
   choose: 'Choose a person',

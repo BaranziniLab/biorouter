@@ -314,7 +314,7 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     // Bob is neither Analysis Lab's owner nor the host.
     const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
     renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot });
-    const dialog = await screen.findByRole('dialog', { name: 'Add people to Analysis Lab' });
+    const dialog = await screen.findByRole('dialog', { name: 'Members of Analysis Lab' });
     const text = 'Only @alice or the host can add people to Analysis Lab.';
     expect(within(dialog).getByText(text)).toBeInTheDocument();
     expect(dialog).toHaveAccessibleDescription(text);
@@ -322,6 +322,57 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
     expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Invite people to/ })).toBeNull();
+  });
+
+  it('shows someone who may not add people to a team its members, then who may (QA Q3-44)', async () => {
+    // Bob is neither Analysis Lab's owner nor the host: the team menu's "Members of…" opens this.
+    const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
+    renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    const list = within(dialog).getByRole('list', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    // Host, you, then by name.
+    expect(
+      within(list)
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('[data-person-context]')?.textContent)
+    ).toEqual([
+      expect.stringContaining('Alice Chen'),
+      expect.stringContaining('Bob Lee'),
+      expect.stringContaining('Carol Diaz'),
+    ]);
+    expect(within(list).getAllByRole('listitem')[1]).toHaveTextContent('you');
+    // The list first, then the muted line saying who may add people, and no Note box.
+    const who = within(dialog).getByText('Only @alice or the host can add people to Analysis Lab.');
+    expect(who).toHaveClass('text-text-muted');
+    expect(list.compareDocumentPosition(who) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(dialog).queryByRole('heading', { name: /^Already in/ })).toBeNull();
+    // A single Done, and nothing to add with.
+    expect(
+      within(dialog)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['Done', expect.anything()]);
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+  });
+
+  it('keeps Add people for the team’s owner and for the host', async () => {
+    // Alice is the host and Analysis Lab's owner.
+    renderDirect({ target: 'team', targetId: 'team-1' });
+    expect(
+      await screen.findByRole('dialog', { name: addPeopleCopy.titleTeam('Analysis Lab') })
+    ).toBeInTheDocument();
+    // The host who does not own the team adds people too, under a broker that adds directly.
+    const hosted = makeSnapshot({
+      teams: [{ ...makeSnapshot().teams[0], created_by: carol.id }],
+    });
+    renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot: hosted });
+    expect(
+      await screen.findAllByRole('dialog', { name: addPeopleCopy.titleTeam('Analysis Lab') })
+    ).toHaveLength(2);
   });
 
   it('says only the owner invites under an older broker', async () => {
