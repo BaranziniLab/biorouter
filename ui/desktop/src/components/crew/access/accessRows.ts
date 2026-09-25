@@ -281,7 +281,7 @@ export function accessRows(
     );
 }
 
-/** Rows shown at rest, and the revoked and expired rows behind "Show revoked and expired (n)". */
+/** Rows shown at rest, and the revoked, expired and ended rows behind "Show past access (n)". */
 export function splitAccessRows(rows: readonly AccessRow[]): {
   current: AccessRow[];
   old: AccessRow[];

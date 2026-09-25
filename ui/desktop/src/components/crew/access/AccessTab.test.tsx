@@ -114,7 +114,10 @@ describe('the Access tab', () => {
     // Revoked and expired rows wait behind their disclosure.
     expect(screen.queryByText('Old chat')).toBeNull();
     expect(screen.queryByText('Late chat')).toBeNull();
+    // Q3-30: one name for rows that read Ended, Revoked or Expired.
+    expect(accessCopy.showOld(2)).toBe('Show past access (2)');
     fireEvent.click(screen.getByRole('button', { name: accessCopy.showOld(2) }));
+    expect(screen.getByRole('list', { name: 'Past access' })).toBeInTheDocument();
     const old = await rowFor('Old chat');
     expect(old).toHaveTextContent(accessCopy.status.revoked);
     expect(within(old).queryByRole('button', { name: /^Revoke/ })).toBeNull();
@@ -303,10 +306,24 @@ describe('the Access tab', () => {
     expect(screen.queryByRole('menuitem')).toBeNull();
   });
 
-  it('heads the tab “Agent access”, the name every surface uses for this list', async () => {
+  /**
+   * Q3-30 (live QA round 3): the details pane's Agent access tab opened on a heading that said
+   * "Agent access" again. The tab names its panel; the list has no heading of its own.
+   */
+  it('has no heading of its own: the Agent access tab names it', async () => {
     setup({});
-    expect(await screen.findByRole('region', { name: 'Agent access' })).toBeInTheDocument();
+    const tab = await screen.findByTestId('crew-access-tab');
+    await rowFor('Plot review');
+    expect(within(tab).queryByRole('heading')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Agent access' })).toBeNull();
+    expect(tab).not.toHaveTextContent(/^Agent access/);
+    // The name every surface uses for this list is still the tab's and Workspace settings'.
     expect(accessCopy.tabTitle).toBe('Agent access');
+  });
+
+  it('keeps the heading in Workspace settings, whose panel hides it and is named by it', async () => {
+    setup({}, WorkspaceLayout);
+    expect(await screen.findByRole('region', { name: 'Agent access' })).toBeInTheDocument();
   });
 
   it('shows an empty channel, and a failed list with Retry', async () => {
@@ -318,11 +335,21 @@ describe('the Access tab', () => {
     expect(await screen.findByText(accessCopy.listFailed)).toBeInTheDocument();
     fail = false;
     fireEvent.click(screen.getByRole('button', { name: accessCopy.listRetryName }));
-    expect(await screen.findByText(accessCopy.empty('#general'))).toBeInTheDocument();
-    // T-12: a chat with no message has nothing to connect, so the instruction says to send one.
+    // Q3-29: the list holds this computer's own chats, so it says whose — never that no chat or
+    // agent at all can post, which is false wherever another person's agent does.
     expect(
-      screen.getByText('To connect a chat, send it a message, then type /crew in it.')
+      await screen.findByText('None of your chats can post in #general yet.')
     ).toBeInTheDocument();
+    expect(screen.getByText(accessCopy.empty('#general'))).toBeInTheDocument();
+    expect(screen.queryByText(/No chats or agents/)).toBeNull();
+    const how = screen.getByText((_, element) =>
+      Boolean(
+        element?.tagName === 'P' &&
+        element.textContent === 'To connect one, open that chat and type /crew.'
+      )
+    );
+    // The command is drawn as something to type.
+    expect(within(how).getByText('/crew').tagName).toBe('CODE');
   });
 });
 
@@ -400,5 +427,6 @@ describe('Workspace settings → Agent access', () => {
   it('names the workspace when nothing has access', async () => {
     setup({ grants: () => [] }, WorkspaceLayout);
     expect(await screen.findByText(accessCopy.emptyWorkspace('lab'))).toBeInTheDocument();
+    expect(screen.getByText('None of your chats can post in lab yet.')).toBeInTheDocument();
   });
 });

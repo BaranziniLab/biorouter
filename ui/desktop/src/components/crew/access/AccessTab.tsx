@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react';
+import { useMemo } from 'react';
 import { channelName } from '../identity';
 import { cn } from '../../../utils';
 import { useCrew } from '../state/CrewControllerContext';
@@ -15,15 +15,18 @@ export interface AccessTabProps {
 }
 
 /**
- * The details pane's Access tab, headed "Agent access" — the same name as Workspace settings' tab
- * and the channel menu's item, since what it lists is agents, not people: every chat and task that
- * can post in or read the selected channel, with Revoke on active chats and Stop on running tasks.
- * The list is read when the tab opens and after every action; it never polls.
+ * The details pane's Agent access tab — the same name as Workspace settings' tab and the channel
+ * menu's item, since what it lists is agents, not people: every chat and task that can post in or
+ * read the selected channel, with Revoke on active chats and Stop on running tasks. The list is
+ * read when the tab opens and after every action; it never polls.
+ *
+ * It has no heading of its own: the tab above it already says "Agent access", and its panel is
+ * named by that tab, so a heading repeated the name on screen and to a screen reader (live QA
+ * round 3, Q3-30).
  */
 export function AccessTab({ className }: AccessTabProps) {
   const { snapshot, runs, channelId, channel } = useCrew();
   const grants = useWorkspaceGrants();
-  const headingId = useId();
   const { onOpen, onStop } = useAccessActions();
   const rows = useMemo(
     () =>
@@ -36,14 +39,7 @@ export function AccessTab({ className }: AccessTabProps) {
     [grants.grants, snapshot, runs, channelId]
   );
   return (
-    <section
-      className={cn('flex flex-col gap-2', className)}
-      aria-labelledby={headingId}
-      data-testid="crew-access-tab"
-    >
-      <h3 id={headingId} className="text-label text-text-default">
-        {accessCopy.tabTitle}
-      </h3>
+    <div className={cn('flex flex-col gap-2', className)} data-testid="crew-access-tab">
       <AccessList
         rows={rows}
         status={grants.status}
@@ -54,6 +50,6 @@ export function AccessTab({ className }: AccessTabProps) {
         onRevoke={(row) => grants.revoke(row.connectionId, row.sessionId)}
         onStop={onStop}
       />
-    </section>
+    </div>
   );
 }

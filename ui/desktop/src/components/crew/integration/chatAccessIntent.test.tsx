@@ -1,7 +1,11 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { chatAccessRoute, chatAccessRouteState } from '../access/ChatConnectNote';
+import {
+  chatAccessRoute,
+  chatAccessRouteState,
+  forgetChatAccessIntents,
+} from '../access/ChatConnectNote';
 import { accessCopy } from '../access/copy';
 import { CREW_APP_OPTIONS } from '../CrewApp';
 import { CrewLayout } from '../layout/CrewLayout';
@@ -9,7 +13,16 @@ import { CrewControllerProvider } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { useCrewController } from '../state/useCrewController';
 import { installResizeObserverStub } from '../test/crewTestUtils';
-import { connection, ids, installDaemon, mocked, type ScriptedDaemon } from './harness';
+import { rememberLastChannel } from '../state/draftStash';
+import {
+  connection,
+  ids,
+  installDaemon,
+  mocked,
+  richMessages,
+  richSnapshot,
+  type ScriptedDaemon,
+} from './harness';
 
 vi.mock('../crewApi', async () => {
   const actual = await vi.importActual<typeof import('../crewApi')>('../crewApi');
@@ -153,6 +166,7 @@ async function expectPaneOpenOnMethods() {
 describe('the one hop from a chat, whatever order Crew’s answers arrive in', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    forgetChatAccessIntents();
   });
 
   it('connections, then the first verified view, then the channel settles, then the grants', async () => {
@@ -210,6 +224,170 @@ describe('the one hop from a chat, whatever order Crew’s answers arrive in', (
       })
     ).toBeInTheDocument();
     // Opening the consent granted nothing.
+    expect(
+      mocked.crewHttp.mock.calls.filter(([path]) => String(path).endsWith('/grant'))
+    ).toHaveLength(0);
+  });
+});
+
+const DAEMON_SENTENCE =
+  'Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.';
+
+/** The observation a daemon gives a connection: refused while it is down, the view once it is up. */
+function observeWhileConnected(isConnected: () => boolean, connectionIdSeen?: string[]) {
+  mocked.observeCrew.mockImplementation(
+    async (
+      connectionId: string,
+      channelId: string | undefined,
+      _after: string | null,
+      signal: AbortSignal,
+      deliver: (frame: unknown) => void
+    ) => {
+      if (signal.aborted) return 'terminal';
+      connectionIdSeen?.push(connectionId);
+      if (!isConnected()) {
+        deliver({ type: 'error', code: 'observation_refused', error: DAEMON_SENTENCE });
+        return 'terminal';
+      }
+      deliver({
+        type: 'state',
+        connection_id: connectionId,
+        connection_mode: 'private',
+        connection_policy_epoch: 1,
+        connection_institution_id: connection.institution_id,
+        snapshot: richSnapshot(),
+        runs: [],
+        cursor: null,
+      });
+      if (channelId) {
+        const messages = richMessages().filter((message) => message.channel_id === channelId);
+        deliver({ type: 'messages', channel_id: channelId, messages, cursor: null, reset: true });
+      }
+      return 'terminal';
+    }
+  );
+}
+
+/**
+ * Q3-08 (live QA round 3): "Connect in Crew" from a chat whose connection was down landed, once
+ * connected, on #methods — the last channel visited — not on the chat's #general. An arrival from
+ * an offline chat comes before any verified view exists; its intent waits for the first verified
+ * view of the grant's connection and only then moves to the grant's channel. (Here the grant is on
+ * #methods and the channel last visited is #general.)
+ */
+describe('an arrival from an offline chat lands on the chat’s channel once connected', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetChatAccessIntents();
+    window.localStorage.clear();
+  });
+
+  it('waits through the offline screen, then selects the grant’s channel and opens its access', async () => {
+    let saved: 'connected' | 'disconnected' = 'disconnected';
+    const CONNECT = `/connections/${connection.id}/connect`;
+    rememberLastChannel(connection.id, ids.general);
+    const daemon = installDaemon();
+    daemon.state.http = (path, method) => {
+      if (path === '/connections' && method === 'GET')
+        return { connections: [{ ...connection, status: saved }] };
+      if (path === `/connections/${connection.id}/grants` && method === 'GET')
+        return { grants: [grantOnMethods()] };
+      if (path === CONNECT && method === 'POST') {
+        saved = 'connected';
+        return {};
+      }
+      return undefined;
+    };
+    observeWhileConnected(() => saved === 'connected');
+    arriveFromChat();
+
+    // The intent arrived before any verified view: nothing moves and nothing opens.
+    await waitFor(() => expect(controller?.screen).toBe('offline'));
+    await settle();
+    expect(controller?.ui.pane).toBeNull();
+    expect(controller?.channel).toBeNull();
+    expect(
+      mocked.crewHttp.mock.calls.filter(([path, method]) => path === CONNECT && method === 'POST')
+    ).toHaveLength(0);
+
+    // The person connects (the Connect button on the offline screen, or Crew acting on the chat's
+    // "Connect in Crew"). The first verified view settles on #general, the channel last visited;
+    // the intent then moves to the grant's #methods and opens the chat's access there.
+    await act(async () => {
+      await controller?.connect({ userInitiated: true });
+    });
+    const pane = await expectPaneOpenOnMethods();
+    expect(await within(pane).findByText('“Plot review” can')).toBeInTheDocument();
+    // Connecting granted nothing.
+    expect(
+      mocked.crewHttp.mock.calls.filter(([path]) => String(path).endsWith('/grant'))
+    ).toHaveLength(0);
+  });
+
+  it('moves to the grant’s own connection first when Crew shows another one', async () => {
+    const other = { ...connection, id: 'conn-0', name: 'Other lab' };
+    const daemon = installDaemon({ connections: [other, connection] });
+    daemon.state.http = (path, method) => {
+      if (path === `/connections/${connection.id}/grants` && method === 'GET')
+        return { grants: [grantOnMethods()] };
+      if (path === `/connections/${other.id}/grants` && method === 'GET') return { grants: [] };
+      return undefined;
+    };
+    const observed: string[] = [];
+    observeWhileConnected(() => true, observed);
+    arriveFromChat();
+
+    await waitFor(() => expect(controller?.connectionId).toBe(connection.id));
+    const pane = await expectPaneOpenOnMethods();
+    expect(await within(pane).findByText('“Plot review” can')).toBeInTheDocument();
+    expect(observed).toContain(connection.id);
+  });
+});
+
+/** Arrive as `/crew` sends the person: the route alone, with no route state. */
+function arriveByCommand() {
+  controller = null;
+  return render(
+    <MemoryRouter initialEntries={[ARRIVAL]}>
+      <CrewApp />
+    </MemoryRouter>
+  );
+}
+
+/**
+ * Q3-28 (live QA round 3): `/crew` in a chat with no grant opens its consent at once, on the
+ * channel Crew shows, rather than stopping at "Connect this chat to #general? [Review access]".
+ * `/crew` carries no route state; its arrival stands in for the intent.
+ */
+describe('/crew from a chat with no grant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetChatAccessIntents();
+    window.localStorage.clear();
+  });
+
+  it('opens the consent once the view is verified, and grants nothing before Allow', async () => {
+    const daemon = installDaemon({ hold: true });
+    daemon.state.http = (path, method) => {
+      if (path === `/connections/${connection.id}/grants` && method === 'GET')
+        return { grants: [] };
+      return undefined;
+    };
+    arriveByCommand();
+    await settle();
+    // No verified view yet: nothing opens.
+    expect(controller?.ui.pane ?? null).toBeNull();
+
+    await firstVerifiedFrame(daemon);
+    await waitFor(() =>
+      expect(controller?.ui.pane).toEqual({ mode: 'chat-access', sessionId: CHAT })
+    );
+    expect(await screen.findByRole('textbox', { name: 'Message #general' })).toBeInTheDocument();
+    const pane = chatAccessPane();
+    expect(pane).toHaveAttribute('data-state', 'open');
+    expect(await within(pane).findByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+    await settle();
+    expect(controller?.ui.pane).toEqual({ mode: 'chat-access', sessionId: CHAT });
     expect(
       mocked.crewHttp.mock.calls.filter(([path]) => String(path).endsWith('/grant'))
     ).toHaveLength(0);

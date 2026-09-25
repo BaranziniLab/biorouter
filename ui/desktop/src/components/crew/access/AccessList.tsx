@@ -17,7 +17,7 @@ export interface AccessListProps {
   /** The list failure to show, with Retry. */
   error?: string | null;
   onRetryLoad(): void;
-  /** The empty-state sentence ("No chats or agents can post in #methods."). */
+  /** The empty-state sentence ("None of your chats can post in #methods yet."). */
   emptyText: string;
   /** Open the chat or the task's conversation. */
   onOpen(row: AccessRow): void;
@@ -39,7 +39,7 @@ type Confirming = { key: string; action: 'revoke' | 'stop' } | null;
  * apart), `#destination (+n)`, a status badge ("Ended" once a task's access ended with it),
  * **Open**, and a visible **Revoke** on an active chat row or **Stop** on a running task row. There is no `⋯`: its
  * only item was "Copy session ID", a machine ID with no use to the person reading the list (live QA
- * round 1, T-55). Revoked and expired rows collapse under "Show revoked and expired (n)". Revoke and
+ * round 1, T-55). Revoked, expired and ended rows collapse under "Show past access (n)". Revoke and
  * Stop each ask inline first; what a revoke came to is said once, above the list.
  *
  * The row's line wraps (`.crew-access-row-*` in `crew-app.css`, authored rather than utilities):
@@ -222,22 +222,14 @@ export function AccessList({
   } else if (status === 'failed') {
     body = null;
   } else if (rows.length === 0) {
-    body = (
-      <div className="flex flex-col gap-1 px-3 py-2">
-        <p className="text-secondary text-text-default">{emptyText}</p>
-        <p className="text-supporting text-text-muted">{accessCopy.emptyHow}</p>
-      </div>
-    );
+    body = <EmptyAccess text={emptyText} />;
   } else {
     body = (
       <>
         {current.length > 0 ? (
           <ul className="biorouter-list-shell">{current.map(renderRow)}</ul>
         ) : (
-          <div className="flex flex-col gap-1 px-3 py-2">
-            <p className="text-secondary text-text-default">{emptyText}</p>
-            <p className="text-supporting text-text-muted">{accessCopy.emptyHow}</p>
-          </div>
+          <EmptyAccess text={emptyText} />
         )}
         {old.length > 0 ? (
           <Disclosure label={accessCopy.showOld(old.length)}>
@@ -286,6 +278,32 @@ export function AccessList({
         />
       ) : null}
       {body}
+    </div>
+  );
+}
+
+const CREW_COMMAND = '/crew';
+
+/**
+ * "None of your chats can post in #methods yet." and how to connect one, with the command drawn as
+ * code: it is something to type, not a word in the sentence (Q3-29).
+ */
+function EmptyAccess({ text }: { text: string }) {
+  const [before, ...rest] = accessCopy.emptyHow.split(CREW_COMMAND);
+  return (
+    <div className="flex flex-col gap-1 px-3 py-2">
+      <p className="text-secondary text-text-default">{text}</p>
+      <p className="text-supporting text-text-muted">
+        {before}
+        {rest.length > 0 ? (
+          <>
+            <code className="font-mono" translate="no">
+              {CREW_COMMAND}
+            </code>
+            {rest.join(CREW_COMMAND)}
+          </>
+        ) : null}
+      </p>
     </div>
   );
 }

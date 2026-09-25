@@ -55,7 +55,7 @@ function knownTitle(name: string | null | undefined): string | null {
  * `session_name` yet (live QA round 1, T-55). Never fetches: an unknown or default title
  * ("New chat") is `null`, and the pane says "This chat".
  */
-function useKnownChatTitle(sessionId: string | null): string | null {
+export function useKnownChatTitle(sessionId: string | null): string | null {
   const [title, setTitle] = useState(() =>
     sessionId ? knownTitle(cacheGet(sessionId)?.session.name) : null
   );
@@ -140,7 +140,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   if (!sessionId) {
     return (
       <div className={className} data-testid="crew-chat-access-pane">
-        <p className="text-supporting text-text-muted">{accessCopy.emptyHow}</p>
+        <p className="text-supporting text-text-muted">{accessCopy.paneNoChat}</p>
       </div>
     );
   }
@@ -450,6 +450,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           contextChannels={contextChannels}
           setContextChannels={setContextChannels}
           currentChannelId={channelId}
+          currentChannelName={here}
         />
         {errorNote}
         <div className="flex justify-end">
@@ -480,10 +481,13 @@ function AlsoRead({
   contextChannels,
   setContextChannels,
   currentChannelId,
+  currentChannelName,
 }: {
   contextChannels: string[];
   setContextChannels(ids: string[]): void;
   currentChannelId: string;
+  /** The selected channel as the consent names it, for the closed summary. */
+  currentChannelName: string;
 }) {
   const { snapshot } = useCrew();
   const candidates = useMemo(
@@ -504,7 +508,10 @@ function AlsoRead({
   if (candidates.length === 0) return null;
   const chosen = contextChannels.filter((id) => candidates.some((item) => item.id === id));
   return (
-    <Disclosure summary={accessCopy.alsoReadSummary(chosen.length)} defaultOpen={chosen.length > 0}>
+    <Disclosure
+      summary={accessCopy.alsoReadSummary(chosen.length, currentChannelName)}
+      defaultOpen={chosen.length > 0}
+    >
       <fieldset className="flex flex-col gap-1">
         <legend className="mb-1 text-label text-text-default">{accessCopy.alsoRead}</legend>
         {candidates.map((item) => (

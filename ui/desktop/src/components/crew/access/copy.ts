@@ -13,21 +13,30 @@
  */
 
 const quoted = (chat: string) => `“${chat}”`;
+/** The chat as a sentence's subject: its quoted title, or "This chat" when it has none. */
+const chatSubject = (chat: string | null) => (chat ? quoted(chat) : 'This chat');
 
 export const accessCopy = {
   // ── The chat-connect note (above the Crew composer, only with ?sessionId=) ──────────────────
+  // Every sentence names the chat when this window knows its title: inside Crew, "This chat" does
+  // not say which one (live QA round 3, Q3-30). A `null` chat keeps the "This chat" form.
   noteChecking: 'Checking this chat’s access…',
-  noteNone: (channel: string) => `Connect this chat to ${channel}?`,
+  noteNone: (chat: string | null, channel: string) =>
+    chat ? `Connect ${quoted(chat)} to ${channel}?` : `Connect this chat to ${channel}?`,
   noteReview: 'Review access',
   /** Pinned: the Review access button's accessible name. */
   noteReviewName: 'Review access and posting permission',
-  noteActive: (channel: string) => `This chat can read and post in ${channel}.`,
-  noteActiveElsewhere: (other: string) => `This chat already uses ${other}.`,
-  noteActiveOtherWorkspace: (workspace: string) =>
-    `This chat already uses a channel in ${workspace}.`,
+  noteActive: (chat: string | null, channel: string) =>
+    `${chatSubject(chat)} can read and post in ${channel}.`,
+  noteActiveElsewhere: (chat: string | null, other: string) =>
+    `${chatSubject(chat)} already uses ${other}.`,
+  noteActiveOtherWorkspace: (chat: string | null, workspace: string) =>
+    `${chatSubject(chat)} already uses a channel in ${workspace}.`,
   noteManage: 'Manage access',
-  noteRevoked: 'This chat’s Crew access was revoked.',
-  noteExpired: 'This chat’s access expired.',
+  noteRevoked: (chat: string | null) =>
+    chat ? `Crew access for ${quoted(chat)} was revoked.` : 'This chat’s Crew access was revoked.',
+  noteExpired: (chat: string | null) =>
+    chat ? `Crew access for ${quoted(chat)} expired.` : 'This chat’s access expired.',
   noteGrantAgain: 'Grant again',
   /** A task's grant ends when the task does: nothing went wrong, and there is nothing to grant. */
   noteTaskFinished: 'This task is finished. Its access ended when it finished.',
@@ -36,8 +45,8 @@ export const accessCopy = {
   paneTitle: 'Chat access',
   willBeAble: (chat: string | null) =>
     chat ? `${quoted(chat)} will be able to` : 'This chat will be able to',
-  canNow: (chat: string | null) => (chat ? `${quoted(chat)} can` : 'This chat can'),
-  chatName: (chat: string | null) => (chat ? quoted(chat) : 'This chat'),
+  canNow: (chat: string | null) => `${chatSubject(chat)} can`,
+  chatName: (chat: string | null) => chatSubject(chat),
   read: (channel: string) => `Read ${channel}`,
   reads: (channel: string) => `Reads ${channel}`,
   /** Followed by the person, rendered with `PersonName context="authority"`. */
@@ -45,9 +54,10 @@ export const accessCopy = {
   postsAs: (channel: string) => `Posts in ${channel} as`,
   expiry: 'Access ends when you revoke it, or after an hour.',
   alsoRead: 'Also read',
-  alsoReadSummary: (count: number) =>
+  /** Beside Advanced while it is closed: what the chat reads, not what it doesn't (Q3-30). */
+  alsoReadSummary: (count: number, channel: string) =>
     count === 0
-      ? 'Also reads nothing else'
+      ? `Reads only ${channel}`
       : `Also reads ${count} ${count === 1 ? 'channel' : 'channels'}`,
   /** Pinned. */
   allow: 'Allow this conversation to read and post here',
@@ -83,6 +93,8 @@ export const accessCopy = {
   paneTaskFinished: 'This task is finished. Its access ended when it finished.',
   /** A revoked chat that did not arrive here with /crew can only be connected from inside it. */
   reconnectHow: 'To connect it again, type /crew in that chat.',
+  /** The pane with no chat to show: a chat is connected from inside it. */
+  paneNoChat: 'To connect a chat, send it a message, then type /crew in it.',
 
   // ── Access rows (Access tab, Agent access tab, Agents section) ─────────────────────────────
   /** One name wherever this list appears: the channel's Access tab and Workspace settings. */
@@ -98,13 +110,17 @@ export const accessCopy = {
     /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
     ended: 'Ended',
   },
-  showOld: (count: number) => `Show revoked and expired (${count})`,
-  oldListName: 'Revoked and expired',
+  /** Its rows read Ended, Revoked or Expired: one name for all of them (Q3-30). */
+  showOld: (count: number) => `Show past access (${count})`,
+  oldListName: 'Past access',
   listLoading: 'Loading agent access…',
-  empty: (channel: string) => `No chats or agents can post in ${channel}.`,
-  emptyWorkspace: (workspace: string) => `No chats or agents can post in ${workspace}.`,
-  /** A chat with no message has nothing to connect, so the instruction says to send one first. */
-  emptyHow: 'To connect a chat, send it a message, then type /crew in it.',
+  // The list holds this computer's own chats and tasks, never anyone else's agents: from a
+  // member's seat "No chats or agents can post" was false whenever another person's agent posts
+  // there (live QA round 3, Q3-29). It says whose, and how to connect one.
+  empty: (channel: string) => `None of your chats can post in ${channel} yet.`,
+  emptyWorkspace: (workspace: string) => `None of your chats can post in ${workspace} yet.`,
+  /** Follows `empty`: a chat is connected from inside it. `/crew` is drawn as code. */
+  emptyHow: 'To connect one, open that chat and type /crew.',
   untitled: 'Untitled chat',
   yourTask: 'Your task',
   /**

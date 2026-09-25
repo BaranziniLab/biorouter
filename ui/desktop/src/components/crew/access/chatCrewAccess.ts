@@ -223,10 +223,35 @@ export function chatDestination(
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
+ * How often a watched chat that holds a grant re-reads the saved connections (Q3-04): an outage
+ * shows as the offline bar within this long, with no focus event needed.
+ */
+export const CONNECTION_WATCH_MS = 15_000;
+
+/** Whether two reads of the saved connections say the same thing about every connection. */
+function sameConnections(a: readonly SavedConnection[], b: readonly SavedConnection[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (item, index) =>
+        item.id === b[index].id && item.name === b[index].name && item.status === b[index].status
+    )
+  );
+}
+
+/**
  * Look up the Crew grant of one chat across the saved connections: when the chat opens, whenever a
  * grant changes through any Biorouter surface, when a turn ends while the chat holds a grant, and
- * when the window regains focus (a grant changed from the CLI). It never polls; the one timer it
- * sets flips an active grant to expired at the moment the daemon's `expires_at` passes.
+ * when the window regains focus (a grant changed from the CLI). The one timer that flips an active
+ * grant to expired fires at the moment the daemon's `expires_at` passes.
+ *
+ * While the chat holds a grant that stands (active or offline) and the window is visible, it also
+ * re-reads the saved connections — only `GET /crew/connections`, never the grants — every
+ * {@link CONNECTION_WATCH_MS}, and at once when the network comes or goes or the window becomes
+ * visible again. Live QA round 3 (Q3-04) left an open, focused chat showing its live "Crew ·
+ * #general" chip and Revoke for six minutes into an outage, because nothing read the connection
+ * again until the window was refocused. A chat without a grant, or a hidden window, reads nothing
+ * on a timer. A read that fails changes nothing: a missed read is not an outage.
  */
 export function useChatCrewAccess(sessionId: string | null | undefined): ChatCrewAccess {
   const id = sessionId || null;
@@ -306,6 +331,7 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   }, [id, hasGrant, refetch]);
 
   const grant = current?.grant ?? null;
+  const grantConnectionId = grant?.connection_id ?? null;
   useEffect(() => {
     shownGrant.current = grant;
   }, [grant]);
@@ -340,6 +366,71 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   // A task's grant that stopped only on this device is still a revoke to confirm, with Retry.
   else if (grant.kind === 'task' && !unconfirmed) state = 'finished';
   else state = grantState;
+
+  // Watch the connection while the grant stands and the chat is watched (Q3-04).
+  const watching = Boolean(id) && (state === 'active' || state === 'offline');
+  useEffect(() => {
+    if (!id || !watching || !grantConnectionId) return;
+    let timer: number | undefined;
+    let reading: AbortController | null = null;
+    const visible = () => document.visibilityState === 'visible';
+    const read = () => {
+      reading?.abort();
+      const request = new AbortController();
+      reading = request;
+      void crewHttp<unknown>('/connections', 'GET', undefined, request.signal).then(
+        (result) => {
+          if (request.signal.aborted) return;
+          const connections = savedConnections(result);
+          // The grant's connection is gone from the list: read the grant again, as on open.
+          if (!connections.some((item) => item.id === grantConnectionId)) {
+            refetch();
+            return;
+          }
+          setLookup((previous) =>
+            previous &&
+            previous.sessionId === id &&
+            !previous.failed &&
+            !sameConnections(previous.connections, connections)
+              ? { ...previous, connections }
+              : previous
+          );
+        },
+        () => undefined
+      );
+    };
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+    const start = () => {
+      stop();
+      if (visible()) timer = window.setInterval(read, CONNECTION_WATCH_MS);
+    };
+    const onVisibility = () => {
+      if (visible()) {
+        read();
+        start();
+      } else {
+        stop();
+        reading?.abort();
+      }
+    };
+    const onNetwork = () => {
+      if (visible()) read();
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('online', onNetwork);
+    window.addEventListener('offline', onNetwork);
+    return () => {
+      stop();
+      reading?.abort();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onNetwork);
+      window.removeEventListener('offline', onNetwork);
+    };
+  }, [id, watching, grantConnectionId, refetch]);
 
   const shared = publishedState(state);
   useEffect(() => {

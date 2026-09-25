@@ -248,7 +248,7 @@ describe('task rows in the Access history', () => {
     // A chat's access still reads as what happened to it.
     expect(label('chat-revoked')).toBe(accessCopy.status.revoked);
     expect(label('chat-expired')).toBe(accessCopy.status.expired);
-    // The state itself is unchanged: an ended task still folds behind "Show revoked and expired".
+    // The state itself is unchanged: an ended task still folds behind "Show past access".
     expect(splitAccessRows(rows).old.map((row) => row.sessionId)).toContain('task-1');
   });
 

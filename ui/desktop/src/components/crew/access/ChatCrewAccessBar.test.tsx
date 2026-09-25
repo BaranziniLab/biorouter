@@ -12,7 +12,11 @@ import {
   useChatCrewAccessState,
 } from './chatCrewAccess';
 import { ChatCrewAccessBar, crewHoldToastId, useCrewComposerHold } from './ChatCrewAccessBar';
-import { chatAccessRouteState } from './ChatConnectNote';
+import {
+  CREW_CONNECT_ROUTE_STATE,
+  chatAccessRouteState,
+  crewConnectRequestOf,
+} from './ChatConnectNote';
 import { accessCopy } from './copy';
 import { connection, grantRow } from './testing';
 import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
@@ -485,8 +489,30 @@ describe('a chat whose Crew connection is offline', () => {
     // Not the connected chip, and no Revoke beside a connection that cannot carry it.
     expect(screen.queryByRole('button', { name: /^Crew · / })).toBeNull();
 
+    // Q3-08: one click, as its label says. Crew connects the grant's connection on arrival and
+    // opens this chat's access on its channel: the route carries both.
     fireEvent.click(within(note).getByRole('button', { name: accessCopy.chatConnectInCrew }));
-    expect(mocks.navigate).toHaveBeenLastCalledWith('/crew?sessionId=chat-1');
+    const [to, options] = mocks.navigate.mock.calls[mocks.navigate.mock.calls.length - 1] as [
+      string,
+      { state?: Record<string, unknown> },
+    ];
+    expect(to).toBe('/crew?sessionId=chat-1');
+    expect(options.state).toEqual({
+      ...Object.fromEntries(
+        Object.keys(chatAccessRouteState()).map((key) => [key, expect.any(String)])
+      ),
+      [CREW_CONNECT_ROUTE_STATE]: 'conn-1',
+    });
+    expect(Object.keys(options.state ?? {}).sort()).toEqual(
+      [...Object.keys(chatAccessRouteState()), CREW_CONNECT_ROUTE_STATE].sort()
+    );
+    // What Crew reads back: the grant's connection, once per intent.
+    expect(crewConnectRequestOf(options.state)).toEqual({
+      intentId: expect.any(String),
+      connectionId: 'conn-1',
+    });
+    // A plain one-hop intent asks for no connect.
+    expect(crewConnectRequestOf(chatAccessRouteState())).toBeNull();
   });
 
   it('reads as connected once the connection is back', async () => {
@@ -507,6 +533,192 @@ describe('a chat whose Crew connection is offline', () => {
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
     expect(screen.queryByTestId('crew-chat-access-offline')).toBeNull();
     expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Q3-04 (live QA round 3, P1): an open, focused chat with Crew access kept its live "Crew ·
+ * #general" chip and Revoke for six minutes into an outage, and changed only on window focus or
+ * reopen. While the chat holds a grant that stands and the window is visible, it re-reads the saved
+ * connections — never the grants — every 15 s, and at once when the network comes or goes or the
+ * window becomes visible again. Nothing reads on a timer without a grant, or while hidden.
+ */
+describe('an open chat notices a Crew outage while it is watched', () => {
+  let visibility: Document['visibilityState'] = 'visible';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChannelLabels();
+    visibility = 'visible';
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    // Back to jsdom's own answer.
+    delete (document as { visibilityState?: unknown }).visibilityState;
+  });
+
+  const grantLists = () =>
+    mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/grants');
+
+  function daemonWith(grants: () => unknown[]) {
+    const saved = { status: 'connected' as string };
+    installDaemon({
+      grants,
+      get connections() {
+        return [{ ...connection, status: saved.status }];
+      },
+    });
+    return saved;
+  }
+
+  async function wait(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it('shows the offline bar within 15 s of the connection dropping, with no focus event', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    const saved = daemonWith(() => [grantRow({ session_id: 'chat-1' })]);
+    renderChat();
+    expect(
+      await screen.findByRole('button', { name: accessCopy.chatChipName('#general') })
+    ).toBeInTheDocument();
+    const grantsRead = grantLists().length;
+
+    saved.status = 'disconnected';
+    await wait(15_000);
+
+    const note = await screen.findByTestId('crew-chat-access-offline');
+    expect(note).toHaveTextContent(accessCopy.chatOffline('#general'));
+    expect(screen.queryByRole('button', { name: accessCopy.revokeButton })).toBeNull();
+    expect(screen.getByTestId('state')).toHaveTextContent('offline');
+    // Only the connections were read again: the grant list is not polled.
+    expect(grantLists()).toHaveLength(grantsRead);
+
+    // And back: the chip returns on the next read, still without a focus event.
+    saved.status = 'connected';
+    await wait(15_000);
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
+    expect(grantLists()).toHaveLength(grantsRead);
+  });
+
+  it('reads at once when the network goes or comes back', async () => {
+    const saved = daemonWith(() => [grantRow({ session_id: 'chat-1' })]);
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    const reads = lookupCalls().length;
+
+    saved.status = 'disconnected';
+    act(() => {
+      window.dispatchEvent(new Event('offline'));
+    });
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('offline'));
+    expect(lookupCalls()).toHaveLength(reads + 1);
+
+    saved.status = 'connected';
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expect(lookupCalls()).toHaveLength(reads + 2);
+  });
+
+  it('reads nothing on a timer while the window is hidden, and reads at once when it is shown', async () => {
+    const saved = daemonWith(() => [grantRow({ session_id: 'chat-1' })]);
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    const reads = lookupCalls().length;
+
+    visibility = 'hidden';
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    saved.status = 'disconnected';
+    await wait(60_000);
+    expect(lookupCalls()).toHaveLength(reads);
+    expect(screen.getByTestId('state')).toHaveTextContent('active');
+
+    visibility = 'visible';
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('offline'));
+    expect(lookupCalls()).toHaveLength(reads + 1);
+    // Watching again: the next read comes on the timer.
+    await wait(15_000);
+    expect(lookupCalls()).toHaveLength(reads + 2);
+  });
+
+  it('reads nothing on a timer for a chat without a grant', async () => {
+    daemonWith(() => [grantRow({ session_id: 'someone-else' })]);
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('none'));
+    const reads = lookupCalls().length;
+    await wait(60_000);
+    act(() => {
+      window.dispatchEvent(new Event('offline'));
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await wait(0);
+    expect(lookupCalls()).toHaveLength(reads);
+  });
+
+  it('stops watching once the grant no longer stands', async () => {
+    let expired = false;
+    daemonWith(() => [grantRow({ session_id: 'chat-1', expired })]);
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    expired = true;
+    act(() =>
+      announceGrantsChanged({ connectionId: 'conn-1', sessionId: 'chat-1', change: 'revoked' })
+    );
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('revoked'));
+    const reads = lookupCalls().length;
+    await wait(60_000);
+    expect(lookupCalls()).toHaveLength(reads);
+  });
+
+  it('keeps what it shows when a read fails: a missed read is not an outage', async () => {
+    const saved = daemonWith(() => [grantRow({ session_id: 'chat-1' })]);
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    const answer = mocks.crewHttp.getMockImplementation();
+    mocks.crewHttp.mockImplementation(async (path: string, method?: string) => {
+      if (path === '/connections') throw new Error('daemon busy');
+      return answer?.(path, method);
+    });
+    const reads = lookupCalls().length;
+    saved.status = 'disconnected';
+    await wait(15_000);
+    // The read was made, and failed.
+    expect(lookupCalls().length).toBeGreaterThan(reads);
+    expect(screen.getByTestId('state')).toHaveTextContent('active');
+    expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
+  });
+
+  it('looks the grant up again when its connection leaves the saved list', async () => {
+    let connections: unknown[] = [connection];
+    installDaemon({
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+      get connections() {
+        return connections;
+      },
+    });
+    renderChat();
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
+    connections = [];
+    await wait(15_000);
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('none'));
+    expect(screen.queryByTestId('crew-chat-access-bar')).toBeNull();
   });
 });
 

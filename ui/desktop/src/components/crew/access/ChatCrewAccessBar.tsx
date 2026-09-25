@@ -10,7 +10,7 @@ import { cn } from '../../../utils';
 import { navigateWithViewTransition } from '../../../utils/navigationUtils';
 import { isMachineIdShaped, sanitizeDisplayText } from '../identity';
 import type { ChatCrewAccess } from './chatCrewAccess';
-import { chatAccessRoute, chatAccessRouteState } from './ChatConnectNote';
+import { chatAccessRoute, chatAccessRouteState, chatConnectRouteState } from './ChatConnectNote';
 import { accessCopy } from './copy';
 import { InlineConfirm, RevokeResultNote } from './RevokeControls';
 import { revokeGrant, type RevokeOutcome } from './useCrewGrants';
@@ -103,7 +103,9 @@ export interface ChatCrewAccessBarProps {
  *   **Revoke access**, a real button that asks inline first — so the chat itself says it is
  *   connected and where the control that ends it lives.
  * - **Offline:** the grant stands but its Crew connection is down, so the next turn would fail as
- *   a model error (Q2-08). A neutral note says so, with **Connect in Crew**. Nothing is held.
+ *   a model error (Q2-08). A neutral note says so, with **Connect in Crew**, which connects and
+ *   lands on the chat's channel (Q3-08). Nothing is held. The chat notices the outage while it is
+ *   watched: `useChatCrewAccess` re-reads the connections while it holds a grant (Q3-04).
  * - **Revoked or expired:** a calm notice, "Crew access to #general was removed, so this chat
  *   can't continue. …", with **Start a new chat** and **Grant access again**, which opens this
  *   chat's consent in Crew in one hop. The chat holds its composer (`access.blocksComposer`) so the
@@ -179,10 +181,13 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     leaveChat();
     navigate(chatAccessRoute(sessionId), { state: chatAccessRouteState() });
   };
-  // To Crew's own screen for this chat, where the connection is: connecting is not a consent.
+  // One click, as its label says (live QA round 3, Q3-08): Crew connects the grant's connection on
+  // arrival — the press here is the person's own connect, so it is user-initiated — and lands on
+  // this chat's channel with its access pane open. Connecting is not a consent: the grant already
+  // stands, and nothing here grants or widens it.
   const connectInCrew = () => {
     leaveChat();
-    navigate(chatAccessRoute(sessionId));
+    navigate(chatAccessRoute(sessionId), { state: chatConnectRouteState(grant.connection_id) });
   };
   const startNewChat = () => {
     leaveChat();
