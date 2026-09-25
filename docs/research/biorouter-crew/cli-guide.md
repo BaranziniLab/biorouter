@@ -222,6 +222,8 @@ biorouter crew --connection lab auth
 
 `auth` opens the daemon-owned native SSH terminal for host authentication, passwords and MFA, including admitted `ProxyJump` hops. Wait for the daemon's verified authentication result: it connects the Crew bridge automatically. `connect` can open a bridge using an already available authenticated connection; `disconnect` closes the selected connection. Follow the [SSH hop policy](ssh-hop-policy.md) for known-hosts setup, supported jump syntax and configuration restrictions. SSH transport alone is not a HIPAA compliance determination.
 
+The daemon keeps a connected bridge alive while it is idle and dials it again without a prompt when it drops. After a network failure it tries again after 20 s, 60 s and 180 s, then every 5 minutes for up to an hour, so a connection comes back by itself when the network does. It never dials again after `disconnect`, while a sign-in is pending, or after a failure only a person can fix. If the workspace no longer knows this computer (its host ran `enroll revoke`), the connection stops for good: `connections list` shows it disconnected with `This computer is no longer a member of lab.`, and JSON output carries `"last_error_code": "crew_membership_ended"` beside `last_error`. Nothing reconnects it by itself; `connect` still may, and checks from scratch.
+
 Connection selection is automatic only when exactly one connection is saved. Otherwise pass `--connection` with the connection's name, SSH target or ID. To replace settings or remove the local saved connection:
 
 ```bash
@@ -278,6 +280,8 @@ The current channel owner can run `remove-member analysis-lab/methods @bob` (add
 
 The host can remove a person from the whole workspace with `enroll revoke @bob`. It revokes their enrollment, devices and agent grants, which is different from removing someone from one channel, so it asks you to type `@bob` again. Where there is no terminal to ask in, pass `--confirm @bob`; `enroll revoke PRINCIPAL_ID` never asks.
 
+These commands name the person the way every list does: `"Bob Lee" (@bob)` when Bob set a display name, and `@crew_frank` alone when the display name is the username, as in `Removed @crew_frank from #methods.`
+
 ## Read, post and follow channel messages
 
 ```bash
@@ -292,7 +296,7 @@ biorouter crew --connection lab watch methods
 
 Use `--output-format json` for structured single responses. Watch commands emit one JSON value per line with either `json` or `stream-json`. Text output escapes terminal control characters. Content in messages, files and agent output remains untrusted input.
 
-When the daemon ends a watch, text output says why in one sentence, for example `Stopped watching #methods: You no longer have access to this channel.` The observer's code (`channel_access_changed`, `scope_changed`, …) is in the JSON error frame, never in the text.
+When the daemon ends a watch, text output says why in one sentence, for example `Stopped watching #methods: You no longer have access to this channel.`, or `Stopped watching #methods: This computer isn't a member of this workspace.` when the workspace no longer knows this computer (the words `history` uses for the same refusal). The observer's code (`channel_access_changed`, `scope_changed`, …) is in the JSON error frame, never in the text.
 
 ## Transfer attachments or share remote references
 
@@ -357,6 +361,8 @@ biorouter crew --connection lab --expected-policy-epoch CONNECTION_EPOCH \
 Replace the epoch placeholders with the observed integers. Do not reuse stale values after policy changes. These flags do not apply to sends, transfers or cleanup.
 
 A private model that the workspace's institution has not approved is refused before the task starts, in the desktop's words: `gpt-5.5 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model.` (`--output-format json` keeps the daemon's code, `crew_request_refused`.)
+
+A task that reads a file shared in the channel ends its posted result with a line the daemon adds from what the task actually read, for example `Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).` (several files: `Sources: …`). When two shared files have the same name the agent uses the most recently shared one, and the line tells the copies apart (`newest copy`, `earlier copy`) when the task read both. A task that read no file has no such line.
 
 Task starts currently require explicit `--allow-posting` for the destination channel. Repeat `--context-channel analysis-lab/raw-data` to request additional source channels; membership and privacy policy still apply. `tasks list --show-ids` shows run IDs. `tasks watch` follows task status, while channel history contains published activity. Ctrl-C detaches a watcher; cancellation requires `tasks cancel`.
 

@@ -23,8 +23,11 @@
 //!   Sign in is the person's to open. A re-dial never follows a person's Disconnect (or an edit
 //!   or removal), never runs while a sign-in is pending, and a failure that is not about the
 //!   network (sign-in, host key, a missing bridge, a workspace that no longer verifies) is
-//!   final. A network failure is tried again at most [`KeepaliveTiming::retry_delays`] times,
-//!   with growing gaps, and the connection shows the real reason all the while.
+//!   final. A network failure is tried again [`KeepaliveTiming::retry_delays`] times, with
+//!   growing gaps, and then every [`KeepaliveTiming::late_retry_every`] for up to
+//!   [`KeepaliveTiming::late_retry_for`] (Q3-11: a network that came back after the quick
+//!   retries left the connection down until someone pressed Connect). The connection shows
+//!   the real reason all the while.
 //!
 //! Only a bridge that is **gone** is dialled again. A heartbeat the bridge carried and whose
 //! answer was refused (a different node, a `hello` that lost the v2 signature it had, one that
@@ -35,6 +38,20 @@
 //!
 //! Nothing here re-sends a request whose outcome is unknown: a heartbeat is only ever a
 //! `hello`, and a request re-dials only when nothing has been written to the old bridge.
+//!
+//! **A membership that ended stops everything (Q3-12).** A heartbeat is a keyless `hello`, so
+//! it cannot see that the workspace revoked this computer: a revoked device's bridge used to be
+//! heartbeated and re-dialled indefinitely, and read `connected`, while every read was refused.
+//! Now a person-signed request the workspace refuses because it no longer knows this device
+//! (`unauthorized: unknown device`, a device whose account is gone, `principal_revoked`) is
+//! identity-final, like a workspace that no longer verifies: the idle re-dial is disarmed, the
+//! bridge is retired (so its keepalive ends), and the connection reads disconnected with
+//! [`MEMBERSHIP_ENDED`] beside its `last_error`. Nothing dials it again by itself; a person's
+//! Connect still may, and verifies from scratch. Only a device the workspace accepted in this
+//! process can have a membership that *ended*: one it never knew is still joining (the join
+//! page keeps its bridge up while the host approves), and its refusals change nothing here. So
+//! that a revocation is noticed without waiting for someone to use Crew, every successful
+//! keepalive re-dial of such a device is followed by one person-signed read.
 
 use super::{transport, CrewManager, SshFailure, SshFailureKind, WorkspaceIdentityError};
 use anyhow::Result;
@@ -55,6 +72,10 @@ pub(super) struct KeepaliveTiming {
     pub probe_before_use: Duration,
     /// The gaps before each retry of a re-dial that failed for a network reason.
     pub retry_delays: [Duration; 3],
+    /// Once `retry_delays` are spent on network failures, how often to try again (Q3-11).
+    pub late_retry_every: Duration,
+    /// How long those later tries go on; zero for none.
+    pub late_retry_for: Duration,
 }
 
 impl Default for KeepaliveTiming {
@@ -68,7 +89,24 @@ impl Default for KeepaliveTiming {
                 Duration::from_secs(60),
                 Duration::from_secs(180),
             ],
+            late_retry_every: Duration::from_secs(5 * 60),
+            late_retry_for: Duration::from_secs(60 * 60),
         }
+    }
+}
+
+impl KeepaliveTiming {
+    /// Every gap a re-dial that keeps failing for a network reason waits before its next try:
+    /// the quick retries, then the later ones.
+    pub(super) fn redial_gaps(&self) -> impl Iterator<Item = Duration> {
+        let late = if self.late_retry_every.is_zero() {
+            0
+        } else {
+            (self.late_retry_for.as_nanos() / self.late_retry_every.as_nanos()) as usize
+        };
+        self.retry_delays
+            .into_iter()
+            .chain(std::iter::repeat_n(self.late_retry_every, late))
     }
 }
 
@@ -98,6 +136,43 @@ pub(super) enum Heartbeat {
 
 /// The last-error text of a bridge the keepalive found gone, until the re-dial says more.
 const IDLE_DROPPED: &str = "The connection to this workspace dropped while it was idle.";
+
+/// `last_error_code` of a connection whose device the workspace no longer knows (Q3-12): the
+/// shared contract `GET /crew/connections` serves and the desktop reads, so it never has to
+/// match `last_error`'s words.
+pub const MEMBERSHIP_ENDED: &str = "crew_membership_ended";
+
+/// The read a keepalive re-dial sends to learn whether the workspace still knows this device:
+/// the cheapest a device can sign (one account lookup), and the one the join status already
+/// uses to tell a member from a stranger.
+const MEMBERSHIP_PROBE: &str = "profile.suggest";
+
+/// The broker's `{code, message}` for a refusal it answered, from the transport's error.
+fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
+    let text = error.to_string();
+    let envelope: serde_json::Value =
+        serde_json::from_str(text.strip_prefix("Crew broker refused request: ")?).ok()?;
+    Some((
+        envelope.get("code")?.as_str()?.to_owned(),
+        envelope.get("message")?.as_str()?.to_owned(),
+    ))
+}
+
+/// Whether the workspace refused a person-signed request because it no longer knows this
+/// device or its account (identity-final). `unauthorized` is also the code of a consumed
+/// challenge or a missing signature, which a retry fixes, so only the texts that name the
+/// device or account count, and `principal_revoked` for a broker that says so outright.
+pub(super) fn membership_refused(error: &anyhow::Error) -> bool {
+    let Some((code, message)) = broker_refusal(error) else {
+        return false;
+    };
+    code == "principal_revoked"
+        || (code == "unauthorized"
+            && matches!(
+                message.as_str(),
+                "unauthorized: unknown device" | "unauthorized"
+            ))
+}
 
 /// Whether a re-dial that failed with `error` may be tried again later: only a network
 /// failure. Anything that needs a person (sign-in, a host key) or that says the workspace is
@@ -319,10 +394,16 @@ impl CrewManager {
     }
 
     /// After a heartbeat found `failed` gone (never one whose answer was refused): dial again
-    /// now, and, for a network failure, a few more times with growing gaps.
+    /// now, and, for a network failure, a few more times with growing gaps, then now and then
+    /// for a while ([`KeepaliveTiming::redial_gaps`]). A dial that connects is followed by a
+    /// membership check ([`Self::probe_membership`]).
     async fn recover_dropped(&self, id: &str, failed: &Arc<Mutex<transport::Transport>>) {
         let first = self.redial_dropped(id, failed).await;
         let error = match first {
+            Ok(Redial::Reconnected) => {
+                self.probe_membership(id).await;
+                return;
+            }
             Ok(_) => return,
             Err(error) => error,
         };
@@ -331,16 +412,159 @@ impl CrewManager {
             return;
         }
         let token = self.arm_idle_redial(id);
-        for delay in self.keepalive_timing().retry_delays {
+        for delay in self.keepalive_timing().redial_gaps() {
             tokio::time::sleep(delay).await;
             match self.retry_idle_redial(id, token).await {
-                None | Some(Ok(())) => return,
+                None => return,
+                Some(Ok(())) => {
+                    self.probe_membership(id).await;
+                    return;
+                }
                 Some(Err(error)) if worth_retrying(&error) => continue,
                 Some(Err(_)) => break,
             }
         }
         if self.idle_redial_armed(id, token) {
             self.disarm_idle_redial(id);
+        }
+    }
+
+    /// What a person-signed request's answer says about membership. An accepted request
+    /// records that the workspace knows this device; a refusal that says it no longer does ends
+    /// the connection for good, for a device it accepted before ([`Self::end_membership`]).
+    /// The `auth.*` requests (and the join door's) are answered before authentication, so
+    /// only their success speaks: this device was just enrolled.
+    pub(super) async fn heed_membership(
+        &self,
+        join_door: bool,
+        id: &str,
+        method: &str,
+        answer: &Result<serde_json::Value>,
+        transport: &Arc<Mutex<transport::Transport>>,
+    ) {
+        match answer {
+            Ok(_) => self.note_member(id),
+            Err(error)
+                if !join_door
+                    && !method.starts_with("auth.")
+                    && membership_refused(error)
+                    && self.was_member(id) =>
+            {
+                if let Err(ending) = self.end_membership(id, transport).await {
+                    tracing::warn!(connection = id, error = %ending, "Couldn't end a Crew connection whose membership ended");
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Record that the workspace accepted a person-signed request from `id`'s device.
+    pub(super) fn note_member(&self, id: &str) {
+        self.members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned());
+    }
+
+    fn was_member(&self, id: &str) -> bool {
+        self.members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    fn forget_member(&self, id: &str) {
+        self.members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
+    /// The typed code beside `connection`'s `last_error`, while that error is still the one
+    /// it was set with (a connect, a later failure or a reload replaces it).
+    pub fn last_error_code(&self, connection: &super::Connection) -> Option<&'static str> {
+        let codes = self
+            .error_codes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (code, message) = codes.get(&connection.id)?;
+        (connection.status == "disconnected"
+            && connection.last_error.as_deref() == Some(message.as_str()))
+        .then_some(*code)
+    }
+
+    pub(super) fn clear_error_code(&self, id: &str) {
+        self.error_codes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
+    /// The workspace's name for `id`, as a person would call it: the signed `hello`'s name,
+    /// else this device's name for the connection.
+    async fn workspace_label(&self, id: &str) -> String {
+        if let Some(name) = self
+            .broker_hello(id)
+            .and_then(|hello| hello.workspace_name)
+            .filter(|name| biorouter_crew::workspace_name_valid(name))
+        {
+            return name;
+        }
+        self.connection(id)
+            .await
+            .map(|c| super::plain_label(&c.name))
+            .ok()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "this workspace".to_owned())
+    }
+
+    /// The workspace refused `refused`'s device as no longer a member (see the module
+    /// documentation). Identity-final: no re-dial is owed any more, and the bridge, while it is
+    /// still `id`'s, is retired with a sentence and [`MEMBERSHIP_ENDED`], which ends its
+    /// keepalive. `false` (and the bridge left alone) when a person's Connect already replaced
+    /// it: that bridge answers for itself.
+    pub(super) async fn end_membership(
+        &self,
+        id: &str,
+        refused: &Arc<Mutex<transport::Transport>>,
+    ) -> Result<bool> {
+        let _lifecycle = self.connection_guard(id).await?;
+        self.disarm_idle_redial(id);
+        // A person's Connect verifies from scratch: until the workspace accepts this device
+        // again, its refusals are those of a computer still joining.
+        self.forget_member(id);
+        if !self.is_current_transport(id, refused).await {
+            return Ok(false);
+        }
+        let message = format!(
+            "This computer is no longer a member of {}.",
+            self.workspace_label(id).await
+        );
+        tracing::warn!(
+            connection = id,
+            "The Crew workspace no longer knows this device; disconnecting and not dialling again"
+        );
+        self.error_codes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), (MEMBERSHIP_ENDED, message.clone()));
+        self.retire_locked(id, refused, &message).await;
+        Ok(true)
+    }
+
+    /// After a keepalive re-dial: one person-signed read, so that a device the workspace
+    /// revoked while this computer slept or was offline is noticed now rather than at the next
+    /// request someone makes. Only for a device the workspace accepted in this process; the
+    /// read's refusal, if any, is handled where every signed request's is.
+    pub(super) async fn probe_membership(&self, id: &str) {
+        if !self.was_member(id) {
+            return;
+        }
+        if let Err(error) = self
+            .signed_request(id, MEMBERSHIP_PROBE, serde_json::json!({}), None)
+            .await
+        {
+            tracing::debug!(connection = id, error = %error, "Crew membership check after a re-dial failed");
         }
     }
 }

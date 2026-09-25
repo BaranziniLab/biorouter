@@ -107,13 +107,16 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 }
 
 /// A scripted `ssh`. `-G` answers settings the preflight accepts. Each bridge spawn takes the
-/// next line of `plan`: `serve` answers everything; `drop-after-1` answers one request and
+/// next line of `plan`: `serve` answers everything; `drop-after-N` answers N requests and
 /// then ends on the next without answering, as a bridge the broker dropped does
 /// (`join-drop-after-1` too, announcing `join_by_name_v1` first); `v2-then-v1` answers its
 /// first `hello` v2-signed and every later one v1 only, as a relay stripping the signature
-/// would; `other-node-after-1` answers later `hello`s from a different node; `auth` and
-/// `unreachable` fail before any request, as OpenSSH does. Every request line is logged as
-/// `<spawn> <line>` to `requests.log`.
+/// would; `other-node-after-1` answers later `hello`s from a different node; `revoked`
+/// answers `hello` and `auth.challenge` but refuses every other request as a device the
+/// workspace does not know (`unauthorized: unknown device`), and `member-then-revoked` does
+/// so after answering the first; `auth` and `unreachable` fail before any request, as OpenSSH
+/// does. `context.manifest` and `blob.read` answer [`manifest`] and [`blob_read`]. Every
+/// request line is logged as `<spawn> <line>` to `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("bin");
@@ -123,7 +126,16 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let hello_v2 = signed_hello(NODE, true, &["human_chat"]).to_string();
     let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
     let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
-    for text in [&hello, &hello_v2, &hello_other, &hello_join] {
+    let manifest = manifest().to_string();
+    let blob_read = blob_read().to_string();
+    for text in [
+        &hello,
+        &hello_v2,
+        &hello_other,
+        &hello_join,
+        &manifest,
+        &blob_read,
+    ] {
         assert!(!text.contains('\'') && !text.contains('%'));
     }
     let challenge = json!({"workspace_id": WORKSPACE_ID, "nonce": "nonce", "uid": 10001});
@@ -156,10 +168,11 @@ case "$plan" in
     exit 255 ;;
 esac
 answered=0
+signed=0
 while IFS= read -r line; do
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
   case "$plan" in
-    *drop-after-1) [ "$answered" -ge 1 ] && exit 0 ;;
+    *drop-after-*) [ "$answered" -ge "${{plan##*drop-after-}}" ] && exit 0 ;;
   esac
   answered=$((answered+1))
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -175,8 +188,22 @@ while IFS= read -r line; do
     printf '{{"id":"%s","result":{{"invited":false}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q '"method":"auth.challenge"'; then
     printf '{{"id":"%s","result":%s}}\n' "$id" '{challenge}'
+  elif printf '%s\n' "$line" | grep -q '"method":"context.manifest"'; then
+    printf '{{"id":"%s","result":%s}}\n' "$id" '{manifest}'
+  elif printf '%s\n' "$line" | grep -q '"method":"blob.read"'; then
+    printf '{{"id":"%s","result":%s}}\n' "$id" '{blob_read}'
   else
-    printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
+    signed=$((signed+1))
+    refuse=0
+    case "$plan" in
+      revoked) refuse=1 ;;
+      member-then-revoked) [ "$signed" -gt 1 ] && refuse=1 ;;
+    esac
+    if [ "$refuse" = 1 ]; then
+      printf '{{"id":"%s","error":{{"code":"unauthorized","message":"unauthorized: unknown device"}}}}\n' "$id"
+    else
+      printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
+    fi
   fi
 done
 "#,
@@ -187,11 +214,60 @@ done
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+/// The CSV the fixture's newest `gina-assay.csv` holds.
+const CSV: &str = "sample,signal\nS1,12.7\nS2,7.8\n";
+
+/// `context.manifest`: two messages in `#data`, each sharing a `gina-assay.csv`, with the
+/// broker's `people` map naming their author.
+fn manifest() -> Value {
+    let message = |id: &str, created_at: u64, blob: &str| {
+        json!({"id": id, "sequence": id, "channel_id": "keepalive-channel",
+            "actor_id": "principal-gina", "run_id": null, "body": "Shared a file",
+            "created_at": created_at, "restricted": false, "source_channels": [],
+            "attachments": [blob], "references": [], "status": null})
+    };
+    json!({
+        "run_id": "keepalive-run", "policy_epoch": 1, "source_channels": ["keepalive-channel"],
+        "messages": [
+            message("message-new", 1_790_214_527, "blob-new"),
+            message("message-old", 1_790_214_441, "blob-old"),
+        ],
+        "restricted": false,
+        "people": {"principal-gina": {"username": "crew_gina", "display_name": "Gina Rossi", "active": true}},
+        "channel_names": {"keepalive-channel": "data"},
+    })
+}
+
+/// `blob.read` of the newest `gina-assay.csv`, as the broker answers it: the chunk hex-encoded.
+fn blob_read() -> Value {
+    let size = CSV.len();
+    json!({
+        "blob": {"run_id": null, "id": "blob-new", "owner_id": "principal-gina",
+            "channel_id": "keepalive-channel", "name": "gina-assay.csv",
+            "media_type": "application/octet-stream", "size": size, "sha256": "00",
+            "offset": size, "complete": true, "restricted": false,
+            "source_channels": ["keepalive-channel"]},
+        "offset": 0,
+        "data_hex": hex(CSV.as_bytes()),
+        "next_offset": size,
+        "complete": true,
+    })
+}
+
 fn spawns(root: &Path) -> usize {
     fs::read_to_string(root.join("spawns"))
         .ok()
         .and_then(|text| text.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// Every request frame any bridge received, in order.
+fn frames(root: &Path) -> Vec<Value> {
+    fs::read_to_string(root.join("requests.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.split_once(' ')?.1).ok())
+        .collect()
 }
 
 /// `(spawn, method)` for every request any bridge received, in order.
@@ -213,6 +289,22 @@ fn fast(retry: Duration) -> KeepaliveTiming {
         idle: Duration::from_millis(80),
         probe_before_use: Duration::from_secs(600),
         retry_delays: [retry; 3],
+        // No later tries unless a test asks for them (see `with_late_retries`).
+        late_retry_every: retry,
+        late_retry_for: Duration::ZERO,
+    }
+}
+
+/// `timing` with later network retries every `every` for `window` (Q3-11).
+fn with_late_retries(
+    timing: KeepaliveTiming,
+    every: Duration,
+    window: Duration,
+) -> KeepaliveTiming {
+    KeepaliveTiming {
+        late_retry_every: every,
+        late_retry_for: window,
+        ..timing
     }
 }
 
@@ -464,6 +556,8 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             idle: Duration::from_secs(600),
             probe_before_use: Duration::from_millis(50),
             retry_delays: [Duration::from_secs(600); 3],
+            late_retry_every: Duration::from_secs(600),
+            late_retry_for: Duration::ZERO,
         },
     )
     .await;
@@ -601,6 +695,16 @@ fn slept() -> KeepaliveTiming {
         idle: Duration::from_secs(600),
         probe_before_use: Duration::from_millis(50),
         retry_delays: [Duration::from_secs(600); 3],
+        late_retry_every: Duration::from_secs(600),
+        late_retry_for: Duration::ZERO,
+    }
+}
+
+/// No heartbeat and no probe before use: only what a test sends reaches a bridge.
+fn quiet() -> KeepaliveTiming {
+    KeepaliveTiming {
+        probe_before_use: Duration::from_secs(600),
+        ..slept()
     }
 }
 
@@ -690,6 +794,363 @@ async fn a_join_status_read_after_a_long_idle_dials_again_first() {
     assert_eq!(status(&f.manager).await, ("connected".into(), None));
 }
 
+/// Grant `WORKER` a run on the fixture's connection, as an admission would.
+async fn grant_worker(f: &Fixture) {
+    let epoch = f
+        .manager
+        .connection(CONNECTION_ID)
+        .await
+        .unwrap()
+        .policy_epoch;
+    f.manager.registry.lock().await.scopes.insert(
+        WORKER.into(),
+        Scope {
+            connection_id: CONNECTION_ID.into(),
+            run_id: "keepalive-run".into(),
+            channel_id: "keepalive-channel".into(),
+            source_channels: vec!["keepalive-channel".into()],
+            epoch,
+            provider_binding: "keepalive-provider".into(),
+            public_provider: false,
+            origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
+            expired: false,
+            expires_at: None,
+            labels: None,
+            session_incarnation: None,
+        },
+    );
+    f.manager
+        .write_credential(&format!("run:{WORKER}"), "run-credential")
+        .unwrap();
+}
+
+const WORKER: &str = "keepalive-worker";
+
+async fn membership_ended(manager: &CrewManager) -> bool {
+    let c = manager.connection(CONNECTION_ID).await.unwrap();
+    manager.last_error_code(&c) == Some(super::keepalive::MEMBERSHIP_ENDED)
+}
+
+fn hellos(root: &Path) -> usize {
+    requests(root)
+        .iter()
+        .filter(|(_, method)| method == "hello")
+        .count()
+}
+
+/// Q3-17 and Q3-02: an agent's first `blob.read` leaves `offset` out; the daemon sends 0, the
+/// CSV comes back as text, and what was read (with who shared it, from the manifest the run
+/// read) is recorded for the result's source line.
+#[tokio::test]
+async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("blob-read", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert_eq!(f.manager.run_source_line(WORKER), None, "nothing read yet");
+    f.manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.manager.run_source_line(WORKER),
+        None,
+        "reading messages is not reading a file"
+    );
+    let read = f
+        .manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-new"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["text"], CSV);
+    assert!(read.get("data_hex").is_none(), "{read}");
+    assert_eq!(read["next_offset"], CSV.len());
+    assert_eq!(read["complete"], true);
+    let sent = frames(&f.root)
+        .into_iter()
+        .find(|frame| frame["method"] == "blob.read")
+        .expect("the read reached the workspace");
+    assert_eq!(sent["params"]["offset"], 0);
+    assert_eq!(sent["params"]["blob_id"], "blob-new");
+    assert_eq!(
+        f.manager.run_source_line(WORKER).as_deref(),
+        Some("Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).")
+    );
+    // Read twice, named once.
+    f.manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-new", "offset": null}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.manager.run_source_line(WORKER).as_deref(),
+        Some("Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).")
+    );
+    // An explicit offset is the caller's.
+    f.manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-new", "offset": 7}),
+        )
+        .await
+        .unwrap();
+    let offsets: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "blob.read")
+        .map(|frame| frame["params"]["offset"].clone())
+        .collect();
+    assert_eq!(offsets, [json!(0), json!(0), json!(7)]);
+    // Another chat read nothing, and a posted result forgets its reads.
+    assert_eq!(f.manager.run_source_line("another-chat"), None);
+    f.manager.forget_run_reads(WORKER);
+    assert_eq!(f.manager.run_source_line(WORKER), None);
+}
+
+/// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge
+/// is retired, no heartbeat or re-dial follows, and the connection says why with a typed code.
+#[tokio::test]
+async fn a_revoked_device_stops_its_keepalive_and_says_its_membership_ended() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "revoked",
+        &["member-then-revoked", "serve"],
+        fast(Duration::from_millis(30)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    let refused = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("unknown device"), "{refused}");
+    assert_eq!(
+        status(&f.manager).await,
+        (
+            "disconnected".into(),
+            Some("This computer is no longer a member of keepalive fixture.".into())
+        )
+    );
+    assert!(membership_ended(&f.manager).await);
+    assert!(f.manager.transport(CONNECTION_ID).await.is_err());
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    // Many heartbeat and retry gaps later: not one more hello, and no second bridge.
+    let heard = hellos(&f.root);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(hellos(&f.root), heard, "no heartbeat after the refusal");
+    assert_eq!(spawns(&f.root), 1, "nothing dialled it again");
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+
+    // A person's Connect still may, and the code goes with the error it cleared.
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+    assert!(!membership_ended(&f.manager).await);
+}
+
+/// A device the workspace never accepted in this process is one still joining: its refusal
+/// changes nothing, and its bridge is kept alive while the host approves it.
+#[tokio::test]
+async fn a_device_that_is_still_joining_keeps_its_bridge_when_refused() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("joining", &["revoked"], fast(Duration::from_millis(30))).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let refused = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("unknown device"), "{refused}");
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+    assert!(!membership_ended(&f.manager).await);
+    let root = f.root.clone();
+    let heard = hellos(&root);
+    until(async || hellos(&root) >= heard + 2).await;
+    assert_eq!(spawns(&f.root), 1);
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+}
+
+/// Q3-12: after a keepalive re-dial, one person-signed read finds a revocation that happened
+/// while the bridge was down, without waiting for anyone to use Crew.
+#[tokio::test]
+async fn a_redial_checks_membership_and_stops_a_revoked_device() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // Bridge 1 answers the connect's hello and one signed read, then drops at the next
+    // heartbeat; bridge 2 reaches a workspace that no longer knows this device.
+    let f = fixture(
+        "redial-revoked",
+        &["drop-after-3", "revoked", "serve"],
+        fast(Duration::from_millis(30)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || membership_ended(&manager).await).await;
+    assert_eq!(
+        methods_on(&f.root, 2),
+        ["hello", "auth.challenge", "profile.suggest"],
+        "the re-dial's own hello, then the membership check"
+    );
+    let heard = hellos(&f.root);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(hellos(&f.root), heard, "no heartbeat after the refusal");
+    assert_eq!(spawns(&f.root), 2, "no third dial");
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+}
+
+/// Q3-11: once the quick retries are spent on network failures, the keepalive keeps trying
+/// now and then, so a network that comes back reconnects without anyone pressing Connect.
+#[tokio::test]
+async fn a_network_that_comes_back_after_the_quick_retries_reconnects_by_itself() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "late-retry",
+        &[
+            "drop-after-1",
+            "unreachable",
+            "unreachable",
+            "unreachable",
+            "unreachable",
+            "unreachable",
+            "unreachable",
+            "serve",
+        ],
+        with_late_retries(
+            fast(Duration::from_millis(30)),
+            Duration::from_millis(60),
+            Duration::from_secs(30),
+        ),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    // The first re-dial, three quick retries, two later ones, then the network is back.
+    until(async || spawns(&root) == 8 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q3-11: the later tries end when their window does, never in a tight loop, and never after
+/// a Disconnect.
+#[tokio::test]
+async fn later_network_retries_end_with_their_window_and_at_a_disconnect() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let plan = [&["drop-after-1"][..], &["unreachable"; 20][..]].concat();
+    let f = fixture(
+        "late-retry-window",
+        &plan,
+        with_late_retries(
+            fast(Duration::from_millis(30)),
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        ),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    // The first re-dial, three quick retries and four later ones (200 ms / 50 ms).
+    until(async || spawns(&root) == 9).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(spawns(&f.root), 9);
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    drop(f);
+
+    let f = fixture(
+        "late-retry-disconnect",
+        &plan,
+        with_late_retries(
+            fast(Duration::from_millis(30)),
+            Duration::from_millis(150),
+            Duration::from_secs(30),
+        ),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 5).await;
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(spawns(&f.root), 5, "no later retry after a Disconnect");
+}
+
+#[test]
+fn only_a_refusal_that_names_the_device_or_account_ends_a_membership() {
+    use super::keepalive::membership_refused;
+    let refusal = |code: &str, message: &str| {
+        anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": code, "message": message})
+        )
+    };
+    assert!(membership_refused(&refusal(
+        "unauthorized",
+        "unauthorized: unknown device"
+    )));
+    assert!(membership_refused(&refusal("unauthorized", "unauthorized")));
+    assert!(membership_refused(&refusal(
+        "principal_revoked",
+        "principal_revoked: removed"
+    )));
+    // A consumed challenge or a missing signature is fixed by a retry, not final.
+    for message in [
+        "unauthorized: challenge missing or consumed",
+        "unauthorized: signature required",
+        "unauthorized: invalid grant",
+    ] {
+        assert!(
+            !membership_refused(&refusal("unauthorized", message)),
+            "{message}"
+        );
+    }
+    assert!(!membership_refused(&refusal(
+        "forbidden",
+        "forbidden: channel unavailable"
+    )));
+    assert!(!membership_refused(&anyhow::anyhow!(
+        "unauthorized: unknown device (not the broker's words)"
+    )));
+}
+
 #[test]
 fn the_default_pace_keeps_every_gap_well_inside_the_brokers_timeout() {
     let timing = KeepaliveTiming::default();
@@ -701,6 +1162,14 @@ fn the_default_pace_keeps_every_gap_well_inside_the_brokers_timeout() {
     // Never a tight loop: every retry waits, and each waits longer than the last.
     assert!(timing.retry_delays[0] >= Duration::from_secs(10));
     assert!(timing.retry_delays.windows(2).all(|pair| pair[0] < pair[1]));
+    // Q3-11: then every 5 minutes for an hour, never faster than the last quick retry.
+    assert_eq!(timing.late_retry_every, Duration::from_secs(300));
+    assert_eq!(timing.late_retry_for, Duration::from_secs(3600));
+    assert!(timing.late_retry_every > timing.retry_delays[2]);
+    let gaps: Vec<Duration> = timing.redial_gaps().collect();
+    assert_eq!(gaps.len(), 3 + 12);
+    assert_eq!(gaps[..3], timing.retry_delays);
+    assert!(gaps[3..].iter().all(|gap| *gap == timing.late_retry_every));
     // The broker's own timeout is the number this pace is measured against.
     let broker = include_str!("../../../biorouter-crew/src/broker.rs");
     assert!(broker.contains("set_read_timeout(Some(Duration::from_secs(300)))"));

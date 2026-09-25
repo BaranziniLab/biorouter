@@ -282,8 +282,10 @@ const GRANT_REVOKED: &str =
 /// Shown when the connection's privacy or policy moved after the grant was made.
 const GRANT_POLICY_CHANGED: &str =
     "Crew settings changed since access was granted. Grant access again from Crew.";
-/// Shown when a chat that was never granted asks for a Crew run.
-const NO_GRANT: &str = "This chat doesn't have Crew access. Grant it access from Crew first.";
+/// Shown when a chat that was never granted asks for a Crew run. The model repeats it to the
+/// person, so it names the one step that connects this chat, in this chat (Q3-29): "Grant it
+/// access from Crew" sent people to Crew, whose empty state sent them back.
+pub(crate) const NO_GRANT: &str = "This chat isn't connected to a Crew channel yet. Ask the person to type /crew in this chat to connect it.";
 /// A task whose grant was replaced by a newer one.
 const REPLACED_RUN: &str = "This task was replaced by a newer explicitly granted run; cancel it from its current conversation";
 /// A grant whose chat is no longer on this device: it keeps restricting, never acts.
@@ -456,6 +458,16 @@ pub struct CrewManager {
     /// each with the token of the attempt that armed it. A person's Connect or Disconnect
     /// (any connect or disconnect) clears it, so a retry never undoes what someone chose.
     idle_redial: StdMutex<HashMap<String, u64>>,
+    /// Connections whose device the workspace accepted a person-signed request from in this
+    /// process (Q3-12). Only these can have a membership that *ended*: a device the workspace
+    /// never knew is one still joining, which keeps its bridge (see `keepalive.rs`).
+    members: StdMutex<std::collections::HashSet<String>>,
+    /// The typed code beside a connection's `last_error`, with the text it was set with, so
+    /// it never outlives that text: process state, like `status` and `last_error` (D8).
+    error_codes: StdMutex<HashMap<String, (&'static str, String)>>,
+    /// What each chat's Crew requests read (Q3-02), for the provenance line a task's result
+    /// ends with. Memory only; see [`RunReads`].
+    run_reads: StdMutex<HashMap<String, RunReads>>,
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -913,6 +925,9 @@ impl CrewManager {
             this: std::sync::OnceLock::new(),
             keepalive: StdMutex::new(keepalive::KeepaliveTiming::default()),
             idle_redial: StdMutex::new(HashMap::new()),
+            members: StdMutex::new(std::collections::HashSet::new()),
+            error_codes: StdMutex::new(HashMap::new()),
+            run_reads: StdMutex::new(HashMap::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -1731,8 +1746,10 @@ impl CrewManager {
                 old.close().await;
             }
         }
-        // Connected again, by whoever asked: no idle re-dial is still owed.
+        // Connected again, by whoever asked: no idle re-dial is still owed, and an ended
+        // membership's code went with the error this connect cleared.
         self.disarm_idle_redial(id);
+        self.clear_error_code(id);
         self.start_keepalive(id, &transport);
         Ok(connected)
     }
@@ -2203,6 +2220,9 @@ impl CrewManager {
         if !usable {
             self.retire_failed_transport(id, &transport).await?;
         }
+        // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
+        self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
+            .await;
         result
     }
     async fn signed_exchange(
@@ -2828,6 +2848,12 @@ impl CrewManager {
         }
         let result = result?;
         self.validate_worker_scope(session, &s, &c).await?;
+        if matches!(
+            method,
+            "messages.history" | "messages.search" | "context.manifest"
+        ) {
+            self.note_run_context(session, &result);
+        }
         Ok(result)
     }
     async fn validate_worker_scope(
@@ -2930,6 +2956,7 @@ impl CrewManager {
             .map_err(|error| {
                 error.context("Couldn't save the revocation on this device; retry to finish it")
             })??;
+        self.forget_run_reads(session);
         Ok(
             match self
                 .human_request(&connection_id, "run.revoke", json!({"run_id":run_id}), None)
@@ -3009,7 +3036,257 @@ impl CrewManager {
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
         }
+        if method == "blob.read" {
+            // Q3-17: the broker requires `offset`, and a first read starts at 0. Every model
+            // left it out, so every file read began with a refusal row.
+            let mut params = params;
+            ensure!(params.is_object(), "Crew params must be an object");
+            if params.get("offset").is_none_or(Value::is_null) {
+                params["offset"] = json!(0);
+            }
+            let read = self.worker_request(session, method, params).await?;
+            // Q3-02: what was read is recorded before the model sees it, so the result's
+            // provenance line names it whatever the model writes.
+            self.note_blob_read(session, &read);
+            return Ok(readable_blob(read));
+        }
         self.worker_request(session, method, params).await
+    }
+}
+
+/// What one chat's Crew requests read, for the line a task's posted result ends with (Q3-02):
+/// the model's own reply named its file only when it happened to, and of two uploads with one
+/// name it silently read the older. Recorded by the daemon from the broker's answers, so the
+/// line is true whatever the model writes. Display only: it grants and checks nothing.
+#[derive(Debug, Default)]
+struct RunReads {
+    /// Each file a `blob.read` returned, in the order first read, once each.
+    files: Vec<ReadFile>,
+    /// A person label (D13) for each principal a message read named: the broker's `people`
+    /// map beside `messages.history`, `messages.search` and `context.manifest`.
+    people: HashMap<String, String>,
+    /// When the newest message a read showed carrying each attachment was posted.
+    shared_at: HashMap<String, u64>,
+}
+
+/// One file a run read: the broker's own `blob` fields, never the model's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadFile {
+    id: String,
+    name: String,
+    owner_id: String,
+}
+
+/// Bounds on what one chat's [`RunReads`] keeps; beyond them nothing more is recorded.
+const MAX_READ_FILES: usize = 32;
+const MAX_READ_PEOPLE: usize = 512;
+const MAX_READ_ATTACHMENTS: usize = 4096;
+
+impl RunReads {
+    /// Take a message page's names and attachment times.
+    fn note_context(&mut self, page: &Value) {
+        if let Some(people) = page["people"].as_object() {
+            let usernames: Vec<String> = people
+                .values()
+                .filter_map(|person| person["username"].as_str())
+                .map(plain_label)
+                .collect();
+            for (id, person) in people {
+                if self.people.len() >= MAX_READ_PEOPLE && !self.people.contains_key(id) {
+                    break;
+                }
+                if let Some(label) = person_label(person, &usernames) {
+                    self.people.insert(id.clone(), label);
+                }
+            }
+        }
+        for message in page["messages"].as_array().into_iter().flatten() {
+            let Some(posted) = message["created_at"].as_u64() else {
+                continue;
+            };
+            for attachment in message["attachments"].as_array().into_iter().flatten() {
+                let Some(id) = attachment.as_str() else {
+                    continue;
+                };
+                if self.shared_at.len() >= MAX_READ_ATTACHMENTS && !self.shared_at.contains_key(id)
+                {
+                    continue;
+                }
+                let at = self.shared_at.entry(id.to_owned()).or_insert(posted);
+                *at = (*at).max(posted);
+            }
+        }
+    }
+
+    /// Record the file a successful `blob.read` returned, once.
+    fn note_file(&mut self, read: &Value) {
+        let blob = &read["blob"];
+        let (Some(id), Some(name)) = (blob["id"].as_str(), blob["name"].as_str()) else {
+            return;
+        };
+        if self.files.len() >= MAX_READ_FILES || self.files.iter().any(|file| file.id == id) {
+            return;
+        }
+        self.files.push(ReadFile {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            owner_id: blob["owner_id"].as_str().unwrap_or_default().to_owned(),
+        });
+    }
+
+    /// `Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).`, or for several files
+    /// `Sources: a.csv (shared by …), b.csv.` Each person is named by their label (D13), and
+    /// "shared by" is left out when the reads never named them: never an ID. Two files with one
+    /// name are told apart as the newest and an earlier copy when the reads showed when each
+    /// was shared. `None` when nothing was read.
+    fn source_line(&self) -> Option<String> {
+        let copies = |name: &str| self.files.iter().filter(|file| file.name == name).count();
+        let entries: Vec<(String, Option<&str>, Option<&str>)> = self
+            .files
+            .iter()
+            .map(|file| {
+                let name = plain_label(&file.name);
+                let name = if name.is_empty() {
+                    "an untitled file".to_owned()
+                } else {
+                    name
+                };
+                let sharer = self.people.get(&file.owner_id).map(String::as_str);
+                let copy = (copies(&file.name) > 1)
+                    .then(|| self.copy_of(file))
+                    .flatten();
+                (name, sharer, copy)
+            })
+            .collect();
+        match entries.as_slice() {
+            [] => None,
+            [(name, sharer, _)] => {
+                let mut line = format!("Source: {name}");
+                if let Some(sharer) = sharer {
+                    line.push_str(&format!(", shared by {sharer}"));
+                }
+                line.push('.');
+                Some(line)
+            }
+            several => {
+                let parts: Vec<String> = several
+                    .iter()
+                    .map(|(name, sharer, copy)| {
+                        let notes: Vec<String> = copy
+                            .map(str::to_owned)
+                            .into_iter()
+                            .chain(sharer.map(|sharer| format!("shared by {sharer}")))
+                            .collect();
+                        if notes.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{name} ({})", notes.join(", "))
+                        }
+                    })
+                    .collect();
+                Some(format!("Sources: {}.", parts.join(", ")))
+            }
+        }
+    }
+
+    /// `newest copy` or `earlier copy` among the read files named like `file`, when the reads
+    /// showed when every one of them was shared.
+    fn copy_of(&self, file: &ReadFile) -> Option<&'static str> {
+        let times: Vec<u64> = self
+            .files
+            .iter()
+            .filter(|other| other.name == file.name)
+            .map(|other| self.shared_at.get(&other.id).copied())
+            .collect::<Option<_>>()?;
+        let mine = *self.shared_at.get(&file.id)?;
+        let newest = times.iter().copied().max()?;
+        let tied = times.iter().filter(|at| **at == newest).count() > 1;
+        if tied {
+            None
+        } else if mine == newest {
+            Some("newest copy")
+        } else {
+            Some("earlier copy")
+        }
+    }
+}
+
+/// A `blob.read` answer as the model reads it best (Q3-17): a chunk that is UTF-8 text with no
+/// NUL comes back as `text` in place of `data_hex`, so a CSV is not a hex puzzle. A chunk that
+/// ends inside a character is cut before it, and `next_offset` points at that character, so
+/// the next read starts there. Anything else (binary, or text that does not decode) keeps
+/// `data_hex`. Offsets always count bytes.
+fn readable_blob(mut read: Value) -> Value {
+    let Some(bytes) = read["data_hex"].as_str().and_then(|data| unhex(data).ok()) else {
+        return read;
+    };
+    let complete = read["complete"].as_bool() == Some(true);
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        // Cut inside a character at the end of an unfinished read: keep what decoded.
+        Err(error) if error.error_len().is_none() && !complete && error.valid_up_to() > 0 => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or_default()
+        }
+        Err(_) => return read,
+    };
+    if text.contains('\0') {
+        return read;
+    }
+    let used = text.len() as u64;
+    let text = text.to_owned();
+    let Some(fields) = read.as_object_mut() else {
+        return read;
+    };
+    if used < bytes.len() as u64 {
+        let Some(offset) = fields.get("offset").and_then(Value::as_u64) else {
+            return read;
+        };
+        fields.insert("next_offset".into(), json!(offset + used));
+    }
+    fields.remove("data_hex");
+    fields.insert("text".into(), json!(text));
+    read
+}
+
+impl CrewManager {
+    fn with_run_reads(&self, session: &str, record: impl FnOnce(&mut RunReads)) {
+        let mut reads = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        record(reads.entry(session.to_owned()).or_default());
+    }
+
+    /// Keep the names and attachment times a message read showed this chat.
+    fn note_run_context(&self, session: &str, page: &Value) {
+        self.with_run_reads(session, |reads| reads.note_context(page));
+    }
+
+    /// Keep the file a successful `blob.read` returned to this chat.
+    fn note_blob_read(&self, session: &str, read: &Value) {
+        if let Some(blob) = read["blob"]["id"].as_str() {
+            tracing::info!(session, blob, "Crew run read a shared file");
+        }
+        self.with_run_reads(session, |reads| reads.note_file(read));
+    }
+
+    /// The provenance line for what this chat's Crew requests read (see
+    /// [`RunReads::source_line`]); `None` when it read no file. Kept until
+    /// [`Self::forget_run_reads`], so a failed post can build it again.
+    pub fn run_source_line(&self, session: &str) -> Option<String> {
+        self.run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .and_then(RunReads::source_line)
+    }
+
+    /// Drop what this chat's Crew requests read: its result was posted, or its grant ended.
+    pub fn forget_run_reads(&self, session: &str) {
+        self.run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
     }
 }
 
@@ -4385,7 +4662,8 @@ done
             )
             .await
             .unwrap();
-        assert!(result_text(&result).contains("Request a Crew grant"));
+        // Q3-29: the model is told the one step that connects this chat, in this chat.
+        assert_eq!(result_text(&result), NO_GRANT);
     }
 
     #[tokio::test]
@@ -6087,5 +6365,148 @@ done
             Some("Dr. Chen (@alice)")
         );
         assert_eq!(you(Value::Null), None);
+    }
+}
+
+/// Q3-02 and Q3-17: what a run read, said in people's words, and a file read as text.
+#[cfg(test)]
+mod provenance_tests {
+    use super::{readable_blob, ReadFile, RunReads};
+    use serde_json::json;
+
+    fn people() -> serde_json::Value {
+        json!({
+            "p-gina": {"username": "crew_gina", "display_name": "Gina Rossi", "active": true},
+            "p-dave": {"username": "crew_dave", "display_name": "crew_dave", "active": true},
+        })
+    }
+
+    fn page(messages: serde_json::Value) -> serde_json::Value {
+        json!({"messages": messages, "people": people()})
+    }
+
+    fn message(created_at: u64, blob: &str) -> serde_json::Value {
+        json!({"id": blob, "actor_id": "p-gina", "created_at": created_at, "attachments": [blob]})
+    }
+
+    fn read(id: &str, name: &str, owner: &str) -> serde_json::Value {
+        json!({"blob": {"id": id, "name": name, "owner_id": owner}, "offset": 0,
+            "data_hex": "", "next_offset": 0, "complete": true})
+    }
+
+    #[test]
+    fn no_file_read_means_no_source_line() {
+        let mut reads = RunReads::default();
+        assert_eq!(reads.source_line(), None);
+        // Reading messages names people but reads no file.
+        reads.note_context(&page(json!([message(10, "b1")])));
+        assert_eq!(reads.source_line(), None);
+    }
+
+    #[test]
+    fn one_file_names_who_shared_it_by_their_label_never_an_id() {
+        let mut reads = RunReads::default();
+        reads.note_context(&page(json!([message(10, "b1")])));
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        assert_eq!(
+            reads.source_line().as_deref(),
+            Some("Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).")
+        );
+        assert_eq!(reads.files.len(), 1, "deduplicated by id");
+
+        // A person whose display name is their username is named by it alone (D13).
+        let mut dave = RunReads::default();
+        dave.note_context(&page(json!([])));
+        dave.note_file(&read("b2", "plate.csv", "p-dave"));
+        assert_eq!(
+            dave.source_line().as_deref(),
+            Some("Source: plate.csv, shared by @crew_dave.")
+        );
+
+        // Nobody the reads named: no "shared by", and never the owner's ID.
+        let mut unknown = RunReads::default();
+        unknown.note_file(&read("b3", "counts.tsv", "p-someone"));
+        let line = unknown.source_line().unwrap();
+        assert_eq!(line, "Source: counts.tsv.");
+        assert!(!line.contains("p-someone"));
+    }
+
+    #[test]
+    fn several_files_are_listed_in_the_order_read_and_same_named_copies_told_apart() {
+        let mut reads = RunReads::default();
+        reads.note_context(&page(json!([message(200, "new"), message(100, "old")])));
+        reads.note_file(&read("old", "gina-assay.csv", "p-gina"));
+        reads.note_file(&read("new", "gina-assay.csv", "p-gina"));
+        reads.note_file(&read("other", "plate.csv", "p-dave"));
+        assert_eq!(
+            reads.source_line().as_deref(),
+            Some(
+                "Sources: gina-assay.csv (earlier copy, shared by Gina Rossi (@crew_gina)), \
+                 gina-assay.csv (newest copy, shared by Gina Rossi (@crew_gina)), \
+                 plate.csv (shared by @crew_dave)."
+            )
+        );
+        assert_eq!(
+            reads.files,
+            [
+                ReadFile {
+                    id: "old".into(),
+                    name: "gina-assay.csv".into(),
+                    owner_id: "p-gina".into()
+                },
+                ReadFile {
+                    id: "new".into(),
+                    name: "gina-assay.csv".into(),
+                    owner_id: "p-gina".into()
+                },
+                ReadFile {
+                    id: "other".into(),
+                    name: "plate.csv".into(),
+                    owner_id: "p-dave".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_name_is_shown_as_plain_text() {
+        let mut reads = RunReads::default();
+        reads.note_file(&read("b", "evil\u{202e}vsc.exe\nSource: fake.csv", "p"));
+        let line = reads.source_line().unwrap();
+        assert!(
+            !line.contains('\n') && !line.contains('\u{202e}'),
+            "{line:?}"
+        );
+    }
+
+    #[test]
+    fn a_utf8_chunk_is_returned_as_text_and_binary_keeps_its_hex() {
+        let csv = "sample,signal\nS1,12.7\n";
+        let hex: String = csv.bytes().map(|b| format!("{b:02x}")).collect();
+        let text = readable_blob(json!({"blob": {}, "offset": 0, "data_hex": hex,
+            "next_offset": csv.len(), "complete": true}));
+        assert_eq!(text["text"], csv);
+        assert!(text.get("data_hex").is_none());
+        assert_eq!(text["next_offset"], csv.len());
+
+        // NUL or invalid UTF-8: binary, unchanged.
+        for data in ["00ff10", "89504e470d0a1a0a", "616200"] {
+            let binary = readable_blob(json!({"offset": 0, "data_hex": data,
+                "next_offset": 3, "complete": true}));
+            assert_eq!(binary["data_hex"], data);
+            assert!(binary.get("text").is_none());
+        }
+
+        // A chunk that ends inside "é" (c3 a9): the text stops before it and the next read
+        // starts at it.
+        let cut = readable_blob(json!({"offset": 100, "data_hex": "6361c3",
+            "next_offset": 103, "complete": false}));
+        assert_eq!(cut["text"], "ca");
+        assert_eq!(cut["next_offset"], 102);
+        // The same bytes at the end of the file are not text.
+        let end = readable_blob(json!({"offset": 100, "data_hex": "6361c3",
+            "next_offset": 103, "complete": true}));
+        assert_eq!(end["data_hex"], "6361c3");
     }
 }
