@@ -860,9 +860,9 @@ impl TransferService {
         .await??;
         let (mut file, stamp) = source;
         file.seek(SeekFrom::Start(0))?;
-        let mut header = [0u8; 16];
-        let header_size = file.read(&mut header)?;
-        let media_type = image_type(&header[..header_size]).unwrap_or("application/octet-stream");
+        let mut head = Vec::with_capacity(MEDIA_SNIFF_BYTES as usize);
+        (&mut file).take(MEDIA_SNIFF_BYTES).read_to_end(&mut head)?;
+        let media_type = upload_media_type(&head, &receipt.name, size <= head.len() as u64);
         ensure!(
             receipt.sha256.is_empty() || (receipt.sha256 == sha256 && receipt.size == size),
             "Reselected file differs from the original transfer"
@@ -1123,6 +1123,43 @@ pub struct PreviewRequest {
     pub channel_id: String,
     pub blob_id: String,
 }
+/// How much of an upload [`upload_media_type`] reads.
+const MEDIA_SNIFF_BYTES: u64 = 8 * 1024;
+
+/// The media type an upload is recorded with (Q3-17). An image is named by its bytes, as
+/// before. A file that is not one, whose first [`MEDIA_SNIFF_BYTES`] are UTF-8 with no NUL, is
+/// named by its extension when that extension is one of a few text formats, so a shared CSV is
+/// `text/csv` rather than `application/octet-stream`. Everything else stays
+/// `application/octet-stream`. Inline previews are unaffected: they accept images only.
+///
+/// `whole` says `head` is the entire file. When it is not, a multi-byte character cut off by the
+/// end of `head` is not a reason to call the file binary.
+fn upload_media_type(head: &[u8], name: &str, whole: bool) -> &'static str {
+    const BINARY: &str = "application/octet-stream";
+    if let Some(image) = image_type(head) {
+        return image;
+    }
+    if head.contains(&0) {
+        return BINARY;
+    }
+    match std::str::from_utf8(head) {
+        Ok(_) => {}
+        Err(error) if !whole && error.error_len().is_none() => {}
+        Err(_) => return BINARY,
+    }
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("csv") => "text/csv",
+        Some("tsv") => "text/tab-separated-values",
+        Some("txt") => "text/plain",
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        _ => BINARY,
+    }
+}
 fn image_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
@@ -1227,5 +1264,85 @@ impl TransferService {
             "Image metadata changed before preview"
         );
         Ok((media_type, bytes))
+    }
+}
+
+/// Q3-17: what an upload is recorded as.
+#[cfg(test)]
+mod media_type_tests {
+    use super::upload_media_type;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    #[test]
+    fn utf8_text_is_named_by_its_extension() {
+        let csv = b"sample,od600\ngina-1,0.42\n";
+        assert_eq!(upload_media_type(csv, "gina-assay.csv", true), "text/csv");
+        assert_eq!(upload_media_type(csv, "GINA-ASSAY.CSV", true), "text/csv");
+        assert_eq!(
+            upload_media_type(b"a\tb\n", "plate.tsv", true),
+            "text/tab-separated-values"
+        );
+        assert_eq!(
+            upload_media_type(b"notes\n", "README.txt", true),
+            "text/plain"
+        );
+        assert_eq!(
+            upload_media_type(br#"{"a":1}"#, "run.json", true),
+            "application/json"
+        );
+        assert_eq!(
+            upload_media_type(b"# Methods\n", "methods.md", true),
+            "text/markdown"
+        );
+        assert_eq!(
+            upload_media_type("données é\n".as_bytes(), "d.csv", true),
+            "text/csv"
+        );
+        assert_eq!(upload_media_type(b"", "empty.csv", true), "text/csv");
+    }
+
+    #[test]
+    fn anything_else_stays_octet_stream() {
+        let binary = "application/octet-stream";
+        // Text, but not an extension on the list.
+        assert_eq!(upload_media_type(b"a,b\n", "table.dat", true), binary);
+        assert_eq!(upload_media_type(b"a,b\n", "no-extension", true), binary);
+        assert_eq!(
+            upload_media_type(b"<html></html>", "page.html", true),
+            binary
+        );
+        // A listed extension over bytes that are not text.
+        assert_eq!(upload_media_type(b"a,b\0c\n", "nul.csv", true), binary);
+        assert_eq!(
+            upload_media_type(b"a,\xff\xfe\n", "latin.csv", true),
+            binary
+        );
+        // A file that ends in the middle of a character is not UTF-8.
+        assert_eq!(
+            upload_media_type(&"a,é".as_bytes()[..3], "cut.csv", true),
+            binary
+        );
+    }
+
+    #[test]
+    fn a_character_cut_by_the_sniff_window_is_still_text() {
+        let mut head = vec![b'a'; super::MEDIA_SNIFF_BYTES as usize - 1];
+        head.push("é".as_bytes()[0]);
+        assert_eq!(upload_media_type(&head, "long.csv", false), "text/csv");
+        assert_eq!(
+            upload_media_type(&head, "long.csv", true),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn an_image_is_named_by_its_bytes_whatever_its_extension() {
+        assert_eq!(upload_media_type(PNG, "plot.png", true), "image/png");
+        assert_eq!(upload_media_type(PNG, "plot.csv", true), "image/png");
+        assert_eq!(
+            upload_media_type(b"\xff\xd8\xff\xe0", "photo", true),
+            "image/jpeg"
+        );
     }
 }
