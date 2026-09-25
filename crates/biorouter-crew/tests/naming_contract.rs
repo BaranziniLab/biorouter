@@ -542,8 +542,10 @@ fn channel_transfer_refuses_an_inactive_successor() {
 #[test]
 fn a_person_sees_their_own_devices_and_nobody_elses() {
     let mut ws = Workspace::new("devices");
-    let mut bob = ws.enroll(BOB, "bob", 11);
+    // Taken before bob's first device is stamped: both clocks read whole
+    // seconds, so sampling after the enroll races a second boundary.
     let started = now();
+    let mut bob = ws.enroll(BOB, "bob", 11);
 
     let host = ws.host_snapshot();
     let devices = host["actor"]["devices"].as_array().unwrap();
