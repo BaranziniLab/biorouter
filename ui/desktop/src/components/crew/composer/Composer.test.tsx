@@ -485,8 +485,63 @@ describe('Crew composer', () => {
         <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
       );
       expect(
-        await screen.findByText(/^copy of assay\.csv is already in #general \(shared 6:54 PM\)/)
+        await screen.findByText(
+          'copy of assay.csv is the same file as gina-assay.csv, shared at 6:54 PM. You can remove it.'
+        )
       ).toBeInTheDocument();
+    });
+
+    /** The draft file's finished upload, whose checksum the composer reads (Q3-13). */
+    const uploaded = (sha256: string) => ({
+      id: 'transfer-8',
+      request_id: 'request-8',
+      connection_id: 'connection-1',
+      channel_id: 'channel-1',
+      direction: 'upload',
+      name: 'gina-assay.csv',
+      size: 100,
+      sha256,
+      offset: 100,
+      blob_id: 'blob-2',
+      state: 'completed',
+      error: null,
+    });
+    const draftOf = {
+      draft: {
+        body: '',
+        attachments: [{ id: 'blob-2', name: 'gina-assay.csv' }],
+        references: [],
+      },
+    };
+
+    it('says it is the same file when the bytes are the same (Q4-18)', async () => {
+      mocks.listTransfers.mockResolvedValue([uploaded('a'.repeat(64))]);
+      renderWithShared(
+        draftOf,
+        <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
+      );
+      expect(
+        await screen.findByText(
+          'gina-assay.csv is the same file as the one shared at 6:54 PM. You can remove it.'
+        )
+      ).toBeInTheDocument();
+    });
+
+    it('says a same-named file with other bytes is a different one, and the newer (Q4-18)', async () => {
+      // Gina's corrected sheet: the same name and size, other numbers. "Remove this one if it's
+      // the same file" read the same for it as for an identical copy.
+      mocks.listTransfers.mockResolvedValue([uploaded('c'.repeat(64))]);
+      renderWithShared(
+        draftOf,
+        <Registered blobId="blob-1" name="gina-assay.csv" sha256={'a'.repeat(64)} postedAt={at} />
+      );
+      expect(
+        await screen.findByText(
+          'A different gina-assay.csv was shared at 6:54 PM. Agents will use this newer one once you send it.'
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/You can remove it/)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
     });
 
     it('says nothing for a different file, or with no channel view around it', () => {

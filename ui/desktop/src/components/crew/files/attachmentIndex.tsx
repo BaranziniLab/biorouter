@@ -19,7 +19,8 @@ import { shortTime } from '../timeline/timelineTime';
  *   its meta ("Save counts.csv, 6:54 PM", "100 bytes · 6:54 PM"), so two same-named files are
  *   never two identical cards with identical buttons;
  * - the composer says when a file in the draft is already in the channel — the same name, or the
- *   same contents once its checksum is known — so sharing the same file twice is a choice.
+ *   same contents once its checksum is known — and, once both checksums are known, whether it is
+ *   the same file or a corrected one (Q4-18), so sharing the same file twice is a choice.
  *
  * Every mounted card registers what it learned, keyed by its file, and takes it back on unmount;
  * the same file shown twice (the timeline and the Files tab) counts once. The layout provides one
@@ -42,6 +43,13 @@ export interface IndexedAttachment {
 interface Entry {
   value: IndexedAttachment;
   refs: number;
+}
+
+/** How a draft file compares with the files already in the channel ({@link AttachmentIndex.compare}). */
+export interface AttachmentComparison {
+  kind: 'same' | 'different' | 'unknown';
+  /** The file in the channel it was compared with. */
+  earlier: IndexedAttachment;
 }
 
 const MONTH_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
@@ -121,19 +129,32 @@ export class AttachmentIndex {
   }
 
   /**
-   * A finished file in the channel that a draft file looks like: the same name, or the same
-   * contents when both checksums are known. The newest such, or null. `excludeId` is the draft
-   * file itself, never its own match.
+   * What a draft file is to the files already in the channel, for the composer's note (Q4-18):
+   *
+   * - `same`: a finished file with the same contents (both checksums known and equal), whatever
+   *   its name — the newest such;
+   * - `different`: none with the same contents, but a finished one with the same name whose
+   *   checksum is known and differs — a corrected file, the newest such;
+   * - `unknown`: the same name, but a checksum is not known yet, so which it is cannot be said.
+   *
+   * Null when nothing in the channel looks like it. `excludeId` is the draft file itself.
    */
-  existing(name: string, sha256: string, excludeId: string): IndexedAttachment | null {
-    let found: IndexedAttachment | null = null;
+  compare(name: string, sha256: string, excludeId: string): AttachmentComparison | null {
+    let same: IndexedAttachment | null = null;
+    let namesake: IndexedAttachment | null = null;
+    const newer = (value: IndexedAttachment, than: IndexedAttachment | null) =>
+      !than || (value.postedAt ?? 0) > (than.postedAt ?? 0);
     for (const [id, { value }] of this.entries) {
       if (id === excludeId || !value.complete) continue;
-      const sameContents = Boolean(sha256) && Boolean(value.sha256) && value.sha256 === sha256;
-      if (value.name !== name && !sameContents) continue;
-      if (!found || (value.postedAt ?? 0) > (found.postedAt ?? 0)) found = value;
+      if (sha256 && value.sha256 && value.sha256 === sha256) {
+        if (newer(value, same)) same = value;
+      } else if (value.name === name && newer(value, namesake)) {
+        namesake = value;
+      }
     }
-    return found;
+    if (same) return { kind: 'same', earlier: same };
+    if (!namesake) return null;
+    return { kind: sha256 && namesake.sha256 ? 'different' : 'unknown', earlier: namesake };
   }
 
   private changed() {

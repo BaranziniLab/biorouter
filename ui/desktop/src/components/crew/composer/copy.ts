@@ -34,12 +34,29 @@ export const composerCopy = {
   pressSend: (count: number) =>
     count === 1 ? 'Press Send to share it.' : 'Press Send to share them.',
   /**
-   * Under a chip whose file is already in the channel — the same name, or the same contents once
-   * its checksum is known (Q3-13). A note, not a question: sharing it again stays allowed.
-   * `channel` is the slug, `when` the earlier post's time.
+   * Under a chip whose file has the name of one already in the channel, while a checksum is not
+   * known yet, so it cannot say whether it is the same file (Q3-13). A note, not a question:
+   * sharing it again stays allowed. `channel` is the slug, `when` the earlier post's time.
    */
   alreadyShared: (name: string, channel: string, when: string) =>
     `${name} is already in #${channel}${when ? ` (shared ${when})` : ''}. Remove this one if it’s the same file.`,
+  /**
+   * Under a chip whose contents are a file already in the channel: both checksums known and equal
+   * (Q4-18). `earlier` is that file's name, `when` its post time ('' when not known).
+   */
+  sameFileShared: (name: string, earlier: string, channel: string, when: string) => {
+    const where = when ? `shared at ${when}` : `already in #${channel}`;
+    const which = earlier === name ? `the one ${where}` : `${earlier}, ${where}`;
+    return `${name} is the same file as ${which}. You can remove it.`;
+  },
+  /**
+   * Under a chip that has a file's name but not its contents: a corrected file (Q4-18). The run
+   * that names it reads the newest copy, which is this one once it is sent.
+   */
+  differentFileShared: (name: string, channel: string, when: string) =>
+    when
+      ? `A different ${name} was shared at ${when}. Agents will use this newer one once you send it.`
+      : `A different ${name} is already in #${channel}. Agents will use this newer one once you send it.`,
   /** Pinned: the server-path chip's remove control. */
   removeRef: (label: string) => `Remove remote reference ${label}`,
   archived: 'This channel is archived.',

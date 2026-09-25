@@ -265,20 +265,24 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   const enclosed = useCrewDropTarget(dropTarget);
 
   // A draft file that is already in the channel, by name or by contents once its upload's
-  // checksum is known: a note under its chip, never a question (Q3-13). Read from the channel
-  // view's attachment index, which the loaded messages' cards fill.
+  // checksum is known: a note under its chip, never a question (Q3-13). It says which it is once
+  // both checksums are known — the same bytes, or a corrected file under the same name — rather
+  // than one sentence for both (Q4-18). Read from the channel view's attachment index, which the
+  // loaded messages' cards fill.
   const [attachmentIndex] = useAttachmentIndexVersion();
   const duplicates: Record<string, string> = {};
   if (attachmentIndex) {
     for (const file of draft.attachments) {
       const sha256 = upload.uploads.find((item) => item.blob_id === file.id)?.sha256 ?? '';
-      const match = attachmentIndex.existing(file.name, sha256, file.id);
-      if (match)
-        duplicates[file.id] = composerCopy.alreadyShared(
-          file.name,
-          name,
-          postedLabel(match.postedAt)
-        );
+      const match = attachmentIndex.compare(file.name, sha256, file.id);
+      if (!match) continue;
+      const when = postedLabel(match.earlier.postedAt);
+      duplicates[file.id] =
+        match.kind === 'same'
+          ? composerCopy.sameFileShared(file.name, match.earlier.name, name, when)
+          : match.kind === 'different'
+            ? composerCopy.differentFileShared(file.name, name, when)
+            : composerCopy.alreadyShared(file.name, name, when);
     }
   }
   const agentOpen = ui.pane?.mode === 'agent';
