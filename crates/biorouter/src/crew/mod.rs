@@ -1446,7 +1446,9 @@ impl CrewManager {
     /// the save decides: every setting the person gave, the privacy mode and the institution
     /// (an omitted institution keeps the saved one, as a save does), and the server group the
     /// save would put it in. `None` when anything would change, and for input a save would
-    /// refuse, which the save then refuses in its own words.
+    /// refuse, which the save then refuses in its own words. Compared with the saved registry
+    /// as it is now (D8), not this process's copy, so a change another process saved since is
+    /// never mistaken for the setting it replaced; nothing is written.
     async fn unchanged_by(&self, id: &str, input: &SaveConnection) -> Result<Option<Connection>> {
         if input.preparation_id.is_some() {
             return Ok(None);
@@ -1458,10 +1460,24 @@ impl CrewManager {
             },
             None => None,
         };
-        let registry = self.registry.lock().await;
-        let Some(current) = registry.connections.iter().find(|c| c.id == id) else {
-            return Ok(None);
-        };
+        self.update_registry(|registry| {
+            Ok(Self::unchanged_in(
+                registry,
+                id,
+                input,
+                institution_id.as_deref(),
+            ))
+        })
+        .await
+    }
+    /// [`Self::unchanged_by`]'s comparison, against `registry`.
+    fn unchanged_in(
+        registry: &Registry,
+        id: &str,
+        input: &SaveConnection,
+        institution_id: Option<&str>,
+    ) -> Option<Connection> {
+        let current = registry.connections.iter().find(|c| c.id == id)?;
         // The group a save would put it in: the first saved connection with this workspace
         // or SSH target, as `build_connection` finds it.
         let group = registry
@@ -1486,9 +1502,8 @@ impl CrewManager {
                 .is_none_or(|cluster| cluster == current.cluster_connection_id)
             && group == Some(current.cluster_connection_id.as_str())
             && current.mode == input.mode
-            && institution_id
-                .is_none_or(|given| current.institution_id.as_deref() == Some(given.as_str()));
-        Ok(unchanged.then(|| current.clone()))
+            && institution_id.is_none_or(|given| current.institution_id.as_deref() == Some(given));
+        unchanged.then(|| current.clone())
     }
     fn validate_connection(input: &SaveConnection) -> Result<()> {
         ensure!(

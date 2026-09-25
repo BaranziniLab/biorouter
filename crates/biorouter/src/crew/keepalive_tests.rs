@@ -2214,6 +2214,20 @@ async fn saving_a_connection_unchanged_changes_nothing() {
         "connected"
     );
 
+    // Another process renamed it since this one loaded (D8): saving the name this process
+    // still holds is a change to the saved connection, not a no-op, and is saved as one.
+    let path = f.root.join("manager").join("connections.json");
+    let mut on_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    on_disk["connections"][0]["name"] = json!("renamed elsewhere");
+    fs::write(&path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+    let resaved = f
+        .manager
+        .update(CONNECTION_ID, same(&before, before.mode))
+        .await
+        .unwrap();
+    assert_eq!(resaved.name, before.name);
+    assert!(resaved.policy_epoch > before.policy_epoch);
+
     // A real change is a save: the epoch moves, the bridge drops, and the grant ends.
     let mut renamed = same(&before, before.mode);
     renamed.name = "renamed fixture".into();
