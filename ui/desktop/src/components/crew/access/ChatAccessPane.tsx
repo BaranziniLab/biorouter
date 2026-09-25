@@ -546,7 +546,9 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── Revoked or expired, or never granted: the consent (only for the chat that sent us here) ─
   const lapsed =
     grant && state === 'expired'
-      ? accessCopy.paneExpired(chat)
+      ? grant.revocation === 'ended_by_workspace'
+        ? accessCopy.paneSettingsChanged(chat)
+        : accessCopy.paneExpired(chat)
       : grant
         ? accessCopy.paneRevoked(chat)
         : null;

@@ -235,6 +235,44 @@ describe('rows', () => {
  * Q2-09 and Q2-74 (live QA round 2): a task's grant ends with the task, and the Access history
  * listed it as "Revoked", in two rows reading "Your task · #general" that could not be told apart.
  */
+/**
+ * Final polish, observation (b): Past access labelled a grant the workspace ended itself — Crew's
+ * settings or its policy changed since it was given (D-1) — "Expired", while the CLI's `grants
+ * list` says "Ended: Crew settings changed" and the chat says the settings changed. Nobody revoked
+ * it and its time did not run out, so the row says what happened, the CLI's words exactly.
+ */
+describe('a grant the workspace ended (observation (b))', () => {
+  it('reads “Ended: Crew settings changed”, chat or task, as the CLI does', () => {
+    expect(accessCopy.status.endedSettingsChanged).toBe('Ended: Crew settings changed');
+    const ended = { expired: true, revocation: 'ended_by_workspace' as const };
+    expect(accessStatusOf(grant(ended), NOW)).toEqual({
+      status: 'expired',
+      label: 'Ended: Crew settings changed',
+    });
+    const rows = accessRows(
+      [grant(ended), grant({ ...ended, session_id: 'task-1', run_id: 'run-9', kind: 'task' })],
+      { snapshot, now: NOW }
+    );
+    const { current, old } = splitAccessRows(rows);
+    expect(current).toEqual([]);
+    expect(old.map((row) => [row.kind, row.status, row.statusLabel])).toEqual([
+      ['chat', 'expired', 'Ended: Crew settings changed'],
+      ['task', 'expired', 'Ended: Crew settings changed'],
+    ]);
+    // A grant whose time ran out still reads Expired, and a finished task still reads Ended.
+    const [lapsed] = accessRows([grant({ expires_at: NOW / 1000 - 60 })], { snapshot, now: NOW });
+    expect(lapsed.statusLabel).toBe(accessCopy.status.expired);
+    const [finished] = accessRows(
+      [grant({ expired: true, kind: 'task', revocation: 'confirmed' })],
+      {
+        snapshot,
+        now: NOW,
+      }
+    );
+    expect(finished.statusLabel).toBe(accessCopy.status.ended);
+  });
+});
+
 describe('task rows in the Access history', () => {
   const TASK_NAME = 'Crew · #general · Please work out the sum and the average of each number…';
   const task = (overrides: Partial<CrewSessionGrant> = {}) =>

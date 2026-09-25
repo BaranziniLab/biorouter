@@ -37,6 +37,14 @@ export const accessCopy = {
     chat ? `Crew access for ${quoted(chat)} was revoked.` : 'This chat’s Crew access was revoked.',
   noteExpired: (chat: string | null) =>
     chat ? `Crew access for ${quoted(chat)} expired.` : 'This chat’s access expired.',
+  /**
+   * The workspace ended the grant because Crew's settings changed since it was given (D-1): not
+   * "expired", which reads as time running out. The chat's own bar and the CLI say the same.
+   */
+  noteSettingsChanged: (chat: string | null) =>
+    chat
+      ? `Crew settings changed since ${quoted(chat)} was given access.`
+      : 'Crew settings changed since this chat was given access.',
   noteGrantAgain: 'Grant again',
   /** A task's grant ends when the task does: nothing went wrong, and there is nothing to grant. */
   noteTaskFinished: 'This task is finished. Its access ended when it finished.',
@@ -107,6 +115,11 @@ export const accessCopy = {
     chat ? `Crew access for ${quoted(chat)} was revoked.` : 'This chat’s Crew access was revoked.',
   paneExpired: (chat: string | null) =>
     chat ? `Crew access for ${quoted(chat)} expired.` : 'This chat’s access expired.',
+  /** {@link accessCopy.noteSettingsChanged}, in the pane. */
+  paneSettingsChanged: (chat: string | null) =>
+    chat
+      ? `Crew settings changed since ${quoted(chat)} was given access.`
+      : 'Crew settings changed since this chat was given access.',
   paneTaskFinished: 'This task is finished. Its access ended when it finished.',
   /** A revoked chat that did not arrive here with /crew can only be connected from inside it. */
   reconnectHow: 'To connect it again, type /crew in that chat.',
@@ -122,6 +135,12 @@ export const accessCopy = {
     /** One wording for the same state everywhere: never "Active" here and "Expires …" there. */
     expires: (time: string) => `Active · ends ${time}`,
     expired: 'Expired',
+    /**
+     * The workspace itself ended the grant because Crew's settings or its policy changed since it
+     * was given (D-1). Nobody revoked it and its time did not run out, so neither "Revoked" nor
+     * "Expired": the CLI's `grants list` says exactly this (`grant_state` in its crew output).
+     */
+    endedSettingsChanged: 'Ended: Crew settings changed',
     revoked: 'Revoked',
     /** A revoked row this device saw confirmed, dated so two revokes of one chat differ (F5). */
     revokedAt: (time: string) => `Revoked · ${time}`,

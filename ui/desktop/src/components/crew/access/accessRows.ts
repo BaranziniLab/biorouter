@@ -175,6 +175,11 @@ export function formatExpiry(expiresAtSeconds: number, now = Date.now()): string
   ).format(at);
 }
 
+/** The workspace itself ended the grant: Crew's settings or its policy moved since it (D-1). */
+function endedByWorkspace(grant: CrewSessionGrant): boolean {
+  return grant.expired && grant.revocation === 'ended_by_workspace';
+}
+
 /**
  * The status a grant shows, and its label. `unconfirmed` is this window's memory of a revoke that
  * stopped only on this device; the daemon's own word on the grant (`revocation`, F3) wins over it
@@ -195,7 +200,13 @@ export function accessStatusOf(
           ? accessCopy.status.expires(formatExpiry(grant.expires_at, now))
           : accessCopy.status.active,
     };
-  if (state === 'expired') return { status: 'expired', label: accessCopy.status.expired };
+  if (state === 'expired')
+    return {
+      status: 'expired',
+      label: endedByWorkspace(grant)
+        ? accessCopy.status.endedSettingsChanged
+        : accessCopy.status.expired,
+    };
   const waiting = grant.revocation !== undefined ? grant.revocation === 'unconfirmed' : unconfirmed;
   if (waiting) return { status: 'unconfirmed', label: accessCopy.status.unconfirmed };
   return {
@@ -246,8 +257,10 @@ export function accessRow(
     remembered
   );
   // A task's grant ends when the task does, which is how a task that did its work ends: not
-  // "Revoked" (nobody revoked it) and not a failure.
-  const ended = kind === 'task' && (status === 'revoked' || status === 'expired');
+  // "Revoked" (nobody revoked it) and not a failure. One the workspace ended because Crew's
+  // settings changed says so, task or chat, as the CLI does.
+  const ended =
+    kind === 'task' && (status === 'revoked' || status === 'expired') && !endedByWorkspace(grant);
   const startedAt = kind === 'task' ? taskStartedAt(grant, run) : null;
   const detail =
     kind === 'task'

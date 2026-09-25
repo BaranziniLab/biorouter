@@ -204,7 +204,10 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
       text = accessCopy.noteRevoked(chat);
       action = { label: accessCopy.noteGrantAgain };
     } else if (state === 'expired') {
-      text = accessCopy.noteExpired(chat);
+      text =
+        grant.revocation === 'ended_by_workspace'
+          ? accessCopy.noteSettingsChanged(chat)
+          : accessCopy.noteExpired(chat);
       action = { label: accessCopy.noteGrantAgain };
     } else {
       const sameConnection = grant.connection_id === connectionId;

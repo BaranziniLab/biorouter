@@ -404,6 +404,25 @@ describe('chat access: other states of the note', () => {
     ).toBeInTheDocument();
   });
 
+  /**
+   * Final polish, observation (b): a grant the workspace ended because Crew's settings changed
+   * (D-1) read "expired" here, while the chat's bar and the CLI say the settings changed.
+   */
+  it('says Crew settings changed for a grant the workspace ended, never “expired”', async () => {
+    setup({
+      grants: () => [grantRow({ expired: true, revocation: 'ended_by_workspace' })],
+    });
+    await waitFor(() =>
+      expect(note()).toHaveTextContent(accessCopy.noteSettingsChanged('Plot review'))
+    );
+    expect(note()).not.toHaveTextContent(/expired/i);
+    const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
+    expect(paneNode).toHaveTextContent(
+      'Crew settings changed since “Plot review” was given access.'
+    );
+    expect(paneNode).not.toHaveTextContent(/expired/i);
+  });
+
   it('asks consent for this channel when granting again after a grant elsewhere was revoked', async () => {
     setup({
       grants: () => [
