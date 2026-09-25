@@ -478,6 +478,54 @@ function Sidebar({
     document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus();
   }, [offCanvas, shortcutToggleRef]);
 
+  // ESCAPE CLOSES THE OVERLAY (live QA round 3, Q3-60). Below rung 1 an open
+  // sidebar is a floating surface over the page, and every other floating
+  // surface in the app steps aside on Escape. This one did not: erin opened it
+  // with the titlebar toggle (focus stays on the toggle, which is right), pressed
+  // Escape, and nothing happened — the panel went on covering Crew's rail until
+  // she found the toggle again. ⌘B had the same gap.
+  //
+  // Escape closes it however it was opened, from where the overlay's own focus
+  // is: inside the panel, on its toggle, or nowhere (<body>). Focus then lands on
+  // the toggle — the layout effect above moves it there from inside the panel,
+  // and from <body> it is moved here. Three things are left alone, each on
+  // purpose:
+  //   - an Escape something else already answered (`defaultPrevented`): a menu,
+  //     a popover or a dialog opened from a row closes first, and only the next
+  //     Escape reaches the panel. Radix's layers listen in the capture phase and
+  //     prevent the default when they dismiss, so a window listener in the bubble
+  //     phase runs after them and can tell;
+  //   - an Escape pressed on the page BEHIND the overlay: that control's own
+  //     Escape (clear a field, cancel an edit) is what the person meant;
+  //   - a docked column, which covers nothing and has nothing to dismiss.
+  // A native listener, not a React `onKeyDown` on the panel: React bubbles a
+  // portalled menu's keys through the row that opened it, and the toggle lives
+  // outside the panel entirely.
+  const overlayOpen = open && !isMobile && collapsible !== 'none';
+  React.useEffect(() => {
+    if (!overlayOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (!sidebarIsOverlay()) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const target = event.target;
+      const trigger =
+        target instanceof Element ? target.closest<HTMLElement>('[data-sidebar="trigger"]') : null;
+      const fromPanel = target instanceof Node && panel.contains(target);
+      const fromNowhere =
+        target === document.body || target === document.documentElement || target === document;
+      if (!fromPanel && !trigger && !fromNowhere) return;
+      event.preventDefault();
+      setOpen(false);
+      if (!fromPanel) {
+        (trigger ?? document.querySelector<HTMLElement>('[data-sidebar="trigger"]'))?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [overlayOpen, setOpen]);
+
   if (collapsible === 'none') {
     return (
       <div

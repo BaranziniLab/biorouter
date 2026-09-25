@@ -560,6 +560,152 @@ describe('the sidebar toggle and ⌘B, for a keyboard user', () => {
   });
 });
 
+const pressEscape = (target: Element = document.activeElement ?? document.body) =>
+  act(() => {
+    fireEvent.keyDown(target, { key: 'Escape' });
+  });
+
+/**
+ * Q3-60 (live QA round 3). The overlay is a floating surface, and every other one in the app
+ * steps aside on Escape. This one ignored it: Erin opened it with the titlebar toggle (focus
+ * rightly stays on the toggle), pressed Escape, and it went on covering Crew's rail until she
+ * found the toggle again. Escape now closes it however it was opened, and focus lands on the
+ * toggle.
+ */
+describe('Escape closes the overlay sidebar', () => {
+  beforeEach(() => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+
+  const renderSidebar = (extra?: React.ReactNode) =>
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar>
+          <button type="button">New chat</button>
+          <button type="button">Settings</button>
+          {extra}
+        </Sidebar>
+        <SidebarTrigger />
+        <input aria-label="Page field" />
+      </SidebarProvider>
+    );
+
+  it('closes an overlay the toggle opened, from the toggle, and keeps focus there', () => {
+    renderSidebar();
+    act(() => toggle().focus());
+    fireEvent.click(toggle());
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+
+    pressEscape();
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(toggle()).toHaveFocus();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('closes an overlay ⌘B opened, from inside it, and hands focus to the toggle', () => {
+    renderSidebar();
+    act(() => screen.getByRole('textbox', { name: 'Page field' }).focus());
+    toggleWithShortcut();
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+
+    pressEscape();
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('closes it with nothing focused, and puts focus on the toggle', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+
+    pressEscape(document.body);
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // A menu or dialog opened from a row answers its own Escape first (Radix prevents the default
+  // when it dismisses); only the next Escape reaches the panel.
+  it('leaves it open when something else already answered the Escape', () => {
+    renderSidebar(
+      <button
+        type="button"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') event.preventDefault();
+        }}
+      >
+        Row menu
+      </button>
+    );
+    fireEvent.click(toggle());
+    const row = screen.getByRole('button', { name: 'Row menu' });
+    act(() => row.focus());
+
+    pressEscape(row);
+    expect(sidebarState()).toBe('expanded');
+
+    // Something that stops the event before it reaches the window, the same.
+    const stop = (event: KeyboardEvent) => event.stopPropagation();
+    document.addEventListener('keydown', stop);
+    try {
+      pressEscape(screen.getByRole('button', { name: 'Settings' }));
+      expect(sidebarState()).toBe('expanded');
+    } finally {
+      document.removeEventListener('keydown', stop);
+    }
+
+    pressEscape(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('collapsed');
+  });
+
+  // The page behind the overlay keeps its own Escape (clear a field, cancel an edit).
+  it('leaves it open for an Escape pressed on the page behind it', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    const field = screen.getByRole('textbox', { name: 'Page field' });
+    act(() => field.focus());
+
+    pressEscape(field);
+    expect(sidebarState()).toBe('expanded');
+    expect(field).toHaveFocus();
+  });
+
+  it('leaves a docked column alone, which covers nothing', () => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar();
+    fireEvent.click(toggle());
+    act(() => toggle().focus());
+
+    pressEscape();
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  it('stops listening once the overlay is closed', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    pressEscape(toggle());
+    expect(sidebarState()).toBe('collapsed');
+
+    // A later Escape on the toggle must not reopen, re-close or steal anything.
+    const field = screen.getByRole('textbox', { name: 'Page field' });
+    act(() => field.focus());
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => {
+      field.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(false);
+    expect(field).toHaveFocus();
+  });
+});
+
 /**
  * T-66. Below rung 1 an open sidebar floats OVER the page (AppLayout puts
  * SIDEBAR_OVERLAY_BODY_CLASS on <body> and main.css draws the overlay from it),
@@ -718,6 +864,21 @@ describe('the app shell, as a keyboard and screen-reader user meets it', () => {
     expect(document.activeElement).toBe(screen.getByTestId('titlebar-sidebar-toggle'));
   });
 
+  // Q3-60 in the real shell: the titlebar toggle opens the overlay, Escape closes it.
+  it('closes the overlay the titlebar toggle opened on Escape', () => {
+    setWindowWidth(1024);
+    renderShell();
+    const titlebarToggle = screen.getByTestId('titlebar-sidebar-toggle');
+    act(() => titlebarToggle.focus());
+    fireEvent.click(titlebarToggle);
+    expect(sidebarState()).toBe('expanded');
+
+    pressEscape(titlebarToggle);
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(titlebarToggle).toHaveFocus();
+  });
+
   it('leaves the docked sidebar open after a choice on a wide window', () => {
     setWindowWidth(1400);
     renderShell();
@@ -746,5 +907,36 @@ describe('the overlay class is shared, not re-spelled', () => {
     expect(LAYOUT).toContain(`classList.toggle('${SIDEBAR_OVERLAY_BODY_CLASS}'`);
     expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-container']`);
     expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-inset']`);
+  });
+
+  /**
+   * Q3-60. The overlay's rule swaps the docked hairline for the popover shadow, and a black
+   * shadow on a near-black page is no edge. A 1px `--border-subtle` border on the side that meets
+   * the page — a border, because forced colours keep it and strip the shadow.
+   */
+  it('draws the overlay’s edge as a --border-subtle border on the side facing the page', () => {
+    const rule = (selector: string) => {
+      const at = CSS.indexOf(`${selector} {`);
+      expect(at, selector).toBeGreaterThanOrEqual(0);
+      return CSS.slice(at, CSS.indexOf('}', at)).replace(/\s+/g, ' ');
+    };
+    const body = `body.${SIDEBAR_OVERLAY_BODY_CLASS}`;
+    expect(rule(`${body} [data-side='left'] > [data-slot='sidebar-container']`)).toContain(
+      'border-right: 1px solid var(--border-subtle)'
+    );
+    expect(rule(`${body} [data-side='right'] > [data-slot='sidebar-container']`)).toContain(
+      'border-left: 1px solid var(--border-subtle)'
+    );
+  });
+
+  it('keys that edge on the attribute and nesting the panel really renders', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <p>rail</p>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(panel().parentElement).toHaveAttribute('data-side', 'left');
   });
 });

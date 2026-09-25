@@ -3917,6 +3917,23 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   box-shadow: var(--shadow-popover);
 }
 
+/* …and it has an EDGE where it meets the page (QA Q3-60). The rule above
+   replaces the docked column's `--sidebar-border` hairline with the popover
+   shadow, and in dark a black shadow on a near-black page is nothing: the
+   overlay's right edge was barely visible, so it read as part of the page it
+   covers. A 1px `--border-subtle` border, the edge a popover wears with the
+   same shadow (`.biorouter-popover-surface`). A border rather than a second
+   shadow, because forced colours strip `box-shadow` and keep a border; and it
+   sits inside the box, so the collapsed panel, translated off-screen, leaves no
+   line at the window edge. */
+body.biorouter-sidebar-compact [data-side='left'] > [data-slot='sidebar-container'] {
+  border-right: 1px solid var(--border-subtle);
+}
+
+body.biorouter-sidebar-compact [data-side='right'] > [data-slot='sidebar-container'] {
+  border-left: 1px solid var(--border-subtle);
+}
+
 /* ============================================================================
    RUNG 2: THE PREVIEW SPLIT (yieldLadder.previewPanelMode)
 
