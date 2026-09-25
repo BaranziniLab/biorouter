@@ -2,9 +2,10 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { groupedFingerprint, workspaceKeyFingerprint } from '../dialogs/fingerprint';
+import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { crewStatusCopy } from '../state/copy';
 import { sidebarCopy } from './copy';
-import { unavailableReason } from './WorkspaceMenu';
+import { offersReconnect, unavailableReason } from './WorkspaceMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import {
   bob,
@@ -198,27 +199,72 @@ describe('WorkspaceSwitcher', () => {
     expect(await within(header() as HTMLElement).findByText(expected)).toBeInTheDocument();
   });
 
-  it('tells a joiner that Reconnect and Disconnect keep their join code (Q2-43)', async () => {
+  it('tells a joiner what Reconnect and Disconnect each do, and that the code survives both (Q2-43, Q3-47)', async () => {
     renderWithCrew(
       <WorkspaceSwitcher />,
       makeController({ snapshot: null, observedPrivacy: null, status: 'not-joined' })
     );
     const { menu } = await openMenu();
-    for (const name of [copy.reconnect, copy.disconnect]) {
-      const item = within(menu).getByRole('menuitem', { name });
-      expect(item).toHaveAccessibleDescription(copy.joinCodeKept);
-      expect(item).not.toHaveAttribute('aria-disabled');
+    const reconnect = within(menu).getByRole('menuitem', { name: copy.reconnect });
+    const disconnect = within(menu).getByRole('menuitem', { name: copy.disconnect });
+    // Two different helpers, where one sentence under both said nothing about the difference.
+    expect(reconnect).toHaveAccessibleDescription(
+      'Try the connection again. Your code doesn’t change.'
+    );
+    expect(disconnect).toHaveAccessibleDescription(
+      'Stop waiting for now. Your host can still let you in with the same code.'
+    );
+    for (const item of [reconnect, disconnect]) expect(item).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('names the host the invitation named in the Disconnect helper', async () => {
+    updateJoinContext(connection.id, {
+      joining: true,
+      hostUsername: 'crew_henry',
+      hostDisplayName: 'Henry Ito',
+    });
+    try {
+      renderWithCrew(
+        <WorkspaceSwitcher />,
+        makeController({ snapshot: null, observedPrivacy: null, status: 'not-joined' })
+      );
+      const { menu } = await openMenu();
+      expect(
+        within(menu).getByRole('menuitem', { name: copy.disconnect })
+      ).toHaveAccessibleDescription(
+        'Stop waiting for now. Henry Ito (@crew_henry) can still let you in with the same code.'
+      );
+    } finally {
+      forgetJoinContext(connection.id);
     }
-    expect(copy.joinCodeKept).toBe('Your join code stays the same.');
   });
 
   it('says nothing about a join code to a member', async () => {
-    renderWithCrew(<WorkspaceSwitcher />);
+    renderWithCrew(<WorkspaceSwitcher />, makeController({ status: 'offline' }));
     const { menu } = await openMenu();
     expect(menu.querySelector('[data-crew-join-code-kept]')).toBeNull();
-    expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).not.toHaveAttribute(
-      'aria-describedby'
-    );
+    for (const name of [copy.reconnect, copy.disconnect]) {
+      expect(within(menu).getByRole('menuitem', { name })).not.toHaveAttribute('aria-describedby');
+    }
+  });
+
+  it('offers Reconnect only while the connection is not connected and verified (Q3-57)', async () => {
+    // Connected · identity verified: Reconnect could only restart a healthy connection.
+    const view = renderWithCrew(<WorkspaceSwitcher />);
+    let { menu } = await openMenu();
+    expect(within(menu).queryByRole('menuitem', { name: copy.reconnect })).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: copy.disconnect })).toBeInTheDocument();
+    view.unmount();
+
+    for (const status of ['checking', 'offline', 'cant-connect', 'not-joined'] as const) {
+      const other = renderWithCrew(
+        <WorkspaceSwitcher />,
+        makeController({ status, snapshot: null, observedPrivacy: null })
+      );
+      ({ menu } = await openMenu());
+      expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).toBeInTheDocument();
+      other.unmount();
+    }
   });
 
   it('states only the server before this connection’s identity is verified', async () => {
@@ -267,7 +313,6 @@ describe('WorkspaceSwitcher', () => {
       copy.privacy,
       copy.access,
       copy.createTeam,
-      copy.reconnect,
       copy.disconnect,
       copy.settings,
       copy.add,
@@ -299,7 +344,7 @@ describe('WorkspaceSwitcher', () => {
   });
 
   it('Reconnect is a user-initiated connect; Disconnect calls its own', async () => {
-    const controller = makeController();
+    const controller = makeController({ status: 'offline' });
     renderWithCrew(<WorkspaceSwitcher />, controller);
     await choose(copy.reconnect);
     expect(controller.connect).toHaveBeenCalledWith({ userInitiated: true });
@@ -330,7 +375,7 @@ describe('WorkspaceSwitcher', () => {
   it('disables Reconnect while a connect or sign-in runs', async () => {
     renderWithCrew(
       <WorkspaceSwitcher />,
-      makeController({ isPending: (key) => key === 'connect' })
+      makeController({ status: 'connecting', isPending: (key) => key === 'connect' })
     );
     const { menu } = await openMenu();
     expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).toHaveAttribute(
@@ -439,6 +484,28 @@ describe('WorkspaceSwitcher', () => {
     renderWithCrew(<WorkspaceSwitcher />, makeController({ snapshot }));
     const { menu } = await openMenu();
     await waitFor(() => expect(menu.textContent).not.toMatch(/person-|workspace-1|conn-1/));
+  });
+});
+
+describe('offersReconnect', () => {
+  it('is false only for a connection that is connected and verified', () => {
+    expect(offersReconnect('connected')).toBe(false);
+    for (const status of [
+      'connecting',
+      'reconnecting',
+      'checking',
+      'updating',
+      'updates-unavailable',
+      'not-joined',
+      'offline',
+      'sign-in-needed',
+      'cant-connect',
+      'cant-verify',
+      'not-set-up',
+    ] as const) {
+      expect(offersReconnect(status)).toBe(true);
+    }
+    expect(offersReconnect(null)).toBe(true);
   });
 });
 

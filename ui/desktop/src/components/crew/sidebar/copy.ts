@@ -208,18 +208,30 @@ export const sidebarCopy = {
      */
     fingerprint: 'Fingerprint',
     /**
-     * Under Reconnect and Disconnect while a join waits for the host (Q2-43). True: the code is
-     * computed from this computer's saved device key and the pinned workspace key, which neither
-     * action touches.
+     * Under Reconnect and Disconnect while a join waits for the host (Q2-43, Q3-47): what each one
+     * does, then that the code already sent survives it — two helpers, where one sentence under
+     * both said nothing about the difference. True: the code is computed from this computer's
+     * saved device key and the pinned workspace key (`device_code_of`), which neither action
+     * touches — a Disconnect closes the SSH transport and forgets the broker's announcement, and
+     * the join screen's in-memory counters (`joinClaimState`) are forgotten only when the join
+     * finishes — and the broker keeps the pending join, so the host can still enter that code.
+     * `host` is `personLabel(…, 'inline')`, or null when the invitation named nobody.
      */
-    joinCodeKept: 'Your join code stays the same.',
+    joinCodeKept: {
+      reconnect: 'Try the connection again. Your code doesn’t change.',
+      disconnect: (host: string | null) =>
+        `Stop waiting for now. ${host ?? 'Your host'} can still let you in with the same code.`,
+    },
     invite: (workspace: string) => `Invite people to ${workspace}…`,
     people: 'People…',
     privacy: 'Privacy…',
     /** The same name as Workspace settings' tab and the pane's Access heading. */
     access: 'Agent access…',
     createTeam: 'Create team…',
-    /** Pinned. */
+    /**
+     * Pinned. Offered only while the connection is not connected and verified, or while a join
+     * waits for the host (Q3-57): beside "Connected" it did nothing but invite a stray Enter.
+     */
     reconnect: 'Reconnect',
     signIn: 'Sign in…',
     disconnect: 'Disconnect',

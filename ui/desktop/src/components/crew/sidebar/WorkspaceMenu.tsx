@@ -20,7 +20,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
-import { serverLabel, useSidebarView } from './sidebarView';
+import { serverLabel, usePendingHost, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy.workspaceMenu;
@@ -65,6 +65,16 @@ const CONNECTION_UP: ReadonlySet<string> = new Set<ConnectionStatusKey>([
 ]);
 
 /**
+ * Whether the menu offers Reconnect (Q3-57): only while the connection is not connected and
+ * verified — which covers a join waiting for the host, whose status is "Not joined yet". Beside
+ * "Connected · identity verified" it could only restart a healthy connection, and a keyboard user
+ * pressed it by accident. Every other state keeps it, disabled while a connect already runs.
+ */
+export function offersReconnect(status: ConnectionStatusKey | null): boolean {
+  return status !== 'connected';
+}
+
+/**
  * Why the workspace's own items are disabled, or `null` when they are not (T-40, T-71). A joiner
  * the host has not let in yet waits for that; a person whose connection is up waits for it to be
  * verified; anyone else waits to be connected.
@@ -84,8 +94,9 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *
  * - Items that open a dialog end in "…" and open it through the controller's intents, so this
  *   area never imports another.
- * - Reconnect, Disconnect and Connection settings are always listed as manual tools. **Sign in…
- *   is listed only while sign-in is needed** (T-40): offered under "Signed in as @alice", it
+ * - Disconnect and Connection settings are always listed as manual tools. **Reconnect is listed
+ *   only while the connection is not connected and verified** (Q3-57, {@link offersReconnect}),
+ *   and **Sign in… only while sign-in is needed** (T-40): offered under "Signed in as @alice", it
  *   read as a second, unexplained Reconnect. When a Reconnect needs credentials, the sign-in
  *   dialog opens by itself.
  * - The header names the PERSON and the server — "Signed in as @alice on lab-server" — never the
@@ -98,11 +109,13 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   "identity verified" instead of under Connection settings' IDs for support (Q2-04). Shown
  *   ONLY in that status — "Connected · identity verified" is the line it explains. A joiner the
  *   host has not let in yet took the fingerprint for the code to send (the Join dialog folds it
- *   away for that reason), and in the menu it would sit unexplained beside "Your join code stays
- *   the same."; before verification there is nothing for it to confirm.
- * - While a join waits for the host, Reconnect and Disconnect each say "Your join code stays the
- *   same." (Q2-43): the code is computed from this computer's saved device key and the pinned
- *   workspace key (`device_code_of`), which neither action touches.
+ *   away for that reason), and in the menu it would sit unexplained beside "Your code doesn't
+ *   change."; before verification there is nothing for it to confirm.
+ * - While a join waits for the host, Reconnect and Disconnect each say what they do and that the
+ *   code already sent survives it (Q2-43, Q3-47): "Try the connection again. Your code doesn't
+ *   change." and "Stop waiting for now. {host} can still let you in with the same code." The code
+ *   is computed from this computer's saved device key and the pinned workspace key
+ *   (`device_code_of`), which neither action touches.
  * - The header's text is the menu's `aria-describedby`: a screen reader's menu navigation skips
  *   static text inside `role="menu"`, so without it the header was unreachable.
  * - A disabled item says why: one note above the workspace's own items, which are disabled until
@@ -130,6 +143,7 @@ export function WorkspaceMenu({ title }: { title: string }) {
     lastConnectFailure,
   } = crew;
   const labels = useMemo(() => connectionNames(connections), [connections]);
+  const { host } = usePendingHost(crew);
   const headerId = useId();
   const reasonId = useId();
   const keptId = useId();
@@ -255,15 +269,17 @@ export function WorkspaceMenu({ title }: { title: string }) {
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuGroup>
-        <DropdownMenuItem
-          disabled={connecting || isPending('disconnect')}
-          aria-describedby={joining ? `${keptId}-reconnect` : undefined}
-          className={joining ? 'flex-col items-start gap-0' : undefined}
-          onSelect={() => void crew.connect({ userInitiated: true })}
-        >
-          {copy.reconnect}
-          {joining && <KeptNote id={`${keptId}-reconnect`} />}
-        </DropdownMenuItem>
+        {offersReconnect(status) && (
+          <DropdownMenuItem
+            disabled={connecting || isPending('disconnect')}
+            aria-describedby={joining ? `${keptId}-reconnect` : undefined}
+            className={joining ? 'flex-col items-start gap-0' : undefined}
+            onSelect={() => void crew.connect({ userInitiated: true })}
+          >
+            {copy.reconnect}
+            {joining && <KeptNote id={`${keptId}-reconnect`} text={copy.joinCodeKept.reconnect} />}
+          </DropdownMenuItem>
+        )}
         {status === 'sign-in-needed' && (
           <DropdownMenuItem onSelect={() => crew.openSignIn()}>{copy.signIn}</DropdownMenuItem>
         )}
@@ -274,7 +290,9 @@ export function WorkspaceMenu({ title }: { title: string }) {
           onSelect={() => void crew.disconnect()}
         >
           {copy.disconnect}
-          {joining && <KeptNote id={`${keptId}-disconnect`} />}
+          {joining && (
+            <KeptNote id={`${keptId}-disconnect`} text={copy.joinCodeKept.disconnect(host)} />
+          )}
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => crew.openDialog({ kind: 'connection-settings', connectionId })}
@@ -325,10 +343,10 @@ export function WorkspaceMenu({ title }: { title: string }) {
 }
 
 /**
- * "Your join code stays the same." under a connection tool while a join waits (Q2-43). Hidden from
- * the item's name, so the item is still called "Reconnect", and read as its description.
+ * What a connection tool does to a join that waits (Q2-43, Q3-47), under the tool. Hidden from the
+ * item's name, so the item is still called "Reconnect", and read as its description.
  */
-function KeptNote({ id }: { id: string }) {
+function KeptNote({ id, text }: { id: string; text: string }) {
   return (
     <span
       id={id}
@@ -336,7 +354,7 @@ function KeptNote({ id }: { id: string }) {
       className="text-supporting text-text-muted"
       data-crew-join-code-kept=""
     >
-      {copy.joinCodeKept}
+      {text}
     </span>
   );
 }
