@@ -34,8 +34,9 @@ const RESTART_FOR_NAMES: &str = "Restart the shared Biorouter daemon to use name
 const RESTART_FOR_JOINING: &str =
     "Restart the shared Biorouter daemon to invite or join with an invitation.";
 /// A revoke that stopped the grant on this device but that the workspace has not confirmed. It
-/// is not a success, so the command exits non-zero (RV-D1).
-const STOPPED_ON_THIS_DEVICE: &str = "Stopped on this device. The workspace has not confirmed the revocation yet; reconnect and run this command again to confirm.";
+/// is not a success, so the command exits non-zero (RV-D1). The daemon asks the workspace
+/// again by itself whenever the connection is back (F3), so no second command is needed.
+const STOPPED_ON_THIS_DEVICE: &str = "Stopped on this device. The workspace hasn't confirmed the revocation yet; Biorouter confirms it with the workspace by itself when the connection is back. biorouter crew grants list shows when it has.";
 /// How often `crew join` asks where joining stands, as the desktop's join screen does.
 const JOIN_POLL: Duration = Duration::from_secs(5);
 

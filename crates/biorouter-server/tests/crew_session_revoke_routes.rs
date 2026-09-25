@@ -383,7 +383,7 @@ async fn a_revoke_the_workspace_cannot_confirm_stops_the_grant_here_and_says_so(
         assert_eq!(body["code"], "crew_revocation_unconfirmed", "{body}");
         assert_eq!(
             body["error"],
-            "Stopped on this device. The workspace has not confirmed yet; reconnect and retry.",
+            "Stopped on this device. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.",
         );
         assert_eq!(body["session_id"], json!(chat));
         assert_eq!(body["run_id"], CHAT_RUN);
@@ -406,6 +406,14 @@ async fn a_revoke_the_workspace_cannot_confirm_stops_the_grant_here_and_says_so(
         json!(true),
         "the grant is still active on this device after an unconfirmed revoke"
     );
+    // F3: the list says the workspace has not confirmed, rather than reading as revoked.
+    assert_eq!(listed[chat.as_str()]["revocation"], "unconfirmed");
+    assert_eq!(
+        listed[chat.as_str()]["remote_revocation_confirmed"],
+        json!(false)
+    );
+    assert!(listed[GUARDED_SESSION]["revocation"].is_null());
+    assert!(listed[GUARDED_SESSION]["remote_revocation_confirmed"].is_null());
     assert!(saved_expired(&chat), "the local stop was not saved");
     assert_eq!(
         listed[GUARDED_SESSION]["expired"],

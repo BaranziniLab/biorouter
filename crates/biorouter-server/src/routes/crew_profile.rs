@@ -37,9 +37,9 @@ pub const REVOCATION_NOT_SAVED: &str = "crew_revocation_not_saved";
 /// The grant stopped on this device and the stop is saved; the workspace has not confirmed
 /// `run.revoke`. The same code the task cancel route answers with.
 pub const REVOCATION_UNCONFIRMED: &str = "crew_revocation_unconfirmed";
-/// The text of a [`REVOCATION_UNCONFIRMED`] refusal (RV-D1).
-pub const REVOCATION_UNCONFIRMED_MESSAGE: &str =
-    "Stopped on this device. The workspace has not confirmed yet; reconnect and retry.";
+/// The text of a [`REVOCATION_UNCONFIRMED`] refusal (RV-D1). The daemon asks the workspace
+/// again by itself whenever the connection is back (F3), so it asks nothing more of the person.
+pub const REVOCATION_UNCONFIRMED_MESSAGE: &str = "Stopped on this device. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.";
 
 /// A refusal: `{code, error}` plus any fields a route adds beside them (`detail`, …).
 pub struct Refusal {
@@ -255,8 +255,9 @@ pub async fn context(headers: HeaderMap, Path((id, session)): Path<(String, Stri
 ///
 /// - 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped
 ///   here and confirmed by the workspace. `run` is the workspace's revoked run.
-/// - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. Retrying asks
-///   the workspace again.
+/// - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon
+///   asks the workspace again by itself at every reconnect until it confirms (F3), and the
+///   grants list says when it has; retrying asks at once.
 /// - 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500
 ///   [`REVOCATION_NOT_SAVED`]: not revoked, or not durably.
 ///
