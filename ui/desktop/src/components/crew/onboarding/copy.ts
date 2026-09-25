@@ -119,14 +119,20 @@ export const joinCopy = {
   advancedSummary: 'server connection details',
   /**
    * The agent's permissions on the server, in their own labelled row outside Advanced (Q2-37): a
-   * permission to run commands on a lab server is not an SSH setting. Whose agent, and one state
-   * word beside it while folded — "Your agent on lab-server: off" (Q4-44) — rather than three
-   * unfamiliar ideas on one line.
+   * permission to run commands on a lab server is not an SSH setting. Whose agent, and its one
+   * state beside it while folded, so the line reads as one sentence — "Your agent on lab-server is
+   * off" (Q4-44) — rather than three unfamiliar ideas on one line. The heading is the trigger's
+   * name and stays whole when the row opens, so it ends in no colon: the summary that finished it
+   * is hidden then.
    */
-  agentHeading: (server: string) => `Your agent on ${server}:`,
-  /** The row's state while folded; off unless the person turned it on. */
+  agentHeading: (server: string) => `Your agent on ${server}`,
+  /** The rest of that sentence while folded; off unless the person turned it on. */
   agentSummary: (folder: string, commands: boolean) =>
-    folder ? (commands ? `can use ${folder} and run commands there` : `can use ${folder}`) : 'off',
+    folder
+      ? commands
+        ? `can use ${folder} and run commands there`
+        : `can use ${folder}`
+      : 'is off',
   serverLogin: 'Server login',
   serverLoginHelper: (defaultLogin: string) =>
     `An SSH alias from your SSH config, instead of ${defaultLogin}.`,
@@ -251,18 +257,14 @@ export const legacyJoinCopy = {
   sendRequest: 'Send this join request to your host:',
   requestLabel: 'join request',
   /**
-   * Under "Having trouble joining?", the device key stays folded behind these (Q2-35). They say
-   * what is shown and for whom (Q3-48).
+   * Under "Having trouble joining?", the device key stays folded behind these (Q2-35), after "If
+   * Alice asks for a join request:", which already names whom it is for (Q4-43).
    */
-  showRequest: (host: string) => `Show the join request for ${host}`,
-  /** Under "If Alice asks for a join request:", which already names whom it is for (Q4-43). */
   showJoinRequest: 'Show the join request',
   hideRequest: 'Hide the join request',
   /** The accessible name of the token field (pinned). */
   tokenName: 'Enrollment invitation',
   tokenPlaceholder: 'Token from an older invitation',
-  /** Only the host's older invitation form makes a token: never something to go looking for. */
-  tokenHelper: (host: string) => `Only if ${host} sent you a token.`,
   submit: 'Join workspace',
   /**
    * The same button under "Having trouble joining?", where the person already pressed Join: it
@@ -440,7 +442,8 @@ export const checklistCopy = {
   useName: nameSuggestionCopy.use,
   editName: nameSuggestionCopy.edit,
   institution: 'Confirm the institution',
-  setInstitution: (id: string) => `Set institution to ${id}…`,
+  /** `institution` as it reads (`institutionLabel`: "UCSF"), like the Mark dialog it opens (Q4-47). */
+  setInstitution: (institution: string) => `Set institution to ${institution}…`,
   institutionMissing: 'Add your institution in Connection settings first.',
   connectionSettings: 'Connection settings…',
   institutionPublic: 'Not needed while the workspace allows Public.',

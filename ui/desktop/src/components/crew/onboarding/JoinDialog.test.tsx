@@ -416,11 +416,16 @@ describe('JoinDialog', () => {
     await paste();
     await screen.findByTestId('crew-join-summary');
     const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
-    // Folded, it says whose agent and its one state (Q4-44): "Your agent on hpc.ucsf.edu: off".
-    expect(row).toHaveTextContent('Your agent on hpc.ucsf.edu:');
-    expect(row).toHaveAccessibleDescription('off');
+    // Folded, it says whose agent and its one state as one sentence (Q4-44): "Your agent on
+    // hpc.ucsf.edu is off". The name ends in no colon, which dangled once the row opened.
+    expect(row.textContent).toBe('Your agent on hpc.ucsf.edu');
+    expect(row).toHaveAccessibleName('Your agent on hpc.ucsf.edu');
+    expect(row).toHaveAccessibleDescription('is off');
     expect(document.body.textContent).not.toMatch(/No work folder|agent commands/);
     fireEvent.click(row);
+    // Open, the heading stands alone: nothing trails it.
+    expect(row.textContent).toBe('Your agent on hpc.ucsf.edu');
+    expect(row).not.toHaveAccessibleDescription();
     const agent = screen.getByRole('switch', { name: joinCopy.remoteExecution });
     expect(agent).not.toBeChecked();
     expect(agent).toBeDisabled();

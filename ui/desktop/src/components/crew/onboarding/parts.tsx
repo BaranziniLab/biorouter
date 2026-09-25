@@ -4,8 +4,6 @@ import InAppTerminalDock from '../../InAppTerminalDock';
 import { Check, Copy, Terminal } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField, COPY_FIELD_FEEDBACK_MS } from '../../ui/copy-field';
-import { PrivacyBadge } from '../../ui/PrivacyBadge';
-import { InstitutionName, type KnownInstitution } from '../identity';
 import { hostCopy, trustCopy } from './copy';
 import './onboarding.css';
 
@@ -82,34 +80,6 @@ export function SetupCard({
 /** The one spinner. It is decoration: the words beside it carry the state. */
 export function Spinner() {
   return <span className="crew-onboard-spinner" aria-hidden="true" />;
-}
-
-/** "🔒 Private · ucsf" or "Public": a workspace's or a connection's privacy, never animated. */
-export function PrivacyLabel({
-  mode,
-  institutionId,
-  known,
-}: {
-  mode: 'private' | 'public';
-  institutionId?: string | null;
-  /** The institutions configured providers publish names for, so `ucsf` reads as UCSF (Q2-38). */
-  known?: readonly KnownInstitution[] | null;
-}) {
-  return (
-    <span className="crew-onboard-privacy" data-privacy={mode}>
-      {/* The broker enforces Crew's mode on its own, independent of this machine's master switch,
-          so "(enforcement off)" would be false here. */}
-      <PrivacyBadge tier={mode} enforcementOff={false} />
-      {mode === 'private' && institutionId ? (
-        <>
-          <span aria-hidden="true" className="text-text-muted">
-            ·
-          </span>
-          <InstitutionName id={institutionId} known={known} className="text-label" />
-        </>
-      ) : null}
-    </span>
-  );
 }
 
 /**

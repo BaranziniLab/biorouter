@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { Hash, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
@@ -71,17 +71,37 @@ export function resetConnectAttemptsForTests(): void {
  */
 const FOCUS_HOLD = 'data-crew-focus-hold';
 
+/** The props that make an element a focus hold; spread them onto it. */
+export interface FocusHoldProps<T extends HTMLElement> {
+  ref: RefObject<T | null>;
+  tabIndex: -1;
+  className: string;
+  'data-crew-focus-hold': '';
+}
+
+/**
+ * A place for keyboard focus to stand while a wait replaces the control that had it (Q4-09): the
+ * connecting card's title, and any screen a connect passes through on its way to the channel (the
+ * main area's `checking` skeleton). Spread the result onto an element that states the wait; when it
+ * mounts with focus lost (on `<body>`, or on an element that just left), focus moves to it before
+ * paint, so no frame has focus on the page. Never a Tab stop and never ringed (`tabindex="-1"`,
+ * `.crew-onboard-focus-hold`), and `focusOnceMounted` treats it as unclaimed, so focus still moves
+ * on to the channel once it opens. It takes nothing from a control that has focus.
+ */
+export function useFocusHold<T extends HTMLElement>(): FocusHoldProps<T> {
+  const ref = useRef<T>(null);
+  useLayoutEffect(() => {
+    if (focusIsLost()) ref.current?.focus();
+  }, []);
+  return { ref, tabIndex: -1, className: 'crew-onboard-focus-hold', [FOCUS_HOLD]: '' };
+}
+
 export function ConnectingCard() {
   const { connectionId } = useCrew();
   const server = useServer();
-  const titleRef = useRef<HTMLSpanElement>(null);
-
   // Connect unmounts itself (the offline screen, the join card's Reconnect): hold focus on this
   // card's title rather than let it fall to `<body>` for as long as the connect takes (Q4-09).
-  // Before paint, so there is no frame with focus on the page. Only when focus was lost.
-  useLayoutEffect(() => {
-    if (focusIsLost()) titleRef.current?.focus();
-  }, []);
+  const hold = useFocusHold<HTMLSpanElement>();
 
   useEffect(() => {
     if (connectionId) connectTriedAt.set(connectionId, Date.now());
@@ -90,16 +110,7 @@ export function ConnectingCard() {
   return (
     <SetupScreen>
       <SetupCard
-        title={
-          <span
-            ref={titleRef}
-            tabIndex={-1}
-            className="crew-onboard-focus-hold"
-            data-crew-focus-hold=""
-          >
-            {emptyCopy.connecting(server)}
-          </span>
-        }
+        title={<span {...hold}>{emptyCopy.connecting(server)}</span>}
         testId="crew-connecting"
       >
         <Spinner />

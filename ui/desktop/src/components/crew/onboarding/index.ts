@@ -23,6 +23,8 @@ export {
   NoTeamState,
   OfflineState,
   SignInNeededState,
+  useFocusHold,
+  type FocusHoldProps,
 } from './EmptyStates';
 export { NameSuggestionNote } from './NameSuggestionNote';
 export {

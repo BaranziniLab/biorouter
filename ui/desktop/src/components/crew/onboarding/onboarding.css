@@ -78,10 +78,11 @@
   color: var(--text-danger);
 }
 
-/* The connecting card's title holds keyboard focus while the Connect that
-   started it is gone (Q4-09), so a key pressed then starts from the card, not
-   from the top of the page. It is only a place to stand (`tabindex="-1"`, never
-   a Tab stop), so it draws no ring: nothing here can be activated. */
+/* A focus hold (`useFocusHold`): the connecting card's title, or whatever else
+   states a wait, holds keyboard focus while the Connect that started it is gone
+   (Q4-09), so a key pressed then starts from there, not from the top of the
+   page. It is only a place to stand (`tabindex="-1"`, never a Tab stop), so it
+   draws no ring: nothing here can be activated. */
 .crew-onboard-focus-hold:focus,
 .crew-onboard-focus-hold:focus-visible {
   outline: none;
@@ -244,13 +245,6 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-element);
   background-color: var(--background-card);
-}
-
-.crew-onboard-privacy {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
 }
 
 /* The invitation's privacy as ONE chip, `🔒 Private · UCSF` (Q4-28): the

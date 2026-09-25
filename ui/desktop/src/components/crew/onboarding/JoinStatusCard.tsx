@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-} from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Clock, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
@@ -30,7 +22,6 @@ import {
   type CrewPerson,
 } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
-import { crewActionCopy } from '../state/copy';
 import { failureMessage } from '../state/observationFailure';
 import { connectionVerifiedThisSession } from '../state/useCrewConnections';
 import { joinStateCopy, legacyJoinCopy } from './copy';
@@ -38,7 +29,7 @@ import { useMounted } from './fields';
 import { forgetJoinClaim, readJoinClaim, updateJoinClaim, useJoinClaim } from './joinClaimState';
 import { readJoinContext, updateJoinContext, useJoinContext } from './joinContext';
 import { firstName, invitationExpiry, membershipEnded, sshUsername } from './joinText';
-import { LegacyJoinForm } from './LegacyJoinForm';
+import { LegacyJoinForm, useTokenJoin } from './LegacyJoinForm';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 
 /** How often the join screen asks where this computer's join stands, while it is visible. */
@@ -514,11 +505,12 @@ export function JoinStatusCard() {
           <Clock aria-hidden className="crew-onboard-wait-icon" />
           <span>{joinStateCopy.waiting(first)}</span>
         </p>
+        {/* Once `expires_at` has passed (before the next poll says `expired`), only that: "You
+            can close Biorouter: {host} can still let you in" would contradict it. */}
         <p className="text-supporting text-text-muted" data-testid="crew-join-wait-note">
-          {expiry
-            ? `${expiry.expired ? joinStateCopy.expiredNow : joinStateCopy.expires(expiry.when)} `
-            : null}
-          {joinStateCopy.closeNote(first, workspace)}
+          {expiry?.expired
+            ? joinStateCopy.expiredNow
+            : `${expiry ? `${joinStateCopy.expires(expiry.when)} ` : ''}${joinStateCopy.closeNote(first, workspace)}`}
         </p>
         {otherWays}
       </SetupCard>
@@ -625,7 +617,7 @@ export function JoinStatusCard() {
  *    request**.
  * 3. **Alice sent me a token instead**, a quiet link that reveals the token field and **Join with a
  *    token**. The field stays masked: a token is a credential. The broker decides (`auth.enroll`),
- *    exactly as the token-only path (`LegacyJoinForm`) sends it.
+ *    through the one submit the token-only path (`LegacyJoinForm`) uses too (`useTokenJoin`).
  */
 function TroubleJoining({
   workspace,
@@ -639,15 +631,9 @@ function TroubleJoining({
   host: string;
   reassure: boolean;
 }) {
-  const crew = useCrew();
-  const mounted = useMounted();
-  const publicKey = crew.connection?.public_key ?? '';
-  const connectionId = crew.connectionId;
+  const { token, setToken, pending, error, submit, publicKey } = useTokenJoin();
   const [requestShown, setRequestShown] = useState(false);
   const [tokenShown, setTokenShown] = useState(false);
-  const [token, setToken] = useState('');
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const requestId = useId();
   const tokenFieldRef = useRef<HTMLInputElement>(null);
 
@@ -658,29 +644,6 @@ function TroubleJoining({
     setFocusToken(false);
     tokenFieldRef.current?.focus();
   }, [focusToken, tokenShown]);
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (pending || !token.trim()) return;
-    setPending(true);
-    setError(null);
-    try {
-      await crew.request(
-        'auth.enroll',
-        { invitation: token.trim(), public_key: publicKey },
-        { mutation: true }
-      );
-      if (!mounted.current) return;
-      setToken('');
-      updateJoinContext(connectionId, { joining: false });
-      crew.setJoinStatus('joined');
-      await crew.refresh();
-    } catch (failure) {
-      if (mounted.current) setError(failureMessage(failure, crewActionCopy.actionFallback));
-    } finally {
-      if (mounted.current) setPending(false);
-    }
-  };
 
   return (
     <div className="crew-onboard-stack" data-testid="crew-join-trouble">

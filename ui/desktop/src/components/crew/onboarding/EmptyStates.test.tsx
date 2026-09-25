@@ -17,6 +17,7 @@ import {
   OfflineState,
   resetConnectAttemptsForTests,
   SignInNeededState,
+  useFocusHold,
 } from './EmptyStates';
 import { attemptTime } from './joinText';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
@@ -34,6 +35,27 @@ import { Welcome } from './Welcome';
 
 vi.mock('../../InAppTerminalDock', () => ({ default: () => <div /> }));
 
+// The checklist's "Set institution to …" reads the configured providers for the name they publish
+// for an institution ID (Q4-47). Stable callbacks, as the real context's are.
+const config = vi.hoisted(() => {
+  const state = { providers: [] as unknown[] };
+  return { state, getProviders: async () => state.providers, read: async () => null };
+});
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return {
+    ...actual,
+    useConfig: () => ({ getProviders: config.getProviders, read: config.read }),
+  };
+});
+
+/** A configured provider whose affiliation publishes "UCSF" as the name of `ucsf`. */
+const ucsfProvider = {
+  name: 'versa_azure',
+  is_configured: true,
+  affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+};
+
 const connection = fakeConnection();
 
 function crewWith(overrides: Partial<CrewController> = {}) {
@@ -44,6 +66,7 @@ beforeEach(() => {
   resetJoinContextForTests();
   resetConnectAttemptsForTests();
   localStorage.clear();
+  config.state.providers = [];
 });
 
 describe('Welcome', () => {
@@ -173,8 +196,15 @@ describe('connection states', () => {
 
   describe('Connect never leaves focus on the page while it connects (Q4-09)', () => {
     /** The main area as the layout draws it: the onboarding screen, or the channel. */
+    /** A wait that holds focus the way the connecting card's title does (`useFocusHold`). */
+    function HeldWait() {
+      const hold = useFocusHold<HTMLSpanElement>();
+      return <span {...hold}>Loading your channels…</span>;
+    }
+
     function MainArea() {
       const { screen: current } = useCrew();
+      if (current === 'checking') return <HeldWait />;
       if (current === 'channel') {
         return (
           <div className="crew-app">
@@ -216,6 +246,45 @@ describe('connection states', () => {
       expect(title.closest('h2')).not.toBeNull();
 
       await act(async () => finish());
+      view.update({ screen: 'channel' });
+      await waitFor(() => expect(screen.getByRole('button', { name: '# general' })).toHaveFocus());
+    });
+
+    it('passes the hold on to the next wait, and still lands on the channel (Q4-09)', async () => {
+      // A connect ends with `refresh()`, so it settles while the main area is `checking`: the
+      // connecting card leaves before the first verified frame arrives.
+      let finish!: () => void;
+      const connect = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const view = renderWithCrew(
+        <MainArea />,
+        crewWith({
+          connection: fakeConnection({ status: 'disconnected' }),
+          screen: 'offline',
+          connect,
+        })
+      );
+      const button = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      button.focus();
+      fireEvent.click(button);
+      view.update({ screen: 'connecting' });
+      expect(screen.getByText(emptyCopy.connecting('hpc.ucsf.edu'))).toHaveFocus();
+
+      view.update({ screen: 'checking' });
+      const wait = screen.getByText('Loading your channels…');
+      expect(document.activeElement).not.toBe(document.body);
+      expect(wait).toHaveFocus();
+      expect(wait).toHaveAttribute('tabindex', '-1');
+      expect(wait).toHaveAttribute('data-crew-focus-hold');
+      expect(wait).toHaveClass('crew-onboard-focus-hold');
+
+      await act(async () => finish());
+      // Still waiting: the hold keeps focus rather than the landing giving up on it.
+      expect(wait).toHaveFocus();
       view.update({ screen: 'channel' });
       await waitFor(() => expect(screen.getByRole('button', { name: '# general' })).toHaveFocus());
     });
@@ -598,12 +667,15 @@ describe('SetupChecklist', () => {
       principals: [{ id: 'p-alice', uid: 1000, username: 'alice', nickname: 'Alice Chen' }],
     });
 
-  it('lists the three steps and opens the dialog that asks for each', () => {
+  it('lists the three steps and opens the dialog that asks for each', async () => {
     const crew = crewWith({ snapshot: hostSnapshot(), isHost: true });
     renderWithCrew(<SetupChecklist />, crew);
     expect(screen.getAllByRole('listitem')).toHaveLength(3);
 
-    fireEvent.click(screen.getByRole('button', { name: checklistCopy.setInstitution('ucsf') }));
+    // No configured provider publishes a name for `ucsf`: the ID is how it reads.
+    fireEvent.click(
+      await screen.findByRole('button', { name: checklistCopy.setInstitution('ucsf') })
+    );
     expect(crew.openDialog).toHaveBeenCalledWith({
       kind: 'confirm',
       confirm: { action: 'set-institution', institutionId: 'ucsf' },
@@ -612,6 +684,23 @@ describe('SetupChecklist', () => {
     expect(crew.openDialog).toHaveBeenCalledWith({ kind: 'create-team' });
     fireEvent.click(screen.getByRole('button', { name: checklistCopy.invitePeople }));
     expect(crew.openDialog).toHaveBeenCalledWith({ kind: 'invite-people' });
+  });
+
+  it('names the institution as the Mark dialog it opens does, and still writes the ID (Q4-47)', async () => {
+    config.state.providers = [ucsfProvider];
+    const crew = crewWith({ snapshot: hostSnapshot(), isHost: true });
+    renderWithCrew(<SetupChecklist />, crew);
+
+    // "Set institution to UCSF…", the words every chip and the confirmation use, never "ucsf…".
+    const button = await screen.findByRole('button', {
+      name: checklistCopy.setInstitution('UCSF'),
+    });
+    expect(screen.queryByRole('button', { name: checklistCopy.setInstitution('ucsf') })).toBeNull();
+    fireEvent.click(button);
+    expect(crew.openDialog).toHaveBeenCalledWith({
+      kind: 'confirm',
+      confirm: { action: 'set-institution', institutionId: 'ucsf' },
+    });
   });
 
   it('ticks what is done and sends a missing institution to Connection settings', () => {

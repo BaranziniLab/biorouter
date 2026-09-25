@@ -1,14 +1,15 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Check, UserPlus } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import {
   connectionServer,
   displayNameIsUsername,
+  institutionLabel,
   personDisplayName,
   usePeopleDirectory,
   workspaceName,
 } from '../identity';
-import { serverLabel } from '../sidebar/sidebarView';
+import { serverLabel, useKnownInstitutions } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import { checklistCopy } from './copy';
 import { dismissNameOffer, offeredName } from './joinContext';
@@ -49,8 +50,20 @@ export function resetSetupChecklistForTests(): void {
   usedNames.clear();
 }
 
+/**
+ * "Set institution to UCSF…": the institution as every chip and the Mark dialog this opens write it
+ * (`institutionLabel`, Q4-47, Carol R4-5), never the raw ID the confirmation writes. Its own
+ * component so the provider list is read only while the button is on screen.
+ */
+function SetInstitutionLabel({ institution }: { institution: string }) {
+  const known = useKnownInstitutions();
+  return <>{checklistCopy.setInstitution(institutionLabel(institution, known) ?? institution)}</>;
+}
+
 interface ChecklistAction {
-  label: string;
+  /** Unique within its row. */
+  key: string;
+  label: ReactNode;
   run: () => void;
   disabled?: boolean;
   variant?: 'outline' | 'ghost';
@@ -141,11 +154,17 @@ export function SetupChecklist({
           done: false,
           actions: [
             {
+              key: 'use-name',
               label: checklistCopy.useName,
               run: () => saveName(suggestion.name),
               disabled: !crew.snapshot || suggestion.pending,
             },
-            { label: checklistCopy.editName, run: suggestion.edit, variant: 'ghost' },
+            {
+              key: 'edit-name',
+              label: checklistCopy.editName,
+              run: suggestion.edit,
+              variant: 'ghost',
+            },
           ],
         }
       : named && (offered || used)
@@ -172,7 +191,8 @@ export function SetupChecklist({
       actions: [
         institution
           ? {
-              label: checklistCopy.setInstitution(institution),
+              key: 'set-institution',
+              label: <SetInstitutionLabel institution={institution} />,
               disabled: !live,
               run: () =>
                 crew.openDialog({
@@ -182,6 +202,7 @@ export function SetupChecklist({
             }
           : {
               // No institution on this connection yet: the label needs one, so go where it is set.
+              key: 'connection-settings',
               label: checklistCopy.connectionSettings,
               run: () =>
                 crew.openDialog({ kind: 'connection-settings', connectionId: crew.connectionId }),
@@ -194,6 +215,7 @@ export function SetupChecklist({
       done: view.teams.length > 0,
       actions: [
         {
+          key: 'create-team',
           label: checklistCopy.createTeam,
           disabled: !live,
           run: () => crew.openDialog({ kind: 'create-team' }),
@@ -206,6 +228,7 @@ export function SetupChecklist({
       done: activePeople > 1 || (view.pending_joins?.length ?? 0) > 0,
       actions: [
         {
+          key: 'invite-people',
           label: checklistCopy.invitePeople,
           disabled: !live,
           run: () => crew.openDialog({ kind: 'invite-people' }),
@@ -282,7 +305,7 @@ export function SetupChecklist({
               <span className="crew-onboard-check-actions">
                 {row.actions.map((action) => (
                   <Button
-                    key={action.label}
+                    key={action.key}
                     type="button"
                     size="sm"
                     variant={action.variant ?? 'outline'}

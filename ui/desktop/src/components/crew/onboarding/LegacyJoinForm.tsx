@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Note } from '../../ui/note';
@@ -6,44 +6,33 @@ import { SecretInput } from '../../ui/secret-input';
 import { useCrew } from '../state/CrewControllerContext';
 import { failureMessage } from '../state/observationFailure';
 import { crewActionCopy } from '../state/copy';
-import { joinStateCopy, legacyJoinCopy } from './copy';
+import { legacyJoinCopy } from './copy';
 import { updateJoinContext } from './joinContext';
 import { useMounted } from './fields';
 
+/** One token submit, and what the form around it shows while it runs. */
+export interface TokenJoin {
+  token: string;
+  setToken: (token: string) => void;
+  pending: boolean;
+  error: string | null;
+  submit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  /** This computer's public device key, which the join request carries and the submit sends. */
+  publicKey: string;
+}
+
 /**
- * The invitation-token path (`auth.enroll`), for a workspace whose server cannot join by
- * invitation code, or behind "Having trouble joining?". The person sends their host a join
- * request — their username and this computer's public device key, never a secret — and pastes back
- * the token the host's older invitation form produced. The broker decides; this only carries it.
- *
- * `host` makes it the fallback (Q2-35): it opens on the condition ("If Alice asks for it, send
- * this instead:"), keeps the 64-character key folded behind "Show the join request for Alice", and
- * says the token field is only for a token the host sent. Its button is "Join with a token": the
- * person already pressed Join, and a second "Join workspace" read as doing that again (Q3-48).
- * Without `host`, this is the only way in, and the request is shown outright.
+ * The one submit of a token from the host's older invitation form (`auth.enroll`, with this
+ * computer's public device key), shared by the token-only path below and the token field behind
+ * "Having trouble joining?" (`JoinStatusCard`). The broker decides; this only carries it. On
+ * success the join is over: the join context stops saying "joining" and the workspace refreshes.
  */
-export function LegacyJoinForm({
-  workspace,
-  username,
-  host,
-}: {
-  workspace: string;
-  username: string | null;
-  /**
-   * The host, as the join card's sentences name them ("Alice", `@alice`, or "your host"): marks
-   * this as the fallback.
-   */
-  host?: string;
-}) {
+export function useTokenJoin(): TokenJoin {
   const crew = useCrew();
   const mounted = useMounted();
   const [token, setToken] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [requestShown, setRequestShown] = useState(false);
-  const requestId = useId();
-  const tokenHelperId = useId();
-  const fallback = host !== undefined;
   const publicKey = crew.connection?.public_key ?? '';
   const connectionId = crew.connectionId;
 
@@ -70,34 +59,28 @@ export function LegacyJoinForm({
     }
   };
 
+  return { token, setToken, pending, error, submit, publicKey };
+}
+
+/**
+ * The invitation-token path, for a workspace whose server cannot join by invitation code: the only
+ * way in there. The person sends their host the join request — their username and this computer's
+ * public device key, never a secret — shown outright, and pastes back the token the host's older
+ * invitation form produced. The fallback behind "Having trouble joining?" is `JoinStatusCard`'s
+ * own, over the same submit (`useTokenJoin`).
+ */
+export function LegacyJoinForm({
+  workspace,
+  username,
+}: {
+  workspace: string;
+  username: string | null;
+}) {
+  const { token, setToken, pending, error, submit, publicKey } = useTokenJoin();
+
   return (
     <div className="crew-onboard-stack" data-testid="crew-legacy-join">
-      {publicKey && fallback ? (
-        <>
-          <p className="text-body text-text-default">{joinStateCopy.otherBody(host)}</p>
-          <div className="crew-onboard-row">
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0"
-              aria-expanded={requestShown}
-              aria-controls={requestShown ? requestId : undefined}
-              onClick={() => setRequestShown((shown) => !shown)}
-            >
-              {requestShown ? legacyJoinCopy.hideRequest : legacyJoinCopy.showRequest(host)}
-            </Button>
-          </div>
-          {requestShown ? (
-            <div id={requestId}>
-              <CopyField
-                multiline
-                label={legacyJoinCopy.requestLabel}
-                value={legacyJoinCopy.request(workspace, username, publicKey)}
-              />
-            </div>
-          ) : null}
-        </>
-      ) : publicKey ? (
+      {publicKey ? (
         <>
           <p className="text-body text-text-default">{legacyJoinCopy.sendRequest}</p>
           <CopyField
@@ -115,21 +98,11 @@ export function LegacyJoinForm({
           required
           disabled={pending}
           value={token}
-          aria-describedby={fallback ? tokenHelperId : undefined}
           onChange={(event) => setToken(event.target.value)}
         />
-        {fallback ? (
-          <p id={tokenHelperId} className="text-supporting text-text-muted">
-            {legacyJoinCopy.tokenHelper(host)}
-          </p>
-        ) : null}
         <div className="crew-onboard-actions">
           <Button type="submit" disabled={pending || !token.trim()}>
-            {pending
-              ? legacyJoinCopy.submitting
-              : fallback
-                ? legacyJoinCopy.submitToken
-                : legacyJoinCopy.submit}
+            {pending ? legacyJoinCopy.submitting : legacyJoinCopy.submit}
           </Button>
         </div>
       </form>

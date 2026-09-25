@@ -361,9 +361,10 @@ describe('JoinStatusCard', () => {
       expires_at: Math.floor(Date.now() / 1000) - 60,
     });
     renderCard();
-    expect(await screen.findByTestId('crew-join-wait-note')).toHaveTextContent(
-      joinStateCopy.expiredNow
-    );
+    // Only that: "Alice can still let you in with the same code" would contradict it.
+    const note = await screen.findByTestId('crew-join-wait-note');
+    expect(note.textContent).toBe(joinStateCopy.expiredNow);
+    expect(document.body.textContent).not.toContain(joinStateCopy.closeNote('Alice', 'lab'));
   });
 
   it('leaves out the expiry when the status names none', async () => {

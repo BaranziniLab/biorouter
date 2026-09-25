@@ -751,7 +751,7 @@ describe('HostDialog', () => {
       expect(hostCopy.advancedSummary).toBe(joinCopy.advancedSummary);
       expect(hostCopy.advancedSummary).not.toMatch(/agent|Port|SSH/);
       const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
-      expect(row).toHaveAccessibleDescription('off');
+      expect(row).toHaveAccessibleDescription('is off');
       fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
       expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
       fireEvent.click(row);
