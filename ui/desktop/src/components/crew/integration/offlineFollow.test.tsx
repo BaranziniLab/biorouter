@@ -1,5 +1,6 @@
-import { act, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { connectionBarCopy } from '../channel/copy';
 import { CrewHttpError } from '../crewApi';
 import { MEMBERSHIP_ENDED_CODE } from '../state/connectFailure';
 import {
@@ -316,6 +317,78 @@ describe('following the daemon’s re-dial while Crew shows a connection offline
     expect(reads()).toBe(ended);
     expect(connects()).toBe(0);
     expect(currentCrew().screen).toBe('offline');
+  });
+});
+
+/**
+ * Final acceptance NEW-1: after a person's failed Connect, the daemon re-dialled by itself and
+ * Crew followed it to "Connected" — but the bar above the channel kept the failed Connect's note,
+ * in the transport's own words, with Try again, for at least five minutes. The daemon's message
+ * for every SSH failure is its transport record, so the bar never shows it, and the note goes as
+ * soon as the connection verifies again, however it came back.
+ */
+describe('a failed Connect’s note after Crew reconnects by itself (NEW-1)', () => {
+  const TRANSPORT_TEXT =
+    'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying';
+  const RAW = /Crew SSH failure|ssh_eof|child_before_cleanup|exit_255|Submitted operation/;
+  const bar = () => screen.getAllByTestId('crew-connection-bar')[0];
+
+  function failConnectsWith(code: string) {
+    const answer = daemon.state.http;
+    daemon.state.http = (path, method, body) => {
+      if (path === CONNECT && method === 'POST' && !networkUp)
+        throw new CrewHttpError(TRANSPORT_TEXT, 502, code);
+      return answer?.(path, method, body);
+    };
+  }
+
+  it('clears the note once the daemon’s own re-dial verifies, and never shows the transport’s words', async () => {
+    saved = { ...connection, status: 'disconnected' };
+    failConnectsWith('crew_ssh_unreachable');
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+
+    networkUp = false;
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(currentCrew().error?.source).toBe('connect');
+    await waitFor(() =>
+      expect(bar()).toHaveTextContent(connectionBarCopy.unreachable('hpc.example.edu'))
+    );
+    expect(document.body.textContent).not.toMatch(RAW);
+
+    // The network returns and the daemon's own retry gets through; nobody clicks.
+    networkUp = true;
+    daemonRedialled();
+    await wait(15_000);
+    await channelReady();
+    expect(currentCrew().status).toBe('connected');
+
+    // The failed Connect's note is gone with its classification, and stays gone.
+    expect(currentCrew().error).toBeNull();
+    expect(currentCrew().lastConnectFailure).toBeNull();
+    expect(bar()).toBeEmptyDOMElement();
+    await wait(5 * 60_000);
+    expect(bar()).toBeEmptyDOMElement();
+    expect(document.body.textContent).not.toMatch(RAW);
+    expect(connects()).toBe(1);
+  });
+
+  it('says “Can’t connect to …” for any other SSH failure, never the transport record', async () => {
+    saved = { ...connection, status: 'disconnected' };
+    failConnectsWith('crew_ssh_failed');
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+
+    networkUp = false;
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    await waitFor(() =>
+      expect(bar()).toHaveTextContent(connectionBarCopy.cantConnect('hpc.example.edu'))
+    );
+    expect(document.body.textContent).not.toMatch(RAW);
   });
 });
 

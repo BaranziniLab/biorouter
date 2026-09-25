@@ -84,7 +84,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const arrival = arrivalConnectIntent(location.state);
 
   const actions = useCrewActions();
-  const { act, reportError, dismissError, isPending } = actions;
+  const { act, reportError, dismissError, dismissErrorFrom, isPending } = actions;
   const generation = useRef(0);
   const {
     connections,
@@ -123,14 +123,28 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     []
   );
   const { clear: clearConnectFailure } = connectFailures;
-  const onVerifiedFrame = useCallback(
+  /**
+   * The connection is back, whoever brought it back (NEW-1): a failed Connect's classification and
+   * its note both go. The note is the `connect` action's error, which only a successful Connect
+   * used to clear — so after the daemon re-dialled by itself, the person's earlier failure stayed
+   * in the bar, in the transport's words, beside "Connected". Only a connect error goes: any other
+   * error is still news.
+   */
+  const forgetConnectFailure = useCallback(
     (id: string) => {
       clearConnectFailure(id);
+      dismissErrorFrom('connect');
+    },
+    [clearConnectFailure, dismissErrorFrom]
+  );
+  const onVerifiedFrame = useCallback(
+    (id: string) => {
+      forgetConnectFailure(id);
       stopReconnectingTimer();
       setReconnecting((current) => (current === id ? null : current));
       setLossPending((current) => (current === id ? null : current));
     },
-    [clearConnectFailure, stopReconnectingTimer]
+    [forgetConnectFailure, stopReconnectingTimer]
   );
   const { openPane: openSurfacePane, closePane: closeSurfacePane } = surfaces;
 
@@ -439,13 +453,12 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
           if (!live() || !record) return;
           if (record.status === 'disconnected' && !isMembershipEnded(record)) return;
           endOfflineFollow();
+          if (record.status !== 'connected' || isMembershipEnded(record)) return;
+          // The daemon's own re-dial succeeded: a Connect the person made during the outage and
+          // that failed no longer describes the connection (NEW-1).
+          forgetConnectFailure(id);
           // Observed again, exactly as a loss the daemon already repaired is. Never a connect.
-          if (
-            record.status === 'connected' &&
-            !isMembershipEnded(record) &&
-            !latestVerified.current
-          )
-            restartObservation();
+          if (!latestVerified.current) restartObservation();
         });
     };
     const tick = () => {

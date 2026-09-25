@@ -5,7 +5,12 @@ import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText } from '../dialogs/refusals';
 import { connectionServer } from '../identity';
-import { isMembershipEnded } from '../state/connectFailure';
+import {
+  isMembershipEnded,
+  isNotSetUpFailure,
+  isTrustFailure,
+  type ConnectFailureKind,
+} from '../state/connectFailure';
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
@@ -41,6 +46,34 @@ export function actionErrorText(message: string): string {
   if (!refusal.code) return words;
   const sentence = refusal.sentence.trim();
   return sentence ? sentence.charAt(0).toUpperCase() + sentence.slice(1) : words;
+}
+
+/**
+ * Machine text a person must never read (NEW-1): the transport's own record of an SSH failure
+ * ("Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: … inspect history before
+ * retrying"), a bracketed or `key=value` status, or a JSON envelope.
+ */
+const MACHINE_TEXT =
+  /Crew SSH failure|child_before_cleanup|\[[^\]]*[a-z0-9]_[a-z0-9][^\]]*\]|\b[a-z]+_[a-z0-9_]+=|[{}]/;
+
+/**
+ * A failed Connect in words, by its kind (NEW-1). A classified SSH failure always reads as its
+ * kind — the daemon's message for every one of them is the transport record above — and so does
+ * any machine-shaped text. Only a failure the daemon answered in a person's words (a missing
+ * approval, an outdated background service) keeps them. Never the raw text.
+ */
+export function connectErrorText(
+  kind: ConnectFailureKind | undefined,
+  message: string,
+  host: string
+): string {
+  if (kind === 'unreachable') return connectionBarCopy.unreachable(host);
+  if (kind === 'auth_required') return connectionBarCopy.signInNeeded(host);
+  if (isTrustFailure(kind)) return connectionBarCopy.cantVerify(host);
+  if (isNotSetUpFailure(kind)) return connectionBarCopy.notRunning(host);
+  if ((kind === undefined || kind === 'unknown') && message.trim() && !MACHINE_TEXT.test(message))
+    return actionErrorText(message);
+  return connectionBarCopy.cantConnect(host);
 }
 
 /**
@@ -89,7 +122,9 @@ export interface ConnectionBarProps {
  *    Q3-50) says so here, as "You're no longer a member of …", with no Retry, whatever its status.
  * 2. an observer or global action error — or a connect failure whose own surface is not on
  *    screen — with Dismiss (Try again for a connect failure). A closed channel's note shows only
- *    over a workspace view (Q2-19);
+ *    over a workspace view (Q2-19). A connect failure reads as its kind, never in the transport's
+ *    words (`connectErrorText`, NEW-1), and goes as soon as the connection verifies again, however
+ *    it came back;
  * 3. the one highest-priority need: the vault is locked (Unlock), the server can't be reached
  *    (Try again), or a reconnect has taken over a second (a spinner, no action);
  *
@@ -251,7 +286,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           unreachableNote('alert')
         ) : (
           <Note tone="danger" role="alert" icon={AlertTriangle} action={connectAction}>
-            <p>{connectError.message}</p>
+            <p>{connectErrorText(failure?.kind, connectError.message, host)}</p>
             {offlineCardShown && settingsLink}
           </Note>
         ))}

@@ -48,6 +48,12 @@ export interface CrewActions {
   ): Promise<T | undefined>;
   reportError(message: string, source?: ErrorSource, code?: string): void;
   dismissError(): void;
+  /**
+   * Dismiss the error only when it came from `source`: a later error from anywhere else stays
+   * (NEW-1: the connection that verified again takes its own connect failure away, and nothing
+   * else).
+   */
+  dismissErrorFrom(source: ErrorSource): void;
   isPending(key: ActionKey): boolean;
   busy: boolean;
   errorSlotFor(source: ErrorSource): boolean;
@@ -92,6 +98,10 @@ export function useCrewActions(): CrewActions {
     []
   );
   const dismissError = useCallback(() => setError(null), []);
+  const dismissErrorFrom = useCallback(
+    (source: ErrorSource) => setError((current) => (current?.source === source ? null : current)),
+    []
+  );
   const registerErrorSlot = useCallback((source: ErrorSource) => {
     setSlots((current) => adjust(current, source, 1));
     let registered = true;
@@ -110,6 +120,7 @@ export function useCrewActions(): CrewActions {
     act,
     reportError,
     dismissError,
+    dismissErrorFrom,
     isPending,
     busy: pending.size > 0,
     errorSlotFor,

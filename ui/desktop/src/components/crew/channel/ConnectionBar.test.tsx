@@ -6,7 +6,7 @@ import { MEMBERSHIP_ENDED_CODE } from '../state/connectFailure';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import { crewObservationCopy } from '../state/copy';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
-import { ConnectionBar, actionErrorText } from './ConnectionBar';
+import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBar';
 import { connectionBarCopy } from './copy';
 import {
   alice,
@@ -65,6 +65,11 @@ function bar() {
 async function verified() {
   await waitFor(() => expect(currentCrew().status).toBe('connected'));
 }
+
+/** The daemon's message for every SSH failure: its transport record, never for a person. */
+const TRANSPORT_TEXT =
+  'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying';
+const RAW_TRANSPORT = /Crew SSH failure|ssh_eof|child_before_cleanup|Submitted operation/;
 
 /** The daemon's one sentence for every observer error: it must never reach the bar. */
 const DAEMON_SENTENCE =
@@ -420,19 +425,22 @@ describe('ConnectionBar', () => {
     expect(screen.getAllByText(connectionBarCopy.unreachable('hpc.example.edu'))).toHaveLength(1);
   });
 
-  it('shows any other connect failure in the daemon’s words, with Try again', async () => {
+  it('says any other SSH failure plainly — never the transport’s words — with Try again (NEW-1)', async () => {
     renderCrew(Layout);
     await verified();
     mocks.crewHttp.mockImplementation(async (path: string) => {
       if (path === '/connections') return { connections: [connection] };
       if (path === '/connections/conn-1/connect')
-        throw new CrewHttpError('ssh failed for a reason', 502, 'crew_ssh_failed');
+        throw new CrewHttpError(TRANSPORT_TEXT, 502, 'crew_ssh_failed');
       return {};
     });
     await act(async () => {
       await currentCrew().connect({ userInitiated: true });
     });
-    expect(await screen.findByText('ssh failed for a reason')).toBeInTheDocument();
+    expect(
+      await screen.findByText(connectionBarCopy.cantConnect('hpc.example.edu'))
+    ).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent(RAW_TRANSPORT);
     expect(screen.getByRole('button', { name: connectionBarCopy.tryAgain })).toBeEnabled();
     expect(screen.queryByRole('button', { name: connectionBarCopy.dismiss })).toBeNull();
   });
@@ -476,11 +484,14 @@ describe('ConnectionBar', () => {
 
     it('shows any other connect failure with Connection settings… and no Try again', async () => {
       await offlineScreen();
-      failConnectWith(new CrewHttpError('ssh failed for a reason', 502, 'crew_ssh_failed'));
+      failConnectWith(new CrewHttpError(TRANSPORT_TEXT, 502, 'crew_ssh_failed'));
       await act(async () => {
         await currentCrew().connect({ userInitiated: true });
       });
-      expect(await screen.findByText('ssh failed for a reason')).toBeInTheDocument();
+      expect(
+        await screen.findByText(connectionBarCopy.cantConnect('hpc.example.edu'))
+      ).toBeInTheDocument();
+      expect(bar()).not.toHaveTextContent(RAW_TRANSPORT);
       expect(
         screen.getByRole('button', { name: connectionBarCopy.connectionSettings })
       ).toBeInTheDocument();
@@ -722,5 +733,57 @@ describe('the new-device notice', () => {
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }
+  });
+});
+
+describe('connectErrorText (NEW-1)', () => {
+  const host = 'lab-server';
+
+  it('reads every classified failure as its kind, whatever the daemon’s message says', () => {
+    expect(connectErrorText('unreachable', TRANSPORT_TEXT, host)).toBe(
+      connectionBarCopy.unreachable(host)
+    );
+    expect(connectErrorText('auth_required', TRANSPORT_TEXT, host)).toBe(
+      connectionBarCopy.signInNeeded(host)
+    );
+    for (const kind of [
+      'host_key_unknown',
+      'host_key_changed',
+      'workspace_identity_mismatch',
+    ] as const)
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(connectionBarCopy.cantVerify(host));
+    for (const kind of ['bridge_missing', 'handoff_failed'] as const)
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(connectionBarCopy.notRunning(host));
+    expect(connectErrorText('ssh_failed', 'ssh failed for a reason', host)).toBe(
+      connectionBarCopy.cantConnect(host)
+    );
+  });
+
+  it('never passes machine text through, classified or not', () => {
+    for (const kind of [undefined, 'unknown'] as const) {
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(
+        connectionBarCopy.cantConnect(host)
+      );
+      expect(
+        connectErrorText(
+          kind,
+          'Crew broker refused request: {"code":"forbidden","message":"forbidden: nope"}',
+          host
+        )
+      ).toBe(connectionBarCopy.cantConnect(host));
+      expect(connectErrorText(kind, 'bridge ended [state=exit_1]', host)).toBe(
+        connectionBarCopy.cantConnect(host)
+      );
+    }
+  });
+
+  it('keeps a daemon answer written for a person, and names no server it does not know', () => {
+    const sentence =
+      'This feature needs a newer Biorouter background service. Quit and reopen Biorouter.';
+    expect(connectErrorText(undefined, sentence, host)).toBe(sentence);
+    expect(connectErrorText('ssh_failed', TRANSPORT_TEXT, '')).toBe(
+      connectionBarCopy.cantConnect('')
+    );
+    expect(connectionBarCopy.cantConnect('')).toBe('Crew can’t connect.');
   });
 });

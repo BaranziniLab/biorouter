@@ -56,6 +56,19 @@ export const connectionBarCopy = {
   retryName: 'Retry Crew updates',
   dismiss: 'Dismiss',
   unreachable: (host: string) => `Can’t reach ${host}.`,
+  /**
+   * A failed Connect, in words (NEW-1). The daemon's own text for an SSH failure is a transport
+   * record — "Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: …" — and never reaches the
+   * bar; the failure's kind picks one of these instead. The sign-in and trust screens keep
+   * OpenSSH's words under their own "Copy details".
+   */
+  cantConnect: (host: string) => (host ? `Can’t connect to ${host}.` : 'Crew can’t connect.'),
+  signInNeeded: (host: string) =>
+    host ? `${host} asked you to sign in.` : 'The server asked you to sign in.',
+  cantVerify: (host: string) =>
+    host ? `Crew couldn’t verify ${host}.` : 'Crew couldn’t verify the server.',
+  notRunning: (host: string) =>
+    host ? `Crew isn’t running for you on ${host}.` : 'Crew isn’t running for you on the server.',
   tryAgain: 'Try again',
   connectionSettings: 'Connection settings…',
   vaultLocked: 'Your Crew vault is locked.',
