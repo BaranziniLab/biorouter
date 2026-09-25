@@ -583,7 +583,13 @@ describe('an end a dropped connection explains (live QA round 2, Q2-01)', () => 
     expect(crew.messages).toEqual([]);
     expect(crew.refreshError).toBeNull();
     expect(crew.error).toBeNull();
-    expect(crew.reconnecting).toBe(true);
+    // Being decided, and not yet for `RECONNECTING_AFTER_MS` (Q4-07): "Checking connection", no
+    // "Reconnecting…" that a record answering at once would only flash.
+    expect(crew.reconnecting).toBe(false);
+    expect(crew.status).toBe('checking');
+    expect(crew.screen).toBe('checking');
+    // Undecided past it: now it says so.
+    await waitFor(() => expect(crew.reconnecting).toBe(true));
     expect(crew.status).toBe('reconnecting');
     expect(crew.screen).toBe('connecting');
     expect(crew.draft.body).toBe('keep this');

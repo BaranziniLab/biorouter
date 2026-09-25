@@ -12,8 +12,8 @@ import {
   ARRIVAL_CONNECT_STORAGE_KEY,
   CHAT_ACCESS_INTENT_ROUTE_KEY,
   CREW_CONNECT_ROUTE_KEY,
-  DAEMON_REDIAL_FOLLOW_MS,
   forgetConnectionMemory,
+  OFFLINE_FOLLOW_WINDOW_MS,
   QUIET_REOBSERVE_GAPS_MS,
   QUIET_REOBSERVE_WINDOW_MS,
   takeQuietReobserve,
@@ -21,6 +21,7 @@ import {
 import { teamForView } from './useCrewObservation';
 import {
   CrewControllerProvider,
+  useCrew,
   useCrewErrorSlot,
   useCrewSurfaceReset,
 } from './CrewControllerContext';
@@ -1135,6 +1136,122 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     expect(crew.contextChannels).toEqual([]);
   });
 
+  describe('a kept draft comes back as its channel is selected, not when it loads (Q4-05)', () => {
+    /** Every render's channel, body and whether its history has loaded. */
+    let renders: { channelId: string; body: string; loaded: boolean }[];
+    function Recorder() {
+      const current = useCrew();
+      renders.push({
+        channelId: current.channelId,
+        body: current.draft.body,
+        loaded: current.messagesLoaded,
+      });
+      return null;
+    }
+    let sessions: Observation[];
+    const latest = () => sessions[sessions.length - 1]!;
+    const withClassification = (classification: string) => ({
+      ...workspace,
+      channels: [{ ...channel, classification }, methods, imagingGeneral],
+    });
+
+    /** #general verified with 'for #general' written in it, then #methods selected and verified. */
+    async function draftLeftInGeneral() {
+      renders = [];
+      sessions = controllableObserver();
+      renderController(undefined, <Recorder />);
+      await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      await waitFor(() => expect(latest().channelId).toBe(channel.id));
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      act(() => crew.setBody('for #general'));
+      act(() => crew.selectChannel(methods.id));
+      await waitFor(() => expect(latest().channelId).toBe(methods.id));
+    }
+
+    /** The first render on `channelId` after `from`. */
+    const firstRenderOn = (channelId: string, from: number) =>
+      renders.slice(from).find((render) => render.channelId === channelId);
+
+    it('holds the draft in the very render that selects the channel, while its history loads', async () => {
+      await draftLeftInGeneral();
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      expect(stashedDraft(connection.id, channel.id)?.body).toBe('for #general');
+
+      const from = renders.length;
+      act(() => crew.selectChannel(channel.id));
+      expect(firstRenderOn(channel.id, from)).toEqual({
+        channelId: channel.id,
+        body: 'for #general',
+        loaded: false,
+      });
+
+      // Its own first frame keeps it there, and takes it out of the stash.
+      await waitFor(() => expect(latest().channelId).toBe(channel.id));
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      expect(crew.draft.body).toBe('for #general');
+      expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+    });
+
+    it('loses nothing when the person leaves again before the channel’s first frame', async () => {
+      await draftLeftInGeneral();
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      act(() => crew.selectChannel(channel.id));
+      expect(crew.draft.body).toBe('for #general');
+      act(() => crew.selectChannel(methods.id));
+      expect(crew.draft.body).toBe('');
+      expect(stashedDraft(connection.id, channel.id)?.body).toBe('for #general');
+      act(() => crew.selectChannel(channel.id));
+      expect(crew.draft.body).toBe('for #general');
+    });
+
+    it('never puts it back when the view current at the selection moved its channel’s classification', async () => {
+      await draftLeftInGeneral();
+      // #methods' verified view says #general is not restricted any more.
+      act(() => latest().receive({ ...stateFrame, snapshot: withClassification('public_safe') }));
+
+      const from = renders.length;
+      act(() => crew.selectChannel(channel.id));
+      expect(firstRenderOn(channel.id, from)?.body).toBe('');
+      expect(crew.draft.body).toBe('');
+      await waitFor(() => expect(latest().channelId).toBe(channel.id));
+      act(() => latest().receive({ ...stateFrame, snapshot: withClassification('public_safe') }));
+      expect(crew.draft.body).toBe('');
+      expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+    });
+
+    it('clears one put back when the channel’s own first frame shows its classification moved', async () => {
+      await draftLeftInGeneral();
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      act(() => crew.selectChannel(channel.id));
+      expect(crew.draft.body).toBe('for #general');
+
+      await waitFor(() => expect(latest().channelId).toBe(channel.id));
+      act(() => latest().receive({ ...stateFrame, snapshot: withClassification('public_safe') }));
+      expect(crew.draft.body).toBe('');
+      expect(crew.error?.message).toBe(crewObservationCopy.scopeChanged);
+      expect(stashedDraft(connection.id, channel.id)).toBeUndefined();
+    });
+
+    it('puts it back on arrival, when Crew itself opens the channel, before its history', async () => {
+      const first = renderController();
+      await opened(channel.id);
+      act(() => crew.setBody('written before leaving'));
+      first.unmount();
+
+      renders = [];
+      sessions = controllableObserver();
+      renderController(undefined, <Recorder />);
+      await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+      // The workspace verifies, and Crew opens #general by itself: the draft is in its first
+      // render there, while #general's own frames are still to come.
+      act(() => latest().receive({ ...stateFrame, snapshot: view }));
+      await waitFor(() => expect(crew.channelId).toBe(channel.id));
+      expect(crew.draft.body).toBe('written before leaving');
+      expect(crew.messagesLoaded).toBe(false);
+    });
+  });
+
   it('never overwrites a newer draft the person typed before the channel verified again', async () => {
     const first = renderController();
     await opened(channel.id);
@@ -1576,7 +1693,7 @@ describe('a membership the workspace ended (Q3-12, Q3-50)', () => {
       await waitFor(() => expect(crew.refreshError).not.toBeNull());
       const after = reads;
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(DAEMON_REDIAL_FOLLOW_MS.reduce((a, b) => a + b, 0) * 2);
+        await vi.advanceTimersByTimeAsync(OFFLINE_FOLLOW_WINDOW_MS * 2);
       });
       expect(reads).toBe(after);
       expect(sessions.length).toBe(observed);

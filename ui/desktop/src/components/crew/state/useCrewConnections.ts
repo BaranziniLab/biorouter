@@ -9,6 +9,7 @@ import {
 import { crewHttp, type CrewConnection } from '../crewApi';
 import { classifyConnectFailure } from './connectFailure';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
+import { forgetViewMemory } from './viewMemory';
 import type {
   ActionKey,
   ActOptions,
@@ -200,13 +201,25 @@ export const QUIET_REOBSERVE_GAPS_MS: readonly number[] = [0, 20_000, 60_000];
 export const QUIET_REOBSERVE_WINDOW_MS = 10 * 60_000;
 
 /**
- * After a loss the daemon now reports as disconnected, the gaps between the reads of the saved
- * record that follow it: 30 s, then 60, 90 and 120 s (cumulative 30 s, 1.5, 3 and 5 min). A read
- * is only `GET /connections`; it connects nothing. It catches the daemon's own re-dial of a
- * network failure (tried again 20, 60 and 180 s apart) without a click: when the record says
- * connected again, the observation, whose error is on show, observes again by itself.
+ * While Crew shows a connection offline or "Can't connect" — after a loss the daemon reports as
+ * disconnected, or after the person's own Connect failed — the saved record is read again this
+ * often while the window is visible (live QA round 4, Q4-02). A read is only `GET /connections`;
+ * it connects nothing. It catches the daemon's own re-dial of a network failure without a click:
+ * when the record says connected again, Crew observes it again.
  */
-export const DAEMON_REDIAL_FOLLOW_MS: readonly number[] = [30_000, 60_000, 90_000, 120_000];
+export const OFFLINE_FOLLOW_INTERVAL_MS = 15_000;
+/**
+ * How long those reads go on: the daemon's late-retry window (D-KEEPALIVE re-dials a dropped
+ * bridge, and a Connect that failed on the network, every 5 min for an hour). Past it the daemon
+ * has stopped trying, and so does this window.
+ */
+export const OFFLINE_FOLLOW_WINDOW_MS = 60 * 60_000;
+/**
+ * How long a loss may take to be decided before the status says "Reconnecting…" (Q4-07). A loss
+ * the saved record settles sooner goes straight to what it is — Offline, say — with no word
+ * flashed in between (a 15–18 ms "Reconnecting…" was measured before this).
+ */
+export const RECONNECTING_AFTER_MS = 300;
 
 /**
  * Whether a connection that ended while the daemon still (or again) calls it connected may be
@@ -239,12 +252,16 @@ export function connectionVerifiedThisSession(connectionId: string): boolean {
   return verifiedConnections.has(connectionId);
 }
 
-/** Forget everything kept for a removed connection, drafts and last channel included. */
+/**
+ * Forget everything kept for a removed connection: drafts, last channel, and the remembered view
+ * and pane (`viewMemory`).
+ */
 export function forgetConnectionMemory(connectionId: string): void {
   quietReobserves.delete(connectionId);
   verifiedConnections.delete(connectionId);
   forgetConnectionDrafts(connectionId);
   forgetLastChannel(connectionId);
+  forgetViewMemory(connectionId);
 }
 
 // ---------------------------------------------------------------------------------------------

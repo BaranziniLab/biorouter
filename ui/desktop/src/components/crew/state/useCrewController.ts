@@ -16,7 +16,9 @@ import {
   connectionVerifiedThisSession,
   consumeArrivalConnect,
   createConnectionLifecycle,
-  DAEMON_REDIAL_FOLLOW_MS,
+  OFFLINE_FOLLOW_INTERVAL_MS,
+  OFFLINE_FOLLOW_WINDOW_MS,
+  RECONNECTING_AFTER_MS,
   takeQuietReobserve,
   useCrewConnectFailures,
   useCrewConnections,
@@ -26,7 +28,8 @@ import {
   useCrewObservation,
   type ObservationEnd,
 } from './useCrewObservation';
-import type { CrewController, CrewControllerOptions, CrewJoinStatus } from './types';
+import { forgetRememberedView, rememberPaneIntent } from './viewMemory';
+import type { CrewController, CrewControllerOptions, CrewJoinStatus, PaneIntent } from './types';
 
 export type * from './types';
 
@@ -103,9 +106,17 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const { resetSurfaces, openSignIn, closeSignIn } = surfaces;
   const [joinStatus, setJoinStatus] = useState<CrewJoinStatus | null>(null);
   const connectFailures = useCrewConnectFailures();
-  // The connection whose observation ended as a dropped connection would (Q2-01): its saved record
-  // is being read again, or it is being observed again quietly. Never connected by the renderer.
+  // The connection whose observation ended as a dropped connection would (Q2-01), once deciding
+  // what the loss is has taken longer than `RECONNECTING_AFTER_MS` (Q4-07): its saved record is
+  // being read again, or it is being observed again quietly. Never connected by the renderer.
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  // The connection whose loss is being decided, before "Reconnecting…" may show (Q4-07).
+  const [lossPending, setLossPending] = useState<string | null>(null);
+  const reconnectingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const stopReconnectingTimer = useCallback(() => {
+    if (reconnectingTimer.current !== undefined) clearTimeout(reconnectingTimer.current);
+    reconnectingTimer.current = undefined;
+  }, []);
   const lossHandler = useRef<(id: string, end: ObservationEnd) => void>(() => undefined);
   const onConnectionLost = useCallback(
     (id: string, end: ObservationEnd) => lossHandler.current(id, end),
@@ -115,10 +126,13 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const onVerifiedFrame = useCallback(
     (id: string) => {
       clearConnectFailure(id);
+      stopReconnectingTimer();
       setReconnecting((current) => (current === id ? null : current));
+      setLossPending((current) => (current === id ? null : current));
     },
-    [clearConnectFailure]
+    [clearConnectFailure, stopReconnectingTimer]
   );
+  const { openPane: openSurfacePane, closePane: closeSurfacePane } = surfaces;
 
   useEffect(() => {
     void loadConnections().catch((failure: unknown) => {
@@ -147,6 +161,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     keepLastVerifiedView,
     joinStatus,
     onConnectionLost,
+    reopenPane: openSurfacePane,
   });
   const {
     snapshot,
@@ -174,6 +189,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     restartObservation,
     observationFailure,
     stashDraft,
+    restoreDraft,
+    restoring,
   } = observation;
 
   useEffect(() => {
@@ -186,10 +203,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // A reconnect belongs to the connection it started on, and ends with any error on show.
   useEffect(() => {
     setReconnecting(null);
+    setLossPending(null);
   }, [connectionId]);
   useEffect(() => {
-    if (refreshError) setReconnecting(null);
-  }, [refreshError]);
+    if (!refreshError) return;
+    stopReconnectingTimer();
+    setReconnecting(null);
+    setLossPending(null);
+  }, [refreshError, stopReconnectingTimer]);
 
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
@@ -204,6 +225,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const verified = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
   const channel = snapshot?.channels.find((item) => item.id === channelId) ?? null;
   const team = snapshot?.teams.find((item) => item.id === teamId) ?? null;
+  // Coming back to Crew (Q4-04): until the remembered channel's fresh opening page is in, the
+  // screen keeps verifying over the remembered view — dimmed and inert — so the fresh view replaces
+  // it whole, rather than through a "Loading messages…" skeleton between its state and its page.
+  // Presentation only: what is shown waits a moment longer; nothing is allowed by it.
+  const settling =
+    verified &&
+    restoring !== null &&
+    restoring === channelId &&
+    !(messagesLoaded && historyBefore === null && backlogComplete !== false);
+  const shownVerified = verified && !settling;
   const connectFailure =
     connectFailures.failure?.connectionId === connectionId
       ? (({ connectionId: _connection, ...failure }) => failure)(connectFailures.failure)
@@ -258,6 +289,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (actions.error?.source === 'observer' && actions.error.code === CHANNEL_LOST_ERROR_CODE)
       dismissError();
   };
+  // A channel the person selects opens with its kept draft already in the composer (Q4-05), in the
+  // same render as the selection — not when its first frame arrives, which left the composer empty
+  // through the channel's loading. `restoreDraft` decides, under the kept-draft rule.
   const selectTeam = (id: string) => {
     leaveChannel();
     generation.current += 1;
@@ -272,8 +306,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       ? channelForTeam(snapshot, id, channelId, rememberedLastChannel(connectionId))
       : channelId;
     if (next) rememberLastChannel(connectionId, next);
-    if (next !== channelId) setChannelId(next);
-    else restartObservation();
+    if (next !== channelId) {
+      setChannelId(next);
+      restoreDraft(next);
+    } else restartObservation();
   };
   const selectChannel = (id: string) => {
     if (id === channelId) return;
@@ -292,22 +328,146 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (target && target.team_id !== teamId) setTeamId(target.team_id);
     rememberLastChannel(connectionId, id);
     setChannelId(id);
+    restoreDraft(id);
     draft.setContextChannels([]);
   };
 
+  // The details pane the person opens or closes is remembered for this connection, so coming back
+  // to Crew finds it as they left it (Q4-04). A reset (a switch, lost access) is not their choice
+  // and changes nothing remembered.
+  const openPane = useCallback(
+    (intent: PaneIntent) => {
+      openSurfacePane(intent);
+      rememberPaneIntent(connectionId, intent);
+    },
+    [openSurfacePane, connectionId]
+  );
+  const closePane = useCallback(() => {
+    closeSurfacePane();
+    rememberPaneIntent(connectionId, null);
+  }, [closeSurfacePane, connectionId]);
+
   // Moves on every connection change, unmount, Disconnect, and connect or Retry the person made:
-  // a loss handled before it is over. Also ends the reads that follow the daemon's re-dial.
+  // a loss handled before it is over. Also ends the reads that follow the daemon's re-dial, and a
+  // "Reconnecting…" still waiting to show.
   const lossToken = useRef(0);
-  const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const offlineFollow = useRef<{ stop(): void } | null>(null);
+  const endOfflineFollow = useCallback(() => {
+    const follow = offlineFollow.current;
+    offlineFollow.current = null;
+    follow?.stop();
+  }, []);
   const settleLoss = useCallback(() => {
     lossToken.current += 1;
-    if (followTimer.current !== undefined) clearTimeout(followTimer.current);
-    followTimer.current = undefined;
-  }, []);
+    endOfflineFollow();
+    stopReconnectingTimer();
+    setLossPending(null);
+  }, [endOfflineFollow, stopReconnectingTimer]);
   useEffect(() => {
     settleLoss();
   }, [connectionId, settleLoss]);
   useEffect(() => () => settleLoss(), [settleLoss]);
+
+  // What the loss handler and the offline follow read after their awaits and timers: the latest
+  // render's selection, saved records and sign-in state, never those of the render that started
+  // them.
+  const latestConnectionId = useRef(connectionId);
+  const latestConnections = useRef(connections);
+  const signInPendingNow = isPending('sign-in') || surfaces.signIn.open;
+  const latestSignInPending = useRef(signInPendingNow);
+  const latestConnectPending = useRef(isPending('connect'));
+  const verifiedNow = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  const latestVerified = useRef(verifiedNow);
+  useEffect(() => {
+    latestConnectionId.current = connectionId;
+    latestConnections.current = connections;
+    latestSignInPending.current = signInPendingNow;
+    latestConnectPending.current = isPending('connect');
+    latestVerified.current = verifiedNow;
+  });
+
+  /**
+   * Follow the daemon's own re-dial while Crew shows `id` offline or "Can't connect" (live QA
+   * round 4, Q4-02).
+   *
+   * SECURITY-SENSITIVE (human review): this only ever READS. It never calls connect: re-dialling
+   * a dropped bridge, or a Connect that failed on the network, is the daemon's alone (D-KEEPALIVE),
+   * which never follows a Disconnect, wherever it was made. The renderer cannot tell a Disconnect
+   * made elsewhere from a drop, so it reads the saved record; when the daemon says connected again,
+   * Crew observes it again, exactly as a loss the daemon already repaired is observed again.
+   *
+   * It reads `GET /crew/connections` every `OFFLINE_FOLLOW_INTERVAL_MS` while the window is not
+   * hidden, and at once when the window comes back into view or the network comes back, for
+   * `OFFLINE_FOLLOW_WINDOW_MS` (the daemon's late-retry window). It runs only while the saved record
+   * says `disconnected`, the workspace has not ended the membership, and no sign-in is pending (it
+   * waits while one is). A connect, a Disconnect, a connection change and unmount end it
+   * (`settleLoss`), and so does a record that says connected (observed again) or anything but
+   * disconnected.
+   */
+  const followOffline = (id: string, fresh?: CrewConnection) => {
+    endOfflineFollow();
+    const saved = fresh ?? latestConnections.current.find((item) => item.id === id);
+    if (!saved || saved.status !== 'disconnected' || isMembershipEnded(saved)) return;
+    const token = lossToken.current;
+    const deadline = Date.now() + OFFLINE_FOLLOW_WINDOW_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reading = false;
+    let stopped = false;
+    const follow = { stop: () => undefined as void };
+    const live = () =>
+      !stopped &&
+      offlineFollow.current === follow &&
+      token === lossToken.current &&
+      latestConnectionId.current === id;
+    const read = () => {
+      if (!live()) return;
+      if (Date.now() >= deadline) {
+        endOfflineFollow();
+        return;
+      }
+      if (document.visibilityState === 'hidden' || reading) return;
+      if (latestSignInPending.current || latestConnectPending.current) return;
+      reading = true;
+      void loadConnections()
+        .then(
+          (list) => list?.find((item) => item.id === id),
+          () => undefined
+        )
+        .then((record) => {
+          reading = false;
+          // A read that failed, or was dropped, decides nothing: the next one tries again.
+          if (!live() || !record) return;
+          if (record.status === 'disconnected' && !isMembershipEnded(record)) return;
+          endOfflineFollow();
+          // Observed again, exactly as a loss the daemon already repaired is. Never a connect.
+          if (
+            record.status === 'connected' &&
+            !isMembershipEnded(record) &&
+            !latestVerified.current
+          )
+            restartObservation();
+        });
+    };
+    const tick = () => {
+      timer = setTimeout(() => {
+        timer = undefined;
+        read();
+        if (live()) tick();
+      }, OFFLINE_FOLLOW_INTERVAL_MS);
+    };
+    follow.stop = () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      window.removeEventListener('online', read);
+      document.removeEventListener('visibilitychange', read);
+    };
+    offlineFollow.current = follow;
+    window.addEventListener('online', read);
+    document.addEventListener('visibilitychange', read);
+    tick();
+  };
+
   const lifecycle = createConnectionLifecycle({
     connectionId,
     failures: connectFailures,
@@ -319,48 +479,27 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     act,
   });
   const connect = async (opts?: { userInitiated?: boolean }) => {
+    const target = connectionId;
     if (opts?.userInitiated) {
       // The person's own connect replaces whatever a loss was waiting for.
       settleLoss();
       setReconnecting(null);
     }
-    await lifecycle.connect(opts);
+    const token = lossToken.current;
+    const accepted = await lifecycle.connect(opts);
+    if (token !== lossToken.current || latestConnectionId.current !== target) return;
+    if (accepted) endOfflineFollow();
+    // The person's Connect failed, and the daemon may yet re-dial it by itself (a network failure,
+    // Q4-01): follow it, as after a loss, rather than say "Can't connect" long after it is back.
+    else if (opts?.userInitiated) followOffline(target);
   };
   const disconnect = async () => {
-    // A Disconnect ends the handling of any loss: nothing is observed or reported for it.
+    // A Disconnect ends the handling of any loss: nothing is observed, reported or followed for it,
+    // and nothing of the view is kept for coming back (Q4-04).
     settleLoss();
     setReconnecting(null);
+    forgetRememberedView(connectionId);
     await lifecycle.disconnect();
-  };
-
-  // What the loss handler reads after its awaits: the latest render's selection, never the one of
-  // the render that saw the loss.
-  const latestConnectionId = useRef(connectionId);
-  useEffect(() => {
-    latestConnectionId.current = connectionId;
-  });
-
-  /**
-   * Read the saved record again at `DAEMON_REDIAL_FOLLOW_MS`, and stop once it says connected (the
-   * observation hook then observes again by itself, its error being on show), once the reads run
-   * out, or once anything else settles the loss. Reads only: it never connects.
-   */
-  const followDaemonRedial = (lostId: string, token: number, step = 0) => {
-    const gap = DAEMON_REDIAL_FOLLOW_MS[step];
-    if (gap === undefined) return;
-    followTimer.current = setTimeout(() => {
-      followTimer.current = undefined;
-      if (token !== lossToken.current || latestConnectionId.current !== lostId) return;
-      void loadConnections()
-        .then(
-          (list) => list?.find((item) => item.id === lostId)?.status === 'connected',
-          () => false
-        )
-        .then((back) => {
-          if (back || token !== lossToken.current || latestConnectionId.current !== lostId) return;
-          followDaemonRedial(lostId, token, step + 1);
-        });
-    }, gap);
   };
 
   /**
@@ -371,13 +510,17 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * them apart; re-dialling is the daemon's alone (D-KEEPALIVE), and it never follows a Disconnect.
    * So, after reading the saved record again:
    * - the daemon still, or again, calls it connected (its keepalive kept the bridge, or its re-dial
-   *   repaired it): observe again, quietly, while `takeQuietReobserve` allows — "Reconnecting…"
-   *   until the new view verifies, the draft coming back unless its scope moved. Past the budget,
-   *   the end is shown with Retry: a bridge that keeps dropping is a failure worth seeing;
+   *   repaired it): observe again, quietly, while `takeQuietReobserve` allows, the draft coming
+   *   back unless its scope moved. Past the budget, the end is shown with Retry: a bridge that
+   *   keeps dropping is a failure worth seeing;
    * - anything else (disconnected, whoever did it): the end is shown as it is, which on a
    *   disconnected connection is the offline screen and its Connect — the person's to press — and
-   *   the record is read again a few times (`followDaemonRedial`) so the daemon's own re-dial
-   *   brings the view back without a click.
+   *   the record is followed (`followOffline`) so the daemon's own re-dial brings the view back
+   *   without a click.
+   *
+   * "Reconnecting…" shows only once this has taken `RECONNECTING_AFTER_MS` (Q4-07), and then
+   * until the new view verifies or the end is shown: a loss the record settles at once goes
+   * straight to what it is, with no word flashed between.
    */
   const handleConnectionLost = (lostId: string, end: ObservationEnd) => {
     settleLoss();
@@ -386,7 +529,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     // a refresh) or stops observing moves it, and then this loss is no longer the news.
     const observed = generation.current;
     const current = () => token === lossToken.current && latestConnectionId.current === lostId;
-    setReconnecting(lostId);
+    setLossPending(lostId);
+    reconnectingTimer.current = setTimeout(() => {
+      reconnectingTimer.current = undefined;
+      if (current()) setReconnecting(lostId);
+    }, RECONNECTING_AFTER_MS);
+    const decided = () => {
+      stopReconnectingTimer();
+      setReconnecting((id) => (id === lostId ? null : id));
+      setLossPending((id) => (id === lostId ? null : id));
+    };
     void (async () => {
       let record: CrewConnection | undefined;
       try {
@@ -397,20 +549,20 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       }
       if (!current()) return;
       if (generation.current !== observed) {
-        setReconnecting((id) => (id === lostId ? null : id));
+        decided();
         return;
       }
       // A membership the workspace ended is final: nothing is observed again or followed for it.
       const ended = isMembershipEnded(record);
       if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
-        // "Reconnecting…" lasts until the new view verifies (`onVerifiedFrame`), or until that
-        // observation ends too and this decides again.
+        // Still being decided until the new view verifies (`onVerifiedFrame`), or until that
+        // observation ends too and this decides again: "Reconnecting…" once that takes a while.
         restartObservation();
         return;
       }
-      setReconnecting(null);
+      decided();
       observationFailure(end.text, end.code);
-      if (record?.status === 'disconnected' && !ended) followDaemonRedial(lostId, token);
+      if (record?.status === 'disconnected' && !ended) followOffline(lostId, record);
     })();
   };
   useEffect(() => {
@@ -566,11 +718,13 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connectingNow,
     signInPending,
   ]);
-  const view = verified
+  const view = shownVerified
     ? snapshot
     : lastVerified?.connectionId === connectionId
       ? lastVerified.snapshot
       : null;
+  // While settling (Q4-04) the fresh view is not shown yet: every area draws the remembered one.
+  const shownSnapshot = settling ? null : snapshot;
 
   return {
     connections,
@@ -590,9 +744,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       connectFailures.record(connectionId, failure);
     },
 
-    snapshot,
+    snapshot: shownSnapshot,
     lastVerified: lastVerified?.connectionId === connectionId ? lastVerified : null,
-    observedPrivacy,
+    observedPrivacy: settling ? null : observedPrivacy,
     runs,
     messages,
     messagesLoaded,
@@ -621,8 +775,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
 
     teamId,
     channelId,
-    team,
-    channel,
+    team: settling ? null : team,
+    channel: settling ? null : channel,
     selectTeam,
     selectChannel,
 
@@ -666,8 +820,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     ui: surfaces.ui,
     openDialog: surfaces.openDialog,
     closeDialog: surfaces.closeDialog,
-    openPane: surfaces.openPane,
-    closePane: surfaces.closePane,
+    openPane,
+    closePane,
     subscribeSurfaceReset: surfaces.subscribeSurfaceReset,
 
     joinStatus,
@@ -677,10 +831,11 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       connection,
       lastConnectFailure: connectFailure,
       inFlight,
-      verified,
+      verified: shownVerified,
       observationError: Boolean(refreshError),
       notJoined,
-      reverifying,
+      // A loss still being decided reads "Checking connection" (Q4-07), not "Updating…".
+      reverifying: reverifying && lossPending !== connectionId,
       reconnecting: isReconnecting,
     }),
     screen: deriveCrewScreen({
@@ -697,11 +852,11 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       reconnecting: isReconnecting,
     }),
     effectivePrivacy:
-      verified && snapshot && observedPrivacy
+      shownVerified && snapshot && observedPrivacy
         ? observedPrivacy.mode === 'private' || snapshot.workspace.mode === 'private'
           ? 'private'
           : 'public'
         : null,
-    isHost: isWorkspaceHost(snapshot),
+    isHost: isWorkspaceHost(shownSnapshot),
   };
 }

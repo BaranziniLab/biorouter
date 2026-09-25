@@ -6,7 +6,7 @@ import { crewObservationCopy, crewStatusCopy } from '../state/copy';
 import { chatAccessRouteState } from '../access/ChatConnectNote';
 import {
   CREW_CONNECT_ROUTE_KEY,
-  DAEMON_REDIAL_FOLLOW_MS,
+  OFFLINE_FOLLOW_INTERVAL_MS,
   QUIET_REOBSERVE_GAPS_MS,
 } from '../state/useCrewConnections';
 import { installResizeObserverStub } from '../test/crewTestUtils';
@@ -47,8 +47,8 @@ installResizeObserverStub();
  * ends observation with the same `observation_refused` for a dropped bridge and for a Disconnect
  * made in a terminal or another window, which this window cannot tell apart. So it reads the saved
  * record again: still (or again) connected, it observes again quietly, a few times with growing
- * gaps; disconnected, it shows the offline screen, whose Connect is the person's, and reads the
- * record a few more times to pick up the daemon's own re-dial.
+ * gaps; disconnected, it shows the offline screen, whose Connect is the person's, and follows the
+ * record every 15 s for up to an hour (Q4-02) to pick up the daemon's own re-dial.
  */
 
 const DAEMON_SENTENCE =
@@ -211,10 +211,11 @@ describe('coming back after the SSH bridge dropped (Q2-01): Crew never connects 
     expect(currentCrew().reconnecting).toBe(false);
     expect(connects()).toBe(0);
 
-    // Well past every follow-up read, and past any once-a-minute floor: still nothing connects.
+    // A quarter of an hour of following the saved record (Q4-02): it is only ever read, every
+    // 15 s, and still nothing connects.
     const before = reads();
     await wait(15 * 60_000);
-    expect(reads()).toBe(before + DAEMON_REDIAL_FOLLOW_MS.length);
+    expect(reads()).toBe(before + (15 * 60_000) / OFFLINE_FOLLOW_INTERVAL_MS);
     expect(connects()).toBe(0);
     expect(currentCrew().screen).toBe('offline');
 
@@ -246,7 +247,7 @@ describe('coming back after the SSH bridge dropped (Q2-01): Crew never connects 
 
     // The daemon's first retry after a network failure (20 s later) got through.
     saved = 'connected';
-    await wait(DAEMON_REDIAL_FOLLOW_MS[0]!);
+    await wait(OFFLINE_FOLLOW_INTERVAL_MS);
 
     expect(await channelReady()).toHaveValue('half-written reply');
     expect(connects()).toBe(0);

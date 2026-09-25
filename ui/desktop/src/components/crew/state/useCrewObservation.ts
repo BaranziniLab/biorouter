@@ -30,11 +30,13 @@ import {
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
 import type { CrewDraftState } from './crewSend';
+import { isMembershipEnded } from './connectFailure';
 import {
   forgetConnectionDrafts,
   forgetStashedDraft,
   rememberedLastChannel,
   stashDraft,
+  stashedDraft,
   takeStashedDraft,
 } from './draftStash';
 import {
@@ -49,13 +51,22 @@ import {
   observationFrameText,
   type DraftScope,
   type ObservationNames,
+  type ScopeFrame,
 } from './observationFailure';
 import { connectionVerifiedThisSession, noteConnectionVerified } from './useCrewConnections';
+import {
+  forgetRememberedView,
+  rememberedPaneIntent,
+  rememberedView,
+  rememberedViewMoved,
+  rememberVerifiedView,
+} from './viewMemory';
 import type {
   CrewFrameLabels,
   CrewJoinStatus,
   ErrorSource,
   ObservedPrivacy,
+  PaneIntent,
   SurfaceResetReason,
   VerifiedView,
 } from './types';
@@ -205,6 +216,25 @@ const OWN_FAILURES: readonly string[] = [
  */
 export const CHANNEL_LOST_ERROR_CODE = 'channel_lost';
 
+/**
+ * How long the view kept from before (Q4-04) may stay on screen once a fresh verified `state`
+ * frame arrived without its channel's first page. The daemon sends that page right after the
+ * state, so this only bounds a stream that stalls: then the live view shows, as it always did.
+ */
+export const RESTORED_VIEW_SETTLE_MS = 3_000;
+
+/** A remembered view put on screen on arrival, until the fresh one replaces it (Q4-04). */
+interface RestoredView {
+  connectionId: string;
+  channelId: string;
+  view: VerifiedView;
+}
+
+/** The messages are all `channelId`'s: a list of another channel is never kept under it. */
+function allInChannel(messages: readonly CrewMessage[], channelId: string): boolean {
+  return messages.every((message) => message.channel_id === channelId);
+}
+
 /** How an observation ended that may have been a dropped connection. */
 export interface ObservationEnd {
   /** The end's code (the broker's, when it named one). */
@@ -268,6 +298,11 @@ export interface CrewObservationContext {
    * reported at once, as before.
    */
   onConnectionLost?(connectionId: string, end: ObservationEnd): void;
+  /**
+   * Open the details pane the person left open on this connection, when Crew comes back to its
+   * remembered view (Q4-04). Absent: the pane stays closed.
+   */
+  reopenPane?(intent: PaneIntent): void;
 }
 
 export interface CrewObservation {
@@ -309,6 +344,19 @@ export interface CrewObservation {
    * context channels are never kept.
    */
   stashDraft(): void;
+  /**
+   * Put `channelId`'s kept draft back into the (just emptied) composer now, as the channel is
+   * selected, rather than when its first verified frame arrives (Q4-05). Only while a verified view
+   * of this connection is current, and only when nothing the draft was written under moved in it;
+   * that channel's first frame checks the same again. Returns whether it did.
+   */
+  restoreDraft(channelId: string): boolean;
+  /**
+   * The channel whose remembered view (Q4-04) is on screen until its fresh first page arrives,
+   * else null. The controller keeps the view verifying meanwhile, so a return draws that view
+   * dimmed rather than a skeleton.
+   */
+  restoring: string | null;
 }
 
 /**
@@ -348,6 +396,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     keepLastVerifiedView,
     joinStatus = null,
     onConnectionLost,
+    reopenPane,
   } = context;
   const {
     body,
@@ -383,6 +432,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const [reverifying, setReverifying] = useState(false);
   const [lastVerified, setLastVerified] = useState<VerifiedView | null>(null);
+  // Q4-04: the channel whose remembered view is on screen until its fresh first page arrives.
+  const [restoring, setRestoring] = useState<string | null>(null);
   const observer = useRef<AbortController | null>(null);
   const [observationRevision, setObservationRevision] = useState(0);
   const historyPage = useRef<string | null>(null);
@@ -429,14 +480,85 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     const view = lastFrame.current?.connectionId === id ? lastFrame.current.snapshot : null;
     return observationNames(view, connectionsRef.current, id, channel);
   }, []);
+  /**
+   * The current verified `state` frame's scope (Q4-05): what a draft is checked against when it is
+   * put back as its channel is selected. Null whenever no verified view is current.
+   */
+  const currentScopeFrame = useRef<ScopeFrame | null>(null);
+  /** A draft put back on selection (Q4-05), checked again against its channel's first frame. */
+  const restoredDraft = useRef<{
+    connectionId: string;
+    channelId: string;
+    scope: DraftScope;
+  } | null>(null);
+  /** The remembered view put on screen on arrival (Q4-04), until its first fresh frame. */
+  const restoredView = useRef<RestoredView | null>(null);
+  /**
+   * The connection whose remembered channel is about to be selected (Q4-04): the observer waits
+   * for it rather than observe the workspace alone first and be replaced a render later.
+   */
+  const awaitingRestoredChannel = useRef<string | null>(null);
+  /** The channel a selection just put its draft back into, for the channel effect to keep. */
+  const selectedDraft = useRef<{ connectionId: string; channelId: string } | null>(null);
+  const reopenPaneRef = useRef(reopenPane);
+  useEffect(() => {
+    reopenPaneRef.current = reopenPane;
+  }, [reopenPane]);
+
+  /**
+   * SECURITY-SENSITIVE (human review). Put `channel`'s kept draft back into the composer, which the
+   * caller has just emptied (Q4-05): only while a verified view of this connection is current,
+   * only when that view offers the channel, and only when nothing the draft was written under
+   * moved in it (`draftScopeChanged` against the kept scope). The body only. The kept entry stays
+   * until the channel's first frame takes it, so leaving again before then loses nothing; that
+   * frame checks the scope once more (`restoredDraft`).
+   */
+  const putDraftBack = useCallback(
+    (connection: string, channel: string): boolean => {
+      const frame = currentScopeFrame.current;
+      if (!connection || !channel || !frame || frame.connection_id !== connection) return false;
+      if (!frame.snapshot.channels.some((item) => item.id === channel)) return false;
+      const kept = stashedDraft(connection, channel);
+      if (
+        !kept ||
+        kept.scope.connectionId !== connection ||
+        draftScopeChanged(kept.scope, frame, channel, [])
+      )
+        return false;
+      setBody(kept.body);
+      draftHasContent.current = true;
+      restoredDraft.current = { connectionId: connection, channelId: channel, scope: kept.scope };
+      return true;
+    },
+    [setBody]
+  );
+  const restoreDraft = useCallback(
+    (channel: string): boolean => {
+      const connection = selection.current.connectionId;
+      if (!putDraftBack(connection, channel)) return false;
+      selectedDraft.current = { connectionId: connection, channelId: channel };
+      return true;
+    },
+    [putDraftBack]
+  );
 
   const verifiedScope = useRef<DraftScope | null>(null);
   const stashCurrentDraft = useCallback(() => {
     const current = selection.current;
     stashDraft(current.connectionId, current.channelId, current.body, verifiedScope.current);
   }, []);
+  /**
+   * SECURITY-SENSITIVE (human review). Every clearing of the protected view clears the view kept
+   * across unmounts too (Q4-04), except a refresh's (and the moment a loss is being decided, which
+   * clears it as a refresh does): those keep drawing the last verified copy, and the end that
+   * caused a loss forgets the kept copy itself (`ended`).
+   */
   const clearProtectedState = useCallback(
     (reason: SurfaceResetReason = 'protected-cleared') => {
+      if (reason !== 'refresh') forgetRememberedView(selection.current.connectionId);
+      currentScopeFrame.current = null;
+      restoredView.current = null;
+      setRestoring(null);
       setSnapshot(null);
       setObservedPrivacy(null);
       setRuns([]);
@@ -528,6 +650,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     const controller = new AbortController();
     observer.current = controller;
     const current = ++generation.current;
+    currentScopeFrame.current = null;
     setSnapshot(null);
     setObservedPrivacy(null);
     setRuns([]);
@@ -610,15 +733,60 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setLastVerified(null);
     setJoinStatus(null);
     resetSurfaces('connection-changed');
+    currentScopeFrame.current = null;
+    restoredDraft.current = null;
+    selectedDraft.current = null;
+    restoredView.current = null;
+    awaitingRestoredChannel.current = null;
+    setRestoring(null);
+
+    // Coming back to a connection this app session had verified (Q4-04): its remembered view is
+    // drawn at once — dimmed and inert, as while re-verifying — on the channel it was on, with the
+    // details pane the person left open, until the fresh view replaces it. Presentation only, and
+    // only for a connection the daemon calls connected: anything else is about to be shown as it
+    // is (offline, can't connect), and a remembered view would only flash before it.
+    if (!keepLastVerifiedView || !connectionId) return;
+    const kept = rememberedView(connectionId);
+    if (!kept) return;
+    const record = connectionsRef.current.find((item) => item.id === connectionId);
+    const channel = kept.snapshot.channels.find((item) => item.id === kept.channelId);
+    if (record?.status !== 'connected' || isMembershipEnded(record) || !channel) {
+      forgetRememberedView(connectionId);
+      return;
+    }
+    restoredView.current = { connectionId, channelId: kept.channelId, view: kept };
+    awaitingRestoredChannel.current = connectionId;
+    setLastVerified(kept);
+    setTeamId(channel.team_id);
+    setChannelId(kept.channelId);
+    setRestoring(kept.channelId);
+    const pane = rememberedPaneIntent(connectionId);
+    if (pane) reopenPaneRef.current?.(pane);
   }, [connectionId]); // eslint-disable-line react-hooks/exhaustive-deps -- runs per connection only; every callee is stable
   // A different channel: leave any history page, and put the old channel's draft aside. A
   // selection has already put it aside and cleared it; this catches a channel that moved under
   // the person (their team's snapshot changed), whose body is still the old channel's here.
+  // A selection that put the new channel's own draft back (Q4-05) has a body that is the NEW
+  // channel's: it is neither put aside under the old channel nor cleared. Any other arrival on a
+  // channel puts its draft back here, under the same rule, rather than when its first frame lands.
   const previousChannel = useRef({ connectionId, channelId });
   useEffect(() => {
     const previous = previousChannel.current;
     previousChannel.current = { connectionId, channelId };
-    if (previous.connectionId === connectionId && previous.channelId !== channelId)
+    const selected = selectedDraft.current;
+    selectedDraft.current = null;
+    const keptBySelection =
+      selected !== null &&
+      selected.connectionId === connectionId &&
+      selected.channelId === channelId;
+    const pending = restoredDraft.current;
+    if (pending && (pending.connectionId !== connectionId || pending.channelId !== channelId))
+      restoredDraft.current = null;
+    if (
+      !keptBySelection &&
+      previous.connectionId === connectionId &&
+      previous.channelId !== channelId
+    )
       stashDraft(connectionId, previous.channelId, body, verifiedScope.current);
     historyPage.current = null;
     setHistoryBefore(null);
@@ -627,7 +795,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setPeople(null);
     setBacklog(undefined);
     setLivePageSize(HISTORY_PAGE_SIZE);
-    setBody('');
+    if (!keptBySelection) {
+      setBody('');
+      putDraftBack(connectionId, channelId);
+    }
     setAttachments([]);
     setReferences([]);
     setContextChannels([]);
@@ -661,6 +832,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
 
   useEffect(() => {
     if (!connectionId) return;
+    // The remembered channel is selected in this same commit (Q4-04): observe it, in the next
+    // render, rather than the workspace alone now and the channel a moment later. Once only.
+    if (!channelId && awaitingRestoredChannel.current === connectionId) {
+      awaitingRestoredChannel.current = null;
+      return;
+    }
+    awaitingRestoredChannel.current = null;
     // Whatever started this observation, it is the re-observation a pending wait was for.
     cancelRecovery();
     const controller = new AbortController();
@@ -676,8 +854,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      */
     const loseChannel = (named: string | null) => {
       const hadContent = draftHasContent.current;
-      // No draft kept for a channel the person can no longer see may ever come back into it.
+      // No draft kept for a channel the person can no longer see may ever come back into it,
+      // and no view kept across leaving Crew may draw it again (Q4-04).
       forgetStashedDraft(connectionId, channelId);
+      forgetRememberedView(connectionId);
+      restoredDraft.current = null;
       historyPage.current = null;
       pendingMessage.current = null;
       setMessages([]);
@@ -710,6 +891,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      */
     const ended = (code: string | undefined, text: string, ownFailure = false) => {
       generation.current += 1;
+      // SECURITY-SENSITIVE (human review): every end clears cached room content (the daemon's
+      // terminal frames say `clear: true`), so the view kept across leaving Crew goes with it,
+      // whatever happens next (Q4-04). A fresh verified view writes it again.
+      forgetRememberedView(connectionId);
       const status = connectionsRef.current.find((item) => item.id === connectionId)?.status;
       const recoverable = isRecoverableObservationCode(code);
       const lost = onConnectionLostRef.current;
@@ -783,15 +968,54 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               // SECURITY-SENSITIVE (human review): the draft is cleared before this view is shown
               // when what it was written under changed materially. A workspace policy epoch moving
               // on its own is not such a change (see `DraftScope`).
+              // A draft put back as this channel was selected (Q4-05) was checked against the
+              // view current then; its channel's first frame checks it again, as a draft that
+              // waited for this frame would have been.
+              const putBack = restoredDraft.current;
+              if (putBack?.connectionId === connectionId && putBack.channelId === channelId)
+                restoredDraft.current = null;
               if (
-                draftScopeChanged(verifiedScope.current, frame, channelId, selectedSources.current)
+                draftScopeChanged(
+                  verifiedScope.current,
+                  frame,
+                  channelId,
+                  selectedSources.current
+                ) ||
+                (putBack?.connectionId === connectionId &&
+                  putBack.channelId === channelId &&
+                  draftScopeChanged(putBack.scope, frame, channelId, []))
               ) {
                 const hadContent = draftHasContent.current;
                 clearDraft();
                 forgetConnectionDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
+              // The view drawn from before leaving Crew (Q4-04) may stay only while nothing it
+              // was verified under moved: otherwise it goes now, and so does what was kept.
+              const restored = restoredView.current;
+              if (restored?.connectionId === connectionId) {
+                restoredView.current = null;
+                if (
+                  rememberedViewMoved(
+                    restored.view,
+                    {
+                      snapshot: frame.snapshot,
+                      observedPrivacy: {
+                        mode: frame.connection_mode,
+                        institutionId: frame.connection_institution_id ?? null,
+                        policyEpoch: frame.connection_policy_epoch,
+                      },
+                    },
+                    restored.channelId
+                  )
+                ) {
+                  forgetRememberedView(connectionId);
+                  setLastVerified(null);
+                  setRestoring(null);
+                }
+              }
               verifiedScope.current = draftScope(frame, channelId, selectedSources.current);
+              currentScopeFrame.current = frame;
               const revoked =
                 Boolean(channelId) &&
                 !frame.snapshot.channels.some((item) => item.id === channelId);
@@ -1021,21 +1245,34 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     generation,
   ]);
 
-  // Presentation only: remember the last verified view so a re-verification can keep drawing it.
+  // Presentation only: remember the last verified view so a re-verification can keep drawing it,
+  // and so can coming back to Crew (`viewMemory`, Q4-04). A list is taken for the channel's only
+  // once it has loaded and every message in it is that channel's: when the channel moves by
+  // itself, the old channel's list is still in state for a render. Only a loaded live tail is
+  // kept across leaving Crew, never an older page.
   useEffect(() => {
     if (!keepLastVerifiedView || !snapshot || observedPrivacy?.connectionId !== connectionId)
       return;
+    const ours = allInChannel(messages, channelId);
+    const view: VerifiedView = {
+      connectionId,
+      snapshot,
+      observedPrivacy,
+      runs,
+      labels,
+      teamId,
+      channelId,
+      messages: [],
+      people: null,
+    };
+    const liveTail =
+      Boolean(channelId) && messagesLoaded && ours && historyBefore === null && backlog !== false;
+    rememberVerifiedView(view, liveTail ? { messages, people } : null);
     setLastVerified((previous) => {
-      const current = messagesLoaded || !channelId;
+      const current = (messagesLoaded || !channelId) && ours;
       const same = previous?.connectionId === connectionId && previous.channelId === channelId;
       return {
-        connectionId,
-        snapshot,
-        observedPrivacy,
-        runs,
-        labels,
-        teamId,
-        channelId,
+        ...view,
         messages: current ? messages : same ? previous.messages : [],
         people: current ? people : same ? (previous.people ?? null) : null,
       };
@@ -1052,7 +1289,24 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     people,
     messages,
     messagesLoaded,
+    historyBefore,
+    backlog,
   ]);
+
+  // The remembered view (Q4-04) gives way once its channel's fresh opening page is in — or at once
+  // when the channel changed — so the fresh view replaces it whole, with no skeleton between.
+  useEffect(() => {
+    if (restoring === null) return;
+    if (restoring !== channelId || (messagesLoaded && historyBefore === null && backlog !== false))
+      setRestoring(null);
+  }, [restoring, channelId, messagesLoaded, historyBefore, backlog]);
+  // …or a while after a fresh verified frame arrived without that page: a stalled stream.
+  const freshView = snapshot !== null && observedPrivacy?.connectionId === connectionId;
+  useEffect(() => {
+    if (restoring === null || !freshView) return;
+    const timer = setTimeout(() => setRestoring(null), RESTORED_VIEW_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [restoring, freshView]);
 
   return {
     snapshot,
@@ -1081,5 +1335,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     clearProtectedState: clearProtectedView,
     observationFailure,
     stashDraft: stashCurrentDraft,
+    restoreDraft,
+    restoring,
   };
 }

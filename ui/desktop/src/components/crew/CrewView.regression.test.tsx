@@ -828,7 +828,9 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
     renderCrew();
 
-    await waitFor(() => expect(screen.getByText('alice@new-host')).toBeInTheDocument());
+    // The reloaded server shows: in the You row's login (`alice@new-host`), or as the place the row
+    // says the person is ("on new-host", Q4-50).
+    await waitFor(() => expect(screen.getAllByText(/new-host/).length).toBeGreaterThan(0));
     expect(screen.getByRole('button', { name: /^Renamed workspace/ })).toBeInTheDocument();
     // No banner, no Retry, and never the daemon's sentence.
     expect(screen.queryByRole('button', { name: 'Retry Crew updates' })).toBeNull();
