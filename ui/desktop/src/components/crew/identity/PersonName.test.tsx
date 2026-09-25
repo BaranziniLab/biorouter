@@ -626,7 +626,8 @@ describe('a fully qualified SSSD account with no display name of its own (T-31)'
     }
     // A name the person chose is still spelled out beside the full handle.
     expect(personLabel(ID.carol, 'authority', sssd)).toBe('Carol Nguyen (@carol@ad.ucsf.edu)');
-    expect(avatarInitials(sssd.byId(ID.carol)!.displayName, 'carol@ad.ucsf.edu')).toBe('CN');
+    // One initial at every size (Q3-62): the chosen name's first word.
+    expect(avatarInitials(sssd.byId(ID.carol)!.displayName, 'carol@ad.ucsf.edu')).toBe('C');
   });
 
   it('counts only the username’s own shapes as a repeat', () => {
