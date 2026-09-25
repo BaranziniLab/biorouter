@@ -36,9 +36,10 @@ export const channelHeaderCopy = {
 
   /**
    * The channel menu's item for the Access tab. One name for one place: the tab, the workspace
-   * menu and the settings tab say "Agent access" too (Q2-66).
+   * menu and the settings tab say "Agent access" too (Q2-66). No ellipsis: it switches the pane
+   * to that tab and opens no dialog, and an ellipsis promises one (Q4-24).
    */
-  agentAccess: 'Agent access…',
+  agentAccess: 'Agent access',
 
   /** The channel menu's last item: the submenu that holds Copy channel ID (Q3-26). */
   copyForSupport: 'Copy for support',

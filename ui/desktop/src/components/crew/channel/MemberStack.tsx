@@ -1,7 +1,7 @@
 import { Avatar } from '../../ui/avatar';
 import { Button } from '../../ui/button';
 import { cn } from '../../../utils';
-import type { CrewPerson, PeopleDirectory } from '../identity';
+import { personLabel, type CrewPerson, type PeopleDirectory } from '../identity';
 import { channelCopy } from './copy';
 import './channel.css';
 
@@ -19,10 +19,25 @@ export interface MemberStackProps {
 const STACK_SIZE = 3;
 
 /**
- * The channel's current members in the header's order: the owner, then you, then everyone else
- * by name, as the Members tab lists them. A former member is still listed on the Members tab
- * (marked so), but is not in the channel now, so neither the stack nor its count includes them:
- * "2 members" used to mean you and someone who had left (Q2-54). A member the viewer has no
+ * What a member is sorted by: the name the stack and the Members tab show, with a leading `@`
+ * ignored, so a person who has not chosen a name ("@crew_bob") sorts among the named ones by
+ * their handle instead of before all of them (Q4-32). Unicode isolates around a right-to-left
+ * name are dropped too; they are layout, not letters.
+ */
+function visibleNameKey(person: CrewPerson): string {
+  return personLabel(person, 'chip')
+    .replace(/[\u2066-\u2069]/g, '')
+    .replace(/^@/, '');
+}
+
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * The channel's current members in the one member order every list of people follows (Q4-32):
+ * the owner (or, with none on record, the host), then you, then everyone else by visible name with a leading `@` ignored,
+ * case-insensitive, then by username. A former member is still listed on the Members tab (marked
+ * so), but is not in the channel now, so neither the stack nor its count includes them: "2
+ * members" used to mean you and someone who had left (Q2-54). A member the viewer has no
  * projection for is still a member, and keeps a place at the end.
  */
 export function currentMembers(
@@ -31,17 +46,22 @@ export function currentMembers(
   ownerId?: string | null
 ): { id: string; person: CrewPerson | null }[] {
   const you = dir.me?.id ?? null;
+  // A channel with no owner on record is led by the workspace's host, as the contract says.
+  const lead = ownerId ?? dir.host?.id ?? null;
   const rank = (id: string, person: CrewPerson | null) =>
-    id === ownerId ? 0 : id === you ? 1 : person ? 2 : 3;
+    id === lead ? 0 : id === you ? 1 : person ? 2 : 3;
   return [...new Set(memberIds)]
     .map((id) => ({ id, person: dir.byId(id) }))
     .filter(({ person }) => !person?.isFormer)
     .sort(
       (a, b) =>
         rank(a.id, a.person) - rank(b.id, b.person) ||
-        (a.person?.displayName ?? '').localeCompare(b.person?.displayName ?? '', undefined, {
-          sensitivity: 'base',
-        })
+        byName(
+          a.person ? visibleNameKey(a.person) : '',
+          b.person ? visibleNameKey(b.person) : ''
+        ) ||
+        byName(a.person?.username ?? '', b.person?.username ?? '') ||
+        a.id.localeCompare(b.id)
     );
 }
 

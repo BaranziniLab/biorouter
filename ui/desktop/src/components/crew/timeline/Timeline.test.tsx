@@ -125,11 +125,62 @@ describe('the channel’s start', () => {
       }),
     });
     renderWithController(<Timeline />, member);
+    // The host in the authority form, as Members and About name them: one person, one spelling
+    // on every channel surface (Q4-21). A bare "@alice" left Jack asking who that was.
     expect(
-      screen.getByText('Ask @alice to add you to other channels.', { exact: true })
+      screen.getByText('Ask Alice Chen (@alice) to add you to other channels.', { exact: true })
     ).toBeInTheDocument();
     // The sidebar already says how other channels appear; the intro does not repeat it.
     expect(screen.queryByText(/Only channels you’ve been added to/)).toBeNull();
+  });
+
+  it('names a host who has not chosen a name by the handle alone (Q4-21)', () => {
+    const member = makeController({
+      snapshot: snapshotFor({
+        actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+        principals: [
+          { id: ID.alice, uid: 1000, username: 'alice', nickname: 'alice' },
+          { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+        ],
+      }),
+    });
+    renderWithController(<Timeline />, member);
+    expect(
+      screen.getByText('Ask @alice to add you to other channels.', { exact: true })
+    ).toBeInTheDocument();
+  });
+
+  it('offers one action for one intent: Invite while the host is alone, Add people after (Q4-23)', async () => {
+    // Alone in the workspace: only the setup line's Invite, never "Add people" over it.
+    const alone = makeController({
+      isHost: true,
+      snapshot: snapshotFor({
+        principals: [{ id: ID.alice, uid: 1000, username: 'alice', nickname: 'Alice Chen' }],
+      }),
+    });
+    const view = renderWithController(<Timeline />, alone);
+    expect(screen.getByTestId('crew-setup-invite-nudge')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Invite people to / })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: timelineCopy.introAddPeople })).toBeNull();
+    view.unmount();
+
+    // Someone asked to join: the invite step is done, so Add people is the one action.
+    const asked = makeController({
+      isHost: true,
+      snapshot: snapshotFor({
+        principals: [{ id: ID.alice, uid: 1000, username: 'alice', nickname: 'Alice Chen' }],
+        pending_joins: [{ id: 'join-1' } as never],
+      }),
+    });
+    const second = renderWithController(<Timeline />, asked);
+    expect(screen.getByRole('button', { name: timelineCopy.introAddPeople })).toBeInTheDocument();
+    expect(screen.queryByTestId('crew-setup-invite-nudge')).toBeNull();
+    second.unmount();
+
+    // With others in the workspace: only Add people.
+    renderWithController(<Timeline />, makeController({ isHost: true }));
+    expect(screen.getByRole('button', { name: timelineCopy.introAddPeople })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Invite people to / })).toBeNull();
   });
 
   it('names the host, not the channel’s owner, and tells the host nothing', () => {
@@ -140,7 +191,9 @@ describe('the channel’s start', () => {
       channel: { ...channel, owner_id: ID.carol, created_by: ID.carol },
     });
     const { unmount } = renderWithController(<Timeline />, member);
-    expect(screen.getByText('Ask @alice to add you to other channels.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Ask Alice Chen (@alice) to add you to other channels.')
+    ).toBeInTheDocument();
     unmount();
     renderWithController(<Timeline />, makeController());
     expect(screen.getByText('Welcome to #general')).toBeInTheDocument();

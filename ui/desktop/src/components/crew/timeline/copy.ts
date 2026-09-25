@@ -27,7 +27,8 @@ export const timelineCopy = {
   /**
    * For anyone but the workspace's host: whom to ask for the channels they are not in. The
    * sidebar already says that other channels appear once someone adds you, so this says only
-   * the next step (Q2-64). `host` is `@username`; without one there is nothing to say (`''`).
+   * the next step (Q2-64). `host` is the host in the authority form, "Iris Wong (@crew_iris)"
+   * (Q4-21); without one there is nothing to say (`''`).
    */
   introOtherChannels: (host: string | null) =>
     host ? `Ask ${host} to add you to other channels.` : '',

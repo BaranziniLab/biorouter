@@ -156,6 +156,45 @@ describe('ChannelHeader', () => {
     ).toEqual(['alice', 'bob', 'carol', 'dave']);
   });
 
+  it('orders the stack as every people list does: owner, you, then names with “@” ignored (Q4-32)', () => {
+    // Carol read "@crew_bob, @crew_dave, @crew_frank, Erin Wu": "@" sorted before every letter,
+    // so everyone without a chosen name came before everyone with one.
+    const person = (suffix: string, username: string, nickname: string) => ({
+      id: `6f1c2a3b-0000-4000-8000-0000000${suffix}`,
+      uid: 2000 + (Number.parseInt(suffix, 16) % 1000),
+      username,
+      nickname,
+    });
+    const crewBob = person('0c0b0', 'crew_bob', 'crew_bob');
+    const crewDave = person('0c0da', 'crew_dave', 'crew_dave');
+    const erin = person('0c0e1', 'crew_erin', 'Erin Wu');
+    const zed = person('0c0f0', 'crew_zed', 'aaron');
+    // Two people who chose the same name read in username order, whatever order they joined in.
+    const samLater = person('0c5a2', 'spark2', 'Sam Park');
+    const samEarlier = person('0c5a1', 'spark1', 'Sam Park');
+    const snapshot = makeSnapshot({
+      actor: carol,
+      principals: [alice, bob, carol, crewBob, crewDave, erin, zed, samLater, samEarlier],
+    });
+    const dir = buildPeopleDirectory(snapshot as never, null);
+    const ids = [erin, samLater, crewDave, zed, carol, samEarlier, crewBob, alice].map(
+      ({ id }) => id
+    );
+    expect(currentMembers(ids, dir, alice.id).map(({ person }) => person?.username)).toEqual([
+      // The owner, then you,
+      'alice',
+      'carol',
+      // then by visible name, case aside, "@" ignored: aaron, crew_bob, crew_dave, Erin Wu,
+      'crew_zed',
+      'crew_bob',
+      'crew_dave',
+      'crew_erin',
+      // and a shared name by username.
+      'spark1',
+      'spark2',
+    ]);
+  });
+
   it('counts the channel’s members, not the team’s people, and opens the Members tab', async () => {
     renderCrew(Header({}));
     await channelShown();

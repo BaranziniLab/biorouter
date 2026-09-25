@@ -248,11 +248,13 @@ describe('ChannelMenu actions', () => {
     });
   });
 
-  it('names the Access tab item as every other place does (Q2-66)', async () => {
+  it('names the Access tab item as every other place does, with no ellipsis (Q2-66, Q4-24)', async () => {
     const user = userEvent.setup();
     renderCrew(() => <Layout />);
     await openMenu(user);
-    expect(screen.getByRole('menuitem', { name: 'Agent access…' })).toBeInTheDocument();
+    // It switches the pane's tab and opens no dialog, so it promises none.
+    expect(screen.getByRole('menuitem', { name: 'Agent access' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Agent access…' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: /Chats and agents with access/ })).toBeNull();
   });
 
