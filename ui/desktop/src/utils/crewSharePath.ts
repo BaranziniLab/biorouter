@@ -106,13 +106,15 @@ export const crewShareCopy = {
    */
   credential: (name: string) =>
     `“${name}” looks like a credential file (a password, key or token store), so Crew won't share it.`,
-  credentialLocation: "Crew won't save into a credential location. Choose another folder.",
+  credentialLocation:
+    "Crew won't save into a credential or settings location. Choose another folder.",
 } as const;
 
 /**
  * The sentence for a `POST /crew/files` refusal that has one of its own, or `undefined` for the
- * caller's general wording. Today that is the credential floor (Q3-01): an upload names the file
- * (made visible), a download names no file, because the refusal is about the folder.
+ * caller's general wording. Today that is the credential floor (Q3-01) and, for a download, the
+ * settings locations beside it (Q4-55): an upload names the file (made visible), a download names
+ * no file, because the refusal is about the folder.
  */
 export function crewFileRefusal(
   failure: unknown,

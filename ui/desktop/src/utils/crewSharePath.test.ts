@@ -367,7 +367,7 @@ describe('crewFileRefusal: the daemon credential floor, in words (Q3-01, Q3-15)'
       "\u201csecrets.yaml\u201d looks like a credential file (a password, key or token store), so Crew won't share it."
     );
     expect(crewFileRefusal(credential, 'download', 'id_ed25519')).toBe(
-      "Crew won't save into a credential location. Choose another folder."
+      "Crew won't save into a credential or settings location. Choose another folder."
     );
   });
 

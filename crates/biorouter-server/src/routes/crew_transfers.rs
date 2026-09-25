@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(body["code"], "crew_file_is_credential");
         assert_eq!(
             body["error"],
-            "Crew won't save into a credential location. Choose another folder."
+            "Crew won't save into a credential or settings location. Choose another folder."
         );
     }
 

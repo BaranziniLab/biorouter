@@ -339,6 +339,7 @@ pub enum CredentialRefusal {
     Source { name: String },
     /// A download destination: a location the credential floor names, or (Q4-55) a settings,
     /// login or autostart location or an executable file ([`download_destination_denied`]).
+    /// One sentence covers both, so it names both.
     Destination,
 }
 
@@ -350,7 +351,7 @@ impl std::fmt::Display for CredentialRefusal {
                 "\u{201c}{name}\u{201d} looks like a credential file (a password, key or token store), so Crew won't share it."
             ),
             Self::Destination => f.write_str(
-                "Crew won't save into a credential location. Choose another folder.",
+                "Crew won't save into a credential or settings location. Choose another folder.",
             ),
         }
     }
@@ -424,8 +425,42 @@ struct SettingsLocations {
     /// with `.` is refused.
     homes: Vec<PathBuf>,
     /// Folders refused whole: `~/Library` on macOS, `%APPDATA%`, `%LOCALAPPDATA%` and
-    /// `~\AppData` on Windows.
+    /// `~\AppData` on Windows, apart from the drives in `drives`.
     settings: Vec<PathBuf>,
+    /// Cloud drives inside a settings folder, open to downloads again: on macOS every
+    /// File Provider drive (Box, OneDrive, Dropbox, Google Drive) lives in
+    /// `~/Library/CloudStorage`, and iCloud Drive in `~/Library/Mobile Documents`. Saving to
+    /// them is ordinary work. Rules (a) and (d) still judge a destination inside one. See
+    /// [`CloudDrive`].
+    drives: Vec<CloudDrive>,
+}
+
+/// A folder of cloud drives inside a settings folder. A destination at least `depth`
+/// components below `root`, its own name included, is inside a drive: for
+/// `~/Library/CloudStorage`, whose children are the drives, that is 2 (`Box-Box/plan.csv`), so
+/// `CloudStorage` itself is not a destination; for iCloud Drive's own folder it is 1.
+struct CloudDrive {
+    root: PathBuf,
+    depth: usize,
+}
+
+/// The cloud-drive folders macOS keeps inside `~/Library`, below the home, with their
+/// [`CloudDrive::depth`]. Only `com~apple~CloudDocs` is iCloud Drive; the other folders in
+/// `Mobile Documents` are apps' own containers and stay refused.
+const MACOS_CLOUD_DRIVES: [(&str, usize); 2] = [
+    ("Library/CloudStorage", 2),
+    ("Library/Mobile Documents/com~apple~CloudDocs", 1),
+];
+
+/// [`MACOS_CLOUD_DRIVES`] below `home`.
+fn macos_cloud_drives(home: &Path) -> Vec<CloudDrive> {
+    MACOS_CLOUD_DRIVES
+        .iter()
+        .map(|(folder, depth)| CloudDrive {
+            root: home.join(folder),
+            depth: *depth,
+        })
+        .collect()
 }
 
 impl SettingsLocations {
@@ -456,13 +491,14 @@ impl SettingsLocations {
         );
         #[cfg(not(any(unix, windows)))]
         let (homes, settings) = (Vec::new(), Vec::new());
-        Self::new(homes, settings)
+        Self::new(homes, settings, Vec::new())
     }
 
-    /// `homes`, with the platform's settings folder below each one added to `settings`. A
-    /// relative path and the filesystem root are dropped: neither names a person's home, and a
-    /// root "home" would refuse every hidden folder on the machine.
-    fn new(homes: Vec<PathBuf>, settings: Vec<PathBuf>) -> Self {
+    /// `homes`, with the platform's settings folder below each one added to `settings` and, on
+    /// macOS, its cloud drives added to `drives`. A relative path and the filesystem root are
+    /// dropped: neither names a person's home, and a root "home" would refuse every hidden
+    /// folder on the machine.
+    fn new(homes: Vec<PathBuf>, settings: Vec<PathBuf>, drives: Vec<CloudDrive>) -> Self {
         let names = |path: &PathBuf| path.is_absolute() && path.parent().is_some();
         let homes: Vec<PathBuf> = homes.into_iter().filter(names).collect();
         let below_home: &[&str] = if cfg!(target_os = "macos") {
@@ -481,7 +517,24 @@ impl SettingsLocations {
             )
             .filter(names)
             .collect();
-        Self { homes, settings }
+        let derived: Vec<CloudDrive> = if cfg!(target_os = "macos") {
+            homes
+                .iter()
+                .flat_map(|home| macos_cloud_drives(home))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let drives = drives
+            .into_iter()
+            .chain(derived)
+            .filter(|drive| names(&drive.root))
+            .collect();
+        Self {
+            homes,
+            settings,
+            drives,
+        }
     }
 }
 
@@ -571,10 +624,17 @@ fn below(path: &Path, root: &Path) -> Option<Vec<String>> {
 /// - (a) it is below the home directory and passes through a component that starts with `.`:
 ///   rc and profile files, all of `~/.ssh` including `authorized_keys` and `config`,
 ///   `~/.gitconfig`, `~/.config/**` (autostart, systemd user units), `~/.local/**`, `.git/**`;
-/// - (b) it is under `~/Library` (macOS);
+/// - (b) it is under `~/Library` (macOS), outside the cloud drives macOS keeps there
+///   (`~/Library/CloudStorage/<drive>/**` for Box, OneDrive, Dropbox and Google Drive, and
+///   iCloud Drive's `~/Library/Mobile Documents/com~apple~CloudDocs/**`), where (a) and (d)
+///   still apply;
 /// - (c) it is under `%APPDATA%` or `%LOCALAPPDATA%` (Windows), the Startup folder included;
 /// - (d) it names an existing file with an execute bit (unix), which a replacement would take
 ///   over.
+///
+/// A cloud drive is judged in the same spelling that put the path in a settings folder, so a
+/// link inside a drive that leads to `~/Library/LaunchAgents` is refused as the place it
+/// reaches.
 ///
 /// On unix the folder is also matched by device and inode, so a route no string comparison
 /// sees (a macOS firmlink such as `/System/Volumes/Data/Users/…`, a bind mount) is refused too.
@@ -595,23 +655,48 @@ fn download_destination_denied(path: &Path, locations: &SettingsLocations) -> bo
             .collect()
     };
     let (homes, settings) = (roots(&locations.homes), roots(&locations.settings));
+    let drives: Vec<CloudDrive> = locations
+        .drives
+        .iter()
+        .flat_map(|drive| {
+            [lexical(&drive.root), resolved(&drive.root)].map(|root| CloudDrive {
+                root,
+                depth: drive.depth,
+            })
+        })
+        .collect();
     let hidden = |rest: Vec<String>| rest.iter().any(|name| name.starts_with('.'));
     spellings.iter().any(|spelled| {
         homes
             .iter()
             .any(|home| below(spelled, home).is_some_and(hidden))
-            || settings.iter().any(|root| below(spelled, root).is_some())
-    }) || denied_by_identity(&folder, name, locations)
+            || in_settings_folder(spelled, &settings, &drives)
+    }) || denied_by_identity(&folder, name, locations, &drives)
         || names_an_executable(path)
 }
 
+/// Rules (b) and (c) for one spelling: below a settings folder and not inside a cloud drive.
+fn in_settings_folder(spelled: &Path, settings: &[PathBuf], drives: &[CloudDrive]) -> bool {
+    settings.iter().any(|root| below(spelled, root).is_some()) && !in_cloud_drive(spelled, drives)
+}
+
+/// Whether `spelled` is inside one of `drives`, as [`CloudDrive::depth`] defines inside.
+fn in_cloud_drive(spelled: &Path, drives: &[CloudDrive]) -> bool {
+    drives
+        .iter()
+        .any(|drive| below(spelled, &drive.root).is_some_and(|rest| rest.len() >= drive.depth))
+}
+
 /// Rules (a) to (c) by device and inode: walk the resolved folder's ancestors and compare each
-/// with the home and settings folders themselves.
+/// with the home and settings folders themselves. Below a settings folder found that way, the
+/// rest of the path is spelled again from that folder's own name, and a cloud drive is judged
+/// on that spelling, as [`in_settings_folder`] judges one.
 #[cfg(unix)]
 fn denied_by_identity(
     folder: &Path,
     name: &std::ffi::OsStr,
     locations: &SettingsLocations,
+    drives: &[CloudDrive],
 ) -> bool {
     use std::os::unix::fs::MetadataExt;
     let identity = |path: &Path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
@@ -619,26 +704,35 @@ fn denied_by_identity(
     let settings: Vec<_> = locations
         .settings
         .iter()
-        .filter_map(|p| identity(p))
+        .filter_map(|p| identity(p).map(|id| (id, p)))
         .collect();
     folder.ancestors().any(|ancestor| {
         let Some(this) = identity(ancestor) else {
             return false;
         };
-        settings.contains(&this)
+        let rest = || {
+            folder
+                .strip_prefix(ancestor)
+                .unwrap_or(Path::new(""))
+                .join(name)
+        };
+        settings
+            .iter()
+            .any(|(id, root)| *id == this && !in_cloud_drive(&root.join(rest()), drives))
             || (homes.contains(&this)
-                && folder
-                    .strip_prefix(ancestor)
-                    .unwrap_or(Path::new(""))
+                && rest()
                     .components()
-                    .map(|component| component.as_os_str())
-                    .chain([name])
-                    .any(|part| part.to_string_lossy().starts_with('.')))
+                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.')))
     })
 }
 
 #[cfg(not(unix))]
-fn denied_by_identity(_: &Path, _: &std::ffi::OsStr, _: &SettingsLocations) -> bool {
+fn denied_by_identity(
+    _: &Path,
+    _: &std::ffi::OsStr,
+    _: &SettingsLocations,
+    _: &[CloudDrive],
+) -> bool {
     false
 }
 
@@ -1340,7 +1434,7 @@ mod credential_floor_tests {
         }
         assert_eq!(
             CredentialRefusal::Destination.to_string(),
-            "Crew won't save into a credential location. Choose another folder."
+            "Crew won't save into a credential or settings location. Choose another folder."
         );
         // Removing a transfer's own partial is not judged: it must stay possible.
         assert!(select_cleanup(&home.home.join(".ssh/id_ecdsa")).is_ok());
@@ -1447,6 +1541,12 @@ mod settings_destination_tests {
                 ".config/systemd/user",
                 ".local/bin",
                 "Library/LaunchAgents",
+                "Library/CloudStorage/Box-Box/Lab data",
+                "Library/CloudStorage/OneDrive-UCSF",
+                "Library/CloudStorage/Dropbox-LCATeam/.dropbox.cache",
+                "Library/CloudStorage/GoogleDrive-tester@example.org/My Drive",
+                "Library/Mobile Documents/com~apple~CloudDocs/Papers",
+                "Library/Mobile Documents/com~apple~Numbers/Documents",
                 "Downloads",
                 "bin",
                 "project/results",
@@ -1475,11 +1575,15 @@ mod settings_destination_tests {
             }
         }
 
-        /// The fake HOME as the check's home. Linux has no `~/Library`, so it is named here
-        /// explicitly and the macOS rows run on every unix; `macos_derives_library_from_home`
-        /// proves the real derivation.
+        /// The fake HOME as the check's home. Linux has no `~/Library` and no cloud drives
+        /// there, so they are named here explicitly and the macOS rows run on every unix;
+        /// `macos_derives_library_from_home` proves the real derivation.
         fn locations(&self) -> SettingsLocations {
-            SettingsLocations::new(vec![self.home.clone()], vec![self.home.join("Library")])
+            SettingsLocations::new(
+                vec![self.home.clone()],
+                vec![self.home.join("Library")],
+                macos_cloud_drives(&self.home),
+            )
         }
 
         fn download(&self, path: &Path, overwrite: bool) -> Result<Selection> {
@@ -1572,7 +1676,7 @@ mod settings_destination_tests {
         // The home itself named through a link, and a link used as the home.
         symlink(home, fake.root.join("home-link")).unwrap();
         assert_refused(&fake, &fake.root.join("home-link/.bashrc"), true);
-        let linked = SettingsLocations::new(vec![fake.root.join("home-link")], vec![]);
+        let linked = SettingsLocations::new(vec![fake.root.join("home-link")], vec![], vec![]);
         assert_eq!(
             refusal(select_with(
                 &home.join(".bashrc"),
@@ -1656,19 +1760,122 @@ mod settings_destination_tests {
         let locations = SettingsLocations::new(
             vec![PathBuf::from("/"), PathBuf::from("relative/home")],
             vec![PathBuf::from("relative/settings")],
+            macos_cloud_drives(Path::new("relative/home")),
         );
         assert!(locations.homes.is_empty());
         assert!(locations.settings.is_empty());
+        assert!(locations.drives.is_empty());
+    }
+
+    /// Q4-55 round 2: every macOS cloud drive lives inside `~/Library`, so rule (b) refused
+    /// Box, OneDrive, Dropbox, Google Drive and iCloud Drive, a main place a UCSF user saves
+    /// to. Inside a drive only rules (a) and (d) apply.
+    #[test]
+    fn cloud_drives_inside_library_are_still_saved() {
+        let fake = FakeHome::new();
+        let library = fake.home.join("Library");
+        fs::write(library.join("CloudStorage/OneDrive-UCSF/plan.csv"), "old\n").unwrap();
+        for (spelled, overwrite) in [
+            ("CloudStorage/Box-Box/results.csv", false),
+            ("CloudStorage/Box-Box/Lab data/plot.png", false),
+            ("CloudStorage/OneDrive-UCSF/plan.csv", true),
+            ("CloudStorage/Dropbox-LCATeam/notes.md", false),
+            (
+                "CloudStorage/GoogleDrive-tester@example.org/My Drive/run.csv",
+                false,
+            ),
+            ("Mobile Documents/com~apple~CloudDocs/summary.md", false),
+            (
+                "Mobile Documents/com~apple~CloudDocs/Papers/draft.docx",
+                false,
+            ),
+        ] {
+            let path = library.join(spelled);
+            let selected = fake
+                .download(&path, overwrite)
+                .unwrap_or_else(|error| panic!("{spelled}: {error:#}"));
+            assert_eq!(selected.name(), path.file_name().unwrap().to_str().unwrap());
+            assert!(fake.replay(&path, overwrite).is_ok(), "replay {spelled}");
+        }
+        // Case folded, as for `~/Library` itself.
+        let folded = fake
+            .root
+            .join("home/library/cloudstorage/box-box/lab data/x.csv");
+        assert!(!download_destination_denied(&folded, &fake.locations()));
+    }
+
+    #[test]
+    fn the_rest_of_library_and_the_other_rules_still_hold_beside_a_cloud_drive() {
+        let fake = FakeHome::new();
+        let library = fake.home.join("Library");
+        let run = library.join("CloudStorage/Box-Box/run.sh");
+        fs::write(&run, "#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o755)).unwrap();
+        for (spelled, overwrite) in [
+            // Beside the drives, not inside one.
+            ("CloudStorage/x.plist", false),
+            // An app's own iCloud container is not iCloud Drive.
+            (
+                "Mobile Documents/com~apple~Numbers/Documents/x.plist",
+                false,
+            ),
+            ("Mobile Documents/x.plist", false),
+            // Rule (a) inside a drive.
+            ("CloudStorage/Dropbox-LCATeam/.dropbox.cache/x", false),
+            // Rule (d) inside a drive.
+            ("CloudStorage/Box-Box/run.sh", true),
+            // A dot-dot route out of a drive.
+            ("CloudStorage/Box-Box/../../LaunchAgents/x.plist", false),
+        ] {
+            assert_refused(&fake, &library.join(spelled), overwrite);
+        }
+        // A link inside a drive is judged as the place it reaches.
+        symlink(
+            library.join("LaunchAgents"),
+            library.join("CloudStorage/Box-Box/agents"),
+        )
+        .unwrap();
+        assert_refused(
+            &fake,
+            &library.join("CloudStorage/Box-Box/agents/x.plist"),
+            false,
+        );
+        // And a drive reached through a link elsewhere is still a drive. (Only the rule is
+        // asked: `open_directory` refuses a linked folder for a reason of its own.)
+        symlink(library.join("CloudStorage/Box-Box"), fake.home.join("Box")).unwrap();
+        assert!(!download_destination_denied(
+            &fake.home.join("Box/results.csv"),
+            &fake.locations()
+        ));
+        assert_eq!(fs::read_to_string(&run).unwrap(), "#!/bin/sh\necho hi\n");
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn macos_derives_library_from_home() {
         let fake = FakeHome::new();
-        let derived = SettingsLocations::new(vec![fake.home.clone()], vec![]);
+        let derived = SettingsLocations::new(vec![fake.home.clone()], vec![], vec![]);
         assert_eq!(
             refusal(select_with(
                 &fake.home.join("Library/LaunchAgents/x.plist"),
+                Direction::Download,
+                false,
+                &derived
+            )),
+            CredentialRefusal::Destination
+        );
+        // And the cloud drives inside it.
+        for spelled in [
+            "Library/CloudStorage/Box-Box/results.csv",
+            "Library/Mobile Documents/com~apple~CloudDocs/summary.md",
+        ] {
+            let path = fake.home.join(spelled);
+            select_with(&path, Direction::Download, false, &derived)
+                .unwrap_or_else(|error| panic!("{spelled}: {error:#}"));
+        }
+        assert_eq!(
+            refusal(select_with(
+                &fake.home.join("Library/CloudStorage/x.plist"),
                 Direction::Download,
                 false,
                 &derived
@@ -1695,19 +1902,42 @@ mod settings_destination_tests {
             &firmlinked.join("Library/LaunchAgents/x.plist"),
             false,
         );
+        // A cloud drive through the firmlink is still a drive, and beside it is not.
+        let box_drive = firmlinked.join("Library/CloudStorage/Box-Box/results.csv");
+        assert!(fake.download(&box_drive, false).is_ok());
+        assert_refused(
+            &fake,
+            &firmlinked.join("Library/CloudStorage/x.plist"),
+            false,
+        );
         // The walk on its own, whatever `realpath` made of the spelling.
         let locations = fake.locations();
+        let drives = &locations.drives;
         let name = std::ffi::OsStr::new(".bashrc");
-        assert!(denied_by_identity(&firmlinked, name, &locations));
+        assert!(denied_by_identity(&firmlinked, name, &locations, drives));
         assert!(denied_by_identity(
             &firmlinked.join("Library/LaunchAgents"),
             std::ffi::OsStr::new("x.plist"),
-            &locations
+            &locations,
+            drives
         ));
         assert!(!denied_by_identity(
             &firmlinked.join("Downloads"),
             std::ffi::OsStr::new("data.csv"),
-            &locations
+            &locations,
+            drives
+        ));
+        assert!(!denied_by_identity(
+            &firmlinked.join("Library/CloudStorage/Box-Box"),
+            std::ffi::OsStr::new("results.csv"),
+            &locations,
+            drives
+        ));
+        assert!(denied_by_identity(
+            &firmlinked.join("Library/CloudStorage"),
+            std::ffi::OsStr::new("x.plist"),
+            &locations,
+            drives
         ));
     }
 }
