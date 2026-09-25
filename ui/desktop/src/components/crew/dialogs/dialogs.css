@@ -231,6 +231,20 @@
   visibility: hidden;
 }
 
+/* The live status note, stretched to its tallest form's room: a one-line sentence sits in the
+   middle of it, not on the first line over a blank second one ("Jack joined wong-lab", QA Q4-38).
+   The two-line sentence fills the room either way. */
+.crew-steady > .crew-steady-live {
+  align-items: center;
+}
+
+/* Text a sizer lays out and nobody reads: generated, so no copy of a sentence reaches the
+   accessibility tree, a live region or a search of the page (Let in's code view reserving the
+   saved view's room, QA Q4-38). Inline, so it wraps exactly as the sentence it stands for. */
+.crew-say::before {
+  content: attr(data-say);
+}
+
 .crew-reserve {
   display: grid;
   min-width: 0;

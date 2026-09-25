@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MODAL_SIZE } from '../../ModalShell';
 import { CrewHttpError, type PendingJoin, type Snapshot } from '../crewApi';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { addPeopleCopy, letInCopy } from './copy';
@@ -130,9 +133,11 @@ afterEach(() => vi.clearAllMocks());
 describe('LetInDialog', () => {
   it('names the joiner by @username and the name on their server account, and focuses the code', async () => {
     renderLetIn({ username: 'eve', full_name: 'Eve Park' });
-    // The authority form, whenever a name is known (QA Q3-36).
-    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park (@eve) into lab' });
-    expect(dialog).toHaveTextContent('Eve Park (name on the server account)');
+    // The name in the title, in the heading's one face; the handle leads the subtitle (QA Q4-38).
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    expect(dialog).toHaveAccessibleDescription('@eve · name on the server account');
+    const heading = within(dialog).getByRole('heading', { name: 'Let Eve Park into lab' });
+    expect(heading.querySelector('.font-mono')).toBeNull();
     await waitFor(() => expect(code()).toHaveFocus());
     expect(code()).toHaveAttribute('autocomplete', 'one-time-code');
     expect(screen.getByText(letInCopy.helper('Eve'))).toBeInTheDocument();
@@ -357,7 +362,12 @@ describe('LetInDialog', () => {
     await approveWith(CODE);
     update(withMethods({ principals: [...makeSnapshot().principals, eve], pending_joins: [] }));
     const dialog = await screen.findByRole('dialog');
-    const channels = within(dialog).getByRole('group', { name: addPeopleCopy.channels });
+    // The group names its team on screen, and is named by those words (QA Q4-38).
+    const channels = within(dialog).getByRole('group', {
+      name: letInCopy.channelsIn('Analysis Lab'),
+    });
+    expect(within(dialog).getByText('Channels in Analysis Lab')).toBeVisible();
+    expect(dialog).not.toHaveTextContent(addPeopleCopy.channels);
     const general = within(channels).getByRole('checkbox', { name: /#general/ });
     expect(general).toBeChecked();
     expect(general).toBeDisabled();
@@ -666,8 +676,8 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     );
     const { update } = renderDirectAdd(withMethods());
     await approveWith(CODE);
-    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park (@eve) into lab' });
-    expect(dialog).toHaveTextContent('Eve Park (name on the server account)');
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    expect(dialog).toHaveAccessibleDescription('@eve · name on the server account');
     expect(within(dialog).getByText(letInCopy.fingerprintFor('Eve'))).toHaveTextContent(
       fingerprint
     );
@@ -676,8 +686,8 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     update(joinedUnnamed());
     expect(await within(dialog).findByText(letInCopy.joined('Eve', 'lab'))).toBeInTheDocument();
     // Nothing the host was reading goes away (QA Q3-35).
-    expect(screen.getByRole('dialog', { name: 'Let Eve Park (@eve) into lab' })).toBe(dialog);
-    expect(dialog).toHaveTextContent('Eve Park (name on the server account)');
+    expect(screen.getByRole('dialog', { name: 'Let Eve Park into lab' })).toBe(dialog);
+    expect(dialog).toHaveAccessibleDescription('@eve · name on the server account');
     expect(within(dialog).getByText(letInCopy.fingerprintFor('Eve'))).toHaveTextContent(
       fingerprint
     );
@@ -710,8 +720,10 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
       makeSnapshot({ pending_joins: [{ username: 'eve', full_name: 'Eve Park' }] })
     );
     await approveWith(CODE);
-    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park (@eve) into lab' });
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
     const status = within(dialog).getByText(letInCopy.approved('Eve')).closest('[role="status"]');
+    // The live note fills the room its sizer keeps, and centres a shorter sentence in it.
+    expect(status).toHaveClass('crew-steady-live');
     expect(status).not.toBeNull();
     const sizer = dialog.querySelector('.crew-steady-sizer');
     const hint = dialog.querySelector('p.crew-reserve');
@@ -772,6 +784,186 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     expect(letInCopy.joined('Gina', 'ito-lab')).toBe('Gina joined ito-lab');
     expect(letInCopy.directAdded('Gina', 'Ito Group', '#general and #data')).toBe(
       'Added Gina to Ito Group. Gina can now see #general and #data.'
+    );
+  });
+});
+
+describe('LetInDialog, round 4 (QA Q4-36, Q4-38)', () => {
+  const HOUR = 60 * 60;
+  const expiresText = (seconds: number) =>
+    `expires ${new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(seconds * 1000))}`;
+
+  it('is the forms’ width, 480, in both views', async () => {
+    renderLive(withMethods());
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    // The shell's `md`: 480, the width of Keys, Connection settings and Join.
+    expect(dialog).toHaveClass(MODAL_SIZE.md);
+    await approveWith(CODE);
+    await screen.findByText(letInCopy.approved('Eve'));
+    expect(screen.getByRole('dialog')).toHaveClass(MODAL_SIZE.md);
+  });
+
+  it('titles a joiner with no known name by @username, with no subtitle', async () => {
+    renderLive(makeSnapshot({ pending_joins: [{ username: 'eve' }] }));
+    const dialog = await screen.findByRole('dialog', { name: 'Let @eve into lab' });
+    expect(dialog).not.toHaveTextContent(/name on the server account/);
+  });
+
+  it('says the handle alone under a name the person chose, which is not their server account’s', async () => {
+    // Eve is a member adding a device: the directory knows the name she chose.
+    renderLive(
+      withMethods({
+        principals: [...makeSnapshot().principals, eve],
+        pending_joins: [{ username: 'eve', full_name: 'Eve Park-Lee', add_device: true }],
+      })
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    expect(dialog).toHaveAccessibleDescription('@eve');
+  });
+
+  it('says when their invitation expires while the code is awaited, under the fingerprint (QA Q4-36)', async () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 20 * HOUR;
+    renderLive(
+      withMethods({
+        pending_joins: [{ username: 'eve', full_name: 'Eve Park', expires_at: expiresAt }],
+      })
+    );
+    const line = await screen.findByText(`Eve’s invitation ${expiresText(expiresAt)}.`);
+    expect(line).toHaveTextContent(letInCopy.expires('Eve', expiresText(expiresAt)));
+    // Under the fingerprint, above the field.
+    const fingerprint = await screen.findByText(letInCopy.fingerprintFor('Eve'));
+    expect(
+      fingerprint.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      line.compareDocumentPosition(screen.getByLabelText(letInCopy.code('Eve'))) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    // Once the code is saved it is no longer what the host is waiting on.
+    await approveWith(CODE);
+    await screen.findByText(letInCopy.approved('Eve'));
+    expect(screen.queryByText(/invitation expires/)).toBeNull();
+  });
+
+  it('says an invitation that ran out is expired, by the broker’s word or the clock', async () => {
+    const past = Math.floor(Date.now() / 1000) - HOUR;
+    const view = renderLive(
+      withMethods({ pending_joins: [{ username: 'eve', full_name: 'Eve Park', expires_at: past }] })
+    );
+    expect(await screen.findByText('Eve’s invitation expired.')).toBeInTheDocument();
+    view.unmount();
+    renderLive(
+      withMethods({
+        pending_joins: [
+          { username: 'eve', full_name: 'Eve Park', expires_at: past + 2 * HOUR, expired: true },
+        ],
+      })
+    );
+    expect(await screen.findByText('Eve’s invitation expired.')).toBeInTheDocument();
+  });
+
+  it('reserves the saved view’s room in the code view, unseen and unspoken (QA Q4-38)', async () => {
+    renderDirectAdd(withMethods());
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    const cell = dialog.querySelector('[data-crew-let-in-code]');
+    expect(cell).toHaveClass('crew-steady');
+    const form = cell?.querySelector(':scope > form');
+    const sizer = cell?.querySelector(':scope > .crew-steady-sizer');
+    // The form and the copy of the saved view share one grid cell.
+    expect(form).toHaveClass('crew-steady-item');
+    expect(sizer).toHaveClass('crew-steady-item');
+    expect(sizer).toHaveAttribute('aria-hidden', 'true');
+    expect(sizer).toHaveAttribute('inert');
+    // Generated text only: nothing to read, announce, press or find.
+    expect(sizer?.textContent).toBe('');
+    expect(sizer?.querySelector('[role], input, label, [id]')).toBeNull();
+    for (const button of Array.from(sizer?.querySelectorAll('button') ?? []))
+      expect(button).toHaveAttribute('tabindex', '-1');
+    // It stands for the saved view's blocks: the status in its tallest form, the fingerprint, the
+    // team's channels and the hint.
+    const said = Array.from(sizer?.querySelectorAll('[data-say]') ?? []).map((node) =>
+      node.getAttribute('data-say')
+    );
+    expect(said).toEqual(
+      expect.arrayContaining([
+        letInCopy.channelsIn('Analysis Lab'),
+        '#general',
+        '#methods',
+        letInCopy.fingerprintHelper('Eve'),
+      ])
+    );
+    const reserved = Array.from(sizer?.querySelectorAll('.crew-reserve') ?? []).map((node) => [
+      node.getAttribute('data-reserve-a'),
+      node.getAttribute('data-reserve-b'),
+    ]);
+    expect(reserved).toEqual([
+      [letInCopy.approved('Eve'), letInCopy.joined('Eve', 'lab')],
+      [letInCopy.addAfterJoin('Eve'), letInCopy.channelsWithTeam],
+    ]);
+    // No second copy of any sentence on the page.
+    expect(screen.queryByText(letInCopy.approved('Eve'))).toBeNull();
+    expect(within(dialog).getAllByText(letInCopy.fingerprintHelper('Eve'))).toHaveLength(1);
+
+    // Saved: the real blocks, and no sizer left beside them.
+    await approveWith(CODE);
+    await screen.findByText(letInCopy.approved('Eve'));
+    expect(dialog.querySelector('[data-crew-let-in-code]')).toBeNull();
+  });
+
+  it('keeps at least the code view’s room until a team is added, so the footer cannot rise either', async () => {
+    // jsdom lays nothing out: the code view's measured height is stubbed, as the click reads it.
+    const measure = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        const height = this.hasAttribute('data-crew-let-in-code') ? 300 : 0;
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: height,
+          width: 0,
+          height,
+        } as DOMRect;
+      });
+    try {
+      const { update } = renderDirectAdd(withMethods());
+      await approveWith(CODE);
+      const dialog = await screen.findByRole('dialog');
+      const saved = dialog.querySelector('[data-crew-let-in-saved]') as HTMLElement;
+      expect(saved.style.minHeight).toBe('300px');
+      // Still held when they join: the footer waits under the host's pointer.
+      update(withMethods({ principals: [...makeSnapshot().principals, eve], pending_joins: [] }));
+      await screen.findByText(letInCopy.joined('Eve', 'lab'));
+      expect(saved.style.minHeight).toBe('300px');
+      // Added: the controls give way to the outcome and Done, and the room is let go.
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
+      });
+      await screen.findByText('Added Eve to Analysis Lab. Eve can now see #general and #methods.');
+      expect(
+        (dialog.querySelector('[data-crew-let-in-saved]') as HTMLElement).style.minHeight
+      ).toBe('');
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
+  it('centres a one-line status in its room, as the CSS says (QA Q4-38)', () => {
+    const css = readFileSync(join(__dirname, 'dialogs.css'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ' '
+    );
+    expect(/\.crew-steady > \.crew-steady-live\s*\{([^}]*)\}/.exec(css)?.[1]).toMatch(
+      /align-items:\s*center;/
+    );
+    expect(/\.crew-say::before\s*\{([^}]*)\}/.exec(css)?.[1]).toMatch(
+      /content:\s*attr\(data-say\);/
     );
   });
 });

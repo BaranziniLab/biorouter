@@ -513,7 +513,11 @@ function MemberList({
 /**
  * The channels a direct team addition also adds the person to: #general checked and fixed (it comes
  * with the team), the others as the caller chooses. A labelled group of real checkboxes, each
- * wrapped in its label so the whole row toggles it.
+ * wrapped in its label so the whole row toggles it; the group is named by its visible heading.
+ *
+ * `sizer` lays out the same rows with nothing in them to read or press — generated text and a box
+ * the checkbox's size — for a block that reserves this one's room before it exists (Let in's code
+ * view, QA Q4-38).
  */
 export function ChannelChoices({
   choices,
@@ -521,14 +525,39 @@ export function ChannelChoices({
   onChange,
   disabled,
   label = copy.channels,
+  sizer = false,
 }: {
   choices: readonly ChannelChoice[];
   isChecked(choice: ChannelChoice): boolean;
   onChange(channelId: string, checked: boolean): void;
   disabled?: boolean;
   label?: string;
+  sizer?: boolean;
 }) {
   const legendId = React.useId();
+  if (sizer) {
+    return (
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="crew-say text-label text-text-default" data-say={label} />
+        {choices.map((choice) => (
+          <div
+            key={choice.id}
+            className="flex min-w-0 items-center gap-2 text-body text-text-default"
+          >
+            {/* The checkbox's own box: `Checkbox` is a 24px target. */}
+            <span className="inline-flex h-6 w-6 shrink-0" />
+            <span className="crew-say min-w-0 truncate" data-say={choice.label} />
+            {choice.always ? (
+              <span
+                className="crew-say text-supporting text-text-muted"
+                data-say={copy.generalIncluded}
+              />
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
   return (
     <div role="group" aria-labelledby={legendId} className="flex min-w-0 flex-col gap-1">
       <span id={legendId} className="text-label text-text-default">

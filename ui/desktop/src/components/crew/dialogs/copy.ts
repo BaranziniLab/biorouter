@@ -208,6 +208,7 @@ export const expiryCopy = {
 } as const;
 
 export const letInCopy = {
+  /** "Let {name} into {workspace}", after `titlePrefix` and the joiner's one name (QA Q4-38). */
   title: (workspace: string) => `into ${workspace}`,
   titlePrefix: 'Let',
   code: (first: string) => `Code from ${first}`,
@@ -256,8 +257,14 @@ export const letInCopy = {
   /** A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23, Q3-36). */
   directAdded: (who: string, team: string, channels: string) =>
     `Added ${who} to ${team}. ${who} can now see ${channels}.`,
-  /** One team's channel choices, where several teams are offered. */
-  channelsIn: (team: string) => `Also add to, in ${team}`,
+  /**
+   * A team's channel choices, whole on screen (QA Q4-38): "Also add to" was half a sentence whose
+   * team was named only on the button. The group is named by this visible heading, so what a
+   * screen reader announces and what a voice-control user says are the words on screen.
+   */
+  channelsIn: (team: string) => `Channels in ${team}`,
+  /** Under the fingerprint while the code is awaited (QA Q4-36). `phrase` is `expiryPhrase`'s. */
+  expires: (first: string, phrase: string) => `${first}’s invitation ${phrase}.`,
   /** Closes with the team additions still undone. */
   notNow: 'Not now',
   /** Under the team offers while the joiner's Crew has not checked in yet (QA Q3-36). */
