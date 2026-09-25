@@ -2,8 +2,10 @@ import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { avatarInitials } from '../../ui/avatar';
 import { isRecord } from '../api/parse';
 import { displayNameIsUsername, usableName } from '../identity';
+import { connectionServerLabel } from '../onboarding/joinText';
 import type { ErrorSource } from '../state/types';
 import { profileCopy as copy } from './copy';
 import { DialogErrorNote, Field, helpId, useCustomValidity } from './fields';
@@ -28,10 +30,16 @@ export interface EditProfileDialogProps {
  * from"). The name on the server account comes from `profile.suggest` and is OFFERED — prefilled
  * only while the person has never chosen a name, otherwise one click away — never applied without
  * **Save profile**. The username is shown read-only: it is the account, not a preference.
+ *
+ * While Display name holds that suggestion unsaved, a line under it says so — "Filled in from your
+ * account on {server}. Save to use it." — so a prefilled name never reads as one already in use,
+ * and Initials shows the initial the avatar will derive from it until the person types their own
+ * (QA Q3-43). The dialog is the forms' width, 480, like Keys, Connection settings and Join (Q3-42).
  */
 export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
   const { crew, dir } = useDialogView();
   const me = dir.me;
+  const saved = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
   const formId = React.useId();
   const nameId = `${formId}-name`;
   const initialsId = `${formId}-initials`;
@@ -78,12 +86,18 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
   };
 
   const offer = suggestion && suggestion !== name.trim() ? suggestion : null;
+  // The server account's name is in the field, and it is not the name already saved.
+  const unsavedSuggestion =
+    suggestion !== null && name.trim() === suggestion && suggestion !== chosen;
+  const nameHelper = unsavedSuggestion ? copy.prefilled(connectionServerLabel(saved)) : undefined;
+  // What the avatar shows when Initials is left empty, from the name as it stands.
+  const derivedInitials = me ? avatarInitials(name.trim() || me.username, me.username) : '';
 
   return (
     <ModalShell
       open
       onOpenChange={(open) => !open && onClose()}
-      size="sm"
+      size="md"
       purpose={saving ? 'required' : 'form'}
       title={copy.title}
       footer={
@@ -98,7 +112,12 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
       }
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-4 pb-1">
-        <Field id={nameId} label={copy.displayName} error={problem ?? undefined}>
+        <Field
+          id={nameId}
+          label={copy.displayName}
+          helper={nameHelper}
+          error={problem ?? undefined}
+        >
           <Input
             id={nameId}
             ref={nameRef}
@@ -107,7 +126,7 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
             // A name is not a word to correct: "crew_erin" drew a red squiggle (QA Q2-30).
             spellCheck={false}
             aria-invalid={problem ? true : undefined}
-            aria-describedby={problem ? helpId(nameId) : undefined}
+            aria-describedby={problem || nameHelper ? helpId(nameId) : undefined}
             value={name}
             onChange={(event) => {
               setEdited(true);
@@ -136,6 +155,7 @@ export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
             id={initialsId}
             maxLength={12}
             autoComplete="off"
+            placeholder={derivedInitials || undefined}
             value={initials}
             onChange={(event) => setInitials(event.target.value)}
           />

@@ -412,6 +412,14 @@ export const profileCopy = {
   usernameLead: 'Your username:',
   suggestion: (name: string) => `Use “${name}”`,
   suggestionDetail: 'the name on your server account',
+  /**
+   * Under Display name while it holds the server account's name and nothing is saved yet: it is a
+   * suggestion, not a name already in use (QA Q3-43).
+   */
+  prefilled: (server: string) =>
+    server
+      ? `Filled in from your account on ${server}. Save to use it.`
+      : 'Filled in from your server account. Save to use it.',
   submit: 'Save profile',
   cancel: 'Cancel',
   handleMark: 'Display name can’t contain @ or #.',

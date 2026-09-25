@@ -12,15 +12,19 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
-import { addPeopleCopy, sharePathCopy } from './copy';
+import { addPeopleCopy, profileCopy, sharePathCopy } from './copy';
 import { CREW_DIALOG_DEFAULTS, CrewDialogs, dialogKey, HOSTED_DIALOG_KINDS } from './CrewDialogs';
 import {
   alice,
+  bob,
   connection,
   installResizeObserverStub,
   makeSnapshot,
   renderWithCrew,
+  requestsFor,
 } from './dialogsTestHarness';
+import { EditProfileDialog } from './EditProfileDialog';
+import { KeysDialog } from './KeysDialog';
 
 installResizeObserverStub();
 
@@ -444,5 +448,67 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
       .filter((file) => file.endsWith('.tsx') && !file.includes('.test.'))
       .filter((file) => /variant=["{']+outline/.test(readFileSync(join(__dirname, file), 'utf8')));
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('Edit profile (QA Q3-42, Q3-43)', () => {
+  const plainBob = { ...bob, nickname: 'bob' };
+  const labelled = {
+    ...connection,
+    ssh_target: 'bob@52.33.141.141',
+    server_label: 'lab-server',
+  };
+  function renderProfile() {
+    return renderWithCrew(<EditProfileDialog onClose={vi.fn()} />, {
+      connections: [labelled],
+      snapshot: makeSnapshot({ actor: plainBob, principals: [alice, plainBob] }),
+      request: (method) => (method === 'profile.suggest' ? { full_name: 'Bob Lee' } : {}),
+    });
+  }
+
+  it('is as wide as Keys and security: one width for single-purpose forms', async () => {
+    Object.assign(window, {
+      electron: { ...window.electron, crewCredentials: vi.fn(async () => ({ cancelled: true })) },
+    });
+    const { unmount } = renderWithCrew(<KeysDialog onClose={vi.fn()} />);
+    const keysWidth = Array.from((await screen.findByRole('dialog')).classList).find((name) =>
+      name.startsWith('sm:max-w-')
+    );
+    unmount();
+    renderProfile();
+    const profile = await screen.findByRole('dialog', { name: profileCopy.title });
+    expect(keysWidth).toBe('sm:max-w-[480px]');
+    expect(profile).toHaveClass(keysWidth!);
+  });
+
+  it('says a prefilled name is a suggestion from the server account until it is saved', async () => {
+    const { crew } = renderProfile();
+    const name = await screen.findByLabelText(profileCopy.displayName);
+    await waitFor(() => expect(name).toHaveValue('Bob Lee'));
+    expect(name).toHaveAccessibleDescription(profileCopy.prefilled('lab-server'));
+    expect(profileCopy.prefilled('lab-server')).toBe(
+      'Filled in from your account on lab-server. Save to use it.'
+    );
+    // Nothing is saved by being shown.
+    expect(requestsFor(crew, 'profile.update')).toEqual([]);
+
+    // Their own name is not a suggestion.
+    const user = userEvent.setup();
+    await user.clear(name);
+    await user.type(name, 'Robert Lee');
+    expect(screen.queryByText(profileCopy.prefilled('lab-server'))).toBeNull();
+  });
+
+  it('shows the initial the avatar will derive, until the person types their own', async () => {
+    renderProfile();
+    const name = await screen.findByLabelText(profileCopy.displayName);
+    await waitFor(() => expect(name).toHaveValue('Bob Lee'));
+    const initials = screen.getByLabelText(profileCopy.initials);
+    expect(initials).toHaveValue('');
+    expect(initials).toHaveAttribute('placeholder', 'B');
+    const user = userEvent.setup();
+    await user.clear(name);
+    await user.type(name, 'Robert Lee');
+    expect(initials).toHaveAttribute('placeholder', 'R');
   });
 });
