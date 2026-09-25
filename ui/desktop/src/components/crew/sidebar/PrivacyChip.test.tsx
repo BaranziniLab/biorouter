@@ -326,7 +326,8 @@ describe('PrivacyChip', () => {
 
 describe('the privacy popover', () => {
   it('is named by its title, opens on itself rather than on an action, and aligns to the chip’s start (T-38)', async () => {
-    renderWithCrew(<PrivacyChip />);
+    // A workspace that allows Public, so the downgrade is there to be (not) focused.
+    renderWithCrew(<PrivacyChip />, privacyController('private', 'public'));
     const popover = await openPopover(/^Privacy: Private/);
     const dialog = popover.closest('[role="dialog"]') as HTMLElement;
     expect(dialog).toHaveAccessibleName('Privacy: Private · ucsf');
@@ -352,31 +353,47 @@ describe('the privacy popover', () => {
     expect(screen.getByRole('dialog')).toHaveAccessibleName('Privacy: Public');
   });
 
-  it.each([
-    [
-      'public',
-      'Makes only your connection Public: public models could then read the public-safe channels you can see in Fixture. Restricted channels stay private.',
-    ],
-    [
-      'private',
-      'Makes only your connection Public. Fixture is Private for everyone, so the models that can read it stay the same.',
-    ],
-  ] as const)(
-    'names what "Make my connection public…" changes when the workspace is %s',
-    async (workspaceMode, line) => {
-      renderWithCrew(<PrivacyChip />, privacyController('private', workspaceMode));
-      const popover = await openPopover(/^Privacy: Private/);
-      const button = within(popover).getByRole('button', { name: 'Make my connection public…' });
-      expect(within(popover).getByText(line)).toHaveAttribute('data-crew-privacy-effect');
-      expect(button).toHaveAccessibleDescription(line);
-      // Checked against the broker: a Public connection loses no channel, only which models may
-      // read what. The effect never says otherwise.
-      expect(line).not.toMatch(/lose|access/i);
-    }
-  );
+  it('names what "Make my connection public…" changes in a workspace that allows Public', async () => {
+    const line =
+      'Makes only your connection Public: public models could then read the public-safe channels you can see in Fixture. Restricted channels stay private.';
+    renderWithCrew(<PrivacyChip />, privacyController('private', 'public'));
+    const popover = await openPopover(/^Privacy: Private/);
+    const button = within(popover).getByRole('button', { name: 'Make my connection public…' });
+    expect(within(popover).getByText(line)).toHaveAttribute('data-crew-privacy-effect');
+    expect(button).toHaveAccessibleDescription(line);
+    expect(copy.makePublicEffect('Fixture', 'public')).toBe(line);
+    // Checked against the broker: a Public connection loses no channel, only which models may
+    // read what. The effect never says otherwise.
+    expect(line).not.toMatch(/lose|access/i);
+  });
 
-  it('makes the downgrade a quiet link, never the popover’s most prominent control (Q2-44)', async () => {
-    renderWithCrew(<PrivacyChip />);
+  // Q3-54: in a Private-for-everyone workspace the downgrade's own description said the models
+  // that can read it "stay the same" — a control that changed nothing, offered first.
+  it('offers no downgrade in a workspace that is Private for everyone: Privacy… is the one action', async () => {
+    renderWithCrew(<PrivacyChip />, privacyController('private', 'private'));
+    const popover = await openPopover(/^Privacy: Private/);
+    expect(within(popover).queryByRole('button', { name: copy.makePublic })).toBeNull();
+    expect(popover.querySelector('[data-crew-privacy-effect]')).toBeNull();
+    expect(
+      within(popover)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual([copy.more]);
+  });
+
+  it('offers no "Make private" either where the workspace is Private for everyone', async () => {
+    renderWithCrew(<PrivacyChip />, privacyController('public', 'private'));
+    const popover = await openPopover(/^Privacy: Private/);
+    expect(within(popover).queryByRole('button', { name: copy.makePrivate })).toBeNull();
+    expect(
+      within(popover)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual([copy.more]);
+  });
+
+  it('makes the downgrade a secondary link in Privacy…’s ink, never the most prominent control (Q2-44, Q3-54)', async () => {
+    renderWithCrew(<PrivacyChip />, privacyController('private', 'public'));
     const popover = await openPopover(/^Privacy: Private/);
     const downgrade = within(popover).getByRole('button', { name: copy.makePublic });
     const more = within(popover).getByRole('button', { name: copy.more });
@@ -384,8 +401,10 @@ describe('the privacy popover', () => {
       // The link variant: no box, no fill, no outline.
       expect(link.className).toContain('underline-offset-4');
       expect(link.className).not.toMatch(/border-border-emphasized|bg-background-medium/);
+      // The same ink and size for both: neither is muted into a hint, neither shouts.
+      expect(link).not.toHaveClass('text-text-muted');
+      expect(link).toHaveClass('text-supporting');
     }
-    expect(downgrade).toHaveClass('text-text-muted');
   });
 
   it.each([
@@ -404,16 +423,19 @@ describe('the privacy popover', () => {
     }
   );
 
-  it('says it all in one note: the why, then who can see the workspace (Q2-44)', async () => {
+  it('says why, then who can see the workspace, on two short 12px lines (Q2-44, Q3-54)', async () => {
     renderWithCrew(<PrivacyChip />);
     const popover = await openPopover(/^Privacy: Private/);
-    const notes = popover.querySelectorAll('[data-crew-privacy-why]');
-    expect(notes).toHaveLength(1);
+    const why = popover.querySelectorAll('[data-crew-privacy-why]');
+    expect(why).toHaveLength(1);
     // The host changes the workspace setting themselves, so nothing says only the host can.
-    expect(notes[0]).toHaveTextContent(
-      `${copy.why.both('Fixture')} ${copy.audience('Fixture', null)}`
-    );
-    // Summary, facts, note, effect: never the five blocks it was.
+    expect(why[0].textContent).toBe(copy.why.both('Fixture'));
+    const audience = popover.querySelector('[data-crew-privacy-audience]') as HTMLElement;
+    expect(audience.textContent).toBe(copy.audience('Fixture', null));
+    for (const line of [why[0], audience]) expect(line).toHaveClass('text-supporting');
+    // The badge, one summary line, the three facts, then those two lines: nothing else.
+    expect(popover.querySelector('[data-crew-privacy-title]')).not.toBeNull();
+    expect(popover.querySelectorAll('dt')).toHaveLength(3);
     expect(popover.querySelectorAll('p')).toHaveLength(3);
   });
 
@@ -567,22 +589,27 @@ describe('the privacy popover', () => {
     const view = renderWithCrew(<PrivacyChip />, member);
     let popover = await openPopover(/^Privacy: Private/);
     let note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
-    expect(note).toHaveTextContent(copy.hostOnly('Fixture'));
-    // …and who can see it at all: "Private" is about models, never about people (Q2-44).
-    expect(note.textContent).toMatch(/Only people .*@alice.* lets in can see Fixture\.$/);
+    // One line: "{why}. Only the host can change {workspace}." (Q3-54).
+    expect(note.textContent).toBe(`${copy.why.workspace('Fixture')} ${copy.hostOnly('Fixture')}`);
+    // …and who can see it at all, on its own line: "Private" is about models, never about people.
+    let audience = popover.querySelector('[data-crew-privacy-audience]') as HTMLElement;
+    expect(audience.textContent).toMatch(/^Only people .*@alice.* lets in can see Fixture\.$/);
     view.unmount();
 
     renderWithCrew(<PrivacyChip />, privacyController('public', 'private', { isHost: true }));
     popover = await openPopover(/^Privacy: Private/);
     note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
     expect(note).not.toHaveTextContent(copy.hostOnly('Fixture'));
-    expect(note).toHaveTextContent(copy.audience('Fixture', null));
+    audience = popover.querySelector('[data-crew-privacy-audience]') as HTMLElement;
+    expect(audience).toHaveTextContent(copy.audience('Fixture', null));
   });
 
   it('disables the change while one is already running', async () => {
     renderWithCrew(
       <PrivacyChip />,
-      makeController({ isPending: (key) => key === PRIVACY_UPDATE_KEY })
+      privacyController('private', 'public', {
+        isPending: (key) => key === PRIVACY_UPDATE_KEY,
+      })
     );
     const popover = await openPopover(/^Privacy:/);
     expect(within(popover).getByRole('button', { name: copy.makePublic })).toBeDisabled();

@@ -79,8 +79,34 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
     vi.clearAllMocks();
   });
 
-  it('asks for the workspace name before the status-row popover makes the connection Public', async () => {
+  it('offers no downgrade from the status-row popover where the workspace is Private for everyone (Q3-54)', async () => {
     savingDaemon();
+    renderCrew();
+    await channelReady();
+    const user = userEvent.setup();
+
+    // Its own description said the models that can read the workspace "stay the same": a control
+    // that changed nothing, offered first. Privacy… is the one action, and leads to the settings.
+    await user.click(screen.getByRole('button', { name: /^Privacy: Private · ucsf/ }));
+    const popover = await screen.findByRole('dialog', { name: /^Privacy: Private/ });
+    expect(
+      within(popover).queryByRole('button', { name: 'Make my connection public…' })
+    ).toBeNull();
+    expect(
+      within(popover)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['Privacy…']);
+    await user.click(within(popover).getByRole('button', { name: 'Privacy…' }));
+    expect(await screen.findByRole('dialog', { name: /settings/ })).toBeInTheDocument();
+    expect(patches()).toEqual([]);
+  });
+
+  it('asks for the workspace name before the status-row popover makes the connection Public', async () => {
+    // A workspace that allows Public: the one place the downgrade changes which models may read.
+    savingDaemon({
+      snapshot: richSnapshot({ workspace: { ...richSnapshot().workspace, mode: 'public' } }),
+    });
     renderCrew();
     await channelReady();
     const user = userEvent.setup();

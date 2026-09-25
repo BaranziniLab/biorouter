@@ -17,26 +17,32 @@ export const PRIVACY_UPDATE_KEY = 'connection.update';
 
 /**
  * The privacy popover (ui-redesign-spec, wireframe "Privacy popover", copy deck "Privacy
- * popover"): what the chip means in one sentence, the three facts behind it, then ONE quiet note
- * (Q2-44) — why the mode is what it is, that only the host changes the workspace (to a member),
- * and who can see the workspace at all, because "Private" is about models, never about people.
- * It is always shown, so a joiner who sets Public in a Private-for-everyone workspace sees why
- * nothing changed.
+ * popover"): the badge, what the chip means in one sentence, the three facts behind it, then two
+ * short 12px lines (Q2-44, Q3-54) — why the mode is what it is, with "Only the host can change
+ * {workspace}." for a member, and who can see the workspace at all, because "Private" is about
+ * models, never about people. The why is always shown, so a joiner who sets Public in a
+ * Private-for-everyone workspace sees why nothing changed.
  *
  * It is named by its title row — `Privacy: Private · UCSF`, the chip's own name — which stays
  * at the top through the institution step, so the popover never loses its name (T-38).
  *
  * The two changes it offers are deliberately asymmetric ("Privacy and institution"):
  *
- * - **Make my connection public…** exposes data, so it is a quiet link, never the popover's most
- *   prominent control (Q2-44), and it only opens the typed confirmation (the workspace name as
- *   the phrase). The line under it, which is also its description, says what it changes: only
- *   this connection, and which models could then read what — checked against the broker, which
- *   refuses a public model a Restricted channel but never a person, so nobody loses a channel.
- *   The dialog, not this popover, sends the change.
+ * - **Make my connection public…** is offered only where it changes something: a workspace that
+ *   allows Public (Q3-54). In a Private-for-everyone workspace its own description said the models
+ *   that can read it "stay the same" — a control that changes nothing, offered first — so there
+ *   **Privacy…** is the one action (the settings tab still holds the connection's own mode). Where
+ *   it is offered it exposes data, so it is a secondary link in the same ink as Privacy…, never
+ *   the popover's most prominent control (Q2-44), and it only opens the typed confirmation (the
+ *   workspace name as the phrase). The line under it, which is also its description, says what it
+ *   changes: only this connection, and which models could then read what — checked against the
+ *   broker, which refuses a public model a Restricted channel but never a person, so nobody loses
+ *   a channel. The dialog, not this popover, sends the change.
  * - **Make private** is one click: the full-body PATCH (L18) and a refresh. A connection with no
  *   institution cannot be Private (the daemon refuses the save), so the popover first asks for
- *   one, in place, as a required field.
+ *   one, in place, as a required field. Like the downgrade it is offered only in a workspace that
+ *   allows Public: in a Private-for-everyone one the chip already reads Private, and "Make private"
+ *   beside it would change nothing there either.
  *
  * "Privacy…" is the link to the rest, in Workspace settings. React authorizes nothing: the daemon
  * decides the save, and the chip changes only when the observer verifies the new mode.
@@ -117,13 +123,16 @@ export function PrivacyPopover({
   }
 
   const host = crew.isHost ? null : dir.host ? personLabel(dir.host, 'inline', dir) : null;
-  const note = [
-    copy.why[privacy.why](title),
-    crew.isHost ? null : copy.hostOnly(title),
-    crew.isHost || host ? copy.audience(title, host) : null,
-  ]
+  const why = [copy.why[privacy.why](title), crew.isHost ? null : copy.hostOnly(title)]
     .filter(Boolean)
     .join(' ');
+  const audience = crew.isHost || host ? copy.audience(title, host) : null;
+  // Either change moves which models may read this person's channels only where the workspace
+  // allows Public; in a Private-for-everyone one neither changes anything there, so Privacy… is
+  // the one action (Q3-54).
+  const workspaceAllowsPublic = privacy.workspaceMode === 'public';
+  const offerPublic = workspaceAllowsPublic && privacy.connectionMode === 'private';
+  const offerPrivate = workspaceAllowsPublic && privacy.connectionMode === 'public';
   const effectId = `${titleId}-make-public`;
 
   return (
@@ -152,16 +161,23 @@ export function PrivacyPopover({
         </dd>
       </dl>
       <Separator className="bg-border-subtle" />
-      <p className="text-supporting text-text-muted" data-crew-privacy-why={privacy.why}>
-        {note}
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-supporting text-text-muted" data-crew-privacy-why={privacy.why}>
+          {why}
+        </p>
+        {audience && (
+          <p className="text-supporting text-text-muted" data-crew-privacy-audience="">
+            {audience}
+          </p>
+        )}
+      </div>
       <div className="flex flex-col items-start gap-1">
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
-          {privacy.connectionMode === 'private' ? (
+          {offerPublic ? (
             <Button
               variant="link"
               size="sm"
-              className="h-auto p-0 text-supporting text-text-muted"
+              className="h-auto p-0 text-supporting"
               disabled={pending}
               aria-describedby={effectId}
               data-crew-privacy-downgrade=""
@@ -169,16 +185,16 @@ export function PrivacyPopover({
             >
               {copy.makePublic}
             </Button>
-          ) : (
+          ) : offerPrivate ? (
             <Button variant="outline" size="sm" disabled={pending} onClick={onMakePrivate}>
               {copy.makePrivate}
             </Button>
-          )}
+          ) : null}
           <Button variant="link" size="sm" className="h-auto p-0 text-supporting" onClick={onMore}>
             {copy.more}
           </Button>
         </div>
-        {privacy.connectionMode === 'private' && (
+        {offerPublic && (
           <p id={effectId} className="text-supporting text-text-muted" data-crew-privacy-effect="">
             {copy.makePublicEffect(title, privacy.workspaceMode)}
           </p>
