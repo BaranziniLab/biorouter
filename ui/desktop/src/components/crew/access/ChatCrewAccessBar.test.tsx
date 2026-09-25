@@ -7,6 +7,7 @@ import { toastWarning } from '../../../toasts';
 import { CrewHttpError } from '../crewApi';
 import {
   forgetChannelLabels,
+  offlineCauseOf,
   rememberChannelLabels,
   useChatCrewAccess,
   useChatCrewAccessState,
@@ -18,6 +19,7 @@ import {
   crewConnectRequestOf,
 } from './ChatConnectNote';
 import { accessCopy } from './copy';
+import { readPastAccess } from './pastAccess';
 import { connection, grantRow } from './testing';
 import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
 
@@ -65,6 +67,7 @@ function Chat({ sessionId = 'chat-1' }: { sessionId?: string }) {
       <p data-testid="state">{access.state}</p>
       <p data-testid="published">{String(published)}</p>
       <p data-testid="hold">{hold ? `${hold.title} | ${hold.message}` : 'none'}</p>
+      <p data-testid="hold-placeholder">{hold ? hold.placeholder : 'none'}</p>
       <Composer sessionId={sessionId} blocked={access.blocksComposer} />
     </div>
   );
@@ -136,6 +139,8 @@ describe('the ordinary chat’s Crew access', () => {
     vi.clearAllMocks();
     forgetUnconfirmedRevocations();
     forgetChannelLabels();
+    // A confirmed revoke is remembered in localStorage (Q4-12): each test starts with none.
+    window.localStorage.clear();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -286,6 +291,8 @@ describe('the ordinary chat’s Crew access', () => {
     const confirm = screen.getByRole('group', {
       name: 'Stop “Plot review” reading and posting in #general?',
     });
+    // Q4-15: the question says the whole chat stops, not only its posts in Crew.
+    expect(confirm).toHaveTextContent('This chat will stop until you grant access again.');
     fireEvent.click(within(confirm).getByRole('button', { name: accessCopy.confirmRevoke }));
 
     await waitFor(() =>
@@ -297,6 +304,19 @@ describe('the ordinary chat’s Crew access', () => {
     expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
     expect(screen.getByTestId('published')).toHaveTextContent('revoked');
+    // Q4-15: the held composer's empty box says why Send is grey, before anyone presses Enter.
+    expect(screen.getByTestId('hold-placeholder')).toHaveTextContent(
+      'Grant access again to continue this chat'
+    );
+    // Q4-12: a confirmed revoke from the chat itself is remembered for "Show past access".
+    expect(readPastAccess('conn-1')).toEqual([
+      expect.objectContaining({
+        session_id: 'chat-1',
+        run_id: 'run-1',
+        session_name: 'Plot review',
+        channel_id: 'channel-1',
+      }),
+    ]);
   });
 
   it('offers a new chat or access again when the grant was revoked', async () => {
@@ -513,6 +533,127 @@ describe('a chat whose Crew connection is offline', () => {
     });
     // A plain one-hop intent asks for no connect.
     expect(crewConnectRequestOf(chatAccessRouteState())).toBeNull();
+  });
+
+  /**
+   * Q4-06 (live QA round 4): "…until you connect" told Bob he had to act, while the daemon dials a
+   * network drop again by itself (Q4-01). For a network failure the bar says so, and its button is
+   * an offer. Every other cause keeps today's sentence: nothing reconnects those by itself.
+   */
+  const SSH_DROP =
+    'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying';
+
+  it('says Crew reconnects by itself after a network failure, with Connect now', async () => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    installDaemon({
+      connections: [
+        {
+          ...connection,
+          status: 'disconnected',
+          last_error: SSH_DROP,
+          last_error_code: 'crew_ssh_unreachable',
+        },
+      ],
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+    });
+    renderChat();
+
+    const note = await screen.findByTestId('crew-chat-access-offline');
+    expect(note).toHaveTextContent(
+      'Crew is offline. It will reconnect by itself when the network is back.'
+    );
+    expect(note).not.toHaveTextContent('until you connect');
+    expect(screen.getByTestId('blocked')).toHaveTextContent('false');
+    // The same one-hop connect as Connect in Crew.
+    fireEvent.click(within(note).getByRole('button', { name: 'Connect now' }));
+    const [to, options] = mocks.navigate.mock.calls[mocks.navigate.mock.calls.length - 1] as [
+      string,
+      { state?: Record<string, unknown> },
+    ];
+    expect(to).toBe('/crew?sessionId=chat-1');
+    expect(crewConnectRequestOf(options.state)).toEqual({
+      intentId: expect.any(String),
+      connectionId: 'conn-1',
+    });
+  });
+
+  it('says so while this computer has no network, and follows the network coming back', async () => {
+    const onLine = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+    try {
+      rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+      installDaemon({
+        connections: [{ ...connection, status: 'disconnected', last_error: SSH_DROP }],
+        grants: () => [grantRow({ session_id: 'chat-1' })],
+      });
+      renderChat();
+      const note = await screen.findByTestId('crew-chat-access-offline');
+      expect(note).toHaveTextContent(accessCopy.chatOfflineNetwork);
+      expect(within(note).getByRole('button', { name: accessCopy.chatConnectNow })).toBeVisible();
+
+      // Online again, and the daemon's words alone cannot tell a network drop from sign-in.
+      onLine.mockReturnValue(true);
+      act(() => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('crew-chat-access-offline')).toHaveTextContent(
+          accessCopy.chatOffline('#general')
+        )
+      );
+    } finally {
+      onLine.mockRestore();
+    }
+  });
+
+  it.each([
+    ['a person’s Disconnect', {}],
+    [
+      'a sign-in the server wants',
+      { last_error: SSH_DROP, last_error_code: 'crew_ssh_auth_required' },
+    ],
+    ['a changed host key', { last_error: SSH_DROP, last_error_code: 'crew_ssh_host_key_changed' }],
+    [
+      'a membership that ended',
+      {
+        last_error: 'This computer is no longer a member of lab.',
+        last_error_code: 'crew_membership_ended',
+      },
+    ],
+    ['an untyped SSH failure', { last_error: SSH_DROP }],
+  ])('keeps “until you connect” for %s', async (_, failure) => {
+    rememberChannelLabels('conn-1', new Map([['channel-1', '#general']]), ['channel-1']);
+    installDaemon({
+      connections: [{ ...connection, status: 'disconnected', ...failure }],
+      grants: () => [grantRow({ session_id: 'chat-1' })],
+    });
+    renderChat();
+    const note = await screen.findByTestId('crew-chat-access-offline');
+    expect(note).toHaveTextContent(accessCopy.chatOffline('#general'));
+    expect(
+      within(note).getByRole('button', { name: accessCopy.chatConnectInCrew })
+    ).toBeInTheDocument();
+  });
+
+  it('classifies the cause from the daemon’s answer and the computer’s network', () => {
+    const drop = { lastError: SSH_DROP };
+    expect(offlineCauseOf({ ...drop, lastErrorCode: 'crew_ssh_unreachable' }, true)).toBe(
+      'network'
+    );
+    expect(offlineCauseOf(drop, true)).toBe('other');
+    expect(offlineCauseOf(drop, false)).toBe('network');
+    // A typed reason that is not the network decides, whatever the computer says.
+    for (const code of [
+      'crew_ssh_auth_required',
+      'crew_ssh_host_key_unknown',
+      'crew_ssh_host_key_changed',
+      'crew_bridge_missing',
+      'crew_workspace_identity_mismatch',
+      'crew_membership_ended',
+    ])
+      expect(offlineCauseOf({ ...drop, lastErrorCode: code }, false), code).toBe('other');
+    // No last answer: a Disconnect or a restart, which nothing re-dials.
+    expect(offlineCauseOf({}, false)).toBe('other');
+    expect(offlineCauseOf(undefined, false)).toBe('other');
   });
 
   it('reads as connected once the connection is back', async () => {
@@ -762,6 +903,10 @@ describe('a finished task’s chat', () => {
       expect(screen.getByTestId('blocked')).toHaveTextContent('true');
       expect(screen.getByTestId('hold')).toHaveTextContent(
         `${accessCopy.chatBlockedSendTitle} | ${accessCopy.chatBlockedSendTaskFinished('#general')}`
+      );
+      // A task is not granted again: its placeholder names the other way on (Q4-15).
+      expect(screen.getByTestId('hold-placeholder')).toHaveTextContent(
+        accessCopy.chatBlockedPlaceholderTaskFinished
       );
     }
   );

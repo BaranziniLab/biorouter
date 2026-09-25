@@ -24,6 +24,11 @@ import { revokeGrant, type RevokeOutcome } from './useCrewGrants';
 export interface CrewComposerHold {
   title: string;
   message: string;
+  /**
+   * The held composer's placeholder: Send is grey, and the empty box says why before Enter does
+   * (live QA round 4, Q4-15).
+   */
+  placeholder: string;
   /** The one toast id this hold is shown under ({@link crewHoldToastId}). */
   toastId: string;
 }
@@ -105,7 +110,9 @@ export interface ChatCrewAccessBarProps {
  * - **Offline:** the grant stands but its Crew connection is down, so the next turn would fail as
  *   a model error (Q2-08). A neutral note says so, with **Connect in Crew**, which connects and
  *   lands on the chat's channel (Q3-08). Nothing is held. The chat notices the outage while it is
- *   watched: `useChatCrewAccess` re-reads the connections while it holds a grant (Q3-04).
+ *   watched: `useChatCrewAccess` re-reads the connections while it holds a grant (Q3-04). When the
+ *   cause is the network, which the daemon retries by itself, it says Crew will reconnect when the
+ *   network is back, with **Connect now** (Q4-06).
  * - **Revoked or expired:** a calm notice, "Crew access to #general was removed, so this chat
  *   can't continue. …", with **Start a new chat** and **Grant access again**, which opens this
  *   chat's consent in Crew in one hop. The chat holds its composer (`access.blocksComposer`) so the
@@ -162,6 +169,9 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     const hold: CrewComposerHold = {
       title: accessCopy.chatBlockedSendTitle,
       message: holdMessage,
+      placeholder: finished
+        ? accessCopy.chatBlockedPlaceholderTaskFinished
+        : accessCopy.chatBlockedPlaceholder,
       toastId: crewHoldToastId(accessCopy.chatBlockedSendTitle, holdMessage),
     };
     publishHold(sessionId, holdToken, hold);
@@ -169,7 +179,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
       publishHold(sessionId, holdToken, null);
       dismissHoldToast(hold);
     };
-  }, [sessionId, holdToken, holdMessage]);
+  }, [sessionId, holdToken, holdMessage, finished]);
 
   if (!sessionId || !grant) return null;
 
@@ -197,7 +207,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
   const revoke = async () => {
     setConfirming(false);
     setRevoking(true);
-    const result = await revokeGrant(grant.connection_id, sessionId);
+    const result = await revokeGrant(grant.connection_id, sessionId, grant);
     setRevoking(false);
     setOutcome(result);
     // Read the grant again now rather than trusting the announcement to reach this chat's lookup:
@@ -264,6 +274,10 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
   }
 
   if (access.state === 'offline') {
+    // A network drop is dialled again by the daemon itself once the network is back (Q4-01), so
+    // the bar says so and its button is an offer, not a requirement (Q4-06). Every other cause —
+    // sign-in, a host key, a membership that ended, a Disconnect — keeps "until you connect".
+    const network = access.offlineCause === 'network';
     return (
       <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
         <Note
@@ -272,11 +286,11 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
           testId="crew-chat-access-offline"
           action={
             <Button type="button" variant="secondary" size="sm" onClick={connectInCrew}>
-              {accessCopy.chatConnectInCrew}
+              {network ? accessCopy.chatConnectNow : accessCopy.chatConnectInCrew}
             </Button>
           }
         >
-          {accessCopy.chatOffline(destination)}
+          {network ? accessCopy.chatOfflineNetwork : accessCopy.chatOffline(destination)}
         </Note>
       </div>
     );
@@ -297,6 +311,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
       {confirming ? (
         <InlineConfirm
           question={accessCopy.confirm(chat, destination)}
+          detail={accessCopy.confirmStops}
           confirmLabel={accessCopy.confirmRevoke}
           cancelLabel={accessCopy.confirmKeep}
           pending={revoking}

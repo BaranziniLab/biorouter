@@ -3329,7 +3329,10 @@ export default function ChatInput({
               // nothing yet; `messagesLength` is already a prop here (#22), so the
               // placeholder can simply tell the truth in both states.
               placeholder={
-                (messagesLength ?? 0) > 0 ? getNavigationShortcutText() : 'Ask Biorouter anything…'
+                crewHold?.placeholder ??
+                ((messagesLength ?? 0) > 0
+                  ? getNavigationShortcutText()
+                  : 'Ask Biorouter anything…')
               }
               value={composerBody}
               onChange={handleChange}

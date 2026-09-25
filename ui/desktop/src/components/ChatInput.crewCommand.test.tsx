@@ -407,6 +407,7 @@ describe('Enter in a chat held by lapsed Crew access', () => {
     state,
     grant: { session_id: 'session-42', connection_id: 'conn-1' } as unknown as CrewSessionGrant,
     destination: '#general',
+    offlineCause: null,
     unconfirmed: false,
     blocksComposer: true,
     refetch: vi.fn(),
@@ -477,5 +478,32 @@ describe('Enter in a chat held by lapsed Crew access', () => {
     fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' });
     expect(toastWarning).not.toHaveBeenCalled();
     expect(handleSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Q4-15 (live QA round 4): after Revoke, the composer took typing but Send stayed grey under the
+   * old placeholder, and only Enter said why. The empty box says it now.
+   */
+  it.each(['revoked', 'expired'] as const)(
+    'says how to continue in the empty composer when access was %s',
+    async (state) => {
+      renderHeld(lapsed(state));
+      fireEvent.change(composer(), { target: { value: '' } });
+      await waitFor(() =>
+        expect(composer()).toHaveAttribute(
+          'placeholder',
+          'Grant access again to continue this chat'
+        )
+      );
+      expect(sendButton()).toBeDisabled();
+    }
+  );
+
+  it('keeps its own placeholder when Crew holds nothing', () => {
+    renderHeld(null, false);
+    expect(composer().getAttribute('placeholder')).not.toBe(
+      'Grant access again to continue this chat'
+    );
+    expect(composer()).toHaveAttribute('placeholder');
   });
 });

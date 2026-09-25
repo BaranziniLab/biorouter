@@ -6,8 +6,13 @@ import {
   type CrewSessionGrant,
 } from '../api/grants';
 import { isRecord, optionalText } from '../api/parse';
-import { crewHttp } from '../crewApi';
+import { CrewHttpError, crewHttp } from '../crewApi';
 import { sanitizeDisplayText } from '../identity';
+import {
+  CONNECT_FAILURE_CODES,
+  classifyConnectFailure,
+  isMembershipEnded,
+} from '../state/connectFailure';
 import { accessCopy } from './copy';
 import { isUnconfirmedRevocation, onGrantsChanged } from './useCrewGrants';
 
@@ -51,6 +56,12 @@ export interface ChatCrewAccess {
    * view last showed it, else "a channel in {workspace}", else "a Crew channel".
    */
   destination: string;
+  /**
+   * Why an `offline` chat's connection is down: `network` when the daemon's last answer (or the
+   * computer itself) says the network failed — the daemon dials such a drop again by itself once
+   * the network is back (Q4-01) — else `other`. `null` unless `state` is `offline`.
+   */
+  offlineCause: 'network' | 'other' | null;
   /** The grant was stopped on this device and the workspace has not confirmed it yet. */
   unconfirmed: boolean;
   /**
@@ -164,6 +175,10 @@ interface SavedConnection {
   name: string;
   /** The daemon's word for the connection now (`connected`, `disconnected`), when it gave one. */
   status?: string;
+  /** Why it is down, in the daemon's words (`last_error`). Never shown: only classified. */
+  lastError?: string;
+  /** The typed reason beside `last_error`, when the daemon has one (`last_error_code`). */
+  lastErrorCode?: string;
 }
 
 function savedConnections(result: unknown): SavedConnection[] {
@@ -175,6 +190,10 @@ function savedConnections(result: unknown): SavedConnection[] {
     const connection: SavedConnection = { id, name: sanitizeDisplayText(row.name) };
     const status = optionalText(row.status);
     if (status) connection.status = status;
+    const lastError = optionalText(row.last_error);
+    if (lastError) connection.lastError = lastError;
+    const lastErrorCode = optionalText(row.last_error_code);
+    if (lastErrorCode) connection.lastErrorCode = lastErrorCode;
     return [connection];
   });
 }
@@ -182,6 +201,50 @@ function savedConnections(result: unknown): SavedConnection[] {
 /** Whether the daemon says the connection `connectionId` is down (only an explicit answer). */
 function isDisconnected(connections: readonly SavedConnection[], connectionId: string): boolean {
   return connections.find((item) => item.id === connectionId)?.status === 'disconnected';
+}
+
+/**
+ * Why a disconnected connection is down, for the chat's offline bar (live QA round 4, Q4-06).
+ * `network` only when something says the network failed: the daemon's last answer classifies as
+ * unreachable (`classifyConnectFailure`, the Crew view's own reading), or this computer has no
+ * network at all (`navigator.onLine`) and the answer carries no typed reason of another kind. The
+ * daemon dials such a drop again by itself for up to an hour (Q4-01).
+ *
+ * `other` for everything nothing will reconnect by itself, so the bar keeps "until you connect": a
+ * connection with no last answer (a person's Disconnect, a restart), a membership the workspace
+ * ended, and every sign-in, host-key or other failure. The daemon's saved answer for an SSH drop is
+ * its untyped message ("Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]…"), which the
+ * classifier reads as sign-in, as it must for a daemon without codes: a network drop is recognised
+ * from it only by a typed `crew_ssh_unreachable` or by the computer being offline.
+ */
+export function offlineCauseOf(
+  connection: Pick<SavedConnection, 'lastError' | 'lastErrorCode'> | undefined,
+  online: boolean
+): 'network' | 'other' {
+  if (!connection?.lastError) return 'other';
+  const code = connection.lastErrorCode;
+  if (isMembershipEnded({ last_error_code: code })) return 'other';
+  const failure = classifyConnectFailure(new CrewHttpError(connection.lastError, 0, code));
+  if (failure.kind === 'unreachable') return 'network';
+  const typed =
+    code !== undefined && Object.prototype.hasOwnProperty.call(CONNECT_FAILURE_CODES, code);
+  return !online && !typed ? 'network' : 'other';
+}
+
+function subscribeOnline(listener: () => void) {
+  window.addEventListener('online', listener);
+  window.addEventListener('offline', listener);
+  return () => {
+    window.removeEventListener('online', listener);
+    window.removeEventListener('offline', listener);
+  };
+}
+
+const readOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
+
+/** Whether this computer says it has a network: an answer that changes, so it is watched. */
+function useOnline(): boolean {
+  return useSyncExternalStore(subscribeOnline, readOnline, () => true);
 }
 
 /** A revoke this window saw land, for one grant: its chat, connection and run. */
@@ -234,7 +297,11 @@ function sameConnections(a: readonly SavedConnection[], b: readonly SavedConnect
     a.length === b.length &&
     a.every(
       (item, index) =>
-        item.id === b[index].id && item.name === b[index].name && item.status === b[index].status
+        item.id === b[index].id &&
+        item.name === b[index].name &&
+        item.status === b[index].status &&
+        item.lastError === b[index].lastError &&
+        item.lastErrorCode === b[index].lastErrorCode
     )
   );
 }
@@ -444,12 +511,21 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     () => chatDestination(grant, current?.connections ?? []),
     [grant, current]
   );
+  const online = useOnline();
+  const offlineCause =
+    state === 'offline' && grant
+      ? offlineCauseOf(
+          current?.connections.find((item) => item.id === grant.connection_id),
+          online
+        )
+      : null;
 
   return {
     sessionId: id,
     state,
     grant,
     destination,
+    offlineCause,
     unconfirmed,
     blocksComposer: state === 'revoked' || state === 'expired' || state === 'finished',
     refetch,
