@@ -23,17 +23,27 @@ import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import type { ErrorSource, PreparedDevice } from '../state/types';
 import { hostCopy, INSTALL_COMMANDS, joinCopy } from './copy';
 import {
+  AgentAccessFields,
   Field,
   FieldErrorsProvider,
   PrivacyFields,
-  SwitchRow,
+  remoteFolderInvalid,
   useFormValidation,
+  useInitialFocus,
   useMounted,
   useOpenGeneration,
 } from './fields';
+import {
+  HOST_START_POLL_MS,
+  readHostRun,
+  startHostRun,
+  stopHostRun,
+  type HostStartRun,
+} from './hostStart';
 import { updateJoinContext, useJoinContext } from './joinContext';
 import { advancedInvalid, WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import {
+  connectionServerLabel,
   groupWorkspaceFingerprint,
   hostStartCommands,
   isWorkspaceName,
@@ -43,7 +53,7 @@ import {
   workspaceSlug,
   type StartOutput,
 } from './joinText';
-import { EmbeddedTerminal, TerminalToggle } from './parts';
+import { EmbeddedTerminal, Spinner, TerminalToggle } from './parts';
 
 type Step = 'name' | 'start' | 'create' | 'label';
 type Mode = 'private' | 'public';
@@ -157,6 +167,34 @@ type CreatePhase =
 
 const STEP_NUMBER: Record<Exclude<Step, 'label'>, number> = { name: 1, start: 2, create: 3 };
 
+/**
+ * Where "Start it for me" stands (D-HOST). `starting`: the request is on its way. `running`: the
+ * daemon is running the commands; `output` grows as they print. `reading`: they finished and
+ * printed Crew's answer, which is being read as a paste is. `problem`: it didn't get there, and
+ * `message` says why and what to do instead.
+ */
+type StartRun =
+  | { phase: 'idle' }
+  | { phase: 'starting' }
+  /** `reads`: how many answers have come back, so each one schedules the next read. */
+  | { phase: 'running'; jobId: string; output: string; reads: number }
+  | { phase: 'reading'; output: string }
+  | { phase: 'problem'; output: string; message: string };
+
+/** The sentence for what a finished run printed when it was not Crew's answer. */
+function startProblemText(problem: string, detail: string | null): string {
+  switch (problem) {
+    case 'starting':
+      return hostCopy.startStarting;
+    case 'not_installed':
+      return hostCopy.pasteNotInstalled;
+    case 'server_error':
+      return hostCopy.pasteServerError(sanitizeDisplayText(detail) || hostCopy.startUnreadable);
+    default:
+      return hostCopy.startUnreadable;
+  }
+}
+
 /** The one institution the configured providers name, when there is exactly one. */
 function useSingleInstitution(open: boolean): string | null {
   const { getProviders } = useConfig();
@@ -245,6 +283,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [institution, setInstitution] = useState('');
   const [institutionEdited, setInstitutionEdited] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  /** "Agent on {server}": its own row, folded, off unless the host turns it on (Q2-37). */
+  const [agentOpen, setAgentOpen] = useState(false);
   const [port, setPort] = useState('');
   const [identityFile, setIdentityFile] = useState('');
   const [proxyJump, setProxyJump] = useState('');
@@ -269,6 +309,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   /** The preview an `incomplete` paste produced, whose details prefill the typed fields. */
   const [partial, setPartial] = useState<CrewInvitationPreview | null>(null);
   const [terminal, setTerminal] = useState(false);
+  /** "Run it yourself in a terminal": the manual path, folded under "Start it for me" (D-HOST). */
+  const [manualOpen, setManualOpen] = useState(false);
+  const [run, setRun] = useState<StartRun>({ phase: 'idle' });
+  const startRef = useRef<HTMLButtonElement>(null);
+  const outputRef = useRef<HTMLPreElement>(null);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  /** Where focus goes once the step it was on has gone: Start it for me, or Create workspace. */
+  const [focusNext, setFocusNext] = useState<'start' | 'submit' | null>(null);
+  const startHintId = useId();
   const [socketPath, setSocketPath] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
   const [ownerUid, setOwnerUid] = useState('');
@@ -298,12 +348,24 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       setInstitution(suggestedInstitution);
   }, [suggestedInstitution, institutionEdited, institution]);
 
+  // Open on the workspace name, and keep focus there while the menu that opened the dialog closes
+  // (Q2-27). A host setup that resumes at Create opens on Create's own content instead.
+  useInitialFocus(nameRef, open && step === 'name');
+
   const slug = workspaceSlug(nameText);
   const resumeConnection = resumeId && crew.connection?.id === resumeId ? crew.connection : null;
   const workspaceLabel =
     slug || sanitizeDisplayText(resumeContext.workspaceName) || resumeConnection?.name || '';
   const loginForServer = resumeConnection?.ssh_target ?? serverLogin.trim();
-  const server = connectionServer({ id: '', ssh_target: loginForServer }) || loginForServer;
+  // What to call the server (D-ALIAS): once the connection is saved, the daemon's name for it (the
+  // host's own SSH alias for the address, when one maps to it); before that, the login's host as
+  // typed, which is already the alias when the host typed one.
+  const savedConnection =
+    resumeConnection ?? crew.connections.find((item) => item.id === savedId) ?? null;
+  const server =
+    connectionServerLabel(savedConnection) ||
+    connectionServer({ id: '', ssh_target: loginForServer }) ||
+    loginForServer;
   // Once bootstrapped the workspace exists: waiting for its first verified view never traps the
   // person in the dialog, so `verifying` (like the label question) is not busy.
   const busy =
@@ -443,7 +505,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     setPreparing(false);
     if (!result) return;
     setPrepared(result);
+    // A run from an earlier visit to Start described the login as it was then.
+    setRun({ phase: 'idle' });
     setStep('start');
+    // Continue leaves with the Name step's footer; the Start step's own action takes focus.
+    setFocusNext('start');
   };
 
   /** Hand the Start step's outcome to the form: pin, ask for the rest, or say what's wrong. */
@@ -492,6 +558,159 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     });
     setStep('create');
   };
+
+  // ── Start it for me (D-HOST) ───────────────────────────────────────────────────────────────
+  /** The commands the Start step shows: what the daemon must run, character for character. */
+  const shownCommands = prepared ? hostStartCommands(slug, prepared.public_key) : '';
+  const runActive = run.phase === 'starting' || run.phase === 'running' || run.phase === 'reading';
+
+  /** A run that didn't get there: say why, and open the manual path, which always works. */
+  const runProblem = useCallback((message: string, output = '') => {
+    setRun({ phase: 'problem', output, message });
+    setManualOpen(true);
+  }, []);
+
+  /**
+   * On the person's click only. The request names the host setup, the workspace name and the
+   * login they typed; the daemon builds the command from its own hosting key, runs it over SSH as
+   * that login and nothing else, and refuses without proof that a person asked.
+   */
+  const startForMe = async () => {
+    if (!prepared || runActive || busy) return;
+    const shown = shownCommands;
+    setRun({ phase: 'starting' });
+    let status: HostStartRun;
+    try {
+      status = await startHostRun({
+        preparation_id: prepared.preparation_id,
+        workspace_name: slug,
+        ssh_target: serverLogin.trim(),
+        port: portValue ?? null,
+        identity_file: identityFile.trim() || null,
+        proxy_jump: proxyJump.trim() || null,
+      });
+    } catch (failure) {
+      if (!mounted.current) return;
+      runProblem(
+        isStaleDaemon(failure)
+          ? hostCopy.startStaleDaemon
+          : failure instanceof Error && failure.message
+            ? failure.message
+            : hostCopy.startFailed
+      );
+      return;
+    }
+    if (!mounted.current) return;
+    // The daemon runs its own copy of the commands. One that differs from what the person saw is
+    // stopped at once and never read (a tripwire: the two are pinned together by tests).
+    if (status.command !== shown) {
+      void stopHostRun(status.jobId).catch(() => undefined);
+      runProblem(hostCopy.startCommandChanged);
+      return;
+    }
+    void settleRun(status);
+  };
+
+  /** Follow a run to its end, then read what it printed as a paste is read. */
+  const settleRun = async (status: HostStartRun) => {
+    if (status.state === 'running') {
+      setRun((current) => ({
+        phase: 'running',
+        jobId: status.jobId,
+        output: status.output,
+        reads: current.phase === 'running' ? current.reads + 1 : 0,
+      }));
+      return;
+    }
+    if (status.state === 'failed' || !status.result) {
+      runProblem(
+        sanitizeDisplayText(status.error?.message) ||
+          (status.result ? hostCopy.startFailed : hostCopy.startUnreadable),
+        status.output
+      );
+      return;
+    }
+    if (status.result.kind === 'problem') {
+      runProblem(startProblemText(status.result.problem, status.result.detail), status.output);
+      return;
+    }
+    setRun({ phase: 'reading', output: status.output });
+    const outcome = await readPaste(status.result.text);
+    if (!mounted.current) return;
+    switch (outcome.kind) {
+      case 'found':
+        setRun({ phase: 'idle' });
+        pinFound(outcome.preview);
+        // Start it for me leaves with the Start step: Create workspace takes focus.
+        setFocusNext('submit');
+        return;
+      case 'incomplete':
+      case 'stale':
+        // Read, but the rest has to be typed: the fields appear below, prefilled where they can.
+        setRun({ phase: 'idle' });
+        applyOutcome(outcome, '');
+        return;
+      case 'bad':
+        runProblem(hostCopy.startUnreadable, status.output);
+        return;
+      case 'failed':
+        runProblem(outcome.message, status.output);
+        return;
+    }
+  };
+
+  // Read a running start again until it ends. Closing the dialog stops reading, not the run: a
+  // start stopped halfway could leave the server half set up, and choosing Start it for me again
+  // answers the same run.
+  const runningJob = run.phase === 'running' ? run.jobId : null;
+  const runningOutput = run.phase === 'running' ? run.output : null;
+  const runningReads = run.phase === 'running' ? run.reads : null;
+  useEffect(() => {
+    if (!runningJob) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      readHostRun(runningJob, controller.signal).then(
+        (status) => {
+          if (controller.signal.aborted || !mounted.current) return;
+          void settleRun(status);
+        },
+        (failure: unknown) => {
+          if (controller.signal.aborted || !mounted.current) return;
+          runProblem(
+            failure instanceof Error && failure.message ? failure.message : hostCopy.startFailed,
+            runningOutput ?? ''
+          );
+        }
+      );
+    }, HOST_START_POLL_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    // `settleRun` is recreated every render; each answer that comes back schedules the next read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningJob, runningReads, mounted, runProblem]);
+
+  const stopRun = () => {
+    if (run.phase !== 'running') return;
+    void stopHostRun(run.jobId).catch(() => undefined);
+  };
+
+  // Keep the newest output in view as it arrives.
+  const shownOutput = run.phase === 'idle' || run.phase === 'starting' ? '' : run.output;
+  useEffect(() => {
+    const box = outputRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [shownOutput]);
+
+  // Hand focus to the step's own action once the control that had it has gone with its step.
+  useLayoutEffect(() => {
+    if (!focusNext) return;
+    const target = focusNext === 'start' ? startRef.current : submitRef.current;
+    if (!target) return;
+    setFocusNext(null);
+    target.focus();
+  }, [focusNext, step]);
 
   // Read the paste as soon as it is pasted, so the person sees "Found lab on hpc ✓" or exactly
   // what is wrong before Continue (T-27). Nothing is saved; the daemon still does the reading.
@@ -607,7 +826,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
   };
 
-  // A submit with an invalid field inside the closed Advanced opens it, then reports.
+  // A submit with an invalid field inside a folded section (Advanced, the agent row, the manual
+  // path) opens it, then reports.
   const [validateHidden, setValidateHidden] = useState(false);
   useEffect(() => {
     if (!validateHidden) return;
@@ -618,10 +838,26 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy) return;
-    if (step === 'name' && !advancedOpen && advancedInvalid(port, remoteRoot)) {
-      setAdvancedOpen(true);
-      setValidateHidden(true);
-      return;
+    if (step === 'name') {
+      const agentHidden = !agentOpen && remoteFolderInvalid(remoteRoot);
+      const advancedHidden = !advancedOpen && advancedInvalid(port, '');
+      if (agentHidden || advancedHidden) {
+        if (agentHidden) setAgentOpen(true);
+        if (advancedHidden) setAdvancedOpen(true);
+        setValidateHidden(true);
+        return;
+      }
+    }
+    if (step === 'start') {
+      // Start it for me is running: it moves on by itself.
+      if (runActive) return;
+      // Continue belongs to the manual path: a submit while it is folded opens it and asks for
+      // the paste there.
+      if (!manualOpen && parse !== 'stale' && parse !== 'incomplete') {
+        setManualOpen(true);
+        setValidateHidden(true);
+        return;
+      }
     }
     // The form is `noValidate`: its fields are checked here and answered under each field.
     if (!validate()) return;
@@ -672,7 +908,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         <>
           <Button
             type="button"
-            variant="ghost"
+            variant="secondary"
             disabled={crew.isPending('mutate:policy.set')}
             onClick={onClose}
           >
@@ -693,32 +929,43 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           : resumeId || savedId
             ? null
             : ('start' as const);
+    // On Start, Continue belongs to the manual path (and to the details typed by hand): Start it
+    // for me is the step's action, and moves on by itself.
+    const showSubmit =
+      step !== 'start' || manualOpen || parse === 'stale' || parse === 'incomplete';
     return (
       <>
         {back ? (
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => setStep(back)}>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || runActive}
+            onClick={() => setStep(back)}
+          >
             {hostCopy.back}
           </Button>
         ) : (
-          <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>
             {joinCopy.cancel}
           </Button>
         )}
-        <Button type="submit" form={formId} disabled={busy || verifying}>
-          {step === 'name'
-            ? preparing
-              ? hostCopy.preparing
-              : hostCopy.continue
-            : step === 'start'
-              ? parse === 'reading'
-                ? hostCopy.reading
+        {showSubmit ? (
+          <Button ref={submitRef} type="submit" form={formId} disabled={busy || verifying}>
+            {step === 'name'
+              ? preparing
+                ? hostCopy.preparing
                 : hostCopy.continue
-              : phase === 'signing-in'
-                ? hostCopy.signingIn
-                : phase !== 'idle'
-                  ? hostCopy.creating
-                  : hostCopy.create}
-        </Button>
+              : step === 'start'
+                ? parse === 'reading'
+                  ? hostCopy.reading
+                  : hostCopy.continue
+                : phase === 'signing-in'
+                  ? hostCopy.signingIn
+                  : phase !== 'idle'
+                    ? hostCopy.creating
+                    : hostCopy.create}
+          </Button>
+        ) : null}
       </>
     );
   })();
@@ -738,6 +985,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       }
       subtitle={subtitle}
       scrollBody
+      // A dialog portals outside `.crew-app`: the class carries Crew's focused-field edge to it
+      // (Q2-25), and the top anchor keeps it from re-centring as each step changes its height
+      // (Q2-26).
+      className="crew-dialog"
+      anchor="top"
       footer={footer}
     >
       <FieldErrorsProvider value={errors}>
@@ -767,6 +1019,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     {(props) => (
                       <Input
                         {...props}
+                        ref={nameRef}
                         autoFocus
                         required
                         disabled={busy}
@@ -813,6 +1066,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       }}
                     />
                   </div>
+                  <AgentAccessFields
+                    server={server}
+                    open={agentOpen}
+                    onOpenChange={setAgentOpen}
+                    remoteRoot={remoteRoot}
+                    remoteExecution={remoteExecution}
+                    disabled={busy}
+                    onRemoteRoot={setRemoteRoot}
+                    onRemoteExecution={setRemoteExecution}
+                  />
                   <Disclosure
                     open={advancedOpen}
                     onOpenChange={setAdvancedOpen}
@@ -867,32 +1130,6 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                           />
                         )}
                       </Field>
-                      <Field
-                        label={joinCopy.remoteFolder}
-                        helper={joinCopy.remoteFolderHelper}
-                        invalidMessage={joinCopy.remoteFolderInvalid}
-                      >
-                        {(props) => (
-                          <Input
-                            {...props}
-                            disabled={busy}
-                            pattern="/.*"
-                            value={remoteRoot}
-                            spellCheck={false}
-                            onChange={(event) => {
-                              setRemoteRoot(event.target.value);
-                              if (!event.target.value.trim()) setRemoteExecution(false);
-                            }}
-                          />
-                        )}
-                      </Field>
-                      <SwitchRow
-                        label={joinCopy.remoteExecution}
-                        checked={remoteExecution}
-                        disabled={busy || !remoteRoot.trim()}
-                        hint={remoteRoot.trim() ? undefined : joinCopy.remoteExecutionNeedsFolder}
-                        onCheckedChange={setRemoteExecution}
-                      />
                     </div>
                   </Disclosure>
                 </>
@@ -904,20 +1141,68 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   <p className="text-body text-text-default">
                     {hostCopy.runThis(server, sshUsername(serverLogin))}
                   </p>
-                  {/* One command per line, scrolling sideways rather than wrapping mid-flag. */}
+                  {/* One command per line, scrolling sideways rather than wrapping mid-flag. The
+                      same text both ways: Start it for me runs exactly this (D-HOST). */}
                   <CopyField
                     multiline
                     className="crew-onboard-command"
                     label={hostCopy.commandLabel}
-                    value={hostStartCommands(slug, prepared.public_key)}
+                    value={shownCommands}
                   />
-                  <div className="crew-onboard-row">
-                    <TerminalToggle
-                      open={terminal}
-                      onToggle={() => setTerminal((value) => !value)}
-                    />
+                  <div className="crew-onboard-stack" data-testid="crew-host-start-for-me">
+                    <div className="crew-onboard-row">
+                      <Button
+                        ref={startRef}
+                        type="button"
+                        // The step's action, until the person takes the manual path instead.
+                        variant={manualOpen ? 'secondary' : 'default'}
+                        // Not `disabled` while it runs: a disabled control drops keyboard focus
+                        // to the page (Q2-20). It says so, and does nothing.
+                        aria-disabled={runActive || busy || undefined}
+                        className="crew-onboard-waiting"
+                        aria-describedby={startHintId}
+                        onClick={() => void startForMe()}
+                      >
+                        {hostCopy.startForMe}
+                      </Button>
+                      {run.phase === 'running' ? (
+                        <Button type="button" variant="secondary" onClick={stopRun}>
+                          {hostCopy.stop}
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p id={startHintId} className="text-supporting text-text-muted">
+                      {hostCopy.startForMeHint(server, sshUsername(serverLogin))}
+                    </p>
+                    <p className="crew-onboard-row text-supporting text-text-muted" role="status">
+                      {runActive ? (
+                        <>
+                          <Spinner />
+                          {run.phase === 'reading'
+                            ? hostCopy.startReading
+                            : hostCopy.startRunning(server)}
+                        </>
+                      ) : null}
+                    </p>
+                    {shownOutput ? (
+                      // What the commands printed, as it arrives. A scrolling region a keyboard
+                      // can reach; not a live region, which would read every line aloud.
+                      <pre
+                        ref={outputRef}
+                        tabIndex={0}
+                        aria-label={hostCopy.startOutput}
+                        className="crew-onboard-output font-mono text-supporting text-text-default"
+                        data-testid="crew-host-start-output"
+                      >
+                        {shownOutput}
+                      </pre>
+                    ) : null}
+                    {run.phase === 'problem' ? (
+                      <Note tone="warning" role="alert" testId="crew-host-start-problem">
+                        {run.message}
+                      </Note>
+                    ) : null}
                   </div>
-                  {terminal ? <EmbeddedTerminal onClose={() => setTerminal(false)} /> : null}
                   {parse === 'stale' ? (
                     <div className="crew-onboard-form" ref={staleFieldsRef}>
                       <Note tone="warning" role="status">
@@ -929,78 +1214,94 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         onChange={pinnedSetters}
                       />
                     </div>
-                  ) : (
-                    <>
-                      <Field
-                        label={hostCopy.pasted}
-                        live
-                        helper={
-                          parse === 'bad' ? (
-                            (problem ?? hostCopy.bad)
-                          ) : parse === 'checking' ? (
-                            hostCopy.checkingPaste
-                          ) : parse === 'found' && found ? (
-                            <span
-                              className="crew-onboard-found text-text-success"
-                              data-testid="crew-host-paste-found"
-                            >
-                              {hostCopy.found(
-                                sanitizeDisplayText(found.preview.workspace_name) || workspaceLabel,
-                                foundServer
-                              )}
-                              <Check aria-hidden className="h-3.5 w-3.5" />
-                            </span>
-                          ) : undefined
-                        }
-                        invalid={parse === 'bad'}
-                      >
-                        {(props) => (
-                          <textarea
-                            {...props}
-                            required
-                            rows={4}
-                            disabled={busy}
-                            value={pasted}
-                            ref={pasteRef}
-                            placeholder={hostCopy.pastedPlaceholder}
-                            spellCheck={false}
-                            onChange={(event) => {
-                              setPasted(event.target.value);
-                              // A new paste is read again, a moment after typing stops.
-                              setFound(null);
-                              setProblem(null);
-                              setParse(event.target.value.trim() ? 'checking' : 'idle');
-                            }}
-                            className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
-                          />
-                        )}
-                      </Field>
-                      {parse === 'incomplete' ? (
-                        <>
-                          <Note tone="warning" role="status">
-                            {hostCopy.detailsMissing}
-                          </Note>
-                          <PinnedFields
-                            disabled={busy}
-                            values={pinnedValues}
-                            onChange={pinnedSetters}
-                          />
-                        </>
-                      ) : null}
-                    </>
-                  )}
-                  <Disclosure label={hostCopy.notSignedIn}>
-                    <div className="crew-onboard-stack">
-                      <CopyField
-                        label={hostCopy.sshCommandLabel}
-                        value={sshLoginCommand({
-                          ssh_target: serverLogin,
-                          port: portValue ?? null,
-                          proxy_jump: proxyJump,
-                          identity_file: identityFile,
-                        })}
+                  ) : parse === 'incomplete' ? (
+                    <div className="crew-onboard-form">
+                      <Note tone="warning" role="status">
+                        {hostCopy.detailsMissing}
+                      </Note>
+                      <PinnedFields
+                        disabled={busy}
+                        values={pinnedValues}
+                        onChange={pinnedSetters}
                       />
-                      <p className="text-supporting text-text-muted">{hostCopy.confirmServer}</p>
+                    </div>
+                  ) : null}
+                  <Disclosure
+                    label={hostCopy.runYourself}
+                    open={manualOpen}
+                    onOpenChange={setManualOpen}
+                  >
+                    <div className="crew-onboard-form" data-testid="crew-host-run-yourself">
+                      <p className="text-body text-text-default">
+                        {hostCopy.runYourselfBody(server, sshUsername(serverLogin))}
+                      </p>
+                      <div className="crew-onboard-stack">
+                        <p className="text-supporting text-text-muted">{hostCopy.notSignedIn}</p>
+                        <CopyField
+                          label={hostCopy.sshCommandLabel}
+                          value={sshLoginCommand({
+                            ssh_target: serverLogin,
+                            port: portValue ?? null,
+                            proxy_jump: proxyJump,
+                            identity_file: identityFile,
+                          })}
+                        />
+                        <p className="text-supporting text-text-muted">{hostCopy.confirmServer}</p>
+                      </div>
+                      <div className="crew-onboard-row">
+                        <TerminalToggle
+                          open={terminal}
+                          onToggle={() => setTerminal((value) => !value)}
+                        />
+                      </div>
+                      {terminal ? <EmbeddedTerminal onClose={() => setTerminal(false)} /> : null}
+                      {parse !== 'stale' ? (
+                        <Field
+                          label={hostCopy.pasted}
+                          live
+                          helper={
+                            parse === 'bad' ? (
+                              (problem ?? hostCopy.bad)
+                            ) : parse === 'checking' ? (
+                              hostCopy.checkingPaste
+                            ) : parse === 'found' && found ? (
+                              <span
+                                className="crew-onboard-found text-text-success"
+                                data-testid="crew-host-paste-found"
+                              >
+                                {hostCopy.found(
+                                  sanitizeDisplayText(found.preview.workspace_name) ||
+                                    workspaceLabel,
+                                  foundServer
+                                )}
+                                <Check aria-hidden className="h-3.5 w-3.5" />
+                              </span>
+                            ) : undefined
+                          }
+                          invalid={parse === 'bad'}
+                        >
+                          {(props) => (
+                            <textarea
+                              {...props}
+                              required
+                              rows={4}
+                              disabled={busy}
+                              value={pasted}
+                              ref={pasteRef}
+                              placeholder={hostCopy.pastedPlaceholder}
+                              spellCheck={false}
+                              onChange={(event) => {
+                                setPasted(event.target.value);
+                                // A new paste is read again, a moment after typing stops.
+                                setFound(null);
+                                setProblem(null);
+                                setParse(event.target.value.trim() ? 'checking' : 'idle');
+                              }}
+                              className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
+                            />
+                          )}
+                        </Field>
+                      ) : null}
                     </div>
                   </Disclosure>
                   <Disclosure label={hostCopy.notInstalled}>

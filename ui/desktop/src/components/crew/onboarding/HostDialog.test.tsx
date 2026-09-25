@@ -20,7 +20,20 @@ const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   previewInvitation: vi.fn(),
   dockProps: [] as Record<string, unknown>[],
+  startHostRun: vi.fn(),
+  readHostRun: vi.fn(),
+  stopHostRun: vi.fn(),
 }));
+
+vi.mock('./hostStart', async () => {
+  const actual = await vi.importActual<typeof import('./hostStart')>('./hostStart');
+  return {
+    ...actual,
+    startHostRun: mocks.startHostRun,
+    readHostRun: mocks.readHostRun,
+    stopHostRun: mocks.stopHostRun,
+  };
+});
 
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({ getProviders: mocks.getProviders }),
@@ -93,10 +106,20 @@ async function fillName() {
   await waitFor(() => expect(screen.getByLabelText(joinCopy.institution)).toHaveValue('ucsf'));
 }
 
-async function throughStart() {
+/** Take the manual path: "Run it yourself in a terminal" (D-HOST keeps it, folded). */
+function runItYourself() {
+  fireEvent.click(screen.getByRole('button', { name: hostCopy.runYourself }));
+}
+
+async function toStart() {
   await fillName();
   fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
   await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+}
+
+async function throughStart() {
+  await toStart();
+  runItYourself();
   fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
   fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
   await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
@@ -107,6 +130,9 @@ beforeEach(() => {
   resetJoinContextForTests();
   mocks.dockProps.length = 0;
   mocks.previewInvitation.mockReset().mockResolvedValue(PREVIEW);
+  mocks.startHostRun.mockReset();
+  mocks.readHostRun.mockReset();
+  mocks.stopHostRun.mockReset().mockResolvedValue(undefined);
   mocks.getProviders.mockReset().mockResolvedValue([
     {
       name: 'versa',
@@ -188,12 +214,22 @@ describe('HostDialog', () => {
     expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.consequence)).toBeInTheDocument();
 
+    // The step's action is Start it for me; the manual path is folded under it (D-HOST).
+    const start = screen.getByRole('button', { name: hostCopy.startForMe });
+    expect(start).toHaveFocus();
+    expect(start).toHaveAccessibleDescription(hostCopy.startForMeHint('hpc.ucsf.edu', 'alice'));
+    expect(screen.queryByLabelText(hostCopy.pasted)).toBeNull();
+    expect(screen.queryByRole('button', { name: hostCopy.continue })).toBeNull();
+    runItYourself();
+    expect(screen.getByText(hostCopy.runYourselfBody('hpc.ucsf.edu', 'alice'))).toBeVisible();
+    expect(screen.getByRole('button', { name: hostCopy.continue })).toBeInTheDocument();
+
     // The embedded terminal is a plain shell: nothing is typed or run for the person.
     fireEvent.click(screen.getByRole('button', { name: hostCopy.openTerminal }));
     expect(screen.getByTestId('in-app-terminal-dock')).toBeInTheDocument();
     expect(Object.keys(mocks.dockProps[0]).sort()).toEqual(['onClose', 'onEmptied', 'open']);
 
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.notSignedIn }));
+    expect(screen.getByText(hostCopy.notSignedIn)).toBeInTheDocument();
     expect(screen.getByText('ssh alice@hpc.ucsf.edu')).toBeInTheDocument();
     expect(screen.getByText(hostCopy.confirmServer)).toBeInTheDocument();
   });
@@ -203,9 +239,8 @@ describe('HostDialog', () => {
       new CrewHttpError('not an invitation', 400, CREW_INVITATION_INVALID)
     );
     renderHost();
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
     fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: 'oops' } });
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
     expect(await screen.findByText(hostCopy.bad)).toBeInTheDocument();
@@ -217,9 +252,8 @@ describe('HostDialog', () => {
     mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, socket_path: null, owner_uid: null });
     const saved = fakeConnection({ id: 'conn-host', status: 'disconnected' });
     const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
     fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
 
@@ -265,9 +299,8 @@ describe('HostDialog', () => {
       .mockResolvedValueOnce({ ...PREVIEW, socket_path: null, owner_uid: null })
       .mockResolvedValueOnce(PREVIEW);
     renderHost();
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
     fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
     await screen.findByText(hostCopy.detailsMissing);
@@ -289,9 +322,8 @@ describe('HostDialog', () => {
     mocks.previewInvitation.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
     const saved = fakeConnection({ id: 'conn-host', status: 'disconnected' });
     const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
     fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
 
@@ -464,9 +496,8 @@ describe('HostDialog', () => {
   });
   it('reads the paste as soon as it is pasted, through the terminal text around it (T-27)', async () => {
     renderHost();
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
 
     // A prompt before the JSON, and a copy that broke the long line inside the socket path.
     const noisy = [
@@ -510,9 +541,8 @@ describe('HostDialog', () => {
     ],
   ])('says exactly what is wrong when %s, before Continue', async (_case, paste, message) => {
     renderHost();
-    await fillName();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
-    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    await toStart();
+    runItYourself();
     const box = screen.getByLabelText(hostCopy.pasted);
     fireEvent.change(box, { target: { value: paste } });
 
@@ -611,5 +641,279 @@ describe('HostDialog', () => {
 
     view.update({ refreshError: 'The workspace refused this computer.' });
     await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
+  });
+  describe('the dialog itself', () => {
+    it('opens at the top, as a Crew dialog, with a secondary Cancel (Q2-25, Q2-26)', () => {
+      renderHost();
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveAttribute('data-anchor', 'top');
+      expect(dialog).toHaveClass('crew-dialog');
+      expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass(
+        'bg-background-medium'
+      );
+    });
+
+    it('keeps focus on the workspace name while the menu that opened it closes (Q2-27)', async () => {
+      renderHost();
+      const name = screen.getByLabelText(hostCopy.workspaceName);
+      expect(name).toHaveFocus();
+      act(() => name.blur());
+      expect(document.activeElement).toBe(document.body);
+      await waitFor(() => expect(name).toHaveFocus());
+    });
+
+    it('gives the agent’s permissions their own row, out of Advanced and off (Q2-37)', async () => {
+      const view = renderHost({
+        saveConnection: vi.fn().mockResolvedValue(fakeConnection({ id: 'conn-host' })),
+      });
+      await fillName();
+      expect(screen.getByText(hostCopy.advancedSummary)).toBeInTheDocument();
+      expect(hostCopy.advancedSummary).not.toMatch(/agent/);
+      const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
+      expect(row).toHaveAccessibleDescription('No work folder · agent commands off');
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+      expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
+      fireEvent.click(row);
+      fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+        target: { value: '/srv/lab' },
+      });
+      fireEvent.click(screen.getByRole('switch', { name: joinCopy.remoteExecution }));
+
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+      runItYourself();
+      fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+      await waitFor(() =>
+        expect(view.crew().saveConnection).toHaveBeenCalledWith(
+          expect.objectContaining({ remote_root: '/srv/lab', remote_execution: true })
+        )
+      );
+    });
+
+    it('names a resumed setup’s server by the host’s own SSH alias (D-ALIAS)', async () => {
+      updateJoinContext('conn-1', { hostSetup: true, workspaceName: 'lab' });
+      const connection = {
+        ...fakeConnection({ ssh_target: 'alice@52.33.141.141', status: 'connected' }),
+        server_label: 'lab-server',
+      };
+      renderHost({ connectionId: 'conn-1', connection, connections: [connection] });
+      expect(await screen.findByText(hostCopy.createHeading('lab', 'lab-server'))).toBeVisible();
+    });
+  });
+
+  describe('Start it for me (D-HOST)', () => {
+    const SHOWN = [
+      'umask 077',
+      'mkdir -p "$HOME/.local/share/biorouter-crew"',
+      `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/lab-data" --name lab-data --bootstrap-key ${HOSTING_KEY}`,
+      '"$HOME/.local/bin/biorouter-crew" status --state-dir "$HOME/.local/share/biorouter-crew/lab-data"',
+    ].join('\n');
+    const LINE = 'brcrew1:eyJ2IjoxfQ';
+
+    function run(overrides: Record<string, unknown> = {}) {
+      return {
+        jobId: 'job-1',
+        command: SHOWN,
+        state: 'running',
+        output: '',
+        result: null,
+        error: null,
+        ...overrides,
+      };
+    }
+
+    it('runs exactly the commands shown, as the login typed, then reads the result and moves on', async () => {
+      mocks.startHostRun.mockResolvedValue(run({ output: 'starting Crew…\n' }));
+      mocks.readHostRun.mockResolvedValue(
+        run({
+          state: 'finished',
+          output: `starting Crew…\n{"invitation":"${LINE}"}\n`,
+          exit_code: 0,
+          result: { kind: 'found', text: LINE },
+        })
+      );
+      renderHost();
+      await toStart();
+
+      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      fireEvent.click(start);
+      // Only what the route accepts: the host setup, the name and the login. Never a command.
+      await waitFor(() => expect(mocks.startHostRun).toHaveBeenCalledOnce());
+      const [request] = mocks.startHostRun.mock.calls[0];
+      expect(request).toEqual({
+        preparation_id: 'prep-1',
+        workspace_name: 'lab-data',
+        ssh_target: 'alice@hpc.ucsf.edu',
+        port: null,
+        identity_file: null,
+        proxy_jump: null,
+      });
+      expect(JSON.stringify(request)).not.toMatch(/biorouter-crew|umask|bootstrap/);
+      // The shown text is the one the daemon reports running.
+      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SHOWN);
+
+      // Its output streams in, in a region a keyboard can reach, while it runs.
+      const output = await screen.findByTestId('crew-host-start-output');
+      expect(output).toHaveTextContent('starting Crew…');
+      expect(output).toHaveAttribute('tabindex', '0');
+      expect(screen.getByText(hostCopy.startRunning('hpc.ucsf.edu'))).toBeInTheDocument();
+      // Busy, not disabled: focus stays on it.
+      expect(start).toHaveAttribute('aria-disabled', 'true');
+      expect(start).toHaveFocus();
+
+      // Read as a paste is read, then on to Create with nothing to paste; focus follows.
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'), undefined, {
+        timeout: 3000,
+      });
+      expect(mocks.readHostRun).toHaveBeenCalledWith('job-1', expect.any(AbortSignal));
+      expect(mocks.previewInvitation).toHaveBeenCalledWith(LINE);
+      expect(screen.getByRole('button', { name: hostCopy.create })).toHaveFocus();
+      expect(screen.getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
+    });
+
+    it('stops a run whose commands are not the ones shown, and reads nothing from it', async () => {
+      mocks.startHostRun.mockResolvedValue(run({ command: `${SHOWN}\nrm -rf ~` }));
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+
+      expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
+        hostCopy.startCommandChanged
+      );
+      expect(mocks.stopHostRun).toHaveBeenCalledWith('job-1');
+      expect(mocks.readHostRun).not.toHaveBeenCalled();
+      expect(mocks.previewInvitation).not.toHaveBeenCalled();
+      // The manual path opens: it always works.
+      expect(screen.getByLabelText(hostCopy.pasted)).toBeInTheDocument();
+    });
+
+    it.each([
+      [
+        'the server wants a password',
+        {
+          state: 'failed',
+          error: {
+            code: 'crew_ssh_auth_required',
+            message:
+              'The server asks for a password or a code, so Biorouter can’t sign in for you. Run the commands yourself in a terminal.',
+          },
+        },
+        'The server asks for a password or a code, so Biorouter can’t sign in for you. Run the commands yourself in a terminal.',
+      ],
+      [
+        'biorouter-crew is missing',
+        { state: 'finished', result: { kind: 'problem', problem: 'not_installed' } },
+        hostCopy.pasteNotInstalled,
+      ],
+      [
+        'Crew was still starting',
+        { state: 'finished', result: { kind: 'problem', problem: 'starting' } },
+        hostCopy.startStarting,
+      ],
+      [
+        'Crew printed an error',
+        {
+          state: 'finished',
+          result: { kind: 'problem', problem: 'server_error', detail: 'state dir is locked' },
+        },
+        hostCopy.pasteServerError('state dir is locked'),
+      ],
+      [
+        'nothing Crew printed',
+        { state: 'finished', result: { kind: 'problem', problem: 'unreadable' } },
+        hostCopy.startUnreadable,
+      ],
+    ])('says what to do when %s, and opens the manual path', async (_case, answer, message) => {
+      mocks.startHostRun.mockResolvedValue(run({ ...answer, output: 'ssh: …' }));
+      renderHost();
+      await toStart();
+      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      fireEvent.click(start);
+
+      expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(message);
+      expect(screen.getByTestId('crew-host-start-output')).toHaveTextContent('ssh: …');
+      expect(screen.getByLabelText(hostCopy.pasted)).toBeInTheDocument();
+      expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
+      // It can be tried again, and focus never left it.
+      expect(start).not.toHaveAttribute('aria-disabled');
+      expect(start).toHaveFocus();
+    });
+
+    it('shows the daemon’s refusal, such as a missing proof that a person asked', async () => {
+      mocks.startHostRun.mockRejectedValue(
+        new CrewHttpError(
+          'Confirm this in Biorouter to continue.',
+          403,
+          'crew_user_action_required'
+        )
+      );
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
+        'Confirm this in Biorouter to continue.'
+      );
+      expect(mocks.readHostRun).not.toHaveBeenCalled();
+    });
+
+    it('says a newer background service is needed when the daemon has no such route', async () => {
+      mocks.startHostRun.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
+        hostCopy.startStaleDaemon
+      );
+      expect(screen.getByLabelText(hostCopy.pasted)).toBeInTheDocument();
+    });
+
+    it('asks for the details the output lacked, prefilled, instead of moving on', async () => {
+      mocks.startHostRun.mockResolvedValue(
+        run({ state: 'finished', result: { kind: 'found', text: LINE } })
+      );
+      mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, socket_path: null, owner_uid: null });
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+
+      expect(await screen.findByText(hostCopy.detailsMissing)).toBeInTheDocument();
+      expect(screen.getByLabelText(joinCopy.workspaceKey)).toHaveValue(WORKSPACE_KEY);
+      expect(screen.getByLabelText(joinCopy.socketPath)).toHaveValue('');
+      // Continue takes the typed details.
+      fireEvent.change(screen.getByLabelText(joinCopy.socketPath), {
+        target: { value: '/tmp/crew-1000-abc/broker.sock' },
+      });
+      fireEvent.change(screen.getByLabelText(joinCopy.hostUserId), { target: { value: '1000' } });
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    });
+
+    it('stops a run on Stop, and keeps Back closed while it runs', async () => {
+      mocks.startHostRun.mockResolvedValue(run());
+      mocks.readHostRun.mockReturnValue(new Promise(() => {}));
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      const stop = await screen.findByRole('button', { name: hostCopy.stop });
+      expect(screen.getByRole('button', { name: hostCopy.back })).toBeDisabled();
+      fireEvent.click(stop);
+      expect(mocks.stopHostRun).toHaveBeenCalledWith('job-1');
+    });
+
+    it('starts nothing while a run is under way, however often it is pressed', async () => {
+      mocks.startHostRun.mockResolvedValue(run());
+      mocks.readHostRun.mockReturnValue(new Promise(() => {}));
+      renderHost();
+      await toStart();
+      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      fireEvent.click(start);
+      await screen.findByRole('button', { name: hostCopy.stop });
+      fireEvent.click(start);
+      fireEvent.click(start);
+      expect(mocks.startHostRun).toHaveBeenCalledOnce();
+    });
   });
 });
