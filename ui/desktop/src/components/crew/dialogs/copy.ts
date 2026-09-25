@@ -182,7 +182,12 @@ export const letInCopy = {
   title: (workspace: string) => `into ${workspace}`,
   titlePrefix: 'Let',
   code: (first: string) => `Code from ${first}`,
-  helper: (first: string) => `Paste the code ${first} sends you directly.`,
+  /**
+   * Under the code field: a security hint, not "just paste it" (QA Q3-36). The code is only worth
+   * approving if it came from the person themselves.
+   */
+  helper: (first: string) =>
+    `Paste the code ${first} sent you. Only use a code that came from ${first}.`,
   submit: (first: string) => `Let ${first} in`,
   /**
    * Before the field, when a computer with a different code has tried to join as this person. The
@@ -198,14 +203,15 @@ export const letInCopy = {
    */
   alreadyApproved: (username: string) =>
     `You already entered a code for @${username}, and it didn’t match their computer. Enter the code they sent and choose Replace code.`,
-  replaceHelp: 'Replace the code only if they sent you a new one.',
+  replaceHelp: (who: string) => `Replace the code only if ${who} sent you a new one.`,
   replace: 'Replace code',
   /**
    * The broker only records the code: it cannot tell yet whether it is the right one, so this
-   * never says "Approved" (QA T-13), and says the host need not wait (QA Q2-23).
+   * never says "Approved" (QA T-13), and says the host need not wait (QA Q2-23). `who` is the one
+   * name the dialog uses for the joiner, never "they" (QA Q3-36).
    */
   approved: (who: string) =>
-    `Code saved. ${who} is in as soon as their Crew checks in; you can close this.`,
+    `Code saved. ${who} is in as soon as ${who}’s Crew checks in; you can close this.`,
   /** Replaces `approved` once the directory shows the person as a member. */
   joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
   /** An older broker: the team is an invitation the person accepts in Crew. */
@@ -217,17 +223,24 @@ export const letInCopy = {
   footerAdd: (team: string) => `Add to ${team}`,
   /** The same, for an older broker that invites. */
   footerInvite: (team: string) => `Invite to ${team}`,
-  /** A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23). */
+  /** A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23, Q3-36). */
   directAdded: (who: string, team: string, channels: string) =>
-    `Added ${who} to ${team}. They can now see ${channels}.`,
+    `Added ${who} to ${team}. ${who} can now see ${channels}.`,
   /** One team's channel choices, where several teams are offered. */
   channelsIn: (team: string) => `Also add to, in ${team}`,
   /** Closes with the team additions still undone. */
   notNow: 'Not now',
-  addAfterJoin: (first: string) => `You can add ${first} to a team once they’ve joined.`,
+  /** Under the team offers while the joiner's Crew has not checked in yet (QA Q3-36). */
+  addAfterJoin: (first: string) => `You can add ${first} to a team once ${first} joins.`,
+  /**
+   * The same row once they have joined, so the dialog keeps its shape and the footer stays under
+   * the host's pointer (QA Q3-35).
+   */
+  channelsWithTeam: 'Ticked channels are added with the team.',
   /** The workspace key's fingerprint, for the host to read out if asked (QA Q2-04). */
   fingerprintFor: (who: string) => `Fingerprint ${who} should see:`,
-  fingerprintHelper: 'If they ask, read this to them. It should match what their Crew shows.',
+  fingerprintHelper: (who: string) =>
+    `If ${who} asks, read this out. It should match what ${who}’s Crew shows.`,
   done: 'Done',
   cancel: 'Cancel',
 } as const;

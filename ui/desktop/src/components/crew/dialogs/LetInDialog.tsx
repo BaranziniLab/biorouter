@@ -4,7 +4,7 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
 import type { Team } from '../crewApi';
-import { identityCopy, joinerPerson, teamName } from '../identity';
+import { displayNameIsUsername, identityCopy, joinerPerson, teamName } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { ChannelChoices } from './AddPeopleDialog';
 import { addPeopleCopy, deviceCodeCopy, letInCopy as copy } from './copy';
@@ -73,7 +73,7 @@ interface Approval {
  *   offers **Replace code**, which sends the same `{username, code}` again with `replace: true`, as
  *   `biorouter crew enroll approve --replace` does. Nothing replaces an approval unasked.
  * - Success is worded as what it is: the broker only saved the code, and cannot yet tell whether it
- *   is the right one (QA T-13). The line becomes "@x joined {workspace}" once the directory shows
+ *   is the right one (QA T-13). The line becomes "{first} joined {workspace}" once the directory shows
  *   them, and a mismatch reported after saving brings the warning back with a way to re-enter it.
  * - Then the teams the host may add them to, available once they have joined: a broker that adds
  *   members directly (`direct_add_v1`) adds them — with the team's channels to choose from — and an
@@ -85,6 +85,13 @@ interface Approval {
  *   primary and no optional channel starts ticked.
  * - Both views show the workspace key's fingerprint the joiner's Crew shows, to read to them if
  *   they ask (QA Q2-04), with nothing to copy: it is compared by eye, never sent.
+ * - One shape and one name throughout (QA Q3-35, Q3-36). The joiner's `pending_joins` row — the
+ *   only place the name on their server account comes from — goes away the moment they join, so
+ *   the dialog remembers that name once it has seen it: the title ("Let Gina Rossi (@crew_gina)
+ *   into …", the authority form), the "(name on the server account)" subtitle, the fingerprint and
+ *   the hint row all stay when "joined" arrives, and the footer stays under the host's pointer.
+ *   Every sentence then calls them `{first}` — the first word of a name they chose, else of that
+ *   server-account name, else `@username` — and never "they".
  */
 export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const { crew, snapshot, dir, workspace } = useDialogView();
@@ -103,10 +110,21 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const fingerprintHex = useWorkspaceKeyFingerprint(saved?.workspace_public_key);
   const fingerprint = fingerprintHex ? groupedFingerprint(fingerprintHex) : null;
   const join = snapshot?.pending_joins?.find((item) => item.username === username) ?? null;
-  const person = joinerPerson(username, join?.full_name);
+  const offered = joinerPerson(username, join?.full_name);
+  // The name on their server account, kept once seen: their `pending_joins` row — the only place
+  // it comes from — is gone the moment they join, and the dialog must not lose it then (QA Q3-35).
+  // Adjusted during render, so no frame draws the joined view without it.
+  const [serverName, setServerName] = React.useState<string | null>(offered.serverName);
+  if (offered.serverName && offered.serverName !== serverName) setServerName(offered.serverName);
+  const person = offered.serverName ? offered : joinerPerson(username, serverName);
   // Once the person is a member (or is adding a device), the directory knows their chosen name.
   const member = dir.people.find((item) => item.username === username && !item.isFormer) ?? null;
-  const first = firstName(member ?? person);
+  const named =
+    member && !displayNameIsUsername(member.displayName, member.username) ? member : null;
+  // One name for them everywhere in the dialog (QA Q3-36): a name they chose, else the name on
+  // their server account, else `@username`.
+  const fullName = named?.displayName ?? person.serverName;
+  const first = firstName(named ?? person);
   const handle = `@${username}`;
   const approving = crew.isPending(APPROVE_KEY);
   const dismissOwnError = useDismissOwnError(SOURCE);
@@ -160,12 +178,23 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
     approve(code, replacing);
   };
 
+  const handleText = (
+    <bdi className="font-mono" translate="no">
+      {handle}
+    </bdi>
+  );
+  // The authority form, `Gina Rossi (@crew_gina)`, whenever a name is known: the title is where the
+  // host checks WHO this is, so it names them in full beside the one name nobody can choose.
   const title = (
     <>
       {copy.titlePrefix}{' '}
-      <bdi className="font-mono" translate="no">
-        {handle}
-      </bdi>{' '}
+      {fullName ? (
+        <>
+          <bdi>{fullName}</bdi> ({handleText})
+        </>
+      ) : (
+        handleText
+      )}{' '}
       {copy.title(workspace)}
     </>
   );
@@ -176,7 +205,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   ) : undefined;
 
   const fingerprintCheck = fingerprint ? (
-    <FingerprintCheck who={handle} fingerprint={fingerprint} />
+    <FingerprintCheck who={first} fingerprint={fingerprint} />
   ) : null;
 
   if (approval) {
@@ -240,7 +269,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
               },
               { mutation: true }
             );
-            return copy.addedToTeam(handle);
+            return copy.addedToTeam(first);
           }
           const result = directAddResultFrom(
             await crew.request(
@@ -255,9 +284,9 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             )
           );
           return result.alreadyMember && result.addedChannels.length === 0
-            ? addPeopleCopy.alreadyIn(handle, label)
+            ? addPeopleCopy.alreadyIn(first, label)
             : copy.directAdded(
-                handle,
+                first,
                 label,
                 channelsSeenAfterTeamAdd(snapshot, team.id, result.addedChannels)
               );
@@ -269,8 +298,8 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
 
     const teamLabel = (team: Team) =>
       directAdd
-        ? copy.directAddToTeam(handle, teamName(team))
-        : copy.addToTeam(handle, teamName(team));
+        ? copy.directAddToTeam(first, teamName(team))
+        : copy.addToTeam(first, teamName(team));
     const waitingToJoin = !memberId;
     // Each footer layout is its own set of keyed elements: reconciled in place of the form's
     // Cancel (or of the add it replaces), React would reuse that node and never apply `autoFocus`.
@@ -335,10 +364,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             </Note>
           ) : (
             <Note tone={joined ? 'success' : 'neutral'} role="status" icon={Check}>
-              <span>{joined ? copy.joined(handle, workspace) : copy.approved(handle)}</span>
+              <span>{joined ? copy.joined(first, workspace) : copy.approved(first)}</span>
             </Note>
           )}
-          {!joined ? fingerprintCheck : null}
+          {/* In both views, so it never vanishes while the host is reading it out (QA Q3-35). */}
+          {fingerprintCheck}
           {teams.length > 0 ? (
             <div className="flex flex-col items-start gap-3">
               {teams.map((team) => {
@@ -381,8 +411,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                   </div>
                 );
               })}
+              {/* The same row before and after they join, so the footer never moves (QA Q3-35). */}
               {waitingToJoin ? (
                 <p className="text-supporting text-text-muted">{copy.addAfterJoin(first)}</p>
+              ) : toDo.some((team) => choicesFor(team).length > 1) ? (
+                <p className="text-supporting text-text-muted">{copy.channelsWithTeam}</p>
               ) : null}
             </div>
           ) : null}
@@ -452,7 +485,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         />
         {replaceCode !== null ? (
           <div className="flex flex-col items-start gap-2">
-            <p className="text-supporting text-text-muted">{copy.replaceHelp}</p>
+            <p className="text-supporting text-text-muted">{copy.replaceHelp(first)}</p>
             <Button
               type="button"
               variant="secondary"
@@ -493,7 +526,7 @@ function FingerprintCheck({ who, fingerprint }: { who: string; fingerprint: stri
           {fingerprint}
         </span>
       </p>
-      <p className="text-supporting text-text-muted">{copy.fingerprintHelper}</p>
+      <p className="text-supporting text-text-muted">{copy.fingerprintHelper(who)}</p>
     </div>
   );
 }
