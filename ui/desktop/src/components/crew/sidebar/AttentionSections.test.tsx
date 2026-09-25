@@ -190,6 +190,49 @@ describe('Waiting to join', () => {
     );
   });
 
+  it('never cuts a joiner’s name short: @username, then the full name and state on a line of their own (Q3-53)', () => {
+    renderWithCrew(
+      <AttentionSections />,
+      makeController({
+        snapshot: makeSnapshot({
+          pending_joins: [{ username: 'crew_gina', full_name: 'Gina Rossi' }],
+        }),
+      })
+    );
+    const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    // One line cut "Gina Rossi · invited" to "Gina …" with nothing to reveal the rest.
+    expect(row.querySelector('.crew-sidebar-truncate')).toBeNull();
+    const handle = row.querySelector('[data-crew-waiting-handle]') as HTMLElement;
+    expect(handle.textContent).toBe('@crew_gina');
+    const name = row.querySelector('[data-crew-waiting-name]') as HTMLElement;
+    expect(name).toHaveClass('crew-sidebar-wrap');
+    expect(name).toHaveTextContent('Gina Rossi (name on the server account) · invited');
+    // Let in… sits beside the username, in a cell that never shrinks, and reads last.
+    const letIn = within(row).getByRole('button', { name: 'Let @crew_gina in' });
+    const action = letIn.closest('.crew-sidebar-waiting-action') as HTMLElement;
+    expect(action).not.toBeNull();
+    expect(action.parentElement).toBe(handle.parentElement);
+    expect(Array.from(action.parentElement?.children ?? [])).toEqual([handle, name, action]);
+    // …and a screen reader hears one line, in that order (the cells are separate blocks).
+    expect(row.textContent).toMatch(
+      /^@crew_gina · Gina Rossi \(name on the server account\) · invited\s*Let in…/
+    );
+  });
+
+  it('keeps "invited" on the second line when the server account names nobody', () => {
+    renderWithCrew(
+      <AttentionSections />,
+      makeController({ snapshot: makeSnapshot({ pending_joins: [{ username: 'frank' }] }) })
+    );
+    const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    const name = row.querySelector('[data-crew-waiting-name]') as HTMLElement;
+    expect(name).toHaveTextContent(
+      `${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.invited}`
+    );
+    expect(row).toHaveTextContent('@frank · invited');
+    expect(row).not.toHaveTextContent(/name on the server account/);
+  });
+
   it('says whose turn it is while a joiner has not sent a code yet (Q2-42)', () => {
     renderWithCrew(<AttentionSections />, asHost());
     const rows = within(section(sidebarCopy.section.waiting)).getAllByRole('listitem');

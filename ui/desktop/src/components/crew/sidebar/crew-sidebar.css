@@ -522,6 +522,43 @@
   white-space: nowrap;
 }
 
+/* A Waiting to join row's head (Q3-53): `@username` and the action on the
+   first line, the full name and "invited" across the whole second line. A
+   grid rather than two flex rows, so the DOM keeps speaking order (username,
+   name, action) while the action sits beside the username. The action never
+   shrinks: Let in… is never truncated. */
+.crew-sidebar-waiting-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+}
+
+.crew-sidebar-waiting-name {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+}
+
+.crew-sidebar-waiting-action {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+/* Text that must never be cut off — a joiner's username and the full name
+   beside it at a host's decision (Q3-53): it wraps, anywhere if it has to,
+   instead of ending in an ellipsis with nothing to reveal the rest. */
+.crew-sidebar-wrap {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* The workspace menu's header: not a row, not focusable. */
 .crew-sidebar-menu-header {
   display: flex;
