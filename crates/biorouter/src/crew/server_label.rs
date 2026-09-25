@@ -351,10 +351,11 @@ host second # trailing comment
             included("~/elsewhere", &ssh),
             vec![home.path().join("elsewhere")]
         );
-        assert_eq!(
-            included("/etc/ssh/extra", &ssh),
-            vec![PathBuf::from("/etc/ssh/extra")]
-        );
+        // An absolute path is taken as it stands. Built from the temporary directory rather than
+        // written as `/etc/ssh/extra`: on Windows a path with a root but no drive is not
+        // absolute, so that literal took the relative arm and came back as `C:/etc/ssh/extra`.
+        let absolute = home.path().join("etc").join("extra");
+        assert_eq!(included(absolute.to_str().unwrap(), &ssh), vec![absolute]);
         assert!(wildcard(b"*.conf", b"a.conf"));
         assert!(!wildcard(b"*.conf", b"a.txt"));
         assert!(wildcard(b"h?st", b"host"));
