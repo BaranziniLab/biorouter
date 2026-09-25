@@ -271,25 +271,32 @@ impl SecretGuard {
     /// verdict, and only reaches the filesystem when the path is not already a
     /// textual descendant of the root.
     pub fn is_denied(&self, path: &Path) -> bool {
-        if self.is_denied_as_spelled(path) {
+        if self.is_denied_as_spelled(path, path) {
             return true;
         }
         match path.to_str() {
+            // The lowercase form is a second spelling to MATCH, never a second
+            // place: whether the project's own patterns apply is asked of `path`.
+            // On a case-sensitive filesystem the lowercase form of a project
+            // under `/tmp/.tmpAbC…` names nothing, so a project's `!.netrc`
+            // used to lose to the floor there (Linux only).
             Some(text) if text.chars().any(char::is_uppercase) => {
-                self.is_denied_as_spelled(Path::new(&text.to_lowercase()))
+                self.is_denied_as_spelled(Path::new(&text.to_lowercase()), path)
             }
             _ => false,
         }
     }
 
-    fn is_denied_as_spelled(&self, path: &Path) -> bool {
-        let everything = self.ignore.matched(path, false).is_ignore();
-        let machine_wide = self.machine_wide.matched(path, false).is_ignore();
+    /// `spelled` is matched against the patterns; `located` is the path whose
+    /// containment in the root decides whether the project's patterns apply.
+    fn is_denied_as_spelled(&self, spelled: &Path, located: &Path) -> bool {
+        let everything = self.ignore.matched(spelled, false).is_ignore();
+        let machine_wide = self.machine_wide.matched(spelled, false).is_ignore();
         if everything == machine_wide {
             // The project's own file did not move the needle either way.
             return everything;
         }
-        if self.is_inside_root(path) {
+        if self.is_inside_root(located) {
             // Inside the project the project has the last word — it may add a
             // rule, and it may negate one of the floor's with `!path`.
             everything
@@ -1101,15 +1108,21 @@ mod tests {
     #[test]
     fn q4_56_a_negation_reopens_one_store() {
         let fake = FakeHome::new();
+        // A capital in the root, always: on a case-sensitive filesystem the
+        // lowercase spelling of `<root>/.netrc` names nothing inside the project,
+        // and the negation must still hold (it failed on Linux whenever the
+        // random temporary directory's name carried a capital).
+        let project = fake.project.join("Lab");
+        fs::create_dir_all(&project).unwrap();
         fs::write(
-            fake.project.join(".biorouterignore"),
+            project.join(".biorouterignore"),
             "!**/.kube/config\n!.netrc\n",
         )
         .unwrap();
-        let project_file = fake.project.join(".biorouterignore");
-        let g = SecretGuard::build(&fake.project, &[project_file]);
+        let project_file = project.join(".biorouterignore");
+        let g = SecretGuard::build(&project, &[project_file]);
         assert!(!g.is_denied(Path::new(".kube/config")));
-        assert!(!g.is_denied(&fake.project.join(".netrc")));
+        assert!(!g.is_denied(&project.join(".netrc")));
         assert!(g.is_denied(Path::new(".pgpass")));
         assert!(g.is_denied(Path::new(".docker/config.json")));
         // The project's word stops at the project: the home's stores stay refused.
