@@ -16,12 +16,14 @@ import {
   connectionVerifiedThisSession,
   consumeArrivalConnect,
   createConnectionLifecycle,
+  forgetDisconnectedHere,
   OFFLINE_FOLLOW_INTERVAL_MS,
   OFFLINE_FOLLOW_WINDOW_MS,
   RECONNECTING_AFTER_MS,
   takeQuietReobserve,
   useCrewConnectFailures,
   useCrewConnections,
+  wasDisconnectedHere,
 } from './useCrewConnections';
 import {
   CHANNEL_LOST_ERROR_CODE,
@@ -417,6 +419,12 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * waits while one is). A connect, a Disconnect, a connection change and unmount end it
    * (`settleLoss`), and so does a record that says connected (observed again) or anything but
    * disconnected.
+   *
+   * Started by a loss Crew was on screen for (`handleConnectionLost`), by the person's failed
+   * Connect (`connect`), and — final polish NEW-2 — whenever Crew mounts on, or selects, a
+   * connection the daemon already calls disconnected (the effect below `handleConnectionLost`): a
+   * bridge that dropped while the person was in a chat is re-dialled by the daemon all the same,
+   * and Crew opened afterwards used to say "Offline" until the person pressed Connect.
    */
   const followOffline = (id: string, fresh?: CrewConnection) => {
     endOfflineFollow();
@@ -581,6 +589,36 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   useEffect(() => {
     lossHandler.current = handleConnectionLost;
   });
+
+  /**
+   * SECURITY-SENSITIVE (human review). Follow the saved record of a connection Crew finds already
+   * disconnected — on mount, on a selection, or when a list read says so — not only one Crew was on
+   * screen to see drop (final polish NEW-2). Live, a bridge dropped while the person was in a chat;
+   * they opened Crew eight seconds later, the daemon re-dialled fifteen seconds after that, and Crew
+   * still said "Offline" eleven minutes on: nothing had armed the follow, and only the person's
+   * Connect (which replaced a working bridge) brought it back.
+   *
+   * Like every follow it only READS (`followOffline`); nothing here connects. It is not started
+   * while a loss is being decided (that handler follows the record itself), while a follow already
+   * runs, for a membership the workspace ended, or for a connection the person disconnected in this
+   * window (`wasDisconnectedHere`): the daemon never re-dials a Disconnect, so there is nothing to
+   * follow. A record this window sees connected forgets that Disconnect, so a later drop is
+   * followed again.
+   */
+  const savedStatus = savedConnection?.status;
+  const savedMembershipEnded = isMembershipEnded(savedConnection);
+  const followLatest = useRef(followOffline);
+  followLatest.current = followOffline;
+  useEffect(() => {
+    if (savedStatus === 'connected') forgetDisconnectedHere(connectionId);
+  }, [connectionId, savedStatus]);
+  useEffect(() => {
+    if (connectionsState !== 'loaded' || !connectionId) return;
+    if (savedStatus !== 'disconnected' || savedMembershipEnded) return;
+    if (lossPending === connectionId || offlineFollow.current) return;
+    if (wasDisconnectedHere(connectionId)) return;
+    followLatest.current(connectionId);
+  }, [connectionsState, connectionId, savedStatus, savedMembershipEnded, lossPending]);
 
   /**
    * The connection bar's Retry (Q2-01), which the person presses: read the saved record first,

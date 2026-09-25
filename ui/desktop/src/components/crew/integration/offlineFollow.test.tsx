@@ -321,6 +321,108 @@ describe('following the daemon’s re-dial while Crew shows a connection offline
 });
 
 /**
+ * Final polish NEW-2 (P2): the bridge dropped while Bob was in a chat, and he opened Crew eight
+ * seconds later. The daemon re-dialled fifteen seconds after that, and Crew still said "Offline"
+ * eleven and a half minutes on, with the window visible and no click: the follow was armed only
+ * by a loss Crew was on screen for, or by a failed Connect. Only Bob's own Connect cleared it, and
+ * that replaced a working bridge. Now Crew follows the saved record whenever it finds the selected
+ * connection disconnected — and still only reads: nothing here connects.
+ */
+describe('Crew opened after the connection dropped elsewhere (NEW-2)', () => {
+  it('follows the daemon’s re-dial when Crew opens on a disconnected connection, with no click', async () => {
+    saved = { ...connection, status: 'disconnected' };
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+
+    // The daemon's re-dial lands 25 s after Crew opened; nobody clicks anything.
+    await wait(25_000);
+    expect(currentCrew().screen).toBe('offline');
+    daemonRedialled();
+    await wait(OFFLINE_FOLLOW_INTERVAL_MS);
+
+    await channelReady();
+    expect(currentCrew().status).toBe('connected');
+    expect(connects()).toBe(0);
+    // And the reads stop once it is back.
+    const after = reads();
+    await wait(10 * 60_000);
+    expect(reads()).toBe(after);
+  });
+
+  it('follows it when the drop happened while Crew was not on screen', async () => {
+    const first = renderCrew();
+    await channelReady();
+    // The person goes to a chat; the bridge drops while Crew is not mounted, so no observation
+    // ends in front of it.
+    first.unmount();
+    saved = { ...connection, status: 'disconnected' };
+
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    daemonRedialled();
+    await wait(OFFLINE_FOLLOW_INTERVAL_MS);
+
+    await channelReady();
+    expect(currentCrew().status).toBe('connected');
+    expect(currentCrew().screen).toBe('channel');
+    expect(connects()).toBe(0);
+  });
+
+  it('never follows a Disconnect made in this window, even after Crew is opened again', async () => {
+    const first = renderCrew();
+    await channelReady();
+    await act(async () => {
+      await currentCrew().disconnect();
+    });
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    first.unmount();
+
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    const before = reads();
+    await wait(OFFLINE_FOLLOW_WINDOW_MS);
+    expect(reads()).toBe(before);
+    expect(connects()).toBe(0);
+    expect(currentCrew().screen).toBe('offline');
+  });
+
+  it('follows a later drop again once this window has seen the connection connected', async () => {
+    const first = renderCrew();
+    await channelReady();
+    await act(async () => {
+      await currentCrew().disconnect();
+    });
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    // The person connects again, then goes to a chat, and the bridge drops there.
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    await channelReady();
+    first.unmount();
+    saved = { ...connection, status: 'disconnected' };
+
+    renderCrew();
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    daemonRedialled();
+    await wait(OFFLINE_FOLLOW_INTERVAL_MS);
+    await channelReady();
+    expect(currentCrew().status).toBe('connected');
+    // The one connect is the person's own.
+    expect(connects()).toBe(1);
+  });
+
+  it('never follows a membership the workspace ended when Crew opens on it', async () => {
+    saved = { ...connection, status: 'disconnected', last_error_code: MEMBERSHIP_ENDED_CODE };
+    renderCrew();
+    await waitFor(() => expect(currentCrew().connectionsState).toBe('loaded'));
+    const before = reads();
+    await wait(OFFLINE_FOLLOW_WINDOW_MS);
+    expect(reads()).toBe(before);
+    expect(connects()).toBe(0);
+  });
+});
+
+/**
  * Final acceptance NEW-1: after a person's failed Connect, the daemon re-dialled by itself and
  * Crew followed it to "Connected" — but the bar above the channel kept the failed Connect's note,
  * in the transport's own words, with Try again, for at least five minutes. The daemon's message

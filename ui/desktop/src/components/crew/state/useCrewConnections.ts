@@ -187,6 +187,13 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
 const quietReobserves = new Map<string, number[]>();
 /** Connections a verified view (or a `joined` answer) showed this app session. */
 const verifiedConnections = new Set<string>();
+/**
+ * Connections the person disconnected in this window, until this window sees them connected
+ * again. The daemon never re-dials a Disconnect (`disarm_idle_redial`), so Crew does not follow
+ * the saved record of one (`followOffline`): there is no re-dial to follow. A Disconnect made
+ * anywhere else is not known here, and is followed like a drop — reading is all a follow does.
+ */
+const disconnectedHere = new Set<string>();
 
 /**
  * The least time since the previous quiet re-observation of a connection before the next one:
@@ -202,8 +209,10 @@ export const QUIET_REOBSERVE_WINDOW_MS = 10 * 60_000;
 
 /**
  * While Crew shows a connection offline or "Can't connect" — after a loss the daemon reports as
- * disconnected, or after the person's own Connect failed — the saved record is read again this
- * often while the window is visible (live QA round 4, Q4-02). A read is only `GET /connections`;
+ * disconnected, after the person's own Connect failed, or whenever Crew opens on (or selects) a
+ * connection the daemon already calls disconnected, wherever the person was when it dropped
+ * (final polish NEW-2) — the saved record is read again this often while the window is visible
+ * (live QA round 4, Q4-02). A read is only `GET /connections`;
  * it connects nothing. It catches the daemon's own re-dial of a network failure without a click:
  * when the record says connected again, Crew observes it again.
  */
@@ -252,6 +261,21 @@ export function connectionVerifiedThisSession(connectionId: string): boolean {
   return verifiedConnections.has(connectionId);
 }
 
+/** The person disconnected `connectionId` in this window: the daemon will not re-dial it. */
+export function noteDisconnectedHere(connectionId: string): void {
+  if (connectionId) disconnectedHere.add(connectionId);
+}
+
+/** `connectionId` is connected again, whoever connected it: a later drop may be re-dialled. */
+export function forgetDisconnectedHere(connectionId: string): void {
+  disconnectedHere.delete(connectionId);
+}
+
+/** Whether the person disconnected `connectionId` in this window and it has not connected since. */
+export function wasDisconnectedHere(connectionId: string): boolean {
+  return disconnectedHere.has(connectionId);
+}
+
 /**
  * Forget everything kept for a removed connection: drafts, last channel, and the remembered view
  * and pane (`viewMemory`).
@@ -259,6 +283,7 @@ export function connectionVerifiedThisSession(connectionId: string): boolean {
 export function forgetConnectionMemory(connectionId: string): void {
   quietReobserves.delete(connectionId);
   verifiedConnections.delete(connectionId);
+  disconnectedHere.delete(connectionId);
   forgetConnectionDrafts(connectionId);
   forgetLastChannel(connectionId);
   forgetViewMemory(connectionId);
@@ -349,6 +374,7 @@ export function consumeArrivalConnect(intentId: string): void {
 export function resetConnectionMemoryForTests(): void {
   quietReobserves.clear();
   verifiedConnections.clear();
+  disconnectedHere.clear();
   consumedArrivalConnects.clear();
   try {
     window.sessionStorage.removeItem(ARRIVAL_CONNECT_STORAGE_KEY);
@@ -436,6 +462,7 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
         throw failure;
       }
       failures.clear(target);
+      forgetDisconnectedHere(target);
       await loadConnections();
       await refresh();
       return true;
@@ -446,6 +473,8 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
     const target = connectionId;
     await act('global', 'disconnect', async () => {
       await crewHttp(`/connections/${target}/disconnect`, 'POST', {});
+      // Before the list is read again, so the record's `disconnected` is never taken for a drop.
+      noteDisconnectedHere(target);
       stopObserving();
       failures.clear(target);
       await loadConnections();
