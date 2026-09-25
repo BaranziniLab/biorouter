@@ -1364,11 +1364,25 @@ impl Ctx {
         out
     }
 
+    /// One chat's or task's grant (F4): the same facts the JSON carries, in the words the
+    /// desktop's access list uses. A task is called a task (`kind`), the conversation by its
+    /// title (`session_name`), and the state is read from `expired`, `expires_at` and
+    /// `revocation` together, so a grant whose time ran out never reads Active.
     fn grant_row(&self, grant: &Value) -> Vec<String> {
-        let session = str_field(grant, "session_id").map_or_else(|| "this chat".into(), safe_text);
-        let chat = match str_field(grant, "title") {
-            Some(title) => format!("{} (chat {session})", quoted_name(title)),
-            None => format!("Chat {session}"),
+        let task = str_field(grant, "kind") == Some("task");
+        let (noun, lower) = if task {
+            ("Task", "task")
+        } else {
+            ("Chat", "chat")
+        };
+        let session =
+            str_field(grant, "session_id").map_or_else(|| format!("this {lower}"), safe_text);
+        let title = str_field(grant, "session_name")
+            .or_else(|| str_field(grant, "title"))
+            .filter(|title| !title.trim().is_empty());
+        let chat = match title {
+            Some(title) => format!("{noun} {} ({lower} {session})", quoted_name(title)),
+            None => format!("{noun} {session}"),
         };
         let destination = str_field(grant, "channel_id");
         let mut row = format!("{chat} → {}", self.channel_in_team(destination));
@@ -1380,12 +1394,42 @@ impl Ctx {
         if !others.is_empty() {
             let _ = write!(row, " (also reads {})", others.join(", "));
         }
-        let expired = grant.get("expired").and_then(Value::as_bool) == Some(true);
-        row.push_str(if expired { " · Expired" } else { " · Active" });
+        let _ = write!(row, " · {}", self.grant_state(grant, task));
         if let Some(epoch) = grant.get("policy_epoch").and_then(Value::as_u64) {
             let _ = write!(row, " · policy epoch {epoch}");
         }
         vec![self.with_id(row, "task ID", str_field(grant, "run_id"))]
+    }
+
+    /// A grant's state as the desktop's access list says it (`accessRows.ts`): a stop the
+    /// workspace has not confirmed yet, a stop the workspace made itself, a revocation, a
+    /// grant whose time ran out, or an active one with its end. A task's grant ends with the
+    /// task, so it reads Ended rather than Revoked or Expired.
+    fn grant_state(&self, grant: &Value, task: bool) -> String {
+        let stopped = grant.get("expired").and_then(Value::as_bool) == Some(true);
+        let expires_at = grant.get("expires_at").and_then(Value::as_i64);
+        let now = self.clock.now();
+        if stopped {
+            return match str_field(grant, "revocation") {
+                Some("unconfirmed") => {
+                    "Stopped on this device; the workspace hasn't confirmed yet".into()
+                }
+                Some("ended_by_workspace") => "Ended: Crew settings changed".into(),
+                _ if task => "Ended".into(),
+                _ => "Revoked".into(),
+            };
+        }
+        match expires_at {
+            Some(at) if at <= now => {
+                if task {
+                    "Ended".into()
+                } else {
+                    "Expired".into()
+                }
+            }
+            Some(at) => format!("Active · ends {}", within(at - now)),
+            None => "Active".into(),
+        }
     }
 
     fn run_grant_row(&self, run: &Value) -> Vec<String> {
@@ -2630,6 +2674,62 @@ mod tests {
         assert!(ids.contains(&format!("[task ID {RUN}]")) && ids.contains(CONNECTION));
         assert!(with_ids(&grants(), &snapshot).contains(RUN));
         assert!(with_ids(&privacy(), &snapshot).contains(WORKSPACE));
+    }
+
+    /// F4: the text list says what the JSON says. A grant whose `expires_at` has passed never
+    /// reads Active; a task is a task; the chat is named by its title; a stop reads as the
+    /// revocation it was, or as not yet confirmed while the workspace has not confirmed it.
+    #[test]
+    fn grants_text_matches_the_json() {
+        let snapshot = alice_snapshot();
+        let row = |fields: Value| {
+            let mut grant = grants()["grants"][0].clone();
+            for (key, value) in fields.as_object().unwrap() {
+                grant[key] = value.clone();
+            }
+            named(&json!({ "grants": [grant] }), &snapshot)
+        };
+        let base = "→ #methods in Crew QA Lab (also reads #general)";
+        for (fields, expected) in [
+            (
+                json!({"kind": "chat", "session_name": "Assay results summary", "expires_at": NOW - 11 * 3600}),
+                format!("Chat {} (chat 20260924_3) {base} · Expired · policy epoch 4", q("Assay results summary")),
+            ),
+            (
+                json!({"kind": "chat", "expires_at": NOW + 45 * 60}),
+                format!("Chat 20260924_3 {base} · Active · ends in 45 minutes · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "session_name": "Summarize counts", "expires_at": NOW + 45 * 60}),
+                format!("Task {} (task 20260924_3) {base} · Active · ends in 45 minutes · policy epoch 4", q("Summarize counts")),
+            ),
+            (
+                json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true}),
+                format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "expires_at": NOW - 60}),
+                format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "chat", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true}),
+                format!("Chat 20260924_3 {base} · Revoked · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "chat", "expired": true}),
+                format!("Chat 20260924_3 {base} · Revoked · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "chat", "expired": true, "revocation": "unconfirmed", "remote_revocation_confirmed": false}),
+                format!("Chat 20260924_3 {base} · Stopped on this device; the workspace hasn't confirmed yet · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "chat", "expired": true, "revocation": "ended_by_workspace", "remote_revocation_confirmed": null}),
+                format!("Chat 20260924_3 {base} · Ended: Crew settings changed · policy epoch 4"),
+            ),
+        ] {
+            assert_eq!(row(fields.clone()), expected, "{fields}");
+        }
     }
 
     #[test]
