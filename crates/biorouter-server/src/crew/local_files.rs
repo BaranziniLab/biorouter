@@ -337,7 +337,8 @@ const CREDENTIAL_SNIFF_BYTES: u64 = 64 * 1024;
 pub enum CredentialRefusal {
     /// An upload source. `name` is the file name as the request spelled it, made printable.
     Source { name: String },
-    /// A download destination.
+    /// A download destination: a location the credential floor names, or (Q4-55) a settings,
+    /// login or autostart location or an executable file ([`download_destination_denied`]).
     Destination,
 }
 
@@ -405,24 +406,298 @@ fn holds_credential_material(file: &File) -> Result<bool> {
     )
 }
 
-pub fn select(path: &Path, direction: Direction, overwrite: bool) -> Result<Selection> {
-    if direction == Direction::Download && credential_floor_denies(path) {
+// ---- Q4-55: settings, login and autostart destinations -------------------------------------
+
+/// The places a download may not write although no credential lives there (Q4-55).
+///
+/// **Defense in depth, not the boundary.** The renderer holds the daemon secret and the
+/// user-action proof, so page script can register a download to any path it can name, and the
+/// credential floor names only credential stores. A write is worse than a read: attacker-chosen
+/// bytes in an rc file, `~/.ssh/authorized_keys` or a LaunchAgent are code execution or a login
+/// (security round 4, F1, wrote `~/.bashrc` end to end). [`download_destination_denied`] refuses
+/// those places. It does not close the door, and says so: `POST /agent/call_tool` reaches
+/// `developer__shell` with the same proof, and a registration proof only the main process
+/// holds, which would close both, is an open decision
+/// (`docs/research/biorouter-crew/implementation-plan.md` §16, D-DROP).
+struct SettingsLocations {
+    /// The person's home directory. Below it, a path that passes through a component starting
+    /// with `.` is refused.
+    homes: Vec<PathBuf>,
+    /// Folders refused whole: `~/Library` on macOS, `%APPDATA%`, `%LOCALAPPDATA%` and
+    /// `~\AppData` on Windows.
+    settings: Vec<PathBuf>,
+}
+
+impl SettingsLocations {
+    /// This process's. On unix that is `$HOME` **and** the account's home from the user
+    /// database: they differ when a profile or a launcher moves `HOME`, and the account's real
+    /// rc files are no less worth protecting then.
+    fn current() -> Self {
+        #[cfg(unix)]
+        let (homes, settings) = (
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .into_iter()
+                .chain(account_home())
+                .collect(),
+            Vec::new(),
+        );
+        #[cfg(windows)]
+        let (homes, settings) = (
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .into_iter()
+                .collect(),
+            ["APPDATA", "LOCALAPPDATA"]
+                .into_iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from)
+                .collect(),
+        );
+        #[cfg(not(any(unix, windows)))]
+        let (homes, settings) = (Vec::new(), Vec::new());
+        Self::new(homes, settings)
+    }
+
+    /// `homes`, with the platform's settings folder below each one added to `settings`. A
+    /// relative path and the filesystem root are dropped: neither names a person's home, and a
+    /// root "home" would refuse every hidden folder on the machine.
+    fn new(homes: Vec<PathBuf>, settings: Vec<PathBuf>) -> Self {
+        let names = |path: &PathBuf| path.is_absolute() && path.parent().is_some();
+        let homes: Vec<PathBuf> = homes.into_iter().filter(names).collect();
+        let below_home: &[&str] = if cfg!(target_os = "macos") {
+            &["Library"]
+        } else if cfg!(windows) {
+            &["AppData"]
+        } else {
+            &[]
+        };
+        let settings = settings
+            .into_iter()
+            .chain(
+                homes
+                    .iter()
+                    .flat_map(|home| below_home.iter().map(move |name| home.join(name))),
+            )
+            .filter(names)
+            .collect();
+        Self { homes, settings }
+    }
+}
+
+/// The account's home directory from the user database, whatever `$HOME` says.
+#[cfg(unix)]
+fn account_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let uid = unsafe { libc::geteuid() };
+    let mut buffer = vec![0u8; 4096];
+    loop {
+        // SAFETY: every pointer is to a live local; `getpwuid_r` writes the entry's strings
+        // into `buffer`, which outlives the `CStr` read from it below.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status == libc::ERANGE && buffer.len() < 1 << 20 {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        if status != 0 || found.is_null() || entry.pw_dir.is_null() {
+            return None;
+        }
+        let dir = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+        let home = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+        return home.is_absolute().then_some(home);
+    }
+}
+
+/// `path` with `.` dropped and `..` taken lexically, never above the root. Nothing is opened.
+fn lexical(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other.as_os_str()),
+        }
+    }
+    folded
+}
+
+/// `path` with links and `..` resolved the way the filesystem resolves them, as far as it
+/// exists; a tail that does not exist yet is appended as [`lexical`] spells it.
+fn resolved(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let spelled = lexical(path);
+    for ancestor in spelled.ancestors().skip(1) {
+        if let (Ok(canonical), Ok(rest)) = (
+            std::fs::canonicalize(ancestor),
+            spelled.strip_prefix(ancestor),
+        ) {
+            return canonical.join(rest);
+        }
+    }
+    spelled
+}
+
+/// The components of `path` after `root`, when `root` is a prefix of it, compared with case
+/// folded: on APFS and NTFS `~/LIBRARY` opens `~/Library`.
+fn below(path: &Path, root: &Path) -> Option<Vec<String>> {
+    let fold = |component: Component| component.as_os_str().to_string_lossy().to_lowercase();
+    let mut rest = path.components();
+    for expected in root.components() {
+        if fold(rest.next()?) != fold(expected) {
+            return None;
+        }
+    }
+    Some(rest.map(fold).collect())
+}
+
+/// Q4-55: is `path` a download destination Crew refuses although the credential floor does
+/// not name it? True when, spelled as written (with `..` folded), with its folder's links
+/// resolved, or through the file's own link:
+///
+/// - (a) it is below the home directory and passes through a component that starts with `.`:
+///   rc and profile files, all of `~/.ssh` including `authorized_keys` and `config`,
+///   `~/.gitconfig`, `~/.config/**` (autostart, systemd user units), `~/.local/**`, `.git/**`;
+/// - (b) it is under `~/Library` (macOS);
+/// - (c) it is under `%APPDATA%` or `%LOCALAPPDATA%` (Windows), the Startup folder included;
+/// - (d) it names an existing file with an execute bit (unix), which a replacement would take
+///   over.
+///
+/// On unix the folder is also matched by device and inode, so a route no string comparison
+/// sees (a macOS firmlink such as `/System/Volumes/Data/Users/…`, a bind mount) is refused too.
+fn download_destination_denied(path: &Path, locations: &SettingsLocations) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
+        return false;
+    };
+    let folder = resolved(parent);
+    let mut spellings = vec![lexical(path), folder.join(name)];
+    spellings.extend(std::fs::canonicalize(path));
+    let roots = |paths: &[PathBuf]| -> Vec<PathBuf> {
+        paths
+            .iter()
+            .flat_map(|root| [lexical(root), resolved(root)])
+            .collect()
+    };
+    let (homes, settings) = (roots(&locations.homes), roots(&locations.settings));
+    let hidden = |rest: Vec<String>| rest.iter().any(|name| name.starts_with('.'));
+    spellings.iter().any(|spelled| {
+        homes
+            .iter()
+            .any(|home| below(spelled, home).is_some_and(hidden))
+            || settings.iter().any(|root| below(spelled, root).is_some())
+    }) || denied_by_identity(&folder, name, locations)
+        || names_an_executable(path)
+}
+
+/// Rules (a) to (c) by device and inode: walk the resolved folder's ancestors and compare each
+/// with the home and settings folders themselves.
+#[cfg(unix)]
+fn denied_by_identity(
+    folder: &Path,
+    name: &std::ffi::OsStr,
+    locations: &SettingsLocations,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let identity = |path: &Path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
+    let homes: Vec<_> = locations.homes.iter().filter_map(|p| identity(p)).collect();
+    let settings: Vec<_> = locations
+        .settings
+        .iter()
+        .filter_map(|p| identity(p))
+        .collect();
+    folder.ancestors().any(|ancestor| {
+        let Some(this) = identity(ancestor) else {
+            return false;
+        };
+        settings.contains(&this)
+            || (homes.contains(&this)
+                && folder
+                    .strip_prefix(ancestor)
+                    .unwrap_or(Path::new(""))
+                    .components()
+                    .map(|component| component.as_os_str())
+                    .chain([name])
+                    .any(|part| part.to_string_lossy().starts_with('.')))
+    })
+}
+
+#[cfg(not(unix))]
+fn denied_by_identity(_: &Path, _: &std::ffi::OsStr, _: &SettingsLocations) -> bool {
+    false
+}
+
+/// Rule (d): an existing file with any execute bit, following a link as the replacement would
+/// be judged by whoever runs it.
+#[cfg(unix)]
+fn names_an_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn names_an_executable(_: &Path) -> bool {
+    false
+}
+
+/// What every download destination must pass, whichever door registered it: the credential
+/// floor (Q3-01) and the settings locations (Q4-55), answered with one refusal.
+fn refuse_destination(path: &Path, locations: &SettingsLocations) -> Result<()> {
+    if credential_floor_denies(path) || download_destination_denied(path, locations) {
         return Err(CredentialRefusal::Destination.into());
+    }
+    Ok(())
+}
+
+pub fn select(path: &Path, direction: Direction, overwrite: bool) -> Result<Selection> {
+    select_with(path, direction, overwrite, &SettingsLocations::current())
+}
+
+fn select_with(
+    path: &Path,
+    direction: Direction,
+    overwrite: bool,
+    locations: &SettingsLocations,
+) -> Result<Selection> {
+    if direction == Direction::Download {
+        refuse_destination(path, locations)?;
     }
     select_local(path, direction, overwrite, false)
 }
 
-/// Removing this transfer's own `.part` file is the one selection the floor does not judge: a
-/// partial left in a folder the floor names (by a receipt older than the floor) must still be
-/// removable.
+/// Removing this transfer's own `.part` file is the one selection neither the floor nor the
+/// settings locations judge: a partial left in a folder they name (by a receipt older than
+/// the rule) must still be removable.
 pub fn select_cleanup(path: &Path) -> Result<Selection> {
     select_local(path, Direction::Download, false, true)
 }
 
 pub fn select_download_replay(path: &Path, overwrite: bool) -> Result<Selection> {
-    if credential_floor_denies(path) {
-        return Err(CredentialRefusal::Destination.into());
-    }
+    select_download_replay_with(path, overwrite, &SettingsLocations::current())
+}
+
+fn select_download_replay_with(
+    path: &Path,
+    overwrite: bool,
+    locations: &SettingsLocations,
+) -> Result<Selection> {
+    refuse_destination(path, locations)?;
     select_local(path, Direction::Download, overwrite, true)
 }
 
@@ -1074,6 +1349,42 @@ mod credential_floor_tests {
         assert_eq!(saved.name(), "results.csv");
     }
 
+    /// Q4-56: security round 4 uploaded each of these with a 200. Their contents hold nothing
+    /// the content check recognises (a netrc password, a pgpass row, a `user:token@host` URL,
+    /// docker's base64 `auth`, a lowercase kubeconfig `token:`), so the name must refuse them.
+    #[test]
+    fn the_long_tail_of_credential_stores_is_refused() {
+        let home = FakeHome::new();
+        for (store, text) in [
+            (".netrc", "machine lab login tester password notapassword\n"),
+            ("_netrc", "machine lab login tester password notapassword\n"),
+            (".pgpass", "db:5432:lab:tester:notapassword\n"),
+            (".git-credentials", "https://tester:notatoken@git.example\n"),
+            (
+                ".docker/config.json",
+                "{\"auths\":{\"x\":{\"auth\":\"dGVzdDp0ZXN0\"}}}\n",
+            ),
+            (".kube/config", "users:\n- user:\n    token: notatoken\n"),
+            (".config/gh/hosts.yml", "github.com:\n  user: tester\n"),
+        ] {
+            let path = home.home.join(store);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(&path, text).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            assert_eq!(
+                refusal(upload(&path)),
+                CredentialRefusal::Source { name },
+                "{store}"
+            );
+            assert_eq!(
+                refusal(select(&path, Direction::Download, true)),
+                CredentialRefusal::Destination,
+                "download over {store}"
+            );
+        }
+    }
+
     #[test]
     fn a_refused_name_is_made_printable() {
         let home = FakeHome::new();
@@ -1084,5 +1395,319 @@ mod credential_floor_tests {
         };
         assert!(!name.chars().any(|c| c.is_control() || c == '\u{202e}'));
         assert!(name.starts_with("id_rsa"));
+    }
+}
+
+/// Q4-55: settings, login and autostart locations and executables are refused as download
+/// destinations, as defense in depth beside the credential floor.
+///
+/// Every row runs against a throwaway HOME handed to the check as its home; the operator's
+/// real home, `~/.ssh`, `~/Library` and `~/.config/biorouter` are never read or written.
+#[cfg(all(test, unix))]
+mod settings_destination_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    /// Creates `folder` and every missing folder above it as owner-only, whatever the umask: a
+    /// group-writable folder is refused for a reason of its own (`protected_directory`), which
+    /// would hide what these rows test.
+    fn private_folder(folder: &Path) {
+        let mut missing = Vec::new();
+        for ancestor in folder.ancestors() {
+            if ancestor.exists() {
+                break;
+            }
+            missing.push(ancestor.to_path_buf());
+        }
+        fs::create_dir_all(folder).unwrap();
+        for created in missing {
+            fs::set_permissions(&created, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    struct FakeHome {
+        _dir: tempfile::TempDir,
+        /// The folder the fake HOME lives in, outside the home itself.
+        root: PathBuf,
+        home: PathBuf,
+    }
+
+    impl FakeHome {
+        fn new() -> Self {
+            let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+            let dir = tempfile::tempdir_in(base).unwrap();
+            // Canonical, because `open_directory` refuses a linked folder (macOS `/var`).
+            let root = fs::canonicalize(dir.path()).unwrap();
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            let home = root.join("home");
+            for folder in [
+                ".ssh",
+                ".config/autostart",
+                ".config/systemd/user",
+                ".local/bin",
+                "Library/LaunchAgents",
+                "Downloads",
+                "bin",
+                "project/results",
+                "project/.git/hooks",
+            ] {
+                private_folder(&home.join(folder));
+            }
+            for (file, text) in [
+                (".bashrc", "# rc\n"),
+                (".zshrc", "# rc\n"),
+                (".profile", "# profile\n"),
+                (".gitconfig", "[user]\n  name = tester\n"),
+                (
+                    ".ssh/authorized_keys",
+                    "ssh-ed25519 AAAAC3fake tester@example\n",
+                ),
+                (".ssh/config", "Host lab\n  User tester\n"),
+                ("Downloads/data.csv", "sample,od600\ngina-1,0.42\n"),
+            ] {
+                fs::write(home.join(file), text).unwrap();
+            }
+            Self {
+                _dir: dir,
+                root,
+                home,
+            }
+        }
+
+        /// The fake HOME as the check's home. Linux has no `~/Library`, so it is named here
+        /// explicitly and the macOS rows run on every unix; `macos_derives_library_from_home`
+        /// proves the real derivation.
+        fn locations(&self) -> SettingsLocations {
+            SettingsLocations::new(vec![self.home.clone()], vec![self.home.join("Library")])
+        }
+
+        fn download(&self, path: &Path, overwrite: bool) -> Result<Selection> {
+            select_with(path, Direction::Download, overwrite, &self.locations())
+        }
+
+        fn replay(&self, path: &Path, overwrite: bool) -> Result<Selection> {
+            select_download_replay_with(path, overwrite, &self.locations())
+        }
+    }
+
+    fn refusal(result: Result<Selection>) -> CredentialRefusal {
+        let error = match result {
+            Ok(selection) => panic!("expected a destination refusal for {}", selection.name()),
+            Err(error) => error,
+        };
+        error
+            .downcast_ref::<CredentialRefusal>()
+            .cloned()
+            .unwrap_or_else(|| panic!("expected a destination refusal, got: {error:#}"))
+    }
+
+    fn assert_refused(fake: &FakeHome, path: &Path, overwrite: bool) {
+        assert_eq!(
+            refusal(fake.download(path, overwrite)),
+            CredentialRefusal::Destination,
+            "download {}",
+            path.display()
+        );
+        assert_eq!(
+            refusal(fake.replay(path, overwrite)),
+            CredentialRefusal::Destination,
+            "replay {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn login_settings_and_autostart_files_are_refused() {
+        let fake = FakeHome::new();
+        for (spelled, overwrite) in [
+            (".bashrc", true),
+            (".zshrc", true),
+            (".zshenv", false),
+            (".profile", true),
+            (".gitconfig", true),
+            (".ssh/authorized_keys", true),
+            (".ssh/authorized_keys", false),
+            (".ssh/config", true),
+            (".ssh/rc", false),
+            (".config/autostart/sync.desktop", false),
+            (".config/systemd/user/sync.service", false),
+            (".local/bin/python3", false),
+            ("Library/LaunchAgents/x.plist", false),
+            ("project/.git/hooks/pre-commit", false),
+            ("Downloads/.hidden-script", false),
+        ] {
+            assert_refused(&fake, &fake.home.join(spelled), overwrite);
+        }
+        // Refused before anything is written: the files are as they were.
+        assert_eq!(
+            fs::read_to_string(fake.home.join(".bashrc")).unwrap(),
+            "# rc\n"
+        );
+        assert!(!fake.home.join(".zshenv").exists());
+    }
+
+    #[test]
+    fn a_route_around_the_rule_is_refused_as_the_place_it_reaches() {
+        let fake = FakeHome::new();
+        let home = &fake.home;
+        // A dot-dot route: no component of the tail is hidden until `..` is folded.
+        assert_refused(&fake, &home.join("Downloads/../.ssh/authorized_keys"), true);
+        assert_refused(&fake, &home.join("project/results/../../.bashrc"), true);
+        // A linked folder: `Downloads/keys/authorized_keys` names nothing hidden until the
+        // link is resolved to `~/.ssh`.
+        symlink(home.join(".ssh"), home.join("Downloads/keys")).unwrap();
+        assert_refused(&fake, &home.join("Downloads/keys/authorized_keys"), true);
+        symlink(
+            home.join("Library/LaunchAgents"),
+            home.join("Downloads/agents"),
+        )
+        .unwrap();
+        assert_refused(&fake, &home.join("Downloads/agents/x.plist"), false);
+        // A link named like an ordinary file, pointing at an rc file.
+        symlink(home.join(".bashrc"), home.join("Downloads/notes.txt")).unwrap();
+        assert_refused(&fake, &home.join("Downloads/notes.txt"), true);
+        // A case variant: on APFS and NTFS this opens `~/Library`.
+        assert_refused(&fake, &home.join("LIBRARY/LaunchAgents/x.plist"), false);
+        // The home itself named through a link, and a link used as the home.
+        symlink(home, fake.root.join("home-link")).unwrap();
+        assert_refused(&fake, &fake.root.join("home-link/.bashrc"), true);
+        let linked = SettingsLocations::new(vec![fake.root.join("home-link")], vec![]);
+        assert_eq!(
+            refusal(select_with(
+                &home.join(".bashrc"),
+                Direction::Download,
+                true,
+                &linked
+            )),
+            CredentialRefusal::Destination
+        );
+    }
+
+    #[test]
+    fn an_executable_is_never_replaced() {
+        let fake = FakeHome::new();
+        for (spelled, mode) in [
+            ("bin/tool", 0o755),
+            ("bin/owner-only", 0o744),
+            ("Downloads/run.sh", 0o700),
+            ("project/results/group-exec.py", 0o650),
+        ] {
+            let path = fake.home.join(spelled);
+            fs::write(&path, "#!/bin/sh\necho hi\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert_refused(&fake, &path, true);
+        }
+        // The same place is fine once nothing there would be run.
+        let plain = fake.home.join("bin/notes.txt");
+        fs::write(&plain, "plain\n").unwrap();
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(fake.download(&plain, true).is_ok());
+        assert!(fake
+            .download(&fake.home.join("bin/new-file"), false)
+            .is_ok());
+    }
+
+    #[test]
+    fn ordinary_destinations_are_still_saved() {
+        let fake = FakeHome::new();
+        for (spelled, overwrite) in [
+            ("Downloads/results.csv", false),
+            ("Downloads/data.csv", true),
+            ("project/results/plot.png", false),
+            ("summary.md", false),
+        ] {
+            let path = fake.home.join(spelled);
+            let selected = fake
+                .download(&path, overwrite)
+                .unwrap_or_else(|error| panic!("{spelled}: {error:#}"));
+            assert_eq!(selected.name(), path.file_name().unwrap().to_str().unwrap());
+            assert!(fake.replay(&path, overwrite).is_ok(), "replay {spelled}");
+        }
+        // The rule is about the home: a hidden folder elsewhere is not a settings location.
+        let elsewhere = fake.root.join("shared/.cache-of-results");
+        private_folder(&elsewhere);
+        assert!(fake.download(&elsewhere.join("run.csv"), false).is_ok());
+    }
+
+    #[test]
+    fn a_partial_in_a_refused_folder_can_still_be_removed() {
+        let fake = FakeHome::new();
+        let partial = fake.home.join(".config/autostart").join(part_name("t1"));
+        fs::write(&partial, b"partial").unwrap();
+        assert!(select_cleanup(&partial).is_ok());
+    }
+
+    #[test]
+    fn the_refusal_keeps_the_destination_sentence() {
+        let fake = FakeHome::new();
+        let error = fake
+            .download(&fake.home.join(".bashrc"), true)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            CredentialRefusal::Destination.to_string()
+        );
+    }
+
+    #[test]
+    fn a_root_or_relative_home_is_not_a_home() {
+        let locations = SettingsLocations::new(
+            vec![PathBuf::from("/"), PathBuf::from("relative/home")],
+            vec![PathBuf::from("relative/settings")],
+        );
+        assert!(locations.homes.is_empty());
+        assert!(locations.settings.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_derives_library_from_home() {
+        let fake = FakeHome::new();
+        let derived = SettingsLocations::new(vec![fake.home.clone()], vec![]);
+        assert_eq!(
+            refusal(select_with(
+                &fake.home.join("Library/LaunchAgents/x.plist"),
+                Direction::Download,
+                false,
+                &derived
+            )),
+            CredentialRefusal::Destination
+        );
+    }
+
+    /// A macOS firmlink spells the same folder a second way that `realpath` keeps as written, so
+    /// no string comparison sees the home in it; the device-and-inode walk does.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_firmlinked_spelling_of_the_home_is_refused() {
+        let fake = FakeHome::new();
+        let firmlinked =
+            Path::new("/System/Volumes/Data").join(fake.home.strip_prefix("/").unwrap());
+        if fs::metadata(&firmlinked).is_err() {
+            eprintln!("no /System/Volumes/Data route to {}", fake.home.display());
+            return;
+        }
+        assert_refused(&fake, &firmlinked.join(".bashrc"), true);
+        assert_refused(
+            &fake,
+            &firmlinked.join("Library/LaunchAgents/x.plist"),
+            false,
+        );
+        // The walk on its own, whatever `realpath` made of the spelling.
+        let locations = fake.locations();
+        let name = std::ffi::OsStr::new(".bashrc");
+        assert!(denied_by_identity(&firmlinked, name, &locations));
+        assert!(denied_by_identity(
+            &firmlinked.join("Library/LaunchAgents"),
+            std::ffi::OsStr::new("x.plist"),
+            &locations
+        ));
+        assert!(!denied_by_identity(
+            &firmlinked.join("Downloads"),
+            std::ffi::OsStr::new("data.csv"),
+            &locations
+        ));
     }
 }
