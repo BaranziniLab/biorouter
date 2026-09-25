@@ -1,7 +1,7 @@
 # Crew UI redesign acceptance evidence, 2026-09
 
-> **What this is.** The acceptance record of the Crew UI redesign and naming campaign (plan §16): four live QA rounds with fresh novice critics on a disposable AWS fixture, the security results of each round, the seven final acceptance lanes on `461f7899`, the final polish that fixed their findings and re-checked the fixes live on `dc274655`, each fixture's provenance and teardown, and what is still unverified.
-> **Status:** Current and complete. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z, the campaign fixture's teardown, independently verified, at 16:52–17:13Z ([Fixture teardown](#fixture-teardown)), and the [final polish](#final-polish-2026-09-25), whose live re-check ran 20:35–21:35Z on a second fixture that was torn down and verified the same way. A result here holds for the build it names; later commits need their own runs.
+> **What this is.** The acceptance record of the Crew UI redesign and naming campaign (plan §16): four live QA rounds with fresh novice critics on a disposable AWS fixture, the security results of each round, the seven final acceptance lanes on `461f7899`, the final polish that fixed their findings and re-checked the fixes live on `dc274655`, the last fixes on `715c59b5`, each fixture's provenance and teardown, and what is still unverified.
+> **Status:** Current and complete. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z, the campaign fixture's teardown, independently verified, at 16:52–17:13Z ([Fixture teardown](#fixture-teardown)), and the [final polish](#final-polish-2026-09-25), whose live re-check ran 20:35–21:35Z on a second fixture that was torn down and verified the same way. The polish's [last fixes](#last-fixes-2026-09-25), ending at code HEAD `715c59b5`, are verified by regression tests and the local gate only, with no live run. A result here holds for the build it names; later commits need their own runs.
 > **Audience:** Maintainers deciding what Crew can claim after this campaign, reviewers of the security-sensitive commits, and whoever resumes Crew acceptance.
 
 The campaign ran the redesigned desktop Crew view and the name-first identity work against real
@@ -44,6 +44,9 @@ deployment or HIPAA compliance.
 
   Three new P2/P3 findings came out of that re-check ([Final polish](#final-polish-2026-09-25)).
   The other final lanes were not re-run on `dc274655`.
+- **On `715c59b5`, by regression tests and the local gate only:** those three findings are fixed,
+  and the daemon holds Edit in place, `/reply`'s history write-back and diverge on a chat whose
+  Crew access has ended. No live run covers them ([Last fixes](#last-fixes-2026-09-25)).
 
 ## Builds under test
 
@@ -659,6 +662,66 @@ deterministic test, not a live-model check.
   polish profiles, and a sweep of 756 files found no Versa key value. `~/.config/biorouter` was only
   read.
 
+### Last fixes (2026-09-25)
+
+Six commits after the live re-check fixed NEW-2, NEW-3 and NEW-4, two of its observations, and the
+daemon half of the F1 reviewer note. They end at code HEAD
+**`715c59b5df6832c130d974a330d6db31cc5a7b2c`** ("fix(crew): refuse to rewrite a chat's history once
+its Crew access has ended (F1, daemon)"). **No new live fixture ran.** These items are verified by
+regression tests and the local gate only. None has been seen in a running app, and the live results
+above remain results on `dc274655`.
+
+| Item | Fix | Commit | Regression tests |
+|---|---|---|---|
+| NEW-2 (P2) | Crew starts its read-only offline follow whenever it opens on, or selects, a connection the saved record already calls `disconnected`. The follow still only reads `GET /connections` and never connects. It does not start while a loss is being decided, when one is already running, for a membership the workspace ended, or for a connection the person disconnected in this window, because the daemon never re-dials a Disconnect | `b5a0caaa0` | 5 new in `integration/offlineFollow.test.tsx`; 3 failed on the parent |
+| NEW-3 (P3) | Every revoke this window sees waiting (its own 503, or a list saying `revocation: unconfirmed`) is remembered. The first grant list that says `confirmed` dates it in Past access. `listSessionGrants` also reads `replaced_grants` for this, so a stop confirmed after its chat was granted again is dated too. A run confirmed before this window saw it waiting gets no invented time, a workspace-ended run is never recorded as a revoke, and a time recorded from a 200 is never moved | `257cddd4b` | 5 new in `access/useCrewGrants.test.tsx`; 3 failed on the parent |
+| NEW-4 (P3) | `useConfirmedAfterWait` keeps what it saw per scope, and the Chat access pane passes its pane intent, so "Confirmed." survives the pane remounting when Crew reconnects. It goes when the person closes the pane, opens another, or presses the new **Dismiss** (in the pane, the Access list and the chat bar) | `36ca51cba` | `integration/confirmedNoteStays.test.tsx` replays R1's sequence; its 3 tests and the `AccessTab` Dismiss check failed on the parent |
+| Observation (b) | Past access reads "Ended: Crew settings changed" for a workspace-ended grant, as the CLI does. The chat-connect note and the Chat access pane also say that Crew settings changed. A grant whose time ran out still reads Expired | `e626cd924` | `accessRows.test.ts`, `ChatAccessPane.test.tsx`; both new tests failed on the parent |
+| Observation (a) | While Crew is offline, the chat's own Crew bar offers **Revoke access** beside Connect, with the same inline confirm. A 503 leaves the chat held with the unconfirmed note. Revoking never navigates to Crew and never connects | `bda845a7a` | `ChatCrewAccessBar.test.tsx`; 3 failed on the parent |
+| F1, daemon (reviewer note) | See below | `715c59b5d` | New integration binary `crew_history_rewrite_hold`; 3 of its 5 route tests failed before the fix, with 200 and the chat truncated, a bare 500, and 200 with the history written back. Two `crew` unit tests pin that the turn and the rewrite use the same sentence |
+
+The renderer's fail-before counts come from its independent reviewer. The reviewer ran each
+commit's tests against its parent and also removed three of the new guards in a scratch copy to
+confirm that tests fail. The daemon's counts are the ones its commit records.
+
+**The daemon's history-rewrite hold (security-relevant).** `CrewManager::history_rewrite_refusal`
+returns the sentence the chat's next turn would be refused with: removed, ended by the workspace
+or by a settings change (D-1), or past the run's recorded end. The daemon asks it before anything
+stored changes, at three doors:
+
+- `edit_message`'s in-place arm, after the reach gate and before the turn lock and the snapshot;
+- `/reply`'s `conversation_so_far` write-back, before `apply_client_writeback`;
+- both diverge doors, for a caller holding the person's proof. These used to fail a Crew chat's copy
+  as a bare 500.
+
+Each refusal is a 403 with that sentence as plain text, and the OpenAPI descriptions say so. A caller
+without the proof is still refused by the reach gate first and learns nothing about the grant. The
+turn's own check and this one share `grant_stands`, so the two cannot word one grant differently.
+The check is **local only**: a grant the workspace ended that this daemon has not heard about yet
+still edits, and its turn is then refused as before.
+
+**Local gate on `715c59b5d`: ALL_GREEN**, with HEAD unmoved and no edits during the run.
+
+| Check | Result |
+|---|---|
+| Build, `./scripts/clippy-lint.sh`, `cargo fmt --check` | rc 0 |
+| `cargo test -p biorouter-crew`, with and without default features | 143 and 103 passed |
+| `cargo test -j 8 --workspace --lib --bins` | 8542 passed, 0 failed, 10 ignored |
+| Integration binaries, 18, each running at least one test | The 13 from `dc274655`'s gate, plus `crew_history_rewrite_hold` 9, `privacy_ar15_is_retired` 10, `privacy_toggle_export` 1, `privacy_toggle_kb_listing` 1 and `privacy_toggle_merge` 2; 0 failed |
+| `just generate-openapi` | No drift in `openapi.json` or `src/api`; `check-openapi-schema.sh` up to date |
+| `npm run lint:check`, `format:check`, `test:run` | rc 0; 696 files, 9229 passed, 19 skipped |
+| `check-version-consistency.sh`, CI's docs-lint subset | 1.91.2 throughout; docs-lint clean |
+
+**Still open after the last fixes:**
+
+- **Observation (c).** While offline, the consent form still names "a channel you can't see".
+- **`replaced_grants` in the desktop.** The desktop reads them only to date a confirmation and
+  still does not list them. A waiting stop that appears only in `replaced_grants` is dated at the
+  next list read, not by a timed re-read.
+- **Unchanged reviewer notes.** D-1 is still noticed only at the next broker request, and an older
+  daemon still never reaches "Confirmed".
+- **No live check.** None of the six commits has been checked live.
+
 ## What remains unverified
 
 - **The native share confirmation in the GUI lanes.** Every stage app ran with the development
@@ -681,16 +744,21 @@ deterministic test, not a live-model check.
   `262560c0b`. That docs-only commit's hosted Frontend run (36165935329) failed one vitest case,
   `ChatCrewAccessBar.test.tsx` "says Crew is offline, offers Connect in Crew…", which had passed on
   the identical code one commit earlier (`ec305ddf5`). Its Rust, Apps smoke, Computer Use and
-  commit-message runs passed. `dc274655` and the documentation commit that carries this
-  section were pushed together at the final polish. A commit cannot record its own CI, so their
-  hosted result is recorded in PR #366's description.
+  commit-message runs passed. `dc274655` and its documentation commit were pushed together at the
+  final polish as `55a345a86`, and every hosted workflow on that head passed on the first attempt:
+  Rust 36193026840, Frontend 36193008030, Apps smoke 36193008162, Computer Use native payloads
+  36193008197, and Check Commit Messages 36193008051 and 36193007124. The last fixes' `715c59b5` and
+  the documentation commit that carries [their section](#last-fixes-2026-09-25) were pushed
+  together. A commit cannot record its own CI, so their hosted result is recorded in PR #366's
+  description.
 - **The other final lanes on `dc274655`:** three users' files and agents, the institution gate,
   mixed GUI and CLI, fairness and the self-test are results on `461f7899`. The 15 commits after it
   change grant, revocation, transfer and connection-save code, and those lanes were not re-run.
 - **The final polish's leftovers:**
-  - NEW-2, NEW-3 and NEW-4 from its re-check.
-  - F1's hold is renderer-only: the daemon's in-place edit has no Crew check.
-  - The desktop does not list `replaced_grants`.
+  - NEW-2, NEW-3 and NEW-4 are fixed on `715c59b5`, together with the daemon's own history-rewrite
+    hold for F1. They are covered by regression tests and the local gate only, with no live run
+    ([Last fixes](#last-fixes-2026-09-25)).
+  - The desktop still does not list `replaced_grants`, and observation (c) is unchanged.
 - **The closeout gate's verdict:** its logs show every command passing except `just generate-openapi`,
   which hit "No space left on device" and was followed by a direct schema regeneration and a passing
   `check-openapi-schema.sh`; no file records the gate runner's own verdict
