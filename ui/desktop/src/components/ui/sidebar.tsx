@@ -92,6 +92,52 @@ function firstFocusableIn(panel: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/**
+ * Put focus on the page's content region: the route's `<main>` inside the inset, or the inset
+ * itself when a layout supplies no landmark. For a choice made in the overlay (live QA round 4,
+ * Q4-54): the panel is going inert with focus on the row that was chosen, and the toggle is the
+ * wrong place to hand it — the person asked for the page. The destination's own focus (a
+ * composer, a field) lands in a later effect and wins; a destination that focuses nothing
+ * leaves focus here, so the next Tab walks into the page rather than back along the titlebar.
+ *
+ * `<main>` is not focusable by itself, so it gets `tabindex="-1"` for exactly as long as it
+ * holds this focus, and loses it when focus moves on — a lasting `tabindex` would make every
+ * click on the page's blank space focus the whole region. Its outline is held back meanwhile:
+ * like a tab panel (D-15 in `main.css`), a region the next Tab leaves for a control inside
+ * gets no ring of its own, and the UA's `outline: auto` would draw one around the whole page.
+ * The `prefers-contrast` / `forced-colors` ring is `!important` and still draws, as it does on
+ * every `[tabindex]`.
+ *
+ * Returns false when there is no region, or it would not take focus.
+ */
+function focusContentRegion(): boolean {
+  const inset = document.querySelector<HTMLElement>('[data-slot="sidebar-inset"]');
+  const region = inset?.querySelector<HTMLElement>('main') ?? inset;
+  if (!region || region.closest('[inert]')) return false;
+
+  const lent = !region.hasAttribute('tabindex');
+  const outlineBefore = region.style.getPropertyValue('outline');
+  const release = () => {
+    // The window losing focus blurs the region too, but focus comes back to it.
+    if (document.activeElement === region) return;
+    region.removeEventListener('blur', release);
+    region.removeAttribute('tabindex');
+    if (outlineBefore) region.style.setProperty('outline', outlineBefore);
+    else region.style.removeProperty('outline');
+  };
+  if (lent) {
+    region.setAttribute('tabindex', '-1');
+    region.style.setProperty('outline', 'none');
+  }
+  region.focus({ preventScroll: true });
+  if (document.activeElement === region) {
+    if (lent) region.addEventListener('blur', release);
+    return true;
+  }
+  if (lent) release();
+  return false;
+}
+
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed';
   open: boolean;
@@ -419,6 +465,12 @@ function Sidebar({
   const panelRef = React.useRef<HTMLDivElement>(null);
   /** What had focus before ⌘B opened the overlay, to hand focus back to when ⌘B closes it. */
   const overlayReturnRef = React.useRef<Element | null>(null);
+  /**
+   * Set when a choice made in the overlay closes it, for the one render that close causes, so
+   * the layout effect below hands focus to the page rather than the toggle (Q4-54). A token, as
+   * with ⌘B: a close a controlled parent refused must not steer a later, unrelated one.
+   */
+  const choiceCloseRef = React.useRef<object | null>(null);
 
   /*
    * OFF-CANVAS MEANS OUT OF THE TAB ORDER (triage T-20). The collapsed panel is
@@ -444,13 +496,22 @@ function Sidebar({
   // opens the overlay, focus moves to the panel's first stop; when the shortcut
   // closes it again, focus goes back to where it was before the panel opened.
   // A docked column covers nothing, so it takes no focus; a pointer toggle
-  // leaves focus on the toggle the person just used; a choice made in the
-  // overlay keeps handing focus to the toggle, because the page behind it may
-  // have been replaced.
+  // leaves focus on the toggle the person just used.
+  //
+  // A CHOICE MADE IN THE OVERLAY HANDS FOCUS TO THE PAGE (live QA round 4, Q4-54).
+  // It used to go to the toggle, like any other close, and erin arrived in Crew
+  // with focus back up in the titlebar: one extra Tab, and her place lost on
+  // arrival. The person asked for the page, so the page's content region takes
+  // focus (`focusContentRegion`), and a destination that focuses something
+  // itself does so in a later effect and wins. That region is the layout's
+  // `<main>`, which outlives the route inside it, so it is there whatever the
+  // choice replaced. The toggle stays the fallback for a layout with no region.
   React.useLayoutEffect(() => {
     const panel = panelRef.current;
     const shortcut = shortcutToggleRef.current;
     shortcutToggleRef.current = null;
+    const chosen = choiceCloseRef.current !== null;
+    choiceCloseRef.current = null;
     if (!panel) return;
 
     if (!offCanvas) {
@@ -475,6 +536,7 @@ function Sidebar({
       returnTo.focus();
       if (document.activeElement === returnTo) return;
     }
+    if (chosen && focusContentRegion()) return;
     document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus();
   }, [offCanvas, shortcutToggleRef]);
 
@@ -578,7 +640,13 @@ function Sidebar({
     // `defaultPrevented` is deliberately NOT a veto: a client-side link cancels
     // the browser's navigation precisely because it is navigating.
     if (!open || !sidebarIsOverlay()) return;
-    if (isSidebarChoice(event.target, event.currentTarget)) setOpen(false);
+    if (!isSidebarChoice(event.target, event.currentTarget)) return;
+    const choice = {};
+    choiceCloseRef.current = choice;
+    window.setTimeout(() => {
+      if (choiceCloseRef.current === choice) choiceCloseRef.current = null;
+    }, 0);
+    setOpen(false);
   };
 
   return (
@@ -1001,15 +1069,23 @@ function SidebarMenuButton({
     };
   }
 
+  // A row's tooltip is for the collapsed icon rail, where the row shows no label. Anywhere else
+  // it could never be seen, so it must never OPEN (live QA round 4, Q4-53). Drawing it `hidden`
+  // was not enough: a hidden tooltip still opens on focus, and an open tooltip is a dismissable
+  // layer. After Erin tabbed onto Home in the overlay, that invisible layer took her first Escape
+  // and the overlay only closed on the second.
+  //
+  // The row keeps its Tooltip wrapper and holds it shut, rather than dropping the wrapper while
+  // expanded: a wrapper that comes and goes changes the element type at this position, so React
+  // would remount the button on every expand and collapse, and a row holding focus (the Escape
+  // that closes the overlay is pressed on one) would drop that focus on <body>.
+  // `sidebar.test.tsx` pins both halves.
+  const tooltipHidden = state !== 'collapsed' || isMobile;
+
   return (
-    <Tooltip>
+    <Tooltip open={tooltipHidden ? false : undefined}>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="center"
-        hidden={state !== 'collapsed' || isMobile}
-        {...tooltip}
-      />
+      <TooltipContent side="right" align="center" hidden={tooltipHidden} {...tooltip} />
     </Tooltip>
   );
 }
