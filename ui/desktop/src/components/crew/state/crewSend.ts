@@ -9,6 +9,7 @@ import {
 } from 'react';
 import type { Channel, Snapshot } from '../crewApi';
 import { clearPublishedTransfers } from '../crewTransfers';
+import { refreshCrewTransfers } from '../files/useCrewTransfers';
 import { crewActionCopy } from './copy';
 import { forgetStashedDraft } from './draftStash';
 import type {
@@ -124,6 +125,8 @@ export interface CrewSendContext {
     params?: Record<string, unknown>,
     opts?: { mutation?: boolean }
   ): Promise<T>;
+  /** `channel.read` up to `sequence`, never a refresh. */
+  markRead(channelId: string, sequence: string): Promise<void>;
   act<T>(
     source: ErrorSource,
     key: ActionKey,
@@ -141,6 +144,10 @@ export interface CrewSendContext {
  * the same idempotency key, while any change rotates it. Success clears only what was sent and
  * never refreshes the verified workspace. Posting while a history page is shown returns to the
  * live tail.
+ *
+ * A post also reads the channel up to the posted message (Q3-10), silently, so the person's own
+ * message never sits under the "New" rule. And the transfer records it forgot are re-listed at
+ * once (Q3-03), so the Files tab stops calling a sent file "not sent" without waiting for a remount.
  */
 export function createSend(context: CrewSendContext): () => Promise<void> {
   const {
@@ -156,6 +163,7 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     setHistoryBefore,
     restartObservation,
     request,
+    markRead,
     act,
     reportError,
   } = context;
@@ -185,13 +193,22 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         if (pendingMessage.current?.fingerprint !== fingerprint)
           pendingMessage.current = { fingerprint, key: crypto.randomUUID() };
         const attempt = pendingMessage.current;
-        await request(
+        const posted = await request<unknown>(
           'message.post',
           { ...payload, idempotency_key: attempt.key },
           { mutation: true }
         );
+        // Your own post is read: move the read position to it. A failure changes nothing on show.
+        const sequence =
+          posted !== null && typeof posted === 'object'
+            ? (posted as { sequence?: unknown }).sequence
+            : undefined;
+        if (typeof sequence === 'string' && sequence)
+          void markRead(channelId, sequence).catch(() => undefined);
         try {
           await clearPublishedTransfers(connectionId, payload.attachments);
+          // The shared transfer list re-lists only while a transfer moves: ask for it now.
+          if (payload.attachments.length > 0) void refreshCrewTransfers(connectionId);
         } catch {
           if (current === generation.current)
             reportError(crewActionCopy.sendTransferRecordKept, 'composer');

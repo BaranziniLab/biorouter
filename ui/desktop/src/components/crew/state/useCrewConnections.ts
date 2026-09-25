@@ -247,10 +247,97 @@ export function forgetConnectionMemory(connectionId: string): void {
   forgetLastChannel(connectionId);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Connect on arrival from a chat (live QA round 3, Q3-08)
+// ---------------------------------------------------------------------------------------------
+//
+// SECURITY-SENSITIVE (human review). A chat's "Connect in Crew" navigates here with the connection
+// to connect (`crewConnect`) beside its one-hop intent id. The click in the chat is the person's,
+// so Crew connects that connection once, as the person, when `arrivalConnectDecision` allows it.
+// "Once" is per intent id and survives a remount and a page reload of the same history entry
+// (session storage), so Back to that entry, or a reload after a later Disconnect, never connects
+// again. The renderer still never connects anything a person did not ask for.
+
+/** The route-state key naming the connection a chat's "Connect in Crew" asks to connect. */
+export const CREW_CONNECT_ROUTE_KEY = 'crewConnect';
+/**
+ * The one-hop intent id's key: `chatAccessRouteState()`'s, in `access/ChatConnectNote.tsx`. A test
+ * pins the two spellings together.
+ */
+export const CHAT_ACCESS_INTENT_ROUTE_KEY = 'crewOpenChatAccess';
+/** Where the consumed intent ids are kept across a reload of this window. */
+export const ARRIVAL_CONNECT_STORAGE_KEY = 'crew:consumedConnectIntents';
+/** The most consumed intent ids kept in storage; the oldest go first. */
+const MAX_STORED_ARRIVAL_CONNECTS = 32;
+/** An intent id is a UUID; anything much longer is not one of ours. */
+const MAX_INTENT_ID_LENGTH = 128;
+
+export interface ArrivalConnectIntent {
+  intentId: string;
+  connectionId: string;
+}
+
+/** The arriving "connect this" request in `state`, when it carries both an intent id and a connection. */
+export function arrivalConnectIntent(state: unknown): ArrivalConnectIntent | null {
+  if (!state || typeof state !== 'object') return null;
+  const record = state as Record<string, unknown>;
+  const intentId = record[CHAT_ACCESS_INTENT_ROUTE_KEY];
+  const connectionId = record[CREW_CONNECT_ROUTE_KEY];
+  if (typeof intentId !== 'string' || !intentId || intentId.length > MAX_INTENT_ID_LENGTH)
+    return null;
+  if (typeof connectionId !== 'string' || !connectionId) return null;
+  return { intentId, connectionId };
+}
+
+const consumedArrivalConnects = new Set<string>();
+
+function storedArrivalConnects(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(
+      window.sessionStorage.getItem(ARRIVAL_CONNECT_STORAGE_KEY) ?? '[]'
+    );
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item): item is string =>
+            typeof item === 'string' && item.length > 0 && item.length <= MAX_INTENT_ID_LENGTH
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Whether the "connect this" request with `intentId` was already honoured (or declined). */
+export function arrivalConnectConsumed(intentId: string): boolean {
+  return consumedArrivalConnects.has(intentId) || storedArrivalConnects().includes(intentId);
+}
+
+/** Spend the "connect this" request with `intentId`: it never connects again. */
+export function consumeArrivalConnect(intentId: string): void {
+  if (!intentId) return;
+  consumedArrivalConnects.add(intentId);
+  try {
+    const kept = storedArrivalConnects().filter((item) => item !== intentId);
+    kept.push(intentId);
+    window.sessionStorage.setItem(
+      ARRIVAL_CONNECT_STORAGE_KEY,
+      JSON.stringify(kept.slice(-MAX_STORED_ARRIVAL_CONNECTS))
+    );
+  } catch {
+    // Storage refused: the in-memory copy still covers this page.
+  }
+}
+
 /** Forget what this module remembers. Tests share one module instance per file. */
 export function resetConnectionMemoryForTests(): void {
   quietReobserves.clear();
   verifiedConnections.clear();
+  consumedArrivalConnects.clear();
+  try {
+    window.sessionStorage.removeItem(ARRIVAL_CONNECT_STORAGE_KEY);
+  } catch {
+    // No storage to clear.
+  }
 }
 resetBetweenTests(resetConnectionMemoryForTests);
 

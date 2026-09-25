@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
 import { createSend, useCrewDraft } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
+import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
 import { failureMessage, isFinalObservationEnd } from './observationFailure';
 import {
+  arrivalConnectConsumed,
+  arrivalConnectIntent,
   connectionVerifiedThisSession,
+  consumeArrivalConnect,
   createConnectionLifecycle,
   DAEMON_REDIAL_FOLLOW_MS,
   takeQuietReobserve,
@@ -72,6 +76,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const { autoOpenSignIn = false, keepLastVerifiedView = false } = options;
   const [searchParams] = useSearchParams();
   const grantSessionId = searchParams.get('sessionId');
+  // A chat's "Connect in Crew" (Q3-08): the connection it asks to connect, and its intent id.
+  const location = useLocation();
+  const arrival = arrivalConnectIntent(location.state);
 
   const actions = useCrewActions();
   const { act, reportError, dismissError, isPending } = actions;
@@ -393,7 +400,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         setReconnecting((id) => (id === lostId ? null : id));
         return;
       }
-      if (record?.status === 'connected' && takeQuietReobserve(lostId, Date.now())) {
+      // A membership the workspace ended is final: nothing is observed again or followed for it.
+      const ended = isMembershipEnded(record);
+      if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
         // "Reconnecting…" lasts until the new view verifies (`onVerifiedFrame`), or until that
         // observation ends too and this decides again.
         restartObservation();
@@ -401,7 +410,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       }
       setReconnecting(null);
       observationFailure(end.text, end.code);
-      if (record?.status === 'disconnected') followDaemonRedial(lostId, token);
+      if (record?.status === 'disconnected' && !ended) followDaemonRedial(lostId, token);
     })();
   };
   useEffect(() => {
@@ -475,8 +484,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     channel,
     snapshot,
     observedPrivacy,
+    runs,
     setBody: draft.setBody,
-    refresh,
+    restartObservation,
     resetSurfaces,
     act,
   });
@@ -493,6 +503,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setHistoryBefore,
     restartObservation,
     request,
+    markRead,
     act,
     reportError,
   });
@@ -501,6 +512,59 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const isReconnecting = reconnecting !== null && reconnecting === connectionId;
   const inFlight = isPending('connect') || isPending('sign-in') || surfaces.signIn.open;
   const verifiedHere = connectionVerifiedThisSession(connectionId) || joinStatus === 'joined';
+  const membershipEnded = isMembershipEnded(savedConnection);
+
+  /**
+   * SECURITY-SENSITIVE (human review). Connect on arrival from a chat's "Connect in Crew" (Q3-08):
+   * the click in the chat was the person's, so this is their connect one screen later, run exactly
+   * as the Connect button runs it (`userInitiated`: it settles any loss being handled, the daemon
+   * re-arms its keepalive, and a password or code prompt opens Sign in). Once per intent id
+   * (`consumeArrivalConnect`), only for a saved connection the daemon calls disconnected, and never
+   * for a final answer (`arrivalConnectDecision`). The named connection is selected first, because
+   * a connect acts on the selection. Which channel opens afterwards is the chat note's.
+   */
+  const arrivalIntentId = arrival?.intentId ?? null;
+  const arrivalConnectionId = arrival?.connectionId ?? null;
+  const arrivalRecord = arrivalConnectionId
+    ? (connections.find((item) => item.id === arrivalConnectionId) ?? null)
+    : null;
+  const arrivalFailure =
+    connectFailures.failure?.connectionId === arrivalConnectionId ? connectFailures.failure : null;
+  const connectingNow = isPending('connect');
+  const signInPending = isPending('sign-in') || surfaces.signIn.open;
+  // Read through a ref: both are new functions every render.
+  const arrivalActions = useRef({ connect, selectConnection });
+  arrivalActions.current = { connect, selectConnection };
+  useEffect(() => {
+    if (!arrivalIntentId || !arrivalConnectionId || connectionsState !== 'loaded') return;
+    if (arrivalConnectConsumed(arrivalIntentId)) return;
+    const decision = arrivalConnectDecision({
+      connection: arrivalRecord,
+      lastConnectFailure: arrivalFailure,
+      connecting: connectingNow,
+      signInPending,
+    });
+    if (decision === 'wait') return;
+    if (decision === 'skip') {
+      consumeArrivalConnect(arrivalIntentId);
+      return;
+    }
+    if (connectionId !== arrivalConnectionId) {
+      arrivalActions.current.selectConnection(arrivalConnectionId);
+      return;
+    }
+    consumeArrivalConnect(arrivalIntentId);
+    void arrivalActions.current.connect({ userInitiated: true });
+  }, [
+    arrivalIntentId,
+    arrivalConnectionId,
+    arrivalRecord,
+    arrivalFailure,
+    connectionsState,
+    connectionId,
+    connectingNow,
+    signInPending,
+  ]);
   const view = verified
     ? snapshot
     : lastVerified?.connectionId === connectionId
@@ -539,7 +603,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     capabilities,
     refreshError: refreshError || null,
     refreshErrorCode,
-    refreshErrorRetryable: !isFinalObservationEnd(refreshErrorCode, verifiedHere),
+    refreshErrorRetryable:
+      !isFinalObservationEnd(refreshErrorCode, verifiedHere) && !membershipEnded,
     reverifying,
     refresh,
     retryUpdates,

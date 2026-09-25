@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectionBarCopy } from '../channel/copy';
 import { emptyCopy } from '../onboarding/copy';
 import { crewObservationCopy, crewStatusCopy } from '../state/copy';
-import { DAEMON_REDIAL_FOLLOW_MS, QUIET_REOBSERVE_GAPS_MS } from '../state/useCrewConnections';
+import { chatAccessRouteState } from '../access/ChatConnectNote';
+import {
+  CREW_CONNECT_ROUTE_KEY,
+  DAEMON_REDIAL_FOLLOW_MS,
+  QUIET_REOBSERVE_GAPS_MS,
+} from '../state/useCrewConnections';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
   channelReady,
@@ -317,5 +322,86 @@ describe('coming back after the SSH bridge dropped (Q2-01): Crew never connects 
     expect(currentCrew().status).toBe('offline');
     expect(connects()).toBe(0);
     expect(currentCrew().reconnecting).toBe(false);
+  });
+});
+
+/**
+ * Live QA round 3, Q3-08 (SECURITY-SENSITIVE). A chat's "Connect in Crew" is the person's click, so
+ * Crew connects the connection it names on arrival — once per intent, as the Connect button would —
+ * instead of opening the offline screen for a second click. Nothing else here connects by itself.
+ */
+describe('arriving from a chat’s “Connect in Crew” (Q3-08)', () => {
+  function refuseWhileDisconnected() {
+    const answer = mocked.observeCrew.getMockImplementation()!;
+    mocked.observeCrew.mockImplementation(
+      async (
+        connectionId: string,
+        channelId: string | undefined,
+        after: string | null,
+        signal: AbortSignal,
+        deliver: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        if (saved === 'disconnected') {
+          deliver({
+            type: 'error',
+            code: 'observation_refused',
+            clear: true,
+            error: DAEMON_SENTENCE,
+          });
+          return 'terminal';
+        }
+        return answer(connectionId, channelId, after, signal, deliver);
+      }
+    );
+  }
+  const fromChat = (state = chatAccessRouteState()) => ({
+    pathname: '/crew',
+    search: '?sessionId=chat-1',
+    state: { ...state, [CREW_CONNECT_ROUTE_KEY]: connection.id },
+  });
+
+  it('connects once and opens the channel, with no offline screen to click through', async () => {
+    saved = 'disconnected';
+    refuseWhileDisconnected();
+    const entry = fromChat();
+    const first = renderCrew(entry);
+
+    await channelReady();
+    expect(connects()).toBe(1);
+    expect(currentCrew().status).toBe('connected');
+    expect(
+      screen.queryByRole('button', { name: emptyCopy.offlineAction('Fixture') })
+    ).not.toBeInTheDocument();
+
+    // Disconnected again later, the same history entry never connects it a second time.
+    first.unmount();
+    saved = 'disconnected';
+    renderCrew(entry);
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    expect(
+      await screen.findByRole('button', { name: emptyCopy.offlineAction('Fixture') })
+    ).toBeInTheDocument();
+    expect(connects()).toBe(1);
+  });
+
+  it('connects nothing when the connection is already connected', async () => {
+    renderCrew(fromChat());
+    await channelReady();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+  });
+
+  it('connects nothing for an arrival that names no connection', async () => {
+    saved = 'disconnected';
+    refuseWhileDisconnected();
+    renderCrew({ pathname: '/crew', search: '?sessionId=chat-1', state: chatAccessRouteState() });
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
   });
 });

@@ -1,9 +1,18 @@
-import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+} from 'react';
 import {
   crewHttp,
   CrewHttpError,
   type Channel,
   type CrewConnection,
+  type ObservedRun,
   type Snapshot,
   type Team,
 } from '../crewApi';
@@ -26,6 +35,12 @@ interface PendingRunAttempt {
 // Module scope makes the lock survive a remount of Crew (C10).
 let unfinishedRunAttempt: PendingRunAttempt | null = null;
 
+/**
+ * How long a started task waits for a verified `state` frame that lists it before the observation
+ * is started over (Q3-06). The daemon sends a state frame every 2 s while it observes.
+ */
+export const RUN_START_FRAME_WAIT_MS = 5000;
+
 export interface CrewRunStartContext {
   connectionId: string;
   teamId: string;
@@ -35,8 +50,14 @@ export interface CrewRunStartContext {
   channel: Channel | null;
   snapshot: Snapshot | null;
   observedPrivacy: ObservedPrivacy | null;
+  /** The runs of the last verified `state` frame. */
+  runs: readonly ObservedRun[];
   setBody: Dispatch<SetStateAction<string>>;
-  refresh(): Promise<void>;
+  /**
+   * Observe again without clearing what is on screen: the verified view stays until the new
+   * observation's first frame replaces it, or its end clears it.
+   */
+  restartObservation(): void;
   resetSurfaces(reason: SurfaceResetReason): void;
   act<T>(
     source: ErrorSource,
@@ -62,6 +83,15 @@ export interface CrewRunStart {
  * `crew_start_outcome_unknown`, the attempt is locked (in module scope, so a remount cannot lose it):
  * nothing starts again until the person confirms they inspected the earlier task and chooses a
  * deliberate restart, which always rotates the id.
+ *
+ * A successful start never blanks the channel (live QA round 3, Q3-06). It used to end with a
+ * refresh, which dropped the verified view and showed "Checking connection" and "Verifying
+ * access…" for seconds right after the person's own action. The verified view, the messages and
+ * the composer now stay, and the observer's next verified `state` frame brings the task. When no
+ * verified frame lists it within `RUN_START_FRAME_WAIT_MS`, the observation is started over, which
+ * keeps the view until its first frame. SECURITY-SENSITIVE (human review): only the viewer's own
+ * successful `run.create` is bridged this way, and it cannot narrow what the viewer may read; every
+ * observer refusal and privacy change still ends the view and clears what it protected.
  */
 export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
@@ -78,11 +108,61 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     channel,
     snapshot,
     observedPrivacy,
+    runs,
     setBody,
-    refresh,
+    restartObservation,
     resetSurfaces,
     act,
   } = context;
+
+  // The started task the view waits for, and the timer that observes again if it does not come.
+  const awaited = useRef<{
+    connectionId: string;
+    runId: string | null;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const restart = useRef(restartObservation);
+  useEffect(() => {
+    restart.current = restartObservation;
+  }, [restartObservation]);
+  const listed = useRef(runs);
+  useEffect(() => {
+    listed.current = runs;
+  }, [runs]);
+  const settleAwaited = useCallback(() => {
+    if (awaited.current) clearTimeout(awaited.current.timer);
+    awaited.current = null;
+  }, []);
+  const awaitStartedRun = (runId: string | null) => {
+    settleAwaited();
+    // A frame that listed it may already have arrived while the start was answered.
+    if (runId !== null && listed.current.some((run) => run.run_id === runId)) return;
+    const entry = {
+      connectionId,
+      runId,
+      timer: setTimeout(() => {
+        if (awaited.current !== entry) return;
+        awaited.current = null;
+        restart.current();
+      }, RUN_START_FRAME_WAIT_MS),
+    };
+    awaited.current = entry;
+  };
+  // A verified frame listed the task: nothing to wait for. Another connection, or a view that
+  // ended (an observer refusal, a privacy change, a Disconnect): not this wait's to observe again —
+  // what ended the view decides what happens next, and a stopped view is the person's to retry.
+  const verified = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  useEffect(() => {
+    const entry = awaited.current;
+    if (!entry) return;
+    if (
+      !verified ||
+      entry.connectionId !== connectionId ||
+      (entry.runId !== null && runs.some((run) => run.run_id === entry.runId))
+    )
+      settleAwaited();
+  }, [runs, connectionId, verified, settleAwaited]);
+  useEffect(() => settleAwaited, [settleAwaited]);
 
   const submitOwnedRun = async ({
     prompt,
@@ -120,8 +200,9 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       setUnknownRunDestination('');
       setInspectedPriorRun(false);
     }
+    let started: unknown;
     try {
-      await crewHttp(`/connections/${connectionId}/runs`, 'POST', {
+      started = await crewHttp<unknown>(`/connections/${connectionId}/runs`, 'POST', {
         ...payload,
         request_id: pendingRun.current.key,
       });
@@ -141,7 +222,11 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     setInspectedPriorRun(false);
     resetSurfaces('run-started');
     if (clearBody) setBody('');
-    await refresh();
+    const runId =
+      started !== null && typeof started === 'object'
+        ? (started as { run_id?: unknown }).run_id
+        : undefined;
+    awaitStartedRun(typeof runId === 'string' && runId ? runId : null);
     return true;
   };
 

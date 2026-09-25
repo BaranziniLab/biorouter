@@ -5,6 +5,8 @@ import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText } from '../dialogs/refusals';
 import { connectionServer } from '../identity';
+import { isMembershipEnded } from '../state/connectFailure';
+import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
@@ -82,12 +84,19 @@ export interface ConnectionBarProps {
  *    Connect; a note there would repeat it with a Retry that can only fail the same way (T-06,
  *    T-09). The error stays in the controller, where the join probe reads its code. Retry reads
  *    the saved connection first and connects at once when the daemon has since called it
- *    disconnected (Q2-01); a person removed from the workspace gets no Retry at all (Q2-18).
+ *    disconnected (Q2-01); a person removed from the workspace gets no Retry at all (Q2-18). A
+ *    saved connection whose membership the workspace ended (`crew_membership_ended`, Q3-12 and
+ *    Q3-50) says so here, as "You're no longer a member of …", with no Retry, whatever its status.
  * 2. an observer or global action error — or a connect failure whose own surface is not on
  *    screen — with Dismiss (Try again for a connect failure). A closed channel's note shows only
  *    over a workspace view (Q2-19);
  * 3. the one highest-priority need: the vault is locked (Unlock), the server can't be reached
  *    (Try again), or a reconnect has taken over a second (a spinner, no action);
+ *
+ * A connect failure's note offers no Try again while the main area is the offline screen of a
+ * connection the daemon calls disconnected: that screen's "Connect to …" is the same action, and
+ * two buttons for one action read as two different things (Q3-07). The reason and "Connection
+ * settings…" stay.
  * 4. the new-device notice, until it is reviewed.
  *
  * Each message renders here exactly once: an action error reaches this bar only when the
@@ -125,8 +134,17 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const unreachable = failure?.kind === 'unreachable';
   const workspace = workspaceLabel(crew, crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
+  // The workspace ended this computer's or this person's membership: said once, here, with no
+  // Retry — on the join screen its card says it instead.
+  const membershipEnded = isMembershipEnded(connection) && !notMember;
   const showObservationError =
-    Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected');
+    membershipEnded ||
+    (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected'));
+  const observationText = membershipEnded
+    ? crewObservationCopy.noLongerMember(workspace)
+    : refreshError;
+  // The offline screen under the bar carries "Connect to …": the same action as Try again (Q3-07).
+  const offlineCardShown = crew.screen === 'offline' && connection?.status === 'disconnected';
   // A closed channel's note describes the workspace view it was closed in: on a connection
   // problem screen, or while reconnecting, it is stale and not shown (Q2-19). The selection that
   // moves on dismisses it.
@@ -156,8 +174,9 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
       {connectionBarCopy.connectionSettings}
     </Button>
   ) : null;
+  const connectAction = offlineCardShown ? undefined : tryAgain;
   const unreachableNote = (role: 'alert' | 'status') => (
-    <Note tone="warning" role={role} icon={AlertTriangle} action={tryAgain}>
+    <Note tone="warning" role={role} icon={AlertTriangle} action={connectAction}>
       <p>{connectionBarCopy.unreachable(host)}</p>
       {settingsLink}
     </Note>
@@ -183,7 +202,9 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             // removed from the workspace (Q2-18). With no saved connection at all, the screen
             // under the bar has its own Try again. Retry reads the saved connection first and,
             // when the daemon has since called it disconnected, connects at once (Q2-01).
-            connection?.status === 'connected' && crew.refreshErrorRetryable !== false ? (
+            !membershipEnded &&
+            connection?.status === 'connected' &&
+            crew.refreshErrorRetryable !== false ? (
               <Button
                 type="button"
                 variant="secondary"
@@ -198,7 +219,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             ) : undefined
           }
         >
-          <p>{refreshError}</p>
+          <p>{observationText}</p>
         </Note>
       )}
 
@@ -229,8 +250,9 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         (unreachable ? (
           unreachableNote('alert')
         ) : (
-          <Note tone="danger" role="alert" icon={AlertTriangle} action={tryAgain}>
+          <Note tone="danger" role="alert" icon={AlertTriangle} action={connectAction}>
             <p>{connectError.message}</p>
+            {offlineCardShown && settingsLink}
           </Note>
         ))}
 

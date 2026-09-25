@@ -16,7 +16,7 @@
  * module instance.
  */
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, type InitialEntry } from 'react-router-dom';
 import type { Mock } from 'vitest';
 import { CREW_APP_OPTIONS } from '../CrewApp';
 import {
@@ -253,6 +253,11 @@ export interface Daemon {
   connectionMode: 'private' | 'public';
   /** When set, an observation hangs (sends nothing) until it is aborted. */
   hold: boolean;
+  /**
+   * After a start the daemon accepted, send the observation a fresh `state` frame shortly after,
+   * as the daemon's own every-2 s state frame would. Default true; false leaves it to `emitState`.
+   */
+  stateAfterStart?: boolean;
   /** `crewHttp` answers checked first: return `undefined` to fall through to the defaults. */
   http?: (path: string, method: string, body: unknown) => unknown;
   /** `crewRequest` answers checked first: return `undefined` to fall through to the defaults. */
@@ -265,7 +270,13 @@ export interface ScriptedDaemon {
   emit(frame: unknown): void;
   /** Answer a held observation now: stop holding and send it the current state and messages. */
   release(): void;
+  /** Send the most recent observation a verified `state` frame of the current state. */
+  emitState(): void;
 }
+
+/** How long after an accepted start the scripted daemon's next `state` frame arrives. */
+export const STATE_FRAME_AFTER_START_MS = 20;
+const RUN_START_PATH = /^\/connections\/[^/]+\/runs$/;
 
 export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
   const state: Daemon = {
@@ -278,23 +289,26 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
     ...initial,
   };
   let receive: ((frame: unknown) => void) | null = null;
+  let observed = connection.id;
   let answerHeld: (() => void) | null = null;
+
+  const stateFrame = (connectionId: string) => ({
+    type: 'state',
+    connection_id: connectionId,
+    connection_mode: state.connectionMode,
+    connection_policy_epoch: 1,
+    connection_institution_id: connection.institution_id,
+    snapshot: state.snapshot,
+    runs: state.runs,
+    cursor: null,
+  });
 
   const answer = (
     connectionId: string,
     channelId: string | undefined,
     deliver: (frame: unknown) => void
   ) => {
-    deliver({
-      type: 'state',
-      connection_id: connectionId,
-      connection_mode: state.connectionMode,
-      connection_policy_epoch: 1,
-      connection_institution_id: connection.institution_id,
-      snapshot: state.snapshot,
-      runs: state.runs,
-      cursor: null,
-    });
+    deliver(stateFrame(connectionId));
     if (channelId) {
       const messages = state.messages.filter((message) => message.channel_id === channelId);
       deliver({
@@ -307,7 +321,7 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
     }
   };
 
-  mocked.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
+  const respond = async (path: string, method: string, body?: unknown): Promise<unknown> => {
     const answer = state.http?.(path, method, body);
     if (answer !== undefined) return answer;
     if (path === '/connections' && method === 'GET') return { connections: state.connections };
@@ -317,6 +331,13 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
       return { runs: state.runs };
     if (path === `/connections/${connection.id}/join`) return { status: 'joined' };
     return {};
+  };
+  mocked.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
+    const result = await respond(path, method, body);
+    // The daemon accepted a start: its observer's next state frame lists the task.
+    if (method === 'POST' && RUN_START_PATH.test(path) && state.stateAfterStart !== false)
+      setTimeout(() => receive?.(stateFrame(observed)), STATE_FRAME_AFTER_START_MS);
+    return result;
   });
   mocked.crewRequest.mockImplementation(
     async (_connection: string, method: string, params: Record<string, unknown> = {}) => {
@@ -346,6 +367,7 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
     ) => {
       if (signal.aborted) return 'terminal';
       receive = deliver;
+      observed = connectionId;
       if (state.hold) {
         answerHeld = () => answer(connectionId, channelId, deliver);
         await new Promise<void>((resolve) =>
@@ -368,6 +390,9 @@ export function installDaemon(initial: Partial<Daemon> = {}): ScriptedDaemon {
       const held = answerHeld;
       answerHeld = null;
       held?.();
+    },
+    emitState() {
+      receive?.(stateFrame(observed));
     },
   };
 }
@@ -394,6 +419,13 @@ export function keepEndingWith(frame: unknown): void {
 }
 
 let latest: CrewController | null = null;
+/** The connection status of every render since `renderCrew`, in order. */
+let statuses: CrewController['status'][] = [];
+
+/** Every connection status the controller rendered since `renderCrew`, in order. */
+export function renderedStatuses(): readonly CrewController['status'][] {
+  return [...statuses];
+}
 
 /** The controller as of the last render, for driving what a DOM query cannot. */
 export function currentCrew(): CrewController {
@@ -405,6 +437,7 @@ export function currentCrew(): CrewController {
 function CapturedCrewApp() {
   const controller = useCrewController(CREW_APP_OPTIONS);
   latest = controller;
+  statuses.push(controller.status);
   return (
     <CrewControllerProvider controller={controller}>
       <CrewLayout />
@@ -412,8 +445,10 @@ function CapturedCrewApp() {
   );
 }
 
-export function renderCrew(entry = '/crew') {
+/** Mount Crew at `entry`: a path, or a location with route state (a chat's one-hop intent). */
+export function renderCrew(entry: InitialEntry = '/crew') {
   latest = null;
+  statuses = [];
   return render(
     <MemoryRouter initialEntries={[entry]}>
       <CapturedCrewApp />

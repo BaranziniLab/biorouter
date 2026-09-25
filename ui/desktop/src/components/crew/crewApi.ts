@@ -23,6 +23,12 @@ export interface CrewConnection {
   policy_epoch: number;
   status: 'disconnected' | 'connected' | 'authentication_required' | 'error';
   last_error?: string;
+  /**
+   * The typed reason behind `last_error`, when the daemon has one. `crew_membership_ended`: the
+   * workspace refused this computer or its person as no longer a member (Q3-12, Q3-50). The
+   * daemon's keepalive then stops re-dialling it, and the renderer never connects it by itself.
+   */
+  last_error_code?: string;
 }
 // The snapshot is forwarded by the daemon as an untyped value, so these interfaces are written by
 // hand from docs/research/biorouter-crew/naming-design.md. Every field a broker before S1a/S2a does

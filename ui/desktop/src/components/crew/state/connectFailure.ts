@@ -45,6 +45,58 @@ export function isNotSetUpFailure(kind: ConnectFailureKind | undefined): boolean
   return kind !== undefined && NOT_SET_UP_FAILURE_KINDS.includes(kind);
 }
 
+/**
+ * The daemon's `last_error_code` on a saved connection the workspace no longer admits: this
+ * computer or its person was removed (Q3-12, Q3-50). The daemon's keepalive stops re-dialling it.
+ */
+export const MEMBERSHIP_ENDED_CODE = 'crew_membership_ended';
+
+/** Whether the saved connection's last answer was that its membership ended. */
+export function isMembershipEnded(
+  connection: { last_error_code?: string | null } | null | undefined
+): boolean {
+  return connection?.last_error_code === MEMBERSHIP_ENDED_CODE;
+}
+
+/** What an arriving "connect this" request (Q3-08) does now. */
+export type ArrivalConnectDecision = 'connect' | 'wait' | 'skip';
+
+export interface ArrivalConnectInput {
+  /** The saved record of the connection the request names; null when there is none. */
+  connection: { status: string; last_error_code?: string | null } | null;
+  /** The classified failure of the most recent connect or sign-in for that connection. */
+  lastConnectFailure: { kind: ConnectFailureKind } | null;
+  /** A connect for it is already running. */
+  connecting: boolean;
+  /** Sign in is open, or a sign-in is running. */
+  signInPending: boolean;
+}
+
+/**
+ * SECURITY-SENSITIVE (human review). Whether Crew connects, on arrival, the connection a chat's
+ * "Connect in Crew" named (Q3-08). The click in the chat is the person's own action, so this is
+ * the person's connect, one screen later — but only for a saved connection the daemon calls
+ * `disconnected`, and never for an answer that is final: a server or workspace that could not be
+ * verified, a server that wants a password or a code (Sign in is the person's), or a membership
+ * the workspace ended (`MEMBERSHIP_ENDED_CODE`). A final answer decides even while a connect runs;
+ * otherwise `wait` while one is running, and the caller decides once it settles.
+ */
+export function arrivalConnectDecision(input: ArrivalConnectInput): ArrivalConnectDecision {
+  const { connection, lastConnectFailure, connecting, signInPending } = input;
+  if (!connection) return 'skip';
+  const failure = lastConnectFailure?.kind;
+  if (
+    isMembershipEnded(connection) ||
+    isTrustFailure(failure) ||
+    failure === 'auth_required' ||
+    connection.status === 'authentication_required' ||
+    signInPending
+  )
+    return 'skip';
+  if (connecting) return 'wait';
+  return connection.status === 'disconnected' ? 'connect' : 'skip';
+}
+
 // A daemon without typed codes still names the SSH child's outcome in its text, for example
 // "Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]". A missing remote command is
 // the more specific cause, so exit 127 is checked before the generic end-of-file.

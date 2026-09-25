@@ -1,11 +1,18 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, type InitialEntry } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { chatAccessRouteState } from '../access/ChatConnectNote';
 import { CrewHttpError } from '../crewApi';
+import { useCrewTransfers } from '../files/useCrewTransfers';
+import { MEMBERSHIP_ENDED_CODE } from './connectFailure';
 import { crewObservationCopy } from './copy';
 import { rememberLastChannel, stashedDraft } from './draftStash';
 import {
+  ARRIVAL_CONNECT_STORAGE_KEY,
+  CHAT_ACCESS_INTENT_ROUTE_KEY,
+  CREW_CONNECT_ROUTE_KEY,
+  DAEMON_REDIAL_FOLLOW_MS,
   forgetConnectionMemory,
   QUIET_REOBSERVE_GAPS_MS,
   QUIET_REOBSERVE_WINDOW_MS,
@@ -188,9 +195,13 @@ function Harness({
   return <CrewControllerProvider controller={controller}>{children}</CrewControllerProvider>;
 }
 
-function renderController(options?: CrewControllerOptions, children?: React.ReactNode) {
+function renderController(
+  options?: CrewControllerOptions,
+  children?: React.ReactNode,
+  entry: InitialEntry = '/crew'
+) {
   return render(
-    <MemoryRouter initialEntries={['/crew']}>
+    <MemoryRouter initialEntries={[entry]}>
       <Harness options={options}>{children}</Harness>
     </MemoryRouter>
   );
@@ -1199,5 +1210,381 @@ describe('CrewView', () => {
     }
     vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(() => render(<Orphan />)).toThrow('useCrew() must be called inside a CrewView.');
+  });
+});
+
+describe('after a post (Q3-10, Q3-03)', () => {
+  const posted = {
+    id: 'message-2',
+    sequence: 'message-2',
+    channel_id: channel.id,
+    actor_id: actor.id,
+    body: 'hi',
+    created_at: 1_700_000_100,
+    restricted: false,
+    source_channels: [channel.id],
+    attachments: [],
+  };
+  const reads = () =>
+    mocks.crewRequest.mock.calls.filter(([, method]) => method === 'channel.read');
+
+  it('reads the channel up to the posted message, without refreshing the view', async () => {
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'message.post' ? posted : {}
+    );
+    renderController();
+    await verifiedChannel();
+    const observed = mocks.observeCrew.mock.calls.length;
+    act(() => crew.setBody('hi'));
+    await act(async () => {
+      await crew.send();
+    });
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    expect(mocks.crewRequest).toHaveBeenCalledWith(
+      connection.id,
+      'channel.read',
+      { channel_id: channel.id, sequence: 'message-2' },
+      true
+    );
+    expect(mocks.observeCrew.mock.calls.length).toBe(observed);
+    expect(crew.draft.body).toBe('');
+  });
+
+  it('reads nothing when the post answers without a sequence', async () => {
+    renderController();
+    await verifiedChannel();
+    act(() => crew.setBody('hi'));
+    await act(async () => {
+      await crew.send();
+    });
+    expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')).toBe(true);
+    expect(reads()).toHaveLength(0);
+  });
+
+  it('says nothing when that read fails: the message was posted', async () => {
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path.startsWith('/transfers?')) return { transfers: [] };
+      return {};
+    });
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method === 'channel.read') throw new Error('read failed');
+      return method === 'message.post' ? posted : {};
+    });
+    renderController();
+    await verifiedChannel();
+    act(() => crew.setBody('hi'));
+    await act(async () => {
+      await crew.send();
+    });
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(crew.error).toBeNull();
+    expect(crew.draft.body).toBe('');
+  });
+
+  it('lists the transfers again at once, so a sent file’s forgotten record leaves the Files tab', async () => {
+    const record = {
+      id: 'transfer-1',
+      request_id: 'request-1',
+      connection_id: connection.id,
+      channel_id: channel.id,
+      direction: 'upload',
+      name: 'counts.csv',
+      size: 10,
+      sha256: 'a'.repeat(64),
+      offset: 10,
+      blob_id: 'blob-1',
+      state: 'completed',
+      error: null,
+    };
+    let records = [record];
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path.startsWith('/transfers?')) return { transfers: records };
+      if (path === '/transfers/transfer-1' && method === 'GET') return record;
+      if (path === '/transfers/transfer-1' && method === 'DELETE') {
+        records = [];
+        return {};
+      }
+      return {};
+    });
+    function Transfers() {
+      const { transfers } = useCrewTransfers(connection.id);
+      return (
+        <ul aria-label="Transfers">
+          {transfers.map((item) => (
+            <li key={item.id}>{item.name}</li>
+          ))}
+        </ul>
+      );
+    }
+    renderController({}, <Transfers />);
+    await verifiedChannel();
+    expect(await screen.findByText('counts.csv')).toBeInTheDocument();
+    act(() => {
+      crew.setBody('the table');
+      crew.addAttachment({ id: 'blob-1', name: 'counts.csv' });
+    });
+    await act(async () => {
+      await crew.send();
+    });
+    // Nothing is moving, so the shared poller would not have asked again by itself.
+    await waitFor(() => expect(screen.queryByText('counts.csv')).toBeNull());
+    expect(crew.draft.attachments).toEqual([]);
+  });
+});
+
+describe('connect on arrival from a chat (Q3-08)', () => {
+  const CONNECT = '/connections/conn-1/connect';
+  const connects = () =>
+    mocks.crewHttp.mock.calls.filter(([path, method]) => path === CONNECT && method === 'POST')
+      .length;
+  let saved: Record<string, unknown>[];
+
+  function serve() {
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: saved };
+      if (path === CONNECT && method === 'POST') {
+        saved = saved.map((item) =>
+          item.id === 'conn-1' ? { ...item, status: 'connected', last_error_code: undefined } : item
+        );
+        return {};
+      }
+      return {};
+    });
+  }
+  function arrival(intentId = 'intent-1', connectionId = 'conn-1'): InitialEntry {
+    return {
+      pathname: '/crew',
+      search: '?sessionId=session-1',
+      state: { [CHAT_ACCESS_INTENT_ROUTE_KEY]: intentId, [CREW_CONNECT_ROUTE_KEY]: connectionId },
+    };
+  }
+
+  /** The daemon observes only a connection it calls connected, as the real one does. */
+  function observeWhenConnected() {
+    mocks.observeCrew.mockImplementation(
+      async (
+        connectionId: string,
+        channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        const record = saved.find((item) => item.id === connectionId);
+        if (record?.status !== 'connected') {
+          receive({
+            type: 'error',
+            code: 'observation_refused',
+            clear: true,
+            error: 'Crew connection is not connected',
+          });
+          return 'terminal';
+        }
+        receive({ ...stateFrame, connection_id: connectionId });
+        if (channelId) receive(messagesFrame);
+        return 'terminal';
+      }
+    );
+  }
+
+  beforeEach(() => {
+    saved = [{ ...connection, status: 'disconnected' }];
+    serve();
+    observeWhenConnected();
+  });
+
+  it('reads the intent id under the key the chat’s route state uses', () => {
+    expect(Object.keys(chatAccessRouteState())).toEqual([CHAT_ACCESS_INTENT_ROUTE_KEY]);
+  });
+
+  it('connects a disconnected connection once, as the person, and not again on a remount', async () => {
+    const first = renderController({ autoOpenSignIn: true }, null, arrival());
+    await verifiedChannel();
+    expect(connects()).toBe(1);
+    expect(crew.status).toBe('connected');
+
+    first.unmount();
+    saved = [{ ...connection, status: 'disconnected' }];
+    renderController({ autoOpenSignIn: true }, null, arrival());
+    await waitFor(() => expect(crew.connectionsState).toBe('loaded'));
+    await waitFor(() => expect(crew.screen).toBe('offline'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(1);
+  });
+
+  it('does not connect again on a reload of the same history entry', async () => {
+    // A reload keeps the history entry and this window's session storage, not this module's memory.
+    window.sessionStorage.setItem(ARRIVAL_CONNECT_STORAGE_KEY, JSON.stringify(['intent-1']));
+    renderController({ autoOpenSignIn: true }, null, arrival());
+    await waitFor(() => expect(crew.screen).toBe('offline'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+  });
+
+  it('connects nothing when the connection is already connected, and spends the intent', async () => {
+    saved = [connection];
+    const first = renderController({}, null, arrival());
+    await verifiedChannel();
+    expect(connects()).toBe(0);
+
+    // It drops later: coming back to the same entry still never connects it.
+    first.unmount();
+    saved = [{ ...connection, status: 'disconnected' }];
+    renderController({}, null, arrival());
+    await waitFor(() => expect(crew.screen).toBe('offline'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+  });
+
+  it('connects nothing without an intent id, or for a connection it does not know', async () => {
+    renderController({}, null, {
+      pathname: '/crew',
+      state: { [CREW_CONNECT_ROUTE_KEY]: 'conn-1' },
+    });
+    await waitFor(() => expect(crew.screen).toBe('offline'));
+    const other = renderController({}, null, arrival('intent-2', 'conn-unknown'));
+    await waitFor(() => expect(crew.connectionsState).toBe('loaded'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+    other.unmount();
+  });
+
+  it('selects the named connection first, then connects it', async () => {
+    saved = [
+      { ...connection, id: 'conn-0', name: 'Other' },
+      { ...connection, status: 'disconnected' },
+    ];
+    renderController({}, null, arrival());
+    await waitFor(() => expect(connects()).toBe(1));
+    expect(crew.connectionId).toBe('conn-1');
+    expect(
+      mocks.crewHttp.mock.calls.some(
+        ([path, method]) => path === '/connections/conn-0/connect' && method === 'POST'
+      )
+    ).toBe(false);
+  });
+
+  it('opens Sign in when the server asks for a password, and connects nothing more', async () => {
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: saved };
+      if (path === CONNECT && method === 'POST')
+        throw new CrewHttpError('Crew SSH failure [ssh_eof]', 400, 'crew_ssh_auth_required');
+      return {};
+    });
+    renderController({ autoOpenSignIn: true }, null, arrival());
+    await waitFor(() => expect(crew.signIn).toEqual({ open: true, reason: 'auto' }));
+    act(() => crew.closeSignIn());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(1);
+  });
+
+  it('never connects a connection whose membership the workspace ended', async () => {
+    saved = [{ ...connection, status: 'disconnected', last_error_code: MEMBERSHIP_ENDED_CODE }];
+    renderController({ autoOpenSignIn: true }, null, arrival());
+    await waitFor(() => expect(crew.screen).toBe('offline'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+    // A person's own Connect still may.
+    await act(async () => {
+      await crew.connect({ userInitiated: true });
+    });
+    expect(connects()).toBe(1);
+  });
+
+  it('never connects a connection that waits for Sign in', async () => {
+    saved = [{ ...connection, status: 'authentication_required' }];
+    renderController({ autoOpenSignIn: true }, null, arrival());
+    await waitFor(() => expect(crew.connectionsState).toBe('loaded'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(connects()).toBe(0);
+  });
+});
+
+describe('a membership the workspace ended (Q3-12, Q3-50)', () => {
+  const ended = { ...connection, last_error_code: MEMBERSHIP_ENDED_CODE };
+
+  it('offers no Retry for an observation end on such a connection', async () => {
+    const sessions = controllableObserver();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [ended] };
+      return {};
+    });
+    renderController();
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive({ ...stateFrame }));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    act(() =>
+      sessions[sessions.length - 1]!.receive({
+        type: 'error',
+        code: 'access_denied',
+        clear: true,
+        error: 'Room observation ended.',
+      })
+    );
+    await waitFor(() => expect(crew.refreshError).not.toBeNull());
+    expect(crew.refreshErrorRetryable).toBe(false);
+  });
+
+  it('never observes it again quietly, nor follows it, after a loss', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const sessions = controllableObserver();
+      let reads = 0;
+      let list: Record<string, unknown>[] = [connection];
+      mocks.crewHttp.mockImplementation(async (path: string) => {
+        if (path === '/connections') {
+          reads += 1;
+          return { connections: list };
+        }
+        return {};
+      });
+      renderController();
+      await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+      act(() => sessions[sessions.length - 1]!.receive({ ...stateFrame }));
+      await waitFor(() => expect(crew.snapshot).not.toBeNull());
+
+      // The daemon found the membership ended and stopped the bridge.
+      list = [{ ...ended, status: 'disconnected' }];
+      const observed = sessions.length;
+      act(() =>
+        sessions[sessions.length - 1]!.receive({
+          type: 'error',
+          code: 'observation_refused',
+          clear: true,
+          error: 'Room observation ended.',
+        })
+      );
+      await waitFor(() => expect(crew.refreshError).not.toBeNull());
+      const after = reads;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(DAEMON_REDIAL_FOLLOW_MS.reduce((a, b) => a + b, 0) * 2);
+      });
+      expect(reads).toBe(after);
+      expect(sessions.length).toBe(observed);
+      expect(mocks.crewHttp.mock.calls.some(([path]) => String(path).endsWith('/connect'))).toBe(
+        false
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

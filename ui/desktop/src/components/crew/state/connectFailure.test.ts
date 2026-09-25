@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import {
+  arrivalConnectDecision,
   CONNECT_FAILURE_CODES,
   classifyConnectFailure,
+  isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
+  MEMBERSHIP_ENDED_CODE,
   TRUST_FAILURE_KINDS,
+  type ArrivalConnectInput,
+  type ConnectFailureKind,
 } from './connectFailure';
 
 // Today's daemon text for an SSH child that ended before the bridge answered.
@@ -108,5 +113,68 @@ describe('classifyConnectFailure', () => {
     expect(kinds.filter(isTrustFailure).sort()).toEqual([...TRUST_FAILURE_KINDS].sort());
     expect(kinds.filter(isNotSetUpFailure).sort()).toEqual(['bridge_missing', 'handoff_failed']);
     expect(isTrustFailure(undefined)).toBe(false);
+  });
+});
+
+describe('isMembershipEnded (Q3-12, Q3-50)', () => {
+  it('reads only the daemon’s typed code', () => {
+    expect(MEMBERSHIP_ENDED_CODE).toBe('crew_membership_ended');
+    expect(isMembershipEnded({ last_error_code: 'crew_membership_ended' })).toBe(true);
+    expect(isMembershipEnded({ last_error_code: 'crew_ssh_unreachable' })).toBe(false);
+    expect(isMembershipEnded({})).toBe(false);
+    expect(isMembershipEnded(null)).toBe(false);
+    expect(isMembershipEnded(undefined)).toBe(false);
+  });
+});
+
+describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
+  const base: ArrivalConnectInput = {
+    connection: { status: 'disconnected' },
+    lastConnectFailure: null,
+    connecting: false,
+    signInPending: false,
+  };
+  const decide = (overrides: Partial<ArrivalConnectInput>) =>
+    arrivalConnectDecision({ ...base, ...overrides });
+
+  it('connects a saved connection the daemon calls disconnected, and nothing else', () => {
+    expect(decide({})).toBe('connect');
+    for (const status of ['connected', 'error', 'authentication_required'])
+      expect(decide({ connection: { status } })).toBe('skip');
+    expect(decide({ connection: null })).toBe('skip');
+  });
+
+  it('waits while a connect already runs', () => {
+    expect(decide({ connecting: true })).toBe('wait');
+  });
+
+  it('never connects after a final answer: trust, sign-in, or an ended membership', () => {
+    for (const kind of TRUST_FAILURE_KINDS)
+      expect(decide({ lastConnectFailure: { kind } })).toBe('skip');
+    expect(decide({ lastConnectFailure: { kind: 'auth_required' } })).toBe('skip');
+    expect(decide({ signInPending: true })).toBe('skip');
+    expect(
+      decide({
+        connection: { status: 'disconnected', last_error_code: MEMBERSHIP_ENDED_CODE },
+      })
+    ).toBe('skip');
+    // Final even while a connect runs: nothing is left to wait for.
+    expect(
+      decide({
+        connecting: true,
+        connection: { status: 'disconnected', last_error_code: MEMBERSHIP_ENDED_CODE },
+      })
+    ).toBe('skip');
+  });
+
+  it('still connects after a failure a person may retry', () => {
+    const retryable: ConnectFailureKind[] = [
+      'unreachable',
+      'ssh_failed',
+      'unknown',
+      'bridge_missing',
+      'handoff_failed',
+    ];
+    for (const kind of retryable) expect(decide({ lastConnectFailure: { kind } })).toBe('connect');
   });
 });
