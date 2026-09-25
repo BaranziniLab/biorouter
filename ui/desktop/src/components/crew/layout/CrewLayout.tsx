@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AgentsSection, WorkspaceAgentAccess } from '../access';
 import { SignInDialog } from '../auth/SignInDialog';
 import { CrewDialogs, uniqueNamesSupported } from '../dialogs';
@@ -25,6 +26,30 @@ export function sidebarFor(
 }
 
 /**
+ * Whether the details pane may animate: only once it has opened or closed while the channel stage
+ * is on screen (live QA round 4, Q4-04). A pane that MOUNTS closed — every return to Crew — played
+ * its push-out and slid the channel 1068 → 1428 px; one that mounts open (its tab remembered)
+ * would slide in. Neither is a change the person made, so neither moves: the root carries
+ * `data-pane-still` until then (`crew-app.css`). Decided in render, so the attribute goes in the
+ * same commit as the pane's own state changes: the pane reads its exit animation from the computed
+ * style as it closes.
+ */
+export function usePaneAnimate(stageShown: boolean, paneOpen: boolean): boolean {
+  const [motion, setMotion] = useState(() => ({
+    stageShown,
+    openAtMount: paneOpen,
+    animate: false,
+  }));
+  let next = motion;
+  if (stageShown !== motion.stageShown)
+    next = { stageShown, openAtMount: paneOpen, animate: false };
+  else if (stageShown && !motion.animate && paneOpen !== motion.openAtMount)
+    next = { ...motion, animate: true };
+  if (next !== motion) setMotion(next);
+  return next.animate;
+}
+
+/**
  * The redesigned Crew layout (ui-redesign-spec, "Layout" and "Component architecture"): the Crew
  * sidebar, then the main area — one channel with its details pane, or the one screen
  * `deriveCrewScreen()` chose — and the dialogs, mounted once and opened through the controller's
@@ -47,12 +72,14 @@ export function CrewLayout() {
   const { screen } = crew;
   const sidebar = sidebarFor(screen, crew);
   const snapshot = crew.snapshot ?? crew.lastVerified?.snapshot ?? null;
+  const paneAnimate = usePaneAnimate(screen === 'channel', crew.ui.pane !== null);
 
   return (
     <div
       className="crew-app"
       data-crew-sidebar={sidebar === 'none' ? 'hidden' : undefined}
       data-crew-screen={screen}
+      data-pane-still={paneAnimate ? undefined : ''}
     >
       {sidebar === 'sidebar' && (
         <div className="crew-sidebar">

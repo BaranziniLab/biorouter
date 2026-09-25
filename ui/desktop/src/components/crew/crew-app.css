@@ -23,7 +23,9 @@
    THE HOOKS this file provides, for `layout/CrewLayout.tsx` and the areas:
 
      .crew-app                              the root; columns: sidebar | main
-                                            ([data-crew-sidebar='hidden']: main only)
+                                            ([data-crew-sidebar='hidden']: main only;
+                                            [data-pane-still]: the pane has not moved
+                                            since the channel appeared, and must not)
        .crew-sidebar                          the Crew sidebar column (geometry)
        .crew-main                             container `crew-main`: channel + pane
          .crew-stage                          the grid the pane pushes into
@@ -231,6 +233,26 @@
 
 .crew-pane[data-state='open'] > .crew-pane-content {
   animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+}
+
+/* A pane that MOUNTS does not move (live QA round 4, Q4-04). Closed — on every
+   return to Crew — it played `crew-pane-push-out` (or the cover fade) as it
+   appeared, sliding the channel 1068 → 1428px; open on the tab the person left
+   it on, it would slide in. `layout/CrewLayout.tsx` holds `data-pane-still` on
+   the root until the pane has opened or closed while the channel is on screen,
+   and drops it in the same commit as the pane's own state, so a real open or
+   close still animates. These out-rank every pane animation below, in both
+   modes and under reduced motion, whose rests are unchanged. */
+.crew-app[data-pane-still] .crew-pane[data-state='open'] {
+  animation: none;
+}
+
+.crew-app[data-pane-still] .crew-pane[data-state='closed'] {
+  animation: none;
+}
+
+.crew-app[data-pane-still] .crew-pane[data-state='open'] > .crew-pane-content {
+  animation: none;
 }
 
 @container crew-main (width < 800px) {
