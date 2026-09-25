@@ -8,7 +8,7 @@ import { useCrew, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { channelLabels, chatTitleOf } from './accessRows';
 import { useKnownChatTitle } from './ChatAccessPane';
 import { accessCopy } from './copy';
-import { isUnconfirmedRevocation, useCrewGrants } from './useCrewGrants';
+import { revocationUnconfirmed, useCrewGrants } from './useCrewGrants';
 
 export interface ChatConnectNoteProps {
   /** Layout only. */
@@ -197,11 +197,7 @@ export function ChatConnectNote({ className }: ChatConnectNoteProps) {
     }
   } else {
     const state = sessionGrantState(grant);
-    if (
-      state !== 'active' &&
-      grant.kind === 'task' &&
-      !isUnconfirmedRevocation(grant.connection_id, grant.session_id)
-    ) {
+    if (state !== 'active' && grant.kind === 'task' && !revocationUnconfirmed(grant)) {
       // A task's access ends with the task (Q2-09): nothing to grant again from here.
       text = accessCopy.noteTaskFinished;
     } else if (state === 'revoked') {

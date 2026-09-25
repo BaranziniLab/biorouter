@@ -7,7 +7,7 @@ import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { accessStatusTone, splitAccessRows, type AccessRow } from './accessRows';
 import { accessCopy } from './copy';
-import { InlineConfirm, RevokeResultNote } from './RevokeControls';
+import { InlineConfirm, RevocationConfirmedNote, RevokeResultNote } from './RevokeControls';
 import type { GrantsStatus, RevokeOutcome } from './useCrewGrants';
 import '../crew-app.css';
 
@@ -31,6 +31,12 @@ export interface AccessListProps {
    * reaches past the edge. Without it, rows and the empty state are inset 12px.
    */
   flush?: boolean;
+  /**
+   * Whether a connection is up, for a revoke that stopped only on this device: the daemon then
+   * asks the workspace again by itself, and the note says "Confirming with the workspace…" rather
+   * than telling a connected person to reconnect (F3). Unknown reads as offline.
+   */
+  isConnected?(connectionId: string): boolean;
   /** Layout only. */
   className?: string;
 }
@@ -62,6 +68,7 @@ export function AccessList({
   onRevoke,
   onStop,
   flush = false,
+  isConnected,
   className,
 }: AccessListProps) {
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -276,12 +283,16 @@ export function AccessList({
           {error}
         </Note>
       ) : null}
-      {result ? (
+      {result && confirmedSince(result, rows) ? (
+        // The daemon confirmed the 503 with the workspace by itself once it was back (F3).
+        <RevocationConfirmedNote />
+      ) : result ? (
         <RevokeResultNote
           outcome={result.outcome}
           chat={result.row.chatTitle}
           retrying={pendingKey === result.row.key}
           onRetry={() => void revoke(result.row)}
+          confirmation={isConnected?.(result.row.connectionId) ? 'confirming' : 'offline'}
           successActions={
             <Button type="button" variant="ghost" size="sm" onClick={() => setResult(null)}>
               {accessCopy.done}
@@ -292,6 +303,20 @@ export function AccessList({
       {body}
     </div>
   );
+}
+
+/**
+ * Whether a revoke this list saw answered "stopped on this device" has since been settled with the
+ * workspace: its row, read again, is revoked and no longer waiting — or expired, when the workspace
+ * itself ended the run meanwhile (F3).
+ */
+function confirmedSince(
+  result: { row: AccessRow; outcome: RevokeOutcome },
+  rows: readonly AccessRow[]
+): boolean {
+  if (result.outcome.kind !== 'unconfirmed') return false;
+  const now = rows.find((row) => row.key === result.row.key);
+  return now?.status === 'revoked' || now?.status === 'expired';
 }
 
 const CREW_COMMAND = '/crew';

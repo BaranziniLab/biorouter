@@ -15,10 +15,13 @@ import { rememberConfirmedRevoke, type RevokedGrantInfo } from './pastAccess';
  * The daemon decides whether a grant exists and whether it may be revoked. Nothing here gates a
  * control: a hook only reads the daemon's list, and `revoke` reports what the daemon answered.
  *
- * **No polling.** A list is fetched when the surface that shows it opens, after every action
- * taken through this module, and when another surface announces a change
+ * **No polling**, with one exception. A list is fetched when the surface that shows it opens,
+ * after every action taken through this module, and when another surface announces a change
  * ({@link CREW_GRANTS_CHANGED_EVENT}) — so the pane, the Access tab, the Agents section and the
- * ordinary chat stay in step without any of them asking on a timer.
+ * ordinary chat stay in step without any of them asking on a timer. The exception is a revoke that
+ * stopped only on this device: the daemon confirms it with the workspace by itself once the
+ * connection is back (F3), which no surface here causes, so while one is listed the list is read
+ * again on a timer ({@link useUnconfirmedRevokeWatch}) until it says confirmed.
  */
 
 /** Fired on `window` after a grant was made, revoked or stopped from any surface. */
@@ -53,6 +56,66 @@ export function forgetUnconfirmedRevocations(): void {
 /** Whether this window saw a revoke of this grant stop only on this device. */
 export function isUnconfirmedRevocation(connectionId: string, sessionId: string): boolean {
   return unconfirmedRevocations.has(grantKey(connectionId, sessionId));
+}
+
+/**
+ * Whether a listed grant is stopped on this device and still waits for the workspace to confirm
+ * (F3). The daemon's own word decides when it gives one — it keeps asking the workspace by itself
+ * whenever the connection comes back, so a revoke this window saw answered 503 may since have been
+ * confirmed — and this window's memory of a 503 only when the daemon predates the word.
+ */
+export function revocationUnconfirmed(
+  grant: Pick<CrewSessionGrant, 'connection_id' | 'session_id' | 'expired' | 'revocation'>
+): boolean {
+  if (!grant.expired) return false;
+  if (grant.revocation !== undefined) return grant.revocation === 'unconfirmed';
+  return isUnconfirmedRevocation(grant.connection_id, grant.session_id);
+}
+
+/**
+ * How often a list holding a revoke that still waits for the workspace is read again while the
+ * window is visible (F3): the daemon confirms it by itself once the connection is back, and the
+ * note must follow it from "Confirming with the workspace…" to "Confirmed" without a click. Only
+ * while such a revoke is listed; otherwise nothing polls.
+ */
+export const UNCONFIRMED_REVOKE_WATCH_MS = 15_000;
+
+/**
+ * Read again every {@link UNCONFIRMED_REVOKE_WATCH_MS} while `watching` and the window is
+ * visible, and at once when it becomes visible or the network comes back.
+ */
+export function useUnconfirmedRevokeWatch(watching: boolean, reread: () => void): void {
+  const latest = useRef(reread);
+  latest.current = reread;
+  useEffect(() => {
+    if (!watching) return;
+    let timer: number | undefined;
+    const visible = () => document.visibilityState !== 'hidden';
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+    const start = () => {
+      stop();
+      if (visible())
+        timer = window.setInterval(() => latest.current(), UNCONFIRMED_REVOKE_WATCH_MS);
+    };
+    const onVisibility = () => {
+      if (visible()) latest.current();
+      start();
+    };
+    const onOnline = () => {
+      if (visible()) latest.current();
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('online', onOnline);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [watching]);
 }
 
 function record(detail: CrewGrantsChangedDetail) {
@@ -279,6 +342,8 @@ export function useCrewGrants(
   }, [enabled, key, ids, nonce]);
 
   const fresh = state.key === key;
+  // A revoke that waits for the workspace is followed until the daemon says confirmed (F3).
+  useUnconfirmedRevokeWatch(enabled && fresh && state.grants.some(revocationUnconfirmed), refetch);
   // Read through a ref, so `revoke` stays one function while the list changes under it.
   const listed = useRef<CrewSessionGrant[]>(NO_GRANTS);
   listed.current = fresh ? state.grants : NO_GRANTS;

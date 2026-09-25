@@ -428,9 +428,11 @@ describe('the ordinary chat’s Crew access', () => {
     renderChat();
     fireEvent.click(await screen.findByRole('button', { name: accessCopy.revokeButton }));
     fireEvent.click(screen.getByRole('button', { name: accessCopy.confirmRevoke }));
-    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    // Its connection is up, so the daemon is confirming it by itself (F3).
+    expect(await screen.findByText(accessCopy.confirming)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: accessCopy.retry })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    expect(screen.queryByText(accessCopy.unconfirmed)).toBeNull();
   });
 
   it('keeps the chat usable when the revoke was refused', async () => {

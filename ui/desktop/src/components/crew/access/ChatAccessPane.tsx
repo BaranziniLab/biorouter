@@ -14,7 +14,7 @@ import {
   isDefaultSessionName,
   subscribeSessionNameChanges,
 } from '../../../utils/sessionNameSync';
-import { sessionGrantState, type CrewSessionGrant } from '../api/grants';
+import { grantDestinationLabel, sessionGrantState, type CrewSessionGrant } from '../api/grants';
 import { AlertCircle } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -26,6 +26,7 @@ import {
   channelName,
   connectionNames,
   identityCopy,
+  sanitizeDisplayText,
   teamName,
   usePeopleDirectory,
   type DaemonPersonLabels,
@@ -34,10 +35,15 @@ import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewCon
 import { accessStatusOf, accessStatusTone, channelLabels, chatTitleOf } from './accessRows';
 import { rememberChannelLabels } from './chatCrewAccess';
 import { accessCopy } from './copy';
-import { InlineConfirm, RevokeResultNote } from './RevokeControls';
+import {
+  InlineConfirm,
+  RevocationConfirmedNote,
+  RevokeResultNote,
+  useConfirmedAfterWait,
+} from './RevokeControls';
 import {
   announceGrantsChanged,
-  isUnconfirmedRevocation,
+  revocationUnconfirmed,
   useCrewGrants,
   type RevokeOutcome,
 } from './useCrewGrants';
@@ -173,7 +179,13 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     setContextChannels,
     ui,
     subscribeSurfaceReset,
+    lastVerified,
   } = controller;
+  // While the workspace is offline there is no verified view, but Revoke is still offered here
+  // (F2): the last one verified this app session names the channel and the person, as the rest of
+  // Crew does while it waits.
+  const view = snapshot ?? lastVerified?.snapshot ?? null;
+  const viewLabels = snapshot ? labels : (lastVerified?.labels ?? null);
   const navigate = useNavigate();
   const intent = ui.pane?.mode === 'chat-access' ? ui.pane : null;
   const sessionId = sessionProp ?? intent?.sessionId ?? grantSessionId ?? null;
@@ -187,8 +199,8 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     if (sessionId && reason === 'refresh') refetch();
   });
   const showError = useCrewErrorSlot('pane:chat-access');
-  const dir = usePeopleDirectory(snapshot, labels as DaemonPersonLabels | null);
-  const destinations = useMemo(() => channelLabels(snapshot), [snapshot]);
+  const dir = usePeopleDirectory(view, viewLabels as DaemonPersonLabels | null);
+  const destinations = useMemo(() => channelLabels(view), [view]);
   const workspaces = useMemo(() => connectionNames(connections), [connections]);
 
   const [granted, setGranted] = useState(false);
@@ -206,6 +218,28 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     setOutcome(null);
   }, [intent, sessionId]);
 
+  const listedGrant: CrewSessionGrant | null = sessionId
+    ? (grants.grants.find((item) => item.session_id === sessionId) ?? null)
+    : null;
+  // The daemon confirmed with the workspace by itself a revoke this pane saw answered 503, or the
+  // workspace itself ended the run meanwhile: either way nothing there honours it now (F3).
+  const listedConfirmed =
+    listedGrant?.revocation === 'confirmed' || listedGrant?.revocation === 'ended_by_workspace';
+  useEffect(() => {
+    if (listedConfirmed)
+      setOutcome((current) => (current?.kind === 'unconfirmed' ? null : current));
+  }, [listedConfirmed]);
+  const listedWaiting =
+    outcome?.kind === 'unconfirmed' ||
+    (listedGrant !== null &&
+      sessionGrantState(listedGrant) !== 'active' &&
+      revocationUnconfirmed(listedGrant));
+  const confirmedAfterWait = useConfirmedAfterWait(
+    listedGrant?.run_id ?? null,
+    listedWaiting,
+    listedConfirmed
+  );
+
   if (!sessionId) {
     return (
       <div className={className} data-testid="crew-chat-access-pane">
@@ -214,17 +248,17 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     );
   }
 
-  const grant: CrewSessionGrant | null =
-    grants.grants.find((item) => item.session_id === sessionId) ?? null;
+  const grant = listedGrant;
   const state = grant ? sessionGrantState(grant) : null;
   // A revoke that stopped only on this device: the grant is no longer usable here, whatever the
   // list said a moment ago, and it stays that way until the workspace confirms or it is granted
-  // again.
-  const stoppedHere =
-    outcome?.kind === 'unconfirmed' ||
-    (grant !== null &&
-      state !== 'active' &&
-      isUnconfirmedRevocation(grant.connection_id, grant.session_id));
+  // again. The daemon asks the workspace again by itself once the connection is back (F3).
+  const stoppedHere = listedWaiting;
+  const confirmation =
+    connections.find((item) => item.id === (grant?.connection_id ?? connectionId))?.status ===
+    'connected'
+      ? 'confirming'
+      : 'offline';
   const active = !stoppedHere && (granted || state === 'active');
   // The daemon's name for the chat when a grant lists one; else the title this window knows.
   const chat = (grant ? chatTitleOf(grant) : null) ?? cachedTitle;
@@ -233,9 +267,12 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const target = grant?.connection_id ?? (granted ? connectionId : null);
   const sameConnection = !grant || grant.connection_id === connectionId;
 
+  // The name the person saw when granting, when no view names the channel now.
+  const grantedAs = grant ? sanitizeDisplayText(grantDestinationLabel(grant)) : '';
   const destinationOf = (id: string) =>
     sameConnection
-      ? (destinations.get(id) ?? accessCopy.unknownChannel)
+      ? (destinations.get(id) ??
+        (grant && id === grant.channel_id && grantedAs ? grantedAs : accessCopy.unknownChannel))
       : accessCopy.unknownChannel;
   // What the listed grant can do (its own destination), and what Allow would grant: always the
   // selected channel plus the channels chosen under Advanced, whatever an old grant named.
@@ -374,8 +411,15 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         )}
       </li>
       <li>
-        {future ? accessCopy.postAs(where) : accessCopy.postsAs(where)}
-        {who ? <> {who}</> : null}
+        {who ? (
+          <>
+            {future ? accessCopy.postAs(where) : accessCopy.postsAs(where)} {who}
+          </>
+        ) : future ? (
+          accessCopy.post(where)
+        ) : (
+          accessCopy.posts(where)
+        )}
       </li>
     </ul>
   );
@@ -398,6 +442,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
             chat={chat}
             onRetry={() => void revoke()}
             retrying={revoking}
+            confirmation={confirmation}
           />
           <div>
             <Button type="button" variant="secondary" size="sm" onClick={openChat}>
@@ -506,10 +551,13 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         ? accessCopy.paneRevoked(chat)
         : null;
 
+  const confirmedNote = confirmedAfterWait ? <RevocationConfirmedNote /> : null;
+
   if (!canGrant) {
     return (
       <div className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
+          {confirmedNote}
           {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
           <p className="text-supporting text-text-muted">{accessCopy.reconnectHow}</p>
           <div>
@@ -525,6 +573,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   return (
     <div className={className} data-testid="crew-chat-access-pane">
       <form className="flex flex-col gap-3" onSubmit={(event) => void allow(event)}>
+        {confirmedNote}
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
         <p className="text-label text-text-default">{accessCopy.willBeAble(chat)}</p>
         {summaryLines(true, here, consentExtras, me)}

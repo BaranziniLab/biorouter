@@ -50,7 +50,25 @@ export interface CrewSessionGrant {
   expires_at?: number | null;
   /** The names the person saw when granting; absent when the daemon recorded none. */
   labels?: CrewGrantLabels;
+  /**
+   * Where a stopped grant stands with the workspace (F3, D-1): `unconfirmed` while the daemon is
+   * still asking the workspace to confirm a revoke (it asks again by itself whenever the
+   * connection comes back), `confirmed` once it has, `ended_by_workspace` when the workspace itself
+   * refused the run as ended (its policy moved since the grant). Absent from a live grant, from a
+   * daemon that predates it, and for a stop whose standing the daemon does not know.
+   */
+  revocation?: CrewGrantRevocation;
+  /**
+   * When this device saw the revoke confirmed, in milliseconds: set only on the rows "Show past
+   * access" remembers (`pastAccess.ts`), never by the daemon. Display only (F5).
+   */
+  revoked_at?: number;
 }
+
+/** A stopped grant's standing with the workspace, as the daemon's grant list says it. */
+export type CrewGrantRevocation = 'unconfirmed' | 'confirmed' | 'ended_by_workspace';
+
+const GRANT_REVOCATIONS: readonly string[] = ['unconfirmed', 'confirmed', 'ended_by_workspace'];
 
 export interface CrewRevokeResult {
   revoked: true;
@@ -126,6 +144,15 @@ function grantFrom(row: unknown): CrewSessionGrant | null {
   if (expiresAt !== undefined) grant.expires_at = expiresAt;
   const labels = grantLabelsFrom(row.labels);
   if (labels) grant.labels = labels;
+  // Only a stopped grant has a standing with the workspace; a word this renderer does not know is
+  // left out rather than guessed at.
+  // `remote_revocation_confirmed` says the same for the two states it covers.
+  if (row.expired === true) {
+    if (typeof row.revocation === 'string' && GRANT_REVOCATIONS.includes(row.revocation))
+      grant.revocation = row.revocation as CrewGrantRevocation;
+    else if (typeof row.remote_revocation_confirmed === 'boolean')
+      grant.revocation = row.remote_revocation_confirmed ? 'confirmed' : 'unconfirmed';
+  }
   return grant;
 }
 
@@ -227,10 +254,12 @@ export function grantDestinationLabel(
 
 /**
  * How a grant reads at rest. `expired` on the wire means stopped on this device, which the person
- * reads as revoked; a grant past its `expires_at` has run out. `now` is in milliseconds.
+ * reads as revoked — unless the workspace itself ended the run (`ended_by_workspace`, D-1: its
+ * policy moved since the grant), which nobody revoked, so it reads as expired. A grant past its
+ * `expires_at` has run out. `now` is in milliseconds.
  */
 export function sessionGrantState(grant: CrewSessionGrant, now = Date.now()): CrewGrantState {
-  if (grant.expired) return 'revoked';
+  if (grant.expired) return grant.revocation === 'ended_by_workspace' ? 'expired' : 'revoked';
   if (typeof grant.expires_at === 'number' && grant.expires_at * 1000 <= now) return 'expired';
   return 'active';
 }

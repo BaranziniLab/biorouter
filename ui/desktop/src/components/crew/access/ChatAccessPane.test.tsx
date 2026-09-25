@@ -34,7 +34,11 @@ import {
   renderWithController,
   type DaemonFixture,
 } from './testing';
-import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
+import {
+  announceGrantsChanged,
+  forgetUnconfirmedRevocations,
+  UNCONFIRMED_REVOKE_WATCH_MS,
+} from './useCrewGrants';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -320,8 +324,11 @@ describe('chat access: an active grant', () => {
     fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.revokeButton }));
     fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.confirmRevoke }));
 
-    expect(await within(pane()).findByText(accessCopy.unconfirmed)).toBeInTheDocument();
-    expect(within(pane()).getByRole('alert')).toHaveTextContent(accessCopy.unconfirmed);
+    // The connection is up, so the daemon is asking the workspace again by itself: the note
+    // says so, and never tells a connected person to reconnect (F3).
+    expect(await within(pane()).findByText(accessCopy.confirming)).toBeInTheDocument();
+    expect(within(pane()).getByRole('alert')).toHaveTextContent(accessCopy.confirming);
+    expect(within(pane()).queryByText(/reconnect/i)).toBeNull();
     expect(screen.queryByText(/Access revoked/)).toBeNull();
     // The list now shows the local stop; the pane keeps saying it is unconfirmed.
     await waitFor(() =>
@@ -330,7 +337,7 @@ describe('chat access: an active grant', () => {
 
     fireEvent.click(within(pane()).getByRole('button', { name: accessCopy.retry }));
     await waitFor(() => expect(attempts).toBe(2));
-    expect(await within(pane()).findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    expect(await within(pane()).findByText(accessCopy.confirming)).toBeInTheDocument();
     expect(screen.queryByText(/Access revoked/)).toBeNull();
   });
 
@@ -373,7 +380,7 @@ describe('chat access: an active grant', () => {
     const paneNode = await openPaneFromNote(accessCopy.noteManage);
     fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.revokeButton }));
     fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.confirmRevoke }));
-    expect(await within(pane()).findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    expect(await within(pane()).findByText(accessCopy.confirming)).toBeInTheDocument();
     expect(screen.queryByText(/Access revoked/)).toBeNull();
   });
 });
@@ -1046,5 +1053,40 @@ describe('chat access: the note while the pane is open', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close pane' }));
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteRevoked('Plot review')));
+  });
+});
+
+/**
+ * Final acceptance F3: a revoke that stopped only on this device is confirmed by the daemon itself
+ * once the connection is back. The pane says so while it waits — "Confirming with the workspace…",
+ * never "Reconnect" to a connected person — and says "Confirmed" when the daemon's list does.
+ */
+describe('chat access: a revoke waiting for the workspace (F3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChatAccessIntents();
+  });
+
+  it('follows the daemon from “Confirming with the workspace…” to “Confirmed”, with no click', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let standing = 'unconfirmed';
+      setup({ grants: () => [grantRow({ expired: true, revocation: standing })] });
+      const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
+      expect(await within(paneNode).findByText(accessCopy.confirming)).toBeInTheDocument();
+      expect(within(paneNode).queryByText(/reconnect/i)).toBeNull();
+      expect(within(paneNode).getByText(accessCopy.status.unconfirmed)).toBeInTheDocument();
+
+      standing = 'confirmed';
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(UNCONFIRMED_REVOKE_WATCH_MS);
+      });
+      expect(await within(pane()).findByText(accessCopy.confirmed)).toBeInTheDocument();
+      expect(within(pane()).queryByText(accessCopy.confirming)).toBeNull();
+      expect(within(pane()).queryByText(accessCopy.status.unconfirmed)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

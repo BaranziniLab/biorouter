@@ -14,7 +14,8 @@ import {
   isMembershipEnded,
 } from '../state/connectFailure';
 import { accessCopy } from './copy';
-import { isUnconfirmedRevocation, onGrantsChanged } from './useCrewGrants';
+import { crewTurnRefusalOf, type CrewTurnRefusalKind } from './crewTurnRefusal';
+import { onGrantsChanged, revocationUnconfirmed, useUnconfirmedRevokeWatch } from './useCrewGrants';
 
 /**
  * A chat's Crew access, seen from the ordinary chat (outside the Crew view).
@@ -62,8 +63,27 @@ export interface ChatCrewAccess {
    * the network is back (Q4-01) — else `other`. `null` unless `state` is `offline`.
    */
   offlineCause: 'network' | 'other' | null;
+  /**
+   * Why an `expired` chat's access ended: `settings` when Crew's settings or the workspace's
+   * policy moved since the grant (the daemon refuses its turns with "Crew settings changed since
+   * access was granted", D-1), else `time`. `null` unless `state` is `expired`.
+   */
+  expiredBecause: 'time' | 'settings' | null;
   /** The grant was stopped on this device and the workspace has not confirmed it yet. */
   unconfirmed: boolean;
+  /**
+   * While `unconfirmed`: `confirming` when the grant's connection is up — the daemon asks the
+   * workspace again by itself, so the note says "Confirming with the workspace…" rather than
+   * telling a connected person to reconnect (F3) — else `offline`. `null` otherwise.
+   */
+  confirmation: 'confirming' | 'offline' | null;
+  /** The daemon calls the grant's connection connected (false when there is no grant). */
+  connectionUp: boolean;
+  /**
+   * The daemon says the workspace confirmed the grant's revoke, or itself ended the run (either
+   * way nothing there honours it any more, F3).
+   */
+  revocationConfirmed: boolean;
   /**
    * The daemon refuses this chat's turns: hold the composer with the reason beside it. True for
    * `revoked`, `expired` and `finished`, including the moment after a revoke this window saw
@@ -175,6 +195,11 @@ interface SavedConnection {
   name: string;
   /** The daemon's word for the connection now (`connected`, `disconnected`), when it gave one. */
   status?: string;
+  /**
+   * The connection's policy epoch now. A grant made under another epoch is refused by the daemon
+   * ("Crew settings changed since access was granted", D-1), whatever its list says.
+   */
+  policyEpoch?: number;
   /** Why it is down, in the daemon's words (`last_error`). Never shown: only classified. */
   lastError?: string;
   /** The typed reason beside `last_error`, when the daemon has one (`last_error_code`). */
@@ -190,6 +215,8 @@ function savedConnections(result: unknown): SavedConnection[] {
     const connection: SavedConnection = { id, name: sanitizeDisplayText(row.name) };
     const status = optionalText(row.status);
     if (status) connection.status = status;
+    if (typeof row.policy_epoch === 'number' && Number.isSafeInteger(row.policy_epoch))
+      connection.policyEpoch = row.policy_epoch;
     const lastError = optionalText(row.last_error);
     if (lastError) connection.lastError = lastError;
     const lastErrorCode = optionalText(row.last_error_code);
@@ -254,6 +281,27 @@ interface SeenRevoke {
   runId: string;
 }
 
+/** A turn of this chat the daemon refused for its Crew access, seen live, for one grant (D-1). */
+interface SeenRefusal extends SeenRevoke {
+  kind: CrewTurnRefusalKind;
+}
+
+/** What the chat's last turn error says, for {@link useChatCrewAccess}. */
+export interface ChatTurnErrorText {
+  message?: string | null;
+  technicalDetails?: string | null;
+}
+
+export interface ChatCrewAccessOptions {
+  /**
+   * The chat's current turn error. A Crew refusal that APPEARS while the chat is open — a turn
+   * the daemon just refused because the grant stopped, or because Crew's settings moved since it
+   * (D-1) — holds the chat at once and reads the grant again. One already on screen when the chat
+   * opened is history: it may predate a grant made since, so it holds nothing.
+   */
+  turnError?: ChatTurnErrorText | null;
+}
+
 interface Lookup {
   sessionId: string;
   failed: boolean;
@@ -300,6 +348,7 @@ function sameConnections(a: readonly SavedConnection[], b: readonly SavedConnect
         item.id === b[index].id &&
         item.name === b[index].name &&
         item.status === b[index].status &&
+        item.policyEpoch === b[index].policyEpoch &&
         item.lastError === b[index].lastError &&
         item.lastErrorCode === b[index].lastErrorCode
     )
@@ -320,13 +369,17 @@ function sameConnections(a: readonly SavedConnection[], b: readonly SavedConnect
  * again until the window was refocused. A chat without a grant, or a hidden window, reads nothing
  * on a timer. A read that fails changes nothing: a missed read is not an outage.
  */
-export function useChatCrewAccess(sessionId: string | null | undefined): ChatCrewAccess {
+export function useChatCrewAccess(
+  sessionId: string | null | undefined,
+  options: ChatCrewAccessOptions = {}
+): ChatCrewAccess {
   const id = sessionId || null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [nonce, setNonce] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [, setMarks] = useState(0);
   const [seenRevoke, setSeenRevoke] = useState<SeenRevoke | null>(null);
+  const [seenRefusal, setSeenRefusal] = useState<SeenRefusal | null>(null);
   const shownGrant = useRef<CrewSessionGrant | null>(null);
   const token = useRef({});
   const refetch = useCallback(() => setNonce((value) => value + 1), []);
@@ -377,6 +430,7 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
           setSeenRevoke({ sessionId: id, connectionId: shown.connection_id, runId: shown.run_id });
       } else if (detail.change === 'granted') {
         setSeenRevoke(null);
+        setSeenRefusal(null);
       }
       setMarks((value) => value + 1);
       refetch();
@@ -402,6 +456,29 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
   useEffect(() => {
     shownGrant.current = grant;
   }, [grant]);
+
+  // A Crew refusal that appears while this chat is open is about the grant shown now (D-1): the
+  // chat holds at once, and the grant is read again — the daemon records a run the workspace
+  // ended as stopped. The error the chat opened with is only remembered, never acted on.
+  const refusal = crewTurnRefusalOf(options.turnError);
+  const refusalKind = refusal?.kind ?? null;
+  const refusalKey = refusal ? `${refusal.kind}\n${refusal.message}` : null;
+  const lastRefusal = useRef<{ sessionId: string | null; key: string | null } | null>(null);
+  useEffect(() => {
+    const previous = lastRefusal.current;
+    lastRefusal.current = { sessionId: id, key: refusalKey };
+    if (!id || !refusalKind || !refusalKey) return;
+    if (!previous || previous.sessionId !== id || previous.key === refusalKey) return;
+    const shown = shownGrant.current;
+    if (shown && shown.session_id === id)
+      setSeenRefusal({
+        sessionId: id,
+        connectionId: shown.connection_id,
+        runId: shown.run_id,
+        kind: refusalKind,
+      });
+    refetch();
+  }, [id, refusalKind, refusalKey, refetch]);
   const revokedHere = Boolean(
     grant &&
     seenRevoke &&
@@ -409,8 +486,40 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     seenRevoke.connectionId === grant.connection_id &&
     seenRevoke.runId === grant.run_id
   );
+  const refusedHere =
+    grant &&
+    seenRefusal &&
+    seenRefusal.sessionId === id &&
+    seenRefusal.connectionId === grant.connection_id &&
+    seenRefusal.runId === grant.run_id
+      ? seenRefusal.kind
+      : null;
+  // The daemon refuses a grant made under another policy epoch than its connection's now (D-1).
+  const grantConnection = grant
+    ? current?.connections.find((item) => item.id === grant.connection_id)
+    : undefined;
+  const settingsMoved = Boolean(
+    grant &&
+    typeof grantConnection?.policyEpoch === 'number' &&
+    grant.policy_epoch !== grantConnection.policyEpoch
+  );
   const listedState = grant ? sessionGrantState(grant, now) : null;
-  const grantState = listedState === 'active' && revokedHere ? 'revoked' : listedState;
+  const grantState =
+    listedState !== 'active'
+      ? listedState
+      : revokedHere || refusedHere === 'revoked'
+        ? 'revoked'
+        : refusedHere || settingsMoved
+          ? 'expired'
+          : listedState;
+  const expiredBecause: ChatCrewAccess['expiredBecause'] =
+    grantState !== 'expired'
+      ? null
+      : grant?.revocation === 'ended_by_workspace' ||
+          refusedHere === 'settings-changed' ||
+          (listedState === 'active' && settingsMoved)
+        ? 'settings'
+        : 'time';
   const expiresAt = grant?.expires_at;
 
   useEffect(() => {
@@ -421,10 +530,10 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     return () => window.clearTimeout(timer);
   }, [grantState, expiresAt]);
 
-  const unconfirmed =
-    grantState === 'revoked' && grant
-      ? isUnconfirmedRevocation(grant.connection_id, grant.session_id)
-      : false;
+  const unconfirmed = grantState === 'revoked' && grant ? revocationUnconfirmed(grant) : false;
+  // Follow the daemon's own confirmation (F3): it asks the workspace again whenever the
+  // connection comes back, which nothing in this window causes.
+  useUnconfirmedRevokeWatch(Boolean(id) && unconfirmed, refetch);
   let state: ChatCrewAccessState;
   if (!id || !current || current.failed) state = 'unknown';
   else if (!grant || !grantState) state = 'none';
@@ -526,7 +635,16 @@ export function useChatCrewAccess(sessionId: string | null | undefined): ChatCre
     grant,
     destination,
     offlineCause,
+    expiredBecause: state === 'expired' ? expiredBecause : null,
     unconfirmed,
+    confirmation: unconfirmed
+      ? grantConnection?.status === 'connected'
+        ? 'confirming'
+        : 'offline'
+      : null,
+    connectionUp: grantConnection?.status === 'connected',
+    revocationConfirmed:
+      grant?.revocation === 'confirmed' || grant?.revocation === 'ended_by_workspace',
     blocksComposer: state === 'revoked' || state === 'expired' || state === 'finished',
     refetch,
   };

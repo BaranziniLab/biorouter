@@ -30,7 +30,7 @@ export interface AccessTabProps {
  * Q4-12). Its words start at the tab panel's own edge, as About's do (Q4-29): the list is `flush`.
  */
 export function AccessTab({ className }: AccessTabProps) {
-  const { snapshot, runs, channelId, channel, connectionId } = useCrew();
+  const { snapshot, runs, channelId, channel, connectionId, connections } = useCrew();
   const grants = useWorkspaceGrants();
   const past = usePastAccess(connectionId);
   const { onOpen, onStop } = useAccessActions();
@@ -60,6 +60,9 @@ export function AccessTab({ className }: AccessTabProps) {
         onOpen={onOpen}
         onRevoke={(row) => grants.revoke(row.connectionId, row.sessionId)}
         onStop={onStop}
+        isConnected={(id) =>
+          connections.some((item) => item.id === id && item.status === 'connected')
+        }
       />
     </div>
   );

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { AgentsSection, WorkspaceAgentAccess } from '../access';
+import { AgentsSection, ChatAccessPane, WorkspaceAgentAccess } from '../access';
 import { SignInDialog } from '../auth/SignInDialog';
 import { CrewDialogs, uniqueNamesSupported } from '../dialogs';
 import { OnboardingDialogs, useJoinProbe } from '../onboarding';
+import { DetailsPane } from '../pane';
 import { CrewSidebar } from '../sidebar';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewScreen } from '../state/crewStatus';
@@ -47,6 +48,20 @@ export function usePaneAnimate(stageShown: boolean, paneOpen: boolean): boolean 
     next = { ...motion, animate: true };
   if (next !== motion) setMotion(next);
   return next.animate;
+}
+
+/**
+ * The details pane beside a screen that is not a channel — an offline workspace, "Can't connect",
+ * any screen the sidebar sits beside — in Chat access mode only (final acceptance F2). The Agents
+ * section's chat rows open it, and a revoke there needs no connection: the daemon stops the grant
+ * on this device at once and confirms it with the workspace once it is back. Before this, the row
+ * set the pane's intent and nothing drew it, so the Crew view offered no Revoke during an outage.
+ * The other modes are about a verified channel, which these screens do not show.
+ */
+function OffStageChatAccess() {
+  const { ui } = useCrew();
+  if (ui.pane?.mode !== 'chat-access') return null;
+  return <DetailsPane chatAccess={<ChatAccessPane />} />;
 }
 
 /**
@@ -97,6 +112,13 @@ export function CrewLayout() {
       <div className="crew-main">
         {screen === 'channel' ? (
           <ChannelStage highlight={highlight} />
+        ) : sidebar === 'sidebar' ? (
+          // The sidebar's rows can open Chat access on any screen, so the screen shares the stage
+          // with the pane (F2).
+          <div className="crew-stage">
+            <MainScreen withBand className="crew-stage-screen" />
+            <OffStageChatAccess />
+          </div>
         ) : (
           <MainScreen withBand={sidebar !== 'none'} />
         )}

@@ -52,6 +52,9 @@ export const accessCopy = {
   /** Followed by the person, rendered with `PersonName context="authority"`. */
   postAs: (channel: string) => `Post in ${channel} as`,
   postsAs: (channel: string) => `Posts in ${channel} as`,
+  /** The same, when no verified view names the person (the workspace is offline, F2). */
+  post: (channel: string) => `Post in ${channel}`,
+  posts: (channel: string) => `Posts in ${channel}`,
   expiry: 'Access ends when you revoke it, or after an hour.',
   alsoRead: 'Also read',
   /** Beside Advanced while it is closed: what the chat reads, not what it doesn't (Q3-30). */
@@ -85,7 +88,16 @@ export const accessCopy = {
     chat
       ? `Access revoked. ${quoted(chat)} can’t use Crew until you grant access again.`
       : 'Access revoked. This chat can’t use Crew until you grant access again.',
-  unconfirmed: 'Stopped on this device. Reconnect to confirm with the workspace.',
+  /**
+   * A revoke that stopped on this device while the workspace could not be reached. The daemon asks
+   * the workspace again by itself whenever the connection comes back (F3), so nothing here tells
+   * the person to reconnect: it says what happens next.
+   */
+  unconfirmed: 'Stopped on this device. Crew confirms it with the workspace when it reconnects.',
+  /** The same, once the connection is back and the daemon is asking the workspace (F3). */
+  confirming: 'Stopped on this device. Confirming with the workspace…',
+  /** The workspace confirmed a revoke this view saw waiting (F3). */
+  confirmed: 'Confirmed. The workspace has stopped this chat’s access too.',
   notRevoked: 'Not revoked. This chat can still read and post.',
   retry: 'Retry',
   done: 'Done',
@@ -111,6 +123,8 @@ export const accessCopy = {
     expires: (time: string) => `Active · ends ${time}`,
     expired: 'Expired',
     revoked: 'Revoked',
+    /** A revoked row this device saw confirmed, dated so two revokes of one chat differ (F5). */
+    revokedAt: (time: string) => `Revoked · ${time}`,
     unconfirmed: 'Stopped on this device',
     /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
     ended: 'Ended',
@@ -179,6 +193,12 @@ export const accessCopy = {
     `Crew access to ${destination} was removed, so this chat can’t continue. It holds messages from the channel. Grant access again to continue, or start a new chat.`,
   chatExpired: (destination: string) =>
     `Crew access to ${destination} expired. This chat has team content, so it can’t continue.`,
+  /**
+   * Crew's settings or the workspace's policy moved since the grant, so the daemon refuses the
+   * chat's turns (D-1): not "expired", which reads as time running out.
+   */
+  chatSettingsChanged: (destination: string) =>
+    `Crew settings changed since this chat was given access to ${destination}, so it can’t continue. Grant access again to continue, or start a new chat.`,
   /** A task's chat after the task: its grant ended with it (Q2-09). Neutral, not a warning. */
   chatTaskFinished: (destination: string) =>
     `This task is finished. Its access to ${destination} ended when it finished.`,
@@ -202,6 +222,8 @@ export const accessCopy = {
     `Crew access to ${destination} was removed. Grant it again or start a new chat.`,
   chatBlockedSendExpired: (destination: string) =>
     `Crew access to ${destination} expired. Grant it again or start a new chat.`,
+  chatBlockedSendSettingsChanged: (destination: string) =>
+    `Crew settings changed since this chat was given access to ${destination}. Grant it again or start a new chat.`,
   chatBlockedSendTaskFinished: (destination: string) =>
     `This task is finished, and its access to ${destination} ended with it. Start a new chat to continue.`,
   /**

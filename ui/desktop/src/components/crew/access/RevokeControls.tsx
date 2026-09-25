@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2 } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
@@ -71,6 +71,41 @@ export function InlineConfirm({
 }
 
 /**
+ * The workspace confirmed a revoke this view saw waiting for it (F3): the daemon asked again by
+ * itself once the connection was back. A status, not an alert — nothing is wrong any more.
+ */
+export function RevocationConfirmedNote({ className }: { className?: string }) {
+  return (
+    <Note
+      tone="success"
+      icon={CheckCircle2}
+      role="status"
+      className={className}
+      testId="crew-access-confirmed"
+    >
+      {accessCopy.confirmed}
+    </Note>
+  );
+}
+
+/**
+ * Whether a revoke this view saw waiting for the workspace has since been confirmed (F3): true
+ * from the moment `unconfirmed` turns false while `confirmed` holds, for the same `key` (a grant's
+ * run). A new key starts over, so a revoke confirmed at once (a 200) never shows it.
+ */
+export function useConfirmedAfterWait(
+  key: string | null,
+  unconfirmed: boolean,
+  confirmed: boolean
+): boolean {
+  const [waitedFor, setWaitedFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (key && unconfirmed) setWaitedFor(key);
+  }, [key, unconfirmed]);
+  return Boolean(key) && waitedFor === key && !unconfirmed && confirmed;
+}
+
+/**
  * What a revoke came to, said once, where the person asked for it. Success is shown only for a
  * confirmed revoke (a 200); a 503 is "stopped on this device"; every other answer is "not revoked"
  * followed by the daemon's own words, and both failures offer Retry.
@@ -81,6 +116,7 @@ export function RevokeResultNote({
   onRetry,
   retrying = false,
   successActions,
+  confirmation = 'offline',
   className,
 }: {
   outcome: RevokeOutcome;
@@ -90,6 +126,12 @@ export function RevokeResultNote({
   retrying?: boolean;
   /** Controls after a confirmed revoke (Open chat · Done). */
   successActions?: ReactNode;
+  /**
+   * For a revoke that stopped only on this device: whether its connection is back, so the daemon
+   * is asking the workspace again by itself (`confirming`, F3), or not yet (`offline`). Retry
+   * stays either way: it asks now.
+   */
+  confirmation?: 'confirming' | 'offline';
   className?: string;
 }) {
   if (outcome.kind === 'revoked') {
@@ -121,7 +163,9 @@ export function RevokeResultNote({
         className={className}
         testId="crew-access-unconfirmed"
       >
-        {accessCopy.unconfirmed}
+        <span data-confirmation={confirmation}>
+          {confirmation === 'confirming' ? accessCopy.confirming : accessCopy.unconfirmed}
+        </span>
       </Note>
     );
   }

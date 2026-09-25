@@ -26,7 +26,7 @@ export interface WorkspaceAgentAccessProps {
  * 4, Q4-12).
  */
 export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
-  const { snapshot, runs, labels, connection, connectionId } = useCrew();
+  const { snapshot, runs, labels, connection, connectionId, connections } = useCrew();
   const grants = useWorkspaceGrants();
   const past = usePastAccess(connectionId);
   const headingId = useId();
@@ -66,6 +66,9 @@ export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
         onOpen={onOpen}
         onRevoke={(row) => grants.revoke(row.connectionId, row.sessionId)}
         onStop={onStop}
+        isConnected={(id) =>
+          connections.some((item) => item.id === id && item.status === 'connected')
+        }
       />
     </section>
   );

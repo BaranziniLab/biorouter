@@ -228,5 +228,7 @@ export function pastAccessGrants(
       kind: entry.kind ?? 'chat',
       session_name: entry.session_name,
       expires_at: null,
+      // When it was revoked, so two revokes of one chat read as two (F5).
+      revoked_at: entry.revoked_at,
     }));
 }

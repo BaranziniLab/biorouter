@@ -54,6 +54,12 @@ export interface AccessRow {
   statusLabel: string;
   /** Unix seconds, when the daemon recorded when the workspace ends the grant. */
   expiresAt: number | null;
+  /**
+   * When this device saw the revoke confirmed, in milliseconds, for a revoked row it remembers
+   * (`pastAccess.ts`); `null` otherwise. It is in the badge — "Revoked · 7:32 AM" — so two revokes
+   * of the same chat are two different rows to the eye (F5).
+   */
+  revokedAt: number | null;
   /** The owned run for a task, when the observer reported it. */
   run: ObservedRun | null;
   /** An active chat row: offer a visible Revoke. */
@@ -169,11 +175,16 @@ export function formatExpiry(expiresAtSeconds: number, now = Date.now()): string
   ).format(at);
 }
 
-/** The status a grant shows, and its label. */
+/**
+ * The status a grant shows, and its label. `unconfirmed` is this window's memory of a revoke that
+ * stopped only on this device; the daemon's own word on the grant (`revocation`, F3) wins over it
+ * whenever the daemon gives one. `revokedAt` (milliseconds) dates a revoked row (F5).
+ */
 export function accessStatusOf(
   grant: CrewSessionGrant,
   now = Date.now(),
-  unconfirmed = false
+  unconfirmed = false,
+  revokedAt: number | null = null
 ): { status: AccessStatus; label: string } {
   const state = sessionGrantState(grant, now);
   if (state === 'active')
@@ -185,9 +196,15 @@ export function accessStatusOf(
           : accessCopy.status.active,
     };
   if (state === 'expired') return { status: 'expired', label: accessCopy.status.expired };
-  return unconfirmed
-    ? { status: 'unconfirmed', label: accessCopy.status.unconfirmed }
-    : { status: 'revoked', label: accessCopy.status.revoked };
+  const waiting = grant.revocation !== undefined ? grant.revocation === 'unconfirmed' : unconfirmed;
+  if (waiting) return { status: 'unconfirmed', label: accessCopy.status.unconfirmed };
+  return {
+    status: 'revoked',
+    label:
+      revokedAt !== null
+        ? accessCopy.status.revokedAt(formatExpiry(revokedAt / 1000, now))
+        : accessCopy.status.revoked,
+  };
 }
 
 /** The badge tone of a status. */
@@ -211,10 +228,22 @@ export function accessRow(
     runs.find((candidate) => candidate.session_id === grant.session_id) ??
     runs.find((candidate) => candidate.run_id === grant.run_id) ??
     null;
+  // When the revoke was confirmed: a remembered row carries it; a listed row finds it in what this
+  // device remembers of the same run (F5).
+  const remembered =
+    typeof grant.revoked_at === 'number'
+      ? grant.revoked_at
+      : (input.pastAccess?.entries.find(
+          (entry) =>
+            input.pastAccess?.connectionId === grant.connection_id &&
+            entry.session_id === grant.session_id &&
+            entry.run_id === grant.run_id
+        )?.revoked_at ?? null);
   const { status, label } = accessStatusOf(
     grant,
     now,
-    input.isUnconfirmed?.(grant.connection_id, grant.session_id) ?? false
+    input.isUnconfirmed?.(grant.connection_id, grant.session_id) ?? false,
+    remembered
   );
   // A task's grant ends when the task does, which is how a task that did its work ends: not
   // "Revoked" (nobody revoked it) and not a failure.
@@ -245,6 +274,7 @@ export function accessRow(
     status,
     statusLabel: ended ? accessCopy.status.ended : label,
     expiresAt: typeof grant.expires_at === 'number' ? grant.expires_at : null,
+    revokedAt: status === 'revoked' ? remembered : null,
     run,
     canRevoke: kind === 'chat' && status === 'active',
     canStop:
@@ -292,6 +322,7 @@ export function accessRows(
     (a, b) =>
       rank(a) - rank(b) ||
       (b.expiresAt ?? 0) - (a.expiresAt ?? 0) ||
+      (b.revokedAt ?? 0) - (a.revokedAt ?? 0) ||
       a.title.localeCompare(b.title) ||
       a.sessionId.localeCompare(b.sessionId)
   );

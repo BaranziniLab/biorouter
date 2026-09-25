@@ -10,7 +10,8 @@ import { useCrewGrants, type CrewGrantsView } from './useCrewGrants';
  *
  * Besides {@link useCrewGrants}'s own triggers (open, every grant action, `refetch()`), the list is
  * read again after a manual refresh of the workspace and after a task starts — the two moments the
- * daemon's list can change without anything in this module having acted. It never polls.
+ * daemon's list can change without anything in this module having acted. It never polls, except
+ * while it lists a revoke still waiting for the workspace (`useCrewGrants`, F3).
  *
  * While it shows grants it also records the names of the channels they post in, so the ordinary
  * chat can say "Crew · #general" rather than an ID (see `chatCrewAccess.ts`).

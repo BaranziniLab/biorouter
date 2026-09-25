@@ -349,4 +349,58 @@ describe('sessionGrantState', () => {
     expect(sessionGrantState({ ...base, expires_at: null }, now)).toBe('active');
     expect(sessionGrantState(base, now)).toBe('active');
   });
+
+  it('reads a run the workspace itself ended as expired, not revoked: nobody revoked it (D-1)', () => {
+    expect(
+      sessionGrantState({ ...base, expired: true, revocation: 'ended_by_workspace' }, now)
+    ).toBe('expired');
+    for (const revocation of ['unconfirmed', 'confirmed'] as const)
+      expect(sessionGrantState({ ...base, expired: true, revocation }, now)).toBe('revoked');
+  });
+});
+
+/**
+ * F3 and D-1: a stopped grant says where it stands with the workspace. The daemon asks the
+ * workspace again by itself for an unconfirmed revoke, and the renderer follows the word.
+ */
+describe('a stopped grant’s standing with the workspace', () => {
+  beforeEach(() => {
+    mocks.crewHttp.mockReset();
+  });
+  const listed = async (rows: unknown[]) => {
+    mocks.crewHttp.mockResolvedValueOnce({ grants: rows });
+    return listSessionGrants('conn-1');
+  };
+
+  it('reads the daemon’s word for a stopped grant, and only for a stopped one', async () => {
+    const grants = await listed([
+      row({ session_id: 'a', expired: true, revocation: 'unconfirmed' }),
+      row({ session_id: 'b', expired: true, revocation: 'confirmed' }),
+      row({ session_id: 'c', expired: true, revocation: 'ended_by_workspace' }),
+      row({ session_id: 'd', expired: false, revocation: 'confirmed' }),
+      row({ session_id: 'e', expired: true, revocation: 'something_new' }),
+      row({ session_id: 'f', expired: true, revocation: null }),
+    ]);
+    expect(grants.map((grant) => [grant.session_id, grant.revocation])).toEqual([
+      ['a', 'unconfirmed'],
+      ['b', 'confirmed'],
+      ['c', 'ended_by_workspace'],
+      ['d', undefined],
+      ['e', undefined],
+      ['f', undefined],
+    ]);
+  });
+
+  it('falls back to remote_revocation_confirmed when the word is missing', async () => {
+    const grants = await listed([
+      row({ session_id: 'a', expired: true, remote_revocation_confirmed: false }),
+      row({ session_id: 'b', expired: true, remote_revocation_confirmed: true }),
+      row({ session_id: 'c', expired: true, remote_revocation_confirmed: null }),
+    ]);
+    expect(grants.map((grant) => grant.revocation)).toEqual([
+      'unconfirmed',
+      'confirmed',
+      undefined,
+    ]);
+  });
 });

@@ -2,6 +2,7 @@ import { NotificationSurface } from '../alerts/NotificationSurface';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
+import { crewTurnRefusalOf } from '../crew/access/crewTurnRefusal';
 
 interface ChatTurnErrorPresentation {
   title: string;
@@ -106,6 +107,12 @@ function userFacingMessage(error: ChatTurnErrorData): string {
 }
 
 export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPresentation {
+  // A chat whose Crew access stopped: the daemon refused the turn before any model request, and
+  // says why in a sentence (final acceptance D-1). Never "Model request failed", and never the
+  // workspace's JSON envelope an older daemon passed on — not even under the details.
+  const crewRefusal = STOP_TITLES[error.code] ? null : crewTurnRefusalOf(error);
+  if (crewRefusal) return { title: crewRefusal.title, message: crewRefusal.message };
+
   let title = 'Model request failed';
   if (STOP_TITLES[error.code]) {
     title = STOP_TITLES[error.code];
@@ -158,7 +165,8 @@ export function ChatTurnError({
   onRetry?: () => void;
 }) {
   const presentation = presentChatTurnError(error);
-  const canRetry = error.retryable && !!onRetry;
+  // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
+  const canRetry = error.retryable && !!onRetry && !crewTurnRefusalOf(error);
 
   return (
     <div data-testid="chat-turn-error" className="mt-4">

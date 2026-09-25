@@ -12,7 +12,12 @@ import { isMachineIdShaped, sanitizeDisplayText } from '../identity';
 import type { ChatCrewAccess } from './chatCrewAccess';
 import { chatAccessRoute, chatAccessRouteState, chatConnectRouteState } from './ChatConnectNote';
 import { accessCopy } from './copy';
-import { InlineConfirm, RevokeResultNote } from './RevokeControls';
+import {
+  InlineConfirm,
+  RevocationConfirmedNote,
+  RevokeResultNote,
+  useConfirmedAfterWait,
+} from './RevokeControls';
 import { revokeGrant, type RevokeOutcome } from './useCrewGrants';
 
 // ── What Enter says in a held chat ───────────────────────────────────────────────────────────
@@ -139,13 +144,24 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     setOutcome(null);
   }, [sessionId]);
 
-  // A later answer from the daemon replaces what this bar last saw a revoke come to.
+  // A later answer from the daemon replaces what this bar last saw a revoke come to — including a
+  // 503 the daemon has since confirmed with the workspace by itself (F3).
   useEffect(() => {
     if (access.state !== 'active')
       setOutcome((current) => (current?.kind === 'revoked' ? null : current));
   }, [access.state]);
+  useEffect(() => {
+    if (access.revocationConfirmed)
+      setOutcome((current) => (current?.kind === 'unconfirmed' ? null : current));
+  }, [access.revocationConfirmed]);
 
   const unconfirmed = outcome?.kind === 'unconfirmed' || access.unconfirmed;
+  const confirmedAfterWait = useConfirmedAfterWait(
+    grant?.run_id ?? null,
+    unconfirmed,
+    access.revocationConfirmed
+  );
+  const settingsChanged = access.state === 'expired' && access.expiredBecause === 'settings';
   const finished = access.state === 'finished';
   const lapsed =
     outcome?.kind === 'revoked' ||
@@ -156,9 +172,11 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     sessionId && grant && lapsed
       ? finished
         ? accessCopy.chatBlockedSendTaskFinished(destination)
-        : access.state === 'expired'
-          ? accessCopy.chatBlockedSendExpired(destination)
-          : accessCopy.chatBlockedSendRevoked(destination)
+        : settingsChanged
+          ? accessCopy.chatBlockedSendSettingsChanged(destination)
+          : access.state === 'expired'
+            ? accessCopy.chatBlockedSendExpired(destination)
+            : accessCopy.chatBlockedSendRevoked(destination)
       : null;
 
   // The composer shows the hold's toast on Enter. When the reason goes — access is back, or this
@@ -246,8 +264,11 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
             }
             chat={chat}
             retrying={revoking}
+            confirmation={access.connectionUp ? 'confirming' : 'offline'}
             onRetry={() => void revoke()}
           />
+        ) : confirmedAfterWait ? (
+          <RevocationConfirmedNote />
         ) : null}
         <Note
           tone="neutral"
@@ -265,9 +286,11 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
             </div>
           }
         >
-          {access.state === 'expired'
-            ? accessCopy.chatExpired(destination)
-            : accessCopy.chatRevoked(destination)}
+          {settingsChanged
+            ? accessCopy.chatSettingsChanged(destination)
+            : access.state === 'expired'
+              ? accessCopy.chatExpired(destination)
+              : accessCopy.chatRevoked(destination)}
         </Note>
       </div>
     );
@@ -305,6 +328,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
           outcome={outcome}
           chat={chat}
           retrying={revoking}
+          confirmation={access.connectionUp ? 'confirming' : 'offline'}
           onRetry={() => void revoke()}
         />
       ) : null}

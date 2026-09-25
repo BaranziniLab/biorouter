@@ -60,7 +60,7 @@ function useWaitingSince(screen: CrewScreen): number | null {
  * is not on screen renders — exactly once. With the Crew sidebar beside it, the area opens with an
  * empty 44px band so the top edge stays one line; the page's `<h1>` names the workspace there.
  */
-export function MainScreen({ withBand }: { withBand: boolean }) {
+export function MainScreen({ withBand, className }: { withBand: boolean; className?: string }) {
   const crew = useCrew();
   const headingId = useId();
   const { screen } = crew;
@@ -92,7 +92,11 @@ export function MainScreen({ withBand }: { withBand: boolean }) {
     </h1>
   );
   return (
-    <section className="crew-frame-screen" aria-labelledby={headingId} data-crew-screen={screen}>
+    <section
+      className={className ? `crew-frame-screen ${className}` : 'crew-frame-screen'}
+      aria-labelledby={headingId}
+      data-crew-screen={screen}
+    >
       {withBand ? <div className="crew-frame-band">{heading}</div> : heading}
       <ConnectionBar />
       <div className="crew-frame-screen-body">{content}</div>

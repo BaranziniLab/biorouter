@@ -408,7 +408,11 @@ describe('Enter in a chat held by lapsed Crew access', () => {
     grant: { session_id: 'session-42', connection_id: 'conn-1' } as unknown as CrewSessionGrant,
     destination: '#general',
     offlineCause: null,
+    expiredBecause: state === 'expired' ? 'time' : null,
     unconfirmed: false,
+    confirmation: null,
+    connectionUp: true,
+    revocationConfirmed: false,
     blocksComposer: true,
     refetch: vi.fn(),
   });

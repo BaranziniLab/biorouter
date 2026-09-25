@@ -432,7 +432,9 @@ describe('past access this device remembers', () => {
       title: 'Plot review',
       runId: 'run-1',
       status: 'revoked',
-      statusLabel: accessCopy.status.revoked,
+      // Dated (F5): when this device saw the revoke confirmed.
+      statusLabel: accessCopy.status.revokedAt(formatExpiry((NOW - 60_000) / 1000, NOW)),
+      revokedAt: NOW - 60_000,
       destination: 'Analysis Lab / #methods',
       canRevoke: false,
       canRetry: false,
@@ -441,6 +443,36 @@ describe('past access this device remembers', () => {
     // Its own key: the chat is listed too, and React and the list's controls key rows by it.
     expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
     expect(showOldLabel(rows)).toBe('Show past access (1)');
+  });
+
+  it('dates each revoke, so two revokes of the same chat read as two rows (F5)', () => {
+    const first = NOW - 5 * 60_000;
+    const second = NOW - 60_000;
+    // The daemon still lists the chat's newest grant (run-2, revoked); run-1 only this device
+    // remembers.
+    const rows = accessRows([grant({ run_id: 'run-2', expired: true })], {
+      snapshot,
+      now: NOW,
+      pastAccess: past([
+        remembered({ run_id: 'run-2', revoked_at: second }),
+        remembered({ run_id: 'run-1', revoked_at: first }),
+      ]),
+    });
+    const { old } = splitAccessRows(rows);
+    expect(old.map((row) => [row.runId, row.revokedAt])).toEqual([
+      ['run-2', second],
+      ['run-1', first],
+    ]);
+    const labels = old.map((row) => row.statusLabel);
+    expect(labels).toEqual([
+      accessCopy.status.revokedAt(formatExpiry(second / 1000, NOW)),
+      accessCopy.status.revokedAt(formatExpiry(first / 1000, NOW)),
+    ]);
+    expect(new Set(labels).size).toBe(2);
+    // A revoke this device never saw confirmed stays undated.
+    const [plain] = accessRows([grant({ expired: true })], { snapshot, now: NOW });
+    expect(plain.statusLabel).toBe(accessCopy.status.revoked);
+    expect(plain.revokedAt).toBeNull();
   });
 
   it('adds nothing for a run the daemon’s list still holds', () => {
@@ -601,3 +633,33 @@ describe('past access this device remembers', () => {
 function showOldLabel(rows: ReturnType<typeof accessRows>): string {
   return accessCopy.showOld(splitAccessRows(rows).old.length);
 }
+
+/**
+ * F3: the daemon's own word on a stopped grant wins over this window's memory of a 503 — it asks
+ * the workspace again by itself, so a revoke seen unconfirmed here may since be confirmed.
+ */
+describe('a revoke waiting for the workspace, as a row (F3)', () => {
+  it('follows the daemon’s word over this window’s memory', () => {
+    const remembers = () => true;
+    const forgets = () => false;
+    const [waiting] = accessRows([grant({ expired: true, revocation: 'unconfirmed' })], {
+      snapshot,
+      now: NOW,
+      isUnconfirmed: forgets,
+    });
+    expect(waiting).toMatchObject({ status: 'unconfirmed', canRetry: true });
+    const [confirmed] = accessRows([grant({ expired: true, revocation: 'confirmed' })], {
+      snapshot,
+      now: NOW,
+      isUnconfirmed: remembers,
+    });
+    expect(confirmed).toMatchObject({ status: 'revoked', canRetry: false });
+    // A daemon without the word: this window's memory decides, as before.
+    const [older] = accessRows([grant({ expired: true })], {
+      snapshot,
+      now: NOW,
+      isUnconfirmed: remembers,
+    });
+    expect(older.status).toBe('unconfirmed');
+  });
+});

@@ -12,7 +12,11 @@ import {
   type DaemonFixture,
 } from './testing';
 import { pastAccessStorageKey, readPastAccess, rememberPastAccess } from './pastAccess';
-import { announceGrantsChanged, forgetUnconfirmedRevocations } from './useCrewGrants';
+import {
+  announceGrantsChanged,
+  forgetUnconfirmedRevocations,
+  UNCONFIRMED_REVOKE_WATCH_MS,
+} from './useCrewGrants';
 import { WorkspaceAgentAccess } from './WorkspaceAgentAccess';
 
 const mocks = vi.hoisted(() => ({
@@ -192,7 +196,8 @@ describe('the Access tab', () => {
     fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
     fireEvent.click(within(chat).getByRole('button', { name: accessCopy.confirmRevoke }));
 
-    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    // Its connection is up: the daemon is confirming it by itself (F3), not waiting on a person.
+    expect(await screen.findByText(accessCopy.confirming)).toBeInTheDocument();
     expect(screen.queryByText(/Access revoked/)).toBeNull();
     const stopped = await waitFor(async () => {
       const row = await rowFor('Plot review');
@@ -203,6 +208,40 @@ describe('the Access tab', () => {
     expect(
       within(stopped).getByRole('button', { name: 'Retry revoking Plot review' })
     ).toBeInTheDocument();
+  });
+
+  it('follows a 503 to “Confirmed” once the daemon confirms it with the workspace by itself (F3)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const state = { revoked: [] as string[], standing: 'unconfirmed' };
+      setup({
+        grants: () =>
+          workspaceGrants(state)().map((grant) =>
+            grant.session_id === 'agent-1' && grant.expired
+              ? { ...grant, revocation: state.standing }
+              : grant
+          ),
+        revoke: (sessionId) => {
+          state.revoked.push(sessionId);
+          throw new CrewHttpError('Stopped here.', 503, 'crew_revocation_unconfirmed');
+        },
+      });
+      const chat = await rowFor('Plot review');
+      fireEvent.click(within(chat).getByRole('button', { name: 'Revoke access for Plot review' }));
+      fireEvent.click(within(chat).getByRole('button', { name: accessCopy.confirmRevoke }));
+      expect(await screen.findByText(accessCopy.confirming)).toBeInTheDocument();
+
+      // The daemon's own retry reached the workspace; no one clicks anything.
+      state.standing = 'confirmed';
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(UNCONFIRMED_REVOKE_WATCH_MS);
+      });
+      expect(await screen.findByText(accessCopy.confirmed)).toBeInTheDocument();
+      expect(screen.queryByText(accessCopy.confirming)).toBeNull();
+      expect(screen.queryByTestId('crew-access-unconfirmed')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says a refused revoke was not revoked, in the daemon’s words', async () => {
