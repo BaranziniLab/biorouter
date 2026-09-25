@@ -485,6 +485,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     snapshot,
     observedPrivacy,
     runs,
+    generation,
     setBody: draft.setBody,
     restartObservation,
     resetSurfaces,

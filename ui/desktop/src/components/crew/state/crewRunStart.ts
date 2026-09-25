@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -52,6 +53,12 @@ export interface CrewRunStartContext {
   observedPrivacy: ObservedPrivacy | null;
   /** The runs of the last verified `state` frame. */
   runs: readonly ObservedRun[];
+  /**
+   * The observer's generation. Every observation that starts, ends (a refusal, a privacy end, a
+   * lost connection), is stopped (Disconnect) or is replaced (another connection, team or channel)
+   * moves it, synchronously, before anything renders.
+   */
+  generation: MutableRefObject<number>;
   setBody: Dispatch<SetStateAction<string>>;
   /**
    * Observe again without clearing what is on screen: the verified view stays until the new
@@ -92,6 +99,14 @@ export interface CrewRunStart {
  * keeps the view until its first frame. SECURITY-SENSITIVE (human review): only the viewer's own
  * successful `run.create` is bridged this way, and it cannot narrow what the viewer may read; every
  * observer refusal and privacy change still ends the view and clears what it protected.
+ *
+ * The wait belongs to the one observation the Start was pressed on, and it never observes a view
+ * that ended. It is armed only when, as the start is answered, that observation is still the
+ * running one (the generation has not moved) and its view is still verified for the same
+ * connection; and it observes again only when both still hold as it runs out. So an observer
+ * refusal, a privacy end, a Disconnect or another selection — whether it lands while the start is
+ * still being answered (provider creation and preflight can take seconds) or during the wait —
+ * leaves the next step to whatever ended the view: a stopped view is the person's to retry.
  */
 export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
@@ -109,6 +124,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     snapshot,
     observedPrivacy,
     runs,
+    generation,
     setBody,
     restartObservation,
     resetSurfaces,
@@ -118,6 +134,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   // The started task the view waits for, and the timer that observes again if it does not come.
   const awaited = useRef<{
     connectionId: string;
+    observed: number;
     runId: string | null;
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
@@ -129,20 +146,44 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   useEffect(() => {
     listed.current = runs;
   }, [runs]);
+  const verified = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  // The selection and whether its view is verified, as of the latest commit: read by the start's
+  // answer and by the timer, which both run after the render that armed them. Written as the
+  // render commits, so neither ever reads a view older than the one on screen.
+  const view = useRef({ connectionId, verified });
+  useLayoutEffect(() => {
+    view.current = { connectionId, verified };
+  }, [connectionId, verified]);
+  /**
+   * SECURITY-SENSITIVE (human review): the observation `observed` (a generation) is still the
+   * running one, and its view is still verified for `forConnection`. The generation moves
+   * synchronously when an observation ends or is replaced, so this is false even for an end whose
+   * render has not committed yet; the view catches anything that cleared it before `observed` was
+   * read.
+   */
+  const stillObserving = (forConnection: string, observed: number) =>
+    generation.current === observed &&
+    view.current.verified &&
+    view.current.connectionId === forConnection;
   const settleAwaited = useCallback(() => {
     if (awaited.current) clearTimeout(awaited.current.timer);
     awaited.current = null;
   }, []);
-  const awaitStartedRun = (runId: string | null) => {
+  const awaitStartedRun = (forConnection: string, observed: number, runId: string | null) => {
     settleAwaited();
     // A frame that listed it may already have arrived while the start was answered.
     if (runId !== null && listed.current.some((run) => run.run_id === runId)) return;
+    // The view ended, or another took its place, while the start was being answered: whatever did
+    // it decides what happens next. A new observation's first frame brings the task by itself.
+    if (!stillObserving(forConnection, observed)) return;
     const entry = {
-      connectionId,
+      connectionId: forConnection,
+      observed,
       runId,
       timer: setTimeout(() => {
         if (awaited.current !== entry) return;
         awaited.current = null;
+        if (!stillObserving(entry.connectionId, entry.observed)) return;
         restart.current();
       }, RUN_START_FRAME_WAIT_MS),
     };
@@ -151,7 +192,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   // A verified frame listed the task: nothing to wait for. Another connection, or a view that
   // ended (an observer refusal, a privacy change, a Disconnect): not this wait's to observe again —
   // what ended the view decides what happens next, and a stopped view is the person's to retry.
-  const verified = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  // The timer checks the same again when it runs out, for an end this effect has not seen yet.
   useEffect(() => {
     const entry = awaited.current;
     if (!entry) return;
@@ -174,6 +215,8 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   }: StartOwnedRunInput) => {
     if (!snapshot || observedPrivacy?.connectionId !== connectionId)
       throw new Error(crewActionCopy.grantPrivacyUnverified);
+    // The observation this Start was pressed on: the only one its wait may ever observe again.
+    const observed = generation.current;
     if (pendingRun.current?.unknownDestination && !deliberateRestart) {
       throw new Error(crewActionCopy.unknownOutcomeGate);
     }
@@ -226,7 +269,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       started !== null && typeof started === 'object'
         ? (started as { run_id?: unknown }).run_id
         : undefined;
-    awaitStartedRun(typeof runId === 'string' && runId ? runId : null);
+    awaitStartedRun(connectionId, observed, typeof runId === 'string' && runId ? runId : null);
     return true;
   };
 

@@ -9,6 +9,7 @@ import {
   channelReady,
   connection,
   currentCrew,
+  ids,
   installDaemon,
   mocked,
   ownedRun,
@@ -109,6 +110,43 @@ afterEach(() => {
   watcher = null;
   vi.useRealTimers();
 });
+
+/**
+ * Start the viewer's agent and leave the start unanswered, as a daemon still creating the provider
+ * and running its preflight does for seconds. `answer` admits the task; `started` is the Start's
+ * own result.
+ */
+function startHeldTask() {
+  let admit: (value: unknown) => void = () => undefined;
+  daemon.state.http = (path, method) => {
+    if (path === RUNS && method === 'POST')
+      return new Promise((resolve) => {
+        admit = resolve;
+      });
+    if (path === `/connections/${connection.id}/disconnect` && method === 'POST') {
+      daemon.state.connections = [{ ...connection, status: 'disconnected' }];
+      return {};
+    }
+    return undefined;
+  };
+  let started: Promise<boolean> = Promise.resolve(false);
+  act(() => {
+    started = currentCrew().startOwnedRun({
+      prompt: 'plot counts by sample',
+      provider: 'fixture-provider',
+      model: 'fixture-model',
+      contextChannels: [],
+    });
+  });
+  return {
+    async answer() {
+      await act(async () => {
+        admit({ ...ownedRun, status: 'running' });
+        expect(await started).toBe(true);
+      });
+    },
+  };
+}
 
 /** Start the viewer's agent through the controller, as the pane's Start does. */
 async function startTask() {
@@ -249,6 +287,126 @@ describe('a successful Start never blanks the channel (Q3-06)', () => {
       expect(currentCrew().snapshot).toBeNull();
     }
   );
+
+  // Review of Q3-06: the wait used to be armed however the view stood when the start was
+  // answered, and only an end that came after it cancelled the wait. An end while the start was
+  // still being answered left it armed, and 5 s later it brought the refused view back by itself.
+  it.each([['access_denied'], ['privacy_denied'], ['principal_revoked']])(
+    'never observes again by itself when the observer ends with %s while the start is still being answered',
+    async (code) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderCrew();
+      await channelReady();
+      const start = startHeldTask();
+      await waitFor(() => expect(starts()).toBe(1));
+
+      act(() =>
+        daemon.emit({ type: 'error', code, clear: true, error: 'Room observation ended.' })
+      );
+      await waitFor(() => expect(currentCrew().snapshot).toBeNull());
+      const observations = mocked.observeCrew.mock.calls.length;
+
+      // The daemon admits the task after the view ended.
+      await start.answer();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS * 3);
+      });
+
+      expect(mocked.observeCrew.mock.calls.length).toBe(observations);
+      expect(currentCrew().snapshot).toBeNull();
+      expect(currentCrew().observedPrivacy).toBeNull();
+      expect(currentCrew().refreshError).not.toBeNull();
+      expect(currentCrew().status).not.toBe('connected');
+      expect(screen.queryByRole('textbox', { name: 'Message #general' })).toBeNull();
+    }
+  );
+
+  it('never observes a connection the person disconnected while the start was being answered', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderCrew();
+    await channelReady();
+    const start = startHeldTask();
+    await waitFor(() => expect(starts()).toBe(1));
+
+    await act(async () => {
+      await currentCrew().disconnect();
+    });
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    const observations = mocked.observeCrew.mock.calls.length;
+
+    await start.answer();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS * 3);
+    });
+
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations);
+    expect(currentCrew().snapshot).toBeNull();
+    expect(currentCrew().screen).toBe('offline');
+  });
+
+  it('never starts the newly selected connection over when the selection moved while the start was being answered', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const other = { ...connection, id: 'conn-2', name: 'Second fixture' };
+    daemon.state.connections = [connection, other];
+    renderCrew();
+    await channelReady();
+    const start = startHeldTask();
+    await waitFor(() => expect(starts()).toBe(1));
+
+    act(() => currentCrew().selectConnection(other.id));
+    await waitFor(() => expect(currentCrew().observedPrivacy?.connectionId).toBe(other.id));
+    await channelReady();
+    const observations = mocked.observeCrew.mock.calls.length;
+
+    // The start was for the first connection; the second one's view is not this wait's.
+    await start.answer();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS * 3);
+    });
+
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations);
+    expect(currentCrew().observedPrivacy?.connectionId).toBe(other.id);
+  });
+
+  it('leaves a channel selected during the wait to its own observation, which is never started over by the wait', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderCrew();
+    await channelReady();
+    const start = startHeldTask();
+    await start.answer();
+
+    // The view stays verified and on the same connection: only the observation behind it moved.
+    act(() => currentCrew().selectChannel(ids.methods));
+    await channelReady('methods');
+    const observations = mocked.observeCrew.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS * 3);
+    });
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations);
+    expect(currentCrew().status).toBe('connected');
+  });
+
+  it('still waits, and observes again once, when the view stayed verified while the start was being answered', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderCrew();
+    await channelReady();
+    const start = startHeldTask();
+    await waitFor(() => expect(starts()).toBe(1));
+    // The observer's periodic frame, without the task, lands while the start is being answered.
+    act(() => daemon.emitState());
+    const observations = mocked.observeCrew.mock.calls.length;
+
+    await start.answer();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS - 500);
+    });
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_START_FRAME_WAIT_MS * 3);
+    });
+    expect(mocked.observeCrew.mock.calls.length).toBe(observations + 1);
+    expect(currentCrew().status).toBe('connected');
+  });
 
   it('keeps the old behaviour for a refused start: nothing is waited for or observed again', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
