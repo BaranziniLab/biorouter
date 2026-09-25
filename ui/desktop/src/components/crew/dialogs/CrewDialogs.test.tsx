@@ -9,6 +9,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
+import { MODAL_SIZE } from '../../ModalShell';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
@@ -477,7 +478,8 @@ describe('Edit profile (QA Q3-42, Q3-43)', () => {
     unmount();
     renderProfile();
     const profile = await screen.findByRole('dialog', { name: profileCopy.title });
-    expect(keysWidth).toBe('sm:max-w-[480px]');
+    // The forms' size in the shell's scale: 480px.
+    expect(keysWidth).toBe(MODAL_SIZE.md);
     expect(profile).toHaveClass(keysWidth!);
   });
 
