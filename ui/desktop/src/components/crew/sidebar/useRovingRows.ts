@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type FocusEvent,
@@ -23,6 +24,10 @@ import {
  * current channel; Escape then put focus back on ⋯, now `tabindex="-1"` beside a `-1` + and
  * header, and Shift+Tab skipped the whole rail to the privacy chip. `onFocus` on the container
  * hands the stop to whichever row the focused element sits in, so the way back is the way in.
+ * And while focus is in a menu that a row's control opened, it has not left that row: the stop
+ * stays, so Shift+Tab from inside the open team menu — which the menu sends to the stop before
+ * its trigger — reaches the header's + too, not the chip. Focus that goes anywhere else, a dialog
+ * a menu item opened included, hands the stop back to the current channel.
  *
  * A row is an element carrying `data-crew-row={key}`, wrapped in (or equal to) an element
  * carrying `data-crew-row-item`, so a keypress on a control INSIDE a row's wrapper — a team
@@ -43,6 +48,23 @@ export interface RovingRows {
   onFocus(event: FocusEvent<HTMLElement>): void;
   /** Put on the container: focus leaving the list hands the stop back to the preferred row. */
   onBlur(event: FocusEvent<HTMLElement>): void;
+}
+
+/**
+ * Whether `element` sits in a menu opened from a control inside `container` — a team's ⋯ menu,
+ * or its "Copy for support" submenu. Radix names a menu's trigger in `aria-labelledby`; a submenu
+ * names its sub-trigger, which sits in the parent menu, so the chain is followed up to the root.
+ */
+export function inMenuOpenedFrom(element: Element, container: Element): boolean {
+  let content = element.closest('[data-radix-menu-content]');
+  for (let depth = 0; content && depth < 4; depth += 1) {
+    const labelledBy = content.getAttribute('aria-labelledby');
+    const trigger = labelledBy ? element.ownerDocument.getElementById(labelledBy) : null;
+    if (!trigger) return false;
+    if (container.contains(trigger)) return true;
+    content = trigger.closest('[data-radix-menu-content]');
+  }
+  return false;
 }
 
 /** The key of the row `element` sits in (the row itself, or a control in its wrapper), if any. */
@@ -106,7 +128,23 @@ export function useRovingRows(keys: readonly string[], preferredKey: string | nu
     const container = containerRef.current;
     const next = event.relatedTarget;
     if (container && next instanceof Node && container.contains(next)) return;
+    // Into a menu one of the rows opened: still on that row.
+    if (container && next instanceof Element && inMenuOpenedFrom(next, container)) return;
     setFocusedKey(null);
+  }, []);
+
+  // Focus that leaves such a menu for anywhere but the list — a dialog its item opened, the
+  // composer — has left the row: the stop goes back to the current channel (Q2-46).
+  useEffect(() => {
+    const onFocusIn = (event: globalThis.FocusEvent) => {
+      const container = containerRef.current;
+      const target = event.target;
+      if (!container || !(target instanceof Element) || container.contains(target)) return;
+      if (inMenuOpenedFrom(target, container)) return;
+      setFocusedKey(null);
+    };
+    document.addEventListener('focusin', onFocusIn);
+    return () => document.removeEventListener('focusin', onFocusIn);
   }, []);
 
   return {

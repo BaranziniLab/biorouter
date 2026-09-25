@@ -744,6 +744,52 @@ describe('keyboard', () => {
     expect(channelRow('methods').tabIndex).toBe(0);
     expect(lab.tabIndex).toBe(-1);
   });
+
+  it('Shift+Tab from INSIDE the open team menu leaves it for the + beside it, not the chip (Q3-56)', async () => {
+    const user = userEvent.setup();
+    renderWithCrew(
+      <SidebarAnnouncer>
+        <button type="button">Privacy: Private · ucsf</button>
+        <TeamSections />
+      </SidebarAnnouncer>,
+      makeController()
+    );
+    const lab = header('Analysis Lab, 4 channels');
+    const plus = screen.getByRole('button', { name: 'Create channel in Analysis Lab' });
+    act(() => lab.focus());
+    await user.tab();
+    await user.tab();
+    await user.keyboard('{Enter}');
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+    // While its menu is open the team keeps the stop, so the way out is the way in.
+    expect(lab.tabIndex).toBe(0);
+    await user.tab({ shift: true });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(plus).toHaveFocus();
+  });
+
+  it('hands the stop back to the current channel when a menu item moves focus elsewhere', async () => {
+    const user = userEvent.setup();
+    renderWithCrew(
+      <SidebarAnnouncer>
+        <TeamSections />
+        <button type="button">Somewhere else</button>
+      </SidebarAnnouncer>,
+      makeController()
+    );
+    const lab = header('Analysis Lab, 4 channels');
+    act(() => lab.focus());
+    await user.tab();
+    await user.tab();
+    await user.keyboard('{Enter}');
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+    // A dialog the item opened takes focus: the person is no longer on the team.
+    act(() => screen.getByRole('button', { name: 'Somewhere else' }).focus());
+    expect(channelRow('methods').tabIndex).toBe(0);
+    expect(lab.tabIndex).toBe(-1);
+  });
 });
 
 describe('the channel context menu', () => {
