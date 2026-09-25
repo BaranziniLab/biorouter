@@ -98,7 +98,11 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
         .map((button) => button.textContent)
     ).toEqual(['Privacy…']);
     await user.click(within(popover).getByRole('button', { name: 'Privacy…' }));
-    expect(await screen.findByRole('dialog', { name: /settings/ })).toBeInTheDocument();
+    const settings = await screen.findByRole('dialog', { name: /settings/ });
+    // Settings → Privacy follows the same rule (Q4-39): nothing there offers it either.
+    expect(
+      within(settings).queryByRole('button', { name: 'Make my connection public…' })
+    ).toBeNull();
     expect(patches()).toEqual([]);
   });
 
@@ -129,7 +133,10 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
   });
 
   it('asks the same from the Privacy tab of Workspace settings', async () => {
-    savingDaemon();
+    // A workspace that allows Public: the only one where Settings offers the downgrade (Q4-39).
+    savingDaemon({
+      snapshot: richSnapshot({ workspace: { ...richSnapshot().workspace, mode: 'public' } }),
+    });
     renderCrew();
     await channelReady();
     const user = userEvent.setup();
