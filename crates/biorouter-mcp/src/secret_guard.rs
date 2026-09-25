@@ -74,6 +74,17 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/.aws/credentials",
     "**/.codex/auth.json",
     "**/.claude/.credentials.json",
+    // Q4-56: the long tail of well-known credential stores. Each holds a password or token in
+    // a shape the output redaction does not recognise (a netrc `password` line, a pgpass
+    // `host:port:db:user:pass` row, a `https://user:token@host` URL, docker's base64 `auth`, a
+    // lowercase kubeconfig `token:`), so the name is the only thing that can stop a read.
+    "**/.netrc",
+    "**/_netrc",
+    "**/.pgpass",
+    "**/.git-credentials",
+    "**/.docker/config.json",
+    "**/.kube/config",
+    "**/.config/gh/hosts.yml",
 ];
 
 /// Object keys whose string values are treated as file paths and scanned in
@@ -995,6 +1006,124 @@ mod tests {
         assert!(g.is_denied(Path::new(".claude/.credentials.json")));
         assert!(!g.is_denied(Path::new("normal.txt")));
         assert!(!g.is_denied(Path::new("data.csv")));
+    }
+
+    /// The credential stores Q4-56 added, by name, at any depth and in any case.
+    const Q4_56_STORES: &[&str] = &[
+        ".netrc",
+        "_netrc",
+        ".pgpass",
+        ".git-credentials",
+        ".docker/config.json",
+        ".kube/config",
+        ".config/gh/hosts.yml",
+    ];
+
+    /// Q4-56: security round 4 uploaded each of these through Crew with a 200, and the same
+    /// gap let any chat's shell read them. Each is now on the floor.
+    #[test]
+    fn q4_56_the_long_tail_of_credential_stores_is_on_the_floor() {
+        let fake = FakeHome::new();
+        let g = fake.guard();
+        for store in Q4_56_STORES {
+            assert!(g.is_denied(Path::new(store)), "{store}");
+            assert!(g.is_denied(&fake.home.join(store)), "~/{store}");
+            assert!(g.is_denied(&fake.project.join(store)), "project/{store}");
+            let shouted = store.to_uppercase();
+            assert!(g.is_denied(Path::new(&shouted)), "{shouted}");
+        }
+        // Their neighbours are not credential stores, and a name alone does not make one.
+        for ordinary in [
+            ".git/config",
+            ".ssh/config",
+            "config",
+            "config.json",
+            "hosts.yml",
+            ".docker/daemon.json",
+            ".kube/cache/discovery.json",
+            ".config/gh/config.yml",
+            "netrc.md",
+            ".pgpass.example",
+            "deploy/.kube-config",
+        ] {
+            assert!(!g.is_denied(Path::new(ordinary)), "{ordinary}");
+            assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+    }
+
+    /// Q4-56 through the resolver: every spelling H1 closed for `~/.aws/credentials` is closed
+    /// for the new stores too, against a fake HOME that really holds them.
+    #[test]
+    fn q4_56_every_spelling_of_the_new_stores_is_refused() {
+        let fake = FakeHome::new();
+        for store in Q4_56_STORES {
+            let path = fake.home.join(store);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "placeholder\n").unwrap();
+        }
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "cat ~/.netrc",
+            "cat $HOME/.pgpass",
+            "head -1 \"$HOME\"/.git-credentials",
+            "cat ~/.docker/config*",
+            "cd ~/.kube && cat config",
+            "cat ~/.KUBE/Config",
+            "cat ~/.config/gh/hosts.yml",
+            "bash -c 'cat ~/.netrc'",
+            "cat ~/_netrc",
+            "find ~ -name .pgpass -exec cat {} \\;",
+        ] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "reached a credential store: {command}"
+            );
+        }
+        // The folders around them still work.
+        for command in [
+            "ls ~/.kube",
+            "ls ~/.docker",
+            "cat ~/.config/gh/config.yml",
+            "kubectl get pods",
+            "git config --list",
+            "cat .git/config",
+        ] {
+            assert_eq!(
+                scan_command(&g, &env, command),
+                None,
+                "refused an ordinary command: {command}"
+            );
+        }
+    }
+
+    /// A person can still allow one of the new stores on purpose: a negation, in the project's
+    /// `.biorouterignore` or the machine-wide one, reopens that file and nothing else.
+    #[test]
+    fn q4_56_a_negation_reopens_one_store() {
+        let fake = FakeHome::new();
+        fs::write(
+            fake.project.join(".biorouterignore"),
+            "!**/.kube/config\n!.netrc\n",
+        )
+        .unwrap();
+        let project_file = fake.project.join(".biorouterignore");
+        let g = SecretGuard::build(&fake.project, &[project_file]);
+        assert!(!g.is_denied(Path::new(".kube/config")));
+        assert!(!g.is_denied(&fake.project.join(".netrc")));
+        assert!(g.is_denied(Path::new(".pgpass")));
+        assert!(g.is_denied(Path::new(".docker/config.json")));
+        // The project's word stops at the project: the home's stores stay refused.
+        assert!(g.is_denied(&fake.home.join(".kube/config")));
+
+        // The machine-wide file (what Crew consults, rooted at the filesystem root) reopens
+        // it everywhere.
+        let global = fake.home.join(".config/biorouter/.biorouterignore");
+        fs::write(&global, "!**/.kube/config\n").unwrap();
+        let root = fake.home.ancestors().last().unwrap().to_path_buf();
+        let machine = SecretGuard::build(&root, &[global]);
+        assert!(!machine.is_denied(&fake.home.join(".kube/config")));
+        assert!(machine.is_denied(&fake.home.join(".netrc")));
+        assert!(machine.is_denied(&fake.home.join(".git-credentials")));
     }
 
     /// Directive 2, gate (d): `.biorouterignore`/secret denial is ABSOLUTE and
