@@ -42,6 +42,33 @@ function spyClipboard() {
 }
 const channelRow = (name: RegExp | string) => screen.getByRole('button', { name });
 
+/** The team menu's "Copy for support" submenu, once its trigger opened it. */
+async function openSupportMenu(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const sub = document.querySelector<HTMLElement>('[data-crew-menu="team-support"]');
+    expect(sub).not.toBeNull();
+    return sub as HTMLElement;
+  });
+}
+
+/**
+ * Opens Analysis Lab's ⋯ menu and, by keyboard (→ on "Copy for support"), its submenu, with focus
+ * on "Copy team ID" — Enter then copies.
+ */
+async function openTeamIdCopy(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+  const root = await screen.findByRole('menu');
+  const support = within(root).getByRole('menuitem', {
+    name: sidebarCopy.teamMenu.copyForSupport,
+  });
+  act(() => support.focus());
+  await user.keyboard('{ArrowRight}');
+  const sub = await openSupportMenu();
+  const item = within(sub).getAllByRole('menuitem')[0];
+  await waitFor(() => expect(item).toHaveFocus());
+  return { root, sub, item };
+}
+
 beforeEach(() => {
   localStorage.removeItem(COLLAPSED_TEAMS_STORAGE_KEY);
 });
@@ -196,9 +223,10 @@ describe('team sections', () => {
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
     ).toEqual([
+      sidebarCopy.teamMenu.members('Analysis Lab'),
       sidebarCopy.teamMenu.createChannel,
       sidebarCopy.teamMenu.addPeople('Analysis Lab'),
-      sidebarCopy.teamMenu.copyId,
+      sidebarCopy.teamMenu.copyForSupport,
     ]);
     await user.click(
       within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.addPeople('Analysis Lab') })
@@ -232,13 +260,15 @@ describe('team sections', () => {
     };
 
     // Bob is neither owner nor host: a member of a team Alice created, in a workspace Alice hosts.
+    // He can still see who is in it (Q3-44).
     const member = renderTeams(
       { snapshot: makeSnapshot({ actor: bob }), isHost: false, capabilities: ['direct_add_v1'] },
       true
     );
     expect(await menuItems()).toEqual([
+      sidebarCopy.teamMenu.members('Analysis Lab'),
       sidebarCopy.teamMenu.createChannel,
-      sidebarCopy.teamMenu.copyId,
+      sidebarCopy.teamMenu.copyForSupport,
     ]);
     member.unmount();
 
@@ -255,9 +285,10 @@ describe('team sections', () => {
       true
     );
     expect(await menuItems()).toEqual([
+      sidebarCopy.teamMenu.members('Analysis Lab'),
       sidebarCopy.teamMenu.createChannel,
       sidebarCopy.teamMenu.addPeople('Analysis Lab'),
-      sidebarCopy.teamMenu.copyId,
+      sidebarCopy.teamMenu.copyForSupport,
     ]);
     directHost.unmount();
 
@@ -268,8 +299,9 @@ describe('team sections', () => {
       true
     );
     expect(await menuItems()).toEqual([
+      sidebarCopy.teamMenu.members('Analysis Lab'),
       sidebarCopy.teamMenu.createChannel,
-      sidebarCopy.teamMenu.copyId,
+      sidebarCopy.teamMenu.copyForSupport,
     ]);
     invitingHost.unmount();
 
@@ -277,13 +309,57 @@ describe('team sections', () => {
     for (const capabilities of [null, ['direct_add_v1']]) {
       const owner = renderTeams({ capabilities }, true);
       expect(await menuItems()).toEqual([
+        sidebarCopy.teamMenu.members('Analysis Lab'),
         sidebarCopy.teamMenu.createChannel,
         sidebarCopy.teamMenu.addPeople('Analysis Lab'),
         sidebarCopy.teamMenu.rename,
-        sidebarCopy.teamMenu.copyId,
+        sidebarCopy.teamMenu.copyForSupport,
       ]);
       owner.unmount();
     }
+  });
+
+  it('opens the member list from "Members of {team}…", first, for everyone (Q3-44)', async () => {
+    const user = userEvent.setup();
+    const view = renderTeams({
+      snapshot: makeSnapshot({ actor: bob }),
+      isHost: false,
+      capabilities: null,
+    });
+    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    const menu = await screen.findByRole('menu');
+    const members = within(menu).getAllByRole('menuitem')[0];
+    expect(members).toHaveTextContent(sidebarCopy.teamMenu.members('Analysis Lab'));
+    await user.click(members);
+    expect(view.controller.openDialog).toHaveBeenCalledWith({
+      kind: 'add-people',
+      target: 'team',
+      targetId: TEAM_LAB,
+    });
+  });
+
+  it('keeps the team ID in "Copy for support", last, after a separator (Q3-26)', async () => {
+    const user = userEvent.setup();
+    renderTeams();
+    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    const menu = await screen.findByRole('menu');
+    // No machine ID at the top level of an everyday menu.
+    expect(within(menu).queryByRole('menuitem', { name: sidebarCopy.teamMenu.copyId })).toBeNull();
+    const items = within(menu).getAllByRole('menuitem');
+    const support = within(menu).getByRole('menuitem', {
+      name: sidebarCopy.teamMenu.copyForSupport,
+    });
+    expect(items[items.length - 1]).toBe(support);
+    expect(support).toHaveAttribute('aria-haspopup', 'menu');
+    expect(support.previousElementSibling).toHaveAttribute('role', 'separator');
+    act(() => support.focus());
+    await user.keyboard('{ArrowRight}');
+    const sub = await openSupportMenu();
+    expect(
+      within(sub)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([sidebarCopy.teamMenu.copyId]);
   });
 
   it('copies the team ID, says "Copied" on the item for a moment, then closes (Q2-34)', async () => {
@@ -291,21 +367,17 @@ describe('team sections', () => {
     const writeText = spyClipboard();
     const view = renderTeams();
     const options = screen.getByRole('button', { name: 'Analysis Lab options' });
-    await user.click(options);
-    const menu = await screen.findByRole('menu');
-    // Last, after a separator.
-    const items = within(menu).getAllByRole('menuitem');
-    const copyItem = within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.copyId });
-    expect(items[items.length - 1]).toBe(copyItem);
-    expect(copyItem.previousElementSibling).toHaveAttribute('role', 'separator');
+    const { root, sub: menu, item: copyItem } = await openTeamIdCopy(user);
+    expect(copyItem).toHaveTextContent(sidebarCopy.teamMenu.copyId);
 
-    await user.click(copyItem);
+    await user.keyboard('{Enter}');
     expect(writeText).toHaveBeenCalledWith(TEAM_LAB);
     // The menu stays open, and the item itself answers…
     expect(
       await within(menu).findByRole('menuitem', { name: sidebarCopy.teamMenu.copied })
     ).toBeVisible();
-    expect(screen.getByRole('menu')).toBe(menu);
+    expect(menu).toBeInTheDocument();
+    expect(root).toBeInTheDocument();
     // …spoken too, and never as a toast or in the connection bar.
     await waitFor(() =>
       expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
@@ -324,9 +396,8 @@ describe('team sections', () => {
     const user = userEvent.setup();
     spyClipboard().mockRejectedValueOnce(new Error('denied'));
     const view = renderTeams();
-    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
-    const menu = await screen.findByRole('menu');
-    await user.click(within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.copyId }));
+    const { root, sub: menu } = await openTeamIdCopy(user);
+    await user.keyboard('{Enter}');
     expect(
       await within(menu).findByRole('menuitem', { name: sidebarCopy.teamMenu.copyFailed })
     ).toBeVisible();
@@ -337,7 +408,68 @@ describe('team sections', () => {
     );
     expect(view.controller.reportError).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, TEAM_COPY_CLOSE_MS + 100));
-    expect(screen.getByRole('menu')).toBe(menu);
+    expect(menu).toBeInTheDocument();
+    expect(root).toBeInTheDocument();
+  });
+
+  it('keeps "Copied" on the item until the closing menu is gone, and resets only on reopen (Q3-57)', async () => {
+    // jsdom runs no CSS, so Radix unmounts a closing menu at once and the exit fade — the ~130ms
+    // in which the item used to read "Copy team ID" again — never happens. Give the two menus an
+    // exit animation (by their `data-state`, as the real `animate-out` does) so the closing
+    // content stays mounted until its `animationend`, and watch what the item says meanwhile.
+    const realStyle = window.getComputedStyle.bind(window);
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+      const style = realStyle(element, pseudo);
+      if (!(element instanceof Element) || !element.matches('[data-crew-menu^="team"]')) {
+        return style;
+      }
+      return new Proxy(style, {
+        get(target, property) {
+          if (property === 'animationName') {
+            return element.getAttribute('data-state') === 'closed' ? 'crew-test-exit' : 'none';
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    const user = userEvent.setup();
+    spyClipboard();
+    renderTeams();
+    const openCopyItem = async () => (await openTeamIdCopy(user)).item;
+
+    const item = await openCopyItem();
+    const said: string[] = [];
+    const record = () => {
+      const text = item.textContent ?? '';
+      if (said[said.length - 1] !== text) said.push(text);
+    };
+    const watch = new MutationObserver(record);
+    watch.observe(item, { childList: true, characterData: true, subtree: true });
+    record();
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(item).toHaveTextContent(sidebarCopy.teamMenu.copied));
+    // It closes by itself, and while it fades out the item still says "Copied".
+    const closing = item.closest('[data-crew-menu="team-support"]') as HTMLElement;
+    await waitFor(() => expect(closing).toHaveAttribute('data-state', 'closed'), {
+      timeout: TEAM_COPY_CLOSE_MS + 1000,
+    });
+    expect(item).toHaveTextContent(sidebarCopy.teamMenu.copied);
+    for (const menu of document.querySelectorAll<HTMLElement>('[data-crew-menu^="team"]')) {
+      const end = new Event('animationend', { bubbles: false });
+      Object.defineProperty(end, 'animationName', { value: 'crew-test-exit' });
+      act(() => {
+        menu.dispatchEvent(end);
+      });
+    }
+    await waitFor(() => expect(item).not.toBeInTheDocument());
+    watch.disconnect();
+    expect(said).toEqual([sidebarCopy.teamMenu.copyId, sidebarCopy.teamMenu.copied]);
+
+    // Opening the menu again is what gives the item its own words back.
+    const again = await openCopyItem();
+    expect(again).toHaveTextContent(sidebarCopy.teamMenu.copyId);
   });
 
   it('disables every action while it shows only the last verified copy', () => {

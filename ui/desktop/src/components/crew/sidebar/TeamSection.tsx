@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useId, useState, type KeyboardEvent } from 'react';
 import { ChevronRight, MoreHorizontal, Plus } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import {
@@ -6,12 +6,16 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { useCrew } from '../state/CrewControllerContext';
 import { ChannelRow } from './ChannelRow';
 import { sidebarCopy } from './copy';
+import { MENU_COPY_CLOSE_MS, MENU_COPY_FAILED_MS, useMenuCopyItem } from './menuCopy';
 import { useSidebarAnnounce, writeClipboard } from './SidebarAnnouncer';
 import type { ChannelRowView, TeamSectionView } from './sidebarView';
 import './crew-sidebar.css';
@@ -19,15 +23,13 @@ import './crew-sidebar.css';
 const copy = sidebarCopy;
 
 /**
- * How long the team menu stays open showing "Copied" after Copy team ID, before it closes (Q2-34).
- * Long enough to be read, short enough that the menu does not linger.
+ * How long the team menu stays open showing "Copied" after Copy team ID, before it closes (Q2-34):
+ * every sidebar menu's {@link MENU_COPY_CLOSE_MS}.
  */
-export const TEAM_COPY_CLOSE_MS = 600;
+export const TEAM_COPY_CLOSE_MS = MENU_COPY_CLOSE_MS;
 
 /** How long a refused copy reads "Couldn't copy" on the item; the menu stays open meanwhile. */
-export const TEAM_COPY_FAILED_MS = 1500;
-
-type CopyState = 'idle' | 'copied' | 'failed';
+export const TEAM_COPY_FAILED_MS = MENU_COPY_FAILED_MS;
 
 /** Row keys for roving focus. Machine IDs live only in these keys, never on screen. */
 export const rowKeys = {
@@ -110,13 +112,17 @@ export interface TeamSectionProps {
  * section ends in a quiet line saying other channels appear once someone adds them (T-28): the
  * snapshot holds only the channels they are in, so nothing else would tell them.
  *
- * The team menu offers "Add people to {team}…" only to those the broker would let add someone —
- * the team's owner, and the host where people are added directly — and "Rename team…" only to the
- * owner (Q2-41). Anyone else would meet a refusal, never an action. "Copy team ID" sits last,
- * after a separator, and answers ON THE ITEM: the menu stays open reading "Copied" for
- * {@link TEAM_COPY_CLOSE_MS}, then closes; a refused copy reads "Couldn't copy" and the menu stays
- * (Q2-34). Either result is spoken too, and neither reaches the
- * channel's connection bar.
+ * The team menu opens with "Members of {team}…" for everyone (Q3-44): the member list lives in
+ * the Add people dialog, which shows only the list to someone who can't add people there. It
+ * offers "Add people to {team}…" only to those the broker would let add someone — the team's
+ * owner, and the host where people are added directly — and "Rename team…" only to the owner
+ * (Q2-41). Anyone else would meet a refusal, never an action.
+ *
+ * "Copy team ID" is a machine ID, so it sits in the "Copy for support" submenu, last, after a
+ * separator (Q3-26, the shared contract), and answers ON THE ITEM: it reads "Copied", the menu
+ * closes {@link TEAM_COPY_CLOSE_MS} later and keeps saying "Copied" until it is gone (Q3-57, see
+ * `useMenuCopyItem`); a refused copy reads "Couldn't copy" and the menu stays (Q2-34). Either
+ * result is spoken too, and neither reaches the channel's connection bar.
  */
 export function TeamSection({
   section,
@@ -155,40 +161,16 @@ export function TeamSection({
 
   const createChannel = () => crew.openDialog({ kind: 'create-channel', teamId: section.id });
 
+  const openPeople = () =>
+    crew.openDialog({ kind: 'add-people', target: 'team', targetId: section.id });
+
   const [menuOpen, setMenuOpen] = useState(false);
-  const [copyState, setCopyState] = useState<CopyState>('idle');
-  const copyTimer = useRef<number | null>(null);
-  const clearCopyTimer = () => {
-    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
-    copyTimer.current = null;
-  };
-  useEffect(
-    () => () => {
-      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
-    },
-    []
-  );
-  const onMenuOpenChange = (open: boolean) => {
-    setMenuOpen(open);
-    if (!open) {
-      clearCopyTimer();
-      setCopyState('idle');
-    }
-  };
+  const teamIdCopy = useMenuCopyItem(setMenuOpen);
   const copyTeamId = async () => {
-    const copied = await writeClipboard(section.id);
-    clearCopyTimer();
-    setCopyState(copied ? 'copied' : 'failed');
+    const copied = await teamIdCopy.run(() => writeClipboard(section.id));
     announce(copied ? copy.clipboard.copied : copy.clipboard.failed);
-    copyTimer.current = window.setTimeout(
-      () => {
-        copyTimer.current = null;
-        setCopyState('idle');
-        if (copied) setMenuOpen(false);
-      },
-      copied ? TEAM_COPY_CLOSE_MS : TEAM_COPY_FAILED_MS
-    );
   };
+  const copyState = teamIdCopy.state;
 
   return (
     <div className="crew-sidebar-team" data-crew-team={section.id}>
@@ -248,7 +230,7 @@ export function TeamSection({
             </TooltipTrigger>
             <TooltipContent>{copy.team.addChannel(section.name)}</TooltipContent>
           </Tooltip>
-          <DropdownMenu open={menuOpen} onOpenChange={onMenuOpenChange}>
+          <DropdownMenu open={menuOpen} onOpenChange={teamIdCopy.onOpenChange}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
@@ -267,16 +249,14 @@ export function TeamSection({
               <TooltipContent>{copy.team.options(section.name)}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="start" data-crew-menu="team">
+              <DropdownMenuItem disabled={!actionable} onSelect={openPeople}>
+                {copy.teamMenu.members(section.name)}
+              </DropdownMenuItem>
               <DropdownMenuItem disabled={!actionable} onSelect={createChannel}>
                 {copy.teamMenu.createChannel}
               </DropdownMenuItem>
               {canAddPeople && (
-                <DropdownMenuItem
-                  disabled={!actionable}
-                  onSelect={() =>
-                    crew.openDialog({ kind: 'add-people', target: 'team', targetId: section.id })
-                  }
-                >
+                <DropdownMenuItem disabled={!actionable} onSelect={openPeople}>
                   {copy.teamMenu.addPeople(section.name)}
                 </DropdownMenuItem>
               )}
@@ -291,20 +271,27 @@ export function TeamSection({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                data-crew-copy-state={copyState}
-                onSelect={(event) => {
-                  // Stay open: the item itself shows whether the copy landed.
-                  event.preventDefault();
-                  void copyTeamId();
-                }}
-              >
-                {copyState === 'copied'
-                  ? copy.teamMenu.copied
-                  : copyState === 'failed'
-                    ? copy.teamMenu.copyFailed
-                    : copy.teamMenu.copyId}
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger data-crew-copy-for-support="">
+                  {copy.teamMenu.copyForSupport}
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent data-crew-menu="team-support">
+                  <DropdownMenuItem
+                    data-crew-copy-state={copyState}
+                    onSelect={(event) => {
+                      // Stay open: the item itself shows whether the copy landed.
+                      event.preventDefault();
+                      void copyTeamId();
+                    }}
+                  >
+                    {copyState === 'copied'
+                      ? copy.teamMenu.copied
+                      : copyState === 'failed'
+                        ? copy.teamMenu.copyFailed
+                        : copy.teamMenu.copyId}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

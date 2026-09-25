@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId } from 'react';
 import { Badge } from '../../ui/badge';
 import {
   DropdownMenuContent,
@@ -8,6 +8,7 @@ import {
 import { PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
+import { MENU_COPY_FAILED_MS, useMenuCopyItem, type MenuCopyItem } from './menuCopy';
 import { useSidebarAnnounce, writeClipboard } from './SidebarAnnouncer';
 import { knownUsername, loginLabel, usePendingHost, useSidebarView } from './sidebarView';
 import { unavailableReason } from './WorkspaceMenu';
@@ -15,10 +16,11 @@ import './crew-sidebar.css';
 
 const copy = sidebarCopy.you;
 
-/** How long "Copied" / "Couldn't copy" replaces the item's label before it reads as before. */
-export const COPY_FEEDBACK_MS = 1500;
+/** How long "Couldn't copy" replaces the item's label before it reads as before. */
+export const COPY_FEEDBACK_MS = MENU_COPY_FAILED_MS;
 
-type CopyState = 'idle' | 'copied' | 'failed';
+/** A You menu rendered without its row has no menu state to close; the item still answers. */
+const keepOpen = () => {};
 
 /**
  * The You menu (ui-redesign-spec, "The workspace menu and the You menu"), opening upward from the
@@ -35,28 +37,33 @@ type CopyState = 'idle' | 'copied' | 'failed';
  * available.
  *
  * "Copy my username" copies the bare username — what a host types into Invite people's `@`
- * field — and answers ON THE ITEM: the menu stays open and the item reads "Copied" (or
- * "Couldn't copy") for a moment, and the same result is spoken. A copy result is never sent to
+ * field — and answers ON THE ITEM, with every sidebar menu's timing (Q3-57, `useMenuCopyItem`):
+ * the item reads "Copied" and the menu closes a moment later, still saying so; a refused copy
+ * reads "Couldn't copy" and the menu stays. It used to stay open after "Copied" and flip back,
+ * unlike the team and message menus. The same result is spoken. A copy result is never sent to
  * the channel's connection bar, which is for the connection.
+ *
+ * `usernameCopy` is the item's state, owned by `YouRow` with the menu's open state, so the item
+ * can close the menu it sits in.
  */
-export function YouMenu({ profile = null }: { profile?: string | null }) {
+export function YouMenu({
+  profile = null,
+  usernameCopy,
+}: {
+  profile?: string | null;
+  usernameCopy?: MenuCopyItem;
+}) {
   const crew = useCrew();
   const { dir, verified } = useSidebarView(crew);
   const { announce } = useSidebarAnnounce();
-  const [copyState, setCopyState] = useState<CopyState>('idle');
-  const timer = useRef<number | null>(null);
+  const ownCopy = useMenuCopyItem(keepOpen);
+  const copyItem = usernameCopy ?? ownCopy;
+  const copyState = copyItem.state;
   const reasonId = useId();
   const { username: remembered } = usePendingHost(crew);
   const me = dir.me;
   const connection = crew.connection;
   const username = knownUsername(me, connection, remembered);
-
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    []
-  );
 
   if (!connection) return null;
 
@@ -65,16 +72,10 @@ export function YouMenu({ profile = null }: { profile?: string | null }) {
 
   const copyUsername = async () => {
     if (!username) return;
-    const copied = await writeClipboard(username);
-    setCopyState(copied ? 'copied' : 'failed');
+    const copied = await copyItem.run(() => writeClipboard(username));
     announce(
       copied ? copy.announceCopiedUsername(username) : copy.announceCopyUsernameFailed(username)
     );
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
-      timer.current = null;
-      setCopyState('idle');
-    }, COPY_FEEDBACK_MS);
   };
 
   return (

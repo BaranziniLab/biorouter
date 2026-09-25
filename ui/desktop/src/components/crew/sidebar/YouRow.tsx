@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { Avatar } from '../../ui/avatar';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { useMenuCopyItem } from './menuCopy';
 import { knownUsername, loginLabel, usePendingHost, useSidebarView } from './sidebarView';
 import { YouMenu } from './YouMenu';
 import './crew-sidebar.css';
@@ -41,9 +43,14 @@ export function devProfileName(): string | null {
  * The row is a real menu (`Alice Chen ▾`), so it ends in the same chevron the switcher carries:
  * a dropdown looks like a dropdown. It turns 180° while the menu is open, by the trigger's own
  * `data-state`, through the shared `.crew-sidebar-chevron[data-turn='half']` rule.
+ *
+ * The menu's open state lives here, with Copy my username's, so a landed copy closes the menu the
+ * way every sidebar menu's copy does (Q3-57).
  */
 export function YouRow() {
   const crew = useCrew();
+  const [open, setOpen] = useState(false);
+  const usernameCopy = useMenuCopyItem(setOpen);
   const { dir } = useSidebarView(crew);
   const { username: remembered } = usePendingHost(crew);
   const connection = crew.connection;
@@ -54,7 +61,7 @@ export function YouRow() {
 
   return (
     <div className="crew-sidebar-you" data-crew-you="">
-      <DropdownMenu>
+      <DropdownMenu open={open} onOpenChange={usernameCopy.onOpenChange}>
         <DropdownMenuTrigger asChild>
           <button type="button" className="crew-sidebar-you-trigger no-drag">
             <Avatar
@@ -79,7 +86,7 @@ export function YouRow() {
             <ChevronDown className="crew-sidebar-chevron" data-turn="half" aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
-        <YouMenu profile={profile} />
+        <YouMenu profile={profile} usernameCopy={usernameCopy} />
       </DropdownMenu>
     </div>
   );

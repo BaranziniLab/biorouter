@@ -175,11 +175,22 @@ export const sidebarCopy = {
   },
 
   teamMenu: {
+    /**
+     * First, for everyone (Q3-44): the team's member list. It opens the same Add people dialog,
+     * which shows someone who can't add people there only the list (the `people.ts` rule).
+     */
+    members: (team: string) => `Members of ${team}…`,
     createChannel: 'Create channel…',
     addPeople: (team: string) => `Add people to ${team}…`,
     rename: 'Rename team…',
+    /**
+     * The submenu that holds a menu's machine-ID copies, and only those, last after a separator
+     * (Q3-26, the shared "Copy for support" contract): a PI's everyday menu leads with what a
+     * person does, and an ID is what a support conversation asks for.
+     */
+    copyForSupport: 'Copy for support',
     copyId: 'Copy team ID',
-    /** The item confirms the copy itself for a moment, then the menu closes (Q2-34). */
+    /** The item confirms the copy itself, then the menu closes still saying so (Q2-34, Q3-57). */
     copied: 'Copied',
     copyFailed: 'Couldn’t copy',
   },
@@ -236,8 +247,9 @@ export const sidebarCopy = {
     keys: 'Keys and security…',
     copyUsername: 'Copy my username',
     /**
-     * The item itself confirms the copy for a moment, and the menu stays open: a copy result is
-     * shown where it was asked for, never in the channel's connection bar.
+     * The item itself confirms the copy, and the menu closes a moment later still saying so, as
+     * every sidebar menu's copy does (Q3-57): a copy result is shown where it was asked for, never
+     * in the channel's connection bar.
      */
     copiedUsername: 'Copied',
     copyUsernameFailed: 'Couldn’t copy',

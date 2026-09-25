@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { sidebarCopy } from './copy';
+import { MENU_COPY_CLOSE_MS } from './menuCopy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import { COPY_FEEDBACK_MS } from './YouMenu';
 import { YouRow } from './YouRow';
@@ -247,17 +248,19 @@ describe('YouRow', () => {
     expect(menu).not.toHaveAttribute('aria-describedby');
   });
 
-  it('Copy my username copies the bare username and confirms on the item, without a toast', async () => {
+  it('Copy my username copies the bare username, says "Copied", then closes like every menu (Q3-57)', async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
     const controller = makeController();
     renderYou(controller);
-    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
+    await user.click(trigger);
     const menu = await screen.findByRole('menu');
     await user.click(within(menu).getByRole('menuitem', { name: copy.copyUsername }));
     expect(writeText).toHaveBeenCalledWith('alice');
-    // The menu stays open and the item itself says so…
-    expect(await within(menu).findByRole('menuitem', { name: copy.copiedUsername })).toBeVisible();
+    // The item itself says so, in the menu that is still open…
+    const item = await within(menu).findByRole('menuitem', { name: copy.copiedUsername });
+    expect(item).toBeVisible();
     expect(screen.getByRole('menu')).toBe(menu);
     // …and the same result is spoken.
     await waitFor(() =>
@@ -266,11 +269,17 @@ describe('YouRow', () => {
       )
     );
     expect(controller.reportError).not.toHaveBeenCalled();
-    // The label comes back.
-    await waitFor(
-      () => expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).toBeVisible(),
-      { timeout: COPY_FEEDBACK_MS + 1000 }
-    );
+    // Then the menu closes by itself — the team and message menus' timing — still saying
+    // "Copied" to the end, and focus goes back to the row.
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), {
+      timeout: MENU_COPY_CLOSE_MS + 1000,
+    });
+    expect(item).toHaveTextContent(copy.copiedUsername);
+    await waitFor(() => expect(trigger).toHaveFocus());
+    // Opening it again gives the item its own words back.
+    await user.click(trigger);
+    const again = await screen.findByRole('menu');
+    expect(within(again).getByRole('menuitem', { name: copy.copyUsername })).toBeVisible();
   });
 
   it('shows a refused copy on the item, never in the channel’s connection bar', async () => {
@@ -290,6 +299,13 @@ describe('YouRow', () => {
       )
     );
     expect(controller.reportError).not.toHaveBeenCalled();
+    // A refused copy keeps the menu open, so the person can try again, and the label comes back.
+    await new Promise((resolve) => setTimeout(resolve, MENU_COPY_CLOSE_MS + 100));
+    expect(screen.getByRole('menu')).toBe(menu);
+    await waitFor(
+      () => expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).toBeVisible(),
+      { timeout: COPY_FEEDBACK_MS + 1000 }
+    );
   });
 
   it('renders nothing until a connection is selected', () => {
