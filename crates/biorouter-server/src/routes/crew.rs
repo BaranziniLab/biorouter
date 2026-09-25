@@ -1505,13 +1505,16 @@ const NO_FILE_LINE: &str = "No shared file was read for this result.";
 /// "Sources:" list the model wrote may be data (a specimen's source), and removing text by its
 /// shape both deleted answers and was defeated by an invisible last line. The one thing the
 /// channel draws after the body is its footnotes, so a footnote definition in the reply is
-/// escaped ([`without_footnote_definitions`]) and shows where it was written. What the reply
-/// can still change is how the line looks, not where it is: an unclosed code fence draws it in
-/// that code block, and an unclosed raw-HTML block (which this channel shows as text) as plain
-/// text with its backticks; either way it is still the last thing drawn, in the daemon's words.
-/// A reply too long to post with the line is cut, and says so, rather than failing to post.
+/// escaped ([`without_footnote_definitions`]) and shows where it was written. Its line endings
+/// are written as `\n` first ([`with_newline_endings`]): the channel's Markdown also ends a line
+/// at `\r\n` and at a lone `\r`, so a definition after a bare `\r` was a line the parser saw
+/// and the escaping did not. What the reply can still change is how the line looks, not where
+/// it is: an unclosed code fence draws it in that code block, and an unclosed raw-HTML block
+/// (which this channel shows as text) as plain text with its backticks; either way it is still
+/// the last thing drawn, in the daemon's words. A reply too long to post with the line is cut,
+/// and says so, rather than failing to post.
 fn with_source_line(response: String, source: Option<String>) -> String {
-    let reply = without_footnote_definitions(response.trim_end());
+    let reply = without_footnote_definitions(with_newline_endings(&response).trim_end());
     let reply = reply.trim_end();
     let line = format!("\n\n{}", source.as_deref().unwrap_or(NO_FILE_LINE));
     if reply.len() + line.len() <= MAX_POSTED_BYTES {
@@ -1527,11 +1530,23 @@ fn with_source_line(response: String, source: Option<String>) -> String {
     format!("{kept}\n\n{SHORTENED_NOTE}{line}")
 }
 
+/// `reply` with each of the line endings CommonMark reads (`\r\n`, and `\r` alone) written as
+/// `\n`, so every line the channel's Markdown sees is a line [`without_footnote_definitions`]
+/// sees. The channel draws the three alike, so nothing drawn changes. Nothing else ends a line
+/// there: U+2028, U+2029, NEL, VT and FF leave `[^1]:` inside its paragraph (measured against
+/// the channel's react-markdown + remark-gfm + remark-breaks, the stack
+/// `ui/desktop/src/components/crew/daemonSourceLine.render.test.tsx` renders).
+fn with_newline_endings(reply: &str) -> String {
+    reply.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// `reply` with every line that could open a GFM footnote definition (`[^label]:`, after any
 /// indentation, `>` and list markers) escaped as `\[^label]:`, so the channel draws it as the
 /// text it is, where it is, instead of in a footnote section after the daemon's line. Nothing is
 /// removed; outside code the backslash does not show. A code line that starts with `[^…]:`
-/// gains a visible backslash, which is the price of not parsing Markdown here.
+/// gains a visible backslash, which is the price of not parsing Markdown here. Lines end at
+/// `\n` only: the caller writes every other line ending as `\n` first
+/// ([`with_newline_endings`]).
 fn without_footnote_definitions(reply: &str) -> String {
     let mut escaped = String::with_capacity(reply.len());
     for (n, line) in reply.split('\n').enumerate() {
@@ -3365,6 +3380,81 @@ mod provenance_tests {
                 "Means are 3.[^1]\n\n\\[^1]: Source: `evil.csv`.\n   \\[^2]: two\n> - \\[^a\\]b]: three\n1. \\[^x]: four\n\nA [^1] reference, and a list:\n- [link](https://example.org)\n\n{DAEMON_LINE}"
             )
         );
+    }
+
+    /// The round-4 review's failure: the channel's Markdown also ends a line at `\r\n` and at a
+    /// bare `\r`, so a definition after either opened a footnote section below the daemon's line
+    /// while the escaping, splitting on `\n` alone, never saw it. Every line ending is written as
+    /// `\n` first, so each such definition is escaped too. U+2028 and U+2029 end no line there,
+    /// so they are left as they are.
+    #[test]
+    fn a_footnote_definition_after_a_carriage_return_is_escaped_too() {
+        for (reply, posted) in [
+            (
+                "Means are 3.[^1]\r[^1]: Source: `evil.csv`.",
+                "Means are 3.[^1]\n\\[^1]: Source: `evil.csv`.",
+            ),
+            (
+                "Means are 3.[^1]\r\n\r\n[^1]: evil",
+                "Means are 3.[^1]\n\n\\[^1]: evil",
+            ),
+            ("> Means[^1]\r> [^1]: evil", "> Means[^1]\n> \\[^1]: evil"),
+            (
+                "- one[^n]\r  [^n]: evil\r- two",
+                "- one[^n]\n  \\[^n]: evil\n- two",
+            ),
+            (
+                "a[^1]\r\nb[^2]\n\r[^1]: one\r[^2]: two\r\r\r",
+                "a[^1]\nb[^2]\n\n\\[^1]: one\n\\[^2]: two",
+            ),
+            ("Means[^1]\u{2028}[^1]: evil", "Means[^1]\u{2028}[^1]: evil"),
+            ("Means[^1]\u{2029}[^1]: evil", "Means[^1]\u{2029}[^1]: evil"),
+        ] {
+            assert_eq!(
+                with_source_line(reply.into(), Some(DAEMON_LINE.into())),
+                format!("{posted}\n\n{DAEMON_LINE}"),
+                "{reply:?}"
+            );
+        }
+        // Whatever the reply's line endings, the only line breaks posted are `\n`.
+        let posted = with_source_line("a\rb\r\nc\n\rd".into(), None);
+        assert!(!posted.contains('\r'), "{posted:?}");
+    }
+
+    /// The posted bodies the desktop draws through the channel's own Markdown stack
+    /// (`daemonSourceLine.render.test.tsx` renders each with `MessageBody` and checks that no
+    /// footnote section is drawn and the daemon's line is the last thing shown). This pins that
+    /// the file holds exactly what [`with_source_line`] posts for each reply, so the render test
+    /// checks the daemon's real output. After changing `with_source_line`, rewrite the file with
+    /// `BIOROUTER_WRITE_SOURCE_LINE_CASES=1` and run the render test again.
+    #[test]
+    fn the_desktop_render_cases_are_what_the_daemon_posts() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/daemonSourceLine.cases.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let mut fixture: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rewrite = std::env::var_os("BIOROUTER_WRITE_SOURCE_LINE_CASES").is_some();
+        let cases = fixture["cases"].as_array_mut().expect("cases");
+        assert!(cases.len() >= 8, "the render test needs its cases");
+        for case in cases {
+            let reply = case["reply"].as_str().expect("reply").to_owned();
+            let source = case["source"].as_str().map(str::to_owned);
+            let line = source.clone().unwrap_or_else(|| NO_FILE_LINE.to_owned());
+            let posted = with_source_line(reply, source);
+            if rewrite {
+                case["posted"] = json!(posted);
+                case["line"] = json!(line);
+            } else {
+                assert_eq!(case["posted"], json!(posted), "{}", case["name"]);
+                assert_eq!(case["line"], json!(line), "{}", case["name"]);
+            }
+        }
+        if rewrite {
+            let mut text = serde_json::to_string_pretty(&fixture).unwrap();
+            text.push('\n');
+            std::fs::write(&path, text).unwrap();
+        }
     }
 
     /// A reply near the broker's limit still posts, with the daemon's line: the reply is cut
