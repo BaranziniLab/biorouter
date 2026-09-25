@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../../ui/button';
+import { Disclosure } from '../../ui/disclosure';
 import { cn } from '../../../utils';
 import { channelName, PersonName, teamName } from '../identity';
 import { aboutCopy } from './copy';
@@ -35,10 +36,12 @@ function Row({
  * The details pane's About tab (ui-redesign-spec, "The details pane"): the channel's name, who can
  * read it ("Private models only" for a Restricted channel, T-67), who owns it (and to whom
  * ownership is offered), who made it, its team, Copy channel ID — the one place this tab holds an
- * ID, behind a copy — and the owner's danger zone. Copy channel ID sits above the danger zone,
- * never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). It answers on
- * itself: "Copied" (or "Couldn't copy") for a moment, also spoken (Q2-34). The owner's actions open
- * the same dialog intents as the channel menu; the broker decides.
+ * ID, behind a copy — and the owner's danger zone. Copy channel ID is a machine ID, for a support
+ * request, so it waits behind a quiet "IDs for support" disclosure rather than sitting among the
+ * everyday rows (Q3-26), as Connection settings keeps its own. The disclosure sits above the
+ * danger zone, never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). The
+ * copy answers on itself: "Copied" (or "Couldn't copy") for a moment, also spoken (Q2-34). The
+ * owner's actions open the same dialog intents as the channel menu; the broker decides.
  */
 export function AboutTab({ canRename = false, className }: AboutTabProps) {
   const { crew, channel, team, dir, isOwner } = usePanePresentation();
@@ -133,7 +136,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         <Row label={aboutCopy.team}>{teamName(team)}</Row>
       </div>
 
-      <div>
+      <Disclosure label={aboutCopy.idsForSupport}>
         <Button
           type="button"
           variant="ghost"
@@ -147,7 +150,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {copyWords ?? ''}
         </span>
-      </div>
+      </Disclosure>
 
       {ownerTools && (
         <section aria-labelledby={dangerId} className="flex flex-col gap-2">

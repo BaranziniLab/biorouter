@@ -8,6 +8,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { cn } from '../../../utils';
@@ -32,14 +35,30 @@ interface MemberRow {
   isOwner: boolean;
 }
 
-function byDisplayName(a: MemberRow, b: MemberRow): number {
-  if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
-  const formerA = a.person?.isFormer ?? true;
-  const formerB = b.person?.isFormer ?? true;
-  if (formerA !== formerB) return formerA ? 1 : -1;
-  return (a.person?.displayName ?? '').localeCompare(b.person?.displayName ?? '', undefined, {
-    sensitivity: 'base',
-  });
+/**
+ * The Members tab's order: the channel's owner, then you, then everyone else by the name the row
+ * shows (case aside, then the username), then a member the viewer has no projection for, then
+ * former members (Q3-32). The rank the header's member stack uses (`channel/MemberStack.tsx`
+ * `currentMembers`), so the three lists of one channel's people read in one order, and so setting
+ * your own display name never moves "you" — Erin's row went from fifth to last when she did.
+ */
+function memberRank(row: MemberRow, actorId: string): number {
+  if (row.isOwner) return 0;
+  if (row.person?.isFormer) return 4;
+  if (row.id === actorId) return 1;
+  return row.person ? 2 : 3;
+}
+
+function memberOrder(actorId: string) {
+  return (a: MemberRow, b: MemberRow): number =>
+    memberRank(a, actorId) - memberRank(b, actorId) ||
+    (a.person?.displayName ?? '').localeCompare(b.person?.displayName ?? '', undefined, {
+      sensitivity: 'base',
+    }) ||
+    (a.person?.username ?? '').localeCompare(b.person?.username ?? '', undefined, {
+      sensitivity: 'base',
+    }) ||
+    a.id.localeCompare(b.id);
 }
 
 type CopyItem = 'username' | 'id';
@@ -49,6 +68,13 @@ type CopyItem = 'username' | 'id';
  * "Copied" for a moment and then the menu closes, returning focus to the `⋯`. A refused copy
  * reads "Couldn't copy" and leaves the menu open, so the person can try again or leave. Either
  * result is also spoken through the tab's live region, since a menu item's new name is not.
+ *
+ * Copy username is a human copy and stays top level. Copy person ID is a machine ID, for a support
+ * request, so it sits in the "Copy for support" submenu, last, after a separator (Q3-26).
+ *
+ * The `⋯` is hidden at rest and shown on the row's hover and focus, and while its menu is open
+ * (`.crew-member-actions` in `pane.css`, design.md §4.14): opacity only, so it stays in the tab
+ * order and the accessibility tree.
  */
 function MemberActions({
   crew,
@@ -117,6 +143,7 @@ function MemberActions({
           variant="ghost"
           shape="round"
           size="sm"
+          className="crew-member-actions"
           aria-label={membersCopy.more(label)}
         >
           <MoreHorizontal aria-hidden="true" />
@@ -135,15 +162,6 @@ function MemberActions({
             {itemLabel('username', membersCopy.copyUsername)}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem
-          data-crew-copy-state={stateOf('id')}
-          onSelect={(event) => {
-            event.preventDefault();
-            void copy('id', memberId);
-          }}
-        >
-          {itemLabel('id', membersCopy.copyPersonId)}
-        </DropdownMenuItem>
         {canManage && (
           <>
             <DropdownMenuSeparator />
@@ -175,6 +193,21 @@ function MemberActions({
             </DropdownMenuItem>
           </>
         )}
+        <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>{membersCopy.copyForSupport}</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem
+              data-crew-copy-state={stateOf('id')}
+              onSelect={(event) => {
+                event.preventDefault();
+                void copy('id', memberId);
+              }}
+            >
+              {itemLabel('id', membersCopy.copyPersonId)}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -186,10 +219,13 @@ function MemberActions({
  *
  * Every row names the person at an authority point, "Display name (@username)", with Channel
  * owner (never a bare "Owner", which read as the workspace's Host, Q2-69), you and former-member
- * markers. The row's `⋯` holds Copy username and Copy person ID (the only place
- * a person's ID appears) and, for the owner acting on someone else, Make owner… and Remove from
- * #name…, which open the transfer dialog and the removal confirmation. A `⋯` is never drawn for
- * Copy person ID alone (T-33): a machine string is not worth a menu of its own, so a row with
+ * markers. The rows run owner, you, everyone else by name, then former members (Q3-32,
+ * `memberOrder`). A name wraps rather than truncating, and the owner's "Channel owner" badge sits
+ * on its own line under the name, so the handle beside it is never cut to "@crew_henr…" (Q3-33).
+ * The row's `⋯` holds Copy username, for the owner acting on someone else Make owner… and Remove
+ * from #name… (which open the transfer dialog and the removal confirmation), and last "Copy for
+ * support" › Copy person ID — the only place a person's ID appears (Q3-26). A `⋯` is never drawn
+ * for Copy person ID alone (T-33): a machine string is not worth a menu of its own, so a row with
  * nothing else to offer (an unknown member) has no `⋯`. Channel invitations the viewer sent and
  * nobody has accepted yet appear as muted "invited" rows.
  *
@@ -221,7 +257,7 @@ export function MembersTab({ className }: MembersTabProps) {
   const actorId = snapshot.actor.id;
   const members: MemberRow[] = channel.members
     .map((id) => ({ id, person: dir.byId(id), isOwner: id === channel.owner_id }))
-    .sort(byDisplayName);
+    .sort(memberOrder(actorId));
   const now = Date.now() / 1000;
   const invited = snapshot.invitations.filter(
     (invitation) =>
@@ -270,7 +306,7 @@ export function MembersTab({ className }: MembersTabProps) {
           return (
             <li
               key={id}
-              className="flex min-h-row items-center gap-3 border-b border-border-subtle py-2 last:border-b-0"
+              className="crew-member-row flex min-h-row items-center gap-3 border-b border-border-subtle py-2 last:border-b-0"
             >
               <Avatar
                 size={24}
@@ -278,15 +314,19 @@ export function MembersTab({ className }: MembersTabProps) {
                 name={person?.displayName}
                 username={person?.username}
               />
-              <span className="min-w-0 flex-1 truncate text-label">
-                <PersonName
-                  person={person ?? id}
-                  dir={dir}
-                  context="authority"
-                  you={id === actorId}
-                />
+              {/* The name wraps rather than truncating, and the owner's badge takes its own line
+                  under it, so neither ever cuts the other's words (Q3-33). */}
+              <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                <span className="crew-member-name text-label">
+                  <PersonName
+                    person={person ?? id}
+                    dir={dir}
+                    context="authority"
+                    you={id === actorId}
+                  />
+                </span>
+                {rowIsOwner && <Badge tone="neutral">{membersCopy.owner}</Badge>}
               </span>
-              {rowIsOwner && <Badge tone="neutral">{membersCopy.owner}</Badge>}
               {hasMenu && (
                 <MemberActions
                   crew={crew}
@@ -309,7 +349,7 @@ export function MembersTab({ className }: MembersTabProps) {
               className="flex min-h-row items-center gap-3 border-b border-border-subtle py-2 text-text-muted last:border-b-0"
             >
               <Avatar size={24} name={invitee?.displayName} username={invitee?.username} />
-              <span className="min-w-0 flex-1 truncate text-label">
+              <span className="crew-member-name min-w-0 flex-1 text-label">
                 <PersonName person={invitation.principal_id} dir={dir} context="authority" />
               </span>
               <span className="text-supporting">{membersCopy.invited}</span>

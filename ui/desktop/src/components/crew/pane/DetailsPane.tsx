@@ -260,8 +260,13 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
           </TabsList>
           {TABS.map((value) => (
             // A panel is a tab stop (Radix), so it shows the quiet inset edge every keyboard
-            // region draws when it takes focus, rather than nothing (Q2-68).
-            <TabsContent key={value} value={value} className="mt-3 biorouter-focus-region">
+            // region draws when it takes focus, rather than nothing (Q2-68). `.crew-pane-panel`
+            // pads that edge clear of the panel's words (Q3-33).
+            <TabsContent
+              key={value}
+              value={value}
+              className="crew-pane-panel biorouter-focus-region"
+            >
               {tabs[value] ??
                 (value === 'about' ? <AboutTab /> : value === 'members' ? <MembersTab /> : null)}
             </TabsContent>

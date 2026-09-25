@@ -65,6 +65,52 @@
   background-color: var(--background-default);
 }
 
+/* A details tab panel is a tab stop (Radix), and takes the quiet inset edge
+   every keyboard region draws on focus (`.biorouter-focus-region` in
+   `main.css`: a 1px inset shadow; under forced colours a 2px outline drawn
+   2px inside). With the words flush to the panel's box that edge sat ON them —
+   the "A" of "Ask @crew_alice…" and the "6" of "6 MEMBERS" (Q3-33). The panel
+   steps out by 8px and pads back in by 8px, so its words stay on the pane's
+   one inset and the edge runs 8px clear of them on every side. The 4px top
+   margin plus the 8px padding keep the 12px gap under the tabs. */
+.crew-pane-panel {
+  margin-block-start: 4px;
+  margin-inline: -8px;
+  padding: 8px;
+  border-radius: var(--radius-element);
+}
+
+/* A member's name wraps rather than truncating (Q3-33): "Henry Ito
+   @crew_henr…" beside the Channel owner badge hid the handle, which is the
+   part an authority point owes in full. The badge has its own line below. */
+.crew-member-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* A member row's ⋯ fades in on the row's hover and focus, and stays while its
+   menu is open (design.md §4.14; Q3-33 counted one on every row at rest).
+   Opacity only: it stays in the tab order and the accessibility tree, so a
+   keyboard reaches it and reveals it by reaching it. Without a hover pointer
+   it is always shown. */
+.crew-member-actions {
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-member-row:hover .crew-member-actions,
+.crew-member-row:focus-within .crew-member-actions,
+.crew-member-actions[data-state='open'] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .crew-member-actions {
+    opacity: 1;
+  }
+}
+
 /* A list of settings rows keeps each row's 4px hover inset, and steps out by
    it so the rows' words sit on the pane inset. */
 .crew-pane-rows {
@@ -134,5 +180,9 @@
 
   .crew-agent-start-spinner {
     animation: none;
+  }
+
+  .crew-member-actions {
+    transition: none;
   }
 }

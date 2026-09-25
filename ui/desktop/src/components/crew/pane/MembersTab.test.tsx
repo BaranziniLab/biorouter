@@ -1,4 +1,6 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -47,6 +49,29 @@ function Members() {
 async function shown() {
   await waitFor(() => expect(currentCrew().channel?.id).toBe(general.id));
   return screen.getByTestId('members');
+}
+
+/** `pane.css` without its comments, for the rules jsdom never applies. */
+const paneCss = readFileSync(join(__dirname, 'pane.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+function cssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(paneCss)?.[2] ?? '';
+}
+
+/**
+ * Open a member menu's "Copy for support" submenu the keyboard's way (→ opens it and moves into
+ * it) and return it, its one item focused. jsdom has no layout, so Radix's pointer grace area
+ * cannot tell a pointer on its way into the submenu from one leaving it; Enter chooses.
+ */
+async function openSupport(user: ReturnType<typeof userEvent.setup>, menu: HTMLElement) {
+  const trigger = within(menu).getByRole('menuitem', { name: membersCopy.copyForSupport });
+  expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+  act(() => trigger.focus());
+  await user.keyboard('{ArrowRight}');
+  await waitFor(() => expect(screen.getAllByRole('menu')).toHaveLength(2));
+  const support = screen.getAllByRole('menu')[1];
+  await waitFor(() => expect(within(support).getAllByRole('menuitem')[0]).toHaveFocus());
+  return support;
 }
 
 /** Each row's text as a reader gets it: decorative avatars (aria-hidden) left out. */
@@ -106,7 +131,7 @@ describe('MembersTab', () => {
     });
   });
 
-  it('offers Copy username before Copy person ID on the owner’s own row (T-33)', async () => {
+  it('offers Copy username at the top and Copy person ID under Copy for support (T-33, Q3-26)', async () => {
     const user = userEvent.setup();
     renderCrew(Members);
     const tab = await shown();
@@ -117,7 +142,7 @@ describe('MembersTab', () => {
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual([membersCopy.copyUsername, membersCopy.copyPersonId]);
+    ).toEqual([membersCopy.copyUsername, membersCopy.copyForSupport]);
     // The username goes without its `@`, as Workspace settings copies it.
     await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyUsername }));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe('alice'));
@@ -126,8 +151,22 @@ describe('MembersTab', () => {
     });
 
     await user.click(more);
-    await user.click(await screen.findByRole('menuitem', { name: membersCopy.copyPersonId }));
+    const support = await openSupport(user, await screen.findByRole('menu'));
+    expect(
+      within(support)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([membersCopy.copyPersonId]);
+    await user.keyboard('{Enter}');
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(alice.id));
+    // The item answers "Copied", then the whole menu closes and hands focus back to the ⋯.
+    expect(
+      await within(support).findByRole('menuitem', { name: membersCopy.copied })
+    ).toHaveAttribute('data-crew-copy-state', 'copied');
+    await waitFor(() => expect(screen.queryAllByRole('menu')).toHaveLength(0), {
+      timeout: MENU_COPY_CLOSE_MS + 1000,
+    });
+    await waitFor(() => expect(more).toHaveFocus());
   });
 
   it('answers a copy on the item: "Copied" for a moment, then the menu closes (Q2-34)', async () => {
@@ -170,27 +209,28 @@ describe('MembersTab', () => {
     const tab = await shown();
     await user.click(within(tab).getByRole('button', { name: membersCopy.more('Bob Lee (@bob)') }));
     const menu = await screen.findByRole('menu');
-    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.copyPersonId }));
+    const support = await openSupport(user, menu);
+    await user.keyboard('{Enter}');
     expect(
-      await within(menu).findByRole('menuitem', { name: membersCopy.copyFailed })
+      await within(support).findByRole('menuitem', { name: membersCopy.copyFailed })
     ).toHaveAttribute('data-crew-copy-state', 'failed');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, MENU_COPY_CLOSE_MS + 100));
     });
-    expect(screen.getByRole('menu')).toBe(menu);
+    expect(screen.getAllByRole('menu')).toEqual([menu, support]);
     // The label comes back; the menu is the person's to close.
     await waitFor(
       () =>
         expect(
-          within(menu).getByRole('menuitem', { name: membersCopy.copyPersonId })
+          within(support).getByRole('menuitem', { name: membersCopy.copyPersonId })
         ).toBeInTheDocument(),
       { timeout: COPY_FEEDBACK_MS + 1000 }
     );
-    expect(screen.getByRole('menu')).toBe(menu);
+    expect(screen.getAllByRole('menu')[0]).toBe(menu);
     refuse.mockRestore();
   });
 
-  it('puts the owner’s actions on someone else after the copies', async () => {
+  it('puts the owner’s actions after Copy username, and Copy for support last (Q3-26)', async () => {
     const user = userEvent.setup();
     renderCrew(Members);
     const tab = await shown();
@@ -202,10 +242,22 @@ describe('MembersTab', () => {
         .map((item) => item.textContent)
     ).toEqual([
       membersCopy.copyUsername,
-      membersCopy.copyPersonId,
       membersCopy.makeOwner,
       membersCopy.remove('#general'),
+      membersCopy.copyForSupport,
     ]);
+    // The support submenu is last, after a separator, and holds the machine ID and nothing else.
+    const support = within(menu).getByRole('menuitem', { name: membersCopy.copyForSupport });
+    expect(support).toHaveAttribute('aria-haspopup', 'menu');
+    expect(menu.lastElementChild).toBe(support);
+    expect(support.previousElementSibling).toHaveAttribute('role', 'separator');
+    expect(within(menu).queryByRole('menuitem', { name: membersCopy.copyPersonId })).toBeNull();
+    const submenu = await openSupport(user, menu);
+    expect(
+      within(submenu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([membersCopy.copyPersonId]);
   });
 
   it('never draws a ⋯ that holds only Copy person ID (T-33)', async () => {
@@ -279,8 +331,8 @@ describe('MembersTab', () => {
     expect(list).toContain('Carol Diaz (@carol) · former member');
     expect(list).toContain('Unknown member');
     expect(tab.textContent).not.toMatch(UUID);
-    // A former member is not offered Make owner or Remove; their ID stays behind Copy, after the
-    // username, so the menu never holds the ID alone.
+    // A former member is not offered Make owner or Remove; their ID stays behind Copy for
+    // support, after the username, so the menu never holds the ID alone.
     await user.click(
       within(tab).getByRole('button', {
         name: membersCopy.more('Carol Diaz (@carol) · former member'),
@@ -291,7 +343,7 @@ describe('MembersTab', () => {
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual([membersCopy.copyUsername, membersCopy.copyPersonId]);
+    ).toEqual([membersCopy.copyUsername, membersCopy.copyForSupport]);
   });
 
   it('shows channel invitations the viewer sent as muted invited rows', async () => {
@@ -327,5 +379,128 @@ describe('MembersTab', () => {
     ]);
     // The count is the channel's members; an invitation is not a member yet.
     expect(within(tab).getByText(membersCopy.count(2))).toBeInTheDocument();
+  });
+
+  describe('order (Q3-32)', () => {
+    const erin = {
+      id: '6f1c2a3b-0000-4000-8000-00000000e41e',
+      uid: 1004,
+      username: 'erin',
+      nickname: 'Zoe Wu',
+    };
+    const aaron = {
+      id: '6f1c2a3b-0000-4000-8000-00000000aa01',
+      uid: 1005,
+      username: 'aaron',
+      nickname: 'aaron Park',
+    };
+    const samB = {
+      id: '6f1c2a3b-0000-4000-8000-0000000005b0',
+      uid: 1006,
+      username: 'sam_b',
+      nickname: 'Sam Park',
+    };
+    const samA = {
+      id: '6f1c2a3b-0000-4000-8000-0000000005a0',
+      uid: 1007,
+      username: 'sam_a',
+      nickname: 'Sam Park',
+    };
+
+    function install(you: Record<string, unknown> & { id: string }) {
+      installObserver({
+        snapshot: makeSnapshot({
+          actor: you,
+          principals: [alice, bob, you, aaron, samB, samA],
+          former_principals: [{ id: carol.id, username: 'carol', display_name: 'Carol Diaz' }],
+          channels: [
+            {
+              ...general,
+              // Listed out of order on purpose, the former member and an unknown one first.
+              members: [carol.id, ghost, samB.id, bob.id, you.id, aaron.id, alice.id, samA.id],
+            },
+            methods,
+          ],
+        }),
+      });
+    }
+
+    const names = (tab: HTMLElement) =>
+      rows(tab).map((row) => (row ?? '').replace(membersCopy.owner, ''));
+
+    it('lists the owner, then you, then everyone by name, then unknown and former members', async () => {
+      install(erin);
+      renderCrew(Members);
+      const tab = await shown();
+      expect(names(tab)).toEqual([
+        'Alice Chen (@alice)',
+        'Zoe Wu (@erin) · you',
+        // By the name shown, whatever its case…
+        'aaron Park (@aaron)',
+        'Bob Lee (@bob)',
+        // …and, for one name, by username.
+        'Sam Park (@sam_a)',
+        'Sam Park (@sam_b)',
+        'Unknown member',
+        'Carol Diaz (@carol) · former member',
+      ]);
+    });
+
+    it('never moves you when you set your display name', async () => {
+      // Before: `@erin`, which sorts among the others' names. After: "Zoe Wu", which would sort
+      // last. Both times the row comes straight after the owner (Erin's moved from 5th to last).
+      for (const you of [{ ...erin, nickname: undefined }, erin]) {
+        install(you);
+        renderCrew(Members);
+        const tab = await shown();
+        expect(names(tab)[1]).toMatch(/· you$/);
+        cleanup();
+      }
+    });
+  });
+
+  describe('row layout (Q3-33)', () => {
+    it('puts the Channel owner badge on its own line under the name, never beside a cut handle', async () => {
+      renderCrew(Members);
+      const tab = await shown();
+      const badge = within(tab).getByText(membersCopy.owner);
+      const row = badge.closest('li') as HTMLElement;
+      const name = row.querySelector('.crew-member-name') as HTMLElement;
+      // The badge and the name share one column, the badge after the name…
+      expect(badge.parentElement).toBe(name.parentElement);
+      expect(name.parentElement).toHaveClass('flex-col');
+      expect(name.nextElementSibling).toBe(badge);
+      // …and no name in the list is truncated: it wraps (`pane.css`).
+      for (const item of within(tab).getAllByRole('listitem')) {
+        expect(item.querySelector('.truncate')).toBeNull();
+      }
+      expect(cssRule('.crew-member-name')).toMatch(/overflow-wrap:\s*anywhere;/);
+      expect(cssRule('.crew-member-name')).not.toMatch(/text-overflow|white-space:\s*nowrap/);
+    });
+
+    it('hides each row’s ⋯ at rest and shows it on hover, focus and while its menu is open', async () => {
+      const user = userEvent.setup();
+      renderCrew(Members);
+      const tab = await shown();
+      const more = within(tab).getByRole('button', { name: membersCopy.more('Bob Lee (@bob)') });
+      expect(more).toHaveClass('crew-member-actions');
+      expect(more.closest('li')).toHaveClass('crew-member-row');
+      // Opacity only (design.md §4.14): still a tab stop, still in the accessibility tree.
+      expect(cssRule('.crew-member-actions')).toMatch(/opacity:\s*0;/);
+      expect(cssRule('.crew-member-actions')).not.toMatch(/display|visibility|pointer-events/);
+      expect(paneCss).toMatch(
+        /\.crew-member-row:hover \.crew-member-actions,\s*\.crew-member-row:focus-within \.crew-member-actions,\s*\.crew-member-actions\[data-state='open'\]\s*\{\s*opacity:\s*1;/
+      );
+      expect(paneCss).toMatch(
+        /@media \(hover: none\)\s*\{\s*\.crew-member-actions\s*\{\s*opacity:\s*1;/
+      );
+      expect(paneCss).toMatch(
+        /prefers-reduced-motion:\s*reduce[\s\S]*\.crew-member-actions\s*\{\s*transition:\s*none;/
+      );
+      // The open state the rule keys on is the trigger's own.
+      await user.click(more);
+      await screen.findByRole('menu');
+      expect(more).toHaveAttribute('data-state', 'open');
+    });
   });
 });

@@ -46,6 +46,12 @@ async function shown() {
   return screen.getByTestId('about');
 }
 
+/** Open "IDs for support" and return Copy channel ID, which waits behind it (Q3-26). */
+async function openIds(user: ReturnType<typeof userEvent.setup>, about: HTMLElement) {
+  await user.click(within(about).getByRole('button', { name: aboutCopy.idsForSupport }));
+  return within(about).findByRole('button', { name: aboutCopy.copyId });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   installDaemon();
@@ -77,13 +83,35 @@ describe('AboutTab', () => {
     expect(within(about).queryByText('Restricted')).toBeNull();
   });
 
+  it('keeps Copy channel ID behind a quiet "IDs for support" disclosure (Q3-26)', async () => {
+    const user = userEvent.setup();
+    renderCrew(() => <About />);
+    const about = await shown();
+    // At rest the tab holds no machine-ID control at all, only the disclosure that leads to one.
+    expect(within(about).queryByRole('button', { name: aboutCopy.copyId })).toBeNull();
+    const ids = within(about).getByRole('button', { name: aboutCopy.idsForSupport });
+    expect(aboutCopy.idsForSupport).toBe('IDs for support');
+    expect(ids).toHaveAttribute('aria-expanded', 'false');
+    // Quiet: the shared Disclosure's muted ghost trigger, never a filled button.
+    expect(ids).toHaveClass('biorouter-disclosure-trigger', 'text-text-muted');
+    const copy = await openIds(user, about);
+    expect(ids).toHaveAttribute('aria-expanded', 'true');
+    expect(ids.getAttribute('aria-controls')).toBeTruthy();
+    expect(document.getElementById(ids.getAttribute('aria-controls') ?? '')).toContainElement(copy);
+    expect(about.textContent).not.toMatch(UUID);
+  });
+
   it('keeps Copy channel ID out of the danger zone, above it (T-67)', async () => {
+    const user = userEvent.setup();
     renderCrew(() => <About />);
     const about = await shown();
     const zone = within(about)
       .getByRole('heading', { name: aboutCopy.dangerZone })
       .closest('section') as HTMLElement;
-    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    const ids = within(about).getByRole('button', { name: aboutCopy.idsForSupport });
+    expect(zone).not.toContainElement(ids);
+    expect(ids.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const copy = await openIds(user, about);
     expect(zone).not.toContainElement(copy);
     expect(copy.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Its words sit on the pane's one inset, not 12px inside it (T-62).
@@ -106,7 +134,7 @@ describe('AboutTab', () => {
       confirm: { action: 'archive-channel', channelId: general.id },
     });
 
-    await user.click(within(about).getByRole('button', { name: aboutCopy.copyId }));
+    await user.click(await openIds(user, about));
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
     expect(about.textContent).not.toMatch(UUID);
   });
@@ -115,7 +143,7 @@ describe('AboutTab', () => {
     const user = userEvent.setup();
     renderCrew(() => <About />);
     const about = await shown();
-    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    const copy = await openIds(user, about);
     await user.click(copy);
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
     // The same node flips its words, so focus stays where it was.
@@ -139,7 +167,7 @@ describe('AboutTab', () => {
       .mockRejectedValue(new Error('denied'));
     renderCrew(() => <About />);
     const about = await shown();
-    const copy = within(about).getByRole('button', { name: aboutCopy.copyId });
+    const copy = await openIds(user, about);
     await user.click(copy);
     await waitFor(() => expect(copy).toHaveTextContent(aboutCopy.copyFailed));
     expect(copy).toHaveAttribute('data-crew-copy-state', 'failed');
@@ -169,6 +197,7 @@ describe('AboutTab', () => {
   });
 
   it('gives a member who is not the owner the facts and no owner tools', async () => {
+    const user = userEvent.setup();
     installObserver({ snapshot: makeSnapshot({ actor: bob }) });
     renderCrew(() => <About canRename />);
     const about = await shown();
@@ -176,7 +205,7 @@ describe('AboutTab', () => {
       expect(within(about).queryByRole('button', { name })).toBeNull();
     }
     expect(within(about).queryByText(aboutCopy.dangerZone)).toBeNull();
-    expect(within(about).getByRole('button', { name: aboutCopy.copyId })).toBeInTheDocument();
+    expect(await openIds(user, about)).toBeInTheDocument();
   });
 
   it('reads a public-safe channel’s rule', async () => {
