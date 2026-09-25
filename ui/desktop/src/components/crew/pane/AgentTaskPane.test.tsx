@@ -405,6 +405,15 @@ describe('AgentTaskPane', () => {
       expect(mark).toHaveTextContent('Private · UCSF');
       expect(within(group).queryByTestId('affiliation-badge')).toBeNull();
       expect(group.innerHTML).not.toMatch(/this chat/);
+      // ONE chip, then Change as a separate link (Q4-28): the row read "[🔒 Private] · UCSF
+      // Change", the institution in a second span beside the pill.
+      expect(mark).toHaveClass('crew-model-tier');
+      expect(within(mark).getByTestId('privacy-badge').parentElement).toBe(mark);
+      expect(within(mark).getByText('UCSF').closest('.crew-model-tier')).toBe(mark);
+      const change = within(group).getByRole('button', { name: agentCopy.modelChangeName });
+      expect(mark).not.toContainElement(change);
+      expect(mark.nextElementSibling).toBe(change);
+      expect(within(group).getAllByText(/UCSF/)).toHaveLength(1);
 
       fireEvent.change(task, { target: { value: 'use the default' } });
       await user.click(startButton());
@@ -1061,10 +1070,16 @@ describe('AgentTaskPane', () => {
         expect(note).toHaveTextContent(words);
         // The file IS shared, so there is no "No file named …" warning beside it.
         expect(fileWarning()).toBeNull();
-        // It is before Start in the footer, describes it, and is not a gate.
-        expect(note.compareDocumentPosition(startButton()) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        // It is a neutral Note ABOVE the Task it is about (Q4-31) — not small blue info text in the
+        // footer beside Start — still describes Start, and is not a gate.
+        expect(note.compareDocumentPosition(task) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
           Node.DOCUMENT_POSITION_FOLLOWING
         );
+        expect(note.closest('.crew-pane-footer')).toBeNull();
+        expect(note.closest('.crew-pane-body')).not.toBeNull();
+        expect(note).toHaveClass('bg-background-muted', 'text-text-muted');
+        expect(note).not.toHaveClass('bg-wash-info');
+        expect(note).not.toHaveClass('text-text-info');
         expect(startButton()).toHaveAccessibleDescription(words);
         await chooseModel(user, 'fixture-model');
         expect(startButton()).toBeEnabled();

@@ -70,6 +70,25 @@ describe('AboutTab', () => {
     expect(about.textContent).not.toMatch(UUID);
   });
 
+  it('names the owner and the creator in one format, the authority form (Q4-21)', async () => {
+    renderCrew(() => <About />);
+    const about = await shown();
+    const value = (label: string) =>
+      within(about).getByText(label, { selector: 'dt' }).nextElementSibling as HTMLElement;
+    const owner = value(aboutCopy.owner);
+    const createdBy = value(aboutCopy.createdBy);
+    // It read "Alice Chen @alice" as Owner and "Alice Chen (@alice)" as Created by, one row
+    // apart. Both are now `personLabel(…, 'authority')`, drawn the way a Members row is.
+    for (const row of [owner, createdBy]) {
+      expect(row.querySelector('[data-person-context]')).toHaveAttribute(
+        'data-person-context',
+        'authority'
+      );
+      expect(row).toHaveTextContent(/^Alice Chen \(@alice\)$/);
+    }
+    expect(createdBy.innerHTML).toBe(owner.innerHTML);
+  });
+
   it('says who can read a Restricted channel in words, not "Content: Restricted" (T-67)', async () => {
     renderCrew(() => <About />);
     const about = await shown();

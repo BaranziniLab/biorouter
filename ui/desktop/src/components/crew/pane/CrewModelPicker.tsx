@@ -28,11 +28,15 @@ import './pane.css';
  * (Q2-67). It used to be two bare glyphs — the dense padlock and the dense affiliation mark — that
  * a person could not read, under a tooltip about "this chat".
  *
- * The padlock pill is `PrivacyBadge`, the app's one mark for the private tier, followed by the
- * affiliation's words (`affiliationPresentation`, the registry's name for the institution), as the
- * sidebar's privacy chip writes "Private · ucsf". Its `title` says what the tier means for THIS
- * task: "Only private models can run this task." only where the pane knows the task's context is
- * protected (`privateOnly`); elsewhere, what a private model adds.
+ * The padlock pill is `PrivacyBadge`, the app's one mark for the private tier, and the affiliation's
+ * words (`affiliationPresentation`, the registry's name for the institution) sit INSIDE its fill,
+ * as ONE chip — the way the sidebar's privacy chip and Settings → Privacy draw "🔒 Private · UCSF"
+ * (`.crew-model-tier` in `pane.css`). It used to put " · UCSF" in a second span beside the pill, so
+ * Ask my agent read "[🔒 Private] · UCSF Change" where every other surface drew one piece (Q4-28).
+ * The " · " is text, not layout, so the chip reads, copies and is spoken "Private · UCSF". Its
+ * `title` says what the tier means for THIS task: "Only private models can run this task." only
+ * where the pane knows the task's context is protected (`privateOnly`); elsewhere, what a private
+ * model adds.
  *
  * `enforcementOff={false}`, as on the sidebar's chip: the daemon's Crew admission refuses a public
  * model for protected context whatever this machine's privacy master switch says
@@ -61,22 +65,13 @@ export function ModelTierMarks({
         ? agentCopy.privateOnly
         : agentCopy.privateModel;
   return (
-    <span
-      className="inline-flex min-w-0 shrink-0 flex-wrap items-center gap-1 text-label"
-      title={title}
-      data-crew-model-tier={tier}
-    >
+    <span className="crew-model-tier" title={title} data-crew-model-tier={tier}>
       <PrivacyBadge tier={tier} enforcementOff={false} />
-      {/* The spaces are text, not layout (the flex gap draws the space), so the mark reads and
-          copies as "Private · UCSF" and is spoken "Private UCSF". */}
       {approvedBy && (
-        <>
-          {' '}
-          <span aria-hidden="true" className="text-text-muted">
-            ·
-          </span>{' '}
-          <bdi className="text-text-default">{approvedBy}</bdi>
-        </>
+        <span className="crew-model-tier-institution" data-crew-model-tier-institution="">
+          {' · '}
+          <bdi translate="no">{approvedBy}</bdi>
+        </span>
       )}
     </span>
   );

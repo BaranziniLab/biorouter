@@ -259,14 +259,12 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
             ))}
           </TabsList>
           {TABS.map((value) => (
-            // A panel is a tab stop (Radix), so it shows the quiet inset edge every keyboard
-            // region draws when it takes focus, rather than nothing (Q2-68). `.crew-pane-panel`
-            // pads that edge clear of the panel's words (Q3-33).
-            <TabsContent
-              key={value}
-              value={value}
-              className="crew-pane-panel biorouter-focus-region"
-            >
+            // A panel is a tab stop (Radix), so it shows a focus edge rather than nothing (Q2-68):
+            // `.crew-pane-panel:focus-visible` in pane.css, the same 2px `--ring` outline drawn
+            // inside the box that Workspace settings' panels take, so the app's two tabbed
+            // surfaces have one panel focus style (Q4-30). The panel's padding keeps that edge
+            // clear of its words (Q3-33).
+            <TabsContent key={value} value={value} className="crew-pane-panel">
               {tabs[value] ??
                 (value === 'about' ? <AboutTab /> : value === 'members' ? <MembersTab /> : null)}
             </TabsContent>

@@ -65,19 +65,30 @@
   background-color: var(--background-default);
 }
 
-/* A details tab panel is a tab stop (Radix), and takes the quiet inset edge
-   every keyboard region draws on focus (`.biorouter-focus-region` in
-   `main.css`: a 1px inset shadow; under forced colours a 2px outline drawn
-   2px inside). With the words flush to the panel's box that edge sat ON them —
-   the "A" of "Ask @crew_alice…" and the "6" of "6 MEMBERS" (Q3-33). The panel
-   steps out by 8px and pads back in by 8px, so its words stay on the pane's
-   one inset and the edge runs 8px clear of them on every side. The 4px top
-   margin plus the 8px padding keep the 12px gap under the tabs. */
+/* A details tab panel is a tab stop (Radix), and draws a focus edge when it
+   takes focus (Q2-68). It is the edge Workspace settings' panels draw
+   (`.crew-settings-panel:focus-visible` in `dialogs/dialogs.css`): a 2px
+   `--ring` outline drawn inside the box (Q4-30). It used to be the 1px orange
+   inset shadow of `.biorouter-focus-region`, so the app's two tabbed panels
+   answered focus in two styles. Unlayered, so it outranks the layered
+   `[role='tabpanel']:focus-visible { outline: none }` in `main.css`; under
+   forced colours the OS-requested block there still draws its own ring.
+
+   With the words flush to the panel's box an edge sat ON them — the "A" of
+   "Ask @crew_alice…" and the "6" of "6 MEMBERS" (Q3-33). The panel steps out
+   by 8px and pads back in by 8px, so its words stay on the pane's one inset
+   and the 2px edge runs 6px clear of them on every side. The 4px top margin
+   plus the 8px padding keep the 12px gap under the tabs. */
 .crew-pane-panel {
   margin-block-start: 4px;
   margin-inline: -8px;
   padding: 8px;
   border-radius: var(--radius-element);
+}
+
+.crew-pane-panel:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 /* A member's name wraps rather than truncating (Q3-33): "Henry Ito
@@ -155,6 +166,38 @@
    Authored here, not as a Tailwind variant, so it cannot fail to generate. */
 .crew-agent-task:focus-visible {
   border-color: var(--border-accent);
+}
+
+/* A model's tier as ONE chip, `🔒 Private · UCSF` (`ModelTierMarks`, Q4-28):
+   the institution sits inside the badge's own fill, never beside it as a
+   second span, exactly as the sidebar's privacy chip and Settings → Privacy
+   draw it (`.crew-sidebar-chip-badge`, `.crew-settings-privacy-badge`). The
+   inner `PrivacyBadge` keeps its geometry and fill (the same token), so the
+   two read as one pill; this box supplies the fill under the institution and
+   the end inset. Ask my agent's Change is a separate link after it. */
+.crew-model-tier {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-model-tier-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 /* The model picker's list: tall enough for three provider groups, then it

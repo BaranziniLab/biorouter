@@ -35,7 +35,8 @@ function Row({
 /**
  * The details pane's About tab (ui-redesign-spec, "The details pane"): the channel's name, who can
  * read it ("Private models only" for a Restricted channel, T-67), who owns it (and to whom
- * ownership is offered), who made it, its team, Copy channel ID — the one place this tab holds an
+ * ownership is offered), who made it — every person here in the one authority form, "Iris Wong
+ * (@crew_iris)" (Q4-21) — its team, Copy channel ID — the one place this tab holds an
  * ID, behind a copy — and the owner's danger zone. Copy channel ID is a machine ID, for a support
  * request, so it waits behind a quiet "IDs for support" disclosure rather than sitting among the
  * everyday rows (Q3-26), as Connection settings keeps its own. The disclosure sits above the
@@ -130,8 +131,12 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
             </span>
           )}
         </Row>
+        {/* Owner's form, the authority point's (Q4-21): one person read "Iris Wong @crew_iris"
+            as Owner and "Iris Wong (@crew_iris)" as Created by on the next row. Both are now
+            `personLabel(…, 'authority')`, "Iris Wong (@crew_iris)", drawn as the Members rows
+            draw it. */}
         <Row label={aboutCopy.createdBy}>
-          <PersonName person={channel.created_by} dir={dir} context="inline" />
+          <PersonName person={channel.created_by} dir={dir} context="authority" />
         </Row>
         <Row label={aboutCopy.team}>{teamName(team)}</Row>
       </div>

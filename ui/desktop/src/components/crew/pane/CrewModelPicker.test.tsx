@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../api';
 import { agentCopy } from './copy';
-import { CrewModelPicker } from './CrewModelPicker';
+import { CrewModelPicker, ModelTierMarks } from './CrewModelPicker';
 import type { ModelChoice } from './useConfiguredModels';
 
 const mocks = vi.hoisted(() => ({ getProviderModels: vi.fn() }));
@@ -141,6 +143,48 @@ describe('CrewModelPicker', () => {
         agentCopy.publicModel
       )
     ).toBeInTheDocument();
+  });
+
+  it('draws the tier and institution as ONE chip, as Settings → Privacy does (Q4-28)', () => {
+    render(<ModelTierMarks provider={versa} />);
+    const chip = screen.getByTitle(agentCopy.privateModel);
+    // One piece: the institution sits INSIDE the chip beside the padlock pill, not in a second
+    // span next to it ("[🔒 Private] · UCSF").
+    expect(chip).toHaveClass('crew-model-tier');
+    const badge = within(chip).getByTestId('privacy-badge');
+    const institution = chip.querySelector('[data-crew-model-tier-institution]');
+    expect(institution).not.toBeNull();
+    expect(badge.parentElement).toBe(chip);
+    expect(institution?.parentElement).toBe(chip);
+    expect(chip.children).toHaveLength(2);
+    expect(institution).toHaveClass('crew-model-tier-institution');
+    // Its text and its spoken form are "Private · UCSF": the separator is text, never hidden.
+    expect(chip).toHaveTextContent(/^Private · UCSF$/);
+    expect(chip.querySelector('[aria-hidden="true"]:not(svg)')).toBeNull();
+    // A public model's chip is the pill alone.
+    render(<ModelTierMarks provider={openRouter} />);
+    const publicChip = screen.getByTitle(agentCopy.publicModel);
+    expect(publicChip).toHaveClass('crew-model-tier');
+    expect(publicChip).toHaveTextContent(/^Public$/);
+    expect(publicChip.querySelector('[data-crew-model-tier-institution]')).toBeNull();
+  });
+
+  it('fills the chip under the institution with the pill’s own token (Q4-28)', () => {
+    // jsdom applies no stylesheet, so the fill is asserted at the source.
+    const css = readFileSync(join(__dirname, 'pane.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string) =>
+      new RegExp(`(^|\\n)${selector.replace(/[.]/g, '\\.')}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    const chip = rule('.crew-model-tier');
+    // The PrivacyBadge's own fill (`bg-background-muted`) continues under the institution, in the
+    // pill's height and radius, so the two read as one piece — the sidebar chip's and Settings →
+    // Privacy's box.
+    expect(chip).toMatch(/display:\s*inline-flex;/);
+    expect(chip).toMatch(/background-color:\s*var\(--background-muted\);/);
+    expect(chip).toMatch(/border-radius:\s*var\(--radius-inner\);/);
+    expect(chip).toMatch(/height:\s*20px;/);
+    const institution = rule('.crew-model-tier-institution');
+    expect(institution).toMatch(/padding-inline-end:\s*6px;/);
+    expect(institution).toMatch(/white-space:\s*nowrap;/);
   });
 
   it('chooses a model and names it on the trigger', async () => {

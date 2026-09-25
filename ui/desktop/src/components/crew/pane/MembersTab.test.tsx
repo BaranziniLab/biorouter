@@ -479,6 +479,58 @@ describe('MembersTab', () => {
       ]);
     });
 
+    it('sorts a person without a chosen name by the handle shown, its "@" ignored (Q4-32)', async () => {
+      // Carol's #general: three people who never chose a name read "@crew_bob" and so on. The
+      // contract is owner, you, then the visible name with a leading "@" ignored, case aside, then
+      // the username — so a handle sorts among the names by its letters, never ahead of them all
+      // because "@" sorts before a letter.
+      const person = (suffix: string, username: string, nickname?: string) => ({
+        id: `6f1c2a3b-0000-4000-8000-0000000d${suffix}`,
+        uid: 2000 + Number.parseInt(suffix, 16),
+        username,
+        ...(nickname ? { nickname } : {}),
+      });
+      const you = person('0001', 'crew_carol', 'Carol Nguyen');
+      const crewBob = person('0002', 'crew_bob');
+      const crewDave = person('0003', 'crew_dave');
+      const crewFrank = person('0004', 'crew_frank');
+      const erinWu = person('0005', 'crew_erin', 'Erin Wu');
+      const benOrtiz = person('0006', 'crew_ben', 'Ben Ortiz');
+      installObserver({
+        snapshot: makeSnapshot({
+          actor: you,
+          principals: [alice, you, crewBob, crewDave, crewFrank, erinWu, benOrtiz],
+          channels: [
+            {
+              ...general,
+              members: [
+                erinWu.id,
+                crewFrank.id,
+                crewDave.id,
+                you.id,
+                crewBob.id,
+                benOrtiz.id,
+                alice.id,
+              ],
+            },
+            methods,
+          ],
+        }),
+      });
+      renderCrew(Members);
+      const tab = await shown();
+      expect(names(tab)).toEqual([
+        'Alice Chen (@alice)',
+        'Carol Nguyen (@crew_carol) · you',
+        // "Ben Ortiz" before "@crew_bob": with the "@" counted, every handle would lead.
+        'Ben Ortiz (@crew_ben)',
+        '@crew_bob',
+        '@crew_dave',
+        '@crew_frank',
+        'Erin Wu (@crew_erin)',
+      ]);
+    });
+
     it('never moves you when you set your display name', async () => {
       // Before: `@erin`, which sorts among the others' names. After: "Zoe Wu", which would sort
       // last. Both times the row comes straight after the owner (Erin's moved from 5th to last).

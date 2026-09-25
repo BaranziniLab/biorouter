@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { cn } from '../../../utils';
-import { channelName, PersonName, personLabel, type CrewPerson } from '../identity';
+import { channelName, PersonName, personLabel, personLayout, type CrewPerson } from '../identity';
 import type { Channel } from '../crewApi';
 import type { CrewController } from '../state/types';
 import { membersCopy } from './copy';
@@ -36,11 +36,12 @@ interface MemberRow {
 }
 
 /**
- * The Members tab's order: the channel's owner, then you, then everyone else by the name the row
- * shows (case aside, then the username), then a member the viewer has no projection for, then
- * former members (Q3-32). The rank the header's member stack uses (`channel/MemberStack.tsx`
- * `currentMembers`), so the three lists of one channel's people read in one order, and so setting
- * your own display name never moves "you" — Erin's row went from fifth to last when she did.
+ * The Members tab's order — the shared member-order contract (Q4-32): the channel's owner, then
+ * you, then everyone else by the name the row shows with a leading "@" ignored, case aside, then
+ * by username; then a member the viewer has no projection for, then former members (Q3-32). The
+ * rank the header's member stack (`channel/MemberStack.tsx`) and Workspace settings → People apply
+ * too, so the lists of one channel's people read in one order, and so setting your own display
+ * name never moves "you" — Erin's row went from fifth to last when she did.
  */
 function memberRank(row: MemberRow, actorId: string): number {
   if (row.isOwner) return 0;
@@ -49,15 +50,26 @@ function memberRank(row: MemberRow, actorId: string): number {
   return row.person ? 2 : 3;
 }
 
+/**
+ * The name a row shows, as it sorts: what `PersonName` leads with at this tab's authority point —
+ * the display name, or `@username` for someone who has not chosen one — with that leading "@"
+ * ignored (Q4-32). Otherwise "@crew_bob" would sort before "Aaron Park" (a symbol before a letter)
+ * and a person without a chosen name would sort ahead of everyone who has one.
+ */
+function visibleSortName(person: CrewPerson | null): string {
+  if (!person) return '';
+  const layout = personLayout(person, 'authority');
+  if (layout.kind !== 'person') return '';
+  const shown = layout.lead === 'handle' ? layout.handle : layout.displayName;
+  return shown.replace(/^@/, '');
+}
+
 function memberOrder(actorId: string) {
+  const byText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
   return (a: MemberRow, b: MemberRow): number =>
     memberRank(a, actorId) - memberRank(b, actorId) ||
-    (a.person?.displayName ?? '').localeCompare(b.person?.displayName ?? '', undefined, {
-      sensitivity: 'base',
-    }) ||
-    (a.person?.username ?? '').localeCompare(b.person?.username ?? '', undefined, {
-      sensitivity: 'base',
-    }) ||
+    byText(visibleSortName(a.person), visibleSortName(b.person)) ||
+    byText(a.person?.username ?? '', b.person?.username ?? '') ||
     a.id.localeCompare(b.id);
 }
 

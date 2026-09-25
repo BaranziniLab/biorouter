@@ -203,17 +203,17 @@ export interface AgentTaskPaneProps {
  * - A task that names a file (`counts.csv`) no message in the channel shares gets a warning before
  *   Start: "No file named … is shared in #…". It does not disable Start, and it is said only while
  *   every message in the channel is loaded (Q2-15). A task that names a file two or more different
- *   shared files carry gets a note, also before Start and also not a gate: "2 files named … are
- *   shared in #…. Your agent will use the newest one, shared at 1:55 AM." — the daemon tells the
- *   agent to do exactly that and to name the file it used (Q3-02). The Task field does not
- *   spell-check: file names and sample IDs are not words (Q3-34).
+ *   shared files carry gets a neutral note ABOVE the Task (Q4-31), also not a gate and also
+ *   describing Start: "2 files named … are shared in #…. Your agent will use the newest one, shared
+ *   at 1:55 AM." — the daemon tells the agent to do exactly that and to name the file it used
+ *   (Q3-02). The Task field does not spell-check: file names and sample IDs are not words (Q3-34).
  * - **Model**: the app's default model as a summary with Change when it resolves to a configured
  *   provider, else the picker; "No models are set up." with Open Settings when nothing is
  *   configured (Crew bypasses provider onboarding). A model is named as the composer's model chip
- *   names it and wraps rather than ellipsizing, followed by one worded mark, "🔒 Private · UCSF"
- *   (`ModelTierMarks`, Q2-67). A private model the workspace's institution has not approved is
- *   explained before Start, which it disables, and the daemon's "resolved affiliation" refusal is
- *   reworded the same way (T-47).
+ *   names it and wraps rather than ellipsizing, followed by one worded chip, "🔒 Private · UCSF"
+ *   (`ModelTierMarks`, Q2-67, one piece since Q4-28), then Change as a separate link. A private
+ *   model the workspace's institution has not approved is explained before Start, which it
+ *   disables, and the daemon's "resolved affiliation" refusal is reworded the same way (T-47).
  * - **Advanced** holds Also read (unmounted while closed, which keeps the unknown-outcome gate's
  *   checkbox the only one in the document, C9) and the remote folder line; closed, it says what it
  *   holds: "Reads only #general" or "Also reads #methods". With neither to offer it is not shown
@@ -479,6 +479,23 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
           {agentCopy.destination(here, teamName(team), workspace)}
         </p>
 
+        {/* Not a gate, and not a warning: the task names a file that two or more different shared
+            files carry, and the agent will use the newest (Q3-02). A neutral Note ABOVE the Task
+            it is about, where it is read before the task is (Q4-31); it used to be small blue
+            info text at the pane's bottom, beside Start, that Gina found only by looking for it.
+            It still describes Start. */}
+        {sameNamed.length > 0 && (
+          <Note tone="neutral" icon={Info} testId="crew-agent-same-name-note">
+            <div id={sameNameId}>
+              {sameNamed.map((item) => (
+                <p key={item.name.toLowerCase()}>
+                  {agentCopy.sameNameShared(item.count, item.name, here, sharedWhen(item.sharedAt))}
+                </p>
+              ))}
+            </div>
+          </Note>
+        )}
+
         <div className="flex flex-col gap-1.5">
           <label htmlFor={taskId} className="text-label text-text-default">
             {agentCopy.task}
@@ -646,19 +663,6 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
         {unshared.length > 0 && (
           <Note tone="warning" icon={AlertTriangle} testId="crew-agent-file-warning">
             <p id={fileWarningId}>{agentCopy.fileNotShared(unshared, here)}</p>
-          </Note>
-        )}
-        {/* Before Start, which it does NOT disable: the task names a file that two or more
-            different shared files carry, and the agent will use the newest (Q3-02). */}
-        {sameNamed.length > 0 && (
-          <Note tone="info" icon={Info} testId="crew-agent-same-name-note">
-            <div id={sameNameId}>
-              {sameNamed.map((item) => (
-                <p key={item.name.toLowerCase()}>
-                  {agentCopy.sameNameShared(item.count, item.name, here, sharedWhen(item.sharedAt))}
-                </p>
-              ))}
-            </div>
           </Note>
         )}
         {/* The fixed error slot: its sibling below never moves or remounts (C11). */}

@@ -224,25 +224,47 @@ describe('DetailsPane', () => {
     for (const name of ['About', 'Members', 'Files', paneCopy.tabs.access]) {
       await user.click(within(pane()).getByRole('tab', { name }));
       const panel = within(pane()).getByRole('tabpanel');
-      // `main.css` draws the inset edge for `.biorouter-focus-region:focus-visible`; a panel
-      // without it was a tab stop that showed nothing.
-      expect(panel).toHaveClass('biorouter-focus-region');
-      expect(panel).toHaveAttribute('tabindex', '0');
-      // …and that edge is padded clear of the panel's words (Q3-33): it sat on the "A" of
-      // "Ask @crew_alice…" and the "6" of "6 MEMBERS".
+      // `pane.css` draws the edge for `.crew-pane-panel:focus-visible`; a panel without one was a
+      // tab stop that showed nothing. It is padded clear of the panel's words (Q3-33): it sat on
+      // the "A" of "Ask @crew_alice…" and the "6" of "6 MEMBERS".
       expect(panel).toHaveClass('crew-pane-panel');
+      expect(panel).toHaveAttribute('tabindex', '0');
+      // Not ALSO the keyboard region's 1px orange inset shadow, which drew a second, different
+      // edge from Settings' panels (Q4-30).
+      expect(panel).not.toHaveClass('biorouter-focus-region');
     }
   });
 
   it('pads the panel’s focus edge clear of its words, which stay on the pane inset (Q3-33)', () => {
     const css = readFileSync(join(__dirname, 'pane.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const panel = /(^|\n)\.crew-pane-panel\s*\{([^}]*)\}/.exec(css)?.[2] ?? '';
-    // The edge is a 1px inset shadow, or a 2px outline 2px inside under forced colours; 8px of
-    // padding clears both. Stepping out by the same 8px keeps the words on the one inset (T-62),
-    // and 4px + 8px keeps the 12px gap under the tabs that `mt-3` gave.
+    // The edge is a 2px outline drawn inside the box; 8px of padding clears it by 6px. Stepping
+    // out by the same 8px keeps the words on the one inset (T-62), and 4px + 8px keeps the 12px
+    // gap under the tabs that `mt-3` gave.
     expect(panel).toMatch(/padding:\s*8px;/);
     expect(panel).toMatch(/margin-inline:\s*-8px;/);
     expect(panel).toMatch(/margin-block-start:\s*4px;/);
+  });
+
+  it('gives its tab panels Workspace settings’ panel focus edge: a 2px ring, inside (Q4-30)', () => {
+    const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+    const focus = (css: string, panel: string) =>
+      new RegExp(`(^|\\n)\\.${panel}:focus-visible\\s*\\{([^}]*)\\}`)
+        .exec(strip(css))?.[2]
+        .split(';')
+        .map((part) => part.trim().replace(/\s+/g, ' '))
+        .filter((part) => part !== '')
+        .sort() ?? [];
+    const pane = readFileSync(join(__dirname, 'pane.css'), 'utf8');
+    // The 1px orange inset ring the pane used to draw is gone; the grey 2px `--ring` outline,
+    // drawn 2px inside so the pane's scroller cannot clip it, is the one panel focus style.
+    expect(focus(pane, 'crew-pane-panel')).toEqual([
+      'outline-offset: -2px',
+      'outline: 2px solid var(--ring)',
+    ]);
+    // …the same declarations Settings' panels draw, so the two cannot drift apart silently.
+    const settings = readFileSync(join(__dirname, '..', 'dialogs', 'dialogs.css'), 'utf8');
+    expect(focus(settings, 'crew-settings-panel')).toEqual(focus(pane, 'crew-pane-panel'));
   });
 
   it('returns focus to the channel menu trigger when the menu opened it', async () => {
