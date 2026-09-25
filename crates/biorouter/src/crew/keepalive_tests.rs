@@ -115,8 +115,10 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// answers `hello` and `auth.challenge` but refuses every other request as a device the
 /// workspace does not know (`unauthorized: unknown device`), and `member-then-revoked` does
 /// so after answering the first; `auth` and `unreachable` fail before any request, as OpenSSH
-/// does. `context.manifest` and `blob.read` answer [`manifest`] and [`blob_read`]. Every
-/// request line is logged as `<spawn> <line>` to `requests.log`.
+/// does. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
+/// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]) and refuse any other blob, as
+/// the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
+/// `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("bin");
@@ -127,14 +129,20 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
     let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
     let manifest = manifest().to_string();
-    let blob_read = blob_read().to_string();
+    let read_new = blob_read("blob-new", NEW_CSV).to_string();
+    let read_old = blob_read("blob-old", OLD_CSV).to_string();
+    let status_new = blob_status("blob-new", NEW_CSV).to_string();
+    let status_old = blob_status("blob-old", OLD_CSV).to_string();
     for text in [
         &hello,
         &hello_v2,
         &hello_other,
         &hello_join,
         &manifest,
-        &blob_read,
+        &read_new,
+        &read_old,
+        &status_new,
+        &status_old,
     ] {
         assert!(!text.contains('\'') && !text.contains('%'));
     }
@@ -190,8 +198,19 @@ while IFS= read -r line; do
     printf '{{"id":"%s","result":%s}}\n' "$id" '{challenge}'
   elif printf '%s\n' "$line" | grep -q '"method":"context.manifest"'; then
     printf '{{"id":"%s","result":%s}}\n' "$id" '{manifest}'
-  elif printf '%s\n' "$line" | grep -q '"method":"blob.read"'; then
-    printf '{{"id":"%s","result":%s}}\n' "$id" '{blob_read}'
+  elif printf '%s\n' "$line" | grep -qE '"method":"blob[.](read|status)"'; then
+    body=''
+    case "$line" in
+      *'"method":"blob.read"'*'"blob_id":"blob-new"'*|*'"blob_id":"blob-new"'*'"method":"blob.read"'*) body='{read_new}' ;;
+      *'"method":"blob.read"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.read"'*) body='{read_old}' ;;
+      *'"method":"blob.status"'*'"blob_id":"blob-new"'*|*'"blob_id":"blob-new"'*'"method":"blob.status"'*) body='{status_new}' ;;
+      *'"method":"blob.status"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.status"'*) body='{status_old}' ;;
+    esac
+    if [ -n "$body" ]; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
+    else
+      printf '{{"id":"%s","error":{{"code":"forbidden","message":"forbidden: attachment unavailable"}}}}\n' "$id"
+    fi
   else
     signed=$((signed+1))
     refuse=0
@@ -215,7 +234,9 @@ done
 }
 
 /// The CSV the fixture's newest `gina-assay.csv` holds.
-const CSV: &str = "sample,signal\nS1,12.7\nS2,7.8\n";
+const NEW_CSV: &str = "sample,signal\nS1,12.7\nS2,7.8\n";
+/// The CSV its earlier `gina-assay.csv` holds.
+const OLD_CSV: &str = "sample,signal\nS1,99.9\nS2,7.8\n";
 
 /// `context.manifest`: two messages in `#data`, each sharing a `gina-assay.csv`, with the
 /// broker's `people` map naming their author.
@@ -238,17 +259,23 @@ fn manifest() -> Value {
     })
 }
 
-/// `blob.read` of the newest `gina-assay.csv`, as the broker answers it: the chunk hex-encoded.
-fn blob_read() -> Value {
-    let size = CSV.len();
+/// `blob.status` of one of the fixture's two `gina-assay.csv` uploads: the broker's blob.
+fn blob_status(id: &str, csv: &str) -> Value {
+    let size = csv.len();
+    json!({"run_id": null, "id": id, "owner_id": "principal-gina",
+        "channel_id": "keepalive-channel", "name": "gina-assay.csv",
+        "media_type": "application/octet-stream", "size": size, "sha256": "00",
+        "offset": size, "complete": true, "restricted": false,
+        "source_channels": ["keepalive-channel"]})
+}
+
+/// `blob.read` of one of them, as the broker answers it: the chunk hex-encoded.
+fn blob_read(id: &str, csv: &str) -> Value {
+    let size = csv.len();
     json!({
-        "blob": {"run_id": null, "id": "blob-new", "owner_id": "principal-gina",
-            "channel_id": "keepalive-channel", "name": "gina-assay.csv",
-            "media_type": "application/octet-stream", "size": size, "sha256": "00",
-            "offset": size, "complete": true, "restricted": false,
-            "source_channels": ["keepalive-channel"]},
+        "blob": blob_status(id, csv),
         "offset": 0,
-        "data_hex": hex(CSV.as_bytes()),
+        "data_hex": hex(csv.as_bytes()),
         "next_offset": size,
         "complete": true,
     })
@@ -873,9 +900,9 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
         )
         .await
         .unwrap();
-    assert_eq!(read["text"], CSV);
+    assert_eq!(read["text"], NEW_CSV);
     assert!(read.get("data_hex").is_none(), "{read}");
-    assert_eq!(read["next_offset"], CSV.len());
+    assert_eq!(read["next_offset"], NEW_CSV.len());
     assert_eq!(read["complete"], true);
     let sent = frames(&f.root)
         .into_iter()
@@ -885,7 +912,7 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
     assert_eq!(sent["params"]["blob_id"], "blob-new");
     assert_eq!(
         f.manager.run_source_line(WORKER).as_deref(),
-        Some("Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).")
+        Some("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).")
     );
     // Read twice, named once.
     f.manager
@@ -900,7 +927,7 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
         .unwrap();
     assert_eq!(
         f.manager.run_source_line(WORKER).as_deref(),
-        Some("Source: gina-assay.csv, shared by Gina Rossi (@crew_gina).")
+        Some("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).")
     );
     // An explicit offset is the caller's.
     f.manager
@@ -919,10 +946,91 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
         .map(|frame| frame["params"]["offset"].clone())
         .collect();
     assert_eq!(offsets, [json!(0), json!(0), json!(7)]);
+    // Before posting, the workspace names the copy the manifest showed and nothing read, so
+    // the line says this was the newest of the two.
+    assert_eq!(
+        f.manager.posted_source_line(WORKER).await.as_deref(),
+        Some("Source: `gina-assay.csv` (newest copy), shared by Gina Rossi (@crew_gina).")
+    );
+    let named: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "blob.status")
+        .map(|frame| frame["params"]["blob_id"].clone())
+        .collect();
+    assert_eq!(
+        named,
+        [json!("blob-old")],
+        "only the copy nothing named yet"
+    );
     // Another chat read nothing, and a posted result forgets its reads.
     assert_eq!(f.manager.run_source_line("another-chat"), None);
+    assert_eq!(f.manager.posted_source_line("another-chat").await, None);
     f.manager.forget_run_reads(WORKER);
     assert_eq!(f.manager.run_source_line(WORKER), None);
+}
+
+/// Q3-02, the live G11 failure: a run that reads only the older of two `gina-assay.csv`
+/// uploads posts a line that says so, because the workspace names the newer copy before the
+/// result is posted.
+#[tokio::test]
+async fn a_run_that_read_only_the_earlier_copy_says_a_newer_one_was_not_read() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("blob-read-old", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    f.manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap();
+    let read = f
+        .manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-old"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["text"], OLD_CSV);
+    assert_eq!(
+        f.manager.posted_source_line(WORKER).await.as_deref(),
+        Some(
+            "Source: `gina-assay.csv` (earlier copy), shared by Gina Rossi (@crew_gina). \
+             A newer copy of `gina-assay.csv` was shared and was not read."
+        )
+    );
+    // A file the workspace will not name is skipped, and the rest are still asked.
+    f.manager.forget_run_reads(WORKER);
+    f.manager.note_run_context(
+        WORKER,
+        &json!({"messages": [
+            {"created_at": 30, "attachments": ["blob-new"]},
+            {"created_at": 20, "attachments": ["blob-outside"]},
+            {"created_at": 10, "attachments": ["blob-old"]},
+        ]}),
+    );
+    f.manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-old"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.manager.posted_source_line(WORKER).await.as_deref(),
+        Some(
+            "Source: `gina-assay.csv` (earlier copy). \
+             A newer copy of `gina-assay.csv` was shared and was not read."
+        )
+    );
 }
 
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge

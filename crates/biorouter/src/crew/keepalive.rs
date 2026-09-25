@@ -521,8 +521,9 @@ impl CrewManager {
     /// The workspace refused `refused`'s device as no longer a member (see the module
     /// documentation). Identity-final: no re-dial is owed any more, and the bridge, while it is
     /// still `id`'s, is retired with a sentence and [`MEMBERSHIP_ENDED`], which ends its
-    /// keepalive. `false` (and the bridge left alone) when a person's Connect already replaced
-    /// it: that bridge answers for itself.
+    /// keepalive. `false` (and the bridge, and this device's membership, left alone) when a
+    /// person's Connect already replaced it: that bridge answers for itself, still as a member,
+    /// so its own refusal ends it too rather than reading as a computer still joining.
     pub(super) async fn end_membership(
         &self,
         id: &str,
@@ -530,12 +531,14 @@ impl CrewManager {
     ) -> Result<bool> {
         let _lifecycle = self.connection_guard(id).await?;
         self.disarm_idle_redial(id);
-        // A person's Connect verifies from scratch: until the workspace accepts this device
-        // again, its refusals are those of a computer still joining.
-        self.forget_member(id);
+        // A late refusal from a bridge already replaced says nothing about the one that
+        // replaced it: that bridge keeps its standing, so its own refusal still ends it.
         if !self.is_current_transport(id, refused).await {
             return Ok(false);
         }
+        // A person's Connect verifies from scratch: until the workspace accepts this device
+        // again, its refusals are those of a computer still joining.
+        self.forget_member(id);
         let message = format!(
             "This computer is no longer a member of {}.",
             self.workspace_label(id).await

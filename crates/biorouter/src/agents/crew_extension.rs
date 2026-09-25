@@ -172,7 +172,7 @@ mod tests {
         assert!(!INSTRUCTIONS.contains("Request a grant in Crew"));
         assert_eq!(
             crate::crew::NO_GRANT,
-            "This chat isn't connected to a Crew channel yet. Ask the person to type /crew in this chat to connect it."
+            "This chat isn't connected to a Crew channel. To connect it, type /crew in this chat."
         );
     }
 
