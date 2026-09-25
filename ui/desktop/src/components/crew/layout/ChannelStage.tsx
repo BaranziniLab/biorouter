@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo } from 'react';
+import { useCallback, useEffect, useId, useMemo } from 'react';
 import { AccessTab, agentAccessCount, ChatAccessPane, useWorkspaceGrants } from '../access';
 import { ChannelHeader, ConnectionBar } from '../channel';
 import { Composer } from '../composer/Composer';
@@ -17,6 +17,7 @@ import {
   type OwnAgentChat,
   type TimelineView,
 } from '../timeline';
+import { rememberAgentChats, withRememberedAgentChats } from './agentChatMemory';
 import { useComposerNote } from './ComposerNote';
 import { MessageFiles } from './MessageFiles';
 import type { TaskHighlight } from './useTaskHighlight';
@@ -58,6 +59,10 @@ function useChannelAgentAccess(crew: CrewController, grants: CrewSessionGrant[])
  * their posts "Your agent · {chat title}" (Q3-22). Built only from this device's own grant list
  * (`useWorkspaceGrants`): another person's chat is never in it, so their agent's posts keep
  * reading "{name}'s agent". A grant the daemon lists without a title adds nothing.
+ *
+ * A TASK's grant adds nothing either (Q4-20): a task's chat is titled with the task, so its post
+ * read the task three times — the byline, "Task: …" and the status row under it, which already
+ * carries Open. A task's posts read "Your agent" alone; a connected chat keeps its title.
  */
 export function ownAgentChatsFrom(
   grants: readonly CrewSessionGrant[],
@@ -65,6 +70,7 @@ export function ownAgentChatsFrom(
 ): ReadonlyMap<string, OwnAgentChat> {
   const chats = new Map<string, OwnAgentChat>();
   for (const grant of grants) {
+    if (grant.kind === 'task') continue;
     const title = typeof grant.session_name === 'string' ? grant.session_name.trim() : '';
     if (!title || grant.connection_id !== connectionId) continue;
     chats.set(grant.run_id, { title, sessionId: grant.session_id });
@@ -92,7 +98,8 @@ export function ownAgentChatsFrom(
  * area's tab and attachment rows (Tab stops only on the active row, Q3-05), the pane's Ask my
  * agent with its "Show task in channel" (and the id the composer's toggle names in its
  * `aria-controls`, Q3-23), the header's agent-access count, and the viewer's own chats with
- * access, which head their agents' posts (Q3-22). The attachment index the files area keeps for
+ * access, which head their agents' posts (Q3-22) — remembered past a revoke, a re-grant or an
+ * expiry (`agentChatMemory.ts`, Q4-12). The attachment index the files area keeps for
  * the channel (same-named files, a file already shared, Q3-13) is provided here around all of it.
  *
  * The whole body — timeline and composer — is one file drop zone. It has no target of its own: the
@@ -133,9 +140,19 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
     ),
     [connectionId]
   );
-  const ownAgentChats = useMemo(
+  // The current chats, and every run this computer has seen them post as (Q4-12): a revoke, a
+  // re-grant or an expiry takes a run out of the grant list, and its posts kept their byline only
+  // while it was listed.
+  const currentAgentChats = useMemo(
     () => ownAgentChatsFrom(grants, connectionId),
     [grants, connectionId]
+  );
+  useEffect(() => {
+    rememberAgentChats(connectionId, currentAgentChats);
+  }, [connectionId, currentAgentChats]);
+  const ownAgentChats = useMemo(
+    () => withRememberedAgentChats(connectionId, currentAgentChats),
+    [connectionId, currentAgentChats]
   );
 
   // One attachment index for the channel view: the timeline's cards, the Files tab's and the
