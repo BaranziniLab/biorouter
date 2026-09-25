@@ -28,15 +28,30 @@ unicode-security = "=0.1.2"
 uuid = { version = "=1.19.0", features = ["v4", "serde"] }
 
 [features]
+# Join a workspace by invitation and device code (S3a) is ON BY DEFAULT since 2026-09-25, after
+# the adversarial security reviews of the broker, daemon and route halves (and of every later
+# fix) and four live multi-account QA rounds on a disposable AWS fixture passed (naming design
+# D17). Every build that ships the broker (`scripts/release.sh` `cmd_linux-backend`,
+# `scripts/build-computer-use-package-cross.sh`, `just build-cross`) passes no feature flags, so
+# it compiles this in. Human security review of the enabling change is still required before
+# merge (CLAUDE.md, auth code).
+default = ["join-by-name"]
+# Kept as a feature so a broker can still be built without it:
+# `cargo build -p biorouter-crew --bin biorouter-crew --no-default-features` drops
+# `join_by_name_v1` from `hello`, and `enrollment.pending` / `auth.join` then fail closed. Build
+# it on its own: `biorouter` and `biorouter-server` take this crate with its default features, so
+# in the same cargo invocation feature unification turns `join-by-name` back on.
+# `scripts/check-crew-broker-join.sh` asserts a shipped broker carries it.
+join-by-name = []
 # Test-only seams (the broker's injectable account directory). Never enabled by the shipped
 # binary; integration tests get it through the dev-dependency self-reference below.
 test-seams = []
-# Join a workspace by invitation and device code (S3a). Off until its adversarial review and
-# the live three-account run pass.
-join-by-name = []
 
 [dev-dependencies]
-biorouter-crew = { path = ".", features = ["test-seams"] }
+# `default-features = false` so this self-reference adds only `test-seams`: without it,
+# `cargo test -p biorouter-crew --no-default-features` would silently turn `join-by-name` back on
+# for every test target and the build without the feature could not be tested at all.
+biorouter-crew = { path = ".", default-features = false, features = ["test-seams"] }
 
 [lints]
 workspace = true

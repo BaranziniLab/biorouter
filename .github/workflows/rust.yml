@@ -457,6 +457,11 @@ jobs:
       - name: Assert the glibc floor (2.31 / bullseye) is not raised
         run: ./scripts/check-glibc-floor.sh
 
+      # `join-by-name` is a default feature of the broker (naming design D17). A broker built
+      # without it boots, passes the step below and refuses every join by invitation.
+      - name: The Crew broker lets people join by invitation
+        run: ./scripts/check-crew-broker-join.sh
+
       # The glibc floor check covers the libraries the binaries need from libc.
       # This covers the ones they need from everywhere ELSE — today exactly one,
       # libxcb.so.1 — and asserts that the packages we ship name it, so apt/dnf

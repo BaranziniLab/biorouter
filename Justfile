@@ -159,6 +159,7 @@ build-cross:
     cross_linux   "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew"
     cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
     ./scripts/check-glibc-floor.sh
+    ./scripts/check-crew-broker-join.sh
 
 # Build for Intel Mac
 release-intel:

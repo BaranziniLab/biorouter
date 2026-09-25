@@ -357,6 +357,12 @@ cmd_linux-backend() {
            /cross-target/x86_64-unknown-linux-gnu/release/biorouter-crew \
            /usr/src/myapp/target/x86_64-unknown-linux-gnu/release/"
   assert_glibc_floor
+  # The broker must carry `join-by-name` (on by default since 2026-09-25, naming design D17).
+  # Nothing else notices a broker built without it: it starts, answers --version and --help,
+  # and only refuses to let anyone join by invitation.
+  bash "$ROOT/scripts/check-crew-broker-join.sh" \
+    "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew" \
+    || die "the linux Crew broker was built without the join-by-name feature"
   log "linux backend compiled"
 }
 

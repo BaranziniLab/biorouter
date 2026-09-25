@@ -48,7 +48,7 @@ review. Every finding of both reviews is answered below; the few that are deferr
 | D14 | **Agent labels come from admission, never from a human-signed call on the worker path.** A task conversation is titled after admission. | FR6 |
 | D15 | **A remote work folder can never contain the bridge.** `~/.local/bin`, `~/bin`, `~/.bashrc.d`, `~/.profile.d`, and the resolved bridge executable's directory and its ancestors up to `HOME` join the protected list; the GUI suggests `~/crew-work/{workspace}`. An allowlist-only rule is a follow-up because it would break saved folders. | SR4 |
 | D16 | **A person can see the devices on their account.** The snapshot projects the actor's devices, and a new device raises a one-time notice on the person's other computers. | SR15 |
-| D17 | **Slice order:** S0 → S1a and S1b → S2a (S2b any time after) → S3a, compiled behind the `join-by-name` cargo feature until its adversarial review and the live three-account run pass → S4 later. | FR §9, plan §16.5 |
+| D17 | **Slice order:** S0 → S1a and S1b → S2a (S2b any time after) → S3a, compiled behind the `join-by-name` cargo feature until its adversarial review and the live three-account run pass → S4 later. **Status (2026-09-25): both passed, and `join-by-name` is a default feature of `biorouter-crew`**, so every broker build that passes no feature flags (all the release paths) compiles S3a in. The gate was met by the adversarial security reviews of N-BROKER-S3, N-CORE-S3 and N-ROUTES-S3 and of every later fix, and by four live QA rounds on a disposable AWS fixture, in which eight new accounts joined real workspaces by invitation and device code and wrong-code, replay, system-account and uninvited attempts were refused. The feature stays, so `--no-default-features` still builds a broker without S3a. Human security review of the enabling change is still required before merge (CLAUDE.md, auth code). | FR §9, plan §16.5 |
 
 ## Principles
 
@@ -505,7 +505,7 @@ it (FR4).
 
 `enrollment.pending` and `auth.join` join the pre-authentication dispatch beside `hello` and `auth.*`
 (`broker.rs:687-695`); `enrollment.pending` joins the read set. The `hello` capability `join_by_name_v1` is advertised
-only by a broker built with the `join-by-name` feature (D17).
+only by a broker built with the `join-by-name` feature (D17), which is on by default since 2026-09-25.
 
 **New-form `enrollment.invite` checks, in order:** `manager()`; canonicalize; then an active principal on this UID
 with the same username requires `add_device = true` (else "@bob is already a member; choose Add device"); an active
@@ -850,7 +850,7 @@ raw field dumps is updated deliberately with the reason recorded beside it; none
 | **S1b** resolver, route, CLI selectors and formatters, admission labels | The CLI takes `@bob`, `analysis-lab`, `methods`; agents write names | ~900 + ~800 | Low–moderate | Standard review |
 | **S2a** unique names, renames, workspace name, `hello` v2 | Teams and channels cannot collide; Rename works; the workspace has a name; `start` prints the invitation line | ~600 + ~900 | Low–moderate (Unicode, oracle wording, legacy replay) | Standard review plus the generated-journal gate |
 | **S2b** confusables | Lookalike and mixed-script names refused | ~150 + ~200 | Low (one new pinned dependency) | Supply-chain review of `unicode-security` |
-| **S3a** join by invitation and device code | Invite `@bob`, paste one message, send one code, paste it back; no token or descriptor field on the default path | ~1,300 + ~1,600 | **High** (new pre-authentication methods, key binding, journal state) | **Mandatory** independent adversarial identity and authorization review, the hostile-bridge harness, the previous-binary downgrade test and the live three-account run, **before** the `join-by-name` feature is enabled in a release build (plan §16.5) |
+| **S3a** join by invitation and device code | Invite `@bob`, paste one message, send one code, paste it back; no token or descriptor field on the default path | ~1,300 + ~1,600 | **High** (new pre-authentication methods, key binding, journal state) | **Mandatory** independent adversarial identity and authorization review, the hostile-bridge harness, the previous-binary downgrade test and the live three-account run, **before** the `join-by-name` feature is enabled in a release build (plan §16.5). All four passed; the feature is on by default since 2026-09-25 (D17) |
 | **S4** discovery and 8-digit codes | Join by host `@username` without an invitation | not sized | High | Its own design revision and adversarial review; maintainer decision on trust provenance |
 
 S2 does not have to precede S3a: its only dependency on names was discovery, which is deferred, and S3a needs D3

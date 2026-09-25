@@ -48,6 +48,10 @@ br_require_command npm "The browser interface bundle is built with npm run build
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouter-crew" ] || die "missing $REL/biorouter-crew — run: scripts/release.sh backends $VERSION"
+# The bytes about to be packaged, not the ones a build step once checked: a broker without the
+# default `join-by-name` feature passes every smoke test below and lets nobody join by invitation.
+bash "$ROOT/scripts/check-crew-broker-join.sh" "$REL/biorouter-crew" \
+  || die "$REL/biorouter-crew was built without the join-by-name feature"
 
 python3 "$ROOT/scripts/computer-use-runtime.py" verify linux-x64
 

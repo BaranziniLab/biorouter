@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! cargo test -p biorouter-crew --test legacy_invite_contract
-//! cargo test -p biorouter-crew --features join-by-name --test legacy_invite_contract
+//! cargo test -p biorouter-crew --no-default-features --test legacy_invite_contract
 //! ```
 #![cfg(unix)]
 

@@ -1,7 +1,7 @@
 # BioRouter Crew: native CLI and shared desktop daemon
 
 > **What this is.** How to use `biorouter crew` from a terminal: the shared desktop daemon and its credentials, the per-account remote executable, joining a workspace, naming people, teams and channels, messages, files, agents, chat grants and recovery.
-> **Status:** Current. Describes the source on branch `codex/biorouter-crew` as of 2026-09-24, including name selection and joining by invitation (package CLI-CMD, `6abace05` and `d7296080`). It is not a release or end-to-end acceptance claim: those commands have been tested against a scripted daemon only, and joining by invitation also needs a broker built with a feature no release enables yet (see [Join a workspace](#join-a-workspace)).
+> **Status:** Current. Describes the source on branch `codex/biorouter-crew` as of 2026-09-24, including name selection and joining by invitation (package CLI-CMD, `6abace05` and `d7296080`). It is not a release or end-to-end acceptance claim: those commands have been tested against a scripted daemon only, and joining by invitation also needs a broker built with the `join-by-name` feature, on by default since 2026-09-25 (see [Join a workspace](#join-a-workspace)).
 > **Audience:** People who use Crew from a terminal, and developers and testers of the Crew CLI.
 
 The native CLI and the desktop Crew panel call the same daemon services for connections, membership, transfers, policy and owned tasks, and the same daemon resolves the names both of them accept. Crew is BioRouter's shared workspace for a lab: a small broker process runs under one member's Unix account on a Linux server, and every member reaches it over their own SSH login.
@@ -104,7 +104,7 @@ biorouter crew --connection "$CONNECTION_ID" --output-format json history "$CHAN
 
 The host starts the broker once and invites each person by their username on the server. A person joins by pasting the host's invitation, signing in, and sending the host a 16-character code their own computer computed; the host types that code to let them in. Nobody copies a key, a socket path or a numeric user ID.
 
-> **Note.** Letting someone in with a code needs a broker built with the `join-by-name` feature; it advertises `join_by_name_v1`. No release build enables that feature until its independent adversarial review and a live three-account run pass (naming decision D17). Against any other broker, `crew join` says the server can't let people join with a code yet, `enroll invite @bob` is refused, and the host uses the [older enrollment token](#enroll-with-a-token-older-versions) instead. Saving a connection from an invitation works with every broker.
+> **Note.** Letting someone in with a code needs a broker built with the `join-by-name` feature; it advertises `join_by_name_v1`. The feature is on by default since 2026-09-25, after its adversarial review and live multi-account runs passed (naming decision D17), so a broker built without feature flags has it. Against a broker built with `--no-default-features`, or one from before the feature, `crew join` says the server can't let people join with a code yet, `enroll invite @bob` is refused, and the host uses the [older enrollment token](#enroll-with-a-token-older-versions) instead. Saving a connection from an invitation works with every broker.
 
 ### Host a workspace
 

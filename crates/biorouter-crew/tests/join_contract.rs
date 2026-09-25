@@ -2,17 +2,19 @@
 //! `docs/research/biorouter-crew/naming-design.md` ("Broker protocol (S3a)", "The device code",
 //! "Security analysis" and "Tests").
 //!
-//! Most of this file needs the `join-by-name` feature:
+//! Most of this file needs the `join-by-name` feature, which is on by default since 2026-09-25
+//! (naming design D17), so a plain run covers it:
 //!
 //! ```text
-//! cargo test -p biorouter-crew --features test-seams,join-by-name --test join_contract
+//! cargo test -p biorouter-crew --test join_contract
+//! cargo test -p biorouter-crew --no-default-features --test join_contract
 //! ```
 //!
 //! **Always compiled:** the downgrade replay. A journal in which a join was added and then
 //! removed (one top-level `Set [pending_joins]`, one `Remove [pending_joins]`) replays and keeps
-//! working on a broker built **without** the feature; running this file without
-//! `join-by-name` is that build. The feature build pins that the real broker writes exactly
-//! those two shapes, so the two runs together cover the downgrade.
+//! working on a broker built **without** the feature; the `--no-default-features` run is that
+//! build. The feature build pins that the real broker writes exactly those two shapes, so the
+//! two runs together cover the downgrade.
 //!
 //! **The previous broker, for the reviewer.** No released Biorouter carries the Crew broker
 //! yet, so the previous binary is the broker as it was before this campaign's naming work

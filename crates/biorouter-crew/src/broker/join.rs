@@ -1,5 +1,5 @@
 //! Joining a workspace by invitation and device code (S3a), compiled only with the
-//! `join-by-name` feature.
+//! `join-by-name` feature, which is on by default since 2026-09-25 (naming design D17).
 //!
 //! See `docs/research/biorouter-crew/naming-design.md`, "Broker protocol (S3a)", "The device
 //! code" and "Security analysis". The host invites an account by `@username`; the joiner's own

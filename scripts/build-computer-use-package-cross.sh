@@ -13,6 +13,7 @@ case "$target" in
     cross_linux 'cargo build --release --locked --bin biorouter --bin biorouterd --bin biorouter-crew -j 2' /cross-target "$post"
     bash scripts/check-glibc-floor.sh
     bash scripts/check-linux-runtime-deps.sh
+    bash scripts/check-crew-broker-join.sh
     ;;
   x86_64-pc-windows-gnu)
     cross_windows 'cargo build --release --locked --bin biorouter --bin biorouterd -j 2' /cross-target "$post && $WIN_DLL_STAGE"

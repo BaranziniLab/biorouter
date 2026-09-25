@@ -2,8 +2,11 @@
 //! the node's `UID_MIN`, the overflow `nobody`, and accounts whose login shell is `nologin` or
 //! `false` are never invited, whatever the host types, and nothing is recorded for them.
 //!
+//! `join-by-name` is on by default since 2026-09-25 (naming design D17), so a plain run covers it;
+//! a `--no-default-features` build compiles nothing here.
+//!
 //! ```text
-//! cargo test -p biorouter-crew --features join-by-name --test system_account_contract
+//! cargo test -p biorouter-crew --test system_account_contract
 //! ```
 #![cfg(all(unix, feature = "join-by-name"))]
 
