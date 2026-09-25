@@ -4098,6 +4098,10 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
         "invalid grant",
         "This task's access to the workspace has ended.",
     ),
+    (
+        "attachment unavailable",
+        "That file isn't available to you. It may have been removed, or you may not be in its channel.",
+    ),
 ];
 
 /// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
@@ -6443,7 +6447,11 @@ done
             ),
             (
                 refused("forbidden", "forbidden: attachment unavailable"),
-                "Attachment unavailable.",
+                "That file isn't available to you. It may have been removed, or you may not be in its channel.",
+            ),
+            (
+                refused("forbidden", "forbidden: incomplete attachment unavailable"),
+                "Incomplete attachment unavailable.",
             ),
             (
                 refused("forbidden", "forbidden"),
