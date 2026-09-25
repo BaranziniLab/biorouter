@@ -828,12 +828,7 @@ impl Ctx {
             View::Message => self.message(value),
             View::Tasks => self.tasks(value),
             View::Task => self.task(value),
-            View::Grants => self.rows(
-                value,
-                "grants",
-                "No chats have Crew access.",
-                Self::grant_row,
-            ),
+            View::Grants => self.grants(value),
             View::Privacy => self.privacy(value),
             View::Transfers => self.transfers(value),
             View::Transfer => self.transfer(value),
@@ -1361,6 +1356,43 @@ impl Ctx {
             out.push(format!("  Error: {}", safe_text(error)));
         }
         out.extend(self.detail_ids(run, &[("connection_id", "Connection ID")]));
+        out
+    }
+
+    /// Every chat's grant, then the earlier grants no chat holds any more whose revocation the
+    /// daemon keeps (`replaced_grants`, F3): replaced by a new grant to the same chat, or left
+    /// by a deleted chat whose id a new chat now holds.
+    fn grants(&self, value: &Value) -> Vec<String> {
+        let mut out = self.rows(
+            value,
+            "grants",
+            "No chats have Crew access.",
+            Self::grant_row,
+        );
+        let replaced = value
+            .get("replaced_grants")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        if replaced.is_empty() {
+            return out;
+        }
+        out.push("Earlier access no chat holds any more:".into());
+        for grant in replaced {
+            out.extend(
+                self.grant_row(grant)
+                    .into_iter()
+                    .map(|row| format!("  {row}")),
+            );
+        }
+        if replaced
+            .iter()
+            .any(|grant| str_field(grant, "revocation") == Some("unconfirmed"))
+        {
+            out.push(
+                "Biorouter confirms these with the workspace by itself whenever the connection is up."
+                    .into(),
+            );
+        }
         out
     }
 
@@ -2730,6 +2762,61 @@ mod tests {
         ] {
             assert_eq!(row(fields.clone()), expected, "{fields}");
         }
+    }
+
+    /// F3: an earlier grant the daemon keeps for its revocation (`replaced_grants`) is listed
+    /// after every chat's grant, under its own heading, never as the chat's access; while it
+    /// is unconfirmed the list says the daemon confirms it by itself. The list without any
+    /// reads as it always did.
+    #[test]
+    fn replaced_grants_are_listed_apart_from_every_chats_grant() {
+        let snapshot = alice_snapshot();
+        let base = "→ #methods in Crew QA Lab (also reads #general)";
+        let current = grants()["grants"][0].clone();
+        let mut earlier = current.clone();
+        earlier["run_id"] = json!("run-earlier");
+        earlier["expired"] = json!(true);
+        earlier["kind"] = json!("chat");
+        earlier["revocation"] = json!("unconfirmed");
+        earlier["remote_revocation_confirmed"] = json!(false);
+        assert_eq!(
+            named(
+                &json!({"grants": [current.clone()], "replaced_grants": [earlier.clone()]}),
+                &snapshot
+            ),
+            [
+                format!("Chat 20260924_3 {base} · Active · policy epoch 4"),
+                "Earlier access no chat holds any more:".into(),
+                format!("  Chat 20260924_3 {base} · Stopped on this device; the workspace hasn't confirmed yet · policy epoch 4"),
+                "Biorouter confirms these with the workspace by itself whenever the connection is up.".into(),
+            ]
+            .join("\n")
+        );
+        earlier["revocation"] = json!("confirmed");
+        earlier["remote_revocation_confirmed"] = json!(true);
+        assert_eq!(
+            named(
+                &json!({"grants": [], "replaced_grants": [earlier]}),
+                &snapshot
+            ),
+            [
+                "No chats have Crew access.".to_owned(),
+                "Earlier access no chat holds any more:".into(),
+                format!("  Chat 20260924_3 {base} · Revoked · policy epoch 4"),
+            ]
+            .join("\n")
+        );
+        assert_eq!(
+            named(
+                &json!({"grants": [current.clone()], "replaced_grants": []}),
+                &snapshot
+            ),
+            named(&json!({"grants": [current]}), &snapshot)
+        );
+        assert_eq!(
+            plain(&json!({"grants": [], "replaced_grants": []})),
+            "No chats have Crew access."
+        );
     }
 
     #[test]

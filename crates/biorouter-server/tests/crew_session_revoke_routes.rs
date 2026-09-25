@@ -53,6 +53,8 @@ const TASK_RUN: &str = "run-task";
 /// The chat grant's run; the chat itself is a real conversation, created by the fixture.
 const CHAT_RUN: &str = "run-chat";
 const CHAT_TITLE: &str = "Plot review";
+/// An earlier grant of the chat, replaced before the workspace confirmed revoking it (F3).
+const EARLIER_CHAT_RUN: &str = "run-chat-earlier";
 const EXPIRES_AT: u64 = 1_790_000_000;
 
 /// Crew's development credential backend: device keys are files under the Crew root, so a
@@ -140,6 +142,9 @@ async fn fixture(state: &Arc<AppState>) -> String {
                 }
                 scope
             };
+            let mut earlier = scope(EARLIER_CHAT_RUN, None);
+            earlier["expired"] = json!(true);
+            earlier["revocation"] = json!("unconfirmed");
             let registry = json!({
                 "connections": [{
                     "id": CONNECTION,
@@ -165,6 +170,7 @@ async fn fixture(state: &Arc<AppState>) -> String {
                     TASK_SESSION: scope(TASK_RUN, Some(EXPIRES_AT)),
                     chat.as_str(): scope(CHAT_RUN, Some(EXPIRES_AT)),
                 },
+                "replaced": [{"session_id": chat.as_str(), "scope": earlier}],
             });
             std::fs::write(
                 crew_root.join("connections.json"),
@@ -450,6 +456,32 @@ async fn each_grant_names_its_chat_and_says_whether_it_is_a_task() {
         "a grant whose conversation is gone was given a name: {guarded_row}"
     );
     assert_eq!(guarded_row["expires_at"], Value::Null, "{guarded_row}");
+
+    // F3: an earlier grant of the chat, kept until the workspace confirms its revocation, is
+    // listed apart from the chat's own grant, as a chat's, stopped and unconfirmed. It is never
+    // named: the id may name a different conversation now, whose title would mislabel it.
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/crew/connections/{CONNECTION}/grants"),
+        Credential::Proof,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let replaced = body["replaced_grants"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no replaced_grants array: {body}"));
+    assert_eq!(replaced.len(), 1, "{body}");
+    let earlier = &replaced[0];
+    assert_eq!(earlier["session_id"], chat.as_str(), "{earlier}");
+    assert_eq!(earlier["run_id"], EARLIER_CHAT_RUN, "{earlier}");
+    assert_eq!(earlier["kind"], "chat", "{earlier}");
+    assert_eq!(earlier["session_name"], Value::Null, "{earlier}");
+    assert_eq!(earlier["expires_at"], Value::Null, "{earlier}");
+    assert_eq!(earlier["expired"], true, "{earlier}");
+    assert_eq!(earlier["revocation"], "unconfirmed", "{earlier}");
+    assert_eq!(earlier["remote_revocation_confirmed"], false, "{earlier}");
+    assert_eq!(listed[chat.as_str()]["run_id"], CHAT_RUN);
 }
 
 /// RV-D3: revoking a task's session goes through the task cancel path, so its ledger entry

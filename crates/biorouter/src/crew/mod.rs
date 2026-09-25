@@ -188,6 +188,22 @@ impl Revocation {
     }
 }
 
+/// A stopped grant whose revocation the workspace had not confirmed when its chat's id stopped
+/// holding it: a new grant to the same chat replaced it, or it was the grant of a deleted chat
+/// whose id another chat now holds (SCOPE-BIND). Only [`Registry::scopes`] is ever asked what
+/// a chat may do, so dropping such a grant there dropped the one record that made the daemon
+/// ask the workspace to revoke its run: the run stayed live at the workspace until it lapsed,
+/// and the grants list stopped showing it (F3). It is kept here instead, asked about again
+/// like any unconfirmed stop, listed, and forgotten only once it is settled
+/// ([`revocation`]).
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+struct ReplacedGrant {
+    /// The id the grant was stored under. The chat holding that id now may be another chat.
+    session_id: String,
+    /// The grant as it stood, always stopped (`expired`).
+    scope: Scope,
+}
+
 impl Scope {
     /// What a stopped grant's chat is told when it tries to use Crew: the workspace ending the
     /// run because its policy moved reads as the policy change it is (D-1), anything else as
@@ -395,6 +411,10 @@ enum SignedDoor {
 struct Registry {
     connections: Vec<Connection>,
     scopes: HashMap<String, Scope>,
+    /// Stopped grants that no chat's id holds any more, kept for their revocation (F3): see
+    /// [`ReplacedGrant`]. Never authority: nothing reads them to decide what a chat may do.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replaced: Vec<ReplacedGrant>,
     #[serde(default)]
     pending_device: Option<PreparedDevice>,
     #[serde(default)]
@@ -438,10 +458,15 @@ fn registry_digest(bytes: &[u8]) -> [u8; 32] {
 /// - a stop: a grant this process expired stays expired even if its save failed, because
 ///   nothing may bring a revoked run back to life;
 /// - what the workspace said about a stop ([`Revocation`]), so a confirmation heard here is
-///   never replaced by an older "not yet confirmed".
+///   never replaced by an older "not yet confirmed";
+/// - an earlier grant this process keeps for its revocation ([`ReplacedGrant`]) whose
+///   revocation is still unconfirmed, while its connection is saved, so a re-read never drops
+///   the record that makes the daemon ask the workspace again (F3).
 ///
 /// Only for the same grant, matched by run: a grant the file no longer holds, or holds for a
-/// newer run, is the file's to decide.
+/// newer run, is the file's to decide — except an unconfirmed earlier grant, which the file
+/// may simply never have been told about. Carrying one another process has since had confirmed
+/// and forgotten costs one more `run.revoke`, which the workspace answers the same way again.
 fn carry_process_state(here: &Registry, theirs: &mut Registry) {
     for connection in &mut theirs.connections {
         match here
@@ -460,11 +485,7 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
         }
     }
     for (session, scope) in &mut theirs.scopes {
-        let Some(mine) = here
-            .scopes
-            .get(session)
-            .filter(|mine| mine.run_id == scope.run_id)
-        else {
+        let Some(mine) = heard_here(here, session, &scope.run_id) else {
             continue;
         };
         scope.expired |= mine.expired;
@@ -477,6 +498,54 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
             scope.revocation = mine.revocation;
         }
     }
+    for kept in &mut theirs.replaced {
+        if let Some(mine) = heard_here(here, &kept.session_id, &kept.scope.run_id) {
+            if Revocation::rank(mine.revocation) > Revocation::rank(kept.scope.revocation) {
+                kept.scope.revocation = mine.revocation;
+            }
+        }
+    }
+    for mine in &here.replaced {
+        let run_id = &mine.scope.run_id;
+        let recorded = theirs.scopes.values().any(|scope| &scope.run_id == run_id)
+            || theirs
+                .replaced
+                .iter()
+                .any(|kept| &kept.scope.run_id == run_id);
+        let saved = theirs
+            .connections
+            .iter()
+            .any(|connection| connection.id == mine.scope.connection_id);
+        if !recorded && saved && mine.scope.revocation == Some(Revocation::Unconfirmed) {
+            theirs.replaced.push(mine.clone());
+        }
+    }
+}
+/// This process's record of `run_id`, the grant stored under `session`: that chat's grant, or
+/// an earlier grant it keeps for its revocation ([`ReplacedGrant`]).
+fn heard_here<'a>(here: &'a Registry, session: &str, run_id: &str) -> Option<&'a Scope> {
+    here.scopes
+        .get(session)
+        .filter(|mine| mine.run_id == run_id)
+        .or_else(|| {
+            here.replaced
+                .iter()
+                .find(|kept| kept.session_id == session && kept.scope.run_id == run_id)
+                .map(|kept| &kept.scope)
+        })
+}
+/// One row of the grants list ([`CrewManager::session_grants`]): the grant stored under
+/// `session`. Where a stop stands with the workspace (F3): `remote_revocation_confirmed` is
+/// `false` only while the daemon is still asking the workspace to confirm it, `true` once it
+/// has, and `null` for a live grant or a stop whose standing is not a revocation this device
+/// sent (see `revocation`).
+fn grant_row(session: &str, scope: &Scope) -> Value {
+    let confirmed = match scope.revocation {
+        Some(Revocation::Unconfirmed) => Some(false),
+        Some(Revocation::Confirmed) => Some(true),
+        Some(Revocation::EndedByWorkspace) | None => None,
+    };
+    json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels,"revocation":scope.revocation.map(Revocation::as_str),"remote_revocation_confirmed":confirmed})
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PreparedDevice {
@@ -1052,7 +1121,7 @@ impl CrewManager {
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
         ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
         let registry = self.registry.lock().await;
-        ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
+        ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.replaced.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
         let vault = self.credential_vault.clone();
         let result = tokio::task::spawn_blocking(move || vault.init(passphrase)).await?;
         drop(registry);
@@ -1075,6 +1144,13 @@ impl CrewManager {
     /// `confirmed`, `ended_by_workspace` (the workspace itself refused the run, D-1), or
     /// `null` when not known; `remote_revocation_confirmed` is the same as a boolean for the
     /// first two and `null` otherwise.
+    ///
+    /// `replaced_grants` lists, in the same shape, the earlier grants on the connection that no
+    /// chat's id holds any more but whose revocation is kept (F3, [`ReplacedGrant`]): replaced
+    /// by a new grant to the same chat, or left by a deleted chat whose id another chat now
+    /// holds. Each is stopped; `unconfirmed` ones are still being asked about. They are a list
+    /// of their own, after every chat's current grant, so a reader that looks a chat up by its
+    /// id in `grants` never finds one of them.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
         self.connection(connection_id).await?;
         let sessions: Vec<String> = self
@@ -1094,19 +1170,19 @@ impl CrewManager {
                 continue;
             };
             if scope.connection_id == connection_id {
-                // Where a stop stands with the workspace (F3): `remote_revocation_confirmed`
-                // is `false` only while the daemon is still asking the workspace to confirm
-                // it, `true` once it has, and `null` for a live grant or a stop whose
-                // standing is not a revocation this device sent (see `revocation`).
-                let confirmed = match scope.revocation {
-                    Some(Revocation::Unconfirmed) => Some(false),
-                    Some(Revocation::Confirmed) => Some(true),
-                    Some(Revocation::EndedByWorkspace) | None => None,
-                };
-                grants.push(json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels,"revocation":scope.revocation.map(Revocation::as_str),"remote_revocation_confirmed":confirmed}));
+                grants.push(grant_row(&session, &scope));
             }
         }
-        Ok(json!({ "grants": grants }))
+        let replaced: Vec<Value> = self
+            .registry
+            .lock()
+            .await
+            .replaced
+            .iter()
+            .filter(|kept| kept.scope.connection_id == connection_id)
+            .map(|kept| grant_row(&kept.session_id, &kept.scope))
+            .collect();
+        Ok(json!({ "grants": grants, "replaced_grants": replaced }))
     }
     /// Write `registry` over the saved one as it stands, for a test that plays another
     /// process's save (or seeds one). Production writes go through
@@ -1753,6 +1829,8 @@ impl CrewManager {
                 for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
                     scope.expired = true;
                 }
+                // Nothing can ask the workspace about them any more: the device key goes next.
+                r.replaced.retain(|kept| kept.scope.connection_id != id);
                 // A prepared device not yet saved keeps its key under the same kind of ID; that
                 // one belongs to the next save, not to this removal.
                 Ok(r.pending_device
@@ -2811,12 +2889,25 @@ impl CrewManager {
                 revocation: None,
             };
             // Recorded here even when the save fails, as it always was: the abandon below
-            // then finds it and stops it here too.
-            self.update_registry_keeping(|r| {
-                r.scopes.insert(session.into(), scope);
-                Ok(())
-            })
-            .await??;
+            // then finds it and stops it here too. A stop of the chat's earlier grant that the
+            // workspace has not confirmed is kept, never replaced away, and asked about again
+            // now, while the connection is known to be up (F3).
+            let mut kept = None;
+            let recorded = self
+                .update_registry_keeping(|r| {
+                    if let Some(previous) = r.scopes.insert(session.into(), scope) {
+                        let connection = previous.connection_id.clone();
+                        if r.keep_replaced(session, previous) {
+                            kept = Some(connection);
+                        }
+                    }
+                    Ok(())
+                })
+                .await;
+            if let Some(connection) = kept {
+                self.schedule_revocation_retries(&connection);
+            }
+            recorded??;
             // A new task starts from nothing read, even under a chat ID used before.
             self.forget_run_reads(session);
             let context = self
@@ -3254,18 +3345,11 @@ impl CrewManager {
     }
     /// Whether the workspace has confirmed revoking `run_id`, the run of `session`'s stopped
     /// grant (F3). The daemon's own retry confirms without anyone pressing Retry, so a task's
-    /// ledger reads this to follow it.
+    /// ledger reads this to follow it — including for a grant no chat's id holds any more,
+    /// which is kept for this ([`ReplacedGrant`]).
     pub async fn remote_revocation_confirmed(&self, session: &str, run_id: &str) -> bool {
-        self.registry
-            .lock()
-            .await
-            .scopes
-            .get(session)
-            .is_some_and(|scope| {
-                scope.run_id == run_id
-                    && scope.expired
-                    && scope.revocation == Some(Revocation::Confirmed)
-            })
+        heard_here(&*self.registry.lock().await, session, run_id)
+            .is_some_and(|scope| scope.expired && scope.revocation == Some(Revocation::Confirmed))
     }
     /// Ask the workspace to revoke `run_id`, the run of `session`'s stopped grant, and record
     /// its confirmation on that grant while it is still the session's (F3). Revoking is
@@ -3288,6 +3372,7 @@ impl CrewManager {
                 {
                     current.revocation = Some(Revocation::Confirmed);
                 }
+                registry.confirm_replaced(session, run_id);
                 Ok(())
             })
             .await;
@@ -4453,15 +4538,27 @@ impl CrewManager {
     /// Drop a grant made to an earlier chat under `session`'s id, from memory and from the
     /// saved registry. Matched by its run, which the workspace mints once per grant, so a
     /// newer grant under the same id — made here or saved by another process — never goes
-    /// with it.
+    /// with it. A stop of it the workspace has not confirmed is kept for its revocation and
+    /// asked about again (F3, [`ReplacedGrant`]); nothing else of it is.
     async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
-        let is_stale = |id: &str, scope: &Scope| id == session && scope.run_id == stale.run_id;
+        let mut kept = false;
         let pruned = self
             .update_registry_keeping(|registry| {
-                registry.scopes.retain(|id, scope| !is_stale(id, scope));
+                if registry
+                    .scopes
+                    .get(session)
+                    .is_some_and(|scope| scope.run_id == stale.run_id)
+                {
+                    if let Some(scope) = registry.scopes.remove(session) {
+                        kept = registry.keep_replaced(session, scope);
+                    }
+                }
                 Ok(())
             })
             .await;
+        if kept {
+            self.schedule_revocation_retries(&stale.connection_id);
+        }
         if let Err(error) = pruned {
             tracing::warn!(
                 session,
@@ -5259,6 +5356,7 @@ done
         let registry = Registry {
             connections: vec![connection.clone()],
             scopes: HashMap::from([("worker-race-session".into(), scope.clone())]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -5496,6 +5594,7 @@ done
         let registry = Registry {
             connections: vec![connection],
             scopes: HashMap::from([("session-1".into(), scope.clone())]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -5592,6 +5691,7 @@ done
         let registry = Registry {
             connections: vec![connection.clone()],
             scopes: HashMap::from([("session-public".into(), scope.clone())]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -5785,6 +5885,7 @@ done
         let registry = Registry {
             connections: vec![connection],
             scopes: HashMap::from([("session-1".into(), scope)]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -5971,6 +6072,7 @@ done
                     revocation: None,
                 },
             )]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -6197,6 +6299,7 @@ done
         let registry = Registry {
             connections: vec![connection.clone()],
             scopes: HashMap::from([("worker-race-session".into(), scope.clone())]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -6367,6 +6470,7 @@ done
         let registry = Registry {
             connections: vec![connection],
             scopes: HashMap::from([("worker-race-session".into(), scope)]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };
@@ -6406,6 +6510,7 @@ done
         let registry = Registry {
             connections: vec![connection],
             scopes: HashMap::from([("worker-race-session".into(), scope)]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         };

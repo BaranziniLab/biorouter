@@ -25,11 +25,83 @@
 //! workspace, so an attempt whose answer was lost is safe to repeat. Only a stop recorded as
 //! unconfirmed is ever sent; a live grant, a confirmed stop or one the workspace ended itself
 //! (D-1) never is.
+//!
+//! ⚠ **Grant and revocation state; needs human review.** A chat's grant is stored under its
+//! session id, one per id, so an unconfirmed stop could be lost without anyone confirming it:
+//! granting the same chat again replaced it, and a deleted chat's grant was pruned once another
+//! chat held its id. Either way the only record that made the daemon ask again was gone, the
+//! old run stayed live at the workspace until it lapsed, and the grants list stopped showing
+//! it. Such a stop is now moved to [`Registry::replaced`] instead ([`Registry::keep_replaced`]):
+//! asked about by the same retries, listed as `replaced_grants`, carried across processes like
+//! any stop, and forgotten only once settled ([`Registry::forget_settled_replaced`]). It is never
+//! authority — nothing asks it what a chat may do.
 
-use super::{CrewManager, Revocation};
+use super::{CrewManager, Registry, ReplacedGrant, Revocation, Scope};
 use std::collections::HashSet;
 use std::sync::Weak;
 use std::time::Duration;
+
+/// How long an earlier grant is kept past its run's own end (`expires_at`), confirmed or not:
+/// by then the workspace no longer honors the run whatever it was told, and a task's ledger has
+/// long had its chance to follow the confirmation (F3).
+const REPLACED_KEPT_PAST_END: u64 = 7 * 24 * 60 * 60;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+impl Registry {
+    /// Keep `previous`, the grant `session` held until it was replaced or pruned just now, when
+    /// it is a stop the workspace has not confirmed; anything else of it goes, as it always did.
+    /// Answers whether it was kept, so the caller can ask the workspace again.
+    pub(super) fn keep_replaced(&mut self, session: &str, previous: Scope) -> bool {
+        self.forget_settled_replaced(unix_now());
+        let unconfirmed = previous.expired && previous.revocation == Some(Revocation::Unconfirmed);
+        let held = self
+            .scopes
+            .get(session)
+            .is_some_and(|scope| scope.run_id == previous.run_id);
+        if !unconfirmed || held {
+            return false;
+        }
+        if !self
+            .replaced
+            .iter()
+            .any(|kept| kept.scope.run_id == previous.run_id)
+        {
+            self.replaced.push(ReplacedGrant {
+                session_id: session.to_owned(),
+                scope: previous,
+            });
+        }
+        true
+    }
+
+    /// Record the workspace's confirmation of revoking `run_id` on the earlier grant kept for
+    /// it under `session`, if there is one.
+    pub(super) fn confirm_replaced(&mut self, session: &str, run_id: &str) {
+        for kept in self
+            .replaced
+            .iter_mut()
+            .filter(|kept| kept.session_id == session && kept.scope.run_id == run_id)
+        {
+            kept.scope.revocation = Some(Revocation::Confirmed);
+        }
+        self.forget_settled_replaced(unix_now());
+    }
+
+    /// Forget the earlier grants that are settled: every one [`REPLACED_KEPT_PAST_END`] past
+    /// its run's own end, and a confirmed one whose end was never recorded. An unconfirmed one
+    /// whose end is unknown is kept until the workspace confirms it.
+    pub(super) fn forget_settled_replaced(&mut self, now: u64) {
+        self.replaced.retain(|kept| match kept.scope.expires_at {
+            Some(end) => end.saturating_add(REPLACED_KEPT_PAST_END) > now,
+            None => kept.scope.revocation != Some(Revocation::Confirmed),
+        });
+    }
+}
 
 /// What one pass over a connection's unconfirmed stops came to.
 #[derive(Debug, PartialEq, Eq)]
@@ -80,22 +152,32 @@ impl CrewManager {
     }
 
     /// The grants on `id` stopped here whose revocation the workspace has not confirmed, as
-    /// `(session, run_id)`.
+    /// `(session, run_id)`: chats' grants, and the earlier grants kept for their revocation
+    /// ([`ReplacedGrant`]). Each run once.
     pub(super) async fn unconfirmed_revocations(&self, id: &str) -> Vec<(String, String)> {
-        let mut pending: Vec<(String, String)> = self
-            .registry
-            .lock()
-            .await
+        let unconfirmed = |scope: &Scope| {
+            scope.connection_id == id
+                && scope.expired
+                && scope.revocation == Some(Revocation::Unconfirmed)
+        };
+        let registry = self.registry.lock().await;
+        let mut pending: Vec<(String, String)> = registry
             .scopes
             .iter()
-            .filter(|(_, scope)| {
-                scope.connection_id == id
-                    && scope.expired
-                    && scope.revocation == Some(Revocation::Unconfirmed)
-            })
+            .filter(|(_, scope)| unconfirmed(scope))
             .map(|(session, scope)| (session.clone(), scope.run_id.clone()))
+            .chain(
+                registry
+                    .replaced
+                    .iter()
+                    .filter(|kept| unconfirmed(&kept.scope))
+                    .map(|kept| (kept.session_id.clone(), kept.scope.run_id.clone())),
+            )
             .collect();
+        drop(registry);
         pending.sort();
+        let mut seen = HashSet::new();
+        pending.retain(|(_, run_id)| seen.insert(run_id.clone()));
         pending
     }
 

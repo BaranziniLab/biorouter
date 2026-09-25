@@ -168,6 +168,10 @@ pub async fn lock(headers: HeaderMap) -> Result {
 ///   a grant recorded before that was kept.
 ///
 /// All three are display only: revoking still decides on the registry and the ledger.
+///
+/// `replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,
+/// F3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a
+/// different conversation, whose title would mislabel the grant.
 #[utoipa::path(get, operation_id = "crew_profile_grants",path="/crew/connections/{id}/grants",params(("id"=String,Path,description="Crew connection ID")),responses((status=200,body=Value)),tag="Crew")]
 pub async fn grants(
     State(state): State<Arc<AppState>>,
@@ -188,7 +192,10 @@ pub async fn grants(
             None
         }
     };
-    if let Some(rows) = listed.get_mut("grants").and_then(Value::as_array_mut) {
+    for (list, named) in [("grants", true), ("replaced_grants", false)] {
+        let Some(rows) = listed.get_mut(list).and_then(Value::as_array_mut) else {
+            continue;
+        };
         for row in rows.iter_mut() {
             let Some(fields) = row.as_object_mut() else {
                 continue;
@@ -203,10 +210,12 @@ pub async fn grants(
                 }
             });
             fields.insert("kind".into(), json!(kind));
-            fields.insert(
-                "session_name".into(),
-                json!(session_name(&state, &session).await),
-            );
+            let name = if named {
+                session_name(&state, &session).await
+            } else {
+                None
+            };
+            fields.insert("session_name".into(), json!(name));
             fields.entry("expires_at").or_insert(Value::Null);
         }
     }

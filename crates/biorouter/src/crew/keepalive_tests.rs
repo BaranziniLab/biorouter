@@ -120,7 +120,10 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// run credential) as a run the workspace no longer honors (`grant_expired`), and
 /// `channel-gone` as a channel the person is no longer in (`forbidden: channel unavailable`);
 /// `refuse-revoke` refuses `run.revoke` as a run the workspace does not know; `auth` and
-/// `unreachable` fail before any request, as OpenSSH does. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
+/// `unreachable` fail before any request, as OpenSSH does. `run.create` answers
+/// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
+/// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
+/// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
 /// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]) and refuse any other blob, as
 /// the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
@@ -138,7 +141,13 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let read_old = blob_read("blob-old", OLD_CSV).to_string();
     let status_new = blob_status("blob-new", NEW_CSV).to_string();
     let status_old = blob_status("blob-old", OLD_CSV).to_string();
+    let snapshot = grant_snapshot().to_string();
+    let run_create = json!({"run": {"id": REGRANTED_RUN, "protected_context": false,
+        "expires_at": 4_102_444_800u64}, "credential": "regranted-credential"})
+    .to_string();
     for text in [
+        &snapshot,
+        &run_create,
         &hello,
         &hello_v2,
         &hello_other,
@@ -231,6 +240,10 @@ while IFS= read -r line; do
     esac
     if [ "$refuse" = 1 ]; then
       printf '{{"id":"%s","error":{{"code":"unauthorized","message":"unauthorized: unknown device"}}}}\n' "$id"
+    elif printf '%s\n' "$line" | grep -q '"method":"run.create"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{run_create}'
+    elif [ -e "$root/grant-snapshot" ] && printf '%s\n' "$line" | grep -q '"method":"workspace.snapshot"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{snapshot}'
     else
       printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
     fi
@@ -245,6 +258,27 @@ done
     let ssh = bin.join("ssh");
     fs::write(&ssh, script).unwrap();
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// The run a grant made against the scripted broker gets.
+const REGRANTED_RUN: &str = "regranted-run";
+
+/// Let a grant be made against the scripted broker: `workspace.snapshot` answers
+/// [`grant_snapshot`] from now on.
+fn allow_grants(root: &Path) {
+    fs::write(root.join("grant-snapshot"), "").unwrap();
+}
+
+/// `workspace.snapshot` of the fixture's public workspace, holding the grant's channel.
+fn grant_snapshot() -> Value {
+    json!({
+        "workspace": {"id": WORKSPACE_ID, "host_uid": 10001, "mode": "public",
+            "institution_id": null, "policy_epoch": 1, "name": "lab"},
+        "principals": [],
+        "teams": [],
+        "channels": [{"id": "keepalive-channel", "name": "data"}],
+        "protected_channel_ids": []
+    })
 }
 
 /// The CSV the fixture's newest `gina-assay.csv` holds.
@@ -2084,6 +2118,475 @@ async fn an_unconfirmed_revocation_survives_a_restart_and_is_asked_again() {
     restarted.disconnect(CONNECTION_ID).await.unwrap();
 }
 
+/// The run of the grant [`grant_chat`] records.
+const EARLIER_RUN: &str = "earlier-run";
+
+/// A session store of the test's own for `f`'s manager, and a saved chat in it: the store, the
+/// chat's id and its incarnation.
+async fn saved_chat(f: &Fixture) -> (Arc<crate::session::SessionManager>, String, i64) {
+    let data = f.root.join("sessions");
+    let work = f.root.join("work");
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&work).unwrap();
+    let store = Arc::new(crate::session::SessionManager::new(data));
+    f.manager.use_session_store(store.clone());
+    let chat = new_chat(&store, &work).await;
+    let incarnation = store.session_incarnation(&chat).await.unwrap().unwrap();
+    (store, chat, incarnation)
+}
+
+async fn new_chat(store: &crate::session::SessionManager, work: &Path) -> String {
+    store
+        .create_session(
+            work.to_path_buf(),
+            "chat".into(),
+            crate::session::session_manager::SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+/// A live grant of `chat` (bound to `incarnation`) on [`EARLIER_RUN`], made to
+/// [`TurnProvider`] in the fixture's channel, so the chat can be granted again through
+/// `begin_run`. Its run ends in 2100, so nothing forgets it as settled.
+async fn grant_chat(f: &Fixture, chat: &str, incarnation: i64) {
+    let epoch = f
+        .manager
+        .connection(CONNECTION_ID)
+        .await
+        .unwrap()
+        .policy_epoch;
+    f.manager.registry.lock().await.scopes.insert(
+        chat.into(),
+        Scope {
+            connection_id: CONNECTION_ID.into(),
+            run_id: EARLIER_RUN.into(),
+            channel_id: "keepalive-channel".into(),
+            source_channels: vec!["keepalive-channel".into()],
+            epoch,
+            provider_binding: provider_binding(&TurnProvider),
+            public_provider: false,
+            origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
+            expired: false,
+            expires_at: Some(4_102_444_800),
+            labels: None,
+            session_incarnation: Some(incarnation),
+            revocation: None,
+        },
+    );
+    f.manager
+        .write_credential(&format!("run:{chat}"), "earlier-credential")
+        .unwrap();
+}
+
+/// How many times any bridge was asked to `run.revoke` `run_id`.
+fn revokes_of(root: &Path, run_id: &str) -> usize {
+    frames(root)
+        .iter()
+        .filter(|frame| frame["method"] == "run.revoke" && frame["params"]["run_id"] == run_id)
+        .count()
+}
+
+/// The grants list's `key` rows for `chat`.
+async fn rows_of(manager: &CrewManager, key: &str, chat: &str) -> Vec<Value> {
+    let listed = manager.session_grants(CONNECTION_ID).await.unwrap();
+    listed[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {key} in {listed}"))
+        .iter()
+        .filter(|row| row["session_id"] == chat)
+        .cloned()
+        .collect()
+}
+
+/// The earlier grants the registry file keeps, as saved.
+fn saved_replaced(f: &Fixture) -> Vec<Value> {
+    let saved: Value = serde_json::from_slice(
+        &fs::read(f.root.join("manager").join("connections.json")).expect("the registry is saved"),
+    )
+    .unwrap();
+    saved["replaced"].as_array().cloned().unwrap_or_default()
+}
+
+/// F3, granting the same chat again. The person revoked during an outage, so the stop is
+/// unconfirmed; the connection came back and the workspace refused the daemon's own retry, so
+/// it would be asked again only at the next reconnect; then the person pressed Grant access
+/// again. The new grant used to overwrite the only record of the earlier stop: nothing ever
+/// sent `run.revoke` for that run again, it stayed live at the workspace until it lapsed, and
+/// the grants list stopped showing it. Now the earlier grant is kept: asked about again at
+/// once, listed and saved as replaced and unconfirmed, and confirmed at the next reconnect —
+/// while the new grant is the chat's, live, and never revoked.
+#[tokio::test]
+async fn granting_a_chat_again_keeps_asking_to_revoke_its_unconfirmed_earlier_run() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "regrant-unconfirmed",
+        &["serve", "refuse-revoke", "serve"],
+        quiet(),
+    )
+    .await;
+    allow_grants(&f.root);
+    let (_store, chat, incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_chat(&f, &chat, incarnation).await;
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    assert!(
+        !f.manager
+            .revoke_session(&chat)
+            .await
+            .unwrap()
+            .remote_confirmed
+    );
+
+    // Back up; the daemon asks by itself, and the workspace refuses.
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || revokes_of(&root, EARLIER_RUN) == 1).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1, "asked once per pass");
+    assert_eq!(
+        rows_of(&f.manager, "grants", &chat).await[0]["revocation"],
+        "unconfirmed"
+    );
+
+    // The person grants the chat access again.
+    let admission = f
+        .manager
+        .begin_run(
+            &chat,
+            CONNECTION_ID,
+            "keepalive-channel",
+            vec![],
+            &TurnProvider,
+        )
+        .await
+        .unwrap();
+    assert_eq!(admission.run_id, REGRANTED_RUN);
+
+    // The earlier run is asked about again at once (refused again on this bridge)...
+    until(async || revokes_of(&root, EARLIER_RUN) == 2).await;
+    // ...and is still listed and saved, apart from the chat's grant, which is the new one.
+    let current = rows_of(&f.manager, "grants", &chat).await;
+    assert_eq!(current.len(), 1, "{current:?}");
+    assert_eq!(current[0]["run_id"], REGRANTED_RUN);
+    assert_eq!(current[0]["expired"], false);
+    assert!(current[0]["revocation"].is_null());
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["expired"], true);
+    assert_eq!(replaced[0]["revocation"], "unconfirmed");
+    assert_eq!(replaced[0]["remote_revocation_confirmed"], false);
+    let saved = saved_replaced(&f);
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0]["session_id"], chat.as_str());
+    assert_eq!(saved[0]["scope"]["run_id"], EARLIER_RUN);
+    assert_eq!(saved[0]["scope"]["revocation"], "unconfirmed");
+    assert!(
+        !f.manager
+            .remote_revocation_confirmed(&chat, EARLIER_RUN)
+            .await
+    );
+
+    // The next reconnect confirms it.
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 3);
+    assert_eq!(
+        methods_on(&f.root, 3).last().map(String::as_str),
+        Some("run.revoke")
+    );
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced[0]["revocation"], "confirmed");
+    assert_eq!(replaced[0]["remote_revocation_confirmed"], true);
+    assert_eq!(saved_replaced(&f)[0]["scope"]["revocation"], "confirmed");
+    // The new grant was never asked about, and is still the chat's, live.
+    assert_eq!(revokes_of(&f.root, REGRANTED_RUN), 0);
+    let current = rows_of(&f.manager, "grants", &chat).await;
+    assert_eq!(current[0]["run_id"], REGRANTED_RUN);
+    assert_eq!(current[0]["expired"], false);
+
+    // Confirmed is final: a later connect asks nothing again.
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 3);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// F3, a deleted chat's id handed to a new chat — a task whose setup failed, whose chat was
+/// deleted, retried at once. The grant made to the deleted chat is pruned the first time the
+/// id is looked up (SCOPE-BIND), and a stop of it the workspace had not confirmed used to go
+/// with it. Now that stop is kept, listed apart from any chat's grant, and confirmed when the
+/// connection comes back, while the new chat under the id holds no grant at all.
+#[tokio::test]
+async fn a_reissued_chat_id_keeps_the_unconfirmed_revocation_of_the_deleted_chats_grant() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("reissue-unconfirmed", &["serve", "serve"], quiet()).await;
+    let (store, chat, incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_chat(&f, &chat, incarnation).await;
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    assert!(
+        !f.manager
+            .revoke_session(&chat)
+            .await
+            .unwrap()
+            .remote_confirmed
+    );
+
+    store.delete_session(&chat).await.unwrap();
+    store.forget_minted_session_ids_for_test().await.unwrap();
+    let reissued = new_chat(&store, &f.root.join("work")).await;
+    assert_eq!(
+        reissued, chat,
+        "the fixture must hand the deleted chat's id to the next chat, or it proves nothing"
+    );
+
+    assert!(rows_of(&f.manager, "grants", &chat).await.is_empty());
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["revocation"], "unconfirmed");
+    assert_eq!(saved_replaced(&f).len(), 1);
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 0, "nothing was connected");
+
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1);
+    assert_eq!(
+        rows_of(&f.manager, "replaced_grants", &chat).await[0]["revocation"],
+        "confirmed"
+    );
+    assert!(rows_of(&f.manager, "grants", &chat).await.is_empty());
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// Only an unconfirmed stop is kept when its chat's id stops holding it; a live grant, a
+/// confirmed stop and one the workspace ended itself go as they always did. Removing the
+/// connection forgets what it kept, since nothing can ask its workspace any more.
+#[test]
+fn only_an_unconfirmed_stop_is_kept_when_replaced() {
+    let scope = |run: &str, expired: bool, revocation: Option<Revocation>| Scope {
+        connection_id: CONNECTION_ID.into(),
+        run_id: run.into(),
+        channel_id: "keepalive-channel".into(),
+        source_channels: vec![],
+        epoch: 1,
+        provider_binding: "keepalive-provider".into(),
+        public_provider: false,
+        origin_restricted: false,
+        institution_ids: BTreeSet::new(),
+        institution_policy: true,
+        expired,
+        expires_at: Some(4_102_444_800),
+        labels: None,
+        session_incarnation: None,
+        revocation,
+    };
+    let mut registry = Registry::default();
+    for (run, expired, revocation, kept) in [
+        ("live", false, None, false),
+        ("confirmed", true, Some(Revocation::Confirmed), false),
+        ("ended", true, Some(Revocation::EndedByWorkspace), false),
+        ("unknown", true, None, false),
+        ("unconfirmed", true, Some(Revocation::Unconfirmed), true),
+    ] {
+        assert_eq!(
+            registry.keep_replaced(WORKER, scope(run, expired, revocation)),
+            kept,
+            "{run}"
+        );
+    }
+    // Kept once, however often it is handed over.
+    assert!(registry.keep_replaced(
+        WORKER,
+        scope("unconfirmed", true, Some(Revocation::Unconfirmed))
+    ));
+    assert_eq!(registry.replaced.len(), 1);
+    assert_eq!(registry.replaced[0].scope.run_id, "unconfirmed");
+    // A grant the id still holds is not an earlier one.
+    registry.scopes.insert(
+        WORKER.into(),
+        scope("held", true, Some(Revocation::Unconfirmed)),
+    );
+    assert!(!registry.keep_replaced(WORKER, scope("held", true, Some(Revocation::Unconfirmed))));
+    assert_eq!(registry.replaced.len(), 1);
+}
+
+/// An earlier grant is forgotten once settled: a week past its run's own end, confirmed or
+/// not, since the workspace honors the run no longer; and at once when confirmed with no end
+/// recorded. An unconfirmed one with no end recorded is kept until the workspace confirms it.
+#[test]
+fn an_earlier_grant_is_forgotten_only_once_settled() {
+    const WEEK: u64 = 7 * 24 * 60 * 60;
+    let now = 1_800_000_000;
+    let kept = |run: &str, end: Option<u64>, revocation: Revocation| ReplacedGrant {
+        session_id: WORKER.into(),
+        scope: Scope {
+            connection_id: CONNECTION_ID.into(),
+            run_id: run.into(),
+            channel_id: "keepalive-channel".into(),
+            source_channels: vec![],
+            epoch: 1,
+            provider_binding: "keepalive-provider".into(),
+            public_provider: false,
+            origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
+            expired: true,
+            expires_at: end,
+            labels: None,
+            session_incarnation: None,
+            revocation: Some(revocation),
+        },
+    };
+    let mut registry = Registry {
+        replaced: vec![
+            kept("ended-now", Some(now), Revocation::Confirmed),
+            kept(
+                "unconfirmed-within-week",
+                Some(now - WEEK + 1),
+                Revocation::Unconfirmed,
+            ),
+            kept(
+                "unconfirmed-week-past",
+                Some(now - WEEK),
+                Revocation::Unconfirmed,
+            ),
+            kept(
+                "confirmed-week-past",
+                Some(now - WEEK),
+                Revocation::Confirmed,
+            ),
+            kept("unconfirmed-no-end", None, Revocation::Unconfirmed),
+            kept("confirmed-no-end", None, Revocation::Confirmed),
+        ],
+        ..Registry::default()
+    };
+    registry.forget_settled_replaced(now);
+    let left: Vec<&str> = registry
+        .replaced
+        .iter()
+        .map(|kept| kept.scope.run_id.as_str())
+        .collect();
+    assert_eq!(
+        left,
+        ["ended-now", "unconfirmed-within-week", "unconfirmed-no-end"]
+    );
+}
+
+/// When two processes' registries meet (D8), an earlier grant kept for its revocation is
+/// never lost and what the workspace said about it is never forgotten: one this process kept
+/// and the file never heard of is carried in while its connection is saved; the more a side
+/// knows (confirmed over unconfirmed) wins either way round, including against this process's
+/// record of the same run as a chat's grant; and a run the file holds as a chat's grant, a
+/// confirmed one the file has forgotten, or one of a removed connection is not carried.
+#[test]
+fn an_earlier_grant_survives_a_registry_merge() {
+    let scope = |run: &str, revocation: Revocation| Scope {
+        connection_id: CONNECTION_ID.into(),
+        run_id: run.into(),
+        channel_id: "keepalive-channel".into(),
+        source_channels: vec![],
+        epoch: 1,
+        provider_binding: "keepalive-provider".into(),
+        public_provider: false,
+        origin_restricted: false,
+        institution_ids: BTreeSet::new(),
+        institution_policy: true,
+        expired: true,
+        expires_at: Some(4_102_444_800),
+        labels: None,
+        session_incarnation: None,
+        revocation: Some(revocation),
+    };
+    let kept = |run: &str, revocation: Revocation| ReplacedGrant {
+        session_id: WORKER.into(),
+        scope: scope(run, revocation),
+    };
+    let saved = |replaced: Vec<ReplacedGrant>| Registry {
+        connections: vec![connection()],
+        replaced,
+        ..Registry::default()
+    };
+
+    // Kept here, never saved: carried in.
+    let here = saved(vec![kept("mine", Revocation::Unconfirmed)]);
+    let mut file = saved(vec![]);
+    carry_process_state(&here, &mut file);
+    assert_eq!(file.replaced.len(), 1);
+    assert_eq!(file.replaced[0].scope.run_id, "mine");
+
+    // Confirmed on either side stays confirmed.
+    for (mine, theirs) in [
+        (Revocation::Confirmed, Revocation::Unconfirmed),
+        (Revocation::Unconfirmed, Revocation::Confirmed),
+    ] {
+        let mut file = saved(vec![kept("both", theirs)]);
+        carry_process_state(&saved(vec![kept("both", mine)]), &mut file);
+        assert_eq!(file.replaced.len(), 1);
+        assert_eq!(
+            file.replaced[0].scope.revocation,
+            Some(Revocation::Confirmed),
+            "{mine:?} over {theirs:?}"
+        );
+    }
+    // This process heard the confirmation while the run was still the chat's grant; the file
+    // has since kept it as an earlier grant.
+    let mut here = saved(vec![]);
+    here.scopes
+        .insert(WORKER.into(), scope("moved", Revocation::Confirmed));
+    let mut file = saved(vec![kept("moved", Revocation::Unconfirmed)]);
+    carry_process_state(&here, &mut file);
+    assert_eq!(
+        file.replaced[0].scope.revocation,
+        Some(Revocation::Confirmed)
+    );
+    // And the other way: kept here and confirmed, still the chat's grant in the file.
+    let here = saved(vec![kept("moved", Revocation::Confirmed)]);
+    let mut file = saved(vec![]);
+    file.scopes
+        .insert(WORKER.into(), scope("moved", Revocation::Unconfirmed));
+    carry_process_state(&here, &mut file);
+    assert!(file.replaced.is_empty(), "the file's grant speaks for it");
+    assert_eq!(file.scopes[WORKER].revocation, Some(Revocation::Confirmed));
+
+    // Not carried: a run the file holds as a chat's grant, a confirmed one the file forgot,
+    // and one whose connection was removed.
+    let mut file = saved(vec![]);
+    file.scopes
+        .insert(WORKER.into(), scope("held", Revocation::Unconfirmed));
+    carry_process_state(
+        &saved(vec![kept("held", Revocation::Unconfirmed)]),
+        &mut file,
+    );
+    assert!(file.replaced.is_empty());
+    let mut file = saved(vec![]);
+    carry_process_state(&saved(vec![kept("done", Revocation::Confirmed)]), &mut file);
+    assert!(file.replaced.is_empty());
+    let mut file = Registry::default();
+    carry_process_state(
+        &saved(vec![kept("removed", Revocation::Unconfirmed)]),
+        &mut file,
+    );
+    assert!(file.replaced.is_empty());
+}
+
 /// A confirmation heard by one process is never replaced by another's "not yet" when their
 /// registries meet (D8), whichever way round.
 #[test]
@@ -2110,6 +2613,7 @@ fn a_confirmed_revocation_is_never_forgotten_across_processes() {
         Registry {
             connections: vec![],
             scopes: HashMap::from([(WORKER.to_owned(), scope)]),
+            replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
         }
