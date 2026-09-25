@@ -17,6 +17,17 @@ import {
   type ControllerOverrides,
 } from './sidebarTestUtils';
 
+/** `text` as a literal inside a RegExp. */
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A sentence as the popover shows it: the element whose whole text it is, however the sentence is
+ * split into elements — a workspace name sits in a span of its own so it never breaks (Q4-51).
+ */
+const sentence = (text: string) => (_content: string, element: Element | null) =>
+  element?.textContent === text &&
+  Array.from(element.children).every((child) => child.textContent !== text);
+
 // The chip reads the configured providers for the names they publish for an institution ID
 // (Q2-38). Stable callbacks, as the real context's are.
 const config = vi.hoisted(() => {
@@ -123,7 +134,7 @@ describe('PrivacyChip', () => {
     const popover = await openPopover(/^Privacy: Private · UCSF/);
     expect(screen.getByRole('dialog')).toHaveAccessibleName('Privacy: Private · UCSF');
     expect(
-      within(popover).getByText('Only private and UCSF-approved models can read Fixture.')
+      within(popover).getByText(sentence('Only private and UCSF-approved models can read Fixture.'))
     ).toBeInTheDocument();
     const values = Array.from(popover.querySelectorAll('dd')).map((dd) => dd.textContent);
     expect(values[2]).toBe('UCSF');
@@ -359,7 +370,7 @@ describe('the privacy popover', () => {
     renderWithCrew(<PrivacyChip />, privacyController('private', 'public'));
     const popover = await openPopover(/^Privacy: Private/);
     const button = within(popover).getByRole('button', { name: 'Make my connection public…' });
-    expect(within(popover).getByText(line)).toHaveAttribute('data-crew-privacy-effect');
+    expect(within(popover).getByText(sentence(line))).toHaveAttribute('data-crew-privacy-effect');
     expect(button).toHaveAccessibleDescription(line);
     expect(copy.makePublicEffect('Fixture', 'public')).toBe(line);
     // Checked against the broker: a Public connection loses no channel, only which models may
@@ -423,27 +434,59 @@ describe('the privacy popover', () => {
     }
   );
 
-  it('says why, then who can see the workspace, on two short 12px lines (Q2-44, Q3-54)', async () => {
+  it('says why, then who can see the workspace, in ONE short 12px note (Q2-44, Q3-54, Q4-51)', async () => {
     renderWithCrew(<PrivacyChip />);
     const popover = await openPopover(/^Privacy: Private/);
     const why = popover.querySelectorAll('[data-crew-privacy-why]');
     expect(why).toHaveLength(1);
-    // The host changes the workspace setting themselves, so nothing says only the host can.
-    expect(why[0].textContent).toBe(copy.why.both('Fixture'));
+    // The host changes the workspace setting themselves, so nothing says only the host can; the
+    // why names the connection as well as the workspace, so "it" would be ambiguous: the
+    // workspace is named again.
+    expect(why[0].textContent).toBe(
+      `${copy.why.both('Fixture')} ${copy.audience('Fixture', null)}`
+    );
     const audience = popover.querySelector('[data-crew-privacy-audience]') as HTMLElement;
+    expect(why[0]).toContainElement(audience);
     expect(audience.textContent).toBe(copy.audience('Fixture', null));
-    for (const line of [why[0], audience]) expect(line).toHaveClass('text-supporting');
-    // The badge, one summary line, the three facts, then those two lines: nothing else.
+    expect(why[0]).toHaveClass('text-supporting');
+    // The badge, one summary line, the three facts, then that one note: nothing else. It was two
+    // paragraphs, which read as more than they said.
     expect(popover.querySelector('[data-crew-privacy-title]')).not.toBeNull();
     expect(popover.querySelectorAll('dt')).toHaveLength(3);
-    expect(popover.querySelectorAll('p')).toHaveLength(3);
+    expect(popover.querySelectorAll('p')).toHaveLength(2);
+  });
+
+  it('never breaks the workspace’s name inside a sentence (Q4-51)', async () => {
+    const snapshot = makeSnapshot({
+      workspace: {
+        id: 'workspace-1',
+        host_uid: 1000,
+        mode: 'private',
+        institution_id: 'ucsf',
+        policy_epoch: 1,
+        name: 'chen-lab',
+      },
+    });
+    renderWithCrew(<PrivacyChip />, makeController({ snapshot }));
+    const popover = await openPopover(/^Privacy: Private/);
+    // Every sentence that names it — the summary and the note — holds it in one unbreakable
+    // span, with the full stop that follows it, and adds no characters.
+    const names = Array.from(popover.querySelectorAll('[data-crew-name]'));
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    for (const name of names) {
+      expect(name).toHaveClass('crew-sidebar-name');
+      expect(name.textContent).toMatch(/^chen-lab[.]?$/);
+    }
+    expect(popover.querySelector('[data-crew-privacy-why]')?.textContent).toBe(
+      `${copy.why.both('chen-lab')} ${copy.audience('chen-lab', null)}`
+    );
   });
 
   it('states the three facts, with the institution as its bare ID and no stray period', async () => {
     renderWithCrew(<PrivacyChip />);
     const popover = await openPopover(/^Privacy: Private/);
     expect(
-      within(popover).getByText('Only private and ucsf-approved models can read Fixture.')
+      within(popover).getByText(sentence('Only private and ucsf-approved models can read Fixture.'))
     ).toBeInTheDocument();
     const facts = popover.querySelector('dl');
     expect(facts).not.toBeNull();
@@ -479,7 +522,9 @@ describe('the privacy popover', () => {
     expect(within(popover).getByText(copy.values.notSet)).toBeInTheDocument();
     expect(
       within(popover).getByText(
-        'Public models can read public-safe channels in Fixture. Restricted channels stay private.'
+        sentence(
+          'Public models can read public-safe channels in Fixture. Restricted channels stay private.'
+        )
       )
     ).toBeInTheDocument();
   });
@@ -589,11 +634,19 @@ describe('the privacy popover', () => {
     const view = renderWithCrew(<PrivacyChip />, member);
     let popover = await openPopover(/^Privacy: Private/);
     let note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
-    // One line: "{why}. Only the host can change {workspace}." (Q3-54).
-    expect(note.textContent).toBe(`${copy.why.workspace('Fixture')} ${copy.hostOnly('Fixture')}`);
-    // …and who can see it at all, on its own line: "Private" is about models, never about people.
+    // One note (Q3-54, Q4-51): "{why} Only the host can change {workspace}. Only people {host}
+    // lets in can see it." — who can see it at all, because "Private" is about models, never about
+    // people; "it" is the workspace the sentence before it just named.
+    expect(note.textContent).toMatch(
+      new RegExp(
+        `^${escapeRegExp(copy.why.workspace('Fixture'))} ${escapeRegExp(copy.hostOnly('Fixture'))} ` +
+          `Only people .*@alice.* lets in can see it\\.$`
+      )
+    );
     let audience = popover.querySelector('[data-crew-privacy-audience]') as HTMLElement;
-    expect(audience.textContent).toMatch(/^Only people .*@alice.* lets in can see Fixture\.$/);
+    expect(note).toContainElement(audience);
+    expect(audience.textContent).toMatch(/^Only people .*@alice.* lets in can see it\.$/);
+    expect(popover.querySelectorAll('p')).toHaveLength(2);
     view.unmount();
 
     renderWithCrew(<PrivacyChip />, privacyController('public', 'private', { isHost: true }));

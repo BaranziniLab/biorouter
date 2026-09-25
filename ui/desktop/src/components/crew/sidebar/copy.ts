@@ -112,8 +112,18 @@ export const sidebarCopy = {
   waiting: {
     /** After the joiner's name: they have an invitation and no code has been entered (Q2-42). */
     invited: 'invited',
-    /** Under it: whose turn it is. The host acts once the joiner sends their code. */
-    nextStep: 'Let in… when they send their code',
+    /**
+     * After "invited", when the broker stamped the invitation's end (Q4-36). `when` is the day and
+     * time, "Sat 1:41 AM" (`expiryWhen`).
+     */
+    expires: (when: string) => `expires ${when}`,
+    /** The same place, once that moment has passed on this computer's clock. */
+    expiredShort: 'expired',
+    /**
+     * Under it: whose turn it is. The host acts once the joiner sends a code. `who` is the first
+     * word of the name on their server account, else `@username` — never "they" (Q4-36).
+     */
+    nextStep: (who: string) => `Let in… when ${who} sends a code`,
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
     /**
@@ -200,8 +210,9 @@ export const sidebarCopy = {
 
   teamMenu: {
     /**
-     * First, for everyone (Q3-44): the team's member list. It opens the same Add people dialog,
-     * which shows someone who can't add people there only the list (the `people.ts` rule).
+     * First, for everyone (Q3-44): the team's member list. It opens the Add people dialog in its
+     * `members` view (Q4-35) — titled "Members of {team}", the list first — where whoever may add
+     * finds Add people one step away; "Add people to {team}…" below opens the add view itself.
      */
     members: (team: string) => `Members of ${team}…`,
     createChannel: 'Create channel…',
@@ -231,6 +242,15 @@ export const sidebarCopy = {
      * "does the fingerprint match?" finds it where the identity is (Q2-04).
      */
     fingerprint: 'Fingerprint',
+    /**
+     * The small Copy beside it (Q4-49), as host step 3 has one: step 3 says "Your workspace menu
+     * shows it too". It copies the whole fingerprint, the value step 3's Copy copies. The item's
+     * name says what it copies; its visible word is the short one.
+     */
+    copyFingerprint: 'Copy',
+    copyFingerprintLabel: 'Copy workspace fingerprint',
+    copiedFingerprint: 'Copied',
+    copyFingerprintFailed: 'Couldn’t copy',
     /**
      * Under Reconnect and Disconnect while a join waits for the host (Q2-43, Q3-47): what each one
      * does, then that the code already sent survives it — two helpers, where one sentence under
@@ -277,6 +297,12 @@ export const sidebarCopy = {
   },
 
   you: {
+    /**
+     * The You row's second line once the person is known (Q4-50), before the server: "on
+     * lab-server" — where, by the person's own name for the server (D-ALIAS). The SSH login `crew_alice@lab-server` is only the placeholder shown
+     * before a snapshot names anyone — under "Alice Chen @alice" it said the username a third time.
+     */
+    on: 'on',
     /** A dev profile's badge, in the You menu's header (T-71): the row keeps its width for names. */
     devProfile: (name: string) => `Profile: ${name}`,
     editProfile: 'Edit profile…',
@@ -328,12 +354,19 @@ export const sidebarCopy = {
     },
     /**
      * Who can see the workspace at all (Q2-44): "Private" is about models, never about people.
-     * `host` is `personLabel(…, 'inline')`; null when the viewer is the host.
+     * `host` is `personLabel(…, 'inline')`; null when the viewer is the host. It ends the popover's
+     * one note (Q4-51), after the why.
      */
     audience: (workspace: string, host: string | null) =>
       host
         ? `Only people ${host} lets in can see ${workspace}.`
         : `Only people you let in can see ${workspace}.`,
+    /**
+     * The same, straight after "Only the host can change {workspace}.", whose one noun it points
+     * back to (Q4-51): "Only the host can change chen-lab. Only people @alice lets in can see it."
+     */
+    audienceIt: (host: string | null) =>
+      host ? `Only people ${host} lets in can see it.` : 'Only people you let in can see it.',
     /** Names what it changes (T-38): only this person's connection, never the workspace. */
     makePublic: 'Make my connection public…',
     /**

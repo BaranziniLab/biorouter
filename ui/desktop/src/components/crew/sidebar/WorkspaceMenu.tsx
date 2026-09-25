@@ -1,5 +1,6 @@
-import { useId, useMemo } from 'react';
-import { LoaderCircle } from '../../icons/app-icons';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Check, Copy, LoaderCircle } from '../../icons/app-icons';
+import { COPY_FIELD_FEEDBACK_MS } from '../../ui/copy-field';
 import {
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -20,6 +21,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
+import { useSidebarAnnounce, writeClipboard } from './SidebarAnnouncer';
 import { serverLabel, usePendingHost, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
 
@@ -110,7 +112,9 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   ONLY in that status — "Connected · identity verified" is the line it explains. A joiner the
  *   host has not let in yet took the fingerprint for the code to send (the Join dialog folds it
  *   away for that reason), and in the menu it would sit unexplained beside "Your code doesn't
- *   change."; before verification there is nothing for it to confirm.
+ *   change."; before verification there is nothing for it to confirm. It carries a small Copy
+ *   (Q4-49), as host step 3 does — step 3 says "Your workspace menu shows it too", and selecting
+ *   text inside a menu is not something a person tries — see {@link FingerprintCopy}.
  * - While a join waits for the host, Reconnect and Disconnect each say what they do and that the
  *   code already sent survives it (Q2-43, Q3-47): "Try the connection again. Your code doesn't
  *   change." and "Stop waiting for now. {host} can still let you in with the same code." The code
@@ -148,6 +152,8 @@ export function WorkspaceMenu({ title }: { title: string }) {
   const reasonId = useId();
   const keptId = useId();
   const fingerprintHex = useWorkspaceKeyFingerprint(connection?.workspace_public_key);
+  const copyLabelId = useId();
+  const fingerprintCopy = useFingerprintCopy();
   if (!connection) return null;
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
@@ -208,21 +214,35 @@ export function WorkspaceMenu({ title }: { title: string }) {
             </span>
           </span>
         )}
-        {fingerprint && (
+        {fingerprint && fingerprintHex && (
           <span
-            className="crew-sidebar-truncate text-supporting text-text-muted"
+            className="crew-sidebar-menu-fingerprint text-supporting text-text-muted"
             data-crew-menu-fingerprint=""
           >
-            {copy.fingerprint}{' '}
-            <bdi className="font-mono" translate="no">
-              {fingerprint}
-            </bdi>
+            <span className="crew-sidebar-truncate">
+              {copy.fingerprint}{' '}
+              <bdi className="font-mono" translate="no">
+                {fingerprint}
+              </bdi>
+            </span>
+            <FingerprintCopy
+              labelId={copyLabelId}
+              state={fingerprintCopy.state}
+              onCopy={() => void fingerprintCopy.run(fingerprintHex)}
+            />
           </span>
         )}
         {lastError && status !== 'connected' && (
           <span className="crew-sidebar-clamp text-supporting text-text-muted">{lastError}</span>
         )}
       </div>
+      {fingerprint && fingerprintHex && (
+        // The Copy's name, outside the header: the header is the menu's description, and a name
+        // inside it would add "Copy workspace fingerprint" to what the menu is described as.
+        <span id={copyLabelId} hidden>
+          {fingerprintCopyLabel(fingerprintCopy.state)}
+        </span>
+      )}
       <DropdownMenuSeparator />
       {reason && (
         <p
@@ -339,6 +359,90 @@ export function WorkspaceMenu({ title }: { title: string }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     </DropdownMenuContent>
+  );
+}
+
+type FingerprintCopyState = 'idle' | 'copied' | 'failed';
+
+/** The Copy's accessible name: what it copies, then what became of the copy. */
+function fingerprintCopyLabel(state: FingerprintCopyState): string {
+  return state === 'copied'
+    ? copy.copiedFingerprint
+    : state === 'failed'
+      ? copy.copyFingerprintFailed
+      : copy.copyFingerprintLabel;
+}
+
+/**
+ * The fingerprint Copy's state (Q4-49). It answers on the control for as long as a `CopyField`
+ * does, then reads Copy again, and says the same thing politely. The menu stays open — the answer
+ * is on the item — and since the switcher owns the menu's open state, nothing here closes it.
+ */
+function useFingerprintCopy() {
+  const { announce } = useSidebarAnnounce();
+  const [state, setState] = useState<FingerprintCopyState>('idle');
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    []
+  );
+  const run = async (value: string) => {
+    const copied = await writeClipboard(value);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    setState(copied ? 'copied' : 'failed');
+    announce(copied ? sidebarCopy.clipboard.copied : sidebarCopy.clipboard.failed);
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      setState('idle');
+    }, COPY_FIELD_FEEDBACK_MS);
+  };
+  return { state, run };
+}
+
+/**
+ * The small Copy beside the fingerprint (Q4-49): a real menu item, so the arrow keys reach it
+ * (static text in a menu is skipped, and a plain button there could not be focused at all), drawn
+ * as a compact control on the fingerprint's own line. It copies the whole fingerprint, the value
+ * host step 3's Copy copies; the line shows its first 16 digits, grouped. Its name comes from a
+ * label outside the header (`labelId`), and its visible word is hidden from the accessibility tree,
+ * so the menu's description — the header — does not end in "Copy". Selecting it keeps the menu open.
+ */
+function FingerprintCopy({
+  labelId,
+  state,
+  onCopy,
+}: {
+  labelId: string;
+  state: FingerprintCopyState;
+  onCopy(): void;
+}) {
+  return (
+    <DropdownMenuItem
+      className="crew-sidebar-menu-copy"
+      aria-labelledby={labelId}
+      data-crew-copy-fingerprint=""
+      data-crew-copy-state={state}
+      onSelect={(event) => {
+        // Stay open: the item itself shows whether the copy landed.
+        event.preventDefault();
+        onCopy();
+      }}
+    >
+      {state === 'copied' ? (
+        <Check className="crew-sidebar-menu-copy-icon" aria-hidden="true" />
+      ) : (
+        <Copy className="crew-sidebar-menu-copy-icon" aria-hidden="true" />
+      )}
+      <span aria-hidden="true">
+        {state === 'copied'
+          ? copy.copiedFingerprint
+          : state === 'failed'
+            ? copy.copyFingerprintFailed
+            : copy.copyFingerprint}
+      </span>
+    </DropdownMenuItem>
   );
 }
 

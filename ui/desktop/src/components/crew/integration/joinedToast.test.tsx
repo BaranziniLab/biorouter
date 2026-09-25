@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import { sidebarCopy } from '../sidebar/copy';
+import { forgetJoinerNames } from '../sidebar/sidebarView';
 import {
   alice,
   bob,
@@ -60,10 +61,24 @@ function stateFrame(daemon: ScriptedDaemon) {
   };
 }
 
+/**
+ * A joiner who chose no name yet: a new principal's nickname is its username, so the snapshot
+ * names him `@crew_jack` alone (naming D2).
+ */
+const jack = {
+  id: '6f5e4d3c-2b1a-4098-8e7d-6c5b4a3f2e1d',
+  uid: 70305,
+  username: 'crew_jack',
+  nickname: 'crew_jack',
+  active: true,
+};
+
 describe('the host hears when someone joins (a result that happens off-screen)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    forgetJoinerNames();
   });
+  afterEach(() => forgetJoinerNames());
 
   it('says once who joined, and nothing for the people already there', async () => {
     const daemon = installDaemon();
@@ -128,6 +143,66 @@ describe('the host hears when someone joins (a result that happens off-screen)',
     });
     act(() => daemon.emit(stateFrame(daemon)));
     await waitFor(() => expect(joinedList()).toBeNull());
+  });
+
+  it('names a joiner who chose no name by the server-account name he waited under (Q4-42)', async () => {
+    // Inside Let in he is "Jack"; the toast and the sidebar row about the same event said
+    // "@crew_jack". His waiting row — the one place that name comes from — is gone from the very
+    // snapshot that shows him joined, so the name is kept from the views before it.
+    const daemon = installDaemon({
+      snapshot: richSnapshot({
+        pending_joins: [{ username: 'crew_jack', full_name: 'Jack Moreno' }],
+      }),
+    });
+    renderCrew();
+    await channelReady();
+
+    daemon.state.snapshot = richSnapshot({ principals: [alice, bob, jack], pending_joins: [] });
+    act(() => daemon.emit(stateFrame(daemon)));
+
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: 'Jack Moreno (@crew_jack) joined lab',
+      })
+    );
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
+    const joined = await screen.findByRole('list', { name: sidebarCopy.section.joined });
+    expect(within(joined).getByRole('listitem')).toHaveTextContent(
+      'Jack Moreno (@crew_jack) · joined'
+    );
+  });
+
+  it('says @username when no verified view ever named the joiner’s server account', async () => {
+    const daemon = installDaemon({ snapshot: richSnapshot({ pending_joins: [] }) });
+    renderCrew();
+    await channelReady();
+
+    daemon.state.snapshot = richSnapshot({ principals: [alice, bob, jack], pending_joins: [] });
+    act(() => daemon.emit(stateFrame(daemon)));
+
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({ msg: '@crew_jack joined lab' })
+    );
+    const joined = await screen.findByRole('list', { name: sidebarCopy.section.joined });
+    expect(within(joined).getByRole('listitem')).toHaveTextContent('@crew_jack · joined');
+    expect(joined).not.toHaveTextContent('Jack Moreno');
+  });
+
+  it('keeps the name the joiner chose over the one on their server account', async () => {
+    const daemon = installDaemon({
+      snapshot: richSnapshot({
+        pending_joins: [{ username: 'dave', full_name: 'David Kim' }],
+      }),
+    });
+    renderCrew();
+    await channelReady();
+
+    daemon.state.snapshot = richSnapshot({ principals: [alice, bob, dave], pending_joins: [] });
+    act(() => daemon.emit(stateFrame(daemon)));
+
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({ msg: 'Dave Kim (@dave) joined lab' })
+    );
   });
 
   it('tells only the host', async () => {

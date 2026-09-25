@@ -319,7 +319,7 @@ describe('team sections', () => {
     }
   });
 
-  it('opens the member list from "Members of {team}…", first, for everyone (Q3-44)', async () => {
+  it('opens the member list from "Members of {team}…", first, for everyone (Q3-44, Q4-35)', async () => {
     const user = userEvent.setup();
     const view = renderTeams({
       snapshot: makeSnapshot({ actor: bob }),
@@ -331,7 +331,35 @@ describe('team sections', () => {
     const members = within(menu).getAllByRole('menuitem')[0];
     expect(members).toHaveTextContent(sidebarCopy.teamMenu.members('Analysis Lab'));
     await user.click(members);
+    // The members view, not the add view (Q4-35): the dialog is then "Members of Analysis Lab".
     expect(view.controller.openDialog).toHaveBeenCalledWith({
+      kind: 'add-people',
+      target: 'team',
+      targetId: TEAM_LAB,
+      view: 'members',
+    });
+  });
+
+  it('opens the members view for an owner too, and "Add people to {team}…" the add view (Q4-35)', async () => {
+    // Round 4: an owner who chose "Members of Wong Lab…" got a dialog titled "Add people to Wong
+    // Lab", with the list they asked for at the bottom.
+    const user = userEvent.setup();
+    const view = renderTeams();
+    const open = async (name: string) => {
+      await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+      const menu = await screen.findByRole('menu');
+      await user.click(within(menu).getByRole('menuitem', { name }));
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    };
+    await open(sidebarCopy.teamMenu.members('Analysis Lab'));
+    expect(view.controller.openDialog).toHaveBeenLastCalledWith({
+      kind: 'add-people',
+      target: 'team',
+      targetId: TEAM_LAB,
+      view: 'members',
+    });
+    await open(sidebarCopy.teamMenu.addPeople('Analysis Lab'));
+    expect(view.controller.openDialog).toHaveBeenLastCalledWith({
       kind: 'add-people',
       target: 'team',
       targetId: TEAM_LAB,

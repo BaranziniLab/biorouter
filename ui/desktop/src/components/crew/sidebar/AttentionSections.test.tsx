@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { hideOthers } from 'aria-hidden';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, PendingJoin } from '../crewApi';
 import type { CrewController } from '../state/types';
 import { buildPeopleDirectory } from '../identity';
@@ -15,7 +15,7 @@ import {
 } from './AttentionSections';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
-import { joinedWithoutTeam } from './sidebarView';
+import { expiryWhen, forgetJoinerNames, joinedWithoutTeam } from './sidebarView';
 import {
   alice,
   bob,
@@ -248,11 +248,12 @@ describe('Waiting to join', () => {
     );
     expect(rows[0]).toHaveTextContent(`@bob · Bob Lee (name on the server account) · invited`);
     const next = rows[0].querySelector('[data-crew-waiting-next]') as HTMLElement;
-    expect(next).toHaveTextContent('Let in… when they send their code');
+    // By the first word of the name on their server account, never "they" (Q4-36).
+    expect(next.textContent).toBe('Let in… when Bob sends a code');
     // The button that acts on it is described by it.
     expect(
       within(rows[0]).getByRole('button', { name: 'Let @bob in' })
-    ).toHaveAccessibleDescription(sidebarCopy.waiting.nextStep);
+    ).toHaveAccessibleDescription(sidebarCopy.waiting.nextStep('Bob'));
     // A code already entered is not "invited", and has no next step to wait for.
     expect(rows[2].querySelector('[data-crew-waiting-state="invited"]')).toBeNull();
     expect(rows[2].querySelector('[data-crew-waiting-next]')).toBeNull();
@@ -266,8 +267,86 @@ describe('Waiting to join', () => {
       })
     );
     const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
-    expect(row).not.toHaveTextContent(sidebarCopy.waiting.nextStep);
+    expect(row).not.toHaveTextContent(/sends a code/);
     expect(row).not.toHaveTextContent(sidebarCopy.waiting.invited);
+  });
+
+  it('names a joiner the server account names nobody for by @username, never "they" (Q4-36)', () => {
+    renderWithCrew(
+      <AttentionSections />,
+      makeController({ snapshot: makeSnapshot({ pending_joins: [{ username: 'crew_jack' }] }) })
+    );
+    const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    const next = row.querySelector('[data-crew-waiting-next]') as HTMLElement;
+    expect(next.textContent).toBe('Let in… when @crew_jack sends a code');
+    expect(row.textContent).not.toMatch(/\bthey\b|\btheir\b/);
+  });
+
+  describe('until when the invitation lasts (Q4-36)', () => {
+    // Unix SECONDS, as the broker stamps `expires_at` (`created_at + PENDING_JOIN_LIFETIME_SECS`):
+    // a millisecond reading of this value would be in 1970, and read "expired".
+    const NOW_MS = Date.UTC(2026, 8, 25, 1, 41);
+    const IN_A_DAY = NOW_MS / 1000 + 24 * 60 * 60;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW_MS);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function rowFor(join: PendingJoin) {
+      renderWithCrew(
+        <AttentionSections />,
+        makeController({ snapshot: makeSnapshot({ pending_joins: [join] }) })
+      );
+      return within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    }
+
+    it('ends "invited" with the day and time it expires', () => {
+      const row = rowFor({ username: 'crew_jack', full_name: 'Jack Moreno', expires_at: IN_A_DAY });
+      const when = expiryWhen(IN_A_DAY);
+      // The contract's own format: a short weekday and the time, in the viewer's locale.
+      expect(when).toBe(
+        new Intl.DateTimeFormat(undefined, {
+          weekday: 'short',
+          hour: 'numeric',
+          minute: '2-digit',
+        }).format(new Date(IN_A_DAY * 1000))
+      );
+      const name = row.querySelector('[data-crew-waiting-name]') as HTMLElement;
+      expect(name).toHaveTextContent(
+        `Jack Moreno (name on the server account) · invited · expires ${when}`
+      );
+      expect(row.querySelector('[data-crew-waiting-state="invited"]')).toHaveTextContent(
+        `invited · ${sidebarCopy.waiting.expires(when)}`
+      );
+      expect(row.querySelector('[data-crew-waiting-next]')?.textContent).toBe(
+        'Let in… when Jack sends a code'
+      );
+    });
+
+    it('says "expired" once the moment has passed on this computer’s clock', () => {
+      const row = rowFor({ username: 'crew_jack', expires_at: NOW_MS / 1000 - 1 });
+      expect(row.querySelector('[data-crew-waiting-expiry]')?.textContent).toBe(
+        ` · ${sidebarCopy.waiting.expiredShort}`
+      );
+      // Still the broker's to decide: without its flag the row is not "Invitation expired".
+      expect(row).not.toHaveTextContent(sidebarCopy.waiting.expired);
+    });
+
+    it('says nothing about an expiry the broker did not stamp', () => {
+      expect(
+        rowFor({ username: 'crew_jack' }).querySelector('[data-crew-waiting-expiry]')
+      ).toBeNull();
+    });
+
+    it('drops the expiry once the host entered a code: nothing is waiting on the joiner', () => {
+      const row = rowFor({ username: 'crew_jack', approved: true, expires_at: IN_A_DAY });
+      expect(row.querySelector('[data-crew-waiting-expiry]')).toBeNull();
+      expect(row).not.toHaveTextContent(/expires/);
+    });
   });
 
   it('opens Let in for that username', () => {
@@ -780,6 +859,61 @@ describe('Joined, not in your teams (Q3-52)', () => {
   it('says nothing about the people already listed when Crew opens', () => {
     renderJoined(hostWith());
     expect(polite()).toHaveTextContent('');
+  });
+
+  describe('one name at the join (Q4-42)', () => {
+    // Jack chose no name: a new principal's nickname is its username, so he is `@crew_jack`
+    // alone (naming D2).
+    const jack = {
+      id: 'person-jack-0000',
+      uid: 1004,
+      username: 'crew_jack',
+      nickname: 'crew_jack',
+    };
+    const waiting: PendingJoin[] = [{ username: 'crew_jack', full_name: 'Jack Moreno' }];
+
+    beforeEach(() => forgetJoinerNames());
+    afterEach(() => forgetJoinerNames());
+
+    it('names someone who joined by the server-account name their waiting row carried', () => {
+      // The host's verified view while Jack waited, then the one that shows him joined — which
+      // no longer carries his waiting row, and so no longer his server-account name.
+      const view = renderJoined(hostWith({ pending_joins: waiting }));
+      view.update(hostWith({ principals: [alice, bob, carol, jack], pending_joins: [] }));
+      const row = within(joinedList())
+        .getAllByRole('listitem')
+        .find((item) => item.textContent?.includes('crew_jack')) as HTMLElement;
+      expect(row).toHaveTextContent('Jack Moreno (@crew_jack) · joined');
+      expect(
+        within(row).getByRole('button', { name: /^Add Jack Moreno \(@crew_jack\) to/ })
+      ).toBeInTheDocument();
+      expect(polite()).toHaveTextContent(
+        'Jack Moreno (@crew_jack) isn’t in any of your teams yet.'
+      );
+      // Carol chose her own name, and keeps it.
+      expect(joinedList()).toHaveTextContent('Carol Diaz (@carol) · joined');
+    });
+
+    it('lets a name the person chose win over their server account’s', () => {
+      const view = renderJoined(
+        hostWith({ pending_joins: [{ username: 'carol', full_name: 'Caroline Diaz' }] })
+      );
+      view.update(hostWith({ pending_joins: [] }));
+      expect(joinedList()).toHaveTextContent('Carol Diaz (@carol) · joined');
+      expect(joinedList()).not.toHaveTextContent('Caroline');
+    });
+
+    it('changes nothing when no verified view ever named them, or named them in another workspace', () => {
+      const other = makeSnapshot({ pending_joins: waiting });
+      const view = renderJoined(
+        makeController({
+          snapshot: { ...other, workspace: { ...other.workspace, id: 'workspace-other' } },
+        })
+      );
+      view.update(hostWith({ principals: [alice, bob, carol, jack], pending_joins: [] }));
+      expect(joinedList()).toHaveTextContent('@crew_jack · joined');
+      expect(joinedList()).not.toHaveTextContent('Jack Moreno');
+    });
   });
 });
 

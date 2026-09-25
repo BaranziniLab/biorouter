@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { toastSuccess } from '../../../toasts';
 import type { Snapshot } from '../crewApi';
-import { buildPeopleDirectory, personLabel } from '../identity';
+import { buildPeopleDirectory } from '../identity';
 import { workspaceTitle } from '../sidebar';
+import { joinedLabel, rememberJoinerNames } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import { layoutCopy } from './copy';
 
@@ -28,6 +29,12 @@ function activePeople(snapshot: Snapshot): Set<string> {
  * Only between two verified views of the same connection and workspace, so opening Crew,
  * switching workspaces or re-verifying after a failure never announces the people already there.
  * Display only: membership is the broker's, and this reads the snapshot it projected.
+ *
+ * The joiner is named as the Let in dialog names them (Q4-42): someone who has chosen no name yet
+ * is "Jack Moreno (@crew_jack) joined wong-lab" when a verified view listed their server-account
+ * name while they waited — it is gone from the very snapshot that shows them joined, so every
+ * verified view is remembered first (`rememberJoinerNames`). Without it, "@crew_jack joined
+ * wong-lab", as before.
  */
 export function useJoinedToast(): void {
   const crew = useCrew();
@@ -40,6 +47,7 @@ export function useJoinedToast(): void {
 
   useEffect(() => {
     if (!verified) return;
+    rememberJoinerNames(verified);
     const people = activePeople(verified);
     const before = seen.current;
     seen.current = { connectionId, workspaceId: verified.workspace.id, people };
@@ -55,7 +63,9 @@ export function useJoinedToast(): void {
     const dir = buildPeopleDirectory(verified, labels);
     const workspace = workspaceTitle(verified, connections, connectionId);
     for (const id of joined) {
-      toastSuccess({ msg: layoutCopy.joined(personLabel(id, 'inline', dir), workspace) });
+      toastSuccess({
+        msg: layoutCopy.joined(joinedLabel(id, dir, verified.workspace.id), workspace),
+      });
     }
   }, [verified, connectionId, isHost, connections, labels]);
 }

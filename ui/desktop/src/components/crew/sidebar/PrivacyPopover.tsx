@@ -7,7 +7,7 @@ import { INSTITUTION_ID_PATTERN, institutionId, personLabel } from '../identity'
 import { useCrew } from '../state/CrewControllerContext';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
-import { useSidebarView, type VerifiedPrivacy } from './sidebarView';
+import { keepNamesWhole, useSidebarView, type VerifiedPrivacy } from './sidebarView';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy.privacy;
@@ -17,11 +17,16 @@ export const PRIVACY_UPDATE_KEY = 'connection.update';
 
 /**
  * The privacy popover (ui-redesign-spec, wireframe "Privacy popover", copy deck "Privacy
- * popover"): the badge, what the chip means in one sentence, the three facts behind it, then two
- * short 12px lines (Q2-44, Q3-54) — why the mode is what it is, with "Only the host can change
- * {workspace}." for a member, and who can see the workspace at all, because "Private" is about
- * models, never about people. The why is always shown, so a joiner who sets Public in a
- * Private-for-everyone workspace sees why nothing changed.
+ * popover"): the badge, what the chip means in one sentence, the three facts behind it, then ONE
+ * short 12px note (Q2-44, Q3-54, Q4-51) — why the mode is what it is, then, for a member, "Only the
+ * host can change {workspace}. Only people {host} lets in can see it.", and for the host "Only
+ * people you let in can see {workspace}.": who can see the workspace at all, because "Private" is
+ * about models, never about people. It was two paragraphs, which read as more than it says. The
+ * why is always shown, so a joiner who sets Public in a Private-for-everyone workspace sees why
+ * nothing changed.
+ *
+ * The workspace's name never breaks inside a sentence here (Q4-51: "…can see chen-" / "lab."):
+ * every sentence that names it goes through `keepNamesWhole`.
  *
  * It is named by its title row — `Privacy: Private · UCSF`, the chip's own name — which stays
  * at the top through the institution step, so the popover never loses its name (T-38).
@@ -123,10 +128,12 @@ export function PrivacyPopover({
   }
 
   const host = crew.isHost ? null : dir.host ? personLabel(dir.host, 'inline', dir) : null;
-  const why = [copy.why[privacy.why](title), crew.isHost ? null : copy.hostOnly(title)]
-    .filter(Boolean)
-    .join(' ');
-  const audience = crew.isHost || host ? copy.audience(title, host) : null;
+  const hostOnly = crew.isHost ? null : copy.hostOnly(title);
+  // "it" only straight after "Only the host can change {workspace}.", whose one noun it points
+  // back to; after the host's why, which may name the connection too, the workspace is named.
+  const audience =
+    crew.isHost || host ? (hostOnly ? copy.audienceIt(host) : copy.audience(title, host)) : null;
+  const names = [title];
   // Either change moves which models may read this person's channels only where the workspace
   // allows Public; in a Private-for-everyone one neither changes anything there, so Privacy… is
   // the one action (Q3-54).
@@ -139,7 +146,10 @@ export function PrivacyPopover({
     <div className="flex flex-col gap-3 p-1" data-crew-privacy-popover="">
       {heading}
       <p className="text-secondary text-text-default">
-        {privacy.effective === 'private' ? copy.private(title, institution) : copy.public(title)}
+        {keepNamesWhole(
+          privacy.effective === 'private' ? copy.private(title, institution) : copy.public(title),
+          names
+        )}
       </p>
       <Separator className="bg-border-subtle" />
       <dl className="crew-sidebar-privacy-facts text-secondary">
@@ -161,16 +171,16 @@ export function PrivacyPopover({
         </dd>
       </dl>
       <Separator className="bg-border-subtle" />
-      <div className="flex flex-col gap-1">
-        <p className="text-supporting text-text-muted" data-crew-privacy-why={privacy.why}>
-          {why}
-        </p>
+      <p className="text-supporting text-text-muted" data-crew-privacy-why={privacy.why}>
+        {keepNamesWhole(copy.why[privacy.why](title), names)}
+        {hostOnly && <> {keepNamesWhole(hostOnly, names)}</>}
         {audience && (
-          <p className="text-supporting text-text-muted" data-crew-privacy-audience="">
-            {audience}
-          </p>
+          <>
+            {' '}
+            <span data-crew-privacy-audience="">{keepNamesWhole(audience, names)}</span>
+          </>
         )}
-      </div>
+      </p>
       <div className="flex flex-col items-start gap-1">
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
           {offerPublic ? (
@@ -196,7 +206,7 @@ export function PrivacyPopover({
         </div>
         {offerPublic && (
           <p id={effectId} className="text-supporting text-text-muted" data-crew-privacy-effect="">
-            {copy.makePublicEffect(title, privacy.workspaceMode)}
+            {keepNamesWhole(copy.makePublicEffect(title, privacy.workspaceMode), names)}
           </p>
         )}
       </div>

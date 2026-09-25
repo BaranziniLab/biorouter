@@ -6,7 +6,7 @@ import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
 import { statusHint, StatusRow } from './StatusRow';
-import { connection, makeController, renderWithCrew } from './sidebarTestUtils';
+import { connection, makeController, makeSnapshot, renderWithCrew } from './sidebarTestUtils';
 
 const config = vi.hoisted(() => ({
   getProviders: async () => [],
@@ -50,6 +50,8 @@ describe('StatusRow', () => {
       // The dot sits beside a word, so it is hidden from assistive technology.
       expect(dot).toHaveAttribute('data-tone', presentation.tone);
       expect(dot).toHaveAttribute('aria-hidden', 'true');
+      // It carries the class `crew-sidebar.css` keeps visible in forced colours (Q4-52).
+      expect(dot).toHaveClass('crew-sidebar-status-dot');
     }
   });
 
@@ -99,6 +101,51 @@ describe('StatusRow', () => {
     // Below the row, never up over the workspace name.
     const content = document.querySelector('[data-crew-status-tooltip]') as HTMLElement;
     expect(content).toHaveAttribute('data-side', 'bottom');
+  });
+
+  it('keeps the workspace’s name whole in the "Updates unavailable" hint (Q4-51)', async () => {
+    const user = userEvent.setup();
+    const snapshot = makeSnapshot({
+      workspace: {
+        id: 'workspace-1',
+        host_uid: 1000,
+        mode: 'private',
+        institution_id: 'ucsf',
+        policy_epoch: 1,
+        name: 'chen-lab',
+      },
+    });
+    renderWithCrew(
+      <StatusRow />,
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        status: 'updates-unavailable',
+        lastVerified: {
+          connectionId: connection.id,
+          snapshot,
+          observedPrivacy: {
+            connectionId: connection.id,
+            mode: 'private',
+            institutionId: 'ucsf',
+            policyEpoch: 1,
+          },
+          runs: [],
+          labels: null,
+          teamId: 'team-lab-0000',
+          channelId: 'chan-methods',
+          messages: [],
+        },
+      })
+    );
+    await user.hover(document.querySelector('[data-crew-status-word]') as HTMLElement);
+    await screen.findByRole('tooltip');
+    const content = document.querySelector('[data-crew-status-tooltip]') as HTMLElement;
+    expect(content).toHaveTextContent(sidebarCopy.statusHint.updatesUnavailable('chen-lab'));
+    const name = content.querySelector('[data-crew-name]') as HTMLElement;
+    expect(name).toHaveClass('crew-sidebar-name');
+    expect(name.textContent).toBe('chen-lab.');
   });
 
   it('says whose turn it is while a join waits, and nothing about privacy (Q2-43)', async () => {

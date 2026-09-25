@@ -6,7 +6,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
 import { PrivacyChip, privacyCheckDeferred } from './PrivacyChip';
-import { usePendingHost, useSidebarView } from './sidebarView';
+import { keepNamesWhole, usePendingHost, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
 
 /**
@@ -67,7 +67,7 @@ export function StatusRow() {
       </button>
     ) : presentation.srText ? (
       <>
-        <WordTooltip text={tooltip}>
+        <WordTooltip text={tooltip} names={[title]}>
           <span className="crew-sidebar-truncate" aria-hidden="true" data-crew-status-word="">
             {presentation.word}
           </span>
@@ -76,7 +76,7 @@ export function StatusRow() {
       </>
     ) : (
       <>
-        <WordTooltip text={tooltip}>
+        <WordTooltip text={tooltip} names={[title]}>
           <span className="crew-sidebar-truncate" data-crew-status-word="">
             {presentation.word}
           </span>
@@ -93,7 +93,8 @@ export function StatusRow() {
         {presentation.spinner ? (
           <LoaderCircle className="crew-sidebar-spinner" aria-hidden="true" />
         ) : (
-          <StatusDot tone={presentation.tone} />
+          // Its own class for the forced-colours edge (Q4-52): the system paints the fill away.
+          <StatusDot tone={presentation.tone} className="crew-sidebar-status-dot" />
         )}
         {word}
       </div>
@@ -104,15 +105,24 @@ export function StatusRow() {
 
 /**
  * The word's tooltip, opening BELOW the row and start-aligned, so it covers the sidebar's first
- * rows for a moment rather than the workspace name above (Q2-43: it covered the switcher).
+ * rows for a moment rather than the workspace name above (Q2-43: it covered the switcher). The
+ * workspace's name in it never breaks at its hyphen (Q4-51).
  */
-function WordTooltip({ text, children }: { text: string | null; children: ReactElement }) {
+function WordTooltip({
+  text,
+  names,
+  children,
+}: {
+  text: string | null;
+  names: readonly string[];
+  children: ReactElement;
+}) {
   if (!text) return children;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side="bottom" align="start" data-crew-status-tooltip="">
-        {text}
+        {keepNamesWhole(text, names)}
       </TooltipContent>
     </Tooltip>
   );

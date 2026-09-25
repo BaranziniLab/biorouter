@@ -7,7 +7,7 @@ import { MENU_COPY_CLOSE_MS } from './menuCopy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import { COPY_FEEDBACK_MS } from './YouMenu';
 import { YouRow } from './YouRow';
-import { connection, makeController, renderWithCrew } from './sidebarTestUtils';
+import { connection, makeController, makeSnapshot, renderWithCrew } from './sidebarTestUtils';
 
 const copy = sidebarCopy.you;
 
@@ -44,20 +44,58 @@ const joiner = {
 } as const;
 
 describe('YouRow', () => {
-  it('renders the SSH login as its own standalone text node, with a snapshot', () => {
+  it('says where I am, "on hpc.ucsf.edu", in the sans supporting style once a snapshot names me (Q4-50)', () => {
     renderYou();
-    // The regression tests' anchor: exactly this text, in an element of its own.
-    const login = screen.getByText('alice@hpc.ucsf.edu');
-    expect(login.childNodes).toHaveLength(1);
-    expect(login.firstChild?.nodeType).toBe(Node.TEXT_NODE);
-    expect(login).toHaveClass('font-mono');
-    // …beside who I act as: my name, then @username as its own element.
+    // Who I act as: my name, then @username as its own element…
     const name = document.querySelector('[data-person-context="header"]') as HTMLElement;
     expect(name).toHaveTextContent('Alice Chen @alice');
     expect(name.querySelector('[data-person-part="username"]')).toHaveTextContent('@alice');
+    // …and where, under it: not the SSH login, which said the username a third time.
+    const place = document.querySelector('[data-crew-you-place]') as HTMLElement;
+    expect(place.textContent).toBe(`${copy.on} hpc.ucsf.edu`);
+    expect(place).toHaveClass('text-supporting', 'text-text-muted');
+    expect(place).not.toHaveClass('font-mono');
+    expect(place.querySelector('.font-mono')).toBeNull();
+    expect(screen.queryByText('alice@hpc.ucsf.edu')).toBeNull();
+    expect(document.querySelector('[data-crew-you-login]')).toBeNull();
+    // (jsdom lays out nothing, so it joins the row's two lines without the space a browser adds.)
+    expect(screen.getByRole('button', { name: /^Alice Chen/ })).toHaveAccessibleName(
+      /^Alice Chen @alice\s*on hpc\.ucsf\.edu$/
+    );
   });
 
-  it('renders the SSH login alone, with a placeholder avatar, before any snapshot', () => {
+  it('keeps "on hpc.ucsf.edu" through a refresh that shows only the last verified copy', () => {
+    const snapshot = makeSnapshot();
+    renderYou(
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        status: 'checking',
+        lastVerified: {
+          connectionId: connection.id,
+          snapshot,
+          observedPrivacy: {
+            connectionId: connection.id,
+            mode: 'private',
+            institutionId: 'ucsf',
+            policyEpoch: 1,
+          },
+          runs: [],
+          labels: null,
+          teamId: 'team-lab-0000',
+          channelId: 'chan-methods',
+          messages: [],
+        },
+      })
+    );
+    expect(document.querySelector('[data-crew-you-place]')?.textContent).toBe(
+      `${copy.on} hpc.ucsf.edu`
+    );
+    expect(document.querySelector('[data-crew-you-login]')).toBeNull();
+  });
+
+  it('renders the SSH login alone, in monospace, with a placeholder avatar, before any snapshot', () => {
     renderYou(
       makeController({
         snapshot: null,
@@ -66,8 +104,12 @@ describe('YouRow', () => {
         connection: { ...connection, ssh_target: 'fixture' },
       })
     );
+    // The regression tests' anchor: exactly this text, in an element of its own.
     const login = screen.getByText('fixture');
     expect(login.childNodes).toHaveLength(1);
+    expect(login.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+    expect(login).toHaveClass('font-mono');
+    expect(document.querySelector('[data-crew-you-place]')).toBeNull();
     expect(document.querySelector('[data-person-context]')).toBeNull();
     const avatar = document.querySelector('[data-slot="avatar"]');
     expect(avatar).toHaveAttribute('aria-hidden', 'true');
@@ -78,7 +120,7 @@ describe('YouRow', () => {
     const user = userEvent.setup();
     stubAppConfig({ BIOROUTER_DEV_PROFILE_NAME: 'alice' });
     renderYou();
-    const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
+    const trigger = screen.getByRole('button', { name: /^Alice Chen/ });
     // The row keeps its width for the name, and its name carries no development detail.
     expect(screen.queryByText(copy.devProfile('alice'))).toBeNull();
     expect(trigger).not.toHaveAccessibleName(/Profile:/);
@@ -95,7 +137,7 @@ describe('YouRow', () => {
     vi.stubEnv('DEV', false);
     stubAppConfig({ BIOROUTER_DEV_PROFILE_NAME: 'frank' });
     renderYou();
-    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await user.click(screen.getByRole('button', { name: /^Alice Chen/ }));
     await screen.findByRole('menu');
     expect(screen.queryByText(/^Profile:/)).toBeNull();
   });
@@ -104,7 +146,7 @@ describe('YouRow', () => {
     const user = userEvent.setup();
     stubAppConfig({});
     renderYou();
-    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await user.click(screen.getByRole('button', { name: /^Alice Chen/ }));
     await screen.findByRole('menu');
     expect(screen.queryByText(/^Profile:/)).toBeNull();
   });
@@ -113,7 +155,7 @@ describe('YouRow', () => {
     const user = userEvent.setup();
     const controller = makeController();
     renderYou(controller);
-    const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
+    const trigger = screen.getByRole('button', { name: /^Alice Chen/ });
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
     expect(trigger).toHaveClass('no-drag');
     // A real menu looks like one: a trailing chevron, hidden from assistive technology, that the
@@ -209,7 +251,7 @@ describe('YouRow', () => {
     );
   });
 
-  it('names the login’s server by the person’s own alias for it (D-ALIAS)', async () => {
+  it('names the server by the person’s own alias for it (D-ALIAS), on the row and in the menu', async () => {
     const user = userEvent.setup();
     const labelled = {
       ...connection,
@@ -217,16 +259,38 @@ describe('YouRow', () => {
       server_label: 'lab-server',
     };
     renderYou(makeController({ connection: labelled, connections: [labelled] }));
+    const place = document.querySelector('[data-crew-you-place]') as HTMLElement;
+    expect(place.textContent).toBe(`${copy.on} lab-server`);
+    expect(screen.queryByText(/52\.33\.141\.141/)).toBeNull();
+    expect(screen.queryByText('crew_alice@lab-server')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /^Alice Chen/ }));
+    const menu = await screen.findByRole('menu');
+    const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
+    expect(header.querySelector('[data-crew-you-place]')?.textContent).toBe(
+      `${copy.on} lab-server`
+    );
+    expect(header).not.toHaveTextContent('crew_alice@lab-server');
+  });
+
+  it('shows the aliased login as the placeholder before any snapshot names me', () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      server_label: 'lab-server',
+    };
+    renderYou(
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        connection: labelled,
+        connections: [labelled],
+      })
+    );
     const login = screen.getByText('crew_alice@lab-server');
     expect(login.childNodes).toHaveLength(1);
+    expect(login).toHaveClass('font-mono');
     expect(screen.queryByText(/52\.33\.141\.141/)).toBeNull();
-    await user.click(screen.getByRole('button', { name: /crew_alice@lab-server/ }));
-    const menu = await screen.findByRole('menu');
-    expect(
-      within(menu.querySelector('[data-crew-menu-header]') as HTMLElement).getByText(
-        'crew_alice@lab-server'
-      )
-    ).toBeInTheDocument();
   });
 
   it('tells a joiner the profile items open once they join', async () => {
@@ -242,7 +306,7 @@ describe('YouRow', () => {
   it('gives no reason while every item is available', async () => {
     const user = userEvent.setup();
     renderYou();
-    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await user.click(screen.getByRole('button', { name: /^Alice Chen/ }));
     const menu = await screen.findByRole('menu');
     expect(menu.querySelector('[data-crew-menu-note]')).toBeNull();
     expect(menu).not.toHaveAttribute('aria-describedby');
@@ -253,7 +317,7 @@ describe('YouRow', () => {
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
     const controller = makeController();
     renderYou(controller);
-    const trigger = screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ });
+    const trigger = screen.getByRole('button', { name: /^Alice Chen/ });
     await user.click(trigger);
     const menu = await screen.findByRole('menu');
     await user.click(within(menu).getByRole('menuitem', { name: copy.copyUsername }));
@@ -287,7 +351,7 @@ describe('YouRow', () => {
     vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
     const controller = makeController();
     renderYou(controller);
-    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await user.click(screen.getByRole('button', { name: /^Alice Chen/ }));
     const menu = await screen.findByRole('menu');
     await user.click(within(menu).getByRole('menuitem', { name: copy.copyUsername }));
     expect(

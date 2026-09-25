@@ -8,7 +8,7 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import type { Snapshot } from '../crewApi';
-import { directAddSupported } from '../dialogs/people';
+import { directAddSupported, firstName } from '../dialogs/people';
 import {
   identityCopy,
   joinerPerson,
@@ -20,8 +20,12 @@ import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useSidebarAnnounce } from './SidebarAnnouncer';
 import {
+  expiryText,
   invitationsToMe,
+  joinedAsNamed,
+  joinedLabel,
   joinedWithoutTeam,
+  rememberJoinerNames,
   teamSections,
   useSidebarView,
   waitingToJoin,
@@ -179,7 +183,7 @@ function useJoinedAnnouncements(
     const fresh = newlyWithoutTeam(before, rows);
     if (fresh.length === 0) return;
     announce(
-      fresh.map((row) => copy.joined.announce(personLabel(row.person, 'inline', dir))).join(' ')
+      fresh.map((row) => copy.joined.announce(joinedLabel(row.person, dir, workspaceId))).join(' ')
     );
   }, [rows, connectionId, workspaceId, dir, announce]);
 }
@@ -201,9 +205,11 @@ interface AddableTeam {
  * run out, "Invitation expired" and Invite again…, and no Let in.
  *
  * A row still waiting for its code reads `@frank`, then `Frank Okafor (name on the server
- * account) · invited` on a line of its own, over "Let in… when they send their code" (Q2-42):
- * whose turn it is — the joiner sends a code, then the host lets them in — which the bare name and
- * button never said. The row's state — "invited", "Code entered" or "Invitation expired" — always
+ * account) · invited · expires Sat 1:41 AM` on a line of its own, over "Let in… when Frank sends a
+ * code" (Q2-42, Q4-36): whose turn it is — the joiner sends a code, then the host lets them in —
+ * which the bare name and button never said, and until when (the invitation lasts 24 hours, and
+ * nothing said so). The joiner is named by the first word of their server-account name, else
+ * `@frank`; never "they". The row's state — "invited", "Code entered" or "Invitation expired" — always
  * ends that second line, and only a button ever sits beside the username, which drops below it
  * when the two don't fit: the name and the state wrap rather than truncate, and the username is
  * never squeezed (Q3-53: one line cut "Gina Rossi · invited" to "Gina …"; then "Invitation
@@ -221,13 +227,22 @@ interface AddableTeam {
  *
  * All of them name people through `PersonName` and never show an ID: an invitation the broker did
  * not name yet reads "Invitation" from its inviter, and a joiner reads `@bob` first (the joiner
- * context), because at a host's decision the account name is what matters.
+ * context), because at a host's decision the account name is what matters. Someone who just joined
+ * and has chosen no name yet is named as the Let in dialog and the joined toast name them —
+ * "Jack Moreno (@crew_jack) · joined", from the server-account name their waiting row carried
+ * (Q4-42, `joinedAsNamed`) — rather than a bare `@crew_jack` for the same event.
  */
 export function AttentionSections() {
   const crew = useCrew();
   const { snapshot, verified, dir, title } = useSidebarView(crew);
   const invitations = useMemo(() => invitationsToMe(snapshot, dir), [snapshot, dir]);
   const waiting = useMemo(() => waitingToJoin(snapshot), [snapshot]);
+  // Every server-account name a verified view lists as waiting, so the row that says they joined
+  // can still name them once their waiting row is gone (Q4-42).
+  useEffect(() => {
+    if (verified) rememberJoinerNames(snapshot);
+  }, [verified, snapshot]);
+  const workspaceId = snapshot?.workspace?.id ?? '';
   useWaitingAnnouncements(snapshot, verified, crew.connectionId, title);
   const joined = useMemo(
     () => (crew.isHost ? joinedWithoutTeam(snapshot, dir) : []),
@@ -236,7 +251,7 @@ export function AttentionSections() {
   useJoinedAnnouncements(
     crew.isHost && verified ? joined : null,
     crew.connectionId,
-    snapshot?.workspace?.id ?? '',
+    workspaceId,
     dir
   );
   // The teams the host may add people to: `team.add_member` lets the host add to any of them where
@@ -284,7 +299,14 @@ export function AttentionSections() {
       {joined.length > 0 && (
         <Section label={copy.section.joined} attention="joined">
           {joined.map((row) => (
-            <JoinedItem key={row.id} row={row} teams={addable} dir={dir} actionable={verified} />
+            <JoinedItem
+              key={row.id}
+              row={row}
+              teams={addable}
+              dir={dir}
+              workspaceId={workspaceId}
+              actionable={verified}
+            />
           ))}
         </Section>
       )}
@@ -295,22 +317,27 @@ export function AttentionSections() {
 /**
  * One "Joined, not in your teams" row (Q3-52): "{name} · joined", and Add to a team… — the Add
  * people dialog for the only team the host can add to, or a picker when there are several. With
- * none, the row still says who is waiting to be placed.
+ * none, the row still says who is waiting to be placed. A person who has chosen no name yet reads
+ * "Jack Moreno (@crew_jack)" when their waiting row named their server account (Q4-42).
  */
 function JoinedItem({
   row,
   teams,
   dir,
+  workspaceId,
   actionable,
 }: {
   row: JoinedRow;
   teams: readonly AddableTeam[];
   dir: PeopleDirectory;
+  workspaceId: string;
   /** False while the sidebar shows only the last verified copy: nothing is actionable then. */
   actionable: boolean;
 }) {
   const crew = useCrew();
-  const name = personLabel(row.person, 'inline', dir);
+  // Drawn WITHOUT the directory when it stands in: a lookup would put the bare handle back.
+  const named = joinedAsNamed(row.person, dir, workspaceId);
+  const name = named ? personLabel(named, 'inline') : personLabel(row.person, 'inline', dir);
   const addTo = (teamId: string) =>
     crew.openDialog({ kind: 'add-people', target: 'team', targetId: teamId });
   const only = teams.length === 1 ? teams[0] : null;
@@ -318,7 +345,11 @@ function JoinedItem({
   return (
     <li className="flex min-w-0 items-center gap-2 px-2 py-1.5" data-crew-joined="">
       <span className="crew-sidebar-wrap min-w-0 flex-1 text-secondary">
-        <PersonName person={row.person} context="inline" dir={dir} />
+        {named ? (
+          <PersonName person={named} context="inline" />
+        ) : (
+          <PersonName person={row.person} context="inline" dir={dir} />
+        )}
         <span className="text-text-muted" data-crew-joined-state="">
           {` ${copy.waiting.separator} ${copy.joined.state}`}
         </span>
@@ -376,7 +407,10 @@ function WaitingItem({
   // Still waiting for the joiner's code: say whose turn it is (Q2-42).
   const invited = !join.expired && !join.approved;
   // The joiner layout's own sanitising: the full name on the server account, or nothing.
-  const serverName = joinerPerson(join.username, join.serverName).serverName;
+  const joiner = joinerPerson(join.username, join.serverName);
+  const serverName = joiner.serverName;
+  // Until when (Q4-36): "expires Sat 1:41 AM", only while the joiner still has to send a code.
+  const expiry = invited ? expiryText(join.expiresAt) : null;
   // Where the row stands, always on the name's line (Q3-53): a sentence beside the username left
   // it a column one letter wide ("Invitation expired · Invite again…" is about as wide as the row).
   const state = join.expired
@@ -439,13 +473,16 @@ function WaitingItem({
                 {state.text}
               </>
             )}
+            {expiry && (
+              <span data-crew-waiting-expiry="">{` ${copy.waiting.separator} ${expiry}`}</span>
+            )}
           </span>
         </p>
         {action && <div className="crew-sidebar-waiting-action">{action}</div>}
       </div>
       {invited && (
         <p id={nextId} className="text-supporting text-text-muted" data-crew-waiting-next="">
-          {copy.waiting.nextStep}
+          {copy.waiting.nextStep(firstName(joiner))}
         </p>
       )}
       {join.otherDeviceTried && (

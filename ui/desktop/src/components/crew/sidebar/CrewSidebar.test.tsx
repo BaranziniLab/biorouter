@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation } from '../crewApi';
+import { workspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { crewStatusCopy } from '../state/copy';
 import { CrewSidebar } from './CrewSidebar';
 import { sidebarCopy } from './copy';
+import { SidebarAnnouncer } from './SidebarAnnouncer';
 import {
   alice,
   bob,
@@ -53,7 +56,7 @@ describe('CrewSidebar', () => {
       within(nav).getByRole('heading', { name: sidebarCopy.section.invitations }),
       within(nav).getByRole('button', { name: /^Analysis Lab, / }),
       within(nav).getByTestId('agents-slot'),
-      within(nav).getByText('alice@hpc.ucsf.edu'),
+      nav.querySelector('[data-crew-you]') as HTMLElement,
     ];
     for (let index = 1; index < order.length; index += 1) {
       expect(
@@ -63,7 +66,7 @@ describe('CrewSidebar', () => {
     // The places and the footer sit outside the scrolling middle, which holds the sections.
     const scroll = nav.querySelector('[data-crew-sidebar-scroll]') as HTMLElement;
     expect(scroll).toContainElement(within(nav).getByTestId('agents-slot'));
-    expect(scroll).not.toContainElement(within(nav).getByText('alice@hpc.ucsf.edu'));
+    expect(scroll).not.toContainElement(nav.querySelector('[data-crew-you]') as HTMLElement);
   });
 
   it('explains the arrow keys on the landmark, since Tab reaches only one row (T-64)', () => {
@@ -103,7 +106,9 @@ describe('CrewSidebar', () => {
   it('shows the pinned verified sentence exactly once at rest', () => {
     renderWithCrew(<CrewSidebar />);
     expect(screen.getAllByText(crewStatusCopy.verified)).toHaveLength(1);
-    expect(screen.getAllByText('alice@hpc.ucsf.edu')).toHaveLength(1);
+    // Verified, the You row says where, not the SSH login a third time (Q4-50).
+    expect(document.querySelectorAll('[data-crew-you-place]')).toHaveLength(1);
+    expect(screen.queryByText('alice@hpc.ucsf.edu')).toBeNull();
   });
 
   it('keeps the places from the last verified copy during a refresh, never its security state', () => {
@@ -165,6 +170,70 @@ describe('CrewSidebar', () => {
     for (const control of Array.from(status.querySelectorAll('button'))) {
       expect(control).toHaveClass('no-drag');
     }
+  });
+});
+
+describe('the workspace menu’s fingerprint Copy (Q4-49)', () => {
+  const KEY = '9dacd3e46f083a8a5b76c22ba7c39d939c81538ed20c6ee33e46c9d92931cad3';
+
+  async function openMenu() {
+    const keyed = { ...connection, workspace_public_key: KEY };
+    renderWithCrew(
+      <SidebarAnnouncer>
+        <CrewSidebar />
+      </SidebarAnnouncer>,
+      makeController({ connection: keyed, connections: [keyed] })
+    );
+    const user = userEvent.setup();
+    // After `setup()`, which installs its own clipboard.
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    await user.click(screen.getByRole('button', { name: /^Fixture/ }));
+    const menu = await screen.findByRole('menu');
+    const item = await within(menu).findByRole('menuitem', {
+      name: sidebarCopy.workspaceMenu.copyFingerprintLabel,
+    });
+    return { user, menu, item, writeText };
+  }
+
+  it('sits on the fingerprint’s own line and copies the whole fingerprint, as host step 3 does', async () => {
+    const { user, menu, item, writeText } = await openMenu();
+    const line = menu.querySelector('[data-crew-menu-fingerprint]') as HTMLElement;
+    expect(line).toContainElement(item);
+    expect(item).toHaveTextContent(sidebarCopy.workspaceMenu.copyFingerprint);
+    await user.click(item);
+    const full = await workspaceKeyFingerprint(KEY);
+    expect(full).toMatch(/^[0-9a-f]{64}$/);
+    expect(writeText).toHaveBeenCalledWith(full);
+    // It answers on the item, and the menu stays open with it.
+    await waitFor(() =>
+      expect(item).toHaveAccessibleName(sidebarCopy.workspaceMenu.copiedFingerprint)
+    );
+    expect(item).toHaveTextContent(sidebarCopy.workspaceMenu.copiedFingerprint);
+    expect(item).toHaveAttribute('data-crew-copy-state', 'copied');
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
+      sidebarCopy.clipboard.copied
+    );
+  });
+
+  it('is reached with the arrow keys, and leaves the menu’s description the header’s facts', async () => {
+    const { menu, item } = await openMenu();
+    // A real menu item, so the roving focus reaches it; static text in a menu is skipped.
+    expect(item).toHaveAttribute('role', 'menuitem');
+    const description = menu.getAttribute('aria-describedby') ?? '';
+    expect(description).not.toBe('');
+    expect(menu).toHaveAccessibleDescription(expect.stringContaining('Fingerprint'));
+    expect(menu).not.toHaveAccessibleDescription(expect.stringMatching(/Copy|Copied/));
+  });
+
+  it('says so on the item when the clipboard refuses', async () => {
+    const { user, item, writeText } = await openMenu();
+    writeText.mockRejectedValue(new Error('denied'));
+    await user.click(item);
+    await waitFor(() =>
+      expect(item).toHaveAccessibleName(sidebarCopy.workspaceMenu.copyFingerprintFailed)
+    );
+    expect(item).toHaveAttribute('data-crew-copy-state', 'failed');
   });
 });
 
@@ -276,6 +345,22 @@ describe('crew-sidebar.css', () => {
     expect(block).toMatch(/\.crew-sidebar-row\[aria-current='page'\]::before\s*\{/);
     expect(block).toMatch(/background-color:\s*Highlight/);
     expect(block).toMatch(/forced-color-adjust:\s*none/);
+  });
+
+  it('keeps the Connected dot visible in forced colours, with a CanvasText edge (Q4-52)', () => {
+    // Inside a forced-colours block: nowhere else would the system colour mean anything.
+    const dot =
+      /@media \(forced-colors: active\)\s*\{[^@]*?\.crew-sidebar-status-dot\s*\{([^}]*)\}/.exec(
+        css
+      )?.[1] ?? '';
+    expect(dot).toMatch(/forced-color-adjust:\s*none/);
+    expect(dot).toMatch(/border:\s*1px solid CanvasText/);
+  });
+
+  it('keeps a workspace name whole inside a sentence, without ever running out of its box (Q4-51)', () => {
+    const [name] = bodiesOf(css, '.crew-sidebar-name');
+    expect(name).toMatch(/display:\s*inline-block/);
+    expect(name).toMatch(/max-width:\s*100%/);
   });
 
   it('matches the app sidebar’s rhythm and tints the whole team header (T-62)', () => {

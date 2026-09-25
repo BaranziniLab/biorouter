@@ -163,6 +163,10 @@ export function TeamSection({
 
   const openPeople = () =>
     crew.openDialog({ kind: 'add-people', target: 'team', targetId: section.id });
+  // "Members of {team}…" opens the member list first, for everyone (Q4-35): the same dialog,
+  // titled by what was asked for. Add people stays one step away in it for whoever may add.
+  const openMembers = () =>
+    crew.openDialog({ kind: 'add-people', target: 'team', targetId: section.id, view: 'members' });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const teamIdCopy = useMenuCopyItem(setMenuOpen);
@@ -249,7 +253,7 @@ export function TeamSection({
               <TooltipContent>{copy.team.options(section.name)}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="start" data-crew-menu="team">
-              <DropdownMenuItem disabled={!actionable} onSelect={openPeople}>
+              <DropdownMenuItem disabled={!actionable} onSelect={openMembers}>
                 {copy.teamMenu.members(section.name)}
               </DropdownMenuItem>
               <DropdownMenuItem disabled={!actionable} onSelect={createChannel}>

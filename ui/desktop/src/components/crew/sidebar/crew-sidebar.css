@@ -357,11 +357,20 @@
 
 /* Forced colours drop the active ground and the bar's background (T-58), so
    the selected channel read exactly like its neighbours. The bar is kept in
-   the system's own highlight colour. */
+   the system's own highlight colour.
+
+   They paint the status row's dot away too, leaving only its word (Q4-52).
+   It keeps its own fill, with a CanvasText edge that holds against any system
+   ground; the word still says the state, so the dot is never the only signal. */
 @media (forced-colors: active) {
   .crew-sidebar-row[aria-current='page']::before {
     background-color: Highlight;
     forced-color-adjust: none;
+  }
+
+  .crew-sidebar-status-dot {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
   }
 }
 
@@ -572,6 +581,21 @@
   overflow-wrap: anywhere;
 }
 
+/* A workspace or channel name inside a sentence (Q4-51, `keepNamesWhole`): it
+   moves to the next line whole instead of breaking at its hyphen ("…can see
+   chen-" / "lab."). The effect of `white-space: nowrap`, as an inline block: a
+   box as wide as its own text whenever that fits the line, so a name that fits
+   never breaks. Measured in Chromium at 12px across 14 line offsets: a bare
+   span broke `chen-lab` at 11 of them, this at none. Unlike bare `nowrap` it
+   cannot run out of its box: a name wider than the whole line (a slug runs to
+   40 characters) wraps inside itself, where `nowrap` overflowed a 180px
+   measure at every offset. `keepNamesWhole` puts the full stop after a name
+   inside the span, so it moves with the name. */
+.crew-sidebar-name {
+  display: inline-block;
+  max-width: 100%;
+}
+
 /* The workspace menu's header: not a row, not focusable. */
 .crew-sidebar-menu-header {
   display: flex;
@@ -579,6 +603,36 @@
   gap: 2px;
   padding: 8px 12px;
   min-width: 0;
+}
+
+/* The fingerprint line, with its small Copy at the end (Q4-49): the digits
+   truncate before the Copy does. */
+.crew-sidebar-menu-fingerprint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The Copy itself: a menu item (so the arrow keys reach it) drawn as a compact
+   control on the fingerprint's line rather than as a full-width row. These
+   rules are unlayered, so they win over the row utilities the shared item
+   carries. */
+.crew-sidebar-menu-copy {
+  flex: none;
+  gap: 4px;
+  min-height: 20px;
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border-radius: var(--radius-inner);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-default);
+}
+
+.crew-sidebar-menu-copy-icon {
+  width: 12px;
+  height: 12px;
 }
 
 /* Why a menu's items are disabled: one note above them, not a row. */
