@@ -238,8 +238,10 @@ export function AttachmentCard({
       <div className="crew-attachment-card" data-sending="true">
         <div className="crew-attachment-row">
           <File className="crew-attachment-icon" aria-hidden />
-          <span className="crew-attachment-name">{name}</span>
-          {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
+          <span className="crew-attachment-label">
+            <span className="crew-attachment-name">{name}</span>
+            {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
+          </span>
         </div>
       </div>
     );
@@ -249,16 +251,17 @@ export function AttachmentCard({
     <div className="crew-attachment-card" data-downloading={downloading ? 'true' : undefined}>
       <div className="crew-attachment-row">
         <File className="crew-attachment-icon" aria-hidden />
-        {/* The whole name on hover, however much of it the row can show (Q4-03). */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="crew-attachment-name" data-crew-file-name="">
-              {name}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{name}</TooltipContent>
-        </Tooltip>
-        {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
+        {/* The name and its meta share one box that the name fills first (Q4-03); the whole
+            name is on hover, however much of it the row can show. */}
+        <span className="crew-attachment-label">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="crew-attachment-name">{name}</span>
+            </TooltipTrigger>
+            <TooltipContent>{name}</TooltipContent>
+          </Tooltip>
+          {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
+        </span>
         <span className="crew-attachment-actions">
           <Tooltip>
             <TooltipTrigger asChild>

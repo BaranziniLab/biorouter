@@ -201,12 +201,14 @@ export function FilesTab() {
               >
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
-                  <span className="crew-file-row-name">{file.name}</span>
-                  {onItsWay ? (
-                    <span className="crew-file-row-meta">{filesCopy.sending}</span>
-                  ) : upload ? (
-                    <span className="crew-file-row-meta">{formatBytes(upload.size)}</span>
-                  ) : null}
+                  <span className="crew-file-row-label">
+                    <span className="crew-file-row-name">{file.name}</span>
+                    {onItsWay ? (
+                      <span className="crew-file-row-meta">{filesCopy.sending}</span>
+                    ) : upload ? (
+                      <span className="crew-file-row-meta">{formatBytes(upload.size)}</span>
+                    ) : null}
+                  </span>
                 </div>
               </li>
             ))}
@@ -223,8 +225,10 @@ export function FilesTab() {
               <li key={transfer.id} className="crew-file-row">
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
-                  <span className="crew-file-row-name">{transfer.name}</span>
-                  <span className="crew-file-row-meta">{formatBytes(transfer.size)}</span>
+                  <span className="crew-file-row-label">
+                    <span className="crew-file-row-name">{transfer.name}</span>
+                    <span className="crew-file-row-meta">{formatBytes(transfer.size)}</span>
+                  </span>
                   <Button
                     type="button"
                     variant="secondary"

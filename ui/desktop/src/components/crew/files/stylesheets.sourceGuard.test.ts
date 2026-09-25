@@ -176,27 +176,41 @@ describe('file names win the row (Q4-03) and the Files tab sits on the panel ins
     return found.declarations;
   };
 
-  it('lets the card’s meta give way before its name', () => {
-    // The name gave way first — 28 of the 125px it needed — while the meta kept 152px.
+  it('lets the card’s meta give way wholly before its name loses a letter', () => {
+    // The name gave way first — 28 of the 125px it needed — while the meta kept 152px. Now the
+    // two share one box that takes the row's room; inside it the name does not shrink (but never
+    // outgrows the box) and the meta shrinks into what is left, with an ellipsis.
+    const label = rule('.crew-attachment-label, .crew-file-row-label');
+    expect(label.get('display')).toBe('flex');
+    expect(label.get('flex')).toBe('1 1 auto');
+    expect(label.get('min-width')).toBe('3ch');
+    expect(label.get('overflow')).toBe('hidden');
     const name = rule('.crew-attachment-name');
-    expect(name.get('flex')).toBe('1 1 auto');
-    expect(name.get('min-width')).toBe('3ch');
+    expect(name.get('flex')).toBe('0 0 auto');
+    expect(name.get('max-width')).toBe('100%');
     expect(name.get('text-overflow')).toBe('ellipsis');
     const meta = rule('.crew-attachment-meta');
-    expect(meta.get('flex')).toBe('0 100 auto');
+    expect(meta.get('flex')).toBe('0 1 auto');
     expect(meta.get('min-width')).toBe('0');
     expect(meta.get('overflow')).toBe('hidden');
     expect(meta.get('text-overflow')).toBe('ellipsis');
     // The shared ink rule no longer pins the meta at its full width.
     expect(rule('.crew-attachment-meta, .crew-server-path-note').has('flex-shrink')).toBe(false);
+    // …and the markup puts the two in that box (a sibling of the name would still take a share
+    // of the shrink, and a share is an ellipsis).
+    const card = read(join(FILES_DIR, 'AttachmentCard.tsx'));
+    expect(card).toMatch(
+      /<span className="crew-attachment-label">\s*(<Tooltip>\s*<TooltipTrigger asChild>\s*)?<span className="crew-attachment-name">/
+    );
   });
 
-  it('does the same for a transfer row’s name and state', () => {
+  it('does the same for a Files row’s name and size, and lets a transfer row’s state give way', () => {
+    expect(rule('.crew-file-row-label > .crew-file-row-name').get('flex')).toBe('0 0 auto');
+    expect(rule('.crew-file-row-label > .crew-file-row-name').get('max-width')).toBe('100%');
     const name = rule('.crew-file-row-name');
-    expect(name.get('flex')).toBe('1 1 auto');
     expect(name.get('min-width')).toBe('3ch');
     const meta = rule('.crew-file-row-meta');
-    expect(meta.get('flex')).toBe('0 100 auto');
+    expect(meta.get('flex')).toBe('0 1 auto');
     expect(meta.get('min-width')).toBe('0');
     expect(meta.get('overflow')).toBe('hidden');
     expect(meta.get('text-overflow')).toBe('ellipsis');

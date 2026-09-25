@@ -146,13 +146,30 @@
 /* The name wins the row (Q4-03). It gave way first: `flex: 0 1 auto` against a
    meta that never shrank left "da…" in the Files tab — 28 of the 125px the
    name needed, while the size and date kept their 152px — and cut the name
-   first in the timeline at 1048px too. Now the name takes the room, keeps at
-   least 3ch, and the meta beside it is what gives way: its shrink weight is
-   far above the name's, so the size and date are cut (with an ellipsis) before
-   the name loses a letter. The full name is in the name's tooltip either way. */
-.crew-attachment-name {
+   first in the timeline at 1048px too.
+
+   The name and its meta share one box, `.crew-attachment-label`, which takes
+   the row's room between the glyph and the controls (at least 3ch of it).
+   Inside it the name does not shrink but never outgrows the box, and the meta
+   shrinks, with an ellipsis, into whatever the name leaves: the size and date
+   give way wholly before the name loses a letter, and the name is cut only
+   when it does not fit even alone. (Two siblings with shrink weights cannot
+   promise that: however lopsided the weights, the name still takes a sliver of
+   the shrink, and a sliver is an ellipsis — measured, "dave-plate-reader.c…".)
+   The whole name is in the name's tooltip either way. */
+.crew-attachment-label,
+.crew-file-row-label {
+  display: flex;
   flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
   min-width: 3ch;
+  overflow: hidden;
+}
+
+.crew-attachment-name {
+  flex: 0 0 auto;
+  max-width: 100%;
   overflow: hidden;
   color: var(--text-default);
   font-size: var(--text-secondary);
@@ -172,7 +189,7 @@
 }
 
 .crew-attachment-meta {
-  flex: 0 100 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -312,7 +329,8 @@
   color: var(--text-muted);
 }
 
-/* As on the card (Q4-03): the name takes the room and the meta gives way. */
+/* Beside its meta in a `.crew-file-row-label`, the name fills first as on the
+   card (Q4-03); a transfer row lays the two out by wrapping instead (below). */
 .crew-file-row-name {
   flex: 1 1 auto;
   min-width: 3ch;
@@ -324,8 +342,13 @@
   white-space: nowrap;
 }
 
+.crew-file-row-label > .crew-file-row-name {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
 .crew-file-row-meta {
-  flex: 0 100 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
