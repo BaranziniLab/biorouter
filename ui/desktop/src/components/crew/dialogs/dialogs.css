@@ -233,9 +233,23 @@
 
 /* The live status note, stretched to its tallest form's room: a one-line sentence sits in the
    middle of it, not on the first line over a blank second one ("Jack joined wong-lab", QA Q4-38).
-   The two-line sentence fills the room either way. */
+   The two-line sentence fills the room either way.
+
+   What is centred is the icon and the words TOGETHER, as one row: the Note's grid track, not
+   each child. Centring the children (the round-4 `align-items: center` on the Note's flex row)
+   dropped the check icon between the two lines of "Code saved…", about 7px under where every
+   other Note puts it. In the row the icon keeps the Note's own place, beside the first line; the
+   words are centred on it, so a one-line sentence still has as much room above as below. */
 .crew-steady > .crew-steady-live {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
   align-items: center;
+}
+
+/* The Note's icon, its one `aria-hidden` child. */
+.crew-steady > .crew-steady-live > [aria-hidden='true'] {
+  align-self: start;
 }
 
 /* Text a sizer lays out and nobody reads: generated, so no copy of a sentence reaches the

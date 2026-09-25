@@ -695,7 +695,8 @@ export function SavedViewBody({
  * to {team}" to enable (QA Q3-35). So when `steady` — a joiner is expected — the note shares one
  * grid cell with an unseen copy of its tallest form, the bordered neutral tone laid out with both
  * sentences, and the cell is as tall in both views. The shorter sentence sits in the middle of that
- * room, not on its first line over a blank second one (QA Q4-38; `dialogs.css`).
+ * room, not on its first line over a blank second one (QA Q4-38; `dialogs.css`), and the check icon
+ * stays beside the first line of the longer one, where every other Note puts it.
  *
  * `sizer` draws only the unseen tallest form, for the code view's copy of the saved view.
  */

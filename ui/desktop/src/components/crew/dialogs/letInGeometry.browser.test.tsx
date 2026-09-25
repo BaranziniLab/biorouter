@@ -26,8 +26,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { Check } from '../../icons/app-icons';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Note } from '../../ui/note';
 import type { Team } from '../crewApi';
 import { letInCopy } from './copy';
 import {
@@ -152,6 +154,8 @@ interface Measured {
   /** For a status note: the room above its words, and below them, inside the note. */
   above: number;
   below: number;
+  /** For a status note: how far its icon's top sits below its first line's top. */
+  icon: number;
 }
 
 describe('Let in keeps its height when the joiner arrives, in a real layout engine (Q3-35)', () => {
@@ -196,8 +200,10 @@ describe('Let in keeps its height when the joiner arrives, in a real layout engi
           '</body></html>'
       );
       return await tab.evaluate(() => {
-        const out: Record<string, { block: number; lines: number; above: number; below: number }> =
-          {};
+        const out: Record<
+          string,
+          { block: number; lines: number; above: number; below: number; icon: number }
+        > = {};
         for (const section of Array.from(document.querySelectorAll('section[data-block]'))) {
           const block = section.firstElementChild!;
           // The live note's words, or the hint's own sentence.
@@ -206,13 +212,17 @@ describe('Let in keeps its height when the joiner arrives, in a real layout engi
             section.querySelector('.crew-reserve-shown');
           const words = document.createRange();
           if (shown) words.selectNodeContents(shown);
-          const note = shown?.closest('[role="status"]')?.getBoundingClientRect();
+          const noteElement = shown?.closest('[role="status"]');
+          const note = noteElement?.getBoundingClientRect();
           const text = shown && shown.textContent ? words.getBoundingClientRect() : null;
+          const firstLine = shown && shown.textContent ? words.getClientRects()[0] : null;
+          const icon = noteElement?.querySelector(':scope > svg')?.getBoundingClientRect();
           out[(section as HTMLElement).dataset.block!] = {
             block: block.getBoundingClientRect().height,
             lines: shown && shown.textContent ? words.getClientRects().length : 0,
             above: note && text ? text.top - note.top : 0,
             below: note && text ? note.bottom - text.bottom : 0,
+            icon: icon && firstLine ? icon.top - firstLine.top : Number.NaN,
           };
         }
         return out;
@@ -263,6 +273,29 @@ describe('Let in keeps its height when the joiner arrives, in a real layout engi
     // Not on the first line over a blank second one: as much room below the words as above.
     expect(Math.abs(measured.joined.above - measured.joined.below)).toBeLessThanOrEqual(1);
     expect(measured.joined.below).toBeLessThan(measured.waiting.block / 2);
+  });
+
+  it('keeps the check icon beside the first line, where every other Note puts it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const measured = await layOut({
+      // Any Note: the place its icon takes beside the first line.
+      plain: (
+        <Note icon={Check} role="status">
+          <span>{letInCopy.approved('Gina')}</span>
+        </Note>
+      ),
+      waiting: <SavedCodeStatus joined={false} first="Gina" workspace="ito-lab" steady />,
+      joined: <SavedCodeStatus joined first="Gina" workspace="ito-lab" steady />,
+    });
+    expect(measured.plain.lines).toBeGreaterThanOrEqual(2);
+    expect(measured.waiting.lines).toBeGreaterThanOrEqual(2);
+    expect(Number.isFinite(measured.plain.icon)).toBe(true);
+    // Two lines: the icon is beside the first, not dropped between the two (it was ~7px lower).
+    expect(Math.abs(measured.waiting.icon - measured.plain.icon)).toBeLessThanOrEqual(0.5);
+    // One line, centred in the room: the icon stays level with the words it marks.
+    expect(measured.joined.lines).toBe(1);
+    expect(Math.abs(measured.joined.icon - measured.plain.icon)).toBeLessThanOrEqual(1);
+    expect(Math.abs(measured.joined.above - measured.joined.below)).toBeLessThanOrEqual(1);
   });
 
   it('is exactly as tall as its tallest form, the bordered "Code saved" note', async (ctx) => {
