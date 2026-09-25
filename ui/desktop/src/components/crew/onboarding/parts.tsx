@@ -14,17 +14,28 @@ import './onboarding.css';
  * give every setup card, trust pane and join state the same shape.
  */
 
-/** One centred main-area screen. */
+/**
+ * One main-area screen, centred in the column. `anchor="top"` keeps its card at the top instead,
+ * for a card that changes height while someone reads it (the join states, Q3-48): centred, every
+ * section that opened moved the whole card up.
+ */
 export function SetupScreen({
   children,
   label,
+  anchor = 'center',
 }: {
   children: ReactNode;
   /** The region's accessible name, when the card's own heading is not enough. */
   label?: string;
+  anchor?: 'center' | 'top';
 }) {
   return (
-    <div className="crew-onboard-screen" aria-label={label} role={label ? 'region' : undefined}>
+    <div
+      className="crew-onboard-screen"
+      data-anchor={anchor}
+      aria-label={label}
+      role={label ? 'region' : undefined}
+    >
       {children}
     </div>
   );

@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CREW_NOT_CONNECTED } from '../api/join';
-import { CrewHttpError } from '../crewApi';
+import { CrewHttpError, type CrewConnection } from '../crewApi';
+import { usePendingHost } from '../sidebar/sidebarView';
 import { deriveCrewScreen } from '../state/crewStatus';
+import { noteConnectionVerified, resetConnectionMemoryForTests } from '../state/useCrewConnections';
 import { joinStateCopy, legacyJoinCopy } from './copy';
 import { resetJoinClaimForTests } from './joinClaimState';
 import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
@@ -119,6 +123,7 @@ beforeEach(() => {
   mocks.crewHttp.mockReset();
   resetJoinContextForTests();
   resetJoinClaimForTests();
+  resetConnectionMemoryForTests();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -146,8 +151,10 @@ describe('JoinStatusCard', () => {
     ).toBeInTheDocument();
     expect(crew.setJoinStatus).toHaveBeenCalledWith('invited');
 
-    // Copy takes what is shown: the daemon's code, grouped with its dashes (T-36).
-    fireEvent.click(screen.getByRole('button', { name: 'Copy device code' }));
+    // Copy takes what is shown: the daemon's code, grouped with its dashes (T-36). One noun for one
+    // code, the one a sighted person reads: "your code", never "device code" (Q3-47).
+    expect(screen.queryByRole('button', { name: /device code/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy your code' }));
     await waitFor(() =>
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('7QK2-M9XA-3JTP-WZ4D')
     );
@@ -246,17 +253,19 @@ describe('JoinStatusCard', () => {
     expect(trouble).toHaveAttribute('aria-expanded', 'false');
     // Folded: no second join form, token field or device key competes with the code.
     expect(screen.queryByLabelText('Enrollment invitation')).toBeNull();
-    expect(screen.queryByText(joinStateCopy.otherBody('@alice'))).toBeNull();
+    expect(screen.queryByText(joinStateCopy.otherBody('Alice'))).toBeNull();
     expect(document.body.textContent).not.toMatch(/Device key/);
 
     fireEvent.click(trouble);
-    // Opened, it starts from its condition, never "Send this join request to your host" (Q2-35).
-    expect(screen.getByText(joinStateCopy.otherBody('@alice'))).toBeInTheDocument();
-    expect(screen.getByText('If @alice asks for it, send this instead:')).toBeInTheDocument();
+    // Opened, it starts from its condition, never "Send this join request to your host" (Q2-35),
+    // and names the host as the card's own sentences do ("Send Alice this code"), not `@alice`
+    // beside a card that says "Alice Chen (@alice)" (Q3-46).
+    expect(screen.getByText(joinStateCopy.otherBody('Alice'))).toBeInTheDocument();
+    expect(screen.getByText('If Alice asks for it, send this instead:')).toBeInTheDocument();
     expect(screen.queryByText(legacyJoinCopy.sendRequest)).toBeNull();
-    // The 64-character device key stays folded behind its own control.
+    // The 64-character device key stays folded behind a control that says what it shows (Q3-48).
     expect(document.body.textContent).not.toMatch(/Device key/);
-    const show = screen.getByRole('button', { name: legacyJoinCopy.showRequest });
+    const show = screen.getByRole('button', { name: 'Show the join request for Alice' });
     expect(show).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(show);
     expect(screen.getByRole('button', { name: legacyJoinCopy.hideRequest })).toHaveAttribute(
@@ -266,7 +275,11 @@ describe('JoinStatusCard', () => {
     expect(screen.getByText(new RegExp(`Device key: ${DEVICE_KEY}`))).toBeInTheDocument();
     // The token field says it is only for a token the host sent.
     const token = screen.getByLabelText('Enrollment invitation');
-    expect(token).toHaveAccessibleDescription('Only if @alice sent you a token.');
+    expect(token).toHaveAccessibleDescription('Only if Alice sent you a token.');
+    // Someone who already pressed Join is not offered "Join workspace" again: the button names
+    // the other way in (Q3-48).
+    expect(screen.queryByRole('button', { name: 'Join workspace' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Join with a token' })).toBeInTheDocument();
   });
 
   it('opens straight on the token path when the probe already found it', () => {
@@ -620,5 +633,120 @@ describe('JoinStatusCard', () => {
     });
     expect(mocks.crewHttp).toHaveBeenCalledTimes(1);
     visibility.mockRestore();
+  });
+  it('names the inviter for the rail as soon as a poll names them, not when the join ends (Q3-46)', async () => {
+    vi.useFakeTimers();
+    // The invitation named only the handle; the workspace knows the name.
+    updateJoinContext('conn-1', {
+      hostUsername: 'alice',
+      hostDisplayName: null,
+      workspaceName: 'lab',
+    });
+    answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE, workspace_name: 'lab' });
+    function Rail() {
+      const { host } = usePendingHost({ connectionId: 'conn-1' });
+      return <p data-testid="rail">{`Waiting for ${host ?? 'your host'} to let you in`}</p>;
+    }
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: fakeConnection(),
+      connections: [fakeConnection()],
+      screen: 'join',
+    });
+    renderWithCrew(
+      <>
+        <JoinStatusCard />
+        <Rail />
+      </>,
+      crew
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Still waiting, and the rail already says what the card says.
+    expect(screen.getByText('Alice Chen (@alice) invited you to lab.')).toBeInTheDocument();
+    expect(screen.getByTestId('rail')).toHaveTextContent(
+      'Waiting for Alice Chen (@alice) to let you in'
+    );
+    expect(readJoinContext('conn-1')).toMatchObject({
+      hostUsername: 'alice',
+      hostDisplayName: 'Alice Chen',
+    });
+    expect(crew.setJoinStatus).not.toHaveBeenCalledWith('joined');
+
+    // A poll that says the same thing writes nothing: the same record is read back.
+    const recorded = readJoinContext('conn-1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(JOIN_POLL_INTERVAL_MS);
+    });
+    expect(countCalls('GET')).toBe(2);
+    expect(readJoinContext('conn-1')).toBe(recorded);
+  });
+
+  it('tells a member the workspace removed that they are no longer in it (Q3-50)', async () => {
+    updateJoinContext('conn-1', {
+      hostUsername: 'alice',
+      hostDisplayName: 'Alice Chen',
+      workspaceName: 'lab',
+    });
+    // This computer was a member earlier in this session.
+    noteConnectionVerified('conn-1');
+    answerJoin({ status: 'not_invited' });
+    renderCard();
+
+    expect(await screen.findByText(joinStateCopy.removedTitle('lab'))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This computer or your account was removed from lab. If you didn’t expect that, ask Alice Chen (@alice).'
+      )
+    ).toBeInTheDocument();
+    // Removed, not "not yet": no invitation request to send, and no second way to join.
+    expect(screen.queryByText(joinStateCopy.notInvitedTitle('lab'))).toBeNull();
+    expect(screen.queryByText(/please invite/)).toBeNull();
+    expect(screen.queryByRole('button', { name: joinStateCopy.other })).toBeNull();
+  });
+
+  it('believes the daemon when it recorded that the membership ended (Q3-50)', async () => {
+    updateJoinContext('conn-1', { workspaceName: 'lab' });
+    const ended = {
+      ...fakeConnection(),
+      last_error_code: 'crew_membership_ended',
+    } as CrewConnection;
+    answerJoin({ status: 'not_invited' });
+    renderCard({ connection: ended, connections: [ended] });
+
+    expect(await screen.findByText(joinStateCopy.removedTitle('lab'))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This computer or your account was removed from lab. If you didn’t expect that, ask your host.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('keeps "not in … yet" for someone this computer never saw admitted (Q3-50)', async () => {
+    updateJoinContext('conn-1', { workspaceName: 'lab' });
+    const other = {
+      ...fakeConnection(),
+      last_error_code: 'crew_ssh_auth_required',
+    } as CrewConnection;
+    answerJoin({ status: 'not_invited' });
+    renderCard({ connection: other, connections: [other] });
+    expect(await screen.findByText(joinStateCopy.notInvitedTitle('lab'))).toBeInTheDocument();
+    expect(screen.queryByText(joinStateCopy.removedTitle('lab'))).toBeNull();
+  });
+
+  it('keeps the card at the top of the column, so an opened section grows it downward (Q3-48)', async () => {
+    answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE });
+    renderCard();
+    await screen.findByRole('button', { name: joinStateCopy.other });
+    const column = document.querySelector('.crew-onboard-screen');
+    expect(column).toHaveAttribute('data-anchor', 'top');
+
+    // jsdom lays nothing out, so the rule that does the anchoring is checked where it is written:
+    // top-anchored screens are not vertically centred.
+    const css = readFileSync(join(__dirname, 'onboarding.css'), 'utf8');
+    const rule = css.match(/\.crew-onboard-screen\[data-anchor='top'\]\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/justify-content:\s*flex-start/);
   });
 });

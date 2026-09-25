@@ -38,6 +38,24 @@ export function connectionServerLabel(
 }
 
 /**
+ * The code the daemon records on a saved connection whose workspace ended this computer's
+ * membership (`last_error_code` on `GET /crew/connections`, Q3-50).
+ */
+export const CREW_MEMBERSHIP_ENDED = 'crew_membership_ended';
+
+/**
+ * Whether the daemon recorded that the workspace ended this saved connection's membership. Read
+ * defensively: the field is optional and additive, and a daemon that predates it says nothing.
+ */
+export function membershipEnded(connection: unknown): boolean {
+  return (
+    typeof connection === 'object' &&
+    connection !== null &&
+    (connection as { last_error_code?: unknown }).last_error_code === CREW_MEMBERSHIP_ENDED
+  );
+}
+
+/**
  * How a person is addressed in a sentence that names them once more ("Send Alice this code"):
  * the first word of a chosen display name, else `@username`.
  */

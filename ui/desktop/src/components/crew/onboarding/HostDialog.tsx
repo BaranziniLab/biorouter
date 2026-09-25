@@ -244,8 +244,9 @@ export interface HostDialogProps {
  *   and asks the workspace to make this computer its first admin device (`auth.bootstrap`).
  *
  * A Private workspace without an institution label is then asked once to take the host's
- * institution — an irreversible label, so it has its own "Set {id} permanently". A host setup
- * interrupted after saving is remembered on this computer and resumes at Create.
+ * institution — an irreversible label, so it has its own "Mark as {id}", with what it does and
+ * what Not now leaves open (Q3-45). A host setup interrupted after saving is remembered on this
+ * computer and resumes at Create.
  */
 export function HostDialog({ open, onOpenChange }: HostDialogProps) {
   const crew = useCrew();
@@ -320,6 +321,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   /** Where focus goes once the step it was on has gone: Start it for me, or Create workspace. */
   const [focusNext, setFocusNext] = useState<'start' | 'submit' | null>(null);
   const startHintId = useId();
+  const labelLaterId = useId();
   const [socketPath, setSocketPath] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
   const [ownerUid, setOwnerUid] = useState('');
@@ -446,7 +448,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           setConnectSettled(false);
           return;
         }
-        updateJoinContext(connectionId, { hostSetup: false, joining: false });
+        // The host never joins, so the join flow's name offer would never reach them: make it
+        // here, for the checklist to ask before the first invitation goes out (Q3-51).
+        updateJoinContext(connectionId, { hostSetup: false, joining: false, suggestName: true });
         crew.setJoinStatus('joined');
         // An observation error from before the workspace existed is not a verdict on it: only a
         // new one closes the dialog while it verifies (T-09).
@@ -922,6 +926,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             type="button"
             variant="secondary"
             disabled={crew.isPending('mutate:policy.set')}
+            aria-describedby={labelLaterId}
             onClick={onClose}
           >
             {hostCopy.labelLater}
@@ -1358,7 +1363,15 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               ) : null}
 
               {step === 'label' ? (
-                <p className="text-body text-text-default">{hostCopy.labelBody}</p>
+                // What the label does, and what Not now leaves open (Q3-45).
+                <div className="crew-onboard-stack">
+                  <p className="text-body text-text-default">
+                    {hostCopy.labelEffect(workspaceLabel, labelInstitution ?? '')}
+                  </p>
+                  <p id={labelLaterId} className="text-supporting text-text-muted">
+                    {hostCopy.labelLaterHelper(workspaceLabel)}
+                  </p>
+                </div>
               ) : null}
             </div>
           </div>

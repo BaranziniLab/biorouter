@@ -369,6 +369,8 @@ describe('HostDialog', () => {
       status: 'disconnected',
     });
     const view = renderHost({ connect, saveConnection: vi.fn().mockResolvedValue(saved) });
+    // An answer this computer once recorded for the id does not stand for the new workspace.
+    updateJoinContext('conn-host', { suggestName: false });
     await throughStart();
 
     expect(screen.getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
@@ -413,7 +415,9 @@ describe('HostDialog', () => {
     );
     await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('joined'));
     expect(crew.refresh).toHaveBeenCalled();
-    expect(readJoinContext('conn-host')).toMatchObject({ hostSetup: false });
+    // The host never joins, so Create makes the server-account name offer the join flow would
+    // have (Q3-51): the checklist asks before the first invitation goes out.
+    expect(readJoinContext('conn-host')).toMatchObject({ hostSetup: false, suggestName: true });
 
     // Verified, Private and unlabelled: ask once for the host's institution.
     const snapshot = fakeSnapshot({
@@ -436,9 +440,23 @@ describe('HostDialog', () => {
         policyEpoch: 1,
       },
     });
-    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
-    expect(screen.getByText(hostCopy.labelBody)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: hostCopy.labelSet('ucsf') }));
+    // It says what the label does — only what the broker enforces — and what Not now leaves open
+    // (Q3-45), instead of "Label lab-data as ucsf? This can't be changed later."
+    expect(
+      await screen.findByRole('dialog', { name: 'Mark lab-data as a ucsf workspace?' })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: hostCopy.labelLater })).toHaveAccessibleDescription(
+      'Until then, people can chat and share files in lab-data, but agents can’t work there. You can do this later from Get lab-data ready, or from Privacy… in the workspace menu.'
+    );
+    expect(document.body.textContent).not.toMatch(/\bLabel\b|changed later/);
+    // A separate, explicit confirmation: nothing is set until the person presses it.
+    expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as ucsf' }));
     await waitFor(() =>
       expect(crew.mutate).toHaveBeenCalledWith('policy.set', {
         mode: 'private',
@@ -667,13 +685,21 @@ describe('HostDialog', () => {
         saveConnection: vi.fn().mockResolvedValue(fakeConnection({ id: 'conn-host' })),
       });
       await fillName();
-      expect(screen.getByText(hostCopy.advancedSummary)).toBeInTheDocument();
-      expect(hostCopy.advancedSummary).not.toMatch(/agent/);
+      // Advanced, folded, says what it holds in plain words, the same as Join's (Q3-49).
+      expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAccessibleDescription(
+        'server connection details'
+      );
+      expect(hostCopy.advancedSummary).toBe(joinCopy.advancedSummary);
+      expect(hostCopy.advancedSummary).not.toMatch(/agent|Port|SSH/);
       const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
       expect(row).toHaveAccessibleDescription('No work folder · agent commands off');
       fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
       expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
       fireEvent.click(row);
+      // The work folder in plain words, not "an absolute path on the server" (Q3-49).
+      expect(screen.getByLabelText(joinCopy.remoteFolder)).toHaveAccessibleDescription(
+        'Optional. A folder on hpc.ucsf.edu, starting with /. Your agent can read and write files there.'
+      );
       fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
         target: { value: '/srv/lab' },
       });

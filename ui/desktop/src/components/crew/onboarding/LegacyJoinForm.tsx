@@ -16,10 +16,11 @@ import { useMounted } from './fields';
  * request — their username and this computer's public device key, never a secret — and pastes back
  * the token the host's older invitation form produced. The broker decides; this only carries it.
  *
- * `host` makes it the fallback (Q2-35): it opens on the condition ("If @alice asks for it, send
- * this instead:"), keeps the 64-character key folded behind "Show join request", and says the
- * token field is only for a token the host sent. Without it, this is the only way in, and the
- * request is shown outright.
+ * `host` makes it the fallback (Q2-35): it opens on the condition ("If Alice asks for it, send
+ * this instead:"), keeps the 64-character key folded behind "Show the join request for Alice", and
+ * says the token field is only for a token the host sent. Its button is "Join with a token": the
+ * person already pressed Join, and a second "Join workspace" read as doing that again (Q3-48).
+ * Without `host`, this is the only way in, and the request is shown outright.
  */
 export function LegacyJoinForm({
   workspace,
@@ -28,7 +29,10 @@ export function LegacyJoinForm({
 }: {
   workspace: string;
   username: string | null;
-  /** The host, as a sentence names them (`@alice`, or "your host"): marks this as the fallback. */
+  /**
+   * The host, as the join card's sentences name them ("Alice", `@alice`, or "your host"): marks
+   * this as the fallback.
+   */
   host?: string;
 }) {
   const crew = useCrew();
@@ -80,7 +84,7 @@ export function LegacyJoinForm({
               aria-controls={requestShown ? requestId : undefined}
               onClick={() => setRequestShown((shown) => !shown)}
             >
-              {requestShown ? legacyJoinCopy.hideRequest : legacyJoinCopy.showRequest}
+              {requestShown ? legacyJoinCopy.hideRequest : legacyJoinCopy.showRequest(host)}
             </Button>
           </div>
           {requestShown ? (
@@ -121,7 +125,11 @@ export function LegacyJoinForm({
         ) : null}
         <div className="crew-onboard-actions">
           <Button type="submit" disabled={pending || !token.trim()}>
-            {pending ? legacyJoinCopy.submitting : legacyJoinCopy.submit}
+            {pending
+              ? legacyJoinCopy.submitting
+              : fallback
+                ? legacyJoinCopy.submitToken
+                : legacyJoinCopy.submit}
           </Button>
         </div>
       </form>

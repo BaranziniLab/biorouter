@@ -22,6 +22,16 @@
   overflow-y: auto;
 }
 
+/* A card that grows while it is read (the join states: "Having trouble
+   joining?" opens under the code) sits at the top of the column, so it
+   grows downward and the code stays under the pointer (Q3-48). Centred, it
+   moved up by half of every section that opened. The top inset keeps it
+   off the channel header without re-centring it. */
+.crew-onboard-screen[data-anchor='top'] {
+  justify-content: flex-start;
+  padding-top: 48px;
+}
+
 /* The setup card: a form-width column on the card ground, one step up from
    the canvas. */
 .crew-onboard-card {
@@ -343,6 +353,15 @@
 
 .crew-onboard-check-row[data-done='true'] .crew-onboard-check-text {
   color: var(--text-muted);
+}
+
+/* A step's buttons, kept together when the row wraps (the name row has two:
+   Use and Edit…, Q3-51). */
+.crew-onboard-check-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
 }
 
 /* The compact invite line a channel keeps while the host is still alone in

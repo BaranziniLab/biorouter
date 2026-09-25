@@ -44,17 +44,18 @@ export const joinCopy = {
   username: (server: string) => `Your username on ${server}`,
   usernameFallback: 'Your username on the server',
   /**
-   * The folded privacy line (Q2-36). It names what the choice governs, the models, because "You'll
-   * join as Private" read as an identity. `institution` is already formatted for display.
+   * The folded privacy line (Q2-36). It names what the choice governs, the AI models ("Models"
+   * alone read as something about the person or the lab, Q3-49), because "You'll join as Private"
+   * read as an identity. `institution` is already formatted for display.
    */
   privacyLine: (mode: 'private' | 'public', institution: string | null) =>
     mode === 'public'
-      ? 'Models: public allowed for public-safe work'
+      ? 'AI models: public allowed for public-safe work'
       : institution
-        ? `Models: private and ${institution}-approved only`
-        : 'Models: private and institution-approved only',
+        ? `AI models: private and ${institution}-approved only`
+        : 'AI models: private and institution-approved only',
   /** The join line while the invitation states no privacy and the person hasn't chosen one. */
-  privacyChoose: 'Choose which models may work here: Private or Public.',
+  privacyChoose: 'Choose which AI models may work here: Private or Public.',
   change: 'Change',
   /** Folds the open privacy choice back into its one-line summary. */
   privacyDone: 'Done',
@@ -104,8 +105,11 @@ export const joinCopy = {
   connecting: (server: string) => `Connecting to ${server}…`,
   cancel: 'Cancel',
   unnamedWorkspace: 'this workspace',
-  /** Advanced holds the SSH settings only; the agent's permissions have their own row (Q2-37). */
-  advancedSummary: (port: number) => `Port ${port} · your SSH settings`,
+  /**
+   * Advanced holds the SSH settings only; the agent's permissions have their own row (Q2-37). The
+   * summary says what is inside in plain words; the port is one of the fields there (Q3-49).
+   */
+  advancedSummary: 'server connection details',
   /**
    * The agent's permissions on the server, in their own labelled row outside Advanced (Q2-37): a
    * permission to run commands on a lab server is not an SSH setting.
@@ -126,9 +130,10 @@ export const joinCopy = {
   jumpHost: 'Jump host',
   connectionName: 'Connection name',
   remoteFolder: 'Remote work folder',
-  remoteFolderHelper:
-    'Optional. An absolute path on the server; your agent can read and write files there.',
-  remoteFolderInvalid: 'Start with / — an absolute path on the server.',
+  /** Plain words for an absolute path (Q3-49): what it looks like, then what it allows. */
+  remoteFolderHelper: (server: string) =>
+    `Optional. A folder on ${server}, starting with /. Your agent can read and write files there.`,
+  remoteFolderInvalid: 'Start with / — the full path of a folder on the server.',
   remoteExecution: 'Let my agent run commands in this folder',
   /** Why the agent-commands switch is off limits: it needs the folder first. */
   remoteExecutionNeedsFolder: 'Add a remote work folder first.',
@@ -158,7 +163,11 @@ export const joinStateCopy = {
   invitedDevice: (person: string, workspace: string) =>
     `${person} invited this computer to your account in ${workspace}.`,
   sendCode: (first: string) => `Send ${first} this code:`,
-  codeLabel: 'device code',
+  /**
+   * The code's name wherever it is named rather than pointed at ("Copy your code"): one noun for
+   * one code (Q3-47). The card's sentence keeps "this code", beside it.
+   */
+  codeLabel: 'your code',
   waiting: (first: string) => `Waiting for ${first} to let you in…`,
   approved: (workspace: string) => `Joining ${workspace}…`,
   approvedDevice: (workspace: string) => `Adding this computer to ${workspace}…`,
@@ -172,6 +181,14 @@ export const joinStateCopy = {
   notInvitedMessage: (first: string | null, username: string | null, workspace: string) =>
     `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew.`,
   notInvitedMessageLabel: 'message to your host',
+  /**
+   * A member the workspace no longer admits (Q3-50): this computer was a member this session, or
+   * the daemon recorded that its membership ended. Removed, not "not yet" invited, so there is no
+   * invitation request to send.
+   */
+  removedTitle: (workspace: string) => `You’re no longer in ${workspace}`,
+  removedBody: (workspace: string, person: string) =>
+    `This computer or your account was removed from ${workspace}. If you didn’t expect that, ask ${person}.`,
   expired: (person: string) => `This invitation expired. Ask ${person} to invite you again.`,
   yourHost: 'your host',
   /** "your host" at the start of a sentence. */
@@ -202,15 +219,23 @@ export const legacyJoinCopy = {
   title: 'Join with an invitation token',
   sendRequest: 'Send this join request to your host:',
   requestLabel: 'join request',
-  /** Under "Having trouble joining?", the device key stays folded behind these (Q2-35). */
-  showRequest: 'Show join request',
-  hideRequest: 'Hide join request',
+  /**
+   * Under "Having trouble joining?", the device key stays folded behind these (Q2-35). They say
+   * what is shown and for whom (Q3-48).
+   */
+  showRequest: (host: string) => `Show the join request for ${host}`,
+  hideRequest: 'Hide the join request',
   /** The accessible name of the token field (pinned). */
   tokenName: 'Enrollment invitation',
   tokenPlaceholder: 'Token from an older invitation',
   /** Only the host's older invitation form makes a token: never something to go looking for. */
   tokenHelper: (host: string) => `Only if ${host} sent you a token.`,
   submit: 'Join workspace',
+  /**
+   * The same button under "Having trouble joining?", where the person already pressed Join: it
+   * names the other way in, not the join again (Q3-48).
+   */
+  submitToken: 'Join with a token',
   submitting: 'Joining…',
   /** The body of the join request, which a host pastes into the older invitation form. */
   request: (workspace: string, username: string | null, key: string) =>
@@ -246,8 +271,8 @@ export const hostCopy = {
   institutionHelper: 'Your organization’s short ID. People who join as Private use the same one.',
   continue: 'Continue',
   preparing: 'Preparing…',
-  /** Advanced holds the SSH settings only; the agent row states its own (Q2-37). */
-  advancedSummary: 'Port 22 · your SSH settings',
+  /** Advanced holds the SSH settings only; the agent row states its own (Q2-37, Q3-49). */
+  advancedSummary: joinCopy.advancedSummary,
   jumpHosts: 'Jump hosts',
   // Step 2
   startHeading: (server: string) => `Start Crew on ${server}`,
@@ -327,16 +352,35 @@ export const hostCopy = {
   creating: 'Creating…',
   signingIn: 'Waiting for you to sign in…',
   signInEnded: 'Sign-in didn’t finish. Choose Create workspace to try again.',
-  // Label step
-  labelTitle: (workspace: string, id: string) => `Label ${workspace} as ${id}?`,
-  labelBody: 'This can’t be changed later.',
-  labelSet: (id: string) => `Set ${id} permanently`,
+  // Label step (Q3-45). Only what the broker and daemon enforce: an institution-labelled Private
+  // workspace admits an agent only on a model approved for that institution
+  // (`enforce_institution_policy`, `institution::admission`), an unlabelled one admits no agent at
+  // all ("unlabelled private workspaces allow human collaboration only"), and `policy.set` refuses
+  // to change or clear the label once set. The composer's institution note shares these words.
+  labelTitle: (workspace: string, id: string) => `Mark ${workspace} as a ${id} workspace?`,
+  /** Workspace-free, for the composer's note, whose title names the workspace. */
+  labelBody:
+    'Agents working here can then use only models approved for that institution. This can’t be undone.',
+  labelEffect: (workspace: string, id: string) =>
+    `Agents working in ${workspace} can then use only models approved for ${id}. This can’t be undone.`,
+  /** Under the choice: what Not now leaves open, and where to finish it later. */
+  labelLaterHelper: (workspace: string) =>
+    `Until then, people can chat and share files in ${workspace}, but agents can’t work there. You can do this later from Get ${workspace} ready, or from Privacy… in the workspace menu.`,
+  labelSet: (id: string) => `Mark as ${id}`,
   labelLater: 'Not now',
   done: 'Done',
 } as const;
 
 export const checklistCopy = {
   title: (workspace: string) => `Get ${workspace} ready`,
+  /**
+   * The server-account name, offered to the host before Invite (Q3-51), so the first invitation
+   * names them. Offered, never applied: Use and Edit… are the answers.
+   */
+  name: (name: string) => `Your name: Use “${name}”?`,
+  nameSet: (name: string) => `Your name: ${name}`,
+  useName: nameSuggestionCopy.use,
+  editName: nameSuggestionCopy.edit,
   institution: 'Confirm the institution',
   setInstitution: (id: string) => `Set institution to ${id}…`,
   institutionMissing: 'Add your institution in Connection settings first.',

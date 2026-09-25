@@ -23,11 +23,12 @@ import {
 } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { failureMessage } from '../state/observationFailure';
+import { connectionVerifiedThisSession } from '../state/useCrewConnections';
 import { joinStateCopy, legacyJoinCopy } from './copy';
 import { useMounted } from './fields';
 import { forgetJoinClaim, readJoinClaim, updateJoinClaim, useJoinClaim } from './joinClaimState';
-import { updateJoinContext, useJoinContext } from './joinContext';
-import { firstName, sshUsername } from './joinText';
+import { readJoinContext, updateJoinContext, useJoinContext } from './joinContext';
+import { firstName, membershipEnded, sshUsername } from './joinText';
 import { LegacyJoinForm } from './LegacyJoinForm';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 
@@ -59,6 +60,36 @@ function visible(): boolean {
 /** One host approval of this computer's code, as the claim path counts it. */
 function approvalOf(connectionId: string, status: CrewJoinStatus): string {
   return `${connectionId}:${status.code ?? ''}`;
+}
+
+/**
+ * Record what the workspace just said about who invited this computer (and what it calls itself),
+ * the moment it says it (Q3-46). The rail's "Waiting for …" and "Having trouble joining?" read the
+ * join context, so recording it only when the join finished left them naming `@alice` beside a card
+ * that said "Alice Chen (@alice)". Nothing is written when nothing changed: a poll every five
+ * seconds must not re-render every reader.
+ */
+function rememberInviter(
+  connectionId: string,
+  inviter: { username: string; display_name?: string | null } | null | undefined,
+  workspaceName: string | null | undefined
+): void {
+  if (!connectionId) return;
+  const known = readJoinContext(connectionId);
+  const patch: { hostUsername?: string; hostDisplayName?: string | null; workspaceName?: string } =
+    {};
+  if (inviter?.username) {
+    const displayName = inviter.display_name ?? null;
+    if (
+      known.hostUsername !== inviter.username ||
+      (known.hostDisplayName ?? null) !== displayName
+    ) {
+      patch.hostUsername = inviter.username;
+      patch.hostDisplayName = displayName;
+    }
+  }
+  if (workspaceName && known.workspaceName !== workspaceName) patch.workspaceName = workspaceName;
+  if (Object.keys(patch).length > 0) updateJoinContext(connectionId, patch);
 }
 
 /**
@@ -129,14 +160,8 @@ export function JoinStatusCard() {
       joined.current = true;
       forgetJoinClaim(connectionId);
       // The workspace named who invited this computer: remember it for the screens that follow.
-      const inviter = claimed?.inviter;
-      updateJoinContext(connectionId, {
-        joining: false,
-        ...(inviter
-          ? { hostUsername: inviter.username, hostDisplayName: inviter.display_name ?? null }
-          : {}),
-        ...(claimed?.workspace_name ? { workspaceName: claimed.workspace_name } : {}),
-      });
+      rememberInviter(connectionId, claimed?.inviter, claimed?.workspace_name);
+      updateJoinContext(connectionId, { joining: false });
       setJoinStatus('joined');
       void refresh();
     },
@@ -301,6 +326,8 @@ export function JoinStatusCard() {
     setClaim({ pending: true, error: null });
     claimJoin(connectionId).then(
       (claimed) => {
+        // Who invited this computer is true whichever mount hears it (Q3-46).
+        rememberInviter(connectionId, claimed?.inviter, claimed?.workspace_name);
         // Unmounted: leave the store as it is. The approval stays claimed, so no mount sends a
         // second claim for a join that succeeded; the next mount's poll reads `joined` and
         // finishes. (`finishJoined` is not called from here: it reports to the controller, whose
@@ -355,6 +382,19 @@ export function JoinStatusCard() {
     );
   }, [status, connectionId, finishJoined, mounted, recoverConnection]);
 
+  // A poll that names the inviter names them for the rail and "Having trouble joining?" too, at
+  // once rather than when the join finishes (Q3-46).
+  const inviterUsername = status?.inviter?.username ?? null;
+  const inviterDisplayName = status?.inviter?.display_name ?? null;
+  const statusWorkspace = status?.workspace_name ?? null;
+  useEffect(() => {
+    rememberInviter(
+      connectionId,
+      inviterUsername ? { username: inviterUsername, display_name: inviterDisplayName } : null,
+      statusWorkspace
+    );
+  }, [connectionId, inviterUsername, inviterDisplayName, statusWorkspace]);
+
   const retryClaim = () => {
     // A person's press: one fresh claim, with its own automatic reconnect if the link dropped.
     claimErrorFor.current = null;
@@ -390,18 +430,18 @@ export function JoinStatusCard() {
   // A connect the card started is running, whichever mount started it.
   const reconnecting = link === 'reconnecting' || claimState.connecting;
 
-  // The token path, folded under "Having trouble joining?". It opens on its condition ("If @alice
+  // The token path, folded under "Having trouble joining?". It opens on its condition ("If Alice
   // asks for it, send this instead:") with the device key folded again, so it never reads as a
-  // second thing to send after the code (T-35, Q2-35).
+  // second thing to send after the code (T-35, Q2-35). It names the host as the card's sentences
+  // do (Q3-46).
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
-      <LegacyJoinForm
-        workspace={workspace}
-        username={username || null}
-        host={inviter ? `@${inviter.username}` : joinStateCopy.yourHost}
-      />
+      <LegacyJoinForm workspace={workspace} username={username || null} host={first} />
     </Disclosure>
   );
+  // This computer was a member and the workspace no longer admits it: removed, not "not yet"
+  // invited (Q3-50). Seen verified this session, or the daemon recorded the membership's end.
+  const removed = connectionVerifiedThisSession(connectionId) || membershipEnded(connection);
 
   let card;
   if (context.hostSetup) {
@@ -483,6 +523,14 @@ export function JoinStatusCard() {
     );
   } else if (status?.status === 'expired') {
     card = <SetupCard key="expired" icon={Clock} title={joinStateCopy.expired(person)} />;
+  } else if (removed) {
+    card = (
+      <SetupCard key="removed" icon={Users} title={joinStateCopy.removedTitle(workspace)}>
+        <p className="text-body text-text-default">
+          {joinStateCopy.removedBody(workspace, person)}
+        </p>
+      </SetupCard>
+    );
   } else {
     card = (
       <SetupCard key="not-invited" icon={Users} title={joinStateCopy.notInvitedTitle(workspace)}>
@@ -504,7 +552,9 @@ export function JoinStatusCard() {
   }
 
   return (
-    <SetupScreen>
+    // Anchored to the top of the column, so a section that opens ("Having trouble joining?") grows
+    // the card downward instead of moving the code under the pointer (Q3-48).
+    <SetupScreen anchor="top">
       {card}
       {reconnecting ? (
         <div className="crew-onboard-card">

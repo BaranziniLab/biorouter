@@ -16,7 +16,7 @@ import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { cn } from '../../../utils';
 import { INSTITUTION_ID_PATTERN } from '../identity';
-import { joinCopy } from './copy';
+import { hostCopy, joinCopy } from './copy';
 
 /** The props a `Field` hands its control, so the label, helper and invalid state are wired once. */
 export interface FieldControlProps {
@@ -338,9 +338,10 @@ export function AgentAccessFields({
   onRemoteExecution: (value: boolean) => void;
 }) {
   const folder = remoteRoot.trim();
+  const serverName = server || hostCopy.theServer;
   return (
     <Disclosure
-      label={joinCopy.agentHeading(server || 'the server')}
+      label={joinCopy.agentHeading(serverName)}
       open={open}
       onOpenChange={onOpenChange}
       summary={joinCopy.agentSummary(folder, Boolean(folder) && remoteExecution)}
@@ -348,7 +349,7 @@ export function AgentAccessFields({
       <div className="crew-onboard-form" data-testid="crew-onboard-agent">
         <Field
           label={joinCopy.remoteFolder}
-          helper={joinCopy.remoteFolderHelper}
+          helper={joinCopy.remoteFolderHelper(serverName)}
           invalidMessage={joinCopy.remoteFolderInvalid}
         >
           {(props) => (

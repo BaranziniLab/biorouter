@@ -53,7 +53,7 @@ import {
   useOpenGeneration,
 } from './fields';
 import { updateJoinContext } from './joinContext';
-import { groupWorkspaceFingerprint } from './joinText';
+import { firstName, groupWorkspaceFingerprint } from './joinText';
 import { PrivacyLabel } from './parts';
 
 type Mode = 'private' | 'public';
@@ -552,13 +552,15 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         display_name: preview.host_display_name,
       })
     : null;
-  // "Ask @alice which institution lab uses": the invitation carried none, so say whom to ask.
+  // The host after "Hosted by" named them in full: every later sentence calls them what the join
+  // card does — the first word of their name, else `@alice` while the invitation names none, else
+  // "your host" (Q3-46).
+  const hostHandle = firstName(host) ?? joinStateCopy.yourHost;
+  const hostSubject = firstName(host) ?? joinStateCopy.yourHostSubject;
+  // "Ask Alice which institution lab uses": the invitation carried none, so say whom to ask.
   const institutionHelper =
     preview && !preview.workspace_institution_id
-      ? joinCopy.institutionUnknown(
-          host ? `@${host.username}` : joinStateCopy.yourHost,
-          workspaceLabel
-        )
+      ? joinCopy.institutionUnknown(hostHandle, workspaceLabel)
       : undefined;
   // The short form the host reads out (computed here, else the daemon's). Never copyable here: it
   // looks like the join code and is not something the joiner sends (Q2-04).
@@ -575,10 +577,6 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         : previewState.kind === 'checking'
           ? joinCopy.checking
           : undefined;
-
-  // "@alice": the person the joiner asks, by the name Crew shows them everywhere (Q2-04).
-  const hostHandle = host ? `@${host.username}` : joinStateCopy.yourHost;
-  const hostSubject = host ? `@${host.username}` : joinStateCopy.yourHostSubject;
 
   return (
     <ModalShell
@@ -906,7 +904,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               <Disclosure
                 open={advancedOpen}
                 onOpenChange={setAdvancedOpen}
-                summary={joinCopy.advancedSummary(portValue ?? defaultPort)}
+                summary={joinCopy.advancedSummary}
               >
                 <div className="crew-onboard-form">
                   <Field

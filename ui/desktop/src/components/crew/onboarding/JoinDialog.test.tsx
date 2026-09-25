@@ -165,8 +165,10 @@ describe('JoinDialog', () => {
     fireEvent.click(check);
 
     const helper = screen.getByTestId('crew-join-fingerprint-helper');
+    // "Hosted by Alice Chen (@alice)" named her in full; later sentences call her what the join
+    // card does, not a bare handle (Q3-46).
     expect(helper).toHaveTextContent(
-      'Fingerprint 3F2A 9C1E 77B0 D4E1. This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask @alice to read theirs from Crew (their workspace menu shows it).'
+      'Fingerprint 3F2A 9C1E 77B0 D4E1. This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask Alice to read theirs from Crew (their workspace menu shows it).'
     );
     // No Copy anywhere in the summary: the joiner never sends this.
     expect(within(summary).queryByRole('button', { name: /copy/i })).toBeNull();
@@ -208,8 +210,11 @@ describe('JoinDialog', () => {
     await paste();
 
     const line = await screen.findByTestId('crew-join-as');
-    // It names what the choice governs, the models, and the institution by its name (Q2-36, Q2-38).
-    await waitFor(() => expect(line).toHaveTextContent('Models: private and UCSF-approved only'));
+    // It names what the choice governs, the AI models (Q3-49: "Models" alone read as something
+    // about the person), and the institution by its name (Q2-36, Q2-38).
+    await waitFor(() =>
+      expect(line).toHaveTextContent('AI models: private and UCSF-approved only·Change')
+    );
     expect(line).not.toHaveTextContent(/join as/i);
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
@@ -231,7 +236,7 @@ describe('JoinDialog', () => {
     // "can't read Restricted channels" may appear.
     const note = screen.getByTestId('crew-join-public-consequence');
     expect(note).toHaveTextContent(
-      'lab is Private, so nothing changes yet: your agent still uses only private and UCSF-approved models here. If @alice makes lab Public, public models could read its public-safe channels through your agent. @alice isn’t told what you chose.'
+      'lab is Private, so nothing changes yet: your agent still uses only private and UCSF-approved models here. If Alice makes lab Public, public models could read its public-safe channels through your agent. Alice isn’t told what you chose.'
     );
     expect(note).not.toHaveTextContent(/Restricted/);
     expect(note).not.toHaveTextContent(/can’t use/);
@@ -338,10 +343,15 @@ describe('JoinDialog', () => {
     renderDialog();
     await paste();
     await screen.findByTestId('crew-join-summary');
-    expect(screen.getByText('Port 22 · your SSH settings')).toBeInTheDocument();
+    // Folded, Advanced says what it holds in plain words; the port is one of its fields (Q3-49).
+    expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAccessibleDescription(
+      'server connection details'
+    );
+    expect(document.body.textContent).not.toMatch(/Port 22|SSH settings/);
     expect(screen.queryByLabelText(joinCopy.identityFile)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByLabelText(joinCopy.identityFile)).toBeInTheDocument();
+    expect(screen.getByLabelText(joinCopy.port)).toHaveAttribute('placeholder', '22');
     // The agent's permission is not an SSH setting: it is not in Advanced (Q2-37).
     expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
     expect(screen.queryByLabelText(joinCopy.remoteFolder)).toBeNull();
@@ -361,7 +371,14 @@ describe('JoinDialog', () => {
     expect(agent).toBeDisabled();
     // A switch that is off limits says why (T-42).
     expect(agent).toHaveAccessibleDescription(joinCopy.remoteExecutionNeedsFolder);
-    fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+    // The folder in plain words: where it is and what it looks like, not "an absolute path"
+    // (Q3-49).
+    const folder = screen.getByLabelText(joinCopy.remoteFolder);
+    expect(folder).toHaveAccessibleDescription(
+      'Optional. A folder on hpc.ucsf.edu, starting with /. Your agent can read and write files there.'
+    );
+    expect(document.body.textContent).not.toMatch(/absolute path/);
+    fireEvent.change(folder, {
       target: { value: '/work/lab' },
     });
     expect(agent).toBeEnabled();
@@ -867,7 +884,7 @@ describe('JoinDialog', () => {
         joinCopy.required
       );
       // The invitation carried no institution, so the helper says whom to ask, not to guess.
-      const ask = joinCopy.institutionUnknown('@alice', 'lab');
+      const ask = joinCopy.institutionUnknown('Alice', 'lab');
       expect(screen.getByText(ask)).toBeInTheDocument();
       expect(field).toHaveAccessibleDescription(ask);
 

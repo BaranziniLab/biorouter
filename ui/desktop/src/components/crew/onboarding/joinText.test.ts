@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { joinerPerson, personFromProjection } from '../identity';
 import {
   connectionServerLabel,
+  CREW_MEMBERSHIP_ENDED,
   firstName,
   groupWorkspaceFingerprint,
   hostKeyFingerprints,
   hostStartCommands,
   isUnknownDeviceFailure,
   isWorkspaceName,
+  membershipEnded,
   readStartOutput,
   sshLoginCommand,
   sshUsername,
@@ -243,5 +245,18 @@ describe('readStartOutput', () => {
       text: '{"unrelated": true}',
     });
     expect(readStartOutput('   \n ')).toBeNull();
+  });
+});
+
+describe('membershipEnded (Q3-50)', () => {
+  it('reads the daemon’s record that the workspace ended this membership, and nothing else', () => {
+    expect(CREW_MEMBERSHIP_ENDED).toBe('crew_membership_ended');
+    expect(membershipEnded({ id: 'c', last_error_code: 'crew_membership_ended' })).toBe(true);
+    // Another failure, a daemon that predates the field, and no connection at all say nothing.
+    expect(membershipEnded({ id: 'c', last_error_code: 'crew_ssh_auth_required' })).toBe(false);
+    expect(membershipEnded({ id: 'c' })).toBe(false);
+    expect(membershipEnded({ id: 'c', last_error_code: null })).toBe(false);
+    expect(membershipEnded(null)).toBe(false);
+    expect(membershipEnded(undefined)).toBe(false);
   });
 });
