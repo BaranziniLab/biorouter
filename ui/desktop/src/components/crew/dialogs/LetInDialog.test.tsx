@@ -205,7 +205,9 @@ describe('LetInDialog', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Let Eve in' }));
     });
-    expect(await screen.findByText(letInCopy.alreadyApproved('eve'))).toBeInTheDocument();
+    // In the dialog's one name for her, never "they" (QA Q3-36).
+    expect(await screen.findByText(letInCopy.alreadyApproved('eve', 'Eve'))).toBeInTheDocument();
+    expect(screen.getByRole('dialog').textContent).not.toMatch(/\bthey\b|\btheir\b/i);
     expect(screen.getByText(letInCopy.replaceHelp('Eve'))).toBeInTheDocument();
     expect(requestsFor(crew, 'enrollment.approve')).toEqual([{ username: 'eve', code: CODE }]);
 
@@ -289,14 +291,14 @@ describe('LetInDialog', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Let Eve in' }));
     });
-    expect(await screen.findByText(letInCopy.alreadyApproved('eve'))).toBeInTheDocument();
+    expect(await screen.findByText(letInCopy.alreadyApproved('eve', 'Eve'))).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Crew broker refused request');
     expect(screen.getByRole('button', { name: letInCopy.replace })).toBeInTheDocument();
 
     // A different code is a new approval, not a replacement of the one refused.
     fireEvent.change(field, { target: { value: '1000-1000-0000-0000' } });
     expect(screen.queryByRole('button', { name: letInCopy.replace })).toBeNull();
-    expect(screen.queryByText(letInCopy.alreadyApproved('eve'))).toBeNull();
+    expect(screen.queryByText(letInCopy.alreadyApproved('eve', 'Eve'))).toBeNull();
     expect(requestsFor(crew, 'enrollment.approve')).toEqual([{ username: 'eve', code: CODE }]);
   });
 
@@ -614,8 +616,13 @@ describe('LetInDialog, the wording (QA Q2-23)', () => {
   });
 
   it('says an already-saved code did not match, naming the control that exists', () => {
+    // One name for them, never "they" (QA Q3-36): the dialog's name when it knows one…
+    expect(letInCopy.alreadyApproved('crew_gina', 'Gina')).toBe(
+      'You already entered a code for Gina, and it didn’t match Gina’s computer. Enter the code Gina sent you and choose Replace code.'
+    );
+    // …else @username.
     expect(letInCopy.alreadyApproved('eve')).toBe(
-      'You already entered a code for @eve, and it didn’t match their computer. Enter the code they sent and choose Replace code.'
+      'You already entered a code for @eve, and it didn’t match @eve’s computer. Enter the code @eve sent you and choose Replace code.'
     );
     expect(letInCopy.mismatch('eve')).toBe(
       'A computer trying to join as @eve showed a different code. Check the code @eve sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @eve.'

@@ -490,7 +490,12 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         </Field>
         <DialogErrorNote
           source={SOURCE}
-          render={(message) => approveRefusalText(message, username)}
+          render={(message) =>
+            // In the dialog's one name for them, never "they" (QA Q3-36).
+            isAlreadyApproved(message)
+              ? copy.alreadyApproved(username, first)
+              : approveRefusalText(message, username)
+          }
         />
         {replaceCode !== null ? (
           <div className="flex flex-col items-start gap-2">

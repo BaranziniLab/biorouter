@@ -211,10 +211,11 @@ export const letInCopy = {
   enterAgain: 'Enter the code again',
   /**
    * `already_approved`: a code is saved for them already. Never "let a device in", which was false
-   * after a mismatch (QA Q2-23); names the control that exists, Replace code.
+   * after a mismatch (QA Q2-23); names the control that exists, Replace code. `who` is the one name
+   * Let in uses for the joiner, never "they" (QA Q3-36); without it, `@username`.
    */
-  alreadyApproved: (username: string) =>
-    `You already entered a code for @${username}, and it didn’t match their computer. Enter the code they sent and choose Replace code.`,
+  alreadyApproved: (username: string, who: string = `@${username}`) =>
+    `You already entered a code for ${who}, and it didn’t match ${who}’s computer. Enter the code ${who} sent you and choose Replace code.`,
   replaceHelp: (who: string) => `Replace the code only if ${who} sent you a new one.`,
   replace: 'Replace code',
   /**
@@ -245,8 +246,8 @@ export const letInCopy = {
   /** Under the team offers while the joiner's Crew has not checked in yet (QA Q3-36). */
   addAfterJoin: (first: string) => `You can add ${first} to a team once ${first} joins.`,
   /**
-   * The same row once they have joined, so the dialog keeps its shape and the footer stays under
-   * the host's pointer (QA Q3-35).
+   * The same row once they have joined. The row keeps the room of the longer of this and
+   * `addAfterJoin` in both views, so the footer stays under the host's pointer (QA Q3-35).
    */
   channelsWithTeam: 'Ticked channels are added with the team.',
   /** The workspace key's fingerprint, for the host to read out if asked (QA Q2-04). */

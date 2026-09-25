@@ -370,7 +370,7 @@ describe('invite and approve', () => {
     }
     // Never "let a device in", which was false after a mismatch (QA Q2-23).
     expect(letInCopy.alreadyApproved('eve')).toBe(
-      'You already entered a code for @eve, and it didn’t match their computer. Enter the code they sent and choose Replace code.'
+      'You already entered a code for @eve, and it didn’t match @eve’s computer. Enter the code @eve sent you and choose Replace code.'
     );
     expect(
       isAlreadyApproved('not_invited: @eve has no pending invitation. Invite them first.')
