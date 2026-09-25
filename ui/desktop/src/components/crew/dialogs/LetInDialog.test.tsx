@@ -691,6 +691,58 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     expect(dialog.textContent).not.toMatch(/\bthey\b|they’ve|\bthem\b|\btheir\b/i);
   });
 
+  /**
+   * The note's words and the hint row's go from two lines to one, or to none, as "joined" lands;
+   * each block keeps the room of its tallest form in both views, so the footer holds still (QA
+   * Q3-35). jsdom lays nothing out: what the room measures is `letInGeometry.browser.test.tsx`'s,
+   * in Chromium. Here: the same elements, carrying the same reserve, before and after.
+   */
+  it('keeps the room of the longer sentence in both views, even when the hint has nothing to say', async () => {
+    // One channel in the team, so the joined view has no channels to tick and nothing to say.
+    const { update } = renderDirectAdd(
+      makeSnapshot({ pending_joins: [{ username: 'eve', full_name: 'Eve Park' }] })
+    );
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park (@eve) into lab' });
+    const status = within(dialog).getByText(letInCopy.approved('Eve')).closest('[role="status"]');
+    expect(status).not.toBeNull();
+    const sizer = dialog.querySelector('.crew-steady-sizer');
+    const hint = dialog.querySelector('p.crew-reserve');
+    const reserveOf = (element: Element | null) => [
+      element?.getAttribute('data-reserve-a'),
+      element?.getAttribute('data-reserve-b'),
+    ];
+    const expectReserved = () => {
+      // The sizer is unseen and unspoken: generated text in an aria-hidden, role-less copy.
+      expect(sizer).toHaveAttribute('aria-hidden', 'true');
+      expect(sizer?.querySelector('[role]')).toBeNull();
+      expect(sizer?.textContent).toBe('');
+      expect(reserveOf(sizer?.querySelector('.crew-reserve') ?? null)).toEqual([
+        letInCopy.approved('Eve'),
+        letInCopy.joined('Eve', 'lab'),
+      ]);
+      expect(reserveOf(hint)).toEqual([letInCopy.addAfterJoin('Eve'), letInCopy.channelsWithTeam]);
+    };
+    expect(hint).toHaveTextContent(letInCopy.addAfterJoin('Eve'));
+    expectReserved();
+
+    update(
+      makeSnapshot({ principals: [...makeSnapshot().principals, eveUnnamed], pending_joins: [] })
+    );
+    expect(await within(dialog).findByText(letInCopy.joined('Eve', 'lab'))).toBeInTheDocument();
+    // The same note, the same sizer, the same row: nothing unmounted to be laid out again.
+    expect(
+      within(dialog).getByText(letInCopy.joined('Eve', 'lab')).closest('[role="status"]')
+    ).toBe(status);
+    expect(dialog.querySelector('.crew-steady-sizer')).toBe(sizer);
+    expect(dialog.querySelector('p.crew-reserve')).toBe(hint);
+    expect(hint?.textContent).toBe('');
+    expectReserved();
+    expect(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' })).not.toHaveAttribute(
+      'aria-disabled'
+    );
+  });
+
   it('keeps @username everywhere when no name is known', async () => {
     const { update } = renderLive(makeSnapshot({ pending_joins: [{ username: 'eve' }] }));
     const dialog = await screen.findByRole('dialog', { name: 'Let @eve into lab' });

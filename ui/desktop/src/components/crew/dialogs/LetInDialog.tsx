@@ -89,7 +89,11 @@ interface Approval {
  *   only place the name on their server account comes from — goes away the moment they join, so
  *   the dialog remembers that name once it has seen it: the title ("Let Gina Rossi (@crew_gina)
  *   into …", the authority form), the "(name on the server account)" subtitle, the fingerprint and
- *   the hint row all stay when "joined" arrives, and the footer stays under the host's pointer.
+ *   the hint row all stay when "joined" arrives. The two blocks whose words change then — the
+ *   status note ("Code saved. …" → "{first} joined …", a sentence of two lines becoming one) and
+ *   the hint row ("You can add … once … joins." → "Ticked channels …" or nothing) — are each laid
+ *   out as tall as the taller of their sentences in both views, so nothing above the footer
+ *   shrinks and "Add to {team}" stays under the host's pointer while it waits for them.
  *   Every sentence then calls them `{first}` — the first word of a name they chose, else of that
  *   server-account name, else `@username` — and never "they".
  */
@@ -301,6 +305,15 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         ? copy.directAddToTeam(first, teamName(team))
         : copy.addToTeam(first, teamName(team));
     const waitingToJoin = !memberId;
+    // Under the teams: what the host can do next with them.
+    const hint = waitingToJoin
+      ? copy.addAfterJoin(first)
+      : toDo.some((team) => choicesFor(team).length > 1)
+        ? copy.channelsWithTeam
+        : null;
+    // For a joiner, the row keeps its place while an addition is still to do, whatever it says —
+    // "joined" can leave it nothing to say (one channel per team), and it must not go then.
+    const holdHint = promote && toDo.length > 0;
     // Each footer layout is its own set of keyed elements: reconciled in place of the form's
     // Cancel (or of the add it replaces), React would reuse that node and never apply `autoFocus`.
     // The addition is `aria-disabled` rather than `disabled` while they have not joined yet, so it
@@ -363,9 +376,8 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
               <span>{copy.mismatch(username)}</span>
             </Note>
           ) : (
-            <Note tone={joined ? 'success' : 'neutral'} role="status" icon={Check}>
-              <span>{joined ? copy.joined(first, workspace) : copy.approved(first)}</span>
-            </Note>
+            // Someone adding a device is a member already: no "joined" is coming to make room for.
+            <SavedCodeStatus joined={joined} first={first} workspace={workspace} steady={promote} />
           )}
           {/* In both views, so it never vanishes while the host is reading it out (QA Q3-35). */}
           {fingerprintCheck}
@@ -411,11 +423,8 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                   </div>
                 );
               })}
-              {/* The same row before and after they join, so the footer never moves (QA Q3-35). */}
-              {waitingToJoin ? (
-                <p className="text-supporting text-text-muted">{copy.addAfterJoin(first)}</p>
-              ) : toDo.some((team) => choicesFor(team).length > 1) ? (
-                <p className="text-supporting text-text-muted">{copy.channelsWithTeam}</p>
+              {hint !== null || holdHint ? (
+                <NextStepHint text={hint} reserve={holdHint ? nextStepReserve(first) : null} />
               ) : null}
             </div>
           ) : null}
@@ -499,6 +508,79 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         ) : null}
       </form>
     </ModalShell>
+  );
+}
+
+/**
+ * The saved-code view's status: "Code saved. …" until the directory shows the joiner, then
+ * "{first} joined {workspace}" (QA T-13). That is two lines becoming one, and the neutral note's
+ * border becoming the success wash's none, while the host's pointer waits on the footer for "Add
+ * to {team}" to enable (QA Q3-35). So when `steady` — a joiner is expected — the note shares one
+ * grid cell with an unseen copy of its tallest form, the bordered neutral tone laid out with both
+ * sentences, and the cell is as tall in both views.
+ */
+export function SavedCodeStatus({
+  joined,
+  first,
+  workspace,
+  steady,
+}: {
+  joined: boolean;
+  first: string;
+  workspace: string;
+  steady: boolean;
+}) {
+  const approvedText = copy.approved(first);
+  const joinedText = copy.joined(first, workspace);
+  return (
+    <div className="crew-steady">
+      <Note
+        tone={joined ? 'success' : 'neutral'}
+        role="status"
+        icon={Check}
+        className="crew-steady-item"
+      >
+        <span>{joined ? joinedText : approvedText}</span>
+      </Note>
+      {steady ? (
+        <div aria-hidden className="crew-steady-item crew-steady-sizer">
+          <Note icon={Check}>
+            <span
+              className="crew-reserve"
+              data-reserve-a={approvedText}
+              data-reserve-b={joinedText}
+            />
+          </Note>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The two sentences the next-step row says for a joiner: waiting for them, then after they join. */
+export function nextStepReserve(first: string): readonly [string, string] {
+  return [copy.addAfterJoin(first), copy.channelsWithTeam];
+}
+
+/**
+ * The row under the teams, saying what the host can do next. With a `reserve`, it is laid out as
+ * tall as the taller of those sentences whichever it shows, or when it shows none (QA Q3-35).
+ */
+export function NextStepHint({
+  text,
+  reserve,
+}: {
+  text: string | null;
+  reserve: readonly [string, string] | null;
+}) {
+  return (
+    <p
+      className="crew-reserve text-supporting text-text-muted"
+      data-reserve-a={reserve?.[0]}
+      data-reserve-b={reserve?.[1]}
+    >
+      <span className="crew-reserve-shown">{text}</span>
+    </p>
   );
 }
 

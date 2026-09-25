@@ -161,3 +161,50 @@
   cursor: not-allowed;
   opacity: 0.5;
 }
+
+/* Let in keeps its shape when the joiner arrives (QA Q3-35). The host's pointer is on the footer,
+   waiting for "Add to {team}" to enable, so nothing above it may get shorter when "joined" lands.
+   Each block that changes its words then is laid out as tall as the tallest of them, in both
+   views.
+
+   `crew-steady` stacks the live element with an unseen copy of its tallest form
+   (`crew-steady-sizer`) in one grid cell, for the status note, whose tone changes its border as
+   well as its words. `crew-reserve` lays out the sentences it may show (`data-reserve-a`,
+   `data-reserve-b`) as unseen generated text in the cell under the one it shows
+   (`crew-reserve-shown`). Generated, so no second copy of a sentence reaches the accessibility
+   tree, a live region, or a search of the page. */
+.crew-steady {
+  display: grid;
+  min-width: 0;
+}
+
+.crew-steady > .crew-steady-item {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-steady-sizer {
+  visibility: hidden;
+}
+
+.crew-reserve {
+  display: grid;
+  min-width: 0;
+}
+
+.crew-reserve > .crew-reserve-shown,
+.crew-reserve::before,
+.crew-reserve::after {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-reserve::before {
+  content: attr(data-reserve-a);
+  visibility: hidden;
+}
+
+.crew-reserve::after {
+  content: attr(data-reserve-b);
+  visibility: hidden;
+}
