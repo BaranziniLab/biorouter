@@ -62,6 +62,22 @@ function CopyLabel({ active, children }: { active: boolean; children: React.Reac
 
 type Feedback = 'idle' | 'copied' | 'failed';
 
+/**
+ * A multi-line value longer than this shows its first four lines behind a fade, with "Show all"
+ * (QA Q3-37). The Invite dialog's invitation — 4 lines of instructions and 16 of base64, 724
+ * characters — was the largest thing in the dialog and looked like something to read. The host's
+ * start commands and the install commands stay whole, because someone reviews those before running
+ * them: the start commands measure 442 with the longest (40-character) workspace name, and
+ * `copy-field.test.tsx` fails if either set ever crosses this line.
+ */
+export const COPY_FIELD_CLAMP_CHARS = 600;
+
+/** The line under a clamped value, so nobody thinks Copy takes only what shows. */
+export const COPY_FIELD_CLAMP_NOTE = 'The whole message is copied.';
+
+/** How long a refused clipboard write waits, after focusing the window, before its one retry. */
+export const COPY_FIELD_RETRY_DELAY_MS = 50;
+
 async function writeClipboard(text: string): Promise<void> {
   // `navigator.clipboard` can be absent (an insecure context) as well as
   // rejecting (no permission, a document without focus), so it is a check AND a
@@ -70,6 +86,76 @@ async function writeClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The last resort: select `text` in a hidden read-only textarea and ask the document to copy it.
+ *
+ * The textarea goes INSIDE the field (`host`), never on `<body>`: every CopyField that matters
+ * sits in a dialog, whose focus trap would pull focus straight back out of `<body>`, and a copy
+ * with nothing focused takes nothing. Focus goes back to what had it (the Copy button) whatever
+ * happens. `false` whenever the document cannot or will not copy.
+ */
+function copyWithSelection(text: string, host: HTMLElement | null): boolean {
+  if (!host || typeof document.execCommand !== 'function') return false;
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.readOnly = true;
+  area.tabIndex = -1;
+  area.setAttribute('aria-hidden', 'true');
+  area.setAttribute('data-slot', 'copy-field-fallback');
+  area.className = 'biorouter-copy-field-fallback';
+  host.appendChild(area);
+  let copied = false;
+  try {
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, text.length);
+    copied = document.execCommand('copy') === true;
+  } catch {
+    copied = false;
+  } finally {
+    area.remove();
+    previous?.focus({ preventScroll: true });
+  }
+  return copied;
+}
+
+/**
+ * Put `text` on the clipboard, trying harder than once (QA Q3-41).
+ *
+ * `navigator.clipboard.writeText` rejects when the document does not have focus, which is not the
+ * person's fault and usually not lasting: the Keys and security dialog's first Copy said "Copy
+ * failed" once and then worked three times in a row. So a refusal focuses the window, waits a
+ * beat and tries once more, and only then falls back to the selection path. "Copy failed" is left
+ * for when all three have refused.
+ */
+async function copyText(text: string, host: HTMLElement | null): Promise<boolean> {
+  try {
+    await writeClipboard(text);
+    return true;
+  } catch {
+    // Retried below.
+  }
+  try {
+    window.focus();
+  } catch {
+    // A window that cannot be focused still gets its retry.
+  }
+  await wait(COPY_FIELD_RETRY_DELAY_MS);
+  try {
+    await writeClipboard(text);
+    return true;
+  } catch {
+    // Fall back to the selection path.
+  }
+  return copyWithSelection(text, host);
+}
+
+/** A multi-line value wider than its box: more to the right, or scrolled to its end (Q3-18). */
+type SidewaysOverflow = 'true' | 'end';
+
 /**
  * The one box for everything a person hands to someone else: an invitation
  * message, a device code, a fingerprint, a command, a server path.
@@ -77,15 +163,23 @@ async function writeClipboard(text: string): Promise<void> {
  * - One click copies `value` (never `display`). The button reads "Copied" with a
  *   settling check for two seconds; a polite live region says "Copied". No
  *   toast — the confirmation is where the person is looking.
- * - If the clipboard refuses, the button reads "Copy failed" and the value is
- *   selected, so ⌘C works. A masked secret is revealed first: selecting the mask
- *   would put bullets on the clipboard, and the person asked to take the value.
+ * - If the clipboard refuses, it is asked once more after the window takes focus,
+ *   then the document's own copy is tried (QA Q3-41). Only when all three refuse
+ *   does the button read "Copy failed", with the value selected so ⌘C works. A
+ *   masked secret is revealed first: selecting the mask would put bullets on the
+ *   clipboard, and the person asked to take the value.
  * - A ⌘C of the whole shown text puts `value` on the clipboard too, so a grouped
  *   display ("7QK2-M9XA-…", a fingerprint in fours) never leaks its separators
  *   into what is pasted. A partial selection copies exactly what was selected.
  * - The accessible name stays "Copy {label}" through every state, so the control
  *   never changes identity under a screen reader; the live region carries the
  *   outcome.
+ * - A multi-line value that is wider than its box (commands shown one per line,
+ *   scrolling sideways) says so: a fade at the right edge, gone once it is
+ *   scrolled to the end, and a scrollbar that stays visible (QA Q3-18).
+ * - A multi-line value over `COPY_FIELD_CLAMP_CHARS` shows four lines behind a
+ *   fade, "The whole message is copied." and "Show all" (QA Q3-37). The whole
+ *   value stays in the DOM, so Copy, a click-select and ⌘C all take all of it.
  *
  * The box is authored CSS (`.biorouter-copy-field` in `main.css`) on
  * `--background-well` in BOTH forms. Never `--background-code`: in dark mode it
@@ -109,15 +203,23 @@ export function CopyField({
   // not asked to show.
   const [revealed, setRevealed] = React.useState(false);
   const [selectPending, setSelectPending] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(false);
+  const [overflow, setOverflow] = React.useState<SidewaysOverflow | undefined>(undefined);
+  const rootRef = React.useRef<HTMLDivElement>(null);
   const valueRef = React.useRef<HTMLSpanElement>(null);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A copy now awaits a retry, so the field can be gone (the dialog closed) by the time it settles.
+  const mountedRef = React.useRef(false);
+  const valueId = React.useId();
+  const noteId = React.useId();
 
-  React.useEffect(
-    () => () => {
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    []
-  );
+    };
+  }, []);
 
   const selectValue = React.useCallback(() => {
     const node = valueRef.current;
@@ -145,9 +247,9 @@ export function CopyField({
   };
 
   const copy = async () => {
-    try {
-      await writeClipboard(value);
-    } catch {
+    const copied = await copyText(value, rootRef.current);
+    if (!mountedRef.current) return;
+    if (!copied) {
       settle('failed');
       if (secret && !revealed) {
         setRevealed(true);
@@ -163,6 +265,40 @@ export function CopyField({
 
   const masked = secret && !revealed;
   const shown = display ?? value;
+  const clamp: 'collapsed' | 'expanded' | undefined =
+    multiline && !masked && Array.from(shown).length > COPY_FIELD_CLAMP_CHARS
+      ? expanded
+        ? 'expanded'
+        : 'collapsed'
+      : undefined;
+
+  // SIDEWAYS OVERFLOW (QA Q3-18). A caller that shows commands one per line lets the value
+  // scroll sideways rather than wrap mid-flag (`white-space: pre`), and macOS hides an idle
+  // scrollbar, so the host's start commands simply looked cut off mid-path — beside a line
+  // promising Biorouter runs exactly these commands. Measured, not guessed: the box's width
+  // follows the dialog (a ResizeObserver), its content follows the value, and the end of the
+  // scroll follows the person (the value's own scroll event).
+  const measureOverflow = React.useCallback(() => {
+    const node = valueRef.current;
+    if (!node) return;
+    const hidden = node.scrollWidth - node.clientWidth;
+    if (hidden <= 1) {
+      setOverflow(undefined);
+      return;
+    }
+    setOverflow(node.scrollLeft >= hidden - 1 ? 'end' : 'true');
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (!multiline) return;
+    const node = valueRef.current;
+    if (!node) return;
+    measureOverflow();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => measureOverflow());
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [multiline, measureOverflow, shown, masked, clamp]);
 
   // `user-select: all` makes one click take the whole value, and the clipboard
   // fallback selects it on purpose; either way a ⌘C of the WHOLE shown form
@@ -204,17 +340,22 @@ export function CopyField({
 
   return (
     <div
+      ref={rootRef}
       data-slot="copy-field"
       data-multiline={multiline ? 'true' : undefined}
+      data-overflow={multiline ? overflow : undefined}
+      data-clamp={clamp}
       data-size={size}
       className={cn('biorouter-copy-field', className)}
       onCopy={handleCopyEvent}
     >
       <span
         ref={valueRef}
+        id={valueId}
         className={cn('biorouter-copy-field-value', valueClassName)}
         data-truncate={singleLineTruncate}
         data-masked={masked ? 'true' : undefined}
+        onScroll={multiline ? measureOverflow : undefined}
       >
         {valueContent}
       </span>
@@ -239,6 +380,7 @@ export function CopyField({
           size="sm"
           onClick={() => void copy()}
           aria-label={`Copy ${label}`}
+          aria-describedby={clamp === 'collapsed' ? noteId : undefined}
           data-feedback={feedback}
         >
           {/* All three labels share one grid cell, the inactive ones laid out but unseen, so the
@@ -264,6 +406,26 @@ export function CopyField({
           </span>
         </Button>
       </span>
+      {clamp ? (
+        <div className="biorouter-copy-field-footer" data-slot="copy-field-footer">
+          {clamp === 'collapsed' ? (
+            <span id={noteId} className="biorouter-copy-field-note">
+              {COPY_FIELD_CLAMP_NOTE}
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            aria-expanded={clamp === 'expanded'}
+            aria-controls={valueId}
+            aria-label={`${clamp === 'expanded' ? 'Show less of the' : 'Show all of the'} ${label}`}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {clamp === 'expanded' ? 'Show less' : 'Show all'}
+          </Button>
+        </div>
+      ) : null}
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {announcement}
       </span>

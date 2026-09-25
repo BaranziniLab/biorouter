@@ -5692,6 +5692,137 @@ code [class~='token'] {
   gap: 2px;
 }
 
+/* SIDEWAYS OVERFLOW (QA Q3-18). A caller that shows commands one per line lets
+   the value scroll sideways (`white-space: pre` in `onboarding.css` and
+   `dialogs.css`), and macOS hides an idle scrollbar: the host's start commands
+   ended mid-path ("--state-dir "$HOME/.") with nothing to say there was more,
+   beside a line promising Biorouter runs exactly these commands. The component
+   measures the value and writes `data-overflow` — `true` while more lies to the
+   right, `end` once it is scrolled there. Two cues follow from it:
+
+   - A fade at the right edge, as a MASK so it is correct on the well in every
+     family and mode without naming a colour (the `.biorouter-scroll-fade-top`
+     reasoning). It goes at the end, where there is nothing left to hint at.
+   - A thin scrollbar that stays visible. The app's `*` rule sets the standard
+     `scrollbar-color`, and a scroller with a non-`auto` `scrollbar-color` or
+     `scrollbar-width` gets Chromium's native scrollbar — an overlay one on macOS,
+     invisible at rest — and ignores every `::-webkit-scrollbar` rule. Both are
+     put back to `auto` here, so the pseudo-elements below draw a real,
+     always-present 6px bar. */
+.biorouter-copy-field[data-multiline='true'][data-overflow] .biorouter-copy-field-value {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow] .biorouter-copy-field-value::-webkit-scrollbar {
+  height: 6px;
+  background-color: transparent;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow]
+  .biorouter-copy-field-value::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border: 0;
+  border-radius: var(--radius-full);
+  min-width: 32px;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow]
+  .biorouter-copy-field-value::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-subtle);
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow='true'] .biorouter-copy-field-value {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+
+/* A LONG MULTI-LINE VALUE FOLDS (QA Q3-37). Past `COPY_FIELD_CLAMP_CHARS` the
+   value shows four lines — 4 × the code line plus the value's 4px block
+   padding — with its last line fading out, and a footer row beneath it inside
+   the well: a muted "The whole message is copied." and "Show all". The whole
+   value is still in the DOM under `overflow: hidden`, so Copy, a click-select
+   (`user-select: all`) and ⌘C take all of it, and a screen reader reads it.
+
+   The folded form is a GRID, so the footer can take a full row under the value
+   and the Copy button without either moving: in the flex row the value's basis
+   is its max-content width, and wrapping would push Copy down a line.
+   `overflow-y` only — a caller's `overflow-x: auto` (the command boxes) keeps
+   scrolling sideways. */
+.biorouter-copy-field[data-clamp] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 4px;
+}
+
+.biorouter-copy-field[data-clamp='collapsed'] .biorouter-copy-field-value {
+  max-height: calc(4 * var(--text-code--line-height) + 8px);
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--text-code--line-height) - 4px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--text-code--line-height) - 4px),
+    transparent
+  );
+}
+
+/* Folded AND wider than the box: both fades, intersected. */
+.biorouter-copy-field[data-clamp='collapsed'][data-overflow='true'] .biorouter-copy-field-value {
+  -webkit-mask-image:
+    linear-gradient(to right, #000 calc(100% - 32px), transparent),
+    linear-gradient(to bottom, #000 calc(100% - var(--text-code--line-height) - 4px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, #000 calc(100% - 32px), transparent),
+    linear-gradient(to bottom, #000 calc(100% - var(--text-code--line-height) - 4px), transparent);
+  mask-composite: intersect;
+}
+
+.biorouter-copy-field-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  padding-block: 0 6px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.biorouter-copy-field-note {
+  color: var(--text-muted);
+}
+
+/* "Show all" is a link in a line of supporting text: no control height, no
+   padding, the line's own type. Authored, not `h-auto p-0` at the call site,
+   for the reason every rule in this block is. */
+.biorouter-copy-field-footer [data-slot='button'] {
+  height: auto;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* The clipboard's last resort (Q3-41) selects the value in a textarea that
+   exists for one call. Inside the field, so a dialog's focus trap keeps it;
+   out of the flow and unseen, so nothing moves while it is there. */
+.biorouter-copy-field-fallback {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* StatusDot (`components/ui/status-dot.tsx`) — design.md §4.16: an 8px circle
    whose fill is a status token, and for a LIVE dot a 2px halo that pulses on
    a slow period.
