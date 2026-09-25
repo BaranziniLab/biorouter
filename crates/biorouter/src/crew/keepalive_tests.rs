@@ -107,7 +107,9 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 }
 
 /// A scripted `ssh`. `-G` answers settings the preflight accepts. Each bridge spawn takes the
-/// next line of `plan`: `serve` answers everything; `drop-after-N` answers N requests and
+/// next line of `plan`: `serve` answers everything; `end-after-N` answers N requests and then
+/// exits at once, before anyone writes another, as a bridge whose `ssh` was killed does;
+/// `drop-after-N` answers N requests and
 /// then ends on the next without answering, as a bridge the broker dropped does
 /// (`join-drop-after-1` too, announcing `join_by_name_v1` first); `v2-then-v1` answers its
 /// first `hello` v2-signed and every later one v1 only, as a relay stripping the signature
@@ -224,6 +226,9 @@ while IFS= read -r line; do
       printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
     fi
   fi
+  case "$plan" in
+    end-after-*) [ "$answered" -ge "${{plan##*end-after-}}" ] && exit 0 ;;
+  esac
 done
 "#,
         root = root.display(),
@@ -319,6 +324,7 @@ fn fast(retry: Duration) -> KeepaliveTiming {
         // No later tries unless a test asks for them (see `with_late_retries`).
         late_retry_every: retry,
         late_retry_for: Duration::ZERO,
+        ended_check: Duration::from_millis(40),
     }
 }
 
@@ -585,6 +591,7 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             retry_delays: [Duration::from_secs(600); 3],
             late_retry_every: Duration::from_secs(600),
             late_retry_for: Duration::ZERO,
+            ended_check: Duration::from_secs(600),
         },
     )
     .await;
@@ -724,6 +731,7 @@ fn slept() -> KeepaliveTiming {
         retry_delays: [Duration::from_secs(600); 3],
         late_retry_every: Duration::from_secs(600),
         late_retry_for: Duration::ZERO,
+        ended_check: Duration::from_secs(600),
     }
 }
 
@@ -947,10 +955,14 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
         .collect();
     assert_eq!(offsets, [json!(0), json!(0), json!(7)]);
     // Before posting, the workspace names the copy the manifest showed and nothing read, so
-    // the line says this was the newest of the two.
+    // the line can tell the two apart: this one, the newest, by when it was shared, in the
+    // daemon's local time (Q4-27), never a "newest copy" that is only true today.
+    let when = super::shared_when(1_790_214_527, &chrono::Local::now()).unwrap();
     assert_eq!(
-        f.manager.posted_source_line(WORKER).await.as_deref(),
-        Some("Source: `gina-assay.csv` (newest copy), shared by Gina Rossi (@crew_gina).")
+        f.manager.posted_source_line(WORKER).await,
+        Some(format!(
+            "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) {when}."
+        ))
     );
     let named: Vec<Value> = frames(&f.root)
         .into_iter()
@@ -1032,6 +1044,82 @@ async fn a_run_that_read_only_the_earlier_copy_says_a_newer_one_was_not_read() {
              A newer copy of `gina-assay.csv` was shared and was not read."
         )
     );
+}
+
+/// Q4-11: a connected chat's first `messages.history` or `messages.search` leaves
+/// `channel_id` out (every model did); the grant has one channel, so the daemon sends that one.
+/// With several, the model is told to choose, and nothing is sent.
+#[tokio::test]
+async fn a_one_channel_read_without_channel_id_reads_the_granted_channel() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("default-channel", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    for (method, params) in [
+        ("messages.history", json!({"limit": 20})),
+        ("messages.history", json!({"channel_id": null})),
+        ("messages.history", json!({"channel_id": ""})),
+        ("messages.search", json!({"query": "assay"})),
+    ] {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{method} {params}: {error}"));
+    }
+    let sent: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| {
+            frame["method"]
+                .as_str()
+                .is_some_and(|method| method.starts_with("messages."))
+        })
+        .map(|frame| frame["params"]["channel_id"].clone())
+        .collect();
+    assert_eq!(sent, vec![json!("keepalive-channel"); 4]);
+    // A channel the model names is its own, and still checked against the grant.
+    let outside = f
+        .manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "messages.history",
+            json!({"channel_id": "another-channel"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        outside.contains("outside the approved context scope"),
+        "{outside}"
+    );
+
+    // Two granted channels: the model must choose, and is told how, before anything is sent.
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .source_channels
+        .push("second-channel".into());
+    let before = frames(&f.root).len();
+    let choose = f
+        .manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "messages.history", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        choose,
+        "messages.history reads one channel at a time: give channel_id, one of the \
+         source_channel_ids crew__connections lists."
+    );
+    assert_eq!(frames(&f.root).len(), before, "nothing sent");
 }
 
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge
@@ -1222,6 +1310,292 @@ async fn later_network_retries_end_with_their_window_and_at_a_disconnect() {
     assert_eq!(spawns(&f.root), 5, "no later retry after a Disconnect");
 }
 
+/// Nothing in the background notices a drop (no heartbeat, no probe before use, no check for
+/// an ended bridge): only a request, or a person, finds it. The retries come every `retry`.
+fn request_finds(retry: Duration) -> KeepaliveTiming {
+    KeepaliveTiming {
+        retry_delays: [retry; 3],
+        late_retry_every: retry,
+        ..quiet()
+    }
+}
+
+/// Connect over a bridge whose `ssh` exits after the connect's `hello` (`end-after-1`), and
+/// give it a moment to exit.
+async fn connect_then_lose_the_bridge(f: &Fixture) {
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+}
+
+/// Q4-01, Bob's F3: with Crew on screen, the desktop's own read finds the dead bridge before the
+/// keepalive does. Its re-dial meets the network still down; the retries it arms reconnect once
+/// the network is back, with no click, and the request itself is never sent again.
+#[tokio::test]
+async fn a_drop_a_request_finds_first_is_dialled_again_until_the_network_is_back() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-finds",
+        &["end-after-1", "unreachable", "unreachable", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    let refused = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .chain()
+            .any(|cause| cause.downcast_ref::<SshFailure>().is_some()),
+        "{refused:#}"
+    );
+    assert_eq!(
+        methods_on(&f.root, 1),
+        ["hello"],
+        "nothing written to the dead bridge"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 4 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .any(|(_, method)| method == "workspace.snapshot"),
+        "the request is never sent again by itself"
+    );
+    // The new bridge is kept alive in turn: no fourth dial.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(spawns(&f.root), 4);
+}
+
+/// Q4-01: a bridge that breaks while carrying a request is a drop that request found. The
+/// request is not sent again (its outcome is unknown); the connection is dialled again on the
+/// same schedule.
+#[tokio::test]
+async fn a_bridge_that_breaks_under_a_request_is_dialled_again_later() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-breaks",
+        &["drop-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(!error.is_empty());
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .any(|(_, method)| method == "workspace.snapshot"),
+        "never re-sent"
+    );
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q4-01: a Disconnect during the retries a request armed stops them for good.
+#[tokio::test]
+async fn a_disconnect_stops_the_retries_a_request_armed() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-finds-disconnect",
+        &["end-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_millis(400)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(spawns(&f.root), 2);
+    assert!(!f.manager.idle_redial.lock().unwrap().is_empty(), "armed");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(spawns(&f.root), 2, "no retry after a Disconnect");
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q4-01: a request's re-dial that fails for a reason only a person can fix arms nothing.
+#[tokio::test]
+async fn a_request_s_redial_that_needs_sign_in_schedules_nothing() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-finds-auth",
+        &["end-after-1", "auth", "serve"],
+        request_finds(Duration::from_millis(30)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 2, "no retry: only a person can sign in");
+    let (state, error) = status(&f.manager).await;
+    assert_eq!(state, "disconnected");
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Couldn't sign in to example.test as crew")),
+        "{error:?}"
+    );
+}
+
+/// Q4-01: a person's Connect that fails for a network reason keeps being tried, so the network
+/// coming back reconnects without a second click; one that needs sign-in is not.
+#[tokio::test]
+async fn a_connect_that_fails_for_a_network_reason_keeps_trying_by_itself() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "connect-network",
+        &["unreachable", "unreachable", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    drop(f);
+
+    let f = fixture(
+        "connect-auth",
+        &["auth", "serve"],
+        request_finds(Duration::from_millis(30)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1, "only a person can sign in");
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q4-01: two finders of one drop (a request, then a person's Connect) run one schedule: the
+/// second arming replaces the first, which stops at its next try.
+#[tokio::test]
+async fn two_finders_of_one_drop_run_one_schedule() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let plan = [&["end-after-1"][..], &["unreachable"; 12][..]].concat();
+    let f = fixture(
+        "two-finders",
+        &plan,
+        request_finds(Duration::from_millis(300)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    assert_eq!(spawns(&f.root), 3);
+    let root = f.root.clone();
+    // The Connect's three retries, and none of the request's.
+    until(async || spawns(&root) == 6).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert_eq!(spawns(&f.root), 6, "one schedule, not two");
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q4-01 keeps Q3-12: a device the workspace no longer knows is never dialled again by
+/// itself, whoever meets the network down afterwards; a person's Connect still dials once.
+#[tokio::test]
+async fn a_revoked_device_is_never_scheduled() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "revoked-not-scheduled",
+        &["member-then-revoked", "unreachable", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert!(membership_ended(&f.manager).await);
+    // A request finds no bridge and dials nothing.
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(spawns(&f.root), 1);
+    // A person's Connect meets the network down: nothing is armed after it.
+    f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(spawns(&f.root), 2, "never dialled again by itself");
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// Q4-08: a bridge whose `ssh` exited is noticed between ticks, from local process state
+/// alone, and dialled again, long before the next tick.
+#[tokio::test]
+async fn an_ended_bridge_is_noticed_between_ticks() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "ended-check",
+        &["end-after-1", "serve"],
+        KeepaliveTiming {
+            ended_check: Duration::from_millis(40),
+            ..quiet()
+        },
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    // Nothing was sent to notice it: the old bridge carried only the connect's hello.
+    assert_eq!(methods_on(&f.root, 1), ["hello"]);
+    drop(f);
+
+    // Without the check (the tick and idle times far off), nothing notices it.
+    let f = fixture("no-ended-check", &["end-after-1", "serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(spawns(&f.root), 1);
+}
+
 #[test]
 fn only_a_refusal_that_names_the_device_or_account_ends_a_membership() {
     use super::keepalive::membership_refused;
@@ -1275,6 +1649,9 @@ fn the_default_pace_keeps_every_gap_well_inside_the_brokers_timeout() {
     assert_eq!(timing.late_retry_every, Duration::from_secs(300));
     assert_eq!(timing.late_retry_for, Duration::from_secs(3600));
     assert!(timing.late_retry_every > timing.retry_delays[2]);
+    // Q4-08: an ended bridge is looked for every few seconds between ticks.
+    assert_eq!(timing.ended_check, Duration::from_secs(5));
+    assert!(timing.ended_check < timing.tick);
     let gaps: Vec<Duration> = timing.redial_gaps().collect();
     assert_eq!(gaps.len(), 3 + 12);
     assert_eq!(gaps[..3], timing.retry_delays);

@@ -34,6 +34,7 @@ use crate::{
     providers::base::Provider,
 };
 use anyhow::{ensure, Result};
+use chrono::{DateTime, Datelike, Offset, TimeZone};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1717,10 +1718,17 @@ impl CrewManager {
         };
         Ok(lock.lock_owned().await)
     }
+    /// A person's Connect. One that fails for a network reason keeps being tried by the daemon
+    /// on the keepalive's schedule, so a network that comes back reconnects without a second
+    /// click (Q4-01, [`Self::connect_failed`]); any other failure is final and left showing.
     pub async fn connect(&self, id: &str) -> Result<Connection> {
         let _lifecycle = self.connection_guard(id).await?;
         authentication::ensure_connect_available(id)?;
-        self.connect_locked(id).await
+        let connected = self.connect_locked(id).await;
+        if let Err(error) = &connected {
+            self.connect_failed(id, error).await;
+        }
+        connected
     }
     pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
         let c = self.connection(id).await?;
@@ -1792,7 +1800,7 @@ impl CrewManager {
         let transport = self.live_transport(id).await?;
         let (answer, usable) = self.hello_over(id, &c, &pinned, &transport).await;
         if !usable {
-            self.retire_failed_transport(id, &transport).await?;
+            self.retire_broken_bridge(id, &transport, &answer).await?;
         }
         answer
     }
@@ -2039,14 +2047,33 @@ impl CrewManager {
         self.retire_locked(id, failed, BRIDGE_FAILED).await;
         Ok(())
     }
+    /// [`Self::retire_failed_transport`] for a bridge that broke carrying a request whose
+    /// answer was `answer`. While it was still `id`'s bridge, a network failure also arms the
+    /// keepalive's retries of the connection, never of the request (Q4-01, see
+    /// [`Self::request_bridge_failed`]).
+    async fn retire_broken_bridge<T>(
+        &self,
+        id: &str,
+        failed: &Arc<Mutex<transport::Transport>>,
+        answer: &Result<T>,
+    ) -> Result<()> {
+        let _lifecycle = self.connection_guard(id).await?;
+        if self.retire_locked(id, failed, BRIDGE_FAILED).await {
+            if let Err(error) = answer {
+                self.request_bridge_failed(id, error);
+            }
+        }
+        Ok(())
+    }
     /// Unpublish `failed` if it is still `id`'s bridge, mark the connection disconnected with
-    /// `message`, and end its `ssh`. The caller holds the connection's lifecycle guard.
+    /// `message`, and end its `ssh`; `true` when it was. The caller holds the connection's
+    /// lifecycle guard.
     pub(super) async fn retire_locked(
         &self,
         id: &str,
         failed: &Arc<Mutex<transport::Transport>>,
         message: &str,
-    ) {
+    ) -> bool {
         let removed = {
             let mut transports = self.transports.lock().await;
             if transports
@@ -2058,15 +2085,17 @@ impl CrewManager {
                 None
             }
         };
-        if let Some(removed) = removed {
-            let mut registry = self.registry.lock().await;
-            if let Some(connection) = registry.connections.iter_mut().find(|c| c.id == id) {
-                connection.status = "disconnected".into();
-                connection.last_error = Some(message.into());
-            }
-            drop(registry);
-            removed.lock().await.close().await;
+        let Some(removed) = removed else {
+            return false;
+        };
+        let mut registry = self.registry.lock().await;
+        if let Some(connection) = registry.connections.iter_mut().find(|c| c.id == id) {
+            connection.status = "disconnected".into();
+            connection.last_error = Some(message.into());
         }
+        drop(registry);
+        removed.lock().await.close().await;
+        true
     }
     async fn transport(&self, id: &str) -> Result<Arc<Mutex<transport::Transport>>> {
         self.transports
@@ -2222,7 +2251,7 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_failed_transport(id, &transport).await?;
+            self.retire_broken_bridge(id, &transport, &result).await?;
         }
         // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
         self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
@@ -2848,7 +2877,7 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_failed_transport(&s.connection_id, &transport)
+            self.retire_broken_bridge(&s.connection_id, &transport, &result)
                 .await?;
         }
         let result = result?;
@@ -3042,6 +3071,7 @@ impl CrewManager {
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
         }
+        let params = with_default_channel(method, params, &s)?;
         if method == "blob.read" {
             // Q3-17: the broker requires `offset`, and a first read starts at 0. Every model
             // left it out, so every file read began with a refusal row.
@@ -3103,6 +3133,13 @@ struct ReadFile {
     id: String,
     name: String,
     owner_id: String,
+}
+
+/// One file as the Source line names it (see [`RunReads::line_entry`]), already in Markdown.
+struct LineEntry {
+    name: String,
+    copy: Option<String>,
+    shared: Option<String>,
 }
 
 /// What [`CrewManager::begin_run_with_policy`] gives the model as `crew_context` when a run is
@@ -3489,39 +3526,43 @@ impl RunReads {
         })
     }
 
-    /// The line a task's posted result ends with, in Markdown. For one file:
+    /// The line a task's posted result ends with, in Markdown, as of the daemon's local clock
+    /// now ([`Self::source_line_at`]).
+    fn source_line(&self) -> Option<String> {
+        self.source_line_at(&chrono::Local::now())
+    }
+
+    /// The line a task's posted result ends with, in Markdown, written at `now` (whose time
+    /// zone is the one the line's times are given in). For one file:
     ///
-    /// ``Source: `gina-assay.csv` (newest copy), shared by Gina Rossi (@crew_gina).``
+    /// ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.``
     ///
     /// and for several, ``Sources: `a.csv` (earlier copy, shared by …), `b.csv`.``, with
     /// `and N more files` when more were read than it lists. A file name is a code span, and so
     /// is a person label Markdown could read as anything ([`markdown_label`]), so neither can
     /// become a link or pose as the line's own notes.
-    /// "shared by" is left out when the reads never named the person: never an ID. The copy note
-    /// appears when another file with the same name is known. When the run read only earlier
-    /// copies of a name, a second sentence says a newer one was left unread. `None` when
-    /// nothing was read.
-    fn source_line(&self) -> Option<String> {
-        let entries: Vec<(String, Option<String>, Option<&'static str>)> = self
+    /// "shared by" is left out when the reads never named the person: never an ID. When another
+    /// file with the same name is known, the line tells them apart: a copy known to be the
+    /// newest is given the time it was shared ([`shared_when`]; Q4-27: "newest copy" was true
+    /// only when it was written, so two results posted a day apart both said it of different
+    /// files), and an earlier one says `earlier copy`. When the run read only earlier copies of
+    /// a name, a second sentence says a newer one was left unread. `None` when nothing was
+    /// read.
+    fn source_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
+        let entries: Vec<LineEntry> = self
             .files
             .iter()
-            .map(|file| {
-                let sharer = self
-                    .people
-                    .get(&file.owner_id)
-                    .map(|label| markdown_label(label));
-                (markdown_file_name(&file.name), sharer, self.copy_of(file))
-            })
+            .map(|file| self.line_entry(file, now))
             .collect();
         let mut line = match entries.as_slice() {
             [] => return None,
-            [(name, sharer, copy)] if self.unlisted.is_empty() => {
-                let mut line = format!("Source: {name}");
-                if let Some(copy) = copy {
+            [entry] if self.unlisted.is_empty() => {
+                let mut line = format!("Source: {}", entry.name);
+                if let Some(copy) = &entry.copy {
                     line.push_str(&format!(" ({copy})"));
                 }
-                if let Some(sharer) = sharer {
-                    line.push_str(&format!(", shared by {sharer}"));
+                if let Some(shared) = &entry.shared {
+                    line.push_str(&format!(", {shared}"));
                 }
                 line.push('.');
                 line
@@ -3529,16 +3570,17 @@ impl RunReads {
             several => {
                 let mut parts: Vec<String> = several
                     .iter()
-                    .map(|(name, sharer, copy)| {
-                        let notes: Vec<String> = copy
-                            .map(str::to_owned)
-                            .into_iter()
-                            .chain(sharer.as_ref().map(|sharer| format!("shared by {sharer}")))
+                    .map(|entry| {
+                        let notes: Vec<&str> = entry
+                            .copy
+                            .iter()
+                            .chain(entry.shared.iter())
+                            .map(String::as_str)
                             .collect();
                         if notes.is_empty() {
-                            name.clone()
+                            entry.name.clone()
                         } else {
-                            format!("{name} ({})", notes.join(", "))
+                            format!("{} ({})", entry.name, notes.join(", "))
                         }
                     })
                     .collect();
@@ -3567,6 +3609,38 @@ impl RunReads {
             }
         }
         Some(line)
+    }
+
+    /// What the line says of one file it read: its name, which copy it is when that is
+    /// `earlier copy`, and who shared it and, for the newest of several copies, when
+    /// (`shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7`, `shared at …` when nobody was
+    /// named). A newest copy whose time cannot be placed keeps `newest copy`.
+    fn line_entry<Tz: TimeZone>(&self, file: &ReadFile, now: &DateTime<Tz>) -> LineEntry {
+        let sharer = self
+            .people
+            .get(&file.owner_id)
+            .map(|label| markdown_label(label));
+        let mut copy = self.copy_of(file).map(str::to_owned);
+        let mut when = None;
+        if copy.as_deref() == Some("newest copy") {
+            when = self
+                .shared_second(&file.id)
+                .and_then(|at| shared_when(at, now));
+            if when.is_some() {
+                copy = None;
+            }
+        }
+        let shared = match (sharer, when) {
+            (Some(sharer), Some(when)) => Some(format!("shared by {sharer} {when}")),
+            (Some(sharer), None) => Some(format!("shared by {sharer}")),
+            (None, Some(when)) => Some(format!("shared {when}")),
+            (None, None) => None,
+        };
+        LineEntry {
+            name: markdown_file_name(&file.name),
+            copy,
+            shared,
+        }
     }
 
     /// The listed attachments the workspace named, in the order given, as the model reads them
@@ -3629,6 +3703,97 @@ fn newest_attachments(page: &Value, order: PageOrder, limit: usize) -> Vec<Strin
         }
     }
     found
+}
+
+/// When a file was shared, as the Source line says it (Q4-27): `at 2:20 AM UTC-7` in `now`'s
+/// time zone (the daemon's local one when the line is posted), with the day in front, `on Sep
+/// 24 at 2:20 AM UTC-7`, when it was not shared on the day the line is written, and the year too
+/// when that differs. `at` is the message's `created_at`, in seconds. `None` for a time the
+/// zone cannot place.
+fn shared_when<Tz: TimeZone>(at: u64, now: &DateTime<Tz>) -> Option<String> {
+    let shared = now
+        .timezone()
+        .timestamp_opt(i64::try_from(at).ok()?, 0)
+        .single()?;
+    let offset = shared.offset().fix().local_minus_utc();
+    let zone = match (offset / 3600, (offset % 3600).abs() / 60) {
+        (0, 0) => "UTC".to_owned(),
+        (hours, 0) => format!("UTC{hours:+}"),
+        (hours, minutes) => {
+            let sign = if offset < 0 { '-' } else { '+' };
+            format!("UTC{sign}{}:{minutes:02}", hours.abs())
+        }
+    };
+    let local = shared.naive_local();
+    let time = local.format("%-I:%M %p");
+    let (day, today) = (local.date(), now.date_naive());
+    Some(if day == today {
+        format!("at {time} {zone}")
+    } else if day.year() == today.year() {
+        format!("on {} at {time} {zone}", local.format("%b %-d"))
+    } else {
+        format!("on {} at {time} {zone}", local.format("%b %-d, %Y"))
+    })
+}
+
+/// The agent's methods whose broker params name one channel: the broker's
+/// `read_messages_history`, which answers both, requires `channel_id` (Q4-11).
+const ONE_CHANNEL_READS: [&str; 2] = ["messages.history", "messages.search"];
+
+/// `params` for an agent's `method`, with `channel_id` filled in where the model left it out
+/// (absent, null or empty) and the run can mean only one channel: the grant's only source
+/// channel (Q4-11). Every model left it out of its first `messages.history`, so a connected
+/// chat's first read failed with the broker's raw refusal. With several source channels the
+/// model has to choose, and is told how, before anything is sent. The channel given is still
+/// checked against the grant by [`CrewManager::worker_request`], and the broker checks it again.
+fn with_default_channel(method: &str, mut params: Value, scope: &Scope) -> Result<Value> {
+    if !ONE_CHANNEL_READS.contains(&method) {
+        return Ok(params);
+    }
+    ensure!(params.is_object(), "Crew params must be an object");
+    let named = params
+        .get("channel_id")
+        .is_some_and(|channel| !channel.is_null() && channel.as_str() != Some(""));
+    if named {
+        return Ok(params);
+    }
+    match scope.source_channels.as_slice() {
+        [only] => {
+            params["channel_id"] = json!(only);
+            Ok(params)
+        }
+        _ => anyhow::bail!(
+            "{method} reads one channel at a time: give channel_id, one of the source_channel_ids crew__connections lists."
+        ),
+    }
+}
+
+/// A Crew error as the agent's tool result says it (Q4-11, naming design "Machine IDs stay
+/// internal"): a refusal the broker answered becomes a sentence, "Crew refused the request:
+/// {its message without the code}.", never the transport's `{"code":…,"message":…}` JSON. Any
+/// other error is its own words, unchanged.
+pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    if !text.starts_with("Crew broker refused request:") {
+        return text;
+    }
+    let reason = keepalive::broker_refusal(error)
+        .map(|(code, message)| {
+            let message = message.trim();
+            let message = message
+                .strip_prefix(code.as_str())
+                .and_then(|rest| rest.strip_prefix(':'))
+                .unwrap_or(message);
+            plain_label(message)
+        })
+        .filter(|reason| !reason.is_empty());
+    match reason {
+        Some(reason) if reason.ends_with(['.', '!', '?']) => {
+            format!("Crew refused the request: {reason}")
+        }
+        Some(reason) => format!("Crew refused the request: {reason}."),
+        None => "Crew refused the request.".to_owned(),
+    }
 }
 
 /// Whether the workspace refused this one request (for one file, say), as against the
@@ -5184,6 +5349,23 @@ done
             .unwrap();
         // Q3-29: the model is told the one step that connects this chat, in this chat.
         assert_eq!(result_text(&result), NO_GRANT);
+        // Q4-11: as an answer, not a failed call; it did nothing.
+        assert_eq!(result.is_error, Some(false));
+        // The connections tool says the same.
+        let listed = client
+            .call_tool(
+                "connections",
+                None,
+                McpMeta::new(
+                    "omitted-connection-id-without-grant-session",
+                    CallCapability::for_test(ProviderTier::Private, true),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result_text(&listed), NO_GRANT);
+        assert_eq!(listed.is_error, Some(false));
     }
 
     #[tokio::test]
@@ -6892,11 +7074,21 @@ done
 #[cfg(test)]
 mod provenance_tests {
     use super::{
-        readable_blob,
+        readable_blob, shared_when,
         PageOrder::{NewestFirst, OldestFirst},
         ReadFile, RunReads,
     };
+    use chrono::{FixedOffset, TimeZone};
     use serde_json::json;
+
+    /// The daemon's clock for a line written in UTC-7, the evening of 1969-12-31 there: the
+    /// same day as these fixtures' `created_at` (seconds 100 to 300 after the epoch).
+    fn evening() -> chrono::DateTime<FixedOffset> {
+        FixedOffset::west_opt(7 * 3600)
+            .unwrap()
+            .timestamp_opt(1_000, 0)
+            .unwrap()
+    }
 
     fn people() -> serde_json::Value {
         json!({
@@ -6977,10 +7169,10 @@ mod provenance_tests {
         reads.note_file(&read("new", "gina-assay.csv", "p-gina"));
         reads.note_file(&read("other", "plate.csv", "p-dave"));
         assert_eq!(
-            reads.source_line().as_deref(),
+            reads.source_line_at(&evening()).as_deref(),
             Some(
                 "Sources: `gina-assay.csv` (earlier copy, shared by Gina Rossi (@crew_gina)), \
-                 `gina-assay.csv` (newest copy, shared by Gina Rossi (@crew_gina)), \
+                 `gina-assay.csv` (shared by Gina Rossi (@crew_gina) at 5:03 PM UTC-7), \
                  `plate.csv` (shared by @crew_dave)."
             )
         );
@@ -7041,8 +7233,8 @@ mod provenance_tests {
         newest.note_status(&status("old", "gina-assay.csv", "p-gina"));
         newest.note_file(&read("new", "gina-assay.csv", "p-gina"));
         assert_eq!(
-            newest.source_line().as_deref(),
-            Some("Source: `gina-assay.csv` (newest copy), shared by Gina Rossi (@crew_gina).")
+            newest.source_line_at(&evening()).as_deref(),
+            Some("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 5:03 PM UTC-7.")
         );
 
         // A name that differs only by an invisible character is shown the same, so it is a
@@ -7109,8 +7301,8 @@ mod provenance_tests {
         newest.note_status(&status("first", "gina-assay.csv", "p-gina"));
         newest.note_file(&read("second", "gina-assay.csv", "p-gina"));
         assert_eq!(
-            newest.source_line().as_deref(),
-            Some("Source: `gina-assay.csv` (newest copy), shared by Gina Rossi (@crew_gina).")
+            newest.source_line_at(&evening()).as_deref(),
+            Some("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 5:01 PM UTC-7.")
         );
 
         // Seen only on two different pages, one each: nothing ordered them, so nothing is said
@@ -7189,6 +7381,98 @@ mod provenance_tests {
             newer.source_line().as_deref(),
             Some("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).")
         );
+    }
+
+    /// Q4-27: a result's line is read long after it is posted, so the newest of several copies
+    /// is named by when it was shared, not by "newest copy", which was true only on the day it
+    /// was written: two results a day apart both said it of different files. An earlier copy
+    /// still says so, with its warning.
+    #[test]
+    fn the_newest_copy_is_named_by_when_it_was_shared() {
+        let two_copies = || {
+            let mut reads = RunReads::default();
+            reads.note_context(
+                &page(json!([message(200, "new"), message(100, "old")])),
+                NewestFirst,
+            );
+            reads.note_status(&status("old", "gina-assay.csv", "p-gina"));
+            reads
+        };
+        let mut newest = two_copies();
+        newest.note_file(&read("new", "gina-assay.csv", "p-gina"));
+        // Posted the next day (here also the next year): the day is said, and the year.
+        let next_day = FixedOffset::west_opt(7 * 3600)
+            .unwrap()
+            .timestamp_opt(86_400, 0)
+            .unwrap();
+        assert_eq!(
+            newest.source_line_at(&next_day).as_deref(),
+            Some(
+                "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) on Dec 31, 1969 at \
+                 5:03 PM UTC-7."
+            )
+        );
+        assert!(!newest.source_line().unwrap().contains("newest copy"));
+
+        // Nobody named: the time alone.
+        let mut unnamed = RunReads::default();
+        unnamed.note_context(
+            &json!({"messages": [message(200, "new"), message(100, "old")]}),
+            NewestFirst,
+        );
+        unnamed.note_status(&status("old", "gina-assay.csv", "p-gina"));
+        unnamed.note_file(&read("new", "gina-assay.csv", "p-gina"));
+        assert_eq!(
+            unnamed.source_line_at(&evening()).as_deref(),
+            Some("Source: `gina-assay.csv`, shared at 5:03 PM UTC-7.")
+        );
+
+        // The earlier copy keeps its words and its warning.
+        let mut earlier = two_copies();
+        earlier.note_status(&status("new", "gina-assay.csv", "p-gina"));
+        earlier.note_file(&read("old", "gina-assay.csv", "p-gina"));
+        assert_eq!(
+            earlier.source_line_at(&evening()).as_deref(),
+            Some(
+                "Source: `gina-assay.csv` (earlier copy), shared by Gina Rossi (@crew_gina). \
+                 A newer copy of `gina-assay.csv` was shared and was not read."
+            )
+        );
+    }
+
+    /// The share time as the line gives it: the daemon's clock, its offset from UTC, and the
+    /// day only when it is not the day the line is written.
+    #[test]
+    fn a_share_time_names_its_zone_and_its_day_when_that_differs() {
+        let zone = |seconds: i32| FixedOffset::east_opt(seconds).unwrap();
+        let at = 1_790_214_527; // 2026-09-24T01:48:47Z
+        let now = |seconds: i32| zone(seconds).timestamp_opt(at + 3_600, 0).unwrap();
+        assert_eq!(
+            shared_when(at as u64, &now(-7 * 3600)).as_deref(),
+            Some("at 6:48 PM UTC-7")
+        );
+        assert_eq!(
+            shared_when(at as u64, &now(0)).as_deref(),
+            Some("at 1:48 AM UTC")
+        );
+        assert_eq!(
+            shared_when(at as u64, &now(9 * 3600)).as_deref(),
+            Some("at 10:48 AM UTC+9")
+        );
+        assert_eq!(
+            shared_when(at as u64, &now(19_800)).as_deref(),
+            Some("at 7:18 AM UTC+5:30")
+        );
+        assert_eq!(
+            shared_when(at as u64, &now(-12_600)).as_deref(),
+            Some("at 10:18 PM UTC-3:30")
+        );
+        let tomorrow = zone(-7 * 3600).timestamp_opt(at + 86_400, 0).unwrap();
+        assert_eq!(
+            shared_when(at as u64, &tomorrow).as_deref(),
+            Some("on Sep 23 at 6:48 PM UTC-7")
+        );
+        assert_eq!(shared_when(u64::MAX, &now(0)), None);
     }
 
     /// One file shared in two messages was shared when the later one was posted.

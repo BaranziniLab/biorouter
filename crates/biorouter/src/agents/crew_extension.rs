@@ -19,7 +19,7 @@ const INSTRUCTIONS: &str = concat!(
     "Initial history covers only the destination channel. ",
     "crew__connections lists authorized source_channel_ids. ",
     "Use {method:context.manifest,params:{}} for recent context from selected channels (up to 200 messages); ",
-    "messages.search searches one granted channel per call using channel_id and query. ",
+    "messages.history and messages.search read one granted channel per call, named by channel_id (omit it when only one channel is granted); messages.search also takes query. ",
     "Retrieve relevant selected-channel evidence before answering cross-channel questions. ",
     "When this chat has no Crew access, ask the person to type /crew in this chat to connect it. ",
     "You cannot grant or revoke Crew access. ",
@@ -39,6 +39,24 @@ const INSTRUCTIONS: &str = concat!(
 pub struct CrewClient {
     info: InitializeResult,
 }
+
+/// A Crew tool call's answer as the agent loop and the transcript get it (Q4-11). A chat that
+/// is simply not connected yet ([`crate::crew::NO_GRANT`]) is an answer, not a failure: it says
+/// the one step that connects the chat, and a transcript drew it as "Tool call failed". It is
+/// still words only, and grants nothing: every request is refused the same way until a person
+/// connects the chat. A refusal the broker answered is a sentence, never its JSON
+/// ([`crate::crew::agent_error_text`]); every other error stays an error, in its own words.
+fn tool_result(result: anyhow::Result<Value>) -> CallToolResult {
+    match result {
+        Ok(value) => CallToolResult::success(vec![Content::text(value.to_string())]),
+        Err(error) if error.to_string() == crate::crew::NO_GRANT => {
+            CallToolResult::success(vec![Content::text(crate::crew::NO_GRANT)])
+        }
+        Err(error) => {
+            CallToolResult::error(vec![Content::text(crate::crew::agent_error_text(&error))])
+        }
+    }
+}
 impl CrewClient {
     pub fn new(_context: PlatformExtensionContext) -> Self {
         Self {
@@ -57,7 +75,7 @@ impl CrewClient {
         }
     }
     fn tools() -> Vec<Tool> {
-        vec![Tool::new("connections", "List the saved connection, destination_channel_id and authorized source_channel_ids admitted to this conversation. Connection details outside your grant are not disclosed.",serde_json::from_value::<JsonObject>(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap()),Tool::new("request","Read channel history, search granted channels, check updates, read an attachment, or post an owned-agent update using the same saved Crew connection. A human must grant the task and destination first. context.manifest with empty params retrieves recent selected-channel context (up to 200 messages); initial history covers only the destination. messages.search requires channel_id and query and searches that channel only; use authorized source_channel_ids from crew__connections. Omit connection_id to use this conversation's bound connection. Remote paths are relative to the approved SSH directory, never the local task directory. Example: {\"method\":\"remote.read\",\"params\":{\"path\":\"crew-task.csv\"}}. Failed tool calls provide no file contents.",serde_json::from_value::<JsonObject>(json!({"type":"object","required":["method"],"properties":{"connection_id":{"type":"string","description":"Optional exact ID from crew__connections; omit to use the already granted connection. Never invent an ID."},"method":{"type":"string","enum":["messages.history","messages.search","context.manifest","blob.read","run.project","remote.list","remote.read","remote.write","remote.hash","remote.execute","remote.job_status","remote.cancel","remote.attach"]},"params":{"type":"object","properties":{"path":{"type":"string","description":"Path relative to approved remote directory"},"argv":{"type":"array","items":{"type":"string"},"description":"Direct executable and arguments, e.g. [python3,-c,script]; no shell/subprocesses"},"idempotency_key":{"type":"string","description":"Stable unique request key for execution or attachment; retain on uncertain retry"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":60},"job_id":{"type":"string"},"text":{"type":"string","description":"UTF-8 file contents for remote.write"},"data_hex":{"type":"string"},"channel_id":{"type":"string"},"query":{"type":"string"},"after":{"type":"string","description":"Opaque sequence token from a visible message in this channel; never a numeric offset"},"before":{"type":"string","description":"Opaque sequence token for exclusive older-history paging"},"limit":{"type":"integer"},"body":{"type":"string"},"status":{"type":"string","enum":["progress"]},"blob_id":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Byte offset for blob.read; start at 0 and continue from next_offset."},"media_type":{"type":"string"}}}},"additionalProperties":false})).unwrap())]
+        vec![Tool::new("connections", "List the saved connection, destination_channel_id and authorized source_channel_ids admitted to this conversation. Connection details outside your grant are not disclosed.",serde_json::from_value::<JsonObject>(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap()),Tool::new("request","Read channel history, search granted channels, check updates, read an attachment, or post an owned-agent update using the same saved Crew connection. A human must grant the task and destination first. context.manifest with empty params retrieves recent selected-channel context (up to 200 messages); initial history covers only the destination. messages.history and messages.search read one channel per call, named by channel_id from the authorized source_channel_ids in crew__connections (omit it when only one channel is granted); messages.search also requires query. Omit connection_id to use this conversation's bound connection. Remote paths are relative to the approved SSH directory, never the local task directory. Example: {\"method\":\"remote.read\",\"params\":{\"path\":\"crew-task.csv\"}}. Failed tool calls provide no file contents.",serde_json::from_value::<JsonObject>(json!({"type":"object","required":["method"],"properties":{"connection_id":{"type":"string","description":"Optional exact ID from crew__connections; omit to use the already granted connection. Never invent an ID."},"method":{"type":"string","enum":["messages.history","messages.search","context.manifest","blob.read","run.project","remote.list","remote.read","remote.write","remote.hash","remote.execute","remote.job_status","remote.cancel","remote.attach"]},"params":{"type":"object","properties":{"path":{"type":"string","description":"Path relative to approved remote directory"},"argv":{"type":"array","items":{"type":"string"},"description":"Direct executable and arguments, e.g. [python3,-c,script]; no shell/subprocesses"},"idempotency_key":{"type":"string","description":"Stable unique request key for execution or attachment; retain on uncertain retry"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":60},"job_id":{"type":"string"},"text":{"type":"string","description":"UTF-8 file contents for remote.write"},"data_hex":{"type":"string"},"channel_id":{"type":"string","description":"The channel messages.history or messages.search reads: one of source_channel_ids from crew__connections. Omit it when the grant has only one channel, and that one is read."},"query":{"type":"string"},"after":{"type":"string","description":"Opaque sequence token from a visible message in this channel; never a numeric offset"},"before":{"type":"string","description":"Opaque sequence token for exclusive older-history paging"},"limit":{"type":"integer"},"body":{"type":"string"},"status":{"type":"string","enum":["progress"]},"blob_id":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Byte offset for blob.read; start at 0 and continue from next_offset."},"media_type":{"type":"string"}}}},"additionalProperties":false})).unwrap())]
     }
 }
 #[async_trait::async_trait]
@@ -115,10 +133,7 @@ impl McpClientTrait for CrewClient {
             }
         }
         .await;
-        Ok(match result {
-            Ok(value) => CallToolResult::success(vec![Content::text(value.to_string())]),
-            Err(error) => CallToolResult::error(vec![Content::text(error.to_string())]),
-        })
+        Ok(tool_result(result))
     }
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
@@ -173,6 +188,83 @@ mod tests {
         assert_eq!(
             crate::crew::NO_GRANT,
             "This chat isn't connected to a Crew channel. To connect it, type /crew in this chat."
+        );
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Q4-11: a refusal the broker answered reaches the transcript as a sentence, never as the
+    /// transport's JSON envelope (naming design "Machine IDs stay internal"). It is still a
+    /// failed call.
+    #[test]
+    fn a_broker_refusal_is_a_sentence_not_its_json() {
+        for (envelope, sentence) in [
+            (
+                json!({"code": "invalid_params", "message": "invalid_params: missing or invalid channel_id"}),
+                "Crew refused the request: missing or invalid channel_id.",
+            ),
+            (
+                json!({"code": "forbidden", "message": "forbidden: channel outside run grant"}),
+                "Crew refused the request: channel outside run grant.",
+            ),
+            (
+                json!({"code": "request_denied", "message": "Message too long."}),
+                "Crew refused the request: Message too long.",
+            ),
+            (
+                json!({"code": "forbidden", "message": ""}),
+                "Crew refused the request.",
+            ),
+        ] {
+            let result = tool_result(Err(anyhow::anyhow!(
+                "Crew broker refused request: {envelope}"
+            )));
+            assert_eq!(result.is_error, Some(true));
+            let text = text_of(&result);
+            assert_eq!(text, sentence);
+            assert!(!text.contains('{') && !text.contains("\"code\""), "{text}");
+        }
+        // Not JSON at all: still no envelope, and no guess at a reason.
+        let result = tool_result(Err(anyhow::anyhow!(
+            "Crew broker refused request: <garbled>"
+        )));
+        assert_eq!(text_of(&result), "Crew refused the request.");
+        // Every other error keeps its own words, and stays an error.
+        let result = tool_result(Err(anyhow::anyhow!("method is required")));
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(text_of(&result), "method is required");
+    }
+
+    /// Q4-11: a chat that is not connected yet is told so as an answer, not drawn as a failed
+    /// tool call. It is words only: the request it answers did nothing.
+    #[test]
+    fn not_connected_yet_is_an_answer_not_a_failure() {
+        let result = tool_result(Err(anyhow::anyhow!(crate::crew::NO_GRANT)));
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(text_of(&result), crate::crew::NO_GRANT);
+    }
+
+    /// Q4-11: the schema says what channel_id is and when it may be left out.
+    #[test]
+    fn channel_id_says_which_channel_and_when_to_omit_it() {
+        let tools = CrewClient::tools();
+        let request = tools
+            .iter()
+            .find(|tool| tool.name == "request")
+            .expect("the request tool");
+        let channel = &request.input_schema["properties"]["params"]["properties"]["channel_id"];
+        let description = channel["description"].as_str().expect("described");
+        assert!(description.contains("source_channel_ids"), "{description}");
+        assert!(
+            description.contains("Omit it when the grant has only one channel"),
+            "{description}"
         );
     }
 

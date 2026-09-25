@@ -29,6 +29,26 @@
 //!   retries left the connection down until someone pressed Connect). The connection shows
 //!   the real reason all the while.
 //!
+//! **The retries are armed whoever finds the drop (Q4-01).** The schedule
+//! ([`CrewManager::schedule_redials`]) used to be armed only by the keepalive's own re-dial, so a
+//! drop that a request found first (Crew's own view, reading the connection while the network
+//! was down) retired the bridge, ended the keepalive with it, and left nothing to dial again
+//! when the network came back. Now the same schedule is armed, with the same rules, by each of
+//! the three ways a drop is found: a heartbeat or an ended bridge the keepalive notices, a
+//! request that finds its bridge gone before writing (or whose bridge breaks while carrying it:
+//! the request is never sent again, only the connection is dialled), and a person's Connect that
+//! fails for a network reason. It is armed under the connection's lifecycle guard, in the same
+//! hold as the failure it follows, so a Disconnect can only come after it and always disarms it.
+//! Each arming replaces the last one's token, so there is never more than one schedule, and it
+//! is never armed for a device whose membership ended ([`MEMBERSHIP_ENDED`]) until a dial
+//! succeeds again.
+//!
+//! **An ended bridge is noticed within [`KeepaliveTiming::ended_check`] (Q4-08).** Between
+//! ticks the keepalive looks, every few seconds, at whether its bridge's `ssh` has exited. That
+//! is local process state, nothing is sent, and the heartbeat and idle rules are unchanged; it
+//! only means a dead bridge reads offline (and is dialled again) in seconds rather than at the
+//! next 30 s tick.
+//!
 //! Only a bridge that is **gone** is dialled again. A heartbeat the bridge carried and whose
 //! answer was refused (a different node, a `hello` that lost the v2 signature it had, one that
 //! does not verify, the broker refusing it) says nothing about the network: a re-dial would only
@@ -76,6 +96,9 @@ pub(super) struct KeepaliveTiming {
     pub late_retry_every: Duration,
     /// How long those later tries go on; zero for none.
     pub late_retry_for: Duration,
+    /// How often, between ticks, the keepalive checks whether its bridge's `ssh` has exited:
+    /// local process state only, never a request (Q4-08).
+    pub ended_check: Duration,
 }
 
 impl Default for KeepaliveTiming {
@@ -91,6 +114,7 @@ impl Default for KeepaliveTiming {
             ],
             late_retry_every: Duration::from_secs(5 * 60),
             late_retry_for: Duration::from_secs(60 * 60),
+            ended_check: Duration::from_secs(5),
         }
     }
 }
@@ -107,6 +131,17 @@ impl KeepaliveTiming {
         self.retry_delays
             .into_iter()
             .chain(std::iter::repeat_n(self.late_retry_every, late))
+    }
+
+    /// How long the keepalive sleeps between looks at its bridge: [`Self::ended_check`], never
+    /// longer than a tick, and never zero.
+    fn nap(&self) -> Duration {
+        let nap = if self.ended_check.is_zero() {
+            self.tick
+        } else {
+            self.ended_check.min(self.tick)
+        };
+        nap.max(Duration::from_millis(1))
     }
 }
 
@@ -148,7 +183,7 @@ pub const MEMBERSHIP_ENDED: &str = "crew_membership_ended";
 const MEMBERSHIP_PROBE: &str = "profile.suggest";
 
 /// The broker's `{code, message}` for a refusal it answered, from the transport's error.
-fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
+pub(super) fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
     let text = error.to_string();
     let envelope: serde_json::Value =
         serde_json::from_str(text.strip_prefix("Crew broker refused request: ")?).ok()?;
@@ -177,7 +212,7 @@ pub(super) fn membership_refused(error: &anyhow::Error) -> bool {
 /// Whether a re-dial that failed with `error` may be tried again later: only a network
 /// failure. Anything that needs a person (sign-in, a host key) or that says the workspace is
 /// not the one pinned is final, and is left showing.
-fn worth_retrying(error: &anyhow::Error) -> bool {
+pub(super) fn worth_retrying(error: &anyhow::Error) -> bool {
     if error
         .chain()
         .any(|cause| cause.is::<WorkspaceIdentityError>())
@@ -285,7 +320,9 @@ impl CrewManager {
     /// heartbeat answer was refused is retired with that reason, and the request fails with it.
     ///
     /// Every request over a connection's bridge takes it from here, so a bridge that died
-    /// while this computer slept is re-dialled whichever request finds it first.
+    /// while this computer slept is re-dialled whichever request finds it first; and when that
+    /// re-dial fails for a network reason, the retries are armed here too (Q4-01, see
+    /// [`Self::redial_dropped`]), since the keepalive of the bridge it retired has ended.
     pub(super) async fn live_transport(
         &self,
         id: &str,
@@ -319,7 +356,10 @@ impl CrewManager {
 
     /// Dial `id` again in place of `failed`, a bridge found gone, the way Connect does it.
     /// Only while `failed` is still `id`'s bridge and no sign-in is pending; a failure is
-    /// recorded as the connection's `last_error` and returned.
+    /// recorded as the connection's `last_error` and returned. Whoever found the drop (the
+    /// keepalive, or a request), a failure worth retrying arms the retries
+    /// ([`Self::schedule_redials`]) before the lifecycle guard is let go, so a Disconnect can
+    /// only follow the arming, and disarms it.
     pub(super) async fn redial_dropped(
         &self,
         id: &str,
@@ -339,9 +379,76 @@ impl CrewManager {
             Ok(_) => Ok(Redial::Reconnected),
             Err(error) => {
                 self.retire_locked(id, failed, &error.to_string()).await;
+                tracing::info!(connection = id, error = %error, "Crew bridge dropped and could not be dialled again");
+                if worth_retrying(&error) {
+                    self.schedule_redials(id);
+                }
                 Err(error)
             }
         }
+    }
+
+    /// A request's bridge broke while carrying it, and the caller (holding the lifecycle
+    /// guard) just retired it (Q4-01). The request is never sent again: its outcome is unknown,
+    /// and its caller was told so. For a network failure the connection is dialled again later,
+    /// on the same schedule a drop the keepalive finds gets.
+    pub(super) fn request_bridge_failed(&self, id: &str, error: &anyhow::Error) {
+        if !worth_retrying(error) {
+            return;
+        }
+        tracing::info!(connection = id, error = %error, "Crew bridge failed while carrying a request; dialling again later");
+        self.schedule_redials(id);
+    }
+
+    /// A person's Connect failed with `error`; the caller still holds the lifecycle guard
+    /// (Q4-01). For a network failure while no bridge is up, the daemon keeps trying on the same
+    /// schedule, so a network that comes back reconnects without a second click. Any other
+    /// failure (sign-in, a host key, the workspace's identity, a refusal) is final: it also ends
+    /// a schedule a drop armed earlier, because the latest dial is the one that says why.
+    pub(super) async fn connect_failed(&self, id: &str, error: &anyhow::Error) {
+        if !worth_retrying(error) {
+            self.disarm_idle_redial(id);
+            return;
+        }
+        if self.transports.lock().await.contains_key(id) {
+            return;
+        }
+        tracing::info!(connection = id, error = %error, "Crew connect failed for a network reason; trying again by itself");
+        self.schedule_redials(id);
+    }
+
+    /// Arm the retries of a connection whose bridge is down after a network failure, and start
+    /// them (Q4-01): the gaps of [`KeepaliveTiming::redial_gaps`], each try made only while the
+    /// schedule is still owed ([`Self::retry_idle_redial`]). The caller holds `id`'s lifecycle
+    /// guard. Arming replaces any earlier schedule's token, so that one stops at its next try and
+    /// there is never more than one. Nothing is armed for a device the workspace no longer
+    /// knows ([`MEMBERSHIP_ENDED`]), or by a manager built without [`CrewManager::shared`].
+    pub(super) fn schedule_redials(&self, id: &str) {
+        if self.membership_ended(id) {
+            tracing::info!(
+                connection = id,
+                "Not dialling a Crew connection again by itself: this computer is no longer a member"
+            );
+            return;
+        }
+        let Some(manager) = self.this.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let token = self.arm_idle_redial(id);
+        runtime.spawn(redial_schedule(manager, id.to_owned(), token));
+    }
+
+    /// Whether the workspace said this device is no longer a member ([`Self::end_membership`])
+    /// and nothing has connected since (a connect clears it).
+    fn membership_ended(&self, id: &str) -> bool {
+        self.error_codes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .is_some_and(|(code, _)| *code == MEMBERSHIP_ENDED)
     }
 
     fn arm_idle_redial(&self, id: &str) -> u64 {
@@ -369,12 +476,25 @@ impl CrewManager {
             .remove(id);
     }
 
+    /// Disarm `id`'s schedule only while it is still the one armed with `token`: a schedule
+    /// that ends never removes the one that replaced it.
+    fn disarm_idle_redial_if(&self, id: &str, token: u64) {
+        let mut armed = self
+            .idle_redial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if armed.get(id) == Some(&token) {
+            armed.remove(id);
+        }
+    }
+
     /// A later try of a re-dial that failed for a network reason, while it is still owed:
-    /// `None` when it is not (someone connected or disconnected meanwhile, or a sign-in is
-    /// pending).
+    /// `None` when it is not (someone connected or disconnected meanwhile, another finder
+    /// armed a newer schedule, the membership ended, or a sign-in is pending).
     async fn retry_idle_redial(&self, id: &str, token: u64) -> Option<Result<()>> {
         let _lifecycle = self.connection_guard(id).await.ok()?;
         if !self.idle_redial_armed(id, token)
+            || self.membership_ended(id)
             || self.transports.lock().await.contains_key(id)
             || super::authentication::ensure_connect_available(id).is_err()
         {
@@ -393,39 +513,13 @@ impl CrewManager {
         }
     }
 
-    /// After a heartbeat found `failed` gone (never one whose answer was refused): dial again
-    /// now, and, for a network failure, a few more times with growing gaps, then now and then
-    /// for a while ([`KeepaliveTiming::redial_gaps`]). A dial that connects is followed by a
-    /// membership check ([`Self::probe_membership`]).
+    /// After the keepalive found `failed` gone (never one whose answer was refused): dial again
+    /// now. A dial that connects is followed by a membership check
+    /// ([`Self::probe_membership`]); one that fails for a network reason has armed the later
+    /// tries ([`Self::redial_dropped`]).
     async fn recover_dropped(&self, id: &str, failed: &Arc<Mutex<transport::Transport>>) {
-        let first = self.redial_dropped(id, failed).await;
-        let error = match first {
-            Ok(Redial::Reconnected) => {
-                self.probe_membership(id).await;
-                return;
-            }
-            Ok(_) => return,
-            Err(error) => error,
-        };
-        tracing::info!(connection = id, error = %error, "Crew bridge dropped and could not be dialled again");
-        if !worth_retrying(&error) {
-            return;
-        }
-        let token = self.arm_idle_redial(id);
-        for delay in self.keepalive_timing().redial_gaps() {
-            tokio::time::sleep(delay).await;
-            match self.retry_idle_redial(id, token).await {
-                None => return,
-                Some(Ok(())) => {
-                    self.probe_membership(id).await;
-                    return;
-                }
-                Some(Err(error)) if worth_retrying(&error) => continue,
-                Some(Err(_)) => break,
-            }
-        }
-        if self.idle_redial_armed(id, token) {
-            self.disarm_idle_redial(id);
+        if let Ok(Redial::Reconnected) = self.redial_dropped(id, failed).await {
+            self.probe_membership(id).await;
         }
     }
 
@@ -572,34 +666,77 @@ impl CrewManager {
     }
 }
 
+/// The retries one finder armed with `token` (see [`CrewManager::schedule_redials`]): each gap,
+/// then one try while the schedule is still owed. Ends at a connect, at a failure that is not
+/// about the network, when the schedule is no longer owed (a Disconnect, an edit or removal, a
+/// newer schedule, a pending sign-in), or when the gaps run out; and disarms its own token, never
+/// a newer one.
+async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64) {
+    let Some(gaps) = manager
+        .upgrade()
+        .map(|manager| manager.keepalive_timing().redial_gaps().collect::<Vec<_>>())
+    else {
+        return;
+    };
+    for delay in gaps {
+        tokio::time::sleep(delay).await;
+        let Some(manager) = manager.upgrade() else {
+            return;
+        };
+        match manager.retry_idle_redial(&id, token).await {
+            None => break,
+            Some(Ok(())) => {
+                manager.probe_membership(&id).await;
+                break;
+            }
+            Some(Err(error)) if worth_retrying(&error) => continue,
+            Some(Err(_)) => break,
+        }
+    }
+    if let Some(manager) = manager.upgrade() {
+        manager.disarm_idle_redial_if(&id, token);
+    }
+}
+
 /// The keepalive of one bridge: heartbeat it while it is idle, and dial again when it is gone.
-/// Ends when the bridge is no longer the connection's (a disconnect, a reconnect, a removal);
-/// a successful re-dial's own connect starts the next bridge's keepalive.
+/// Between ticks it checks, every [`KeepaliveTiming::ended_check`], whether the bridge's `ssh`
+/// has exited (Q4-08); idleness is only looked at on a tick. Ends when the bridge is no longer
+/// the connection's (a disconnect, a reconnect, a removal); a successful re-dial's own connect
+/// starts the next bridge's keepalive.
 async fn keepalive(
     manager: Weak<CrewManager>,
     id: String,
     transport: Weak<Mutex<transport::Transport>>,
 ) {
+    let mut since_tick = Duration::ZERO;
     loop {
         let Some(timing) = manager.upgrade().map(|manager| manager.keepalive_timing()) else {
             return;
         };
-        tokio::time::sleep(timing.tick).await;
+        let nap = timing.nap();
+        tokio::time::sleep(nap).await;
+        since_tick += nap;
         let (Some(manager), Some(transport)) = (manager.upgrade(), transport.upgrade()) else {
             return;
         };
         if !manager.is_current_transport(&id, &transport).await {
             return;
         }
-        // A bridge in use is not idle; look again next tick.
+        let tick = since_tick >= timing.tick;
+        if tick {
+            since_tick = Duration::ZERO;
+        }
+        // A bridge in use is neither ended nor idle; look again next time.
         let (ended, idle) = match transport.try_lock() {
             Ok(mut locked) => (locked.has_ended(), locked.idle_for()),
             Err(_) => continue,
         };
-        if !ended && idle < timing.idle {
+        if !ended && (!tick || idle < timing.idle) {
             continue;
         }
-        if !ended {
+        if ended {
+            tracing::info!(connection = %id, "Crew bridge ended; dialling again");
+        } else {
             match manager.heartbeat(&id, &transport).await {
                 Heartbeat::Alive => continue,
                 // Not about the network: final, shown, and never dialled again.
