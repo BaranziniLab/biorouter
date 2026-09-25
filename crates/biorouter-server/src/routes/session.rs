@@ -1081,7 +1081,11 @@ async fn import_session(
         (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): \
                                       `editType: diverge` on a private chat branches it into a \
                                       new chat that inherits its private model, and the request \
-                                      carried no proof it came from the user (body = plain text)"),
+                                      carried no proof it came from the user (body = plain text). \
+                                      Or refused because the chat's Crew access has ended \
+                                      (removed, ended by the workspace or a settings change, or \
+                                      run out of time): nothing was changed, and the body is the \
+                                      plain sentence the chat's next turn would be refused with"),
         (status = 404, description = "Session or message not found"),
         (status = 409, description = "A turn is in flight for this session, or a supplied \
                                       `expectedMessageIds` is missing messages the server holds \
@@ -1125,6 +1129,16 @@ async fn edit_message(
             let had_user_action = is_user_action(&headers);
             if source_is_private && !had_user_action {
                 return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
+            }
+            // A Crew chat is never copied: `create_derived_session` refuses every one, which
+            // this arm answers as a bare 500. A person whose chat's Crew access has ended is
+            // told why instead, in the sentence its next turn would be refused with (revoke
+            // F1). A person only: without the proof, `session_reach` keeps a Crew chat's
+            // standing from the caller, so this arm must not say it either.
+            if had_user_action {
+                if let Some(refusal) = crew_history_hold(&session_id).await {
+                    return refusal;
+                }
             }
             match manager
                 .diverge_session_for_edit(&session_id, request.timestamp)
@@ -1178,9 +1192,50 @@ async fn edit_message(
             {
                 return refusal.into_response();
             }
+            // Revoke F1, defense in depth. A chat whose Crew access has ended cannot run the
+            // turn this cut is made for — the daemon refuses it at dispatch — so the cut would
+            // destroy stored history for nothing. Refused before the turn lock and the snapshot,
+            // so nothing is read for it or deleted. After the reach gate, which keeps a Crew
+            // chat's standing from a caller without the person's proof.
+            if let Some(refusal) = crew_history_hold(&session_id).await {
+                return refusal;
+            }
             edit_in_place(&state, &session_id, &request).await
         }
     }
+}
+
+/// Revoke F1, defense in depth: refuse to rewrite or resend `session_id`'s stored history when
+/// its Crew grant has stopped, BEFORE anything is changed. `None` lets the caller go on.
+///
+/// The refusal is 403 with a `text/plain` body holding the sentence the chat's next turn would
+/// be refused with ([`biorouter::crew::CrewManager::history_rewrite_refusal`]), the shape this
+/// file's other refusals take, so the desktop's toast reads it as it stands. The renderer holds
+/// these paths itself first; this answers a window that has not re-read the grant since the CLI
+/// or another window revoked it, and any other client.
+///
+/// ⚠ **Only after the caller's reach gate.** `session_reach` refuses a Crew chat to a caller
+/// without the person's proof, and this answer says where the chat's grant stands.
+///
+/// Fails closed: a Crew registry that cannot be opened is a 500, as every turn in it would be.
+pub(crate) async fn crew_history_hold(session_id: &str) -> Option<Response> {
+    let crew = match biorouter::crew::manager() {
+        Ok(crew) => crew,
+        Err(error) => {
+            tracing::error!(
+                session_id,
+                %error,
+                "Couldn't open the Crew registry to check a history rewrite; nothing was changed"
+            );
+            return Some(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    };
+    let sentence = crew.history_rewrite_refusal(session_id).await?;
+    tracing::info!(
+        session_id,
+        "Refused to rewrite the history of a chat whose Crew access has ended; nothing was changed"
+    );
+    Some((StatusCode::FORBIDDEN, sentence).into_response())
 }
 
 /// The destructive half of [`edit_message`]: truncate the LIVE session.
@@ -1367,7 +1422,10 @@ async fn edit_in_place(
         (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): the \
                                       source chat is private, so the branch would inherit its \
                                       private model, and the request carried no proof it came \
-                                      from the user (body = plain text)"),
+                                      from the user (body = plain text). Or, to a request that \
+                                      carried that proof, refused because the chat's Crew access \
+                                      has ended: no chat was created, and the body is the plain \
+                                      sentence the chat's next turn would be refused with"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -1422,6 +1480,14 @@ async fn diverge_session(
     let had_user_action = is_user_action(&headers);
     if source.privacy_tier == SessionClassification::Private && !had_user_action {
         return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
+    }
+
+    // As `edit_message`'s diverge arm: a Crew chat is never copied, and a person whose chat's
+    // Crew access has ended is told why rather than handed a bare 500 (revoke F1).
+    if had_user_action {
+        if let Some(refusal) = crew_history_hold(&session_id).await {
+            return Err(refusal);
+        }
     }
 
     // diverge_session does the placeholder-aware, sibling-numbered naming,

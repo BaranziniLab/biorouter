@@ -542,6 +542,9 @@ export type ChatRequest = {
      * the copy must already contain every message the server holds, and the
      * request is refused with 409 if it does not. See
      * [`apply_client_writeback`]. The desktop app has never sent this field.
+     *
+     * On a chat whose Crew access has ended the copy is refused with 403, and nothing is
+     * written: the turn it would seed is refused anyway.
      */
     conversation_so_far?: Array<Message> | null;
     /**
@@ -8549,7 +8552,7 @@ export type ReplyData = {
 
 export type ReplyErrors = {
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text). Or the request carried `conversation_so_far` for a chat whose Crew access has ended: nothing was written, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**
@@ -9379,7 +9382,7 @@ export type DivergeSessionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text). Or, to a request that carried that proof, refused because the chat's Crew access has ended: no chat was created, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**
@@ -9423,7 +9426,7 @@ export type EditMessageErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text). Or refused because the chat's Crew access has ended (removed, ended by the workspace or a settings change, or run out of time): nothing was changed, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**

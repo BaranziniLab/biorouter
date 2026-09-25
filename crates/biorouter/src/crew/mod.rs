@@ -521,6 +521,20 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
         }
     }
 }
+/// Whether a chat's own grant still stands on this device, and its connection when it does:
+/// not stopped here, admitted under today's institution policy, and made under the policy
+/// epoch its connection holds now. Each refusal is the sentence the person reads. Shared by
+/// every turn's check ([`CrewManager::check_tier`]) and the history-rewrite refusal
+/// ([`CrewManager::history_rewrite_refusal`]), so the two can never word one grant
+/// differently.
+fn grant_stands<'a>(scope: &Scope, connection: Option<&'a Connection>) -> Result<&'a Connection> {
+    ensure!(!scope.expired, scope.stopped_text());
+    // A scope granted before institution policy existed never passed today's admission.
+    ensure!(scope.institution_policy, GRANT_POLICY_CHANGED);
+    let connection = connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
+    ensure!(scope.epoch == connection.policy_epoch, GRANT_POLICY_CHANGED);
+    Ok(connection)
+}
 /// This process's record of `run_id`, the grant stored under `session`: that chat's grant, or
 /// an earlier grant it keeps for its revocation ([`ReplacedGrant`]).
 fn heard_here<'a>(here: &'a Registry, session: &str, run_id: &str) -> Option<&'a Scope> {
@@ -2677,11 +2691,7 @@ impl CrewManager {
         let Some((s, c)) = self.checked_scope(session).await? else {
             return Ok(());
         };
-        ensure!(!s.expired, s.stopped_text());
-        // A scope granted before institution policy existed never passed today's admission.
-        ensure!(s.institution_policy, GRANT_POLICY_CHANGED);
-        let c = c.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
-        ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
+        let c = grant_stands(&s, c.as_ref())?;
         ensure!(
             tier != ProviderTier::Public
                 || (c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted),
@@ -2689,6 +2699,43 @@ impl CrewManager {
         );
         institution::check_provider(tier, affiliation, &s.institution_ids)?;
         Ok(())
+    }
+    /// Why `session`'s stored history must not be rewritten or resent under its Crew grant, or
+    /// `None` when no grant restricts the chat or its grant still stands (revoke F1, defense in
+    /// depth). The reason is the sentence the chat's next turn is refused with: removed, ended
+    /// by the workspace or by a settings change (D-1), or run out of time.
+    ///
+    /// A door that truncates or replaces a chat's history and then starts a turn — Edit in
+    /// place, `/reply`'s `conversation_so_far` — asks this BEFORE it changes anything. The turn
+    /// is refused at dispatch (`check_tier`) whatever the door does, so a rewrite let
+    /// through would destroy history for a turn that can never run: measured at 20 and 24
+    /// stored rows by the final acceptance. The renderer holds those paths first; this is the
+    /// daemon's own answer for a client that does not, such as another window that has not
+    /// re-read the grant since the CLI revoked it.
+    ///
+    /// Local only: it never asks the workspace. A run the workspace ended that this device has
+    /// not yet heard about (D-1) passes here and is refused at the turn, as before. A run whose
+    /// recorded end (`expires_at`) has passed on this device's clock is refused here, as the
+    /// chat already holds it, although a turn leaves that decision to the workspace: refusing
+    /// a rewrite changes nothing, so erring towards it costs nothing.
+    pub async fn history_rewrite_refusal(&self, session: &str) -> Option<String> {
+        let (scope, connection) = match self.checked_scope(session).await {
+            Ok(None) => return None,
+            Ok(Some(found)) => found,
+            // A grant that cannot be confirmed as this chat's, or that changed under the read:
+            // it restricts either way, and its text says why.
+            Err(error) => return Some(error.to_string()),
+        };
+        if let Err(error) = grant_stands(&scope, connection.as_ref()) {
+            return Some(error.to_string());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        if scope.expires_at.is_some_and(|end| end <= now) {
+            return Some(GRANT_TIMED_OUT.to_owned());
+        }
+        None
     }
     pub async fn check_provider_binding(
         &self,
@@ -6703,6 +6750,126 @@ done
             assert!(
                 !text.contains("human grant") && !text.contains("Crew run"),
                 "refusals speak of access, not of runs and grants: {text}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A manager holding one chat's standing grant (`worker-race-session`) and its connection,
+    /// for the history-rewrite refusal; [`install_history_grant`] replaces both.
+    async fn history_rewrite_fixture(label: &str) -> (PathBuf, CrewManager, Connection, Scope) {
+        let root = fixture_root(label);
+        let (connection, scope) = worker_race_connection(
+            "17171717-1717-4717-8717-171717171717",
+            ClusterMode::Public,
+            3,
+            true,
+        );
+        let manager = CrewManager::new(root.clone()).unwrap();
+        install_history_grant(&manager, scope.clone(), vec![connection.clone()]).await;
+        (root, manager, connection, scope)
+    }
+
+    async fn install_history_grant(
+        manager: &CrewManager,
+        scope: Scope,
+        connections: Vec<Connection>,
+    ) {
+        let mut registry = manager.registry.lock().await;
+        registry.connections = connections;
+        registry.scopes.insert("worker-race-session".into(), scope);
+    }
+
+    /// Revoke F1, defense in depth: a door that rewrites or resends a chat's history is let
+    /// through for a chat no grant restricts and for one whose grant stands, and refused for a
+    /// run past its recorded end, as the chat already holds it.
+    #[tokio::test]
+    async fn a_history_rewrite_is_let_through_only_while_the_grant_stands() {
+        let (root, manager, connection, mut scope) =
+            history_rewrite_fixture("history-rewrite-stands").await;
+        let session = "worker-race-session";
+        let capability = &CallCapability::for_test(ProviderTier::Public, true);
+        assert_eq!(
+            manager
+                .history_rewrite_refusal("a-chat-no-grant-restricts")
+                .await,
+            None
+        );
+        assert_eq!(
+            manager.history_rewrite_refusal(session).await,
+            None,
+            "a grant that stands must not hold the chat's history"
+        );
+        manager.check_dispatch(session, capability).await.unwrap();
+
+        scope.expires_at = Some(1);
+        install_history_grant(&manager, scope, vec![connection]).await;
+        assert_eq!(
+            manager.history_rewrite_refusal(session).await.as_deref(),
+            Some(GRANT_TIMED_OUT)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Revoke F1, defense in depth: for every way a grant stops on this device, a history
+    /// rewrite is refused in exactly the sentence the chat's next turn is refused with.
+    #[tokio::test]
+    async fn a_history_rewrite_is_refused_in_the_sentence_the_turn_would_be() {
+        let (root, manager, connection, scope) =
+            history_rewrite_fixture("history-rewrite-stops").await;
+        let session = "worker-race-session";
+        let capability = &CallCapability::for_test(ProviderTier::Public, true);
+        type Stop = fn(&mut Scope, &mut Vec<Connection>);
+        let stops: [(&str, Stop, &str); 5] = [
+            (
+                "revoked here",
+                |s, _| {
+                    s.expired = true;
+                    s.revocation = Some(Revocation::Unconfirmed);
+                },
+                GRANT_REVOKED,
+            ),
+            (
+                "ended by the workspace",
+                |s, _| {
+                    s.expired = true;
+                    s.revocation = Some(Revocation::EndedByWorkspace);
+                },
+                GRANT_POLICY_CHANGED,
+            ),
+            (
+                "settings moved",
+                |_, c| c[0].policy_epoch = 4,
+                GRANT_POLICY_CHANGED,
+            ),
+            (
+                "admitted before institution policy",
+                |s, _| s.institution_policy = false,
+                GRANT_POLICY_CHANGED,
+            ),
+            (
+                "connection removed",
+                |_, c| c.clear(),
+                "Crew connection was removed",
+            ),
+        ];
+        for (label, stop, sentence) in stops {
+            let (mut stopped, mut connections) = (scope.clone(), vec![connection.clone()]);
+            stop(&mut stopped, &mut connections);
+            install_history_grant(&manager, stopped, connections).await;
+            assert_eq!(
+                manager.history_rewrite_refusal(session).await.as_deref(),
+                Some(sentence),
+                "{label}"
+            );
+            assert_eq!(
+                manager
+                    .check_dispatch(session, capability)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                sentence,
+                "{label}: the turn and the rewrite must say the same thing"
             );
         }
         let _ = fs::remove_dir_all(root);
