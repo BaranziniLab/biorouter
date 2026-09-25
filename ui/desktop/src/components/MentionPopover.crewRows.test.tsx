@@ -73,8 +73,11 @@ function renderPalette(query: string) {
 /**
  * Q2-71 (live QA round 2): "/cr" listed two rows that both read as crew — the `/crew` command and
  * the Crew extension, described as "Use saved Crew connections and human-approved channel
- * context…" — and people asked which one. The command comes first for any query it starts with,
- * and the extension's row says it is the advanced tools.
+ * context…" — and people asked which one. The command comes first for any query it starts with.
+ *
+ * Q3-31 (live QA round 3): the second row was still there, and still confusing. Any list that shows
+ * the `/crew` command leaves the extension's row out. The extension stays reachable: a query aimed
+ * at extensions never matches the command, so its list shows the row, labelled as the tools.
  */
 describe('the / palette’s Crew rows', () => {
   let savedElectron: unknown;
@@ -104,10 +107,21 @@ describe('the / palette’s Crew rows', () => {
     Object.assign(window, { electron: savedElectron });
   });
 
+  const isCrewExtension = (item: DisplayItemWithMatch) =>
+    item.itemType === 'Extension' && item.relativePath === 'crew';
+
   it.each(['cr', 'cre', 'crew', 'CR'])(
-    'puts the /crew command first for “%s”, and the extension below it',
+    'lists only the /crew command for “%s”, first, and not the extension beside it',
     async (query) => {
       const { ref } = renderPalette(query);
+      await waitFor(() =>
+        expect(
+          ref.current
+            ?.getDisplayFiles()
+            .some((item) => item.itemType === 'Builtin' && item.name === 'crew')
+        ).toBe(true)
+      );
+      // Everything has loaded: the other rows the list holds are there.
       await waitFor(() =>
         expect(ref.current?.getDisplayFiles().some((item) => item.itemType === 'Extension')).toBe(
           true
@@ -115,22 +129,42 @@ describe('the / palette’s Crew rows', () => {
       );
       const items = ref.current?.getDisplayFiles() ?? [];
       expect(items[0]).toMatchObject({ itemType: 'Builtin', name: 'crew' });
-      const extension = items.findIndex(
-        (item) => item.itemType === 'Extension' && item.relativePath === 'crew'
-      );
-      expect(extension).toBeGreaterThan(0);
       expect(
         items.filter((item) => item.itemType === 'Builtin' && item.name === 'crew')
       ).toHaveLength(1);
+      expect(items.some(isCrewExtension)).toBe(false);
+      expect(screen.queryByText(CREW_EXTENSION_DESCRIPTION)).toBeNull();
     }
   );
 
-  it('says the extension’s row is the advanced Crew tools', async () => {
+  it('leaves the extension out of the whole list too, where /crew is listed', async () => {
+    const { ref } = renderPalette('');
+    await waitFor(() =>
+      expect(ref.current?.getDisplayFiles().some((item) => item.itemType === 'Extension')).toBe(
+        true
+      )
+    );
+    const items = ref.current?.getDisplayFiles() ?? [];
+    expect(items.some((item) => item.itemType === 'Builtin' && item.name === 'crew')).toBe(true);
+    expect(items.some(isCrewExtension)).toBe(false);
+  });
+
+  it.each(['ext', 'ext:cr', 'ext:crew'])(
+    'still reaches the extension for “%s”, labelled as the advanced Crew tools',
+    async (query) => {
+      const { ref } = renderPalette(query);
+      await waitFor(() => expect(ref.current?.getDisplayFiles().some(isCrewExtension)).toBe(true));
+      const items = ref.current?.getDisplayFiles() ?? [];
+      expect(items.some((item) => item.itemType === 'Builtin' && item.name === 'crew')).toBe(false);
+      expect(await screen.findByText(CREW_EXTENSION_DESCRIPTION)).toBeInTheDocument();
+      expect(CREW_EXTENSION_DESCRIPTION).toBe('Crew tools extension (advanced)');
+      expect(screen.queryByText(/human-approved channel context/)).toBeNull();
+    }
+  );
+
+  it('says what the /crew command does', async () => {
     renderPalette('cr');
-    expect(await screen.findByText(CREW_EXTENSION_DESCRIPTION)).toBeInTheDocument();
-    expect(CREW_EXTENSION_DESCRIPTION).toBe('Crew tools extension (advanced)');
-    expect(screen.getByText('Connect this chat to a Crew channel')).toBeInTheDocument();
-    expect(screen.queryByText(/human-approved channel context/)).toBeNull();
+    expect(await screen.findByText('Connect this chat to a Crew channel')).toBeInTheDocument();
   });
 
   it('leaves every other row’s order to the match', async () => {
