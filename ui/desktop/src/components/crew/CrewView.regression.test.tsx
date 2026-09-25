@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import CrewApp from './CrewApp';
 import { CrewHttpError } from './crewApi';
 import { layoutCopy } from './layout/copy';
+import { emptyCopy } from './onboarding/copy';
 import { crewObservationCopy } from './state/copy';
 import {
   chooseModel,
@@ -218,21 +219,54 @@ function defaultHttp() {
 }
 
 /**
- * Open Sign in the way a connected workspace now offers it (T-40): the workspace menu lists
- * "Sign in…" only while sign-in is needed, and a Reconnect whose server asks for credentials
- * opens the dialog by itself. Connect answers normally again once the dialog is open.
+ * The daemon calls the connection disconnected, refuses to observe it, and asks for credentials
+ * on connect, until the returned `signedIn()`: then it reads connected and observes as the
+ * test's own observer does. Install before rendering.
  */
-async function openSignInThroughReconnect() {
-  const normal = mocks.crewHttp.getMockImplementation();
+function offlineUntilSignedIn(): () => void {
+  let status: 'connected' | 'disconnected' = 'disconnected';
+  const normalHttp = mocks.crewHttp.getMockImplementation();
   mocks.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
+    if (path === '/connections') return { connections: [{ ...connection, status }] };
     if (path === '/connections/conn-1/connect' && method === 'POST')
       throw new CrewHttpError('Crew SSH failure [ssh_eof]', 400, 'crew_ssh_auth_required');
-    return normal?.(path, method, body);
+    return normalHttp?.(path, method, body);
   });
-  await workspaceAction('Reconnect');
-  const complete = await screen.findByRole('button', { name: 'Simulate authenticated completion' });
-  if (normal) mocks.crewHttp.mockImplementation(normal);
-  return complete;
+  const normalObserve = mocks.observeCrew.getMockImplementation();
+  mocks.observeCrew.mockImplementation(
+    async (
+      connectionId: string,
+      channelId: string | undefined,
+      after: string | null,
+      signal: AbortSignal,
+      receive: (frame: unknown) => void
+    ) => {
+      if (signal.aborted) return 'terminal';
+      if (status === 'disconnected') {
+        receive({
+          type: 'error',
+          clear: true,
+          code: 'observation_refused',
+          error: 'Crew connection is not connected',
+        });
+        return 'terminal';
+      }
+      return normalObserve?.(connectionId, channelId, after, signal, receive);
+    }
+  );
+  return () => {
+    status = 'connected';
+  };
+}
+
+/**
+ * Open Sign in the way it opens now (T-40, Q3-57): the offline screen's Connect meets a server
+ * that asks for credentials, and the dialog opens by itself. A connected, verified workspace
+ * offers no Reconnect to reach it from.
+ */
+async function openSignInFromOffline() {
+  fireEvent.click(await screen.findByRole('button', { name: emptyCopy.offlineAction('Fixture') }));
+  return screen.findByRole('button', { name: 'Simulate authenticated completion' });
 }
 
 describe('CrewView action and uncertain-start regressions', () => {
@@ -364,7 +398,8 @@ describe('CrewView action and uncertain-start regressions', () => {
     const composer = await screen.findByLabelText('Message #general');
     fireEvent.change(composer, { target: { value: 'clear after policy change' } });
     connectionPolicyEpoch = 2;
-    await workspaceAction('Reconnect');
+    // Observed again (Refresh channel; Reconnect is offered only while not connected, Q3-57).
+    await channelAction('Refresh channel');
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
     expect(screen.getByText(/privacy or selected channel access changed/)).toBeInTheDocument();
   });
@@ -597,15 +632,19 @@ describe('CrewView action and uncertain-start regressions', () => {
   });
 
   it('refreshes after authenticated completion without issuing a second manual connect request', async () => {
+    const signedIn = offlineUntilSignedIn();
     renderCrew();
-    await screen.findByText('Welcome to #general');
-    const complete = await openSignInThroughReconnect();
+    const complete = await openSignInFromOffline();
+    // The sign-in terminal connected it.
+    signedIn();
     mocks.crewHttp.mockClear();
     mocks.crewRequest.mockClear();
+    const observed = mocks.observeCrew.mock.calls.length;
 
     fireEvent.click(complete);
 
-    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observed));
+    expect(await screen.findByText('Welcome to #general')).toBeInTheDocument();
     expect(
       mocks.crewHttp.mock.calls.some(
         ([path, method]) => path === '/connections/conn-1/connect' && method === 'POST'
@@ -654,6 +693,7 @@ describe('CrewView action and uncertain-start regressions', () => {
 
   it('clears the composer after the selected channel is revoked', async () => {
     let activeSnapshot = snapshot;
+    let latest: ((frame: unknown) => void) | null = null;
     mocks.observeCrew.mockImplementation(
       async (
         _connectionId: string,
@@ -663,6 +703,7 @@ describe('CrewView action and uncertain-start regressions', () => {
         receive: (frame: unknown) => void
       ) => {
         if (signal.aborted) return 'terminal';
+        latest = receive;
         receive(observerState(activeSnapshot));
         return 'terminal';
       }
@@ -677,8 +718,9 @@ describe('CrewView action and uncertain-start regressions', () => {
       expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observationsBeforeRefresh)
     );
     await waitFor(() => expect(screen.queryByLabelText('Message #general')).toBeNull());
+    // Access comes back with the daemon's next state frame: the draft does not.
     activeSnapshot = snapshot;
-    await workspaceAction('Reconnect');
+    act(() => latest?.(observerState(activeSnapshot)));
     await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
   });
 
@@ -711,7 +753,8 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
     observerMode = 'failure';
     const beforeFailure = mocks.observeCrew.mock.calls.length;
-    await workspaceAction('Reconnect');
+    // Observed again (Refresh channel; Reconnect is offered only while not connected, Q3-57).
+    await channelAction('Refresh channel');
     await waitFor(() =>
       expect(
         screen.getByText(
@@ -831,7 +874,8 @@ describe('CrewView action and uncertain-start regressions', () => {
     fireEvent.change(privateComposer, { target: { value: 'private draft to clear' } });
 
     observedMode = 'public';
-    fireEvent.click(await openSignInThroughReconnect());
+    // Observed again, with the saved record still reading private.
+    await channelAction('Refresh channel');
     // The status row's chip is the effective mode (it replaced the privacy select and its
     // "Effective: …" line); the payload assertions below still prove the wire.
     await waitFor(() =>
@@ -894,7 +938,7 @@ describe('CrewView action and uncertain-start regressions', () => {
     );
 
     observedMode = 'private';
-    fireEvent.click(await openSignInThroughReconnect());
+    await channelAction('Refresh channel');
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^Privacy: Private/ })).toBeInTheDocument()
     );
