@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
 import { teamName } from '../identity';
+import { useFormValidation } from '../onboarding/fields';
 import type { ErrorSource } from '../state/types';
 import { createChannelCopy as copy, nameRuleCopy } from './copy';
 import {
@@ -45,6 +46,15 @@ export function examplePlaceholder(
   return taken ? copy.placeholderTaken : copy.placeholder;
 }
 
+/**
+ * What the field keeps of what was typed or pasted: without any leading `#`, because the field
+ * already shows one, and "#data" read as "# #data" (QA Q3-38) — the same as Invite people does
+ * with `@` (`withoutLeadingAt`). A fullwidth `＃` is a `#` to the name rules too.
+ */
+export function withoutLeadingHash(value: string): string {
+  return value.replace(/^\s*[#＃]+/u, '');
+}
+
 export interface CreateChannelDialogProps {
   teamId: string;
   onClose(): void;
@@ -59,6 +69,9 @@ export interface CreateChannelDialogProps {
  * - Content is visible, not behind Advanced: it cannot be changed after the channel exists.
  * - A taken name is refused in the broker's one wording (S2), and the consequence line says that
  *   the refusal itself tells team members a name exists.
+ * - The form validates itself (`noValidate`, the onboarding forms' `useFormValidation`), so an
+ *   empty or refused name is said under the field, like Join and Host, never in the browser's
+ *   bubble (QA Q3-38).
  */
 export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -67,10 +80,13 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   const [name, setName] = React.useState('');
   const [classification, setClassification] = React.useState<Classification>('restricted');
   const [touched, setTouched] = React.useState(false);
+  const { errors, validate, formProps } = useFormValidation();
   const error = useDialogError(SOURCE);
   const team = snapshot?.teams.find((item) => item.id === teamId) ?? null;
   const slug = channelSlugPreview(name);
-  const problem = name.trim() ? channelSlugProblem(slug) : null;
+  // Anything typed at all is judged, so a name of only spaces is "can't be empty" on submit rather
+  // than a request the broker refuses.
+  const problem = name ? channelSlugProblem(slug) : null;
   const nameRef = useCustomValidity<HTMLInputElement>(problem);
   const creating = crew.isPending(KEY);
   const placeholder = examplePlaceholder(snapshot?.channels ?? [], teamId);
@@ -78,6 +94,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!validate()) return;
     void crew
       .act(SOURCE, KEY, async () => {
         const created = await crew.request(
@@ -98,7 +115,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   };
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'channel') : null;
-  const fieldError = nameError ?? (touched ? problem : null);
+  const fieldError = nameError ?? errors[nameId] ?? (touched ? problem : null);
   const helper = slug && !problem ? copy.preview(slug) : undefined;
   const consequenceId = `${formId}-consequence`;
   // The preview or the error, then the consequence line — both describe the name (QA T-72).
@@ -127,13 +144,14 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
         </>
       }
     >
-      <form id={formId} onSubmit={submit} className="flex flex-col gap-4 pb-1">
+      <form id={formId} {...formProps} onSubmit={submit} className="flex flex-col gap-4 pb-1">
         <Field id={nameId} label={copy.name} helper={helper} error={fieldError ?? undefined}>
           <AdornedInput
             adornment="#"
             id={nameId}
             ref={nameRef}
             required
+            data-required-message={nameRuleCopy.channelEmpty}
             autoComplete="off"
             spellCheck={false}
             placeholder={placeholder}
@@ -143,7 +161,7 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
             onBlur={() => setTouched(name.trim().length > 0)}
             onInvalid={() => setTouched(true)}
             onChange={(event) => {
-              setName(event.target.value);
+              setName(withoutLeadingHash(event.target.value));
               if (error) crew.dismissError();
             }}
           />

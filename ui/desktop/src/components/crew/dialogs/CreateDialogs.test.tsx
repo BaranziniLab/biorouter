@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { addPeopleCopy, createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
-import { CreateChannelDialog, examplePlaceholder } from './CreateChannelDialog';
-import { CreateTeamDialog } from './CreateTeamDialog';
+import { CreateChannelDialog, examplePlaceholder, withoutLeadingHash } from './CreateChannelDialog';
+import { CreateTeamDialog, teamExamplePlaceholder } from './CreateTeamDialog';
 import { CrewDialogs } from './CrewDialogs';
 import {
   alice,
@@ -188,7 +188,82 @@ describe('CreateChannelDialog', () => {
   });
 });
 
+describe('CreateChannelDialog, the name field (QA Q3-38)', () => {
+  it('drops a typed or pasted leading # from the value it shows, since the field shows one', async () => {
+    const { crew } = renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />, {
+      request: (method) => (method === 'channel.create' ? { id: 'channel-new' } : {}),
+    });
+    const name = await screen.findByLabelText('Name');
+    fireEvent.change(name, { target: { value: '#data' } });
+    // "# #data" was the adornment plus a typed #.
+    expect(name).toHaveValue('data');
+    expect(screen.getByText(createChannelCopy.preview('data'))).toBeInTheDocument();
+    fireEvent.change(name, { target: { value: ' ##data' } });
+    expect(name).toHaveValue('data');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'channel.create')).toEqual([
+        { team_id: 'team-1', name: 'data', classification: 'restricted' },
+      ])
+    );
+    // Only a LEADING #: anything else is the name rules' to refuse, in their own words.
+    expect(withoutLeadingHash('da#ta')).toBe('da#ta');
+    expect(withoutLeadingHash('＃data')).toBe('data');
+  });
+
+  it('says what a taken name reveals in a lab’s words, not "identifiers"', async () => {
+    renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    const line = await screen.findByText(nameRuleCopy.consequence);
+    expect(line).toHaveTextContent(
+      'Everyone in this team can see whether a name is taken, so don’t put patient or sample IDs in channel names.'
+    );
+    expect(line.textContent).not.toMatch(/identifiers/i);
+  });
+
+  it('says an empty name under the field, never in the browser’s bubble', async () => {
+    const { crew } = renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    const name = await screen.findByLabelText('Name');
+    expect(name.closest('form')).toHaveAttribute('novalidate');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    expect(await screen.findByText(nameRuleCopy.channelEmpty)).toBeInTheDocument();
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(name).toHaveAccessibleDescription(
+      `${nameRuleCopy.channelEmpty} ${nameRuleCopy.consequence}`
+    );
+    expect(name).toHaveFocus();
+    expect(requestsFor(crew, 'channel.create')).toEqual([]);
+
+    // Spaces are no name either, and typing a real one clears the message.
+    fireEvent.change(name, { target: { value: '   ' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    expect(screen.getByText(nameRuleCopy.channelEmpty)).toBeInTheDocument();
+    fireEvent.change(name, { target: { value: 'data' } });
+    fireEvent.input(name, { target: { value: 'data' } });
+    await waitFor(() => expect(screen.queryByText(nameRuleCopy.channelEmpty)).toBeNull());
+    expect(requestsFor(crew, 'channel.create')).toEqual([]);
+  });
+});
+
 describe('CreateTeamDialog', () => {
+  it('gives an example name that is never a team the workspace already has (QA Q3-38)', async () => {
+    renderWithCrew(<CreateTeamDialog onClose={vi.fn()} />);
+    const name = await screen.findByLabelText('Name');
+    expect(name).toHaveAttribute('placeholder', 'e.g. Imaging Group');
+    // The harness's workspace has Analysis Lab, the example this used to give.
+    expect(name.getAttribute('placeholder')).not.toContain('Analysis Lab');
+    expect(teamExamplePlaceholder([{ name: 'Analysis Lab' }])).toBe('e.g. Imaging Group');
+    expect(teamExamplePlaceholder([{ name: 'Imaging Group' }])).toBe('e.g. new-team');
+    expect(teamExamplePlaceholder([{ name: 'Imaging', handle: 'imaging-group' }])).toBe(
+      'e.g. new-team'
+    );
+  });
+
   it('creates a team, offers the Add people step, and lands on the new team', async () => {
     const onClose = vi.fn();
     const { crew } = renderWithCrew(<CreateTeamDialog onClose={onClose} />, {

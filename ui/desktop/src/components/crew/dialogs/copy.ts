@@ -257,7 +257,12 @@ export const deviceCodeCopy = {
 export const createTeamCopy = {
   title: 'Create team',
   name: 'Name',
-  placeholder: 'e.g. Analysis Lab',
+  /**
+   * Never the name of a team that exists (QA Q3-38): "e.g. Analysis Lab" sat beside the lab's own
+   * Analysis Lab. `placeholderTaken` when this one does.
+   */
+  placeholder: 'e.g. Imaging Group',
+  placeholderTaken: 'e.g. new-team',
   helper: (workspace: string) => `Team names are unique in ${workspace}.`,
   submit: 'Create team',
   addTitle: (team: string) => `Add people to ${team}`,
@@ -290,8 +295,12 @@ export const nameRuleCopy = {
     'A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.',
   channelTaken:
     'A channel with this name, or one that looks like it, already exists in this team. Choose a different name.',
+  /**
+   * Under a channel name: what the refusal of a taken name tells people, and so what never to put
+   * in one — said in a lab's words, not "identifiers" (QA Q3-38).
+   */
   consequence:
-    'Everyone in this team can tell whether a name is taken. Keep identifiers out of names.',
+    'Everyone in this team can see whether a name is taken, so don’t put patient or sample IDs in channel names.',
   channelEmpty: 'Channel name can’t be empty.',
   channelTooLong: 'Channel name is too long. Choose a shorter name.',
   channelReserved: 'Channel name can’t contain @, #, / or :.',

@@ -5,7 +5,7 @@ import { Input } from '../../ui/input';
 import { toastSuccess } from '../../../toasts';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
-import { personLabel, teamName } from '../identity';
+import { nameKey, personLabel, teamName } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { addPeopleCopy, createTeamCopy as copy } from './copy';
 import {
@@ -49,6 +49,21 @@ function createdTeamFrom(value: unknown, typed: string): CreatedTeam {
   };
 }
 
+/**
+ * The name field's example: never the name of a team this workspace already has, which read as a
+ * suggestion to make a duplicate ("e.g. Analysis Lab" beside the lab's own Analysis Lab, QA Q3-38).
+ * Compared the way the broker compares names, so "imaging-group" takes it too.
+ */
+export function teamExamplePlaceholder(
+  teams: readonly { name?: string | null; handle?: string | null }[]
+): string {
+  const example = nameKey(copy.placeholder.replace(/^e\.g\. /, ''));
+  const taken = teams.some((team) =>
+    [team.name, team.handle].some((name) => typeof name === 'string' && nameKey(name) === example)
+  );
+  return taken ? copy.placeholderTaken : copy.placeholder;
+}
+
 export interface CreateTeamDialogProps {
   onClose(): void;
 }
@@ -60,7 +75,7 @@ export interface CreateTeamDialogProps {
  * done the new team is selected, so its #general is where the person lands.
  */
 export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
-  const { crew, dir, workspace } = useDialogView();
+  const { crew, dir, snapshot, workspace } = useDialogView();
   const formId = React.useId();
   const nameId = `${formId}-name`;
   const personId = `${formId}-person`;
@@ -214,7 +229,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             ref={nameRef}
             required
             autoComplete="off"
-            placeholder={copy.placeholder}
+            placeholder={teamExamplePlaceholder(snapshot?.teams ?? [])}
             aria-invalid={fieldError ? true : undefined}
             // The helper ("Team names are unique in …"), or the error that replaces it.
             aria-describedby={helpId(nameId)}
