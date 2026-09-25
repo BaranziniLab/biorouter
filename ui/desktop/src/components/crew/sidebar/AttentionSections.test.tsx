@@ -304,9 +304,15 @@ describe('Waiting to join', () => {
     });
     renderWithCrew(<AttentionSections />, controller);
     const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    // The state ends the name's line; beside the username there is only the button (Q3-53).
+    const state = row.querySelector('[data-crew-waiting-state]') as HTMLElement;
+    expect(state.dataset.crewWaitingState).toBe('expired');
+    expect(state.closest('[data-crew-waiting-name]')).not.toBeNull();
     expect(row).toHaveTextContent(
-      `${sidebarCopy.waiting.expired} ${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.inviteAgain}`
+      `@gail ${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.expired}`
     );
+    const action = row.querySelector('.crew-sidebar-waiting-action') as HTMLElement;
+    expect(action.textContent).toBe(sidebarCopy.waiting.inviteAgain);
     expect(row).not.toHaveTextContent(sidebarCopy.waiting.approved);
     expect(within(row).queryByRole('button', { name: 'Let @gail in' })).toBeNull();
     // The different-code warning still says someone tried.
@@ -324,6 +330,11 @@ describe('Waiting to join', () => {
     expect(rows[2]).toHaveTextContent('Code entered');
     expect(rows[2]).not.toHaveTextContent(/Approved/);
     expect(within(rows[2]).queryByRole('button')).toBeNull();
+    // On the name's line, and no empty button cell beside the username.
+    expect(
+      rows[2].querySelector('[data-crew-waiting-name] [data-crew-waiting-state="code-entered"]')
+    ).toHaveTextContent('Code entered');
+    expect(rows[2].querySelector('.crew-sidebar-waiting-action')).toBeNull();
   });
 
   it('keeps Let in… beside "Code entered" after a different code, so a typo can be fixed', () => {
@@ -336,6 +347,10 @@ describe('Waiting to join', () => {
     const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
     expect(row).toHaveTextContent(sidebarCopy.waiting.approved);
     expect(row).toHaveTextContent(sidebarCopy.waiting.otherDevice('hana'));
+    // "Code entered" reads on the name's line, so only Let in… sits beside the username (Q3-53).
+    expect(row.querySelector('.crew-sidebar-waiting-action')?.textContent).toBe(
+      sidebarCopy.waiting.letIn
+    );
     // The warning says "let them in again with the right code": the way to do it is right here.
     fireEvent.click(within(row).getByRole('button', { name: 'Let @hana in' }));
     expect(controller.openDialog).toHaveBeenCalledWith({ kind: 'let-in', username: 'hana' });

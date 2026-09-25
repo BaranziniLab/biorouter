@@ -522,33 +522,46 @@
   white-space: nowrap;
 }
 
-/* A Waiting to join row's head (Q3-53): `@username` and the action on the
-   first line, the full name and "invited" across the whole second line. A
-   grid rather than two flex rows, so the DOM keeps speaking order (username,
-   name, action) while the action sits beside the username. The action never
-   shrinks: Let in… is never truncated. */
+/* A Waiting to join row's head (Q3-53): `@username` with its button beside
+   it, then the full name and the row's state ("invited", "Code entered",
+   "Invitation expired") across a line of their own.
+
+   Flex with wrapping, not a grid. The username's basis is its whole width, so
+   when it and the button don't fit side by side the button drops to the next
+   line rather than squeezing the username: a `minmax(0, 1fr) auto` grid gave
+   "@crew_gina" a column one letter wide beside "Invitation expired · Invite
+   again…" (which is why only a button sits there now, never a sentence). Only
+   a username wider than the whole row wraps, and then it has the row.
+
+   `order` keeps the DOM in speaking order (username, name and state, button)
+   while the button sits beside the username. The button never shrinks: Let
+   in… is never truncated. */
 .crew-sidebar-waiting-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   column-gap: 8px;
   row-gap: 2px;
   min-width: 0;
 }
 
-.crew-sidebar-waiting-name {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  margin: 0;
+.crew-sidebar-waiting-handle {
+  flex: 0 1 auto;
 }
 
 .crew-sidebar-waiting-action {
   display: flex;
-  grid-column: 2;
-  grid-row: 1;
+  flex: none;
+  order: 1;
   align-items: center;
-  justify-self: end;
+  margin-inline-start: auto;
   white-space: nowrap;
+}
+
+.crew-sidebar-waiting-name {
+  flex: 1 1 100%;
+  order: 2;
+  margin: 0;
 }
 
 /* Text that must never be cut off — a joiner's username and the full name

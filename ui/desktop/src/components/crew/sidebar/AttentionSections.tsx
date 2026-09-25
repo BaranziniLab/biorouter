@@ -198,16 +198,20 @@ interface AddableTeam {
  * The sidebar's attention sections (ui-redesign-spec, "The Crew sidebar"), each shown only when
  * it has a row: **Invitations** addressed to me, with a small Join, and — for the host —
  * **Waiting to join**, with Let in… and the different-code warning, or, once an invitation has
- * run out, "Invitation expired · Invite again…" and no Let in.
+ * run out, "Invitation expired" and Invite again…, and no Let in.
  *
  * A row still waiting for its code reads `@frank`, then `Frank Okafor (name on the server
  * account) · invited` on a line of its own, over "Let in… when they send their code" (Q2-42):
  * whose turn it is — the joiner sends a code, then the host lets them in — which the bare name and
- * button never said. The name and the state wrap rather than truncate (Q3-53: one line cut
- * "Gina Rossi · invited" to "Gina …" with nothing to reveal the rest), and Let in… never shrinks. A row whose code the host entered reads "Code entered",
- * not "Approved": the broker compares the code only when the joiner's computer checks in (T-13). When a claim with a different code was
- * refused, the warning says what to do, and Let in… stays offered so a mistyped code can be
- * entered again (the dialog then offers Replace code).
+ * button never said. The row's state — "invited", "Code entered" or "Invitation expired" — always
+ * ends that second line, and only a button ever sits beside the username, which drops below it
+ * when the two don't fit: the name and the state wrap rather than truncate, and the username is
+ * never squeezed (Q3-53: one line cut "Gina Rossi · invited" to "Gina …"; then "Invitation
+ * expired · Invite again…" beside it left `@crew_gina` a column one letter wide). A row whose
+ * code the host entered reads "Code entered", not "Approved": the broker compares the code only
+ * when the joiner's computer checks in (T-13). When a claim with a different code was refused,
+ * the warning says what to do, and Let in… stays offered so a mistyped code can be entered again
+ * (the dialog then offers Replace code).
  *
  * Last, for the host, **Joined, not in your teams** (Q3-52): each person who joined and is in none
  * of the host's teams, as "{name} · joined" with **Add to a team…** — straight to Add people for
@@ -373,70 +377,71 @@ function WaitingItem({
   const invited = !join.expired && !join.approved;
   // The joiner layout's own sanitising: the full name on the server account, or nothing.
   const serverName = joinerPerson(join.username, join.serverName).serverName;
-  const second = Boolean(serverName) || invited;
+  // Where the row stands, always on the name's line (Q3-53): a sentence beside the username left
+  // it a column one letter wide ("Invitation expired · Invite again…" is about as wide as the row).
+  const state = join.expired
+    ? { key: 'expired', text: copy.waiting.expired }
+    : join.approved
+      ? { key: 'code-entered', text: copy.waiting.approved }
+      : { key: 'invited', text: copy.waiting.invited };
+  // Only ever a button: Invite again…, Let in…, or — for a code entered — Let in… again only after
+  // a different code was tried, so a typo can be fixed.
   const action = join.expired ? (
-    <span className="flex items-center gap-1 text-supporting text-text-muted">
-      <span>{copy.waiting.expired}</span>
-      <span aria-hidden="true">{` ${copy.waiting.separator} `}</span>
-      <Button
-        variant="ghost"
-        size="xs"
-        className="no-drag"
-        aria-label={copy.waiting.inviteAgainLabel(join.username)}
-        disabled={!verified}
-        onClick={() => crew.openDialog({ kind: 'invite-people' })}
-      >
-        {copy.waiting.inviteAgain}
-      </Button>
-    </span>
+    <Button
+      variant="ghost"
+      size="xs"
+      className="no-drag"
+      aria-label={copy.waiting.inviteAgainLabel(join.username)}
+      disabled={!verified}
+      onClick={() => crew.openDialog({ kind: 'invite-people' })}
+    >
+      {copy.waiting.inviteAgain}
+    </Button>
   ) : join.approved ? (
-    <span className="flex items-center gap-1.5">
-      <span className="text-supporting text-text-muted" data-crew-waiting-state="code-entered">
-        {copy.waiting.approved}
-      </span>
-      {join.otherDeviceTried && letIn(join.username)}
-    </span>
+    join.otherDeviceTried ? (
+      letIn(join.username)
+    ) : null
   ) : (
     letIn(join.username, nextId)
   );
   return (
     <li className="flex flex-col gap-1 px-2 py-1.5" data-crew-waiting={join.username}>
-      {/* A grid, so the DOM reads in speaking order — `@gina`, then "Gina Rossi (name on the
-          server account) · invited", then Let in… — while Let in… sits on the first line beside
-          the username and the name takes the whole second line (Q3-53). */}
+      {/* The DOM reads in speaking order — `@gina`, then "Gina Rossi (name on the server
+          account) · invited", then Let in… — while the CSS puts Let in… beside the username when
+          both fit and below it when they don't, and the name and state on a line of their own
+          (Q3-53). */}
       <div className="crew-sidebar-waiting-head">
-        <span className="crew-sidebar-wrap text-secondary" data-crew-waiting-handle="">
+        <span
+          className="crew-sidebar-waiting-handle crew-sidebar-wrap text-secondary"
+          data-crew-waiting-handle=""
+        >
           <PersonName person={joinerPerson(join.username)} context="joiner" />
         </span>
-        {second && (
-          <p
-            className="crew-sidebar-waiting-name crew-sidebar-wrap text-supporting text-text-muted"
-            data-crew-waiting-name=""
-          >
-            {serverName && (
+        <p
+          className="crew-sidebar-waiting-name crew-sidebar-wrap text-supporting text-text-muted"
+          data-crew-waiting-name=""
+        >
+          {serverName && (
+            <>
+              {/* Heard as one line with the username: "@gina · Gina Rossi (…) · invited". */}
+              <span className="sr-only">{identityCopy.separator}</span>
+              <span data-person-part="server-name">
+                <bdi>{serverName}</bdi> ({identityCopy.serverAccountName})
+              </span>
+            </>
+          )}
+          <span data-crew-waiting-state={state.key}>
+            {serverName ? (
+              ` ${copy.waiting.separator} ${state.text}`
+            ) : (
               <>
-                {/* Heard as one line with the username: "@gina · Gina Rossi (…) · invited". */}
-                <span className="sr-only">{identityCopy.separator}</span>
-                <span data-person-part="server-name">
-                  <bdi>{serverName}</bdi> ({identityCopy.serverAccountName})
-                </span>
+                <span className="sr-only">{` ${copy.waiting.separator} `}</span>
+                {state.text}
               </>
             )}
-            {invited && (
-              <span data-crew-waiting-state="invited">
-                {serverName ? (
-                  ` ${copy.waiting.separator} ${copy.waiting.invited}`
-                ) : (
-                  <>
-                    <span className="sr-only">{` ${copy.waiting.separator} `}</span>
-                    {copy.waiting.invited}
-                  </>
-                )}
-              </span>
-            )}
-          </p>
-        )}
-        <div className="crew-sidebar-waiting-action">{action}</div>
+          </span>
+        </p>
+        {action && <div className="crew-sidebar-waiting-action">{action}</div>}
       </div>
       {invited && (
         <p id={nextId} className="text-supporting text-text-muted" data-crew-waiting-next="">

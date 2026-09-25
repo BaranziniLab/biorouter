@@ -138,7 +138,10 @@ export const sidebarCopy = {
       `Warning: a computer trying to join as @${username} showed a different code.`,
     /** A join whose invitation ran out: it can no longer be let in, only invited again. */
     expired: 'Invitation expired',
-    /** Between `expired` and `inviteAgain`, read as one line. */
+    /**
+     * Between a sidebar row's full name and its state (`invited`, `approved`, `expired`); in
+     * Workspace settings, between `expired` and `inviteAgain`.
+     */
     separator: '·',
     inviteAgain: 'Invite again…',
     inviteAgainLabel: (username: string) => `Invite @${username} again`,
