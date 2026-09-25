@@ -14,6 +14,7 @@ import { crewActionCopy } from '../state/copy';
 import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/types';
 import { AttachmentIndexProvider, useAttachmentIndex } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
+import { TRANSFER_POLL_MS } from '../files/useCrewTransfers';
 import { crewTestController, CrewTestProvider, testChannel } from '../files/crewTestController';
 import { Composer } from './Composer';
 import { composerCopy } from './copy';
@@ -340,7 +341,8 @@ describe('Crew composer', () => {
       ]);
       mocks.pauseTransfer.mockResolvedValue({});
       renderComposer();
-      expect(await screen.findByText('42%')).toBeInTheDocument();
+      // "Uploading…" for its first second, whatever its percent; then the number (Q3-16).
+      expect(await screen.findByText('42%', undefined, { timeout: 2000 })).toBeInTheDocument();
       // Pause shows once the chip has been up a second (Q3-16).
       const pause = await screen.findByRole(
         'button',
@@ -351,33 +353,45 @@ describe('Crew composer', () => {
       expect(mocks.pauseTransfer).toHaveBeenCalledWith('transfer-1');
     });
 
-    it('shows a new upload as “Uploading…” with no 0% and no Pause for its first second (Q3-16)', async () => {
+    it('shows “Uploading…”, never 0% or Pause, until the upload has moved 1% (Q3-16, Q4-16)', async () => {
+      // Round 3 joined "its first second" and "until it has moved 1%" with AND: a 100-byte file
+      // still at 0% after a second showed "0%" beside a pause glyph, and read as stuck.
       vi.useFakeTimers({ shouldAdvanceTime: true });
+      const upload = (offset: number) => ({
+        id: 'transfer-2',
+        request_id: 'request-2',
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'upload',
+        name: 'gina-assay.csv',
+        size: 1000,
+        sha256: '',
+        offset,
+        blob_id: null,
+        state: 'uploading',
+        error: null,
+      });
       try {
-        mocks.listTransfers.mockResolvedValue([
-          {
-            id: 'transfer-2',
-            request_id: 'request-2',
-            connection_id: 'connection-1',
-            channel_id: 'channel-1',
-            direction: 'upload',
-            name: 'gina-assay.csv',
-            size: 100,
-            sha256: '',
-            offset: 0,
-            blob_id: null,
-            state: 'uploading',
-            error: null,
-          },
-        ]);
+        mocks.listTransfers.mockResolvedValue([upload(0)]);
         renderComposer();
         expect(await screen.findByText(filesCopy.uploading)).toBeInTheDocument();
         expect(screen.queryByText('0%')).toBeNull();
         expect(screen.queryByRole('button', { name: 'Pause gina-assay.csv' })).toBeNull();
+        // Held at 0% well past its first second: still the word, still no Pause.
         await act(async () => {
-          vi.advanceTimersByTime(1000);
+          vi.advanceTimersByTime(1500);
         });
-        expect(screen.getByText('0%')).toBeInTheDocument();
+        expect(screen.getByText(filesCopy.uploading)).toBeInTheDocument();
+        expect(screen.queryByText('0%')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Pause gina-assay.csv' })).toBeNull();
+
+        // Once it has moved 1%, the number and Pause.
+        mocks.listTransfers.mockResolvedValue([upload(10)]);
+        await act(async () => {
+          vi.advanceTimersByTime(TRANSFER_POLL_MS);
+        });
+        expect(await screen.findByText('1%')).toBeInTheDocument();
+        expect(screen.queryByText(filesCopy.uploading)).toBeNull();
         const pause = screen.getByRole('button', { name: 'Pause gina-assay.csv' });
         // Named for the file; its tooltip says what it does, since a glyph alone read as "Paused?".
         fireEvent.focus(pause);

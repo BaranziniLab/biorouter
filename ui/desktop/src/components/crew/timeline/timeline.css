@@ -330,9 +330,13 @@
   top: 4px;
 }
 
+/* Without a hover pointer the cluster sits in the flow, under the message. It
+   comes BEFORE the message in the DOM (so Tab reaches it before the file cards,
+   Q4-22); `order` places it after the message all the same. */
 @media (hover: none) {
   .crew-row-actions {
     position: static;
+    order: 1;
     grid-column: 2;
     justify-self: end;
     background-color: transparent;
@@ -464,6 +468,22 @@
   mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
 }
 
+/* A table's body rows are on the page's ground, so a fade over right-aligned
+   numbers that sit wholly past the edge fades nothing: only the header's fill
+   showed it (Q4-26). The box also draws a hairline at its right edge, kept out
+   of the fade — the mask stops 1px short and the border's pixel stays opaque —
+   so the cut reads as an edge on every row. The code block keeps its fade
+   alone: its well has a border of its own. */
+.crew-md-table-scroll[data-overflow='true'] {
+  border-right: 1px solid var(--border-subtle);
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - 41px),
+    transparent calc(100% - 1px),
+    black calc(100% - 1px)
+  );
+}
+
 /* Focused from the keyboard, the box drops its fade: the mask takes alpha from
    everything it covers, the inset focus edge included, so the ring's right side
    faded out with the last column. The whole ring is the sign it scrolls now. */
@@ -566,16 +586,22 @@
 }
 
 /* ── A post on its way ───────────────────────────────────────────────────────
-   The words dimmed, "Sending…" at full muted ink under them. Inert, so it
+   The words and files dimmed, "Sending…" at full muted ink: on a head row where
+   the time will be, on a continuation on a line under the words. Inert, so it
    takes no hover and no focus. */
-.crew-pending-row .crew-message-body {
+.crew-pending-row .crew-message-body,
+.crew-pending-files {
   opacity: 0.6;
 }
 
 .crew-pending-status {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.crew-pending-status-line {
+  display: flex;
   margin: 2px 0 0;
 }
 
@@ -773,6 +799,20 @@
   .crew-day-label {
     border-bottom: 1px solid CanvasText;
     background-color: Canvas;
+  }
+
+  /* The New line is a 1px fill, which forced colours repaint as Canvas: only
+     the word "New" was left (Q4-25). It keeps its line in the text colour. */
+  .crew-new-divider::before {
+    background-color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  /* The hover toolbar's Copy and ⋯ had no button box: a tooltip trigger's slot
+     replaces the Button's own, so the app's button edge never reached them
+     (Q4-25). They get the system button edge every other button has. */
+  .crew-row-action {
+    border: 1px solid ButtonText;
   }
 
   .crew-md-code-body[data-overflow='true'],

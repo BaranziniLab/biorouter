@@ -143,9 +143,16 @@
   color: var(--text-muted);
 }
 
+/* The name wins the row (Q4-03). It gave way first: `flex: 0 1 auto` against a
+   meta that never shrank left "da…" in the Files tab — 28 of the 125px the
+   name needed, while the size and date kept their 152px — and cut the name
+   first in the timeline at 1048px too. Now the name takes the room, keeps at
+   least 3ch, and the meta beside it is what gives way: its shrink weight is
+   far above the name's, so the size and date are cut (with an ellipsis) before
+   the name loses a letter. The full name is in the name's tooltip either way. */
 .crew-attachment-name {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 3ch;
   overflow: hidden;
   color: var(--text-default);
   font-size: var(--text-secondary);
@@ -157,12 +164,22 @@
 
 .crew-attachment-meta,
 .crew-server-path-note {
-  flex-shrink: 0;
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.crew-attachment-meta {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crew-server-path-note {
+  flex-shrink: 0;
 }
 
 /* "Not uploaded" takes a tab stop so a keyboard can reach its tooltip; its
@@ -213,12 +230,14 @@
 
 /* ── Transfer rows (Files tab) ────────────────────────────────────────────── */
 
+/* No padding of its own: the tab panel's 8px is the inset, as it is for About
+   and Members, so every tab's words start on one left edge (Q4-29). Its own
+   16px put Files 16px right of About. */
 .crew-files-tab {
   display: flex;
   flex-direction: column;
   gap: 20px;
   min-width: 0;
-  padding: 16px;
 }
 
 .crew-files-section {
@@ -293,9 +312,10 @@
   color: var(--text-muted);
 }
 
+/* As on the card (Q4-03): the name takes the room and the meta gives way. */
 .crew-file-row-name {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 3ch;
   overflow: hidden;
   color: var(--text-default);
   font-size: var(--text-secondary);
@@ -305,11 +325,14 @@
 }
 
 .crew-file-row-meta {
-  flex-shrink: 0;
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

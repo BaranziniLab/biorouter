@@ -48,6 +48,13 @@ export const filesCopy = {
    * never "0%" beside a pause glyph, which read as paused (Q3-16).
    */
   uploading: 'Uploading…',
+  /** A download in the Files tab before it has moved 1%: never "Downloading 0%" (Q4-16). */
+  downloading: 'Downloading…',
+  /**
+   * A file in a post the broker accepted but the observer has not delivered yet: under "In your
+   * message" in Files until the posted message is loaded (Q4-17).
+   */
+  sending: 'Sending…',
   resume: 'Resume…',
   resumeNamed: (name: string) => `Resume ${name}`,
   removeFromList: 'Remove from list',

@@ -164,6 +164,50 @@ describe('the composer and files stylesheets', () => {
   });
 });
 
+/**
+ * What jsdom cannot lay out, asserted at the source like `styles/composerFocus.test.ts`: a
+ * component test renders the card whether or not the name can be read.
+ */
+describe('file names win the row (Q4-03) and the Files tab sits on the panel inset (Q4-29)', () => {
+  const rules = leafRules(read(join(FILES_DIR, 'files.css')));
+  const rule = (selector: string) => {
+    const found = rules.find((item) => item.selector === selector);
+    if (!found) throw new Error(`no rule for ${selector}`);
+    return found.declarations;
+  };
+
+  it('lets the card’s meta give way before its name', () => {
+    // The name gave way first — 28 of the 125px it needed — while the meta kept 152px.
+    const name = rule('.crew-attachment-name');
+    expect(name.get('flex')).toBe('1 1 auto');
+    expect(name.get('min-width')).toBe('3ch');
+    expect(name.get('text-overflow')).toBe('ellipsis');
+    const meta = rule('.crew-attachment-meta');
+    expect(meta.get('flex')).toBe('0 100 auto');
+    expect(meta.get('min-width')).toBe('0');
+    expect(meta.get('overflow')).toBe('hidden');
+    expect(meta.get('text-overflow')).toBe('ellipsis');
+    // The shared ink rule no longer pins the meta at its full width.
+    expect(rule('.crew-attachment-meta, .crew-server-path-note').has('flex-shrink')).toBe(false);
+  });
+
+  it('does the same for a transfer row’s name and state', () => {
+    const name = rule('.crew-file-row-name');
+    expect(name.get('flex')).toBe('1 1 auto');
+    expect(name.get('min-width')).toBe('3ch');
+    const meta = rule('.crew-file-row-meta');
+    expect(meta.get('flex')).toBe('0 100 auto');
+    expect(meta.get('min-width')).toBe('0');
+    expect(meta.get('overflow')).toBe('hidden');
+    expect(meta.get('text-overflow')).toBe('ellipsis');
+  });
+
+  it('gives the Files tab no padding of its own: the panel’s 8px is the inset', () => {
+    const tab = rule('.crew-files-tab');
+    expect([...tab.keys()].filter((property) => property.startsWith('padding'))).toEqual([]);
+  });
+});
+
 describe('the guard itself', () => {
   it('finds a class two stylesheets share, and ignores comments and custom properties', () => {
     const own = stylesheetClasses(`

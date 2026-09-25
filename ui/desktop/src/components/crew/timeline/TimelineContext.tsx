@@ -10,6 +10,13 @@ export interface AttachmentSlotState {
    * in the Tab order, so a channel with files was 8–10 stops from the log to the composer (Q3-05).
    */
   active: boolean;
+  /**
+   * The row is a post on its way (Q4-19): draw its files as they will look once it lands, the
+   * same height, with no controls. The message is a stand-in that carries only its files.
+   */
+  sending?: boolean;
+  /** For a post on its way: each file's name as the draft had it, by ID, until its own loads. */
+  fileNames?: Readonly<Record<string, string>>;
 }
 
 /** Renders a message's attachments and server paths under its body. */

@@ -16,6 +16,7 @@ import {
 import { transferStatePresentation } from '../state/crewStatus';
 import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
 import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attachmentIndex';
+import { cachedBlob, forgetBlob, rememberBlob } from './blobMetadataCache';
 import { filesCopy } from './copy';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
@@ -62,15 +63,30 @@ const failureText = (failure: unknown, fallback: string) =>
  * `tabIndex`: in the timeline the controls are Tab stops only while their message is the active
  * row, like the row's own actions (Q3-05); in the Files tab they always are.
  *
- * The metadata is asked for once per file. Download progress comes from the one shared
- * transfers poller, never from a timer of the card's own (L13), so a channel with fifty
- * attachments still polls once, and only while something moves.
+ * The metadata is asked for once per mount, and a finished file's answer is kept for the next
+ * mount (`blobMetadataCache`), which starts from it: a card that mounted again drew a nameless
+ * "Attachment" with a dimmed Save until its answer came back (Q4-17). Download progress comes
+ * from the one shared transfers poller, never from a timer of the card's own (L13), so a channel
+ * with fifty attachments still polls once, and only while something moves.
+ *
+ * The name takes the row and the size gives way first (`files.css`, Q4-03); the whole name is in
+ * its tooltip. `postedTimeInMeta={false}` leaves a namesake's post time out of the meta where the
+ * line above the card already says when it was shared (the Files tab); the controls' names keep it.
+ *
+ * `sending`: the stand-in for a file in a post the broker accepted but the observer has not
+ * delivered yet (Q4-19). The same row at the same height — name and size — with no controls, and
+ * nothing registered in the channel's attachment index; `fallbackName` is the draft's name for it
+ * until its answer comes. Its answer is kept like any other, so the posted card that replaces it
+ * starts named.
  */
 export function AttachmentCard({
   connectionId,
   blobId,
   tabIndex,
   postedAt = null,
+  postedTimeInMeta = true,
+  sending = false,
+  fallbackName = '',
 }: {
   connectionId: string;
   blobId: string;
@@ -78,8 +94,14 @@ export function AttachmentCard({
   tabIndex?: number;
   /** When the message carrying the file was posted (Unix milliseconds), when known. */
   postedAt?: number | null;
+  /** Whether a namesake's post time is in the meta (the timeline) or not (the Files tab). */
+  postedTimeInMeta?: boolean;
+  /** A file in a post on its way: shown, not acted on. */
+  sending?: boolean;
+  /** The name to show until the file's metadata loads (a post on its way). */
+  fallbackName?: string;
 }) {
-  const [metadata, setMetadata] = useState<CrewBlob | null>(null);
+  const [metadata, setMetadata] = useState<CrewBlob | null>(() => cachedBlob(connectionId, blobId));
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [working, setWorking] = useState(false);
@@ -93,16 +115,23 @@ export function AttachmentCard({
 
   useEffect(() => {
     let active = true;
-    setMetadata(null);
+    // A finished file's kept answer, so a card that mounts again is never nameless (Q4-17).
+    setMetadata(cachedBlob(connectionId, blobId));
     setError('');
     setLoadError('');
     setPreview('');
     void crewRequest<CrewBlob>(connectionId, 'blob.status', { blob_id: blobId })
       .then((blob) => {
-        if (active) setMetadata(blob);
+        if (!active) return;
+        rememberBlob(connectionId, blobId, blob);
+        setMetadata(blob);
       })
       .catch((failure: unknown) => {
-        if (active) setLoadError(failureText(failure, filesCopy.detailsFailed));
+        if (!active) return;
+        // The kept answer is no longer known to hold: draw what a first failed load draws.
+        forgetBlob(connectionId, blobId);
+        setMetadata(null);
+        setLoadError(failureText(failure, filesCopy.detailsFailed));
       });
     return () => {
       active = false;
@@ -176,10 +205,10 @@ export function AttachmentCard({
     }
   };
 
-  const name = metadata?.name || filesCopy.attachment;
+  const name = metadata?.name || fallbackName || filesCopy.attachment;
   useRegisterAttachment(
     blobId,
-    metadata
+    metadata && !sending
       ? {
           name: metadata.name,
           sha256: metadata.sha256,
@@ -196,18 +225,39 @@ export function AttachmentCard({
   const saveDisabled = !metadata || working || downloading;
   const meta = [
     metadata ? formatBytes(metadata.size) : '',
-    // A namesake's own time, without the ", 1 of 2" its controls may carry.
-    posted ? postedLabel(postedAt) : '',
-    state && state.key !== 'saved' ? state.word : '',
+    // A namesake's own time, without the ", 1 of 2" its controls may carry — except where the
+    // line above the card says when it was shared (the Files tab, Q4-03).
+    posted && postedTimeInMeta ? postedLabel(postedAt) : '',
+    state && state.key !== 'saved' && !sending ? state.word : '',
   ]
     .filter(Boolean)
     .join(' · ');
+
+  if (sending) {
+    return (
+      <div className="crew-attachment-card" data-sending="true">
+        <div className="crew-attachment-row">
+          <File className="crew-attachment-icon" aria-hidden />
+          <span className="crew-attachment-name">{name}</span>
+          {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="crew-attachment-card" data-downloading={downloading ? 'true' : undefined}>
       <div className="crew-attachment-row">
         <File className="crew-attachment-icon" aria-hidden />
-        <span className="crew-attachment-name">{name}</span>
+        {/* The whole name on hover, however much of it the row can show (Q4-03). */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="crew-attachment-name" data-crew-file-name="">
+              {name}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{name}</TooltipContent>
+        </Tooltip>
         {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
         <span className="crew-attachment-actions">
           <Tooltip>

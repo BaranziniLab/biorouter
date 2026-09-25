@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
 import type { CrewTransfer } from '../crewTransfers';
 import type { CrewController } from '../state/types';
+import { AttachmentIndexProvider } from './attachmentIndex';
 import { filesCopy } from './copy';
 import { crewTestController, CrewTestProvider } from './crewTestController';
 import { FilesTab } from './FilesTab';
@@ -107,6 +108,18 @@ describe('FilesTab', () => {
       .click(within(section).getByRole('button', { name: 'Pause counts.csv' }));
     expect(mocks.pauseTransfer).toHaveBeenCalledWith('transfer-1');
     await waitFor(() => expect(mocks.listTransfers).toHaveBeenCalledTimes(2));
+  });
+
+  it('says “Uploading…”, with no 0%, bar or Pause, until a transfer has moved 1% (Q4-16)', async () => {
+    mocks.listTransfers.mockResolvedValue([transfer({ offset: 0, size: 216 })]);
+    renderTab();
+    const section = (await screen.findByRole('heading', { name: 'In progress' })).closest(
+      'section'
+    ) as HTMLElement;
+    expect(within(section).getByText(`${filesCopy.uploading} · 216 bytes`)).toBeInTheDocument();
+    expect(section.textContent).not.toMatch(/0%/);
+    expect(within(section).queryByRole('button', { name: 'Pause counts.csv' })).toBeNull();
+    expect(within(section).queryByRole('progressbar')).toBeNull();
   });
 
   it('shows a failure in the daemon’s words and offers Resume… from the row menu', async () => {
@@ -229,6 +242,45 @@ describe('FilesTab', () => {
     const row = (await within(section).findByText('shared.csv')).closest('li') as HTMLElement;
     expect(row).toHaveTextContent(/Shared by Bob Lee.* · 6:54 PM/);
     expect(row.textContent).not.toMatch(/person-2/);
+  });
+
+  it('leaves a namesake’s time out of the card, which the line above already says (Q4-03)', async () => {
+    // Two files named alike: the line over each card says who and when, so the card's meta is
+    // the size alone, and the room goes to the name. The controls still say which is which.
+    const at = (hours: number) => {
+      const date = new Date();
+      date.setHours(hours, 5, 0, 0);
+      return Math.floor(date.getTime() / 1000);
+    };
+    render(
+      <CrewTestProvider
+        controller={crewTestController({
+          messages: [
+            message({ id: 'm1', attachments: ['blob-a'], created_at: at(9) }),
+            message({ id: 'm2', attachments: ['blob-b'], created_at: at(10) }),
+          ],
+        })}
+      >
+        <AttachmentIndexProvider>
+          <FilesTab />
+        </AttachmentIndexProvider>
+      </CrewTestProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Save shared\.csv, / })).toHaveLength(2)
+    );
+    const metas = [...document.querySelectorAll('.crew-attachment-meta')].map(
+      (node) => node.textContent
+    );
+    expect(metas).toEqual(['10 bytes', '10 bytes']);
+  });
+
+  it('keeps the full name of a file in its tooltip, however little of it fits (Q4-03)', async () => {
+    renderTab({ messages: [message({ id: 'm1', attachments: ['blob-9'] })] });
+    const name = await screen.findByText('shared.csv');
+    expect(name).toHaveClass('crew-attachment-name');
+    await userEvent.setup().hover(name);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('shared.csv');
   });
 
   it('lists the files and server paths shared in the loaded messages, once each', async () => {

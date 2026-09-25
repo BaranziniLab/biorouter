@@ -64,9 +64,23 @@ export function TransferMenuItems({
 }
 
 /**
+ * Whether a moving transfer has yet to move 1%: it then reads "Uploading…" (or "Downloading…"),
+ * with no percent, no bar and no Pause — "Uploading 0% · Pause" read as stuck, for a 100-byte file
+ * as much as a large one (Q4-16), exactly as the composer's chip does.
+ */
+function notYetMoving(transfer: CrewTransfer): boolean {
+  const presentation = transferStatePresentation(transfer);
+  return (
+    (presentation.key === 'uploading' || presentation.key === 'downloading') &&
+    (presentation.percent ?? 0) < 1
+  );
+}
+
+/**
  * One transfer in the Files tab: direction glyph, name, the state in words ("Uploading 42%",
  * "Paused", "Not confirmed"), a thin bar while it has a position, Pause while it moves and a
- * `⋯` for the rest. The daemon's own reason for a failure is shown as written.
+ * `⋯` for the rest. Until it has moved 1% it says only "Uploading…" (Q4-16). The daemon's own
+ * reason for a failure is shown as written.
  */
 export function TransferRow({
   transfer,
@@ -78,15 +92,25 @@ export function TransferRow({
 }) {
   const presentation = transferStatePresentation(transfer);
   const Glyph = transfer.direction === 'upload' ? Upload : Download;
-  const showBar = presentation.percent !== undefined && presentation.key !== 'failed';
-  const canPause = presentation.active && presentation.key !== 'pausing';
+  const starting = notYetMoving(transfer);
+  const word = starting
+    ? transfer.direction === 'upload'
+      ? filesCopy.uploading
+      : filesCopy.downloading
+    : presentation.word;
+  const showBar = presentation.percent !== undefined && presentation.key !== 'failed' && !starting;
+  const canPause = presentation.active && presentation.key !== 'pausing' && !starting;
   return (
-    <li className="crew-file-row" data-transfer-state={presentation.key}>
+    <li
+      className="crew-file-row"
+      data-transfer-state={presentation.key}
+      data-starting={starting ? 'true' : undefined}
+    >
       <div className="crew-file-row-main">
         <Glyph className="crew-file-row-icon" aria-hidden />
         <span className="crew-file-row-name">{transfer.name}</span>
         <span className="crew-file-row-meta">
-          {presentation.word}
+          {word}
           {presentation.key === 'failed' || presentation.key === 'not-confirmed'
             ? ''
             : ` · ${formatBytes(transfer.size)}`}

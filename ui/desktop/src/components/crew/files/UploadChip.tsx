@@ -38,10 +38,12 @@ export const UPLOAD_SETTLE_MS = 1000;
 /**
  * An upload still on its way into the composer: `[counts.csv 42% ⏸]`.
  *
- * For its first second, and until it has moved 1%, it shows the one spinner and "Uploading…":
- * a 100-byte file used to sit at an empty ring, "0%" and a pause glyph for a second or two, and
- * read as paused (Q3-16). After that it shows the ring, the percent, and Pause (tooltip "Pause
- * upload"); Pause never shows sooner, so a file that finishes in under a second never offers it.
+ * For its first second, AND until it has moved 1%, it shows the one spinner and "Uploading…": a
+ * 100-byte file used to sit at an empty ring, "0%" and a pause glyph for a second or two, and read
+ * as paused (Q3-16). Round 3's fix joined the two with "and" where "or" was meant, so a file still
+ * at 0% after its first second showed "0%" and Pause anyway (Q4-16). After both it shows the ring,
+ * the percent, and Pause (tooltip "Pause upload"); Pause never shows sooner, so a file that
+ * finishes in under a second, or that never moves, never offers it.
  * While it starts or finishes, the spinner. One this composer started that stopped (paused, or
  * failed with the reason on hover) offers Resume, which reopens the secure picker for the same
  * file. When it completes the chip goes, and the file becomes an ordinary attachment chip.
@@ -59,9 +61,14 @@ export function UploadChip({
   const settled = useSettled(transfer.id);
   const moving = presentation.key === 'uploading';
   const percent = presentation.percent ?? 0;
-  // The first second, and while nothing has moved: a spinner and a word, never "0%".
-  const starting = moving && !settled && percent < 1;
-  const canPause = settled && presentation.active && presentation.key !== 'pausing';
+  // The first second, or while nothing has moved: a spinner and a word, never "0%".
+  const starting = moving && (!settled || percent < 1);
+  // Pause only once there is something to pause: a second up, and at least 1% moved.
+  const canPause =
+    settled &&
+    presentation.active &&
+    presentation.key !== 'pausing' &&
+    (presentation.percent ?? 0) >= 1;
   const canResume = presentation.key === 'paused' || presentation.key === 'failed';
   const state = starting ? filesCopy.uploading : moving ? `${percent}%` : presentation.word;
   return (

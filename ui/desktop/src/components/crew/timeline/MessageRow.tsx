@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
@@ -17,6 +17,7 @@ import type { CrewMessage } from '../crewApi';
 import { timelineCopy } from './copy';
 import type { TimelineGroup, TimelineMessageEntry, TimelineTraceEntry } from './groupMessages';
 import { MessageBody } from './MessageBody';
+import type { PendingPost } from './pendingPost';
 import { CopyForSupport, CopyIconButton, useMenuCopy, useTimelineCopy } from './TimelineCopy';
 import { useTimeline, type OwnAgentChat } from './TimelineContext';
 import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
@@ -238,6 +239,7 @@ function RowActions({
         label={timelineCopy.copyText}
         name={timelineCopy.copyTextOf(who, time)}
         tabIndex={tabIndex}
+        className="crew-row-action"
       />
       <DropdownMenu open={menuOpen} onOpenChange={menuCopy.onOpenChange}>
         <Tooltip>
@@ -250,7 +252,7 @@ function RowActions({
                 shape="round"
                 aria-label={moreName}
                 tabIndex={tabIndex}
-                className="text-text-muted"
+                className="crew-row-action text-text-muted"
               >
                 <MoreHorizontal aria-hidden />
               </Button>
@@ -321,6 +323,10 @@ export function MessageRow({
           <GutterTime time={entry.time} id={ownTime} />
         )}
       </div>
+      {/* The toolbar comes before the message in the DOM, so Tab reaches it before the file
+          cards under the body, as it sits above them on screen (Q4-22). It is drawn at the row's
+          top right whatever its place here (`timeline.css`). */}
+      <RowActions message={message} tabIndex={tabIndex} who={who} time={when} />
       <div className="crew-message-main">
         {entry.head ? (
           <HeadMeta
@@ -336,7 +342,6 @@ export function MessageRow({
         <MessageBody body={message.body} />
         {renderAttachments?.(message, { active })}
       </div>
-      <RowActions message={message} tabIndex={tabIndex} who={who} time={when} />
     </div>
   );
 }
@@ -402,20 +407,42 @@ export function TraceRow({
 
 /**
  * A post the broker accepted that the observer has not delivered yet: the words
- * that just left the composer, dimmed, with "Sending…" under them, at the end of
- * the log. It is inert and hidden from assistive technology — the real message
- * is announced by the log when it arrives, and this row then goes in the same
- * render, so the words are never shown twice.
+ * that just left the composer, dimmed, and "Sending…", at the end of the log. It
+ * is inert and hidden from assistive technology — the real message is announced
+ * by the log when it arrives, and this row then goes in the same render, so the
+ * words are never shown twice.
  *
  * `head`: it carries the viewer's own avatar and name, as the message will once
  * it lands. Without them it sat under the previous person's message and read as
  * theirs for a second (Q3-20). The timeline leaves the head off only where the
  * delivered message would itself continue the viewer's own group.
+ *
+ * It takes the height the message will (Q4-19): its files are drawn through the
+ * same attachments slot, in their sending state (the name and size, no
+ * controls), and on a head row "Sending…" stands where the time will, so the
+ * card no longer appears — and the row no longer moves — when it lands. A
+ * continuation row has no time on its line, so it keeps "Sending…" on a line of
+ * its own.
  */
-export function PendingPostRow({ body, head }: { body: string; head: boolean }) {
-  const { dir, viewerId } = useTimeline();
+export function PendingPostRow({ post, head }: { post: PendingPost; head: boolean }) {
+  const { dir, viewerId, renderAttachments } = useTimeline();
   const showHead = head && viewerId !== null;
   const person = viewerId !== null ? dir.byId(viewerId) : undefined;
+  const standIn = useMemo(() => pendingMessage(post, viewerId), [post, viewerId]);
+  const fileNames = useMemo(
+    () => Object.fromEntries(post.attachments.map((file) => [file.id, file.name])),
+    [post]
+  );
+  const files =
+    post.attachments.length > 0
+      ? renderAttachments?.(standIn, { active: false, sending: true, fileNames })
+      : null;
+  const status = (
+    <>
+      <Loader2 aria-hidden className="crew-pending-spinner animate-spin" />
+      {timelineCopy.sending}
+    </>
+  );
   return (
     <div
       className="crew-message-row crew-pending-row"
@@ -441,14 +468,35 @@ export function PendingPostRow({ body, head }: { body: string; head: boolean }) 
             <span className="crew-message-author">
               <PersonName person={viewerId} context="header" dir={dir} tooltip={false} />
             </span>
+            <span className="crew-pending-status text-supporting text-text-muted">{status}</span>
           </div>
         )}
-        {body.trim() && <MessageBody body={body} />}
-        <p className="crew-pending-status text-supporting text-text-muted">
-          <Loader2 aria-hidden className="crew-pending-spinner animate-spin" />
-          {timelineCopy.sending}
-        </p>
+        {post.body.trim() && <MessageBody body={post.body} />}
+        {files ? <div className="crew-pending-files">{files}</div> : null}
+        {!showHead && (
+          <p className="crew-pending-status crew-pending-status-line text-supporting text-text-muted">
+            {status}
+          </p>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * The message a post on its way will be, for the attachments slot: its files and its words. Never
+ * rendered as a message and never sent anywhere; the slot reads only its files.
+ */
+function pendingMessage(post: PendingPost, viewerId: string | null): CrewMessage {
+  return {
+    id: 'pending',
+    sequence: '',
+    channel_id: '',
+    actor_id: viewerId ?? '',
+    body: post.body,
+    created_at: Date.now(),
+    restricted: false,
+    source_channels: [],
+    attachments: post.attachments.map((file) => file.id),
+  };
 }

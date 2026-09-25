@@ -129,13 +129,23 @@ describe('file cards and the Tab order through a channel (Q3-05)', () => {
       await user.tab();
       reached.push(document.activeElement?.getAttribute('aria-label') ?? '');
     }
-    // The card's own controls, then the row's, then the composer — never the other card's.
+    // The row's toolbar, then the card's own controls, then the composer — never the other
+    // card's. The toolbar sits above the card on screen, so Tab reaches it first: it used to go
+    // Save, ⋯, then back up to Copy text and More actions (Q4-22).
     const saves = reached.filter((name) => name.startsWith('Save counts.csv'));
     const cardMenus = reached.filter((name) => name.startsWith('More actions for counts.csv'));
     expect(saves).toHaveLength(1);
     expect(cardMenus).toHaveLength(1);
     expect(within(row).getByRole('button', { name: saves[0] })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: cardMenus[0] })).toBeInTheDocument();
+    const copyText = reached.findIndex((name) => name.startsWith('Copy text of '));
+    const rowMenu = reached.findIndex(
+      (name) => name.startsWith('More actions for ') && !name.startsWith('More actions for counts')
+    );
+    expect(copyText).toBeGreaterThanOrEqual(0);
+    expect(rowMenu).toBeGreaterThan(copyText);
+    expect(reached.indexOf(saves[0])).toBeGreaterThan(rowMenu);
+    expect(reached.indexOf(cardMenus[0])).toBeGreaterThan(reached.indexOf(saves[0]));
     expect(reached[reached.length - 1]).toBe('Message #general');
 
     // Same-named files are told apart by their post time in those names (Q3-13).

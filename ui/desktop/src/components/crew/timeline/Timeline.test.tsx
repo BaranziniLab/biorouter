@@ -1115,6 +1115,139 @@ describe('a post on its way (T-37)', () => {
     view.rerenderWith(accepted);
     expect(sending()).toBeNull();
   });
+
+  /**
+   * Q4-19: on confirmation the post jumped 57–70px and gained its card — the day's band came in
+   * above it, and its files appeared under it. The stand-in now takes the box the message will.
+   */
+  describe('taking the box the message will (Q4-19)', () => {
+    it('draws today’s band over a post that is the day’s first message, and only one', () => {
+      // "Morning." was posted on September 22, 2026; today is later.
+      const { idle, posting, accepted } = stages();
+      const view = renderWithController(<Timeline />, idle);
+      view.rerenderWith(posting);
+      view.rerenderWith(accepted);
+      const day = sending()?.closest('.crew-day') as HTMLElement;
+      expect(day).toHaveAttribute('data-pending', 'true');
+      // Hidden like the row it stands in for: the log announces the real band when it lands.
+      expect(day).toHaveAttribute('aria-hidden', 'true');
+      expect(day.querySelector('.crew-day-label')).toHaveTextContent(timelineCopy.today);
+      // It heads its own group box, as the message will.
+      expect(sending()?.closest('.crew-message-group')).not.toBeNull();
+
+      view.rerenderWith({
+        ...accepted,
+        messages: [
+          before,
+          message({ id: 'm-sent', actor_id: ID.alice, body: sent, at: new Date() }),
+        ],
+      });
+      expect(sending()).toBeNull();
+      expect(document.querySelector('.crew-day[data-pending]')).toBeNull();
+      expect(screen.getAllByRole('separator', { name: timelineCopy.today })).toHaveLength(1);
+    });
+
+    it('draws no second band when today already has one', () => {
+      const earlier = message({ id: 'm-today', body: 'Morning.', at: new Date() });
+      const idle = makeController({ messages: [earlier], draft: draft(sent) });
+      const view = renderWithController(<Timeline />, idle);
+      view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+      view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
+      expect(sending()).toBeInTheDocument();
+      expect(sending()?.closest('.crew-day')).toBeNull();
+      expect(screen.getAllByRole('separator', { name: timelineCopy.today })).toHaveLength(1);
+    });
+
+    it('puts “Sending…” where the time will be on a head row, not on a line of its own', () => {
+      const { idle, posting, accepted } = stages();
+      const view = renderWithController(<Timeline />, idle);
+      view.rerenderWith(posting);
+      view.rerenderWith(accepted);
+      const row = sending()?.closest('.crew-pending-row') as HTMLElement;
+      expect(sending()?.closest('.crew-message-meta')).not.toBeNull();
+      expect(row.querySelector('.crew-pending-status-line')).toBeNull();
+    });
+
+    it('draws the post’s files through the attachments slot, in their sending state', () => {
+      const slots: { ids: string[]; slot: AttachmentSlotState }[] = [];
+      const renderAttachments = (item: CrewMessage, slot: AttachmentSlotState) => {
+        slots.push({ ids: item.attachments, slot });
+        return <div data-testid="files">{item.attachments.join(',')}</div>;
+      };
+      const withFile = {
+        body: 'The plate map.',
+        attachments: [{ id: 'blob-1', name: 'plate.csv' }],
+        references: [],
+      };
+      const idle = makeController({ messages: [before], draft: withFile });
+      const view = renderWithController(<Timeline renderAttachments={renderAttachments} />, idle);
+      view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+      view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
+      const row = sending()?.closest('.crew-pending-row') as HTMLElement;
+      expect(within(row).getByTestId('files')).toHaveTextContent('blob-1');
+      expect(within(row).getByTestId('files').closest('.crew-pending-files')).not.toBeNull();
+      const last = slots[slots.length - 1];
+      expect(last.ids).toEqual(['blob-1']);
+      expect(last.slot).toEqual({
+        active: false,
+        sending: true,
+        fileNames: { 'blob-1': 'plate.csv' },
+      });
+    });
+  });
+
+  it('takes the in-session New line away once the viewer posts here (Q4-10)', () => {
+    // Bob's reply went up under a New line that stayed above it until he left the channel.
+    const messages = [
+      message({ id: 'a', sequence: 's1', at: new Date(2026, 8, 22, 9, 0) }),
+      message({ id: 'b', sequence: 's2', at: new Date(2026, 8, 22, 9, 30), body: 'fresh' }),
+    ];
+    const idle = makeController({
+      messages,
+      draft: draft(sent),
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: 's1' },
+        unread: { [ID.general]: 1 },
+      }),
+    });
+    const view = renderWithController(<Timeline />, idle);
+    expect(screen.getByRole('separator', { name: timelineCopy.newLineLabel })).toBeInTheDocument();
+    view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+    // Not while the post might still be refused.
+    expect(screen.getByRole('separator', { name: timelineCopy.newLineLabel })).toBeInTheDocument();
+    const accepted = { ...idle, draft: draft(''), isPending: vi.fn(() => false) };
+    view.rerenderWith(accepted);
+    expect(screen.queryByRole('separator', { name: timelineCopy.newLineLabel })).toBeNull();
+    // Nor does it come back when the post lands.
+    view.rerenderWith({
+      ...accepted,
+      messages: [...messages, message({ id: 'm-sent', actor_id: ID.alice, body: sent })],
+    });
+    expect(screen.queryByRole('separator', { name: timelineCopy.newLineLabel })).toBeNull();
+  });
+
+  it('keeps the New line when the post is refused (Q4-10)', () => {
+    const messages = [
+      message({ id: 'a', sequence: 's1', at: new Date(2026, 8, 22, 9, 0) }),
+      message({ id: 'b', sequence: 's2', at: new Date(2026, 8, 22, 9, 30), body: 'fresh' }),
+    ];
+    const idle = makeController({
+      messages,
+      draft: draft(sent),
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: 's1' },
+        unread: { [ID.general]: 1 },
+      }),
+    });
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+    view.rerenderWith({
+      ...idle,
+      error: { message: 'Not allowed.', source: 'composer' },
+      isPending: vi.fn(() => false),
+    });
+    expect(screen.getByRole('separator', { name: timelineCopy.newLineLabel })).toBeInTheDocument();
+  });
 });
 
 describe('arrivals', () => {
@@ -1928,6 +2061,28 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     // A collapsed table ignores its radius.
     expect(table).toMatch(/border-collapse: separate;/);
     expect(table).toMatch(/overflow: hidden;/);
+  });
+
+  it('draws the toolbar after the message without a hover pointer, though it comes first in the DOM (Q4-22)', () => {
+    // Tab reaches the toolbar before the file cards; on a touch screen it still sits below.
+    const touch = css.slice(css.indexOf('@media (hover: none)'));
+    expect(touch).toMatch(/\.crew-row-actions \{[^}]*position: static;[^}]*order: 1;/);
+  });
+
+  it('keeps the New line and the toolbar’s button edges in forced colours (Q4-25)', () => {
+    const forced = css.slice(css.indexOf('@media (forced-colors: active)'));
+    expect(forced).toMatch(
+      /\.crew-new-divider::before \{\s*background-color: CanvasText;\s*forced-color-adjust: none;/
+    );
+    expect(forced).toMatch(/\.crew-row-action \{\s*border: 1px solid ButtonText;/);
+  });
+
+  it('draws a wide table’s cut edge on every row, outside its fade (Q4-26)', () => {
+    // Its own rule, after the fade it shares with code blocks. The fade stops 1px short, so the
+    // border's own pixel stays opaque.
+    expect(css.replace(/\s+/g, ' ')).toContain(
+      ".crew-md-table-scroll[data-overflow='true'] { border-right: 1px solid var(--border-subtle); mask-image: linear-gradient( to right, black calc(100% - 41px), transparent calc(100% - 1px), black calc(100% - 1px) ); }"
+    );
   });
 
   it('sets every message body on the 14/21 reading line (T-62, Q2-58)', () => {

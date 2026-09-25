@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewTransfer } from '../crewTransfers';
 import { AttachmentCard, type CrewBlob } from './AttachmentCard';
 import { AttachmentIndexProvider } from './attachmentIndex';
+import { cachedBlob, clearBlobCache } from './blobMetadataCache';
+import { filesCopy } from './copy';
 import { TRANSFER_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
@@ -67,6 +69,7 @@ describe('AttachmentCard', () => {
     for (const mock of Object.values(mocks)) mock.mockReset();
     mocks.listTransfers.mockResolvedValue([]);
     installBlobs();
+    clearBlobCache();
   });
 
   it('shows the name and a human size, never a byte count or an ID', async () => {
@@ -275,6 +278,81 @@ describe('AttachmentCard', () => {
     );
     await user.click(remove);
     expect(mocks.forgetTransfer).toHaveBeenCalledWith('download-counts');
+  });
+
+  describe('a card that mounts again (Q4-17)', () => {
+    it('starts from the file’s kept name and size, never a nameless “Attachment”', async () => {
+      const first = render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+      await screen.findByText('counts.csv');
+      first.unmount();
+      // The next answer is slow: the card must not wait for it to be named.
+      mocks.crewRequest.mockImplementation(() => new Promise(() => {}));
+      render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+      expect(screen.getByText('counts.csv')).toBeInTheDocument();
+      expect(screen.getByText('55 KB')).toBeInTheDocument();
+      expect(screen.queryByText(filesCopy.attachment)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+      // It still asks: the kept answer decides only what is drawn meanwhile.
+      expect(mocks.crewRequest).toHaveBeenCalledWith('connection-1', 'blob.status', {
+        blob_id: 'counts',
+      });
+    });
+
+    it('keeps no unfinished file, and never another connection’s answer', async () => {
+      installBlobs({ partial: { complete: false } });
+      const first = render(
+        <>
+          <AttachmentCard connectionId="connection-1" blobId="partial" />
+          <AttachmentCard connectionId="connection-1" blobId="counts" />
+        </>
+      );
+      await screen.findByText('partial.csv');
+      await screen.findByText('counts.csv');
+      first.unmount();
+      mocks.crewRequest.mockImplementation(() => new Promise(() => {}));
+      render(
+        <>
+          <AttachmentCard connectionId="connection-1" blobId="partial" />
+          <AttachmentCard connectionId="connection-2" blobId="counts" />
+        </>
+      );
+      expect(screen.queryByText('partial.csv')).toBeNull();
+      expect(screen.queryByText('counts.csv')).toBeNull();
+      expect(screen.getAllByText(filesCopy.attachment)).toHaveLength(2);
+    });
+
+    it('drops the kept answer when asking again fails', async () => {
+      const first = render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+      await screen.findByText('counts.csv');
+      first.unmount();
+      mocks.crewRequest.mockRejectedValue(new Error('Not a member of this channel.'));
+      const second = render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+      expect(await screen.findByText('Not a member of this channel.')).toBeInTheDocument();
+      expect(screen.queryByText('counts.csv')).toBeNull();
+      expect(screen.getByRole('button', { name: `Save ${filesCopy.attachment}` })).toBeDisabled();
+      second.unmount();
+      expect(cachedBlob('connection-1', 'counts')).toBeNull();
+    });
+  });
+
+  it('draws a file in a post on its way as its row, the same height, with no controls (Q4-19)', async () => {
+    mocks.crewRequest.mockImplementation(() => new Promise(() => {}));
+    const { container, rerender } = render(
+      <AttachmentCard connectionId="connection-1" blobId="fresh" sending fallbackName="plate.csv" />
+    );
+    // Named from the draft until its own answer comes.
+    expect(screen.getByText('plate.csv')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+    const card = container.querySelector('.crew-attachment-card') as HTMLElement;
+    expect(card).toHaveAttribute('data-sending', 'true');
+    expect(card.querySelector('.crew-attachment-row')).not.toBeNull();
+
+    installBlobs();
+    rerender(<AttachmentCard connectionId="connection-1" blobId="fresh2" sending />);
+    expect(await screen.findByText('fresh2.csv')).toBeInTheDocument();
+    expect(screen.getByText('55 KB')).toBeInTheDocument();
+    // Its answer is kept, so the posted card that replaces it starts named.
+    expect(cachedBlob('connection-1', 'fresh2')?.name).toBe('fresh2.csv');
   });
 
   it('shows an action failure once, in the card', async () => {

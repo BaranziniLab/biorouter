@@ -123,7 +123,13 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const { connectionId } = crew;
   const renderAttachments = useCallback(
     (message: CrewMessage, slot: AttachmentSlotState) => (
-      <MessageFiles connectionId={connectionId} message={message} active={slot.active} />
+      <MessageFiles
+        connectionId={connectionId}
+        message={message}
+        active={slot.active}
+        sending={slot.sending}
+        fileNames={slot.fileNames}
+      />
     ),
     [connectionId]
   );

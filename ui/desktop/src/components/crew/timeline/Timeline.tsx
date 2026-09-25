@@ -13,9 +13,8 @@ import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
 import type { Channel, CrewMessage, CrewMessagePeople, ObservedRun, Snapshot } from '../crewApi';
 import { channelSlug, usePeopleDirectory } from '../identity';
-import { crewActionCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
-import type { CrewController, CrewFrameLabels } from '../state/types';
+import type { CrewFrameLabels } from '../state/types';
 import { ChannelIntro } from './ChannelIntro';
 import { timelineCopy } from './copy';
 import { DayDivider } from './DayDivider';
@@ -39,6 +38,7 @@ import { JumpPill } from './JumpPill';
 import { MessageGroup } from './MessageGroup';
 import { PendingPostRow } from './MessageRow';
 import { NewDivider } from './NewDivider';
+import { usePendingPost, type PendingPost } from './pendingPost';
 import { TaskStatusRow } from './TaskStatusRow';
 import {
   TimelineContextProvider,
@@ -48,7 +48,7 @@ import {
 } from './TimelineContext';
 import { TimelineCopyProvider } from './TimelineCopy';
 import { TimelineSkeleton } from './TimelineSkeleton';
-import { messageTime } from './timelineTime';
+import { dayKey, messageTime } from './timelineTime';
 import { useAutoMarkRead, type AutoReadMemory } from './useAutoMarkRead';
 import { useOpening } from './useOpening';
 import '../crew-app.css';
@@ -126,105 +126,7 @@ function continuesOwnGroup(days: readonly TimelineDay[], viewerId: string | null
   return Boolean(lastEntry) && now - lastEntry.time.getTime() <= GROUP_GAP_MS;
 }
 
-/**
- * How long a "Sending…" row waits for the observer to deliver its message
- * before it goes quietly. The broker accepted the post, so the message is
- * coming; this only keeps a stalled observation from leaving the row for good.
- */
-export const PENDING_POST_TIMEOUT_MS = 30_000;
-
-/** A post the broker has accepted, from this timeline's composer. */
-interface PendingPost {
-  body: string;
-  /** Messages already on screen when it was sent: the delivered one is not among them. */
-  before: ReadonlySet<string>;
-}
-
-/** The draft as a send began: what to recognize the delivered message by. */
-interface PostAttempt extends PendingPost {
-  attachments: readonly string[];
-}
-
-/**
- * Whether the send that just settled was accepted. The controller's `send()`
- * says nothing (and `state/*` is not this area's to change), so it is read the
- * way the composer sees it: an accepted post clears exactly what was sent from
- * the draft, and a refused one leaves the draft and records a composer error. A
- * post whose only trouble was the kept upload record still went out. A draft
- * cleared because the verified view was dropped proves nothing either way.
- */
-function postAccepted(attempt: PostAttempt, crew: CrewController): boolean {
-  const { error, draft, snapshot } = crew;
-  if (error?.source === 'composer' && error.message !== crewActionCopy.sendTransferRecordKept) {
-    return false;
-  }
-  // A reset that dropped the verified view (and cleared the draft with it) is not an answer.
-  if (!snapshot) return false;
-  const bodyCleared = !attempt.body.trim() || !draft.body.trim();
-  const filesCleared = attempt.attachments.every(
-    (id) => !draft.attachments.some((file) => file.id === id)
-  );
-  return bodyCleared && filesCleared;
-}
-
-function isDelivery(post: PendingPost, message: CrewMessage, viewerId: string | null): boolean {
-  return (
-    viewerId !== null &&
-    !post.before.has(message.id) &&
-    message.actor_id === viewerId &&
-    !message.run_id &&
-    message.body.trim() === post.body.trim()
-  );
-}
-
-/**
- * The post between Send and its arrival (T-37). The send is not optimistic —
- * the draft stays until the broker answers — but once it has answered the draft
- * is cleared, and the message arrived only when the observer next delivered it,
- * seconds later, with nothing on screen in between. So from the answer until
- * the message is in the list, a dimmed "Sending…" row stands in for it. It is
- * matched by who posted it and its words, among messages that were not already
- * on screen; `send()` returns no message ID to match by.
- */
-function usePendingPost(
-  crew: CrewController,
-  messages: readonly CrewMessage[],
-  viewerId: string | null
-): PendingPost | null {
-  const posting = crew.isPending('send');
-  const [pending, setPending] = useState<PendingPost | null>(null);
-  const attempt = useRef<PostAttempt | null>(null);
-  const wasPosting = useRef(false);
-  const latest = useRef({ crew, messages });
-  latest.current = { crew, messages };
-  useEffect(() => {
-    const was = wasPosting.current;
-    wasPosting.current = posting;
-    const { crew: now, messages: list } = latest.current;
-    if (posting && !was) {
-      attempt.current = {
-        body: now.draft.body,
-        attachments: now.draft.attachments.map((file) => file.id),
-        before: new Set(list.map((message) => message.id)),
-      };
-    } else if (!posting && was) {
-      const sent = attempt.current;
-      attempt.current = null;
-      setPending(sent && postAccepted(sent, now) ? { body: sent.body, before: sent.before } : null);
-    }
-  }, [posting]);
-  const delivered =
-    pending !== null && messages.some((message) => isDelivery(pending, message, viewerId));
-  useEffect(() => {
-    if (delivered) setPending(null);
-  }, [delivered]);
-  useEffect(() => {
-    if (!pending) return;
-    const timer = window.setTimeout(() => setPending(null), PENDING_POST_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [pending]);
-  return pending && !delivered ? pending : null;
-}
+export { PENDING_POST_TIMEOUT_MS } from './pendingPost';
 
 /** How close to the bottom edge the newest row counts as on screen for mark-read. */
 const BOTTOM_TOLERANCE_PX = 4;
@@ -432,6 +334,9 @@ function ChannelTimeline({
   }, [opened, loadKey]);
   const live = opened && liveKey === loadKey;
 
+  // ── The post between Send and its arrival ───────────────────────────────
+  const pendingPost = usePendingPost(crew, messages, viewerId);
+
   // ── The New line: fixed once, as soon as the live tail decides its place ──
   const [newLine, setNewLine] = useState<{ computed: boolean; id: string | null }>({
     computed: false,
@@ -445,6 +350,11 @@ function ChannelTimeline({
   ) {
     setNewLine({ computed: true, id: newLineBeforeId(messages, readState) });
   }
+  // Posting here reads the channel to its end — the post already sends `channel.read` — so the
+  // rule goes with it rather than standing above the viewer's own reply until they leave (Q4-10).
+  const [postedHere, setPostedHere] = useState(false);
+  if (pendingPost !== null && !readOnly && !postedHere) setPostedHere(true);
+  const newLineId = postedHere ? null : newLine.id;
 
   // "Today" becomes "Yesterday" at midnight even when nothing new arrives.
   const [now, setNow] = useState(() => new Date());
@@ -467,7 +377,7 @@ function ChannelTimeline({
         groupMessages(messages, {
           channelId: channel.id,
           channelRestricted: channel.classification === 'restricted',
-          newLineBeforeId: newLine.id,
+          newLineBeforeId: newLineId,
           runs,
           // Not while the page loads: a task row with nothing under it would stand above the
           // skeleton, and then jump below the messages when they land (Q2-62).
@@ -475,7 +385,7 @@ function ChannelTimeline({
           now,
         })
       ),
-    [messages, channel.id, channel.classification, newLine.id, runs, historyBefore, pageReady, now]
+    [messages, channel.id, channel.classification, newLineId, runs, historyBefore, pageReady, now]
   );
   useEffect(() => {
     drawnDays.current = days;
@@ -641,10 +551,13 @@ function ChannelTimeline({
     highlightDone.current?.();
   }, []);
 
-  // ── The post between Send and its arrival ───────────────────────────────
-  const pendingPost = usePendingPost(crew, messages, viewerId);
+  // ── Where the post on its way is drawn ─────────────────────────────────
+  // As the message will be once it lands, so nothing moves then (Q4-19): under today's band when
+  // it is the day's first message, heading a group of its own unless it continues the viewer's.
   const showPending = pendingPost !== null && !readOnly && historyBefore === null;
-  const pendingHead = showPending && !continuesOwnGroup(days, viewerId, Date.now());
+  const pendingNewDay = showPending && days[days.length - 1]?.key !== `day-${dayKey(now)}`;
+  const pendingHead =
+    showPending && (pendingNewDay || !continuesOwnGroup(days, viewerId, Date.now()));
 
   // ── Keyboard: ↑/↓ move between rows, Home/End to the ends ────────────────
   // The active row's actions are Tab stops only while focus is inside the log. Once focus leaves
@@ -784,7 +697,15 @@ function ChannelTimeline({
                     ))}
                   </section>
                 ))}
-                {showPending && <PendingPostRow body={pendingPost.body} head={pendingHead} />}
+                {showPending &&
+                  (pendingNewDay ? (
+                    <section className="crew-day" data-pending="true" aria-hidden="true" inert>
+                      <DayDivider label={timelineCopy.today} />
+                      <PendingPostGroup post={pendingPost} head />
+                    </section>
+                  ) : (
+                    <PendingPostGroup post={pendingPost} head={pendingHead} />
+                  ))}
               </div>
             </div>
           </ScrollArea>
@@ -812,6 +733,21 @@ function ChannelTimeline({
         </TimelineContextProvider>
       </TimelineCopyProvider>
     </div>
+  );
+}
+
+/**
+ * The post on its way, in the box the delivered message will take: a group of its own (and its
+ * 8px above) when it heads one, or the bare row when it continues the viewer's group.
+ */
+function PendingPostGroup({ post, head }: { post: PendingPost; head: boolean }) {
+  const row = <PendingPostRow post={post} head={head} />;
+  return head ? (
+    <div className="crew-message-group" data-pending="true">
+      {row}
+    </div>
+  ) : (
+    row
   );
 }
 

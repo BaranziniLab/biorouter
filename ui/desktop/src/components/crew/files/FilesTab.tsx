@@ -6,6 +6,7 @@ import type { CrewMessage } from '../crewApi';
 import { forgetTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
 import { PersonName, usePeopleDirectory, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { usePendingPostOf } from '../timeline/pendingPost';
 import { isoTime, messageTime } from '../timeline/timelineTime';
 import { AttachmentCard, type CrewBlob } from './AttachmentCard';
 import { postedLabel } from './attachmentIndex';
@@ -30,13 +31,17 @@ type SharedItem =
  * - **In progress**: this channel's transfers on this computer that have not finished, with
  *   Pause while they move and Resume… / Remove from list otherwise.
  * - **In your message, not sent yet**: the files attached to the message being written. Nothing
- *   is offered on them: the composer chip's × takes one out (Q3-03).
+ *   is offered on them: the composer chip's × takes one out (Q3-03). A file in a post the broker
+ *   accepted stays here, reading "Sending…", until the posted message carrying it is loaded
+ *   (`timeline/pendingPost.ts`): Send emptied the draft a second or two before the message came,
+ *   and the file was in no section at all meanwhile (Q4-17).
  * - **Uploaded, not sent**: finished uploads to this channel that are in no loaded message and
  *   not in the composer, with **Attach** (formerly "Restore to composer"). Attach re-reads the
  *   file's record first and refuses one that no longer matches the upload. A file a message
  *   already carries is never here: it was sent, and Attach would post a second copy (Q3-03).
  * - **In this channel**: the files and server paths in the loaded messages, newest first, each
- *   with who shared it and when (Q3-13).
+ *   with who shared it and when (Q3-13). The card's meta then leaves the time out: the line
+ *   above says it (Q4-03).
  *
  * Transfers come from the one shared poller; an action error renders once, here.
  */
@@ -53,6 +58,7 @@ export function FilesTab() {
     people,
   } = useCrew();
   const dir = usePeopleDirectory(snapshot, labels, people ?? null);
+  const pendingPost = usePendingPostOf(connectionId, channelId);
   const viewerId = typeof snapshot?.actor?.id === 'string' ? snapshot.actor.id : null;
   const { transfers, error: listError, refresh } = useCrewTransfers(connectionId);
   const [error, setError] = useState('');
@@ -93,20 +99,26 @@ export function FilesTab() {
     shared.filter((item) => item.kind === 'attachment').map((item) => item.id)
   );
   const attachedIds = new Set(draft.attachments.map((item) => item.id));
+  // A post on its way: its files, until a loaded message carries them.
+  const sending = (pendingPost?.attachments ?? []).filter(
+    (file) => !sentIds.has(file.id) && !attachedIds.has(file.id)
+  );
+  const sendingIds = new Set(sending.map((file) => file.id));
   const notSent = channelTransfers.filter(
     (item) =>
       item.direction === 'upload' &&
       item.state === 'completed' &&
       item.blob_id &&
       !attachedIds.has(item.blob_id) &&
+      !sendingIds.has(item.blob_id) &&
       !sentIds.has(item.blob_id)
   );
-  const inMessage = draft.attachments.map((file) => ({
-    file,
-    upload: channelTransfers.find(
-      (item) => item.direction === 'upload' && item.blob_id === file.id
-    ),
-  }));
+  const upload = (id: string) =>
+    channelTransfers.find((item) => item.direction === 'upload' && item.blob_id === id);
+  const inMessage = [
+    ...sending.map((file) => ({ file, upload: upload(file.id), sending: true })),
+    ...draft.attachments.map((file) => ({ file, upload: upload(file.id), sending: false })),
+  ];
 
   const act = useCallback(
     async (operation: () => Promise<unknown>) => {
@@ -181,12 +193,18 @@ export function FilesTab() {
             {filesCopy.inYourMessage}
           </h3>
           <ul className="crew-file-list">
-            {inMessage.map(({ file, upload }) => (
-              <li key={file.id} className="crew-file-row">
+            {inMessage.map(({ file, upload, sending: onItsWay }) => (
+              <li
+                key={file.id}
+                className="crew-file-row"
+                data-sending={onItsWay ? 'true' : undefined}
+              >
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
                   <span className="crew-file-row-name">{file.name}</span>
-                  {upload ? (
+                  {onItsWay ? (
+                    <span className="crew-file-row-meta">{filesCopy.sending}</span>
+                  ) : upload ? (
                     <span className="crew-file-row-meta">{formatBytes(upload.size)}</span>
                   ) : null}
                 </div>
@@ -248,6 +266,7 @@ export function FilesTab() {
                     connectionId={connectionId}
                     blobId={item.id}
                     postedAt={messageTime(item.message.created_at).getTime()}
+                    postedTimeInMeta={false}
                   />
                 ) : (
                   <ServerPathRow connectionId={connectionId} referenceId={item.id} />
