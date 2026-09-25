@@ -194,7 +194,8 @@ impl TransferService {
                 "publishing" | "publication_unconfirmed"
             ) {
                 receipt.state = "publication_unconfirmed".into();
-            } else if receipt.state != "completed" {
+            } else if !matches!(receipt.state.as_str(), "completed" | "failed") {
+                // A transfer the workspace refused stays refused, with its reason (F-1).
                 receipt.state = "needs_file_selection".into();
             }
         }
@@ -689,17 +690,9 @@ impl TransferService {
             state.active.remove(&receipt.id);
             if let Err(error) = outcome {
                 tracing::error!("Crew transfer {} failed: {error}", receipt.id);
-                if receipt.direction == Direction::Download
-                    && matches!(receipt.state.as_str(), "publishing" | "completed")
-                {
-                    receipt.state = "publication_unconfirmed".into();
-                } else {
-                    receipt.state = "needs_file_selection".into();
-                }
-                receipt.error = Some(
-                    transfer_recovery_message(&error, receipt.state == "publication_unconfirmed")
-                        .into(),
-                );
+                let (stopped, message) = stopped_transfer(&receipt, &error);
+                receipt.state = stopped.into();
+                receipt.error = Some(message);
                 state.receipts.insert(receipt.id.clone(), receipt);
                 let _ = service.persist(&mut state);
             }
@@ -711,6 +704,30 @@ impl TransferService {
 #[cfg(all(test, unix))]
 #[path = "transfers_tests.rs"]
 mod transfers_tests;
+
+/// How a transfer that stopped with `error` ends, and what it says. A download stopped while
+/// publishing is `publication_unconfirmed`. One the workspace itself refused (the person was
+/// removed from the channel, say) is `failed`, with the workspace's reason as a sentence
+/// (F-1): reselecting the file cannot fix that, so it is never offered as the way on. Anything
+/// else (a pause, a dropped connection, a locked vault) is `needs_file_selection`, which a
+/// reselection resumes.
+fn stopped_transfer(receipt: &Receipt, error: &anyhow::Error) -> (&'static str, String) {
+    if receipt.direction == Direction::Download
+        && matches!(receipt.state.as_str(), "publishing" | "completed")
+    {
+        return (
+            "publication_unconfirmed",
+            transfer_recovery_message(error, true).into(),
+        );
+    }
+    if let Some(sentence) = biorouter::crew::refusal_sentence(error) {
+        return ("failed", sentence);
+    }
+    (
+        "needs_file_selection",
+        transfer_recovery_message(error, false).into(),
+    )
+}
 
 fn transfer_recovery_message(error: &anyhow::Error, publication_unconfirmed: bool) -> &'static str {
     if publication_unconfirmed {

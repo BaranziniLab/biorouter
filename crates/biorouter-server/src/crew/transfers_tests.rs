@@ -548,3 +548,102 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
     assert!(state.receipts[id].error.is_none());
     state.active[id].cancel();
 }
+
+fn stopped_receipt(direction: Direction, state: &str) -> Receipt {
+    Receipt {
+        id: "0123456789abcdef0123456789abcdef".into(),
+        request_id: "request".into(),
+        connection_id: "connection".into(),
+        channel_id: "channel".into(),
+        direction,
+        name: "restricted.csv".into(),
+        size: 4,
+        sha256: "a".repeat(64),
+        offset: 0,
+        blob_id: Some("blob".into()),
+        state: state.into(),
+        error: None,
+        binding: "binding".into(),
+        intent: "intent".into(),
+        local_selection: String::new(),
+        destination_identity: None,
+        destination_selection: None,
+        initial_target: None,
+    }
+}
+
+/// F-1: a removed member's download is refused by the workspace (`forbidden: channel
+/// unavailable`). It used to end `needs_file_selection`, "Reselect the original local file or
+/// destination to resume", which no reselection could ever fix. It now ends `failed`, saying
+/// why in the words the CLI uses. A stop the workspace did not answer is still resumable.
+#[test]
+fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
+    let refused = anyhow::anyhow!(
+        "Crew broker refused request: {}",
+        json!({"code": "forbidden", "message": "forbidden: channel unavailable"})
+    );
+    for direction in [Direction::Download, Direction::Upload] {
+        for state in ["starting", "downloading", "uploading"] {
+            let (stopped, message) = stopped_transfer(&stopped_receipt(direction, state), &refused);
+            assert_eq!(stopped, "failed");
+            assert_eq!(
+                message,
+                "That channel isn't available to you. It may be archived, or you may not be in it."
+            );
+            assert!(!message.contains("Reselect") && !message.contains('{'));
+        }
+    }
+    // Refused while publishing: whether the file was published is still the question.
+    let (stopped, _) = stopped_transfer(
+        &stopped_receipt(Direction::Download, "publishing"),
+        &refused,
+    );
+    assert_eq!(stopped, "publication_unconfirmed");
+    // Not the workspace's answer: reconnecting and reselecting does resume these.
+    let (stopped, message) = stopped_transfer(
+        &stopped_receipt(Direction::Download, "downloading"),
+        &anyhow::anyhow!("Crew connection is disconnected; authenticate and connect in Crew"),
+    );
+    assert_eq!(stopped, "needs_file_selection");
+    assert!(
+        message.starts_with("Authenticate and reconnect"),
+        "{message}"
+    );
+    let (stopped, _) = stopped_transfer(
+        &stopped_receipt(Direction::Upload, "uploading"),
+        &anyhow::anyhow!("Transfer paused"),
+    );
+    assert_eq!(stopped, "needs_file_selection");
+}
+
+/// F-1: a refused transfer stays refused, with its reason, when the daemon restarts; it is
+/// not turned back into one that asks for the file again.
+#[tokio::test]
+async fn a_refused_transfer_stays_failed_across_a_restart() {
+    let root = private_root();
+    let mut receipt = stopped_receipt(Direction::Download, "failed");
+    receipt.error = Some(
+        "That channel isn't available to you. It may be archived, or you may not be in it.".into(),
+    );
+    let id = receipt.id.clone();
+    let mut receipts = serde_json::Map::new();
+    receipts.insert(id.clone(), serde_json::to_value(&receipt).unwrap());
+    fs::write(
+        root.path().join("receipts.json"),
+        serde_json::to_vec(&receipts).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        root.path().join("receipts.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let service = TransferService::open(root.path()).unwrap();
+    let state = service.state.lock().await;
+    let reopened = &state.receipts[&id];
+    assert_eq!(reopened.state, "failed");
+    assert_eq!(
+        reopened.error.as_deref(),
+        Some("That channel isn't available to you. It may be archived, or you may not be in it.")
+    );
+}
