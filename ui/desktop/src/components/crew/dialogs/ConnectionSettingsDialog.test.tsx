@@ -39,6 +39,40 @@ describe('ConnectionSettingsDialog', () => {
     expect(screen.getByLabelText('Connection name')).toHaveAttribute('spellcheck', 'false');
   });
 
+  it('opens with the caret at the end of the name, not the whole name selected (QA Q3-43)', async () => {
+    renderSettings({ name: 'chen-lab' });
+    const name = (await screen.findByLabelText('Connection name')) as HTMLInputElement;
+    await waitFor(() => expect(name).toHaveFocus());
+    // Selected, the first key typed replaced the whole name.
+    expect(name.selectionStart).toBe('chen-lab'.length);
+    expect(name.selectionEnd).toBe('chen-lab'.length);
+  });
+
+  it('keeps the saved login and says what the person’s SSH settings call its server (QA Q3-39)', async () => {
+    renderSettings({
+      ssh_target: 'crew_alice@52.33.141.141',
+      server_label: 'lab-server',
+    } as Partial<typeof connection>);
+    const login = await screen.findByLabelText(connectionSettingsCopy.login);
+    // The real target stays: it is what connects.
+    expect(login).toHaveValue('crew_alice@52.33.141.141');
+    expect(login).toHaveAccessibleDescription(connectionSettingsCopy.loginAlias('lab-server'));
+    expect(connectionSettingsCopy.loginAlias('lab-server')).toBe(
+      'Your SSH settings call this server lab-server.'
+    );
+    // The alias names the saved server, so it goes once the field names another.
+    fireEvent.change(login, { target: { value: 'crew_alice@hpc.example.edu' } });
+    expect(screen.queryByText(connectionSettingsCopy.loginAlias('lab-server'))).toBeNull();
+  });
+
+  it('adds no alias line when the label is only the host', async () => {
+    renderSettings({ server_label: 'hpc.example.edu' } as Partial<typeof connection>);
+    const login = await screen.findByLabelText(connectionSettingsCopy.login);
+    expect(login).toHaveValue('alice@hpc.example.edu');
+    expect(screen.queryByText(/Your SSH settings call this server/)).toBeNull();
+    expect(login).not.toHaveAttribute('aria-describedby');
+  });
+
   it('is a real form: native required validation blocks the PATCH', async () => {
     const { crew } = renderSettings();
     const institution = await screen.findByPlaceholderText(PLACEHOLDER);

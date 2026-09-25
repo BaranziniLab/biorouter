@@ -12,10 +12,11 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent } from '../state/types';
-import { addPeopleCopy } from './copy';
+import { addPeopleCopy, sharePathCopy } from './copy';
 import { CREW_DIALOG_DEFAULTS, CrewDialogs, dialogKey, HOSTED_DIALOG_KINDS } from './CrewDialogs';
 import {
   alice,
+  connection,
   installResizeObserverStub,
   makeSnapshot,
   renderWithCrew,
@@ -77,6 +78,21 @@ describe('CrewDialogs', () => {
     });
     const field = await screen.findByLabelText(label);
     await waitFor(() => expect(field).toHaveFocus());
+  });
+
+  it('titles Share a path with the server’s alias, not its address (QA Q3-39)', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_dave@52.33.141.141',
+      server_label: 'lab-server',
+    };
+    renderWithCrew(<CrewDialogs />, { dialog: { kind: 'share-path' }, connections: [labelled] });
+    expect(
+      await screen.findByRole('dialog', { name: sharePathCopy.title('lab-server') })
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('52.33.141.141');
+    // The placeholder still starts in the person's own home, from the saved login.
+    expect(screen.getByLabelText('Path')).toHaveAttribute('placeholder', '/home/crew_dave/…');
   });
 
   it('opens Add people on its checklist’s search', async () => {

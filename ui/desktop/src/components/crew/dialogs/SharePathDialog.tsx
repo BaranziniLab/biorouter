@@ -6,6 +6,7 @@ import { Input } from '../../ui/input';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
 import { sanitizeDisplayText } from '../identity';
+import { connectionServerLabel } from '../onboarding/joinText';
 import type { ErrorSource } from '../state/types';
 import { sharePathCopy as copy } from './copy';
 import { DialogErrorNote, Field, helpId } from './fields';
@@ -44,11 +45,13 @@ export interface SharePathDialogProps {
  *
  * The title and helper say when to use it — a file already on the server, such as a large dataset,
  * rather than one from this computer — and the placeholder starts in the person's own home there
- * (QA Q2-32).
+ * (QA Q2-32). The server is called what the person's own SSH settings call it (QA Q3-39).
  */
 export function SharePathDialog({ onClose }: SharePathDialogProps) {
-  const { crew, server } = useDialogView();
+  const { crew } = useDialogView();
   const saved = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
+  // The server as the person names it (D-ALIAS): "lab-server", not its address (QA Q3-39).
+  const server = connectionServerLabel(saved);
   const login = sshLogin(saved?.ssh_target);
   const formId = React.useId();
   const pathId = `${formId}-path`;

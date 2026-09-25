@@ -7,7 +7,8 @@ import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { Copy } from '../../icons/app-icons';
 import type { CrewConnection } from '../crewApi';
-import { isInstitutionId } from '../identity';
+import { connectionServer, isInstitutionId } from '../identity';
+import { connectionServerLabel } from '../onboarding/joinText';
 import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ErrorSource, SaveConnectionInput } from '../state/types';
@@ -145,6 +146,10 @@ export interface ConnectionSettingsDialogProps {
  *   all (identity rule 6).
  * - The destructive **Remove …** sits on its own row below the form, apart from the footer's
  *   Cancel and **Save connection**, which stay on one line (QA T-45).
+ * - "Your server login" keeps the saved target — it is what connects — and says what the person's
+ *   own SSH settings call that server when everywhere else shows the alias (QA Q3-39).
+ * - It opens with the caret at the end of the connection's name, not the whole name selected, so
+ *   the first key typed adds to the name rather than replacing it (QA Q3-43).
  */
 export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSettingsDialogProps) {
   const { crew } = useDialogView(connectionId);
@@ -177,6 +182,24 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   const confirmFocus = useFocusReturn();
   const fingerprint = useWorkspaceKeyFingerprint(saved.workspace_public_key);
   const dismissOwnError = useDismissOwnError(SOURCE, CONFIRM_SOURCE);
+  // The alias the daemon reports for the SAVED target (D-ALIAS). It says nothing about a login the
+  // person has typed since, so the helper goes while the field holds anything else.
+  const serverAlias = connectionServerLabel(saved);
+  const loginHelper =
+    serverAlias &&
+    serverAlias !== connectionServer(saved) &&
+    form.ssh_target.trim() === saved.ssh_target.trim()
+      ? copy.loginAlias(serverAlias)
+      : undefined;
+  // Once, as the dialog opens: the caret at the end of the name. The dialog's own first-field focus
+  // selects the whole name, which the first key typed then replaced (QA Q3-43).
+  const caretPlaced = React.useRef(false);
+  const placeCaretAtEnd = (event: React.FocusEvent<HTMLInputElement>) => {
+    if (caretPlaced.current) return;
+    caretPlaced.current = true;
+    const input = event.currentTarget;
+    input.setSelectionRange(input.value.length, input.value.length);
+  };
 
   const update = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -272,6 +295,10 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
         <Field id={ids.name} label={copy.name}>
           <Input
             id={ids.name}
+            // Focused by React as it mounts, before the dialog's focus scope would move focus to
+            // the first field and select it, so the caret goes where `placeCaretAtEnd` puts it.
+            autoFocus
+            onFocus={placeCaretAtEnd}
             required
             maxLength={255}
             // A workspace name is not a word to correct: "chen-lab" drew a red squiggle (QA Q2-30).
@@ -280,13 +307,15 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             onChange={(event) => update('name', event.target.value)}
           />
         </Field>
-        <Field id={ids.login} label={copy.login}>
+        <Field id={ids.login} label={copy.login} helper={loginHelper}>
           <Input
             id={ids.login}
             required
             autoComplete="off"
             spellCheck={false}
+            translate="no"
             placeholder={copy.loginPlaceholder}
+            aria-describedby={loginHelper ? helpId(ids.login) : undefined}
             value={form.ssh_target}
             onChange={(event) => update('ssh_target', event.target.value)}
           />

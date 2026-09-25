@@ -60,6 +60,33 @@ describe('WorkspaceSettingsDialog', () => {
     expect(within(dialog).queryByRole('button', { name: 'Rename…' })).toBeNull();
   });
 
+  it('names the server as the person does, with its address to copy (QA Q3-39)', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      server_label: 'lab-server',
+    };
+    renderSettings({}, { connections: [labelled] });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const general = within(dialog).getByRole('tabpanel', { name: 'General' });
+    expect(general).toHaveTextContent('lab-server·52.33.141.141');
+    const copyAddress = within(general).getByRole('button', {
+      name: `Copy ${copy.serverAddress}`,
+    });
+    expect(copyAddress).toBeInTheDocument();
+  });
+
+  it('shows only the address, to copy, when no alias names the server', async () => {
+    renderSettings();
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const general = within(dialog).getByRole('tabpanel', { name: 'General' });
+    expect(general).toHaveTextContent('hpc.example.edu');
+    expect(general.textContent).not.toContain('·');
+    expect(
+      within(general).getByRole('button', { name: `Copy ${copy.serverAddress}` })
+    ).toBeInTheDocument();
+  });
+
   it('offers Rename to the host when the broker projects name handles', async () => {
     const snapshot = makeSnapshot();
     snapshot.teams[0].handle = 'analysis-lab';

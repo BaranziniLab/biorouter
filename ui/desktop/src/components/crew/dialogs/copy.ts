@@ -12,6 +12,11 @@ export const connectionSettingsCopy = {
   name: 'Connection name',
   login: 'Your server login',
   loginPlaceholder: 'you@server.example.edu',
+  /**
+   * Under the login, when the person's own SSH settings name its server (D-ALIAS): the field keeps
+   * the real target, and this says why everywhere else calls it by the alias (QA Q3-39).
+   */
+  loginAlias: (label: string) => `Your SSH settings call this server ${label}.`,
   privacy: 'Privacy',
   private: 'Private',
   privateDetail: 'Only private and institution-approved models',
@@ -73,6 +78,8 @@ export const workspaceSettingsCopy = {
   },
   hostedBy: 'Hosted by',
   server: 'Server',
+  /** The Copy button beside the server's address: "Copy server address" (QA Q3-39). */
+  serverAddress: 'server address',
   rename: 'Rename…',
   /** The tab list's accessible name (QA T-39). */
   tabsLabel: 'Workspace settings sections',
@@ -439,8 +446,11 @@ export const keysCopy = {
 } as const;
 
 export const sharePathCopy = {
-  /** Says what it is for: a file already on the server, not one from this computer (QA Q2-32). */
-  title: (host: string) => `Share a file that’s already on ${host}`,
+  /**
+   * Says what it is for: a file already on the server, not one from this computer (QA Q2-32), and
+   * names the server as the person does — their SSH alias, not its address (QA Q3-39).
+   */
+  title: (server: string) => `Share a file that’s already on ${server}`,
   path: 'Path',
   /** Under the path: when to use this rather than an upload. */
   helper:

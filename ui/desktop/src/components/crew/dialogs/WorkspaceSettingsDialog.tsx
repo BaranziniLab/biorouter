@@ -3,6 +3,7 @@ import { ModalShell } from '../../ModalShell';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { CopyField } from '../../ui/copy-field';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +24,7 @@ import {
   personLabel,
   type CrewPerson,
 } from '../identity';
+import { connectionServerLabel } from '../onboarding/joinText';
 import { sidebarCopy } from '../sidebar/copy';
 import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
@@ -264,6 +266,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function GeneralTab({ view }: { view: DialogView }) {
   const { crew, dir, snapshot, server } = view;
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
+  // The server as the person names it (D-ALIAS), with its address beside it to copy: "lab-server ·
+  // 52.33.141.141 [Copy]" (QA Q3-39). The alias alone where it IS the address.
+  const alias = connectionServerLabel(savedConnection(view));
   return (
     <div className="flex flex-col">
       <TabLabel title={copy.tabs.general} />
@@ -272,9 +277,22 @@ function GeneralTab({ view }: { view: DialogView }) {
           <PersonName person={dir.host} context="inline" dir={dir} />
         </Row>
         <Row label={copy.server}>
-          <span className="truncate" translate="no">
-            {server}
-          </span>
+          {alias && alias !== server ? (
+            <>
+              <span className="shrink-0 whitespace-nowrap" translate="no">
+                {alias}
+              </span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
+          {server ? (
+            <CopyField
+              value={server}
+              label={copy.serverAddress}
+              truncate="end"
+              className="min-w-0"
+            />
+          ) : null}
         </Row>
       </div>
       {canRename && snapshot ? (
