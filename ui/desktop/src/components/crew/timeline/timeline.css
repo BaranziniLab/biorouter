@@ -66,10 +66,12 @@
   position: relative;
 }
 
+/* Above a row's hover actions (z-index 3), so a row sliding under the band
+   never draws its toolbar over it. */
 .crew-day-label {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 4;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;

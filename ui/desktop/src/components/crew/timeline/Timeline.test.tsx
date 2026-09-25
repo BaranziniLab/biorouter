@@ -1787,6 +1787,9 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     const band = rule('.crew-day-label');
     expect(band).toMatch(/position: sticky;/);
     expect(band).toMatch(/top: 0;/);
+    // Over the hover toolbar (z-index 3) of a row sliding beneath it.
+    expect(band).toMatch(/z-index: 4;/);
+    expect(rule('.crew-row-actions')).toMatch(/z-index: 3;/);
     expect(band).toMatch(/height: 28px;/);
     // The column's own 16px gutters too, so no word is cut at the band's edge.
     expect(band).toMatch(/margin: 10px -16px 4px;/);
