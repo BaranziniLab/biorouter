@@ -5,7 +5,7 @@ import { INSTITUTION_ID_PATTERN } from '../identity';
 import type { ConnectionStatusKey } from '../state/crewStatus';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
-import { CHIP_SILENT_STATUSES, PrivacyChip } from './PrivacyChip';
+import { CHIP_DEFERRED_STATUSES, CHIP_SILENT_STATUSES, PrivacyChip } from './PrivacyChip';
 import { PRIVACY_UPDATE_KEY } from './PrivacyPopover';
 import { verifiedPrivacy } from './sidebarView';
 import {
@@ -183,7 +183,12 @@ describe('PrivacyChip', () => {
     ['no effective privacy', { effectivePrivacy: null }],
   ])('reads "Checking privacy…" with no padlock and nothing to open: %s', async (_, overrides) => {
     const user = userEvent.setup();
-    renderWithCrew(<PrivacyChip />, makeController(overrides));
+    // Without a snapshot the controller would read "Checking connection", where the status word
+    // stands in for the chip (Q3-55); "Updating…" is where the chip still says it.
+    renderWithCrew(
+      <PrivacyChip />,
+      makeController({ ...overrides, ...('snapshot' in overrides ? { status: 'updating' } : {}) })
+    );
     expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
@@ -202,16 +207,43 @@ describe('PrivacyChip', () => {
     );
   });
 
-  it.each(['connecting', 'checking', 'updating'] as const)(
-    'keeps "Checking privacy…" while the status is %s: the next snapshot verifies it',
+  it('keeps "Checking privacy…" while the status is updating: the next snapshot verifies it', () => {
+    renderWithCrew(
+      <PrivacyChip />,
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        status: 'updating',
+      })
+    );
+    expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
+  });
+
+  // Q3-55: "Checking connection · Checking pri…" cut both facts short at 240px. The status word
+  // already says a check runs, so the unverified chip steps aside and the row reads it whole.
+  it.each(['connecting', 'checking'] as const)(
+    'renders nothing while the status is %s and privacy is unverified: the word says it',
     (status) => {
-      renderWithCrew(
+      const { container } = renderWithCrew(
         <PrivacyChip />,
         makeController({ snapshot: null, observedPrivacy: null, effectivePrivacy: null, status })
       );
-      expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
+      expect(container).toBeEmptyDOMElement();
+      expect(CHIP_DEFERRED_STATUSES.has(status)).toBe(true);
     }
   );
+
+  it('keeps a VERIFIED chip during a connect: it is verified, and its resting home', () => {
+    renderWithCrew(<PrivacyChip />, makeController({ status: 'connecting' }));
+    expect(screen.getByRole('button', { name: 'Privacy: Private · ucsf' })).toBeInTheDocument();
+  });
+
+  it('defers to the status word in exactly these statuses, decided on purpose', () => {
+    expect([...CHIP_DEFERRED_STATUSES].sort()).toEqual(['checking', 'connecting']);
+    for (const status of CHIP_DEFERRED_STATUSES)
+      expect(CHIP_SILENT_STATUSES.has(status)).toBe(false);
+  });
 
   // Q2-17, Q2-01, Q2-43: "Offline · Checking privacy…" claimed work nothing was doing, and a
   // joiner read "Privacy shown after…" cut off beside "Not joined yet".
@@ -265,6 +297,8 @@ describe('PrivacyChip', () => {
     renderWithCrew(
       <PrivacyChip />,
       makeController({
+        // Re-verifying a view it had: the one unverified state where the chip speaks.
+        status: 'updating',
         snapshot: null,
         observedPrivacy: null,
         effectivePrivacy: null,

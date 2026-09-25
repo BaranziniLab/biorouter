@@ -138,6 +138,35 @@ describe('StatusRow', () => {
     }
   );
 
+  // Q3-55: at 240px the row read "Checking connection · Checking pri…" and "Connecting… ·
+  // Checking privacy…". The word says a check runs, so the unverified chip steps aside, and the
+  // status region still says both facts.
+  it.each([
+    ['checking', crewStatusCopy.checking],
+    ['connecting', crewStatusCopy.connecting],
+  ] as const)(
+    'reads "%s" whole, and tells a screen reader privacy is being checked too',
+    (status, word) => {
+      const { container } = renderWithCrew(
+        <StatusRow />,
+        makeController({ ...unverified, status })
+      );
+      expect(container.querySelector('[data-crew-privacy]')).toBeNull();
+      const visible = document.querySelector('[data-crew-status-word]') as HTMLElement;
+      expect(visible).toHaveTextContent(word);
+      // The only text beside the word is the screen reader's, and it keeps both facts.
+      const more = statusRegion().querySelector('[data-crew-status-more]') as HTMLElement;
+      expect(more).toHaveClass('sr-only');
+      expect(statusRegion()).toHaveTextContent(`${word}. ${sidebarCopy.chip.checking}`);
+    }
+  );
+
+  it('says nothing extra once privacy is verified, even during a connect', () => {
+    renderWithCrew(<StatusRow />, makeController({ status: 'connecting' }));
+    expect(statusRegion()).not.toHaveTextContent(sidebarCopy.chip.checking);
+    expect(screen.getByRole('button', { name: 'Privacy: Private · ucsf' })).toBeInTheDocument();
+  });
+
   it('makes "Sign-in needed" a button that opens Sign in', () => {
     const controller = makeController({ status: 'sign-in-needed' });
     renderWithCrew(<StatusRow />, controller);

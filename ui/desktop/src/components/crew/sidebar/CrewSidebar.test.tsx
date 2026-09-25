@@ -133,8 +133,13 @@ describe('CrewSidebar', () => {
       })
     );
     expect(screen.getByRole('button', { name: 'methods' })).toHaveAttribute('aria-current', 'page');
+    // The word says the check runs, so the row reads it whole; the region still says both facts
+    // to a screen reader (Q3-55). No mode shows until the observer verifies one.
     expect(screen.getByText(crewStatusCopy.checking)).toBeInTheDocument();
-    expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: sidebarCopy.statusLabel })).toHaveTextContent(
+      `${crewStatusCopy.checking}. ${sidebarCopy.chip.checking}`
+    );
+    expect(document.querySelector('[data-crew-privacy]')).toBeNull();
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
     expect(screen.getByRole('button', { name: sidebarCopy.team.add })).toBeDisabled();
   });

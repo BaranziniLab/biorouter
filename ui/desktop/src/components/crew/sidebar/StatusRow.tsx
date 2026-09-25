@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { useCrew } from '../state/CrewControllerContext';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
-import { PrivacyChip } from './PrivacyChip';
+import { PrivacyChip, privacyCheckDeferred } from './PrivacyChip';
 import { usePendingHost, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
 
@@ -36,7 +36,10 @@ export function statusHint(
  *
  * Right, the privacy chip — which says nothing while nothing is verifying privacy (offline,
  * reconnecting, a join the host has not let in yet…), so the row never reads "Offline · Checking
- * privacy…" (Q2-17).
+ * privacy…" (Q2-17), and nothing while the word itself says a check runs ("Checking connection",
+ * "Connecting…"), so the row reads its status whole instead of "Checking connection · Checking
+ * pri…" (Q3-55). Then the status region still says both facts to a screen reader: "Checking
+ * connection. Checking privacy…".
  *
  * A word with more to say carries it in a tooltip BELOW the row, never over the workspace name
  * above it, and in the region itself for a screen reader: "Updates unavailable" names the
@@ -53,6 +56,9 @@ export function StatusRow() {
   const presentation = CONNECTION_STATUS[status];
   const hint = statusHint(status, title, host);
   const tooltip = hint ?? presentation.srText ?? null;
+  // What the chip would have said, while the word stands in for it (Q3-55).
+  const privacyPending = privacyCheckDeferred(crew);
+  const spoken = [hint, privacyPending ? sidebarCopy.chip.checking : null].filter(Boolean);
 
   const word =
     status === 'sign-in-needed' ? (
@@ -75,7 +81,9 @@ export function StatusRow() {
             {presentation.word}
           </span>
         </WordTooltip>
-        {hint && <span className="sr-only">{`. ${hint}`}</span>}
+        {spoken.length > 0 && (
+          <span className="sr-only" data-crew-status-more="">{`. ${spoken.join('. ')}`}</span>
+        )}
       </>
     );
 

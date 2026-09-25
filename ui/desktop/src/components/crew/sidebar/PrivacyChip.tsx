@@ -34,6 +34,28 @@ export const CHIP_SILENT_STATUSES: ReadonlySet<ConnectionStatusKey> = new Set<Co
 ]);
 
 /**
+ * Statuses whose own word already says the check is running — "Checking connection",
+ * "Connecting…" — so an unverified chip beside them renders nothing too (Q3-55, extending Q2-17's
+ * rule): at 240px "Checking connection · Checking pri…" cut both facts short, and the row now reads
+ * its status whole. Privacy IS being checked here, unlike the {@link CHIP_SILENT_STATUSES}, so the
+ * status row says so to a screen reader after the word ({@link privacyCheckDeferred}). A verified
+ * chip still shows during a connect: it is verified, and the row's resting home for the mode.
+ * "Reconnecting…" is silent already, and "Updating…" keeps "Checking privacy…", which fits.
+ */
+export const CHIP_DEFERRED_STATUSES: ReadonlySet<ConnectionStatusKey> =
+  new Set<ConnectionStatusKey>(['checking', 'connecting']);
+
+/**
+ * Whether the status row, not the chip, carries "Checking privacy…" (for a screen reader only):
+ * privacy is unverified and the status is one of {@link CHIP_DEFERRED_STATUSES}.
+ */
+export function privacyCheckDeferred(
+  crew: Parameters<typeof verifiedPrivacy>[0] & { status: ConnectionStatusKey | null }
+): boolean {
+  return crew.status !== null && CHIP_DEFERRED_STATUSES.has(crew.status) && !verifiedPrivacy(crew);
+}
+
+/**
  * The privacy chip on the status row (ui-redesign-spec, "Privacy and institution").
  *
  * It states the EFFECTIVE mode — the one the broker enforces for this person here — and the
@@ -45,14 +67,16 @@ export const CHIP_SILENT_STATUSES: ReadonlySet<ConnectionStatusKey> = new Set<Co
  * ⚠ **An unverified mode never looks verified.** Until the observer verifies this connection's
  * privacy the chip has no padlock and nothing to open: the saved connection record and the last
  * verified copy are not evidence of the mode in force now. While a connect or a refresh is
- * verifying it, it reads "Checking privacy…" with a tooltip, BELOW the row, saying what it waits
- * for (T-06, T-68); in a status where nothing is verifying it ({@link CHIP_SILENT_STATUSES}) it
- * renders nothing. The verified badge carries no tooltip: its full words are its name and the
- * popover's title, and a tooltip reading "UCSF" over "UCSF" would only repeat it (Q2-17).
+ * re-verifying it ("Updating…"), it reads "Checking privacy…" with a tooltip, BELOW the row,
+ * saying what it waits for (T-06, T-68); in a status where nothing is verifying it
+ * ({@link CHIP_SILENT_STATUSES}), or whose word already says a check runs
+ * ({@link CHIP_DEFERRED_STATUSES}), it renders nothing. The verified badge carries no tooltip: its
+ * full words are its name and the popover's title, and a tooltip reading "UCSF" over "UCSF" would
+ * only repeat it (Q2-17).
  *
- * The popover is named by its own title and opens with focus on itself, never on the first
- * action: that action is "Make my connection public…", and landing on it invites an Enter
- * nobody meant (T-38). It aligns to the chip's start edge, so it stays over the Crew column.
+ * The popover is named by its own title and opens with focus on itself, never on an action: the
+ * first may be "Make my connection public…", and landing on it invites an Enter nobody meant
+ * (T-38). It aligns to the chip's start edge, so it stays over the Crew column.
  *
  * `enforcementOff={false}`: the broker enforces Crew mode on its own, whatever this machine's
  * privacy master switch says, so the badge's "(enforcement off)" suffix would be false here.
@@ -67,7 +91,12 @@ export function PrivacyChip() {
   const privacy = verifiedPrivacy(crew, known);
 
   if (!privacy) {
-    if (crew.status === null || CHIP_SILENT_STATUSES.has(crew.status)) return null;
+    if (
+      crew.status === null ||
+      CHIP_SILENT_STATUSES.has(crew.status) ||
+      CHIP_DEFERRED_STATUSES.has(crew.status)
+    )
+      return null;
     return (
       <Tooltip>
         <TooltipTrigger asChild>
