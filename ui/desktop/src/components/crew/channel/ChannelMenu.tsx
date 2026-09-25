@@ -11,7 +11,7 @@ import {
 import { cn } from '../../../utils';
 import { channelName, channelSlug } from '../identity';
 import type { DetailsTab, DialogIntent } from '../state/types';
-import { useMenuCopy } from '../timeline/TimelineCopy';
+import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
 import { channelCopy } from './copy';
 import { channelHeaderCopy } from './headerCopy';
 import { copyText, useChannelPresentation } from './presentation';
@@ -49,6 +49,9 @@ export interface ChannelMenuProps {
  *
  * Owner items are hidden from everyone else; React gates nothing — the broker refuses anything the
  * person may not do, and the refusal renders in the connection bar.
+ *
+ * Copy channel name is a person's copy and stays with the everyday items; Copy channel ID is a
+ * machine string, and sits last, after a separator, in "Copy for support" (Q3-26).
  */
 export function ChannelMenu({
   canRename = false,
@@ -166,12 +169,6 @@ export function ChannelMenu({
           >
             {menuCopy.label('name', channelCopy.menu.copyName)}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            data-crew-copy-state={menuCopy.state('id')}
-            onSelect={menuCopy.select('id', channel.id)}
-          >
-            {menuCopy.label('id', channelCopy.menu.copyId)}
-          </DropdownMenuItem>
         </DropdownMenuGroup>
         {ownerTools && (
           <>
@@ -201,6 +198,14 @@ export function ChannelMenu({
             </DropdownMenuGroup>
           </>
         )}
+        <CopyForSupport label={channelHeaderCopy.copyForSupport}>
+          <DropdownMenuItem
+            data-crew-copy-state={menuCopy.state('id')}
+            onSelect={menuCopy.select('id', channel.id)}
+          >
+            {menuCopy.label('id', channelCopy.menu.copyId)}
+          </DropdownMenuItem>
+        </CopyForSupport>
       </DropdownMenuContent>
     </DropdownMenu>
   );

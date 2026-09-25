@@ -80,6 +80,15 @@ describe('ChannelHeader', () => {
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
   });
 
+  it('keeps the classification chip a button’s shape in forced colours (Q3-25)', async () => {
+    // Forced colours drop the badge's fill; only the stylesheet can give it an edge back, and
+    // jsdom never evaluates the media query, so the rule is asserted at the source.
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(`${__dirname}/channel.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const forced = css.slice(css.indexOf('@media (forced-colors: active)'));
+    expect(forced).toMatch(/\.crew-channel-classification \{\s*border: 1px solid ButtonText;\s*\}/);
+  });
+
   it('lets a keyboard reach the classification and read its explanation (T-65)', async () => {
     renderCrew(Header({}));
     const trigger = await channelShown();
@@ -90,7 +99,7 @@ describe('ChannelHeader', () => {
     expect(`${channelCopy.restricted}${channelHeaderCopy.restrictedNameSuffix}`).toBe(
       'Restricted: only private models can read it. It doesn’t limit who’s in the channel.'
     );
-    expect(badge).toHaveClass('no-drag', 'biorouter-focus-surface');
+    expect(badge).toHaveClass('no-drag', 'biorouter-focus-surface', 'crew-channel-classification');
     // The next Tab stop after the channel menu, and its explanation opens on that focus.
     act(() => trigger.focus());
     await userEvent.setup().tab();

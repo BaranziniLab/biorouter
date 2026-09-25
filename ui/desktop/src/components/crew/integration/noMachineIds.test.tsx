@@ -1,10 +1,11 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
   channelReady,
   ids,
+  keys,
   installDaemon,
   MACHINE_ID_PATTERNS,
   ownedRun,
@@ -70,6 +71,17 @@ function leaks(): string[] {
   });
 }
 
+/**
+ * Every machine-ID copy sits in a "Copy for support" submenu, last in its menu (Q3-26). With the
+ * menu open, this goes into that submenu by keyboard, as a person would, and chooses `item`.
+ */
+async function chooseForSupport(user: ReturnType<typeof userEvent.setup>, item: string) {
+  const support = await screen.findByRole('menuitem', { name: 'Copy for support' });
+  act(() => support.focus());
+  await user.keyboard('{ArrowRight}');
+  await user.click(await screen.findByRole('menuitem', { name: item }));
+}
+
 /** The row of the timeline that holds `text`. */
 function rowOf(text: string): HTMLElement {
   const row = screen.getByText(text).closest<HTMLElement>('[data-crew-row]');
@@ -97,7 +109,8 @@ describe('no machine IDs by default (naming rule 8)', () => {
     // Row actions are revealed on hover (`pointer-events: none` at rest); a person hovers first.
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await user.click(screen.getByRole('button', { name: 'Channel details' }));
-    await screen.findByRole('button', { name: 'Copy channel ID' });
+    // About keeps the channel's ID behind a quiet "IDs for support" disclosure (Q3-26).
+    await screen.findByRole('button', { name: 'IDs for support' });
     return user;
   }
 
@@ -133,9 +146,16 @@ describe('no machine IDs by default (naming rule 8)', () => {
     const user = await openRichWorkspace();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText');
 
-    // The channel: the About tab's footer.
-    await user.click(screen.getByRole('button', { name: 'Copy channel ID' }));
+    // The channel: the About tab's "IDs for support".
+    await user.click(screen.getByRole('button', { name: 'IDs for support' }));
+    await user.click(await screen.findByRole('button', { name: 'Copy channel ID' }));
     expect(writeText).toHaveBeenLastCalledWith(ids.general);
+
+    // The channel again: its menu, "Copy for support".
+    await user.click(screen.getByRole('button', { name: /^#general, channel menu$/ }));
+    await chooseForSupport(user, 'Copy channel ID');
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.general));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     // A message by a former member: its row's ⋯.
     await user.click(
@@ -144,24 +164,41 @@ describe('no machine IDs by default (naming rule 8)', () => {
         hidden: true,
       })
     );
-    await user.click(await screen.findByRole('menuitem', { name: 'Copy message ID' }));
+    await chooseForSupport(user, 'Copy message ID');
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.messages[0]));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+
+    // A file: its card's ⋯, both the file's ID and its checksum.
+    await user.click(
+      screen.getAllByRole('button', { name: /^More actions for counts\.csv/, hidden: true })[0]
+    );
+    await chooseForSupport(user, 'Copy file ID');
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.blob));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+    await user.click(
+      screen.getAllByRole('button', { name: /^More actions for counts\.csv/, hidden: true })[0]
+    );
+    await chooseForSupport(user, 'Copy SHA-256');
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(keys.sha256));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     // The viewer's task: the status row's ⋯.
     await user.click(screen.getByRole('button', { name: 'More task actions', hidden: true }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Copy task ID' }));
+    await chooseForSupport(user, 'Copy task ID');
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.run));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     // A person: the Members tab row's ⋯.
     await user.click(screen.getByRole('tab', { name: 'Members' }));
     const members = await screen.findByRole('list', { name: '#general members' });
     await user.click(within(members).getByRole('button', { name: /Bob Lee/ }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Copy person ID' }));
+    await chooseForSupport(user, 'Copy person ID');
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.bob));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     // The team: its section's options menu in the sidebar.
     await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Copy team ID' }));
+    await chooseForSupport(user, 'Copy team ID');
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(ids.team));
 
     // Copying never renders what it copied.

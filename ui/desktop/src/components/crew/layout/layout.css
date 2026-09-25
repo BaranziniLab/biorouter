@@ -169,3 +169,13 @@
 .crew-frame-bone-short {
   width: 36%;
 }
+
+/* Ask my agent, wrapped so the composer's toggle can name it in
+   `aria-controls` (Q3-23). It lays out exactly as the pane's own content
+   would: the column that holds the task form and its footer. */
+.crew-frame-agent-pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}

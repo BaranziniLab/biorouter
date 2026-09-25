@@ -4,12 +4,19 @@ import { ChannelHeader, ConnectionBar } from '../channel';
 import { Composer } from '../composer/Composer';
 import type { CrewMessage } from '../crewApi';
 import { uniqueNamesSupported } from '../dialogs';
+import { AttachmentIndexProvider } from '../files/attachmentIndex';
 import { CrewFileDropZone } from '../files/FileDropZone';
 import { FilesTab } from '../files/FilesTab';
 import { AgentTaskPane, DetailsPane } from '../pane';
 import { useCrew } from '../state/CrewControllerContext';
+import type { CrewSessionGrant } from '../api/grants';
 import type { CrewController, VerifiedView } from '../state/types';
-import { Timeline, type TimelineView } from '../timeline';
+import {
+  Timeline,
+  type AttachmentSlotState,
+  type OwnAgentChat,
+  type TimelineView,
+} from '../timeline';
 import { useComposerNote } from './ComposerNote';
 import { MessageFiles } from './MessageFiles';
 import type { TaskHighlight } from './useTaskHighlight';
@@ -38,13 +45,31 @@ export function lastVerifiedTimeline(
 }
 
 /** Who else can post in the selected channel, kept steady while Crew re-verifies. */
-function useChannelAgentAccess(crew: CrewController) {
-  const grants = useWorkspaceGrants();
+function useChannelAgentAccess(crew: CrewController, grants: CrewSessionGrant[]) {
   const runs = crew.snapshot ? crew.runs : (crew.lastVerified?.runs ?? crew.runs);
   return useMemo(
-    () => agentAccessCount({ grants: grants.grants, runs, channelId: crew.channelId }),
-    [grants.grants, runs, crew.channelId]
+    () => agentAccessCount({ grants, runs, channelId: crew.channelId }),
+    [grants, runs, crew.channelId]
   );
+}
+
+/**
+ * The viewer's own chats with Crew access, by the run each posts as, so the timeline can head
+ * their posts "Your agent · {chat title}" (Q3-22). Built only from this device's own grant list
+ * (`useWorkspaceGrants`): another person's chat is never in it, so their agent's posts keep
+ * reading "{name}'s agent". A grant the daemon lists without a title adds nothing.
+ */
+export function ownAgentChatsFrom(
+  grants: readonly CrewSessionGrant[],
+  connectionId: string
+): ReadonlyMap<string, OwnAgentChat> {
+  const chats = new Map<string, OwnAgentChat>();
+  for (const grant of grants) {
+    const title = typeof grant.session_name === 'string' ? grant.session_name.trim() : '';
+    if (!title || grant.connection_id !== connectionId) continue;
+    chats.set(grant.run_id, { title, sessionId: grant.session_id });
+  }
+  return chats;
 }
 
 /**
@@ -64,8 +89,11 @@ function useChannelAgentAccess(crew: CrewController) {
  * copy, and an observation failure drops it (the controller then leaves this screen).
  *
  * Slots are wired here and nowhere else: the Access area's chat note, pane and tab, the files
- * area's tab and attachment rows, the pane's Ask my agent with its "Show task in channel", and the
- * header's agent-access count.
+ * area's tab and attachment rows (Tab stops only on the active row, Q3-05), the pane's Ask my
+ * agent with its "Show task in channel" (and the id the composer's toggle names in its
+ * `aria-controls`, Q3-23), the header's agent-access count, and the viewer's own chats with
+ * access, which head their agents' posts (Q3-22). The attachment index the files area keeps for
+ * the channel (same-named files, a file already shared, Q3-13) is provided here around all of it.
  *
  * The whole body — timeline and composer — is one file drop zone. It has no target of its own: the
  * composer registers its upload with it (`useCrewDropTarget`), so a file dropped on the messages
@@ -84,7 +112,9 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const verifying = !crew.snapshot;
   const behindDialog = crew.ui.dialog !== null || crew.signIn.open;
   const lastView = verifying ? lastVerifiedTimeline(crew.lastVerified, crew.channelId) : null;
-  const access = useChannelAgentAccess(crew);
+  const { grants } = useWorkspaceGrants();
+  const access = useChannelAgentAccess(crew, grants);
+  const agentPaneId = useId();
   const canRename = uniqueNamesSupported(
     crew.snapshot ?? crew.lastVerified?.snapshot ?? null,
     crew.capabilities
@@ -92,44 +122,59 @@ export function ChannelStage({ highlight }: { highlight: TaskHighlight }) {
   const note = useComposerNote();
   const { connectionId } = crew;
   const renderAttachments = useCallback(
-    (message: CrewMessage) => <MessageFiles connectionId={connectionId} message={message} />,
+    (message: CrewMessage, slot: AttachmentSlotState) => (
+      <MessageFiles connectionId={connectionId} message={message} active={slot.active} />
+    ),
     [connectionId]
   );
+  const ownAgentChats = useMemo(
+    () => ownAgentChatsFrom(grants, connectionId),
+    [grants, connectionId]
+  );
 
+  // One attachment index for the channel view: the timeline's cards, the Files tab's and the
+  // composer's same-file note all read the same one (Q3-13).
   return (
-    <div className="crew-stage">
-      <section className="crew-channel" aria-labelledby={titleId}>
-        <ChannelHeader
-          agentAccess={{ chats: access.chats, tasks: access.tasks }}
-          canRename={canRename}
-          titleId={titleId}
-        />
-        <ConnectionBar className="crew-channel-bar" />
-        <div className="crew-channel-body">
-          <CrewFileDropZone className="crew-frame-drop">
-            <div
-              className="crew-frame-timeline"
-              inert={verifying || behindDialog}
-              aria-hidden={behindDialog ? true : undefined}
-              data-verifying={verifying ? 'true' : undefined}
-            >
-              <Timeline
-                view={lastView}
-                readOnly={verifying}
-                renderAttachments={renderAttachments}
-                highlightRunId={highlight.runId}
-                onHighlightDone={highlight.done}
-              />
+    <AttachmentIndexProvider>
+      <div className="crew-stage">
+        <section className="crew-channel" aria-labelledby={titleId}>
+          <ChannelHeader
+            agentAccess={{ chats: access.chats, tasks: access.tasks }}
+            canRename={canRename}
+            titleId={titleId}
+          />
+          <ConnectionBar className="crew-channel-bar" />
+          <div className="crew-channel-body">
+            <CrewFileDropZone className="crew-frame-drop">
+              <div
+                className="crew-frame-timeline"
+                inert={verifying || behindDialog}
+                aria-hidden={behindDialog ? true : undefined}
+                data-verifying={verifying ? 'true' : undefined}
+              >
+                <Timeline
+                  view={lastView}
+                  readOnly={verifying}
+                  renderAttachments={renderAttachments}
+                  ownAgentChats={ownAgentChats}
+                  highlightRunId={highlight.runId}
+                  onHighlightDone={highlight.done}
+                />
+              </div>
+              <Composer note={note} agentPaneId={agentPaneId} />
+            </CrewFileDropZone>
+          </div>
+        </section>
+        <DetailsPane
+          tabs={{ files: <FilesTab />, access: <AccessTab /> }}
+          chatAccess={<ChatAccessPane />}
+          agent={
+            <div id={agentPaneId} className="crew-frame-agent-pane">
+              <AgentTaskPane onShowTask={highlight.show} />
             </div>
-            <Composer note={note} />
-          </CrewFileDropZone>
-        </div>
-      </section>
-      <DetailsPane
-        tabs={{ files: <FilesTab />, access: <AccessTab /> }}
-        chatAccess={<ChatAccessPane />}
-        agent={<AgentTaskPane onShowTask={highlight.show} />}
-      />
-    </div>
+          }
+        />
+      </div>
+    </AttachmentIndexProvider>
   );
 }

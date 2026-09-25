@@ -35,6 +35,15 @@
   background-color: var(--background-focus);
 }
 
+/* The classification chip ("Restricted", "Public-safe") is a button drawn as
+   a badge. Forced colours drop its fill, and it read as plain text beside the
+   channel name (Q3-25): it keeps a button's outline there. */
+@media (forced-colors: active) {
+  .crew-channel-classification {
+    border: 1px solid ButtonText;
+  }
+}
+
 /* Refresh channel's brief "Up to date", beside the badges. */
 .crew-channel-refreshed {
   white-space: nowrap;

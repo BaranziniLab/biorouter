@@ -40,6 +40,9 @@ export const channelHeaderCopy = {
    */
   agentAccess: 'Agent access…',
 
+  /** The channel menu's last item: the submenu that holds Copy channel ID (Q3-26). */
+  copyForSupport: 'Copy for support',
+
   /** What a copy item in the channel menu says, and the header announces, once it copied. */
   copied: 'Copied',
   /** …and when the clipboard refused. */

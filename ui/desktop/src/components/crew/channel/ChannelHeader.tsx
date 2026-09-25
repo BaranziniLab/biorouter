@@ -59,7 +59,11 @@ function ClassificationBadge({
     <Tooltip>
       <TooltipTrigger asChild onFocus={onTriggerFocus}>
         <Badge tone="neutral" asChild>
-          <button type="button" className="no-drag biorouter-focus-surface" onClick={onOpen}>
+          <button
+            type="button"
+            className="crew-channel-classification no-drag biorouter-focus-surface"
+            onClick={onOpen}
+          >
             {label}
             <span className="sr-only">{nameSuffix}</span>
           </button>

@@ -41,7 +41,8 @@ const EVERYONE = [
   menu.markRead,
   menu.refresh,
   menu.copyName,
-  menu.copyId,
+  // Last, after a separator: the channel ID is one step away (Q3-26).
+  channelHeaderCopy.copyForSupport,
 ];
 const OWNER_ONLY = [menu.addPeople, menu.transfer, menu.archive];
 
@@ -56,6 +57,15 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>, slug = 'genera
 
 async function choose(user: ReturnType<typeof userEvent.setup>, item: string) {
   await openMenu(user);
+  await user.click(await screen.findByRole('menuitem', { name: item }));
+}
+
+/** Copy channel ID lives in "Copy for support": open it by keyboard, as a person would. */
+async function chooseForSupport(user: ReturnType<typeof userEvent.setup>, item: string) {
+  await openMenu(user);
+  const support = await screen.findByRole('menuitem', { name: channelHeaderCopy.copyForSupport });
+  act(() => support.focus());
+  await user.keyboard('{ArrowRight}');
   await user.click(await screen.findByRole('menuitem', { name: item }));
 }
 
@@ -84,14 +94,19 @@ describe('ChannelMenu items per role', () => {
       menu.markRead,
       menu.refresh,
       menu.copyName,
-      menu.copyId,
       menu.transfer,
       menu.archive,
+      channelHeaderCopy.copyForSupport,
     ]);
     expect(screen.getByRole('menuitem', { name: menu.archive })).toHaveAttribute(
       'data-variant',
       'destructive'
     );
+    // The ID is not an everyday item: it sits in the submenu, after a separator (Q3-26).
+    expect(screen.queryByRole('menuitem', { name: menu.copyId })).toBeNull();
+    const support = screen.getByRole('menuitem', { name: channelHeaderCopy.copyForSupport });
+    expect(support).toHaveAttribute('aria-haspopup', 'menu');
+    expect(support.previousElementSibling).toHaveAttribute('role', 'separator');
   });
 
   it('adds Rename… for the owner when the broker advertises unique names', async () => {
@@ -254,8 +269,13 @@ describe('ChannelMenu actions', () => {
     // …then it closes by itself, 600ms later.
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
-    await choose(user, menu.copyId);
+    await chooseForSupport(user, menu.copyId);
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(general.id));
+    // "Copied" holds on the item until the menu closes.
+    expect(screen.getByRole('menuitem', { name: channelHeaderCopy.copied })).toHaveAttribute(
+      'data-crew-copy-state',
+      'copied'
+    );
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
     // Refresh channel's answer stays empty: a copy is not a refresh.
     expect(document.querySelector('.crew-channel-refreshed')).toBeEmptyDOMElement();
