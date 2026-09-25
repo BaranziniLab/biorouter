@@ -21,6 +21,13 @@
   /* The avatar column plus its gap: 32 + 12 = 44px, the gutter a continuation
      row shows its time in. */
   --crew-message-gutter: calc(var(--crew-avatar, 32px) + 12px);
+  /* The day band's line: the 28px that carries the day's name. The band and the
+     scroller's scroll padding both read it, so the stop can never drift from
+     the band it clears. */
+  --crew-day-band-line: 28px;
+  /* How far a row's hover cluster rises above the row's top edge. The cluster
+     and the row's scroll margin both read it. */
+  --crew-row-actions-rise: 12px;
 
   position: relative;
   display: flex;
@@ -39,6 +46,21 @@
 .crew-timeline-scroll {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* Where a scroll into view stops: under the day band, not under the fade alone
+   (Q3-19, WCAG 2.2 2.4.11). The band is opaque and covers the viewport's top
+   `--scroll-fade-top + --crew-day-band-line + 1px` (its padding, its line and
+   its hairline). The shared `.biorouter-scroll-fade-top` rule stops only the
+   fade's 10px short, so a one-line row arrowed or tabbed to at the top landed
+   at y=10–34, wholly behind the band, and `block: 'nearest'` counted a row
+   already under the band as in view and did not scroll at all. The same held
+   for a row's Save and ⋯ buttons. The arrow keys' `scrollIntoView`, focus
+   scrolling and the highlight's `block: 'center'` all read this padding; the
+   sticky band itself does not (it still rides at `top: 0`). One more class than
+   the shared rule, so it wins whichever stylesheet loads last. */
+.crew-timeline > .crew-timeline-scroll > [data-radix-scroll-area-viewport] {
+  scroll-padding-top: calc(var(--scroll-fade-top) + var(--crew-day-band-line) + 1px);
 }
 
 .crew-timeline-column {
@@ -61,7 +83,17 @@
    ("colum[Today]ies"); the band hides a line scrolling under it whole. It rides
    at the very top of the viewport, and its top `--scroll-fade-top` is padding
    that the scroller's top fade may take (`.biorouter-scroll-fade-top`), so the
-   28px that carries the name is never faded. It does not move by itself. */
+   28px that carries the name is never faded. It does not move by itself.
+
+   The ground is `--background-canvas`, the one `.crew-app` paints under the
+   conversation (`crew-app.css`) and nothing between repaints. Not
+   `--background-default`: the two are equal in light, but in dark default is a
+   step lighter (neutral-900 on neutral-950, #1b1b19 on #131312), which drew
+   the band as a lighter 760px stripe instead of the page it stands for.
+
+   It takes the pointer. It hides what scrolls under it, so a click on it must
+   land on it and never on a link, a card's Save or "Your agent · {chat title}"
+   hidden beneath. */
 .crew-day {
   position: relative;
 }
@@ -76,13 +108,12 @@
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   column-gap: 8px;
-  height: 28px;
+  height: var(--crew-day-band-line);
   margin: 10px -16px 4px;
   padding: var(--scroll-fade-top) 16px 0;
   box-sizing: content-box;
   border-bottom: 1px solid var(--border-subtle);
-  background-color: var(--background-default);
-  pointer-events: none;
+  background-color: var(--background-canvas);
 }
 
 .crew-day-pill {
@@ -133,6 +164,10 @@
   padding: 2px 8px;
   border-radius: var(--radius-element);
   transition: background-color var(--dur-fast-min) var(--ease-out);
+  /* A focused row shows its hover cluster, which rises above the row's top. A
+     row scrolled in under the day band stops that much lower, so the cluster
+     it reveals is not cut by the band either. */
+  scroll-margin-top: var(--crew-row-actions-rise);
 }
 
 .crew-message-row[data-head='true'] {
@@ -266,7 +301,7 @@
    pointer it sits in the flow, always shown. */
 .crew-row-actions {
   position: absolute;
-  top: -12px;
+  top: calc(-1 * var(--crew-row-actions-rise));
   right: 8px;
   z-index: 3;
   display: flex;

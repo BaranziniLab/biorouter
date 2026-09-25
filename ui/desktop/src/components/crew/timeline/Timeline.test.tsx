@@ -1790,10 +1790,16 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     // Over the hover toolbar (z-index 3) of a row sliding beneath it.
     expect(band).toMatch(/z-index: 4;/);
     expect(rule('.crew-row-actions')).toMatch(/z-index: 3;/);
-    expect(band).toMatch(/height: 28px;/);
+    expect(rule('.crew-timeline')).toMatch(/--crew-day-band-line: 28px;/);
+    expect(band).toMatch(/height: var\(--crew-day-band-line\);/);
     // The column's own 16px gutters too, so no word is cut at the band's edge.
     expect(band).toMatch(/margin: 10px -16px 4px;/);
-    expect(band).toMatch(/background-color: var\(--background-default\);/);
+    // The canvas `.crew-app` paints, not the default ground: in dark the two
+    // differ and the band read as a lighter stripe.
+    expect(band).toMatch(/background-color: var\(--background-canvas\);/);
+    expect(band).not.toMatch(/--background-default/);
+    // It takes the pointer, so a click on it never reaches a control hidden under it.
+    expect(band).not.toMatch(/pointer-events/);
     expect(band).toMatch(/border-bottom: 1px solid var\(--border-subtle\);/);
     // The scroller's top fade takes only the band's padding, never the 28px with the name.
     expect(band).toMatch(/padding: var\(--scroll-fade-top\) 16px 0;/);
@@ -1806,6 +1812,23 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     // The New line stays in the flow; only the day's band rides the top.
     expect(rule('.crew-new-divider')).not.toMatch(/sticky/);
     expect(rule(".crew-day-label[data-new='true']")).toMatch(/var\(--accent-bar\)/);
+  });
+
+  it('stops a scroll into view under the day band, not under the fade alone (Q3-19, WCAG 2.4.11)', () => {
+    // The band covers fade + line + hairline; the shared rule stopped only the
+    // fade short, so a row arrowed to at the top landed wholly behind the band.
+    expect(
+      rule('.crew-timeline > .crew-timeline-scroll > [data-radix-scroll-area-viewport]')
+    ).toMatch(
+      /scroll-padding-top: calc\(var\(--scroll-fade-top\) \+ var\(--crew-day-band-line\) \+ 1px\);/
+    );
+    const band = rule('.crew-day-label');
+    expect(band).toMatch(/padding: var\(--scroll-fade-top\) 16px 0;/);
+    expect(band).toMatch(/border-bottom: 1px solid /);
+    // A focused row reveals its hover cluster above its top: it stops that much lower.
+    expect(rule('.crew-timeline')).toMatch(/--crew-row-actions-rise: 12px;/);
+    expect(rule('.crew-message-row')).toMatch(/scroll-margin-top: var\(--crew-row-actions-rise\);/);
+    expect(rule('.crew-row-actions')).toMatch(/top: calc\(-1 \* var\(--crew-row-actions-rise\)\);/);
   });
 
   it('rings a focused row, keeping its fill: the fill alone was 1.3:1 (Q3-21)', () => {
