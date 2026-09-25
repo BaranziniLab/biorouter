@@ -7,6 +7,7 @@ import { MARK_READ_KEY } from './ChannelRow';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import { unreadBadgeText } from './sidebarView';
+import { TEAM_COPY_CLOSE_MS } from './TeamSection';
 import { teamRoles, TeamSections } from './TeamSections';
 import { COLLAPSED_TEAMS_STORAGE_KEY } from './useCollapsedTeams';
 import {
@@ -220,35 +221,92 @@ describe('team sections', () => {
     });
   });
 
-  it('copies the team ID from its menu and says so without a toast', async () => {
+  it('offers Add people and Rename only to the team’s owner and the host (Q2-41)', async () => {
+    const user = userEvent.setup();
+    // Bob is neither: a member of a team Alice created, in a workspace Alice hosts.
+    const member = renderTeams({ snapshot: makeSnapshot({ actor: bob }), isHost: false }, true);
+    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    let menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([sidebarCopy.teamMenu.createChannel, sidebarCopy.teamMenu.copyId]);
+    member.unmount();
+
+    // The host, who did not create the team, may manage it (the broker lets the host act on any
+    // channel it can see; `dialogs/people.ts`).
+    const snapshot = makeSnapshot({
+      actor: bob,
+      workspace: { id: 'workspace-1', host_uid: 1001, mode: 'private', policy_epoch: 1 },
+    });
+    renderTeams({ snapshot, isHost: true }, true);
+    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([
+      sidebarCopy.teamMenu.createChannel,
+      sidebarCopy.teamMenu.addPeople('Analysis Lab'),
+      sidebarCopy.teamMenu.rename,
+      sidebarCopy.teamMenu.copyId,
+    ]);
+  });
+
+  it('copies the team ID, says "Copied" on the item for a moment, then closes (Q2-34)', async () => {
     const user = userEvent.setup();
     const writeText = spyClipboard();
-    renderTeams();
-    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    const view = renderTeams();
+    const options = screen.getByRole('button', { name: 'Analysis Lab options' });
+    await user.click(options);
     const menu = await screen.findByRole('menu');
-    await user.click(within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.copyId }));
+    // Last, after a separator.
+    const items = within(menu).getAllByRole('menuitem');
+    const copyItem = within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.copyId });
+    expect(items[items.length - 1]).toBe(copyItem);
+    expect(copyItem.previousElementSibling).toHaveAttribute('role', 'separator');
+
+    await user.click(copyItem);
     expect(writeText).toHaveBeenCalledWith(TEAM_LAB);
+    // The menu stays open, and the item itself answers…
+    expect(
+      await within(menu).findByRole('menuitem', { name: sidebarCopy.teamMenu.copied })
+    ).toBeVisible();
+    expect(screen.getByRole('menu')).toBe(menu);
+    // …spoken too, and never as a toast or in the connection bar.
     await waitFor(() =>
       expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
         sidebarCopy.clipboard.copied
       )
     );
+    expect(view.controller.reportError).not.toHaveBeenCalled();
+    // Then it closes by itself, and focus goes back to the ⋯ that opened it.
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), {
+      timeout: TEAM_COPY_CLOSE_MS + 1000,
+    });
+    await waitFor(() => expect(options).toHaveFocus());
   });
 
-  it('reports a clipboard refusal where errors render, not as success', async () => {
+  it('shows a refused copy on the item and keeps the menu open, never in the connection bar', async () => {
     const user = userEvent.setup();
     spyClipboard().mockRejectedValueOnce(new Error('denied'));
     const view = renderTeams();
     await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
     const menu = await screen.findByRole('menu');
     await user.click(within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.copyId }));
+    expect(
+      await within(menu).findByRole('menuitem', { name: sidebarCopy.teamMenu.copyFailed })
+    ).toBeVisible();
     await waitFor(() =>
-      expect(view.controller.reportError).toHaveBeenCalledWith(
-        sidebarCopy.clipboard.failed,
-        'global'
+      expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent(
+        sidebarCopy.clipboard.failed
       )
     );
-    expect(document.querySelector('[data-crew-sidebar-announcer]')).toHaveTextContent('');
+    expect(view.controller.reportError).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, TEAM_COPY_CLOSE_MS + 100));
+    expect(screen.getByRole('menu')).toBe(menu);
   });
 
   it('disables every action while it shows only the last verified copy', () => {
@@ -449,6 +507,32 @@ describe('keyboard', () => {
     act(() => intro.focus());
     fireEvent.keyDown(intro, { key: 'ArrowLeft' });
     expect(header('single-cell, 1 channel')).toHaveFocus();
+  });
+
+  it('hands the tab stop back to the current channel once focus leaves the rail (Q2-46)', () => {
+    renderTeams();
+    const addChannel = screen.getAllByRole('button', { name: sidebarCopy.channel.add })[0];
+    act(() => addChannel.focus());
+    // While focus is inside, the stop follows it…
+    expect(addChannel.tabIndex).toBe(0);
+    expect(channelRow('methods').tabIndex).toBe(-1);
+    // …and once it leaves, Tab or Shift+Tab back in lands on the channel the person is in, never
+    // on "+ Add channel", one Enter away from a duplicate channel.
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    expect(channelRow('methods').tabIndex).toBe(0);
+    expect(addChannel.tabIndex).toBe(-1);
+    outside.remove();
+  });
+
+  it('keeps the stop where it is while focus moves between rows', () => {
+    renderTeams();
+    const methods = channelRow('methods');
+    act(() => methods.focus());
+    fireEvent.keyDown(methods, { key: 'ArrowUp' });
+    expect(channelRow('general')).toHaveFocus();
+    expect(channelRow('general').tabIndex).toBe(0);
   });
 
   it('moves from a header’s + to the next row too', () => {

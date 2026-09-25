@@ -1,10 +1,27 @@
 import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
-import { StatusRow } from './StatusRow';
-import { makeController, renderWithCrew } from './sidebarTestUtils';
+import { statusHint, StatusRow } from './StatusRow';
+import { connection, makeController, renderWithCrew } from './sidebarTestUtils';
+
+const config = vi.hoisted(() => ({
+  getProviders: async () => [],
+  read: async () => null,
+}));
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return { ...actual, useConfig: () => config };
+});
+
+afterEach(() => {
+  forgetJoinContext(connection.id);
+});
+
+const unverified = { snapshot: null, observedPrivacy: null, effectivePrivacy: null } as const;
 
 const STATUS_KEYS = Object.keys(CONNECTION_STATUS) as ConnectionStatusKey[];
 
@@ -54,13 +71,70 @@ describe('StatusRow', () => {
     expect(screen.queryByText(crewStatusCopy.checking)).toBeNull();
   });
 
-  it.each(STATUS_KEYS.filter((key) => key !== 'sign-in-needed'))(
-    'carries the full words of %s in a tooltip, since the row can truncate them (T-68)',
+  it.each(
+    STATUS_KEYS.filter(
+      (key) => key !== 'sign-in-needed' && key !== 'updates-unavailable' && key !== 'not-joined'
+    )
+  )('never gives %s a tooltip that repeats its own word (Q2-17)', (status) => {
+    renderWithCrew(<StatusRow />, makeController({ status }));
+    const word = document.querySelector('[data-crew-status-word]') as HTMLElement;
+    expect(word).toHaveTextContent(CONNECTION_STATUS[status].word);
+    // No native title either: the app's tooltip layer would place it over the switcher above.
+    expect(word).not.toHaveAttribute('title');
+    expect(statusHint(status, 'Fixture', null)).toBeNull();
+  });
+
+  it('says where the fix is for "Updates unavailable", below the row and to a screen reader', async () => {
+    const user = userEvent.setup();
+    renderWithCrew(<StatusRow />, makeController({ ...unverified, status: 'updates-unavailable' }));
+    const hint = 'Crew isn’t receiving updates for Fixture. Retry below.';
+    expect(sidebarCopy.statusHint.updatesUnavailable('Fixture')).toBe(hint);
+    // The status region carries it after the word, so it is heard with the status.
+    expect(statusRegion()).toHaveTextContent(`${crewStatusCopy.updatesUnavailable}. ${hint}`);
+    const word = document.querySelector('[data-crew-status-word]') as HTMLElement;
+    expect(word).not.toHaveAttribute('title');
+    await user.hover(word);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(hint);
+    // Below the row, never up over the workspace name.
+    const content = document.querySelector('[data-crew-status-tooltip]') as HTMLElement;
+    expect(content).toHaveAttribute('data-side', 'bottom');
+  });
+
+  it('says whose turn it is while a join waits, and nothing about privacy (Q2-43)', async () => {
+    const user = userEvent.setup();
+    updateJoinContext(connection.id, { hostUsername: 'alice', hostDisplayName: null });
+    const { container } = renderWithCrew(
+      <StatusRow />,
+      makeController({ ...unverified, status: 'not-joined' })
+    );
+    const region = statusRegion();
+    expect(within(region).getByText(crewStatusCopy.notJoined)).toBeInTheDocument();
+    expect(region.textContent).toMatch(/Waiting for .*@alice.* to let you in$/);
+    // Only the status: no "Privacy shown after…" truncated beside it.
+    expect(container).not.toHaveTextContent(sidebarCopy.chip.notJoined);
+    expect(container).not.toHaveTextContent(sidebarCopy.chip.checking);
+    expect(container.querySelector('[data-crew-privacy]')).toBeNull();
+    await user.hover(within(region).getByText(crewStatusCopy.notJoined));
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(
+      /^Waiting for .*@alice.* to let you in$/
+    );
+  });
+
+  it('names no one it cannot: "your host" when the join remembered no host', () => {
+    renderWithCrew(<StatusRow />, makeController({ ...unverified, status: 'not-joined' }));
+    expect(statusRegion()).toHaveTextContent('Waiting for your host to let you in');
+  });
+
+  it.each(['offline', 'reconnecting', 'sign-in-needed', 'cant-connect'] as const)(
+    'shows no privacy text beside %s, which contradicted it (Q2-17)',
     (status) => {
-      const presentation = CONNECTION_STATUS[status];
-      renderWithCrew(<StatusRow />, makeController({ status }));
-      const word = within(statusRegion()).getByText(presentation.word);
-      expect(word).toHaveAttribute('title', presentation.srText ?? presentation.word);
+      const { container } = renderWithCrew(
+        <StatusRow />,
+        makeController({ ...unverified, status })
+      );
+      expect(container).not.toHaveTextContent(sidebarCopy.chip.checking);
+      expect(container.querySelector('[data-crew-privacy]')).toBeNull();
     }
   );
 

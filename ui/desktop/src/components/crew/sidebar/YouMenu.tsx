@@ -9,7 +9,7 @@ import { PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useSidebarAnnounce, writeClipboard } from './SidebarAnnouncer';
-import { useSidebarView } from './sidebarView';
+import { knownUsername, loginLabel, usePendingHost, useSidebarView } from './sidebarView';
 import { unavailableReason } from './WorkspaceMenu';
 import './crew-sidebar.css';
 
@@ -27,9 +27,11 @@ type CopyState = 'idle' | 'copied' | 'failed';
  * the row keeps its width for the name (T-71) — then Edit profile…, Keys and security… and Copy
  * my username. It mounts only while open, so the You row's login stays the one text node at rest.
  *
- * Edit profile and Copy my username need a person to act as, so they wait for the verified
- * snapshot, and say so: a note above them names what they wait for, and it is the menu's
- * description too (T-71). Keys and security is this computer's own storage and is always
+ * Edit profile needs a person to act as, so it waits for the verified snapshot, and says so: a
+ * note above it names what it waits for, and it is the menu's description too (T-71). Copy my
+ * username needs only the username, so it is available whenever anything names it — the verified
+ * directory, the saved login or the join (Q2-43: a joiner's own `crew_frank` was greyed out while
+ * it was shown right above). Keys and security is this computer's own storage and is always
  * available.
  *
  * "Copy my username" copies the bare username — what a host types into Invite people's `@`
@@ -44,8 +46,10 @@ export function YouMenu({ profile = null }: { profile?: string | null }) {
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const timer = useRef<number | null>(null);
   const reasonId = useId();
+  const { username: remembered } = usePendingHost(crew);
   const me = dir.me;
   const connection = crew.connection;
+  const username = knownUsername(me, connection, remembered);
 
   useEffect(
     () => () => {
@@ -60,13 +64,11 @@ export function YouMenu({ profile = null }: { profile?: string | null }) {
   const reason = canEdit ? null : unavailableReason(crew.status, false);
 
   const copyUsername = async () => {
-    if (!me) return;
-    const copied = await writeClipboard(me.username);
+    if (!username) return;
+    const copied = await writeClipboard(username);
     setCopyState(copied ? 'copied' : 'failed');
     announce(
-      copied
-        ? copy.announceCopiedUsername(me.username)
-        : copy.announceCopyUsernameFailed(me.username)
+      copied ? copy.announceCopiedUsername(username) : copy.announceCopyUsernameFailed(username)
     );
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
@@ -93,7 +95,7 @@ export function YouMenu({ profile = null }: { profile?: string | null }) {
           className="crew-sidebar-truncate font-mono text-supporting text-text-muted"
           translate="no"
         >
-          {connection.ssh_target}
+          {loginLabel(connection)}
         </span>
         {profile && (
           <Badge tone="neutral" className="min-w-0 self-start" data-crew-dev-profile="">
@@ -122,8 +124,8 @@ export function YouMenu({ profile = null }: { profile?: string | null }) {
         {copy.keys}
       </DropdownMenuItem>
       <DropdownMenuItem
-        disabled={!me}
-        aria-describedby={me ? undefined : reasonId}
+        disabled={!username}
+        aria-describedby={username ? undefined : reasonId}
         data-crew-copy-state={copyState}
         onSelect={(event) => {
           // Stay open: the item itself shows whether the copy landed.

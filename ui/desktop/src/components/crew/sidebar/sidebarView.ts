@@ -3,16 +3,23 @@ import type { Channel, CrewConnection, Invitation, PendingJoin, Snapshot, Team }
 import {
   channelSlug,
   connectionNames,
+  connectionServer,
   isMachineIdShaped,
   institutionLabel,
   personFromProjection,
+  personLabel,
   sanitizeDisplayText,
   teamName,
   usePeopleDirectory,
   type CrewPerson,
   type DaemonPersonLabels,
+  type KnownInstitution,
   type PeopleDirectory,
 } from '../identity';
+import { useJoinContext } from '../onboarding/joinContext';
+import { sshUsername } from '../onboarding/joinText';
+import { knownInstitutions } from '../pane/presentation';
+import { useConfiguredModels } from '../pane/useConfiguredModels';
 import type { CrewController } from '../state/types';
 import { sidebarCopy } from './copy';
 
@@ -80,8 +87,96 @@ export function workspaceTitle(
 }
 
 // ---------------------------------------------------------------------------------------------
+// The server, by the person's own name for it (D-ALIAS)
+// ---------------------------------------------------------------------------------------------
+
+/** A saved connection as the connection routes answer it, with the daemon's display label. */
+type LabelledConnection = { ssh_target?: string | null; server_label?: unknown };
+
+/**
+ * What to call the connection's server on screen (D-ALIAS): the daemon's `server_label` — the
+ * person's own SSH alias for that address when one maps to it, else the host — and, from a daemon
+ * that sends none, the host of the saved login. Display only: the raw address stays in Connection
+ * settings, and nothing here is ever used to connect.
+ */
+export function serverLabel(connection: LabelledConnection | null | undefined): string {
+  return (
+    sanitizeDisplayText(connection?.server_label) ||
+    connectionServer(connection ? { id: '', ssh_target: connection.ssh_target } : null)
+  );
+}
+
+/**
+ * The SSH login with its server named the same way: `crew_alice@lab-server` for a saved
+ * `crew_alice@52.33.141.141` whose server the person calls `lab-server`. Without a label it is
+ * the saved login exactly as saved.
+ */
+export function loginLabel(connection: LabelledConnection | null | undefined): string {
+  const target = sanitizeDisplayText(connection?.ssh_target);
+  const label = sanitizeDisplayText(connection?.server_label);
+  if (!label) return target;
+  const at = target.lastIndexOf('@');
+  return at > 0 ? `${target.slice(0, at)}@${label}` : label;
+}
+
+/**
+ * The person's username on this connection, when anything names it: the verified directory's
+ * `me`, else the saved login's user part, else what the join remembered (Q2-43). A joiner the
+ * host has not let in yet has no snapshot, and their username is still known.
+ */
+export function knownUsername(
+  me: Pick<CrewPerson, 'username'> | null | undefined,
+  connection: Pick<CrewConnection, 'ssh_target'> | null | undefined,
+  remembered?: string | null
+): string | null {
+  return (
+    sanitizeDisplayText(me?.username) ||
+    sshUsername(connection?.ssh_target) ||
+    sanitizeDisplayText(remembered) ||
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// A join the host has not let in yet
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Who a joiner waits for, as `personLabel(…, 'inline')`: the host the invitation named, which the
+ * Join dialog remembers for this connection (and the join screen updates once the workspace names
+ * its inviter) — the workspace itself says nothing to a non-member. `null` when nothing named
+ * anyone, so each sentence says "your host" instead. `username` is the joiner's own username as
+ * the join remembered it, for a login that does not carry one.
+ */
+export function usePendingHost(crew: Pick<CrewController, 'connectionId'>): {
+  host: string | null;
+  username: string | null;
+} {
+  const context = useJoinContext(crew.connectionId);
+  const inviter = context.hostUsername
+    ? personFromProjection({
+        username: context.hostUsername,
+        display_name: context.hostDisplayName,
+      })
+    : null;
+  return {
+    host: inviter ? personLabel(inviter, 'inline') : null,
+    username: sanitizeDisplayText(context.username) || null,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Privacy
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * The institutions configured providers publish names for, so `ucsf` reads as `UCSF` wherever a
+ * provider publishes that name for it (Q2-38), and as itself everywhere else.
+ */
+export function useKnownInstitutions(): KnownInstitution[] {
+  const { providers } = useConfiguredModels();
+  return useMemo(() => knownInstitutions(providers), [providers]);
+}
 
 export type PrivacyWhy = 'both' | 'connection' | 'workspace' | 'public';
 
@@ -102,10 +197,12 @@ export interface VerifiedPrivacy {
 
 /**
  * The privacy the observer VERIFIED for the selected connection, or `null` while it has not.
- * Never derived from the saved connection record or the last verified copy.
+ * Never derived from the saved connection record or the last verified copy. `known` words the
+ * institution by the name a configured provider publishes for it (Q2-38).
  */
 export function verifiedPrivacy(
-  crew: Pick<CrewController, 'snapshot' | 'observedPrivacy' | 'connectionId' | 'effectivePrivacy'>
+  crew: Pick<CrewController, 'snapshot' | 'observedPrivacy' | 'connectionId' | 'effectivePrivacy'>,
+  known?: readonly KnownInstitution[] | null
 ): VerifiedPrivacy | null {
   const { snapshot, observedPrivacy, connectionId, effectivePrivacy } = crew;
   if (!snapshot || !observedPrivacy || observedPrivacy.connectionId !== connectionId) return null;
@@ -125,8 +222,8 @@ export function verifiedPrivacy(
     connectionMode,
     workspaceMode,
     institution:
-      institutionLabel(snapshot.workspace.institution_id) ??
-      institutionLabel(observedPrivacy.institutionId),
+      institutionLabel(snapshot.workspace.institution_id, known) ??
+      institutionLabel(observedPrivacy.institutionId, known),
     why,
   };
 }

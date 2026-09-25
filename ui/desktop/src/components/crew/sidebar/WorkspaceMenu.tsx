@@ -14,12 +14,13 @@ import {
 } from '../../ui/dropdown-menu';
 import { StatusDot, type StatusDotTone } from '../../ui/status-dot';
 import type { CrewConnection } from '../crewApi';
-import { connectionNames, connectionServer, PersonName } from '../identity';
+import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
+import { connectionNames, PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
-import { useSidebarView } from './sidebarView';
+import { serverLabel, useSidebarView } from './sidebarView';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy.workspaceMenu;
@@ -87,9 +88,17 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   is listed only while sign-in is needed** (T-40): offered under "Signed in as @alice", it
  *   read as a second, unexplained Reconnect. When a Reconnect needs credentials, the sign-in
  *   dialog opens by itself.
- * - The header names the PERSON and the server — "Signed in as @alice on hpc.ucsf.edu" — never
- *   the SSH alias alone, which is a machine name. Before this connection's identity is verified
- *   there is no person to name, so it states the server only.
+ * - The header names the PERSON and the server — "Signed in as @alice on lab-server" — never the
+ *   SSH login alone. The server is the person's own name for it (D-ALIAS): the daemon's
+ *   `server_label`, their SSH alias when one maps to the address, else the host; the raw address
+ *   stays in Connection settings. Before this connection's identity is verified there is no
+ *   person to name, so it states the server only.
+ * - After the status line, the workspace key's fingerprint, grouped as the Join dialog shows it
+ *   (`Fingerprint 6682 327B A040 C709`), so a host asked "does it match?" finds it beside
+ *   "identity verified" instead of under Connection settings' IDs for support (Q2-04).
+ * - While a join waits for the host, Reconnect and Disconnect each say "Your join code stays the
+ *   same." (Q2-43): the code is computed from this computer's saved device key and the pinned
+ *   workspace key (`device_code_of`), which neither action touches.
  * - The header's text is the menu's `aria-describedby`: a screen reader's menu navigation skips
  *   static text inside `role="menu"`, so without it the header was unreachable.
  * - A disabled item says why: one note above the workspace's own items, which are disabled until
@@ -119,6 +128,8 @@ export function WorkspaceMenu({ title }: { title: string }) {
   const labels = useMemo(() => connectionNames(connections), [connections]);
   const headerId = useId();
   const reasonId = useId();
+  const keptId = useId();
+  const fingerprintHex = useWorkspaceKeyFingerprint(connection?.workspace_public_key);
   if (!connection) return null;
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
@@ -126,8 +137,10 @@ export function WorkspaceMenu({ title }: { title: string }) {
   const lastError = lastConnectFailure?.message || connection.last_error || '';
   const snapshotReady = verified && Boolean(crew.snapshot);
   const reason = unavailableReason(status, snapshotReady);
-  const server = connectionServer(connection);
+  const server = serverLabel(connection);
   const me = verified ? dir.me : null;
+  const fingerprint = fingerprintHex ? groupedFingerprint(fingerprintHex) : '';
+  const joining = status === 'not-joined';
 
   return (
     <DropdownMenuContent
@@ -174,6 +187,17 @@ export function WorkspaceMenu({ title }: { title: string }) {
             <span className="crew-sidebar-truncate">
               {presentation.srText ?? presentation.word}
             </span>
+          </span>
+        )}
+        {fingerprint && (
+          <span
+            className="crew-sidebar-truncate text-supporting text-text-muted"
+            data-crew-menu-fingerprint=""
+          >
+            {copy.fingerprint}{' '}
+            <bdi className="font-mono" translate="no">
+              {fingerprint}
+            </bdi>
           </span>
         )}
         {lastError && status !== 'connected' && (
@@ -228,18 +252,24 @@ export function WorkspaceMenu({ title }: { title: string }) {
       <DropdownMenuGroup>
         <DropdownMenuItem
           disabled={connecting || isPending('disconnect')}
+          aria-describedby={joining ? `${keptId}-reconnect` : undefined}
+          className={joining ? 'flex-col items-start gap-0' : undefined}
           onSelect={() => void crew.connect({ userInitiated: true })}
         >
           {copy.reconnect}
+          {joining && <KeptNote id={`${keptId}-reconnect`} />}
         </DropdownMenuItem>
         {status === 'sign-in-needed' && (
           <DropdownMenuItem onSelect={() => crew.openSignIn()}>{copy.signIn}</DropdownMenuItem>
         )}
         <DropdownMenuItem
           disabled={isPending('connect') || isPending('disconnect')}
+          aria-describedby={joining ? `${keptId}-disconnect` : undefined}
+          className={joining ? 'flex-col items-start gap-0' : undefined}
           onSelect={() => void crew.disconnect()}
         >
           {copy.disconnect}
+          {joining && <KeptNote id={`${keptId}-disconnect`} />}
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => crew.openDialog({ kind: 'connection-settings', connectionId })}
@@ -286,5 +316,22 @@ export function WorkspaceMenu({ title }: { title: string }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     </DropdownMenuContent>
+  );
+}
+
+/**
+ * "Your join code stays the same." under a connection tool while a join waits (Q2-43). Hidden from
+ * the item's name, so the item is still called "Reconnect", and read as its description.
+ */
+function KeptNote({ id }: { id: string }) {
+  return (
+    <span
+      id={id}
+      aria-hidden="true"
+      className="text-supporting text-text-muted"
+      data-crew-join-code-kept=""
+    >
+      {copy.joinCodeKept}
+    </span>
   );
 }

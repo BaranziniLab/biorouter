@@ -6,7 +6,13 @@ import { joinerPerson, PersonName, personLabel } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useSidebarAnnounce } from './SidebarAnnouncer';
-import { invitationsToMe, useSidebarView, waitingToJoin, type InvitationRow } from './sidebarView';
+import {
+  invitationsToMe,
+  useSidebarView,
+  waitingToJoin,
+  type InvitationRow,
+  type WaitingRow,
+} from './sidebarView';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy;
@@ -131,8 +137,10 @@ function useWaitingAnnouncements(
  * **Waiting to join**, with Let in… and the different-code warning, or, once an invitation has
  * run out, "Invitation expired · Invite again…" and no Let in.
  *
- * A row whose code the host entered reads "Code entered", not "Approved": the broker compares the
- * code only when the joiner's computer checks in (T-13). When a claim with a different code was
+ * A row still waiting for its code reads `@frank · invited` over "Let in… when they send their
+ * code" (Q2-42): whose turn it is — the joiner sends a code, then the host lets them in — which
+ * the bare name and button never said. A row whose code the host entered reads "Code entered",
+ * not "Approved": the broker compares the code only when the joiner's computer checks in (T-13). When a claim with a different code was
  * refused, the warning says what to do, and Let in… stays offered so a mistyped code can be
  * entered again (the dialog then offers Replace code).
  *
@@ -148,12 +156,13 @@ export function AttentionSections() {
   useWaitingAnnouncements(snapshot, verified, crew.connectionId, title);
   if (invitations.length === 0 && waiting.length === 0) return null;
 
-  const letIn = (username: string) => (
+  const letIn = (username: string, describedBy?: string) => (
     <Button
       variant="secondary"
       size="xs"
       className="no-drag shrink-0"
       aria-label={copy.waiting.letInLabel(username)}
+      aria-describedby={describedBy}
       disabled={!verified}
       onClick={() => crew.openDialog({ kind: 'let-in', username })}
     >
@@ -173,61 +182,84 @@ export function AttentionSections() {
       {waiting.length > 0 && (
         <Section label={copy.section.waiting} attention="waiting">
           {waiting.map((join) => (
-            <li
-              key={join.username}
-              className="flex flex-col gap-1 px-2 py-1.5"
-              data-crew-waiting={join.username}
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="crew-sidebar-truncate min-w-0 flex-1 text-secondary">
-                  <PersonName
-                    person={joinerPerson(join.username, join.serverName)}
-                    context="joiner"
-                  />
-                </span>
-                {join.expired ? (
-                  <span className="flex shrink-0 items-center gap-1 text-supporting text-text-muted">
-                    <span>{copy.waiting.expired}</span>
-                    <span aria-hidden="true">{` ${copy.waiting.separator} `}</span>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      className="no-drag"
-                      aria-label={copy.waiting.inviteAgainLabel(join.username)}
-                      disabled={!verified}
-                      onClick={() => crew.openDialog({ kind: 'invite-people' })}
-                    >
-                      {copy.waiting.inviteAgain}
-                    </Button>
-                  </span>
-                ) : join.approved ? (
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    <span
-                      className="text-supporting text-text-muted"
-                      data-crew-waiting-state="code-entered"
-                    >
-                      {copy.waiting.approved}
-                    </span>
-                    {join.otherDeviceTried && letIn(join.username)}
-                  </span>
-                ) : (
-                  letIn(join.username)
-                )}
-              </div>
-              {join.otherDeviceTried && (
-                <p
-                  className="flex items-start gap-1.5 text-supporting text-text-warning"
-                  data-crew-waiting-warning=""
-                >
-                  <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
-                  <span>{copy.waiting.otherDevice(join.username)}</span>
-                </p>
-              )}
-            </li>
+            <WaitingItem key={join.username} join={join} verified={verified} letIn={letIn} />
           ))}
         </Section>
       )}
     </>
+  );
+}
+
+/** One Waiting to join row. */
+function WaitingItem({
+  join,
+  verified,
+  letIn,
+}: {
+  join: WaitingRow;
+  /** False while the sidebar shows only the last verified copy: nothing is actionable then. */
+  verified: boolean;
+  letIn(username: string, describedBy?: string): ReactNode;
+}) {
+  const crew = useCrew();
+  const nextId = useId();
+  // Still waiting for the joiner's code: say whose turn it is (Q2-42).
+  const invited = !join.expired && !join.approved;
+  return (
+    <li className="flex flex-col gap-1 px-2 py-1.5" data-crew-waiting={join.username}>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="crew-sidebar-truncate min-w-0 flex-1 text-secondary">
+          <PersonName person={joinerPerson(join.username, join.serverName)} context="joiner" />
+          {invited && (
+            <span className="text-text-muted" data-crew-waiting-state="invited">
+              {` ${copy.waiting.separator} ${copy.waiting.invited}`}
+            </span>
+          )}
+        </span>
+        {join.expired ? (
+          <span className="flex shrink-0 items-center gap-1 text-supporting text-text-muted">
+            <span>{copy.waiting.expired}</span>
+            <span aria-hidden="true">{` ${copy.waiting.separator} `}</span>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="no-drag"
+              aria-label={copy.waiting.inviteAgainLabel(join.username)}
+              disabled={!verified}
+              onClick={() => crew.openDialog({ kind: 'invite-people' })}
+            >
+              {copy.waiting.inviteAgain}
+            </Button>
+          </span>
+        ) : join.approved ? (
+          <span className="flex shrink-0 items-center gap-1.5">
+            <span
+              className="text-supporting text-text-muted"
+              data-crew-waiting-state="code-entered"
+            >
+              {copy.waiting.approved}
+            </span>
+            {join.otherDeviceTried && letIn(join.username)}
+          </span>
+        ) : (
+          letIn(join.username, nextId)
+        )}
+      </div>
+      {invited && (
+        <p id={nextId} className="text-supporting text-text-muted" data-crew-waiting-next="">
+          {copy.waiting.nextStep}
+        </p>
+      )}
+      {join.otherDeviceTried && (
+        <p
+          className="flex items-start gap-1.5 text-supporting text-text-warning"
+          data-crew-waiting-warning=""
+        >
+          <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+          <span>{copy.waiting.otherDevice(join.username)}</span>
+        </p>
+      )}
+    </li>
   );
 }
 

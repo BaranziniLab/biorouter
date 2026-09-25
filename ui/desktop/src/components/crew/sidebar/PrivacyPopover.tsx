@@ -3,7 +3,7 @@ import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Separator } from '../../ui/separator';
-import { INSTITUTION_ID_PATTERN, institutionId } from '../identity';
+import { INSTITUTION_ID_PATTERN, institutionId, personLabel } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
@@ -17,25 +17,29 @@ export const PRIVACY_UPDATE_KEY = 'connection.update';
 
 /**
  * The privacy popover (ui-redesign-spec, wireframe "Privacy popover", copy deck "Privacy
- * popover"): what the chip means in one sentence, the three facts behind it, and the "why" line,
- * always shown, so a joiner who sets Public in a Private-for-everyone workspace sees why nothing
- * changed.
+ * popover"): what the chip means in one sentence, the three facts behind it, then ONE quiet note
+ * (Q2-44) — why the mode is what it is, that only the host changes the workspace (to a member),
+ * and who can see the workspace at all, because "Private" is about models, never about people.
+ * It is always shown, so a joiner who sets Public in a Private-for-everyone workspace sees why
+ * nothing changed.
  *
- * It is named by its title row — `Privacy: Private · ucsf`, the chip's own name — which stays
+ * It is named by its title row — `Privacy: Private · UCSF`, the chip's own name — which stays
  * at the top through the institution step, so the popover never loses its name (T-38).
  *
  * The two changes it offers are deliberately asymmetric ("Privacy and institution"):
  *
- * - **Make my connection public…** exposes data, so it only opens the typed confirmation (the
- *   workspace name as the phrase), and says under it what it changes — only this connection,
- *   and whether that changes what models can read here (T-38). The dialog, not this popover,
- *   sends the change.
+ * - **Make my connection public…** exposes data, so it is a quiet link, never the popover's most
+ *   prominent control (Q2-44), and it only opens the typed confirmation (the workspace name as
+ *   the phrase). The line under it, which is also its description, says what it changes: only
+ *   this connection, and which models could then read what — checked against the broker, which
+ *   refuses a public model a Restricted channel but never a person, so nobody loses a channel.
+ *   The dialog, not this popover, sends the change.
  * - **Make private** is one click: the full-body PATCH (L18) and a refresh. A connection with no
  *   institution cannot be Private (the daemon refuses the save), so the popover first asks for
  *   one, in place, as a required field.
  *
- * React authorizes nothing: the daemon decides the save, and the chip changes only when the
- * observer verifies the new mode.
+ * "Privacy…" is the link to the rest, in Workspace settings. React authorizes nothing: the daemon
+ * decides the save, and the chip changes only when the observer verifies the new mode.
  */
 export function PrivacyPopover({
   privacy,
@@ -48,7 +52,7 @@ export function PrivacyPopover({
   onClose(): void;
 }) {
   const crew = useCrew();
-  const { title } = useSidebarView(crew);
+  const { title, dir } = useSidebarView(crew);
   const [askInstitution, setAskInstitution] = useState(false);
   const pending = crew.isPending(PRIVACY_UPDATE_KEY);
   const institution = privacy.effective === 'private' ? privacy.institution : null;
@@ -89,15 +93,17 @@ export function PrivacyPopover({
   const heading = (
     <div id={titleId} className="flex min-w-0 items-center gap-1" data-crew-privacy-title="">
       <span className="sr-only">{copy.titlePrefix}</span>{' '}
-      <PrivacyBadge tier={privacy.effective} enforcementOff={false} />
-      {institution && (
-        <span className="crew-sidebar-chip-text">
-          {' · '}
-          <bdi translate="no" className="crew-sidebar-truncate">
-            {institution}
-          </bdi>
-        </span>
-      )}
+      <span className="crew-sidebar-chip-badge">
+        <PrivacyBadge tier={privacy.effective} enforcementOff={false} />
+        {institution && (
+          <span className="crew-sidebar-chip-institution">
+            {' · '}
+            <bdi translate="no" className="crew-sidebar-truncate">
+              {institution}
+            </bdi>
+          </span>
+        )}
+      </span>
     </div>
   );
 
@@ -110,7 +116,14 @@ export function PrivacyPopover({
     );
   }
 
-  const showHostOnly = !crew.isHost && (privacy.why === 'workspace' || privacy.why === 'both');
+  const host = crew.isHost ? null : dir.host ? personLabel(dir.host, 'inline', dir) : null;
+  const note = [
+    copy.why[privacy.why](title),
+    crew.isHost ? null : copy.hostOnly(title),
+    crew.isHost || host ? copy.audience(title, host) : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
   const effectId = `${titleId}-make-public`;
 
   return (
@@ -140,33 +153,36 @@ export function PrivacyPopover({
       </dl>
       <Separator className="bg-border-subtle" />
       <p className="text-supporting text-text-muted" data-crew-privacy-why={privacy.why}>
-        {copy.why[privacy.why]}
+        {note}
       </p>
-      {showHostOnly && <p className="text-supporting text-text-muted">{copy.hostOnly}</p>}
-      {privacy.connectionMode === 'private' && (
-        <p id={effectId} className="text-supporting text-text-muted" data-crew-privacy-effect="">
-          {copy.makePublicEffect(title, privacy.workspaceMode)}
-        </p>
-      )}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {privacy.connectionMode === 'private' ? (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pending}
-            aria-describedby={effectId}
-            onClick={onMakePublic}
-          >
-            {copy.makePublic}
+      <div className="flex flex-col items-start gap-1">
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
+          {privacy.connectionMode === 'private' ? (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-supporting text-text-muted"
+              disabled={pending}
+              aria-describedby={effectId}
+              data-crew-privacy-downgrade=""
+              onClick={onMakePublic}
+            >
+              {copy.makePublic}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled={pending} onClick={onMakePrivate}>
+              {copy.makePrivate}
+            </Button>
+          )}
+          <Button variant="link" size="sm" className="h-auto p-0 text-supporting" onClick={onMore}>
+            {copy.more}
           </Button>
-        ) : (
-          <Button variant="outline" size="sm" disabled={pending} onClick={onMakePrivate}>
-            {copy.makePrivate}
-          </Button>
+        </div>
+        {privacy.connectionMode === 'private' && (
+          <p id={effectId} className="text-supporting text-text-muted" data-crew-privacy-effect="">
+            {copy.makePublicEffect(title, privacy.workspaceMode)}
+          </p>
         )}
-        <Button variant="ghost" size="sm" onClick={onMore}>
-          {copy.more}
-        </Button>
       </div>
     </div>
   );

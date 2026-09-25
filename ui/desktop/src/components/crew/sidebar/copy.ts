@@ -22,9 +22,28 @@ export const sidebarCopy = {
    * skips most of them. Said once, when the landmark is entered.
    */
   navDescription:
-    'Use the Up and Down arrow keys to move between teams and channels. Left and Right collapse and expand a team.',
+    'Use the Up and Down arrow keys to move between teams and channels. Left and Right collapse and expand a team. On a team, Tab reaches its Create channel and options buttons.',
   /** The status row's `role="status"` name. */
   statusLabel: 'Connection status',
+
+  /**
+   * What a status word waits for, in its tooltip and after it for a screen reader (Q2-17, Q2-43).
+   * Only a status that has more to say gets one: a tooltip that repeats the word says nothing.
+   */
+  statusHint: {
+    /** `workspace` is the switcher's name. The Retry it names is the connection bar's. */
+    updatesUnavailable: (workspace: string) =>
+      `Crew isn’t receiving updates for ${workspace}. Retry below.`,
+    /** `host` is `personLabel(…, 'inline')`, or null when the invitation named nobody. */
+    notJoined: (host: string | null) =>
+      host ? `Waiting for ${host} to let you in` : 'Waiting for your host to let you in',
+  },
+
+  /** A joiner the host has not let in yet: what the empty column will hold (Q2-43). */
+  pendingColumn: (host: string | null) =>
+    host
+      ? `Your channels appear here once ${host} lets you in.`
+      : 'Your channels appear here once your host lets you in.',
 
   switcher: {
     /** Before a connection is selected (the selection lands with the saved list). */
@@ -32,7 +51,11 @@ export const sidebarCopy = {
   },
 
   chip: {
-    /** The chip's accessible name (the test anchor): `Privacy: Private · ucsf` / `Privacy: Public`. */
+    /**
+     * The chip's accessible name (the test anchor): `Privacy: Private · ucsf` / `Privacy: Public`.
+     * `institution` is already an institution label (`UCSF` when a configured provider publishes
+     * that name for `ucsf`, else the ID itself).
+     */
     name: (mode: 'private' | 'public', institution: string | null) =>
       mode === 'public'
         ? 'Privacy: Public'
@@ -48,8 +71,8 @@ export const sidebarCopy = {
     checkingHint:
       'Checking privacy: Crew is confirming this connection’s privacy with the workspace. It shows here once confirmed.',
     /**
-     * A joiner the host has not let in yet (T-06): the workspace cannot report their privacy
-     * until they are a member, so "Checking…" would never resolve. Plain text, no padlock.
+     * A joiner the host has not let in yet (T-06). No longer shown (Q2-43): the status row then
+     * says only "Not joined yet", and the chip renders nothing until privacy can be verified.
      */
     notJoined: 'Privacy shown after you join',
     notJoinedHint:
@@ -81,6 +104,10 @@ export const sidebarCopy = {
   },
 
   waiting: {
+    /** After the joiner's name: they have an invitation and no code has been entered (Q2-42). */
+    invited: 'invited',
+    /** Under it: whose turn it is. The host acts once the joiner sends their code. */
+    nextStep: 'Let in… when they send their code',
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
     /**
@@ -152,6 +179,9 @@ export const sidebarCopy = {
     addPeople: (team: string) => `Add people to ${team}…`,
     rename: 'Rename team…',
     copyId: 'Copy team ID',
+    /** The item confirms the copy itself for a moment, then the menu closes (Q2-34). */
+    copied: 'Copied',
+    copyFailed: 'Couldn’t copy',
   },
 
   workspaceMenu: {
@@ -161,6 +191,17 @@ export const sidebarCopy = {
     signedInOn: 'on',
     /** Before this connection's identity is verified there is no person to name, only a server. */
     server: 'Server',
+    /**
+     * The workspace key's fingerprint, grouped as the Join dialog shows it, so a host asked
+     * "does the fingerprint match?" finds it where the identity is (Q2-04).
+     */
+    fingerprint: 'Fingerprint',
+    /**
+     * Under Reconnect and Disconnect while a join waits for the host (Q2-43). True: the code is
+     * computed from this computer's saved device key and the pinned workspace key, which neither
+     * action touches.
+     */
+    joinCodeKept: 'Your join code stays the same.',
     invite: (workspace: string) => `Invite people to ${workspace}…`,
     people: 'People…',
     privacy: 'Privacy…',
@@ -206,7 +247,7 @@ export const sidebarCopy = {
   },
 
   privacy: {
-    /** The one-line explanation. `institution` is already an institution label. */
+    /** The one-line summary. `institution` is already an institution label. */
     private: (workspace: string, institution: string | null) =>
       institution
         ? `Only private and ${institution}-approved models can read ${workspace}.`
@@ -225,22 +266,41 @@ export const sidebarCopy = {
       workspacePublic: 'Allows Public',
       notSet: 'Not set',
     },
+    /**
+     * Why the mode is what it is, first in the popover's one note (Q2-44). `workspace` is the
+     * switcher's name.
+     */
     why: {
-      workspace: 'Private because the workspace is Private for everyone.',
-      connection: 'Private because your connection is Private.',
-      both: 'Private because your connection and the workspace are both Private.',
-      public: 'Public because your connection is Public and the workspace allows it.',
+      workspace: (workspace: string) => `Private because ${workspace} is Private for everyone.`,
+      connection: () => 'Private because your connection is Private.',
+      both: (workspace: string) =>
+        `Private because both your connection and ${workspace} are Private.`,
+      public: (workspace: string) =>
+        `Public because your connection is Public and ${workspace} allows it.`,
     },
+    /**
+     * Who can see the workspace at all (Q2-44): "Private" is about models, never about people.
+     * `host` is `personLabel(…, 'inline')`; null when the viewer is the host.
+     */
+    audience: (workspace: string, host: string | null) =>
+      host
+        ? `Only people ${host} lets in can see ${workspace}.`
+        : `Only people you let in can see ${workspace}.`,
     /** Names what it changes (T-38): only this person's connection, never the workspace. */
     makePublic: 'Make my connection public…',
-    /** The one line under it, saying what changes. `workspace` is the switcher's name. */
+    /**
+     * What the downgrade changes, as its description (T-38, Q2-44). Checked against the broker: a
+     * Public connection keeps every channel it can see; only which models may read it changes
+     * (`privacy_denied` refuses a public model a Restricted channel, never a person).
+     */
     makePublicEffect: (workspace: string, workspaceMode: 'private' | 'public') =>
       workspaceMode === 'private'
-        ? `Changes only your connection. ${workspace} stays Private for everyone, so the models that can read it stay the same.`
-        : `Changes only your connection: public models could then read public-safe channels in ${workspace}. You’ll confirm first.`,
+        ? `Makes only your connection Public. ${workspace} is Private for everyone, so the models that can read it stay the same.`
+        : `Makes only your connection Public: public models could then read the public-safe channels you can see in ${workspace}. Restricted channels stay private.`,
     makePrivate: 'Make private',
     more: 'Privacy…',
-    hostOnly: 'Only the host can change the workspace setting.',
+    /** After the why, for a member (Q2-44). */
+    hostOnly: (workspace: string) => `Only the host can change ${workspace}.`,
     /** The popover's name is its title: `Privacy: Private · ucsf` (T-38). */
     titlePrefix: 'Privacy:',
     /** The inline step "Make private" takes when the connection has no institution yet. */

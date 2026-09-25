@@ -1,9 +1,21 @@
-import { useCallback, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import {
+  useCallback,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type RefObject,
+} from 'react';
 
 /**
  * Roving keyboard focus for the sidebar's rows (ui-redesign-spec, Accessibility → Keyboard):
- * ↑/↓ move between rows, Home/End jump to the ends, and Tab leaves the list from whichever row
- * last had focus, so the list is one tab stop however many channels it holds.
+ * ↑/↓ move between rows, Home/End jump to the ends, and Tab leaves the list, so the list is one
+ * tab stop however many channels it holds.
+ *
+ * While focus is inside, the stop follows the row that last had focus. Once focus LEAVES the
+ * list, the stop goes back to the preferred row — the current channel — so Tab or Shift+Tab back
+ * in always lands where the person is, never on the last row they arrowed past (Q2-46: it came
+ * back to "+ Add channel", one Enter away from a duplicate channel).
  *
  * A row is an element carrying `data-crew-row={key}`, wrapped in (or equal to) an element
  * carrying `data-crew-row-item`, so a keypress on a control INSIDE a row's wrapper — a team
@@ -17,9 +29,11 @@ export interface RovingRows {
   containerRef: RefObject<HTMLDivElement | null>;
   /** `0` for the row that holds the list's tab stop, `-1` for the rest. */
   tabIndexFor(key: string): 0 | -1;
-  /** Call from a row's `onFocus`, so Tab returns to the row the person last used. */
+  /** Call from a row's `onFocus`, so the stop follows focus while it stays in the list. */
   onRowFocus(key: string): void;
   onKeyDown(event: KeyboardEvent<HTMLElement>): void;
+  /** Put on the container: focus leaving the list hands the stop back to the preferred row. */
+  onBlur(event: FocusEvent<HTMLElement>): void;
 }
 
 /**
@@ -64,10 +78,18 @@ export function useRovingRows(keys: readonly string[], preferredKey: string | nu
     rows[next]?.focus();
   }, []);
 
+  const onBlur = useCallback((event: FocusEvent<HTMLElement>) => {
+    const container = containerRef.current;
+    const next = event.relatedTarget;
+    if (container && next instanceof Node && container.contains(next)) return;
+    setFocusedKey(null);
+  }, []);
+
   return {
     containerRef,
     tabIndexFor: (key) => (key === stop ? 0 : -1),
     onRowFocus: setFocusedKey,
     onKeyDown,
+    onBlur,
   };
 }

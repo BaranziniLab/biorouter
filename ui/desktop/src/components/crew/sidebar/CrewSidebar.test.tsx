@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation } from '../crewApi';
+import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { crewStatusCopy } from '../state/copy';
 import { CrewSidebar } from './CrewSidebar';
 import { sidebarCopy } from './copy';
@@ -15,6 +16,19 @@ import {
   renderWithCrew,
   TEAM_LAB,
 } from './sidebarTestUtils';
+
+const config = vi.hoisted(() => ({
+  getProviders: async () => [],
+  read: async () => null,
+}));
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return { ...actual, useConfig: () => config };
+});
+
+afterEach(() => {
+  forgetJoinContext(connection.id);
+});
 
 const invitation: Invitation = {
   id: 'invitation-1',
@@ -57,6 +71,33 @@ describe('CrewSidebar', () => {
     const nav = screen.getByRole('navigation', { name: sidebarCopy.navLabel });
     expect(nav).toHaveAttribute('aria-description', sidebarCopy.navDescription);
     expect(sidebarCopy.navDescription).toMatch(/Up and Down arrow keys/);
+    // …and how a team's own buttons are reached, which arrows never do (Q2-46).
+    expect(sidebarCopy.navDescription).toMatch(
+      /On a team, Tab reaches its Create channel and options buttons\.$/
+    );
+  });
+
+  it('tells a joiner what the empty column will hold, and who it waits for (Q2-43)', () => {
+    updateJoinContext(connection.id, { hostUsername: 'alice', hostDisplayName: null });
+    renderWithCrew(
+      <CrewSidebar />,
+      makeController({
+        snapshot: null,
+        observedPrivacy: null,
+        effectivePrivacy: null,
+        status: 'not-joined',
+      })
+    );
+    const scroll = document.querySelector('[data-crew-sidebar-scroll]') as HTMLElement;
+    const note = scroll.querySelector('[data-crew-sidebar-pending]') as HTMLElement;
+    expect(note.textContent).toMatch(/^Your channels appear here once .*@alice.* lets you in\.$/);
+    // Not a row, and nothing to press.
+    expect(within(scroll).queryByRole('button')).toBeNull();
+  });
+
+  it('says nothing of the kind to a member', () => {
+    renderWithCrew(<CrewSidebar />);
+    expect(document.querySelector('[data-crew-sidebar-pending]')).toBeNull();
   });
 
   it('shows the pinned verified sentence exactly once at rest', () => {
@@ -123,10 +164,11 @@ describe('CrewSidebar', () => {
 });
 
 /**
- * jsdom evaluates none of `crew-sidebar.css`, so the two properties a real window depends on are
- * held at the source: the titlebar reserve is a MARGIN keyed on the app sidebar's collapsed state
- * (issue #74 — padding would stay inside the box the controls sit over), and nothing in the
- * sidebar's stylesheet declares a drag region.
+ * jsdom evaluates none of `crew-sidebar.css`, so the properties a real window depends on are held
+ * at the source (and measured in Chromium by `crewSidebarGeometry.browser.test.ts`): while the
+ * app sidebar is collapsed the switcher moves to a row of its own below the titlebar band (issue
+ * #74, Q2-39) and the column stays 240px, and nothing in the sidebar's stylesheet declares a drag
+ * region.
  */
 describe('crew-sidebar.css', () => {
   const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, ' ');
@@ -141,18 +183,25 @@ describe('crew-sidebar.css', () => {
       .map(([, , body]) => body);
   }
 
-  it('reserves the titlebar controls with a margin when the app sidebar is collapsed', () => {
-    const rule = /([^{}]*\.crew-sidebar-switcher)\s*\{([^}]*)\}/g;
-    const reserves = Array.from(css.matchAll(rule)).filter(([, , body]) =>
-      body.includes('--biorouter-titlebar-control-reserve')
-    );
-    expect(reserves).toHaveLength(1);
-    const [, selector, body] = reserves[0];
-    expect(selector.replace(/\s+/g, ' ').trim()).toBe(
-      "[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher"
-    );
-    expect(body).toMatch(/margin-left\s*:\s*var\(--biorouter-titlebar-control-reserve\)/);
-    expect(body).not.toMatch(/padding/);
+  const COLLAPSED = "[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset']";
+
+  /**
+   * Q2-39: the switcher leaves the band for its own 36px row while the app sidebar is collapsed,
+   * so nothing of Crew's sits under the titlebar controls — and it is never pushed right by a
+   * margin, which in a 240px column left it 51px ("c.").
+   */
+  it('moves the switcher below the band while the app sidebar is collapsed, never beside it', () => {
+    const [band] = bodiesOf(css, `${COLLAPSED} .crew-sidebar-band`);
+    expect(band).toBeDefined();
+    expect(band).toMatch(/grid-template-rows:\s*var\(--chrome-height\) 36px/);
+    expect(band).toMatch(/height:\s*calc\(var\(--chrome-height\) \+ 36px\)/);
+    // The band's hairline stays at y=44, the channel header's: one continuous top edge.
+    expect(band).toMatch(/background-position:\s*0 calc\(var\(--chrome-height\) - 1px\)/);
+    expect(bodiesOf(css, `${COLLAPSED} .crew-sidebar-switcher`)[0]).toMatch(/grid-row:\s*2/);
+    // At rest the band is the 44px band, and the switcher sits in it.
+    expect(bodiesOf(css, '.crew-sidebar-band')[0]).toMatch(/height:\s*var\(--chrome-height\)/);
+    // No margin reserve anywhere: the switcher keeps the band's whole width.
+    expect(css).not.toMatch(/margin-left\s*:\s*var\(--biorouter-titlebar-control-reserve\)/);
   });
 
   it('declares no -webkit-app-region at all', () => {
@@ -160,19 +209,12 @@ describe('crew-sidebar.css', () => {
   });
 
   /**
-   * T-21: inside a fixed 240px column the 172px macOS reserve left the switcher 51px ("c.").
-   * The column grows by the reserve under the SAME collapsed state, and the name keeps 10ch.
+   * Q2-39: round 1 widened the column by the reserve (T-21) to 396px, which left the channel 652px
+   * at a 1048px window, so the details pane covered it. The column is 240px in every state.
    */
-  it('widens the Crew column by the titlebar reserve while the app sidebar is collapsed', () => {
-    const [body] = bodiesOf(
-      appCss,
-      "[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-app"
-    );
-    expect(body).toBeDefined();
-    expect(body).toMatch(
-      /--crew-sidebar-width\s*:\s*calc\(240px \+ var\(--biorouter-titlebar-control-reserve\) - 16px\)/
-    );
-    // The column is sized by that property, and 240px stays the resting width.
+  it('keeps the Crew column 240px whether or not the app sidebar is collapsed', () => {
+    expect(bodiesOf(appCss, `${COLLAPSED} .crew-app`)).toEqual([]);
+    expect(appCss).not.toMatch(/--crew-sidebar-width\s*:\s*calc\(/);
     expect(bodiesOf(appCss, '.crew-app')[0]).toMatch(/--crew-sidebar-width:\s*240px/);
     expect(bodiesOf(appCss, '.crew-app')[0]).toMatch(
       /grid-template-columns:\s*var\(--crew-sidebar-width\)/

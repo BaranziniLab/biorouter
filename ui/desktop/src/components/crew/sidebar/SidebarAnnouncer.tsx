@@ -24,6 +24,12 @@ import { sidebarCopy } from './copy';
  *   every screen reader announces on insertion; it is absent at rest, so the sidebar adds no
  *   empty alert for the rest of the page's alerts to be confused with.
  *
+ *   ⚠ **Its host carries `aria-live="assertive"`, and that is load-bearing (Q2-47).** A modal
+ *   (Radix, through `aria-hidden`'s `hideOthers`) hides everything outside it, and keeps only
+ *   elements that carry an `aria-live` attribute when it opens. Without one, the host was hidden
+ *   whenever any dialog was open, and a warning raised then — a host busy in Invite people —
+ *   reached nobody. The host holds no controls, so keeping it exposed exposes nothing else.
+ *
  * Each message renders in its own KEYED span, so the same sentence said twice is inserted twice
  * and heard twice (a changed text node that happens to hold the same words is not). Neither
  * region carries `role="status"`: the status row's `role="status"` is the sidebar's one status.
@@ -90,7 +96,7 @@ export function SidebarAnnouncer({ children }: { children: ReactNode }) {
       >
         {polite && <span key={polite.id}>{polite.text}</span>}
       </span>
-      <span className="sr-only" data-crew-sidebar-alert="">
+      <span className="sr-only" aria-live="assertive" data-crew-sidebar-alert="">
         {urgent && (
           <span key={urgent.id} role="alert">
             {urgent.text}

@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
 import { COPY_FEEDBACK_MS } from './YouMenu';
@@ -29,7 +30,17 @@ function stubAppConfig(values: Record<string, unknown>) {
 afterEach(() => {
   Reflect.deleteProperty(window, 'appConfig');
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  forgetJoinContext(connection.id);
 });
+
+const joiner = {
+  snapshot: null,
+  observedPrivacy: null,
+  effectivePrivacy: null,
+  status: 'not-joined',
+  connection: { ...connection, ssh_target: 'crew_frank@52.33.141.141' },
+} as const;
 
 describe('YouRow', () => {
   it('renders the SSH login as its own standalone text node, with a snapshot', () => {
@@ -76,6 +87,16 @@ describe('YouRow', () => {
     const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
     const badge = within(header).getByText(copy.devProfile('alice')).parentElement as HTMLElement;
     expect(badge.className).toContain('bg-background-medium');
+  });
+
+  it('shows no profile badge in a built app, even one launched with a dev profile (Q2-43)', async () => {
+    const user = userEvent.setup();
+    vi.stubEnv('DEV', false);
+    stubAppConfig({ BIOROUTER_DEV_PROFILE_NAME: 'frank' });
+    renderYou();
+    await user.click(screen.getByRole('button', { name: /alice@hpc\.ucsf\.edu/ }));
+    await screen.findByRole('menu');
+    expect(screen.queryByText(/^Profile:/)).toBeNull();
   });
 
   it('shows no profile badge outside a dev profile', async () => {
@@ -126,9 +147,9 @@ describe('YouRow', () => {
       'aria-disabled',
       'true'
     );
-    expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).toHaveAttribute(
-      'aria-disabled',
-      'true'
+    // The login names the username, so it can be copied before any snapshot (Q2-43).
+    expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).not.toHaveAttribute(
+      'aria-disabled'
     );
     // A disabled item says why, above the items and in the menu's description (T-71).
     const note = menu.querySelector('[data-crew-menu-note]') as HTMLElement;
@@ -139,6 +160,72 @@ describe('YouRow', () => {
     ).toHaveAccessibleDescription(sidebarCopy.unavailable.notVerified);
     await user.click(within(menu).getByRole('menuitem', { name: copy.keys }));
     expect(controller.openDialog).toHaveBeenCalledWith({ kind: 'keys' });
+  });
+
+  it('lets a joiner copy the username the login already names, and shows its initial (Q2-43)', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    renderYou(makeController(joiner));
+    // Not a blank circle: the username is known, so the avatar has its initial.
+    const avatar = document.querySelector('[data-slot="avatar"]') as HTMLElement;
+    expect(avatar.textContent).toMatch(/^f$/i);
+    await user.click(screen.getByRole('button', { name: /crew_frank@52\.33\.141\.141/ }));
+    const menu = await screen.findByRole('menu');
+    const item = within(menu).getByRole('menuitem', { name: copy.copyUsername });
+    expect(item).not.toHaveAttribute('aria-disabled');
+    await user.click(item);
+    expect(writeText).toHaveBeenCalledWith('crew_frank');
+    // Edit profile still waits for the join, and says so.
+    expect(within(menu).getByRole('menuitem', { name: copy.editProfile })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+  });
+
+  it('takes a joiner’s username from the join when the login is an alias', async () => {
+    const user = userEvent.setup();
+    updateJoinContext(connection.id, { username: 'crew_frank' });
+    renderYou(
+      makeController({ ...joiner, connection: { ...connection, ssh_target: 'lab-server' } })
+    );
+    await user.click(screen.getByRole('button', { name: /lab-server/ }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).not.toHaveAttribute(
+      'aria-disabled'
+    );
+  });
+
+  it('disables Copy my username only while nothing names the username', async () => {
+    const user = userEvent.setup();
+    renderYou(
+      makeController({ ...joiner, connection: { ...connection, ssh_target: 'lab-server' } })
+    );
+    await user.click(screen.getByRole('button', { name: /lab-server/ }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: copy.copyUsername })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+  });
+
+  it('names the login’s server by the person’s own alias for it (D-ALIAS)', async () => {
+    const user = userEvent.setup();
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      server_label: 'lab-server',
+    };
+    renderYou(makeController({ connection: labelled, connections: [labelled] }));
+    const login = screen.getByText('crew_alice@lab-server');
+    expect(login.childNodes).toHaveLength(1);
+    expect(screen.queryByText(/52\.33\.141\.141/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: /crew_alice@lab-server/ }));
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu.querySelector('[data-crew-menu-header]') as HTMLElement).getByText(
+        'crew_alice@lab-server'
+      )
+    ).toBeInTheDocument();
   });
 
   it('tells a joiner the profile items open once they join', async () => {

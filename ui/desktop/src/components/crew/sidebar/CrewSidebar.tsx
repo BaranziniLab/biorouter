@@ -3,6 +3,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { AttentionSections } from './AttentionSections';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
+import { usePendingHost } from './sidebarView';
 import { StatusRow } from './StatusRow';
 import { TeamSections } from './TeamSections';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -29,13 +30,19 @@ export interface CrewSidebarProps {
  * layout (`.crew-sidebar` in `crew-app.css`); this component fills it.
  *
  * The team and channel rows are one roving-focus list, so Tab alone reaches only one of them;
- * the landmark's `aria-description` says how the arrow keys move through it (T-64).
+ * the landmark's `aria-description` says how the arrow keys move through it, and that Tab reaches
+ * a team's own buttons from its header (T-64, Q2-46).
+ *
+ * A joiner the host has not let in yet has no snapshot, so no sections: the middle then says what
+ * will appear there and who it waits for, instead of standing empty (Q2-43).
  *
  * Unmounted until the layout composes it. It reads everything through `useCrew()`, and opens
  * other areas' dialogs and panes through the controller's intents.
  */
 export function CrewSidebar({ agentsSection, renameEnabled = false }: CrewSidebarProps) {
   const crew = useCrew();
+  const { host } = usePendingHost(crew);
+  const pending = crew.status === 'not-joined' && !crew.snapshot;
   return (
     <SidebarAnnouncer>
       <nav
@@ -50,6 +57,11 @@ export function CrewSidebar({ agentsSection, renameEnabled = false }: CrewSideba
           <>
             <StatusRow />
             <div className="crew-sidebar-scroll" data-crew-sidebar-scroll="">
+              {pending && (
+                <p className="crew-sidebar-pending text-supporting" data-crew-sidebar-pending="">
+                  {sidebarCopy.pendingColumn(host)}
+                </p>
+              )}
               <AttentionSections />
               <TeamSections renameEnabled={renameEnabled} />
               {agentsSection}

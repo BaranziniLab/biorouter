@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { hideOthers } from 'aria-hidden';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, PendingJoin } from '../crewApi';
 import type { CrewController } from '../state/types';
@@ -187,6 +188,37 @@ describe('Waiting to join', () => {
     expect(within(rows[0]).getByRole('button', { name: 'Let @bob in' })).toHaveTextContent(
       sidebarCopy.waiting.letIn
     );
+  });
+
+  it('says whose turn it is while a joiner has not sent a code yet (Q2-42)', () => {
+    renderWithCrew(<AttentionSections />, asHost());
+    const rows = within(section(sidebarCopy.section.waiting)).getAllByRole('listitem');
+    // "@bob · invited", then what happens next — the joiner sends a code, then the host acts.
+    expect(rows[0].querySelector('[data-crew-waiting-state="invited"]')).toHaveTextContent(
+      `${sidebarCopy.waiting.separator} ${sidebarCopy.waiting.invited}`
+    );
+    expect(rows[0]).toHaveTextContent(`@bob · Bob Lee (name on the server account) · invited`);
+    const next = rows[0].querySelector('[data-crew-waiting-next]') as HTMLElement;
+    expect(next).toHaveTextContent('Let in… when they send their code');
+    // The button that acts on it is described by it.
+    expect(
+      within(rows[0]).getByRole('button', { name: 'Let @bob in' })
+    ).toHaveAccessibleDescription(sidebarCopy.waiting.nextStep);
+    // A code already entered is not "invited", and has no next step to wait for.
+    expect(rows[2].querySelector('[data-crew-waiting-state="invited"]')).toBeNull();
+    expect(rows[2].querySelector('[data-crew-waiting-next]')).toBeNull();
+  });
+
+  it('says nothing about a code for an invitation that ran out', () => {
+    renderWithCrew(
+      <AttentionSections />,
+      makeController({
+        snapshot: makeSnapshot({ pending_joins: [{ username: 'gail', expired: true }] }),
+      })
+    );
+    const row = within(section(sidebarCopy.section.waiting)).getByRole('listitem');
+    expect(row).not.toHaveTextContent(sidebarCopy.waiting.nextStep);
+    expect(row).not.toHaveTextContent(sidebarCopy.waiting.invited);
   });
 
   it('opens Let in for that username', () => {
@@ -385,6 +417,31 @@ describe('announcing Waiting to join (T-17)', () => {
     view.update(host([{ username: 'erin', approved: true, mismatched_attempts: 2 }]));
     expect(screen.getByRole('alert')).not.toBe(raised);
     expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('raises the warning even while a modal hides the rest of the page (Q2-47)', () => {
+    const view = renderAnnounced(host([{ username: 'erin', approved: true }]));
+    const hostSpan = document.querySelector('[data-crew-sidebar-alert]') as HTMLElement;
+    // `hideOthers` keeps an element that carries `aria-live`: that is what keeps the host exposed.
+    expect(hostSpan).toHaveAttribute('aria-live', 'assertive');
+    // A modal opens (Radix calls aria-hidden's `hideOthers` on its content)…
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    const undo = hideOthers(dialog);
+    try {
+      expect(hostSpan.closest('[aria-hidden="true"]')).toBeNull();
+      // …and a different code lands while it is open: still an alert, still reachable.
+      view.update(host([{ username: 'erin', approved: true, mismatched_attempts: 1 }]));
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        sidebarCopy.waiting.alertOtherDevice('erin')
+      );
+      // The host holds no controls, so keeping it exposed exposes nothing else.
+      expect(hostSpan.querySelector('button, a, input, [tabindex]')).toBeNull();
+    } finally {
+      undo();
+      dialog.remove();
+    }
   });
 
   it('clears both regions after a while, so a later message is heard as new', () => {

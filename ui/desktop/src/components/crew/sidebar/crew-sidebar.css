@@ -49,9 +49,12 @@
 
 /* ── The switcher band: one continuous top edge at y=44 ──────────────────── */
 .crew-sidebar-band {
-  display: flex;
+  display: grid;
   flex: none;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   align-items: center;
+  justify-items: start;
   height: var(--chrome-height);
   min-width: 0;
   padding-inline: 8px;
@@ -79,26 +82,42 @@
     border-color var(--dur-fast) var(--ease-out);
 }
 
-/* THE TITLEBAR RESERVE (issue #74). When the app sidebar is collapsed — the
-   default at a 1048px window — the floating titlebar controls (and on macOS
-   the traffic lights) sit over this band's left end, so the switcher clears
-   them by `AppLayout`'s own `--biorouter-titlebar-control-reserve`.
+/* THE TITLEBAR RESERVE (issue #74, Q2-39). When the app sidebar is collapsed —
+   the default at a 1048px window — the floating titlebar controls (and on
+   macOS the traffic lights, 172px in all) sit over this band's left end. The
+   switcher then leaves the band for a 36px row of its own below it, and the
+   band keeps only the reserve: nothing of Crew's sits under those controls, so
+   a click aimed at them can never land on the switcher.
 
-   ⚠ **A MARGIN, never padding.** Padding stays inside the trigger's box, so
-   the box would still start under the controls and a click aimed at them
-   could land on the switcher; a margin moves the box itself. It is keyed on
-   the app sidebar's own `data-state`, the same peer relationship
+   ⚠ **The column stays 240px.** Round 1 paid for the reserve by widening the
+   column (`240 + 172 - 16` = 396px, T-21), which left the channel 652px at a
+   1048px window — under `--crew-push-min` (800px), so the details pane covered
+   the conversation (Q2-39). A 288px column would still leave 760px. With the
+   switcher in its own row the column keeps 240px, the channel gets 808px, and
+   the pane pushes again. The switcher is never pushed right by a margin
+   either, so the name keeps the band's whole width (and 10ch at the least).
+
+   The band's hairline stays at y=44, where the channel header's is: one
+   continuous top edge. It is drawn at the foot of the band's first row rather
+   than as the box's border, which now sits under the switcher's row.
+
+   Keyed on the app sidebar's own `data-state`, the same peer relationship
    `ui/sidebar.tsx`'s `SidebarInset` margins use, so it follows a collapse on
    the same frame with no React read of the sidebar. A compact window with the
    sidebar opened by hand needs none: the sidebar then overlays this band. */
-[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher {
-  margin-left: var(--biorouter-titlebar-control-reserve);
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-band {
+  grid-template-rows: var(--chrome-height) 36px;
+  height: calc(var(--chrome-height) + 36px);
+  border-block-end: none;
+  background-image: linear-gradient(var(--border-subtle), var(--border-subtle));
+  background-repeat: no-repeat;
+  background-position: 0 calc(var(--chrome-height) - 1px);
+  background-size: 100% 1px;
 }
 
-/* ⚠ The reserve is paid for by WIDENING the column (T-21), never by the name:
-   inside a fixed 240px column the 172px macOS reserve left the switcher 51px
-   and the name read "c.". `crew-app.css` widens `--crew-sidebar-width` under
-   the same collapsed state, and the name keeps 10ch before it truncates. */
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher {
+  grid-row: 2;
+}
 
 .crew-sidebar-switcher:hover {
   border-color: var(--border-subtle);
@@ -210,6 +229,43 @@
    no press scale, so a click never shows the mode mid-tween. */
 .crew-sidebar-chip:active {
   scale: none;
+}
+
+/* ONE badge, `🔒 Private · UCSF` (Q2-45): the institution sits inside the
+   badge's own fill, never beside it as a second, unfilled chip. The inner
+   `PrivacyBadge` keeps its geometry and fill (the same token), so the two read
+   as one pill; this box supplies the fill under the institution and the end
+   inset. The institution takes the badge's ink and truncates first. */
+.crew-sidebar-chip-badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-sidebar-chip-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A joiner the host has not let in yet: what the empty column will hold, in
+   the column's own words (Q2-43). Not a row, not focusable. */
+.crew-sidebar-pending {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--text-muted);
 }
 
 /* The privacy popover's facts: two columns, label and value. */

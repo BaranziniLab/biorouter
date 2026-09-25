@@ -3,12 +3,17 @@ import { Avatar } from '../../ui/avatar';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { PersonName } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
-import { useSidebarView } from './sidebarView';
+import { knownUsername, loginLabel, usePendingHost, useSidebarView } from './sidebarView';
 import { YouMenu } from './YouMenu';
 import './crew-sidebar.css';
 
-/** The dev profile this app runs under, when it runs under one (`BIOROUTER_DEV_PROFILE_NAME`). */
+/**
+ * The dev profile this app runs under, when it runs under one (`BIOROUTER_DEV_PROFILE_NAME`) — in
+ * a development build only (Q2-43). A built app launched with a dev profile is what a person
+ * meets, and "Profile: frank" means nothing to them.
+ */
 export function devProfileName(): string | null {
+  if (!import.meta.env.DEV) return null;
   try {
     const value = window.appConfig?.get('BIOROUTER_DEV_PROFILE_NAME');
     return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -23,8 +28,11 @@ export function devProfileName(): string | null {
  *
  * A 20px avatar, my name (the identity `header` context), and on a second line the SSH login as
  * its own text node — the one the regression tests find (`fixture`, `alice@new-host`), rendered
- * with or without a verified snapshot. Before a snapshot exists there is no person to name: a
- * placeholder avatar and the login only.
+ * with or without a verified snapshot. The login names its server the person's own way
+ * (D-ALIAS): `crew_alice@lab-server` for a saved `crew_alice@52.33.141.141` whose server their
+ * SSH configuration calls `lab-server`; without that label it is the login exactly as saved.
+ * Before a snapshot exists there is no person to name: the login only, beside an avatar with the
+ * username's initial when the login names one (a joiner's blank circle said nothing, Q2-43).
  *
  * A dev profile's "Profile: {name}" badge is in the You MENU's header, not here (T-71): on the
  * row it took about 90px and truncated both lines ("Carol Ng…", "crew_caro…"), and it put a
@@ -37,10 +45,12 @@ export function devProfileName(): string | null {
 export function YouRow() {
   const crew = useCrew();
   const { dir } = useSidebarView(crew);
+  const { username: remembered } = usePendingHost(crew);
   const connection = crew.connection;
   if (!connection) return null;
   const me = dir.me;
   const profile = devProfileName();
+  const username = knownUsername(me, connection, remembered);
 
   return (
     <div className="crew-sidebar-you" data-crew-you="">
@@ -51,7 +61,7 @@ export function YouRow() {
               size={20}
               fallback={me?.avatar ?? null}
               name={me?.displayName ?? null}
-              username={me?.username ?? null}
+              username={username}
             />
             <span className="crew-sidebar-you-text">
               {me && (
@@ -63,7 +73,7 @@ export function YouRow() {
                 className="crew-sidebar-truncate font-mono text-supporting text-text-muted"
                 translate="no"
               >
-                {connection.ssh_target}
+                {loginLabel(connection)}
               </span>
             </span>
             <ChevronDown className="crew-sidebar-chevron" data-turn="half" aria-hidden="true" />

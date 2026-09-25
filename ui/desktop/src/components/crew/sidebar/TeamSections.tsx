@@ -61,9 +61,10 @@ export function teamRoles(
 
 /**
  * Every team section, then the quiet "+ Add team" row, as ONE roving-focus list: ↑/↓ move
- * between rows across teams, Tab leaves it. Shown whenever a verified (or last verified) snapshot
- * exists; while it is only the last verified copy the rows still navigate but nothing is
- * actionable.
+ * between rows across teams, Tab leaves it, and coming back in lands on the current channel —
+ * never on the last row arrowed to, which could be "+ Add channel" (Q2-46). Shown whenever a
+ * verified (or last verified) snapshot exists; while it is only the last verified copy the rows
+ * still navigate but nothing is actionable.
  */
 export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolean }) {
   const crew = useCrew();
@@ -111,12 +112,14 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
       className="crew-sidebar-section"
       data-crew-sidebar-teams=""
       onKeyDown={roving.onKeyDown}
+      onBlur={roving.onBlur}
     >
       {sections.map((section) => (
         <TeamSection
           key={section.id}
           section={section}
           role={roles.get(section.id) ?? { kind: 'member' }}
+          canManage={roles.get(section.id)?.kind === 'owner' || dir.viewerIsHost}
           collapsed={collapsedTeams.isCollapsed(section.id)}
           onCollapsedChange={(collapsed) => collapsedTeams.setCollapsed(section.id, collapsed)}
           archivedOpen={archivedOpen.has(section.id)}

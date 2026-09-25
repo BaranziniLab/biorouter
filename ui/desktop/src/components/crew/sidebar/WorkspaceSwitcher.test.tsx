@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { groupedFingerprint, workspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { crewStatusCopy } from '../state/copy';
 import { sidebarCopy } from './copy';
 import { unavailableReason } from './WorkspaceMenu';
@@ -15,6 +16,10 @@ import {
 } from './sidebarTestUtils';
 
 const copy = sidebarCopy.workspaceMenu;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 async function openMenu(name: RegExp = /^Fixture/) {
   const user = userEvent.setup();
@@ -51,13 +56,27 @@ describe('WorkspaceSwitcher', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('shows the full name in a tooltip, since the band can truncate it (T-21)', () => {
+  it('shows a truncated name in full in a tooltip to its RIGHT, clear of the status row (T-21, Q2-17)', async () => {
+    const user = userEvent.setup();
+    // jsdom lays nothing out: make the name need more room than it has.
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(80);
     renderWithCrew(<WorkspaceSwitcher />);
     const trigger = screen.getByRole('button', { name: /^Fixture/ });
-    expect(trigger.querySelector('.crew-sidebar-switcher-name')).toHaveAttribute(
-      'title',
-      'Fixture'
-    );
+    // No native title: the app's tooltip layer would open it down over the status text.
+    expect(trigger.querySelector('.crew-sidebar-switcher-name')).not.toHaveAttribute('title');
+    await user.hover(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Fixture');
+    const content = document.querySelector('[data-crew-switcher-tooltip]') as HTMLElement;
+    expect(content).toHaveAttribute('data-side', 'right');
+  });
+
+  it('offers no tooltip for a name that fits: it would only repeat itself', async () => {
+    const user = userEvent.setup();
+    renderWithCrew(<WorkspaceSwitcher />);
+    await user.hover(screen.getByRole('button', { name: /^Fixture/ }));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
   it('names the workspace by its own name when the broker sends one', () => {
@@ -97,6 +116,73 @@ describe('WorkspaceSwitcher', () => {
     const { menu } = await openMenu();
     const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
     expect(line).toHaveTextContent('Signed in as @alice on lab-server');
+  });
+
+  it('names the server by the person’s own alias for it when the daemon sends one (D-ALIAS)', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      server_label: 'lab-server',
+    };
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ connection: labelled, connections: [labelled] })
+    );
+    const { menu } = await openMenu();
+    const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
+    expect(line).toHaveTextContent('Signed in as @alice on lab-server');
+    // The raw address belongs to Connection settings' details, not this header.
+    expect(menu).not.toHaveTextContent('52.33.141.141');
+  });
+
+  it('shows the workspace key’s fingerprint after "identity verified" (Q2-04)', async () => {
+    const key = '9dacd3e46f083a8a5b76c22ba7c39d939c81538ed20c6ee33e46c9d92931cad3';
+    const expected = groupedFingerprint((await workspaceKeyFingerprint(key)) ?? '');
+    expect(expected).toMatch(/^[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}$/);
+    const keyed = { ...connection, workspace_public_key: key };
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ connection: keyed, connections: [keyed] })
+    );
+    const { menu } = await openMenu();
+    const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
+    const line = await within(header).findByText(expected);
+    expect(line.closest('[data-crew-menu-fingerprint]')).toHaveTextContent(
+      `${copy.fingerprint} ${expected}`
+    );
+    // After the verified status line, in the header the menu is described by.
+    const verified = within(header).getByText(crewStatusCopy.verified);
+    expect(verified.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(menu).toHaveAccessibleDescription(expect.stringContaining(expected));
+  });
+
+  it('shows no fingerprint for a key it cannot read', async () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const { menu } = await openMenu();
+    expect(menu.querySelector('[data-crew-menu-fingerprint]')).toBeNull();
+  });
+
+  it('tells a joiner that Reconnect and Disconnect keep their join code (Q2-43)', async () => {
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ snapshot: null, observedPrivacy: null, status: 'not-joined' })
+    );
+    const { menu } = await openMenu();
+    for (const name of [copy.reconnect, copy.disconnect]) {
+      const item = within(menu).getByRole('menuitem', { name });
+      expect(item).toHaveAccessibleDescription(copy.joinCodeKept);
+      expect(item).not.toHaveAttribute('aria-disabled');
+    }
+    expect(copy.joinCodeKept).toBe('Your join code stays the same.');
+  });
+
+  it('says nothing about a join code to a member', async () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const { menu } = await openMenu();
+    expect(menu.querySelector('[data-crew-join-code-kept]')).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: copy.reconnect })).not.toHaveAttribute(
+      'aria-describedby'
+    );
   });
 
   it('states only the server before this connection’s identity is verified', async () => {

@@ -64,18 +64,15 @@
   background-color: var(--background-canvas);
 }
 
-/* THE TITLEBAR RESERVE WIDENS THE COLUMN (T-21). While the app sidebar is
-   collapsed — the default at a 1048px window — the floating titlebar controls
-   sit over the Crew sidebar's band, and `crew-sidebar.css` moves the switcher
-   clear of them by `--biorouter-titlebar-control-reserve`. Inside a fixed
-   240px column that margin left the switcher 51px, and the workspace name read
-   "c.". So the column grows by the reserve instead, less 16px, which leaves the
-   switcher 208px of the 224px it has at rest (the band's 8px insets are spent
-   either way). Keyed on the app sidebar's own `data-state`, the peer relationship the
-   switcher's margin uses, so the two always move on the same frame. */
-[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-app {
-  --crew-sidebar-width: calc(240px + var(--biorouter-titlebar-control-reserve) - 16px);
-}
+/* THE COLUMN IS 240px IN EVERY STATE (Q2-39). Round 1 widened it by the
+   titlebar reserve while the app sidebar was collapsed (T-21), to
+   `240 + 172 - 16` = 396px. At a 1048px window that left the channel 652px,
+   under `--crew-push-min`, so the details pane covered the conversation
+   instead of pushing beside it. The reserve is now paid for vertically:
+   `sidebar/crew-sidebar.css` moves the switcher into a 36px row below the band
+   while the app sidebar is collapsed, so the channel keeps 808px and the pane
+   pushes. Do not widen the column to clear the controls: even 288px leaves
+   760px, still under 800. */
 
 /* A focused text field inside Crew firms its edge to the accent (T-16): the
    D-15 edge shift in `main.css` is layered and zero-specificity, so the field's
@@ -153,7 +150,15 @@
 }
 
 /* Rows: the 44px channel band, the connection bar (0 when it holds nothing),
-   the channel body. */
+   the channel body.
+
+   The channel narrows WITH the pane, frame by frame: column 2 is `auto`, so it
+   sizes to the aside's animated width on every frame of `crew-pane-push-in`
+   and `-out`. Measured in Chromium, in the running app and in
+   `sidebar/crewSidebarGeometry.browser.test.ts` (Q2-40, which read "the grid
+   snaps"; it does not). A `transition: grid-template-columns` here would never
+   run — the computed value `minmax(0, 1fr) auto` never changes — so there is
+   none. */
 .crew-stage {
   position: relative;
   isolation: isolate;

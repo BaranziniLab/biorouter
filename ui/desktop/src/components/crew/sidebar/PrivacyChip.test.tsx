@@ -1,19 +1,50 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { INSTITUTION_ID_PATTERN } from '../identity';
+import type { ConnectionStatusKey } from '../state/crewStatus';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
-import { PrivacyChip } from './PrivacyChip';
+import { CHIP_SILENT_STATUSES, PrivacyChip } from './PrivacyChip';
 import { PRIVACY_UPDATE_KEY } from './PrivacyPopover';
 import { verifiedPrivacy } from './sidebarView';
 import {
+  bob,
   connection,
   makeController,
   makeSnapshot,
   renderWithCrew,
   type ControllerOverrides,
 } from './sidebarTestUtils';
+
+// The chip reads the configured providers for the names they publish for an institution ID
+// (Q2-38). Stable callbacks, as the real context's are.
+const config = vi.hoisted(() => {
+  const state = { providers: [] as unknown[] };
+  return {
+    state,
+    getProviders: async () => state.providers,
+    read: async () => null,
+  };
+});
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return {
+    ...actual,
+    useConfig: () => ({ getProviders: config.getProviders, read: config.read }),
+  };
+});
+
+afterEach(() => {
+  config.state.providers = [];
+});
+
+/** A configured provider whose affiliation publishes "UCSF" as the name of `ucsf`. */
+const ucsfProvider = {
+  name: 'versa_azure',
+  is_configured: true,
+  affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+};
 
 const copy = sidebarCopy.privacy;
 
@@ -65,6 +96,46 @@ describe('PrivacyChip', () => {
     expect(badge).toHaveAttribute('data-enforcement', 'on');
     expect(chip).toHaveTextContent('Private · ucsf');
     expect(chip).toHaveClass('no-drag');
+  });
+
+  it('is ONE badge, the institution inside it, with no press scale (Q2-45)', () => {
+    renderWithCrew(<PrivacyChip />);
+    const chip = screen.getByRole('button', { name: 'Privacy: Private · ucsf' });
+    const pill = chip.querySelector('.crew-sidebar-chip-badge') as HTMLElement;
+    expect(pill).not.toBeNull();
+    // The padlock badge and the institution share one fill: both inside the one pill.
+    expect(pill).toContainElement(within(chip).getByTestId('privacy-badge'));
+    expect(pill).toContainElement(within(chip).getByText('ucsf'));
+    expect(Array.from(chip.children)).toEqual([pill]);
+    // Security state never animates: the shared press scale is overridden, not merely hidden.
+    expect(chip).toHaveClass('active:scale-100');
+    expect(chip.className).not.toContain('active:scale-[0.98]');
+  });
+
+  it('words the institution by the name a configured provider publishes for it (Q2-38)', async () => {
+    config.state.providers = [ucsfProvider];
+    renderWithCrew(<PrivacyChip />);
+    const chip = await screen.findByRole('button', { name: 'Privacy: Private · UCSF' });
+    expect(chip).toHaveTextContent('UCSF');
+    expect(chip).not.toHaveTextContent('ucsf');
+    const popover = await openPopover(/^Privacy: Private · UCSF/);
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Privacy: Private · UCSF');
+    expect(
+      within(popover).getByText('Only private and UCSF-approved models can read Fixture.')
+    ).toBeInTheDocument();
+    const values = Array.from(popover.querySelectorAll('dd')).map((dd) => dd.textContent);
+    expect(values[2]).toBe('UCSF');
+  });
+
+  it('keeps an institution ID nobody publishes a name for exactly as stored', () => {
+    config.state.providers = [
+      {
+        ...ucsfProvider,
+        affiliation: { kind: 'institutions', institutions: [{ id: 'sdsc', display_name: 'SDSC' }] },
+      },
+    ];
+    renderWithCrew(<PrivacyChip />);
+    expect(screen.getByRole('button', { name: 'Privacy: Private · ucsf' })).toBeInTheDocument();
   });
 
   it('is named "Privacy: Public" with no institution when the effective mode is Public', () => {
@@ -121,30 +192,8 @@ describe('PrivacyChip', () => {
     );
   });
 
-  it('tells a joiner the host has not let in that privacy shows after they join (T-06)', () => {
-    // A non-member's privacy is never verified, so "Checking privacy…" would never resolve.
-    renderWithCrew(
-      <PrivacyChip />,
-      makeController({
-        snapshot: null,
-        observedPrivacy: null,
-        effectivePrivacy: null,
-        status: 'not-joined',
-      })
-    );
-    expect(screen.getByText('Privacy shown after you join')).toBeInTheDocument();
-    expect(screen.queryByText(sidebarCopy.chip.checking)).toBeNull();
-    // Still plain text: no padlock and nothing to open, so it never looks verified.
-    expect(screen.queryByTestId('privacy-badge')).toBeNull();
-    expect(screen.queryByRole('button')).toBeNull();
-    expect(document.querySelector('[data-crew-privacy="not-joined"]')).toHaveAttribute(
-      'title',
-      sidebarCopy.chip.notJoinedHint
-    );
-  });
-
-  it.each(['connecting', 'checking', 'updates-unavailable'] as const)(
-    'keeps "Checking privacy…" for a member while the status is %s',
+  it.each(['connecting', 'checking', 'updating'] as const)(
+    'keeps "Checking privacy…" while the status is %s: the next snapshot verifies it',
     (status) => {
       renderWithCrew(
         <PrivacyChip />,
@@ -153,6 +202,43 @@ describe('PrivacyChip', () => {
       expect(screen.getByText(sidebarCopy.chip.checking)).toBeInTheDocument();
     }
   );
+
+  // Q2-17, Q2-01, Q2-43: "Offline · Checking privacy…" claimed work nothing was doing, and a
+  // joiner read "Privacy shown after…" cut off beside "Not joined yet".
+  it.each([
+    'offline',
+    'reconnecting',
+    'sign-in-needed',
+    'cant-connect',
+    'cant-verify',
+    'not-set-up',
+    'not-joined',
+    'updates-unavailable',
+  ] as const)(
+    'says nothing at all while the status is %s: nothing is checking privacy',
+    (status) => {
+      const { container } = renderWithCrew(
+        <PrivacyChip />,
+        makeController({ snapshot: null, observedPrivacy: null, effectivePrivacy: null, status })
+      );
+      expect(container).toBeEmptyDOMElement();
+      expect(CHIP_SILENT_STATUSES.has(status)).toBe(true);
+    }
+  );
+
+  it('checks every silent status against the status table, so a new one is decided on purpose', () => {
+    const decided: ConnectionStatusKey[] = [
+      'offline',
+      'reconnecting',
+      'sign-in-needed',
+      'cant-connect',
+      'cant-verify',
+      'not-set-up',
+      'not-joined',
+      'updates-unavailable',
+    ];
+    expect([...CHIP_SILENT_STATUSES].sort()).toEqual([...decided].sort());
+  });
 
   it('never shows an unverified mode as verified, whatever the status claims', () => {
     // Even a controller reading "connected" shows no mode until privacy is observed.
@@ -225,11 +311,11 @@ describe('the privacy popover', () => {
   it.each([
     [
       'public',
-      'Changes only your connection: public models could then read public-safe channels in Fixture. You’ll confirm first.',
+      'Makes only your connection Public: public models could then read the public-safe channels you can see in Fixture. Restricted channels stay private.',
     ],
     [
       'private',
-      'Changes only your connection. Fixture stays Private for everyone, so the models that can read it stay the same.',
+      'Makes only your connection Public. Fixture is Private for everyone, so the models that can read it stay the same.',
     ],
   ] as const)(
     'names what "Make my connection public…" changes when the workspace is %s',
@@ -239,22 +325,53 @@ describe('the privacy popover', () => {
       const button = within(popover).getByRole('button', { name: 'Make my connection public…' });
       expect(within(popover).getByText(line)).toHaveAttribute('data-crew-privacy-effect');
       expect(button).toHaveAccessibleDescription(line);
+      // Checked against the broker: a Public connection loses no channel, only which models may
+      // read what. The effect never says otherwise.
+      expect(line).not.toMatch(/lose|access/i);
     }
   );
 
+  it('makes the downgrade a quiet link, never the popover’s most prominent control (Q2-44)', async () => {
+    renderWithCrew(<PrivacyChip />);
+    const popover = await openPopover(/^Privacy: Private/);
+    const downgrade = within(popover).getByRole('button', { name: copy.makePublic });
+    const more = within(popover).getByRole('button', { name: copy.more });
+    for (const link of [downgrade, more]) {
+      // The link variant: no box, no fill, no outline.
+      expect(link.className).toContain('underline-offset-4');
+      expect(link.className).not.toMatch(/border-border-emphasized|bg-background-medium/);
+    }
+    expect(downgrade).toHaveClass('text-text-muted');
+  });
+
   it.each([
-    ['private', 'private', 'both', copy.why.both],
-    ['private', 'public', 'connection', copy.why.connection],
-    ['public', 'private', 'workspace', copy.why.workspace],
-    ['public', 'public', 'public', copy.why.public],
+    ['private', 'private', 'both', copy.why.both('Fixture')],
+    ['private', 'public', 'connection', copy.why.connection()],
+    ['public', 'private', 'workspace', copy.why.workspace('Fixture')],
+    ['public', 'public', 'public', copy.why.public('Fixture')],
   ] as const)(
-    'connection %s, workspace %s: always shows the "%s" why line',
+    'connection %s, workspace %s: always opens the note with the "%s" why',
     async (connectionMode, workspaceMode, why, line) => {
       renderWithCrew(<PrivacyChip />, privacyController(connectionMode, workspaceMode));
       const popover = await openPopover(/^Privacy:/);
-      expect(within(popover).getByText(line)).toHaveAttribute('data-crew-privacy-why', why);
+      const note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
+      expect(note).toHaveAttribute('data-crew-privacy-why', why);
+      expect(note.textContent?.startsWith(line)).toBe(true);
     }
   );
+
+  it('says it all in one note: the why, then who can see the workspace (Q2-44)', async () => {
+    renderWithCrew(<PrivacyChip />);
+    const popover = await openPopover(/^Privacy: Private/);
+    const notes = popover.querySelectorAll('[data-crew-privacy-why]');
+    expect(notes).toHaveLength(1);
+    // The host changes the workspace setting themselves, so nothing says only the host can.
+    expect(notes[0]).toHaveTextContent(
+      `${copy.why.both('Fixture')} ${copy.audience('Fixture', null)}`
+    );
+    // Summary, facts, note, effect: never the five blocks it was.
+    expect(popover.querySelectorAll('p')).toHaveLength(3);
+  });
 
   it('states the three facts, with the institution as its bare ID and no stray period', async () => {
     renderWithCrew(<PrivacyChip />);
@@ -370,7 +487,11 @@ describe('the privacy popover', () => {
     const popover = await openPopover(/^Privacy: Public/);
     fireEvent.click(within(popover).getByRole('button', { name: copy.makePrivate }));
     fireEvent.click(await screen.findByRole('button', { name: copy.cancel }));
-    expect(await screen.findByText(copy.why.public)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector('[data-crew-privacy-why]')).toHaveTextContent(
+        copy.why.public('Fixture')
+      )
+    );
     expect(controller.updateConnection).not.toHaveBeenCalled();
   });
 
@@ -386,15 +507,32 @@ describe('the privacy popover', () => {
   });
 
   it('tells a member, not the host, that only the host changes the workspace setting', async () => {
-    const member = privacyController('public', 'private', { isHost: false });
+    const member = privacyController('public', 'private', {
+      isHost: false,
+      snapshot: makeSnapshot({
+        actor: bob,
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: 'ucsf',
+          policy_epoch: 1,
+        },
+      }),
+    });
     const view = renderWithCrew(<PrivacyChip />, member);
     let popover = await openPopover(/^Privacy: Private/);
-    expect(within(popover).getByText(copy.hostOnly)).toBeInTheDocument();
+    let note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
+    expect(note).toHaveTextContent(copy.hostOnly('Fixture'));
+    // …and who can see it at all: "Private" is about models, never about people (Q2-44).
+    expect(note.textContent).toMatch(/Only people .*@alice.* lets in can see Fixture\.$/);
     view.unmount();
 
     renderWithCrew(<PrivacyChip />, privacyController('public', 'private', { isHost: true }));
     popover = await openPopover(/^Privacy: Private/);
-    expect(within(popover).queryByText(copy.hostOnly)).toBeNull();
+    note = popover.querySelector('[data-crew-privacy-why]') as HTMLElement;
+    expect(note).not.toHaveTextContent(copy.hostOnly('Fixture'));
+    expect(note).toHaveTextContent(copy.audience('Fixture', null));
   });
 
   it('disables the change while one is already running', async () => {
