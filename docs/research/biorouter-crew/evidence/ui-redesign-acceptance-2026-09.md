@@ -1,7 +1,7 @@
 # Crew UI redesign acceptance evidence, 2026-09
 
 > **What this is.** The acceptance record of the Crew UI redesign and naming campaign (plan §16): four live QA rounds with fresh novice critics on a disposable AWS fixture, the security results of each round, the seven final acceptance lanes on the final build `461f7899`, the fixture's provenance, and what is still unverified.
-> **Status:** Current. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z and is complete except the fixture teardown receipts, which the close-out's Finish phase adds to [Fixture teardown](#fixture-teardown). A result here holds for the build it names; later commits need their own runs.
+> **Status:** Current and complete. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z, and the fixture's teardown, independently verified, at 16:52–17:13Z ([Fixture teardown](#fixture-teardown)). A result here holds for the build it names; later commits need their own runs.
 > **Audience:** Maintainers deciding what Crew can claim after this campaign, reviewers of the security-sensitive commits, and whoever resumes Crew acceptance.
 
 The campaign ran the redesigned desktop Crew view and the name-first identity work against real
@@ -76,7 +76,7 @@ Three EC2 runs served the campaign, all in `us-west-2`, all tagged
 |---|---|---|---|
 | `crew-ui-qa-20260924T013533Z-b9155424` | `i-0d7277eaa90124c45` | Resume-time checks: the baseline novice run, fourth-profile CLI refusal, the first live fairness pass, the broker upgrade and downgrade | The deadline supervisor ran cleanup at 2026-09-24T13:36:06Z and recorded `cleanup_verified` (instance terminated; volume, security group and key pairs absent; local keys removed) |
 | `crew-ui-live-20260924T141727Z-10eda2e0` | `i-001b9863cb7c170bc` | Nothing: no host key appeared in the console within 360 s | Cleaned up by its own failure path; an independent check at 14:24:50Z found the instance terminated and the volume, security group and key pair not found |
-| `crew-ui-live-20260924T142514Z-50d6da52` | `i-00efab0e3576ff58d` (`52.33.141.141`) | Rounds 1–4 and the final lanes | Active at this writing; see [Fixture teardown](#fixture-teardown) |
+| `crew-ui-live-20260924T142514Z-50d6da52` | `i-00efab0e3576ff58d` (`52.33.141.141`) | Rounds 1–4 and the final lanes | Torn down by the close-out's Finish phase: `cleanup_verified` at 2026-09-25T16:55:06Z, then independently verified; see [Fixture teardown](#fixture-teardown) |
 
 Controls on the live run:
 
@@ -94,8 +94,8 @@ Controls on the live run:
   (alice, bob, carol, foreign, dave, erin), frank in round 2, henry and gina in round 3, iris and jack in
   round 4. Each new account was registered in the fixture state before it was created, so cleanup deletes its key.
 - **Profiles:** one local profile per person with its own shared daemon and development Electron app.
-  Each carries the working Versa key in its own `secrets.yaml` (the same key in every profile, copied
-  without printing). The fourth profile's daemon ran behind a CONNECT recorder that forwards nothing,
+  Each carried the working Versa key in its own `secrets.yaml` until the teardown deleted it (the same
+  key in every profile, copied without printing). The fourth profile's daemon ran behind a CONNECT recorder that forwards nothing,
   whose log read 0 bytes at every recorded check in every round.
 - **Deadline:** created with `ExpiresAt` 2026-09-25T02:25:14Z. Extended at 2026-09-24T21:20Z to
   2026-09-25T14:25:14Z (supervisor PID 710) and at 2026-09-25T10:35Z to 2026-09-26T02:25:14Z
@@ -103,12 +103,45 @@ Controls on the live run:
 
 ### Fixture teardown
 
-Pending. The close-out's Finish phase runs
-`python3 /private/tmp/crew-ui-redesign/live/fixture/tools/cleanup.py /private/tmp/crew-ui-redesign/live/fixture/aws/fixture-state.json`
-and records its receipts here: the instance, volume `vol-0500a9e73aee9221f`, security group
-`sg-034b925eff57a0c0e`, key pair `crew-ui-live-20260924T142514Z-50d6da52-bootstrap` and all eleven
-local user keys. If Finish does not run, supervisor PID 67165 runs the same cleanup at
-2026-09-26T02:25:14Z.
+Done by the close-out's Finish phase on 2026-09-25, 16:52–17:13Z, about nine hours before the
+supervisor's deadline. Receipts: `/private/tmp/crew-ui-redesign/live/evidence-final/teardown/RESULT.md`
+with `raw/`.
+
+- **Stage stopped first.** The eleven Electron apps and the eleven profile daemons were stopped
+  through the harness, by exact PID after matching each process's own profile environment. Jack's
+  first daemon stop answered `connection was not ready`, and a retry stopped it. The eleven SSH
+  bridges exited with their daemons. The CONNECT recorder (41762) was stopped with its log still at
+  0 bytes. A scan of every process's command line and environment then found nothing naming a stage
+  profile, a bridge socket or the fixture IP; its positive control was found.
+- **Cleanup.** `python3 /private/tmp/crew-ui-redesign/live/fixture/tools/cleanup.py
+  /private/tmp/crew-ui-redesign/live/fixture/aws/fixture-state.json` printed `cleanup_verified` at
+  16:55:06Z (instance, volume, security group, key pairs and local keys each verified), and deadline
+  supervisor 67165 was then stopped.
+- **Independent check.** Read-only `aws ec2 describe-*` calls in us-west-2 at 16:55Z, 17:10Z and
+  17:12Z agreed:
+  - `i-00efab0e3576ff58d` is `terminated` ("User initiated (2026-09-25 16:54:41 GMT)") with no
+    volume or ENI.
+  - Volume `vol-0500a9e73aee9221f`, security group `sg-034b925eff57a0c0e`, its VPN rule
+    `sgr-06dfcd2e553b28434`, ENI `eni-0730f6b1a6ddec03a` and key pair
+    `crew-ui-live-20260924T142514Z-50d6da52-bootstrap` (by name and by id) each return `NotFound`.
+  - No key pair, volume, security group, ENI, snapshot, image, Elastic IP or non-terminated instance
+    carries `Project=biorouter-crew-qa`.
+  - The tag index (`describe-tags` and the Resource Groups Tagging API) still listed four rows, which
+    is its usual lag. EC2 was asked about each row directly, and each is terminated or `NotFound`.
+- **Keys.** The bootstrap key and all eleven users' private and public keys are absent. No file with
+  any of those names exists anywhere under `/private/tmp/crew-ui-redesign`.
+  - A content sweep for private-key blocks, with a positive control, finds only the round-4
+    security critic's synthetic decoys in the fourth profile's home. None of them matches a fixture
+    public key.
+- **Versa key.** The single `VERSA_AZURE_API_KEY` line was deleted from all 16 QA `secrets.yaml`
+  files: the eleven live profiles, `secjoin`, and four in the earlier `fixture/profiles`. The files
+  are kept, now empty and still 0600.
+  - A search for the key's value, rather than for file names, found one more copy. The round-4
+    security critic had hard-linked the fourth profile's `secrets.yaml` as a decoy, and rewriting
+    `secrets.yaml` left the old contents alive under that name alone. That copy was stripped too,
+    and the value now appears in no file under the stage tree.
+  - The unused `secjoin` profile directory was removed.
+  - The preserved source profile and `~/.config/biorouter` were not touched.
 
 ## Live QA rounds
 
