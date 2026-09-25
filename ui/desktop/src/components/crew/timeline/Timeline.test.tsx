@@ -1849,6 +1849,12 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     expect(
       rule(".crew-md-code-body[data-overflow='true'],\n.crew-md-table-scroll[data-overflow='true']")
     ).toMatch(/mask-image: linear-gradient\(to right, black calc\(100% - 40px\), transparent\);/);
+    // The mask would fade the right side of the box's inset focus edge too.
+    expect(
+      rule(
+        ".crew-md-code-body[data-overflow='true']:focus-visible,\n.crew-md-table-scroll[data-overflow='true']:focus-visible"
+      )
+    ).toMatch(/mask-image: none;/);
   });
 
   it('never splits a table heading or a number, and draws horizontal rules only (Q2-52)', () => {

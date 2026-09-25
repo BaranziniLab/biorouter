@@ -464,6 +464,14 @@
   mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
 }
 
+/* Focused from the keyboard, the box drops its fade: the mask takes alpha from
+   everything it covers, the inset focus edge included, so the ring's right side
+   faded out with the last column. The whole ring is the sign it scrolls now. */
+.crew-md-code-body[data-overflow='true']:focus-visible,
+.crew-md-table-scroll[data-overflow='true']:focus-visible {
+  mask-image: none;
+}
+
 .crew-md-list {
   padding-left: 1.5em;
   list-style: disc outside;
