@@ -1,7 +1,7 @@
 # BioRouter Crew implementation plan
 
 > **What this is.** The plan for BioRouter Crew: SSH-reached, rootless lab collaboration with owned agents and mandatory Private/Public boundaries, covering architecture, identity, privacy enforcement, storage, transfers, UI and agent tools, packaging, testing, and the requirements and work packages added when work resumed (§16).
-> **Status:** Current. Implementation in progress on branch `codex/biorouter-crew`; §16 was last updated on 2026-09-25, at the close-out. A requirement written here is not evidence: measured results are in the [status ledger](implementation-status.md), and live package status and the dated decisions log are in the [resume handoff](handoff-2026-09-24.md).
+> **Status:** Current. Implementation in progress on branch `codex/biorouter-crew`; §16 was last updated on 2026-09-25, after the close-out's final polish (code HEAD `dc274655`). A requirement written here is not evidence: measured results are in the [status ledger](implementation-status.md), and live package status and the dated decisions log are in the [resume handoff](handoff-2026-09-24.md).
 > **Audience:** Implementers, reviewers and testers of Crew, and the maintainers who decide its scope.
 
 Status: implementation in progress September 22, 2026 under the user's approved requirements. The rootless broker, saved SSH manager, native Crew view and built-in MCP capability are present in the development worktree; acceptance remains incomplete. See [the evidence ledger](implementation-status.md) for measured results rather than inferring readiness from this plan. This revision supersedes the earlier administrator-managed deployment recommendation. Research performed September 21, 2026 Pacific / September 22 UTC. Source baseline: `314f3b268c24663a8696dbbbd5aa76a171d0fab8` on `main`. Implementation branch: `codex/biorouter-crew` in `/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter`.
@@ -1217,7 +1217,7 @@ Coordinator decision under naming criterion 5 and D17: both remaining conditions
 
 ### Final status (2026-09-25)
 
-**Implemented.** All 28 packages are done, the round-1 to round-4 fix groups are committed with independent review (adversarial for the security-sensitive groups), and `join-by-name` is on by default. The final build is `461f7899`; its artifacts, the four live QA rounds and the seven final acceptance lanes are in the [redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md). Against the criteria above:
+**Implemented.** All 28 packages are done, the round-1 to round-4 fix groups are committed with independent review (adversarial for the security-sensitive groups), and `join-by-name` is on by default. The seven final acceptance lanes ran on `461f7899`. A final polish then fixed their findings in 15 commits, ending at the final code head **`dc2746551fb422f271075e7291c876d97b53c153`**, and re-checked the fixes live there. The artifacts, the four live QA rounds, the final lanes and the final polish are in the [redesign acceptance evidence](evidence/ui-redesign-acceptance-2026-09.md). Against the criteria above:
 
 - **GUI criterion 1 (novices unaided).** The unaided task rate went 39% → 57% → 85% → 91% over rounds 1–4. The round-4 host and joiner, both new, finished 21 of their 22 tasks unaided; the round's two failures (Crew not reconnecting by itself, Q4-01 and Q4-02) were fixed and a fresh novice re-checked them on `461f7899` with no clicks. Two stand-ins qualify this: drag and paste were sent as DevTools events, and the stage answered the native share confirmation automatically. The security critics saw the real confirmation, with that gate off, in rounds 3 and 4.
 - **GUI criteria 2–6.** The design critic scored the redesign 9/10 in round 4 (about 4½ in round 1). Keyboard, forced-colours and contrast passes ran every round; `lint:check`'s 884 contrast assertions pass; under reduced motion, 396 of 396 sampled animations and transitions ran at 0.01 ms in round 4.
@@ -1225,7 +1225,16 @@ Coordinator decision under naming criterion 5 and D17: both remaining conditions
 - **Naming criteria 1–4.** People appear as display name plus `@username` in both interfaces; the security critics found no machine ID on Crew screens in rounds 2–4; team names are unique per workspace in the broker; invitations go by `@username`, and seven new accounts joined by invitation and device code.
 - **Naming criterion 5.** Met, and enabled by default ([above](#join-by-name-enabled-by-default-2026-09-25)).
 
-**One acceptance assertion failed.** G12 (d): a grant made stale by a workspace policy change is refused before any dispatch, but the person sees the broker's raw `grant_expired` JSON envelope rather than the plain "settings changed" sentence, because the turn-start path does not reword broker refusals (D-1). Five P2/P3 revoke findings and a stale connect-error bar (NEW-1) are also open; none leaks data.
+**One acceptance assertion failed on `461f7899`, and passes on `dc274655`.** G12 (d): a grant made stale by a workspace policy change was refused before any dispatch, but the person saw the broker's raw `grant_expired` JSON envelope rather than the plain "settings changed" sentence (D-1).
+
+**The final polish (2026-09-25).** Two fix groups, each reviewed adversarially, fixed the final lanes' findings ([evidence](evidence/ui-redesign-acceptance-2026-09.md#final-polish-2026-09-25)):
+
+- **D-1.** The daemon now ends a grant the broker refuses as `grant_expired`, and the person reads "Crew settings changed since access was granted. Grant access again from Crew." in both interfaces.
+- **The five revoke findings.** Most significantly F3: the daemon now confirms an unconfirmed revocation by itself when the connection returns.
+- **NEW-1, F-1 and P-1.**
+- **B-1.** A deterministic worker-allowlist test (`crates/biorouter/tests/crew_worker_allowlist.rs`) covers the half of G12 (b) the live model never exercised.
+
+The local gate was ALL_GREEN on `dc274655`. A live re-check on a new disposable fixture passed all nine items it covered. It found three new findings, none leaking data: NEW-2 (P2, Crew opened after a drop stays Offline after the daemon reconnects), NEW-3 (P3, a daemon-confirmed revoke is undated in Past access) and NEW-4 (P3, "Confirmed." shows for about 7 s). The other final lanes were not re-run on `dc274655`.
 
 **Deferred, with reasons:**
 
@@ -1236,9 +1245,19 @@ Coordinator decision under naming criterion 5 and D17: both remaining conditions
 - **Chat-product and app-level items**: raw tool rows and JSON in the agent conversation, the "All extensions loaded" toast, Recents lag, indistinguishable task tabs, the raw model id and "Copied!" against "Copied". They belong to the chat product, not Crew.
 - **Slice S4** (discovery and 8-digit codes): D10, pending its own design, review and a maintainer decision.
 - **Residuals carried from integrate-verify** that no later commit names: `launch_run` failures after a successful setup, reads that do not refresh the registry from disk (D8), the thin GATE-1 stack margin, N-CORE-S3's per-join `last_refusal`, and `stream-json` carrying no `seq`.
-- **The final lanes' findings**, found after the last fix round; the close-out has no fix phase after acceptance.
+- **The findings the final polish left open:**
+  - NEW-2, NEW-3 and NEW-4.
+  - F1's hold is renderer-only: the daemon's in-place edit has no Crew check.
+  - The desktop does not list `replaced_grants`.
+  - From the final lanes: the institution lane's `Daemon returned 400:` prefix and repeated sentence, a new task chat missing from Recents, the mixed lane's low items, and the self-test's double printing.
 
-**Still required before merge or release:** human review of the security-sensitive commits (SCOPE-BIND, direct add, observer re-authorization and batching, the keepalive, host start, trusted drop, the file-registration credential floor, the `join-by-name` default, and D7/D8 and D14); hosted CI on the pushed final head; the fixture teardown receipts; and the rows the [status ledger](implementation-status.md) still holds open (Windows and Linux desktops, MFA, load, storage faults).
+**Still required before merge or release:**
+
+- **Human review of the security-sensitive commits.** SCOPE-BIND, direct add, observer re-authorization and batching, the keepalive, host start, trusted drop, the file-registration credential floor, the `join-by-name` default, and D7/D8 and D14. From the final polish: the automatic revocation retry, the policy-changed mapping, the connection-save no-op and the worker-allowlist test. The [handoff](handoff-2026-09-24.md#security-sensitive-commits-that-need-human-review-before-merge) lists the commits.
+- **A green hosted CI on the pushed final head.** Its result is recorded in PR #366.
+- **The rows the [status ledger](implementation-status.md) still holds open.** Windows and Linux desktops, MFA, load and storage faults.
+
+Both fixtures' teardowns are recorded and independently verified.
 
 <!-- Package outcome paragraphs are added above this comment; keep Related documentation last. -->
 

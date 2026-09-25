@@ -1,7 +1,7 @@
 # Crew UI redesign acceptance evidence, 2026-09
 
-> **What this is.** The acceptance record of the Crew UI redesign and naming campaign (plan §16): four live QA rounds with fresh novice critics on a disposable AWS fixture, the security results of each round, the seven final acceptance lanes on the final build `461f7899`, the fixture's provenance, and what is still unverified.
-> **Status:** Current and complete. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z, and the fixture's teardown, independently verified, at 16:52–17:13Z ([Fixture teardown](#fixture-teardown)). A result here holds for the build it names; later commits need their own runs.
+> **What this is.** The acceptance record of the Crew UI redesign and naming campaign (plan §16): four live QA rounds with fresh novice critics on a disposable AWS fixture, the security results of each round, the seven final acceptance lanes on `461f7899`, the final polish that fixed their findings and re-checked the fixes live on `dc274655`, each fixture's provenance and teardown, and what is still unverified.
+> **Status:** Current and complete. It records completed runs from 2026-09-24 14:13Z to 2026-09-25 15:11Z, the campaign fixture's teardown, independently verified, at 16:52–17:13Z ([Fixture teardown](#fixture-teardown)), and the [final polish](#final-polish-2026-09-25), whose live re-check ran 20:35–21:35Z on a second fixture that was torn down and verified the same way. A result here holds for the build it names; later commits need their own runs.
 > **Audience:** Maintainers deciding what Crew can claim after this campaign, reviewers of the security-sensitive commits, and whoever resumes Crew acceptance.
 
 The campaign ran the redesigned desktop Crew view and the name-first identity work against real
@@ -34,8 +34,16 @@ deployment or HIPAA compliance.
   answered it automatically), the daemon's worker allowlist exercised by a model, Windows and Linux
   desktops, MFA and jump hosts (the fixture used keys only), load, storage faults, and hosted CI on
   `461f7899`. [What remains unverified](#what-remains-unverified) lists each one.
-- **One assertion failed:** G12 (d). A policy change after a grant was refused correctly, but the
-  person saw the broker's raw JSON envelope instead of the plain sentence.
+- **One assertion failed on `461f7899`:** G12 (d). A policy change after a grant was refused
+  correctly, but the person saw the broker's raw JSON envelope instead of the plain sentence.
+- **Established on `dc274655`, the final polish:**
+  - G12 (d) now passes in both interfaces, and the revoke, connection and transfer findings of the
+    final lanes pass their live re-check.
+  - The worker allowlist is covered by a deterministic test that sends the person-only methods with
+    no model.
+
+  Three new P2/P3 findings came out of that re-check ([Final polish](#final-polish-2026-09-25)).
+  The other final lanes were not re-run on `dc274655`.
 
 ## Builds under test
 
@@ -77,6 +85,11 @@ Three EC2 runs served the campaign, all in `us-west-2`, all tagged
 | `crew-ui-qa-20260924T013533Z-b9155424` | `i-0d7277eaa90124c45` | Resume-time checks: the baseline novice run, fourth-profile CLI refusal, the first live fairness pass, the broker upgrade and downgrade | The deadline supervisor ran cleanup at 2026-09-24T13:36:06Z and recorded `cleanup_verified` (instance terminated; volume, security group and key pairs absent; local keys removed) |
 | `crew-ui-live-20260924T141727Z-10eda2e0` | `i-001b9863cb7c170bc` | Nothing: no host key appeared in the console within 360 s | Cleaned up by its own failure path; an independent check at 14:24:50Z found the instance terminated and the volume, security group and key pair not found |
 | `crew-ui-live-20260924T142514Z-50d6da52` | `i-00efab0e3576ff58d` (`52.33.141.141`) | Rounds 1–4 and the final lanes | Torn down by the close-out's Finish phase: `cleanup_verified` at 2026-09-25T16:55:06Z, then independently verified; see [Fixture teardown](#fixture-teardown) |
+
+Two more runs, `crew-polish-live-20260925T203721Z-ffb025ea` (failed at launch, cleaned) and
+`crew-polish-live-20260925T203843Z-b99bc64b` (two accounts), served the final polish's live
+re-check. Both were torn down and independently verified by 21:30Z on 2026-09-25; see
+[Final polish](#final-polish-2026-09-25).
 
 Controls on the live run:
 
@@ -441,13 +454,221 @@ None of these is a leak. They were found after the last fix round, so none is fi
 | F2 | Institution | P3 | The mismatch sentence shows twice after a bypassed Start |
 | — | Self-test | Display | `run --output-format text` prints each tool output twice |
 
+The [final polish](#final-polish-2026-09-25) below fixed D-1, NEW-1, revoke F1–F5, F-1 and P-1 on
+`dc274655` and re-checked them live. It did not touch the institution lane's F1 and F2, O-3, the
+mixed lane's low items or the self-test's double printing.
+
+## Final polish (2026-09-25)
+
+After the close-out, a final-polish pass fixed the final lanes' findings, ran the local gate on the
+result, and re-checked the fixes live on a new, smaller fixture. It ends at code HEAD
+**`dc2746551fb422f271075e7291c876d97b53c153`** ("fix(crew): bring the F3 change back inside the
+lint, seam-audit and OpenAPI gates"), 15 commits after `461f7899`. Every other result in this
+record is still a result on `461f7899`. The three-user, institution, mixed GUI and CLI, fairness and
+self-test lanes were **not** re-run on `dc274655`.
+
+Two finding IDs from lanes this record does not otherwise list are used here. **B-1** is the denial
+matrix's coverage note: the worker allowlist was never exercised, because the model declined to
+send the methods ((b) above). **O-1 (denial matrix)** is its other note: two renderers moved to
+`#/crew` with no navigation by that lane. It is not the three-user lane's O-1, which is F4 here.
+
+### What was fixed
+
+Two fix groups ran in parallel, one for the daemon, core and CLI and one for the renderer. Each was
+reviewed adversarially by an independent agent that re-ran the suites and inspected the commits.
+The renderer reviewer also put the old code back one item at a time and confirmed that each new
+test failed.
+
+- **Daemon, core and CLI.** The first review failed F3 and P-1:
+  - an unconfirmed stop was still dropped for good when its chat was granted again or its session ID reissued;
+  - a refused connection edit still dropped the bridge.
+
+  Round 2 fixed both (`07c2a104f`, `f3dd33761`), and the re-review on `f3dd33761` passed.
+- **Renderer.** The first review passed its four commits.
+
+| Finding | From | Fix | Commits | Regression tests |
+|---|---|---|---|---|
+| D-1 | Denial matrix, P2 (G12 (d)) | The daemon now handles the broker's `grant_expired` refusal. It marks the grant expired here (`revocation: ended_by_workspace`), and the person reads "Crew settings changed since access was granted. Grant access again from Crew." at turn start in both interfaces and in the tool path. The chat shows a "Crew access ended" card with no JSON and no Retry, and its bar offers **Grant access again**. A run that ran out of time gets its own sentence and is not marked revoked | `cd94f12fb`, `b6226ac59`, `9248dcbb0` | Fake-broker tests in `keepalive_tests.rs`, text tests in `mod.rs` and `crew_extension.rs`, `ChatTurnError.test.tsx`, `chatCrewAccess.acceptance.test.tsx` |
+| F3 (security-relevant) | Revoke, P2 | The daemon now asks the workspace again for an unconfirmed revocation by itself (see below this table). The 503, the CLI and the GUI now say Biorouter confirms by itself; the GUI then shows "Confirming with the workspace…" and "Confirmed." | `cd94f12fb`, `b88ea1476`, `cf02f2d03`, `07c2a104f`, `dc2746551`, `b6226ac59` | Seven fake-broker tests: reconnect, keepalive re-dial, refused revoke, restart, cross-process merge, and grant-again and reissued-ID, each in a process of its own. Also a task-ledger test and `crew_session_revoke_routes.rs` |
+| NEW-1 | Novice re-check, P2 | When the connection verifies again, whether after a person's Connect or the daemon's own re-dial, the failed-Connect note clears. The bar and the workspace menu word a failure by its kind ("Can't reach X.", "Can't connect to X."), never the transport record | `73aa6ccd2`, `d8e8b1bfc` | `offlineFollow.test.tsx`, `ConnectionBar.test.tsx`, `WorkspaceSwitcher.test.tsx` |
+| F1 | Revoke, P2 | The chat checks the Crew hold before every path that sends outside the composer: Edit in place, Retry, Send again, a queued message, compact, a workflow activity, steer, the initial message and artifact repair. A refused send changes nothing, and a refused edit keeps the editor open with the person's text | `9248dcbb0` | `crewResendHold.test.tsx`, plus a source guard on `BaseChat.tsx`'s wiring |
+| F2 | Revoke, P2 | While the workspace is offline, the Crew view offers the Chat access pane beside the offline screen, with Revoke; a 503 reads "Stopped on this device" | `b6226ac59` | `offlineRevoke.test.tsx`, `ChatAccessPane.test.tsx` |
+| F4 | Revoke and three-user lanes, P2 | The CLI's text `grants list` says what its JSON says: Task or Chat from `kind`, the chat's title, Expired rather than Active for a lapsed grant, and a state word for unconfirmed and workspace-ended grants | `2f5e33618`, `07c2a104f` | `grants_text_matches_the_json` |
+| F5 | Revoke, P3 | Past access rows carry the time of a revoke this window saw confirmed ("Revoked · 2:05 PM") | `b6226ac59` | `accessRows.test.ts` |
+| F-1 | Denial matrix, P3 | A transfer the workspace refuses ends `failed` with a sentence from `crew::refusal_sentence`, for a removed member "That channel isn't available to you. It may be archived, or you may not be in it.". A pause or a dropped connection still ends `needs_file_selection` | `4f2833b48`, `d6213c564` | Two tests in `transfers_tests.rs`, plus the refusal-text table |
+| P-1 | Denial matrix, P3 | A connection PATCH that changes nothing is a no-op: no save, no epoch bump, no grant expiry, no bridge drop. It is judged under the registry's locks against `connections.json` as it is now. Every refusal the save would make is asked before the bridge is touched | `cd94f12fb`, `fb2c0f4a8`, `f3dd33761` | `saving_a_connection_unchanged_changes_nothing` (no-op, refused edits, a change another process saved, a real change) |
+| B-1 | Denial matrix coverage note (G12 (b)) | A new offline integration binary, `crates/biorouter/tests/crew_worker_allowlist.rs`, with no model involved (details below this table) | `9f84b4f08` | The binary itself, 1 test |
+| O-1 (denial matrix) | Denial matrix note | No code moves a window to Crew on an event; the only navigations are a person's click, Enter or Send. The likeliest cause was the concurrent novice lane driving the same apps | `b6226ac59` | `integration/crewNavigation.source.test.ts` (a census of the navigations), plus a behaviour test that the chat stays put through grant, turn, connection and window events |
+
+**How the F3 retry works:**
+
+- **When it asks.** At every connect: a person's Connect, a keepalive re-dial, or a request that
+  re-dials. While connected, it asks again after 5 s, doubling to 5 min, until the workspace
+  confirms. If the workspace answers and refuses `run.revoke`, the daemon asks again only at the
+  next reconnect.
+- **What is saved.** The grant's state is saved as `revocation` (`unconfirmed`, `confirmed` or
+  `ended_by_workspace`) with `remote_revocation_confirmed`. The state survives a restart, and a
+  confirmation is never replaced by another process's older answer.
+- **What is kept.** An unconfirmed stop is kept as `replaced_grants` when its chat is granted again
+  or its session ID is reissued, and the retries continue for it.
+- **Task ledger.** A task's ledger follows the confirmation.
+
+**How the B-1 test works.** It runs a real `Agent::reply` on a chat granted through the real grant
+path, with a Private model affiliated with `ucsf`.
+
+- **Methods sent:** a scripted provider sends `crew__request` for `enrollment.approve`,
+  `team.add_member`, `channel.add_member`, `run.revoke` and `policy.set`.
+- **Assertions:** each call is refused with "Operation unavailable to a scoped Crew worker". The fake
+  broker, which logs every frame, receives none of those methods.
+- **Checked against a disabled allowlist:** the test fails.
+- **Offline:** it runs in CI's loopback-only integration step.
+
+The reviewers' non-blocking notes, kept here because they bound what the fixes claim:
+
+- **F1's hold is in the renderer.** The daemon's in-place edit (`edit_message` in
+  `routes/session.rs`) has no Crew check. So a chat revoked from the CLI or another window can still
+  have its stored transcript cut by Edit in place, if this window has not re-read its grant yet. The
+  turn itself is still refused before anything reaches the model. `/diverge` is not held in the
+  renderer; the daemon's `create_derived_session` refuses to copy a Crew chat.
+- **D-1's detection.** The daemon notices D-1 only when it next asks the broker. An idle chat's grant
+  reads `expired: false` until then. The renderer recognizes the refusal by matching its text.
+- **F5's dates.** F5 dates only revokes this window saw confirmed; NEW-3 below is the live case.
+- **`replaced_grants` gaps.** The desktop does not list `replaced_grants` yet; the CLI and the route
+  do. A replaced grant with no recorded expiry is dropped at confirmation, so a task ledger that has
+  not re-read in between keeps its "didn't confirm" note.
+- **O-1's census.** It matches literal paths only. The reviewer's own search found no event-driven
+  navigation either.
+- **Older daemons.** Against a daemon that does not send `revocation`, the note can reach "Confirming…"
+  but never "Confirmed".
+
+### Local gate on `dc274655`
+
+The gate's first attempt, on `f3dd33761`, failed three checks, all caused by `07c2a104f`:
+
+- `clippy::too_many_lines` on `begin_run_with_policy`;
+- the ID-reuse seam audit, which found a new test-only caller;
+- OpenAPI drift in two doc comments.
+
+`dc2746551` repaired all three. It moved the F3 recording unchanged into `CrewManager::record_grant`,
+gave the test caller an allowed row, and regenerated the OpenAPI files. The second attempt was
+**ALL_GREEN** on `dc274655`, with the tree clean before and after:
+
+| Check | Result |
+|---|---|
+| `cargo build -j 8 -p biorouter-cli -p biorouter-server --bin biorouter --bin biorouterd` | rc 0 |
+| `./scripts/clippy-lint.sh`, `cargo fmt --check` | rc 0; strict clippy, the baselines and the banned-TLS check pass |
+| `cargo test -p biorouter-crew`, with and without default features | 143 and 103 passed |
+| `cargo test -j 8 --workspace --lib --bins` | 8540 passed, 0 failed, 10 ignored |
+| Integration binaries | `crew_join_routes` 13, `crew_session_revoke_routes` 10, `crew_transfer_authority` 10, `crew_transfer_filesystem` 9, `privacy_toggle_config` 18, `crew_credentials_contract` 2, `crew_worker_allowlist` 1, `privacy_capability` 4, `privacy_disclosure_toggle` 1, `privacy_guard_wiring` 3, `privacy_spawn_classification` 1, `privacy_toggle` 4, `no_console_window_census` 20; 0 failed |
+| `just generate-openapi` | No drift; `check-openapi-schema.sh` rc 0 |
+| `npm run lint:check`, `format:check`, `test:run` (Node 24.10.0, npm 11.6.1) | rc 0; 884 contrast assertions; 695 files, 9213 passed, 19 skipped |
+| `check-version-consistency.sh`, CI's docs-lint subset | 1.91.2 throughout; 474 files, 0 findings |
+
+### Live re-check on `dc274655`
+
+Run 2026-09-25, 20:35–21:35Z. Receipts:
+`/private/tmp/crew-ui-redesign/live/evidence-final/polish-live/RESULT.md` with `raw/`.
+
+- **Build.** The worktree was clean at `dc274655` at the start, at every freeze and at the end.
+  - Native `biorouter` `2b79b5e85262f3acadc4de771138ba9bccd0b9b455598d472ca62473ca5a0ed7` and
+    `biorouterd` `6b0b9bf14cc3fcd9bba6df26d1fce0eb9c9296aeae3aac451c33cc340e209b51`, frozen in
+    `live/artifacts/native-dc274655/`.
+  - Broker `2d08981b…57ec1`, byte-identical to `461f7899`'s since no broker source changed. It
+    imports glibc 2.30 at most, carries `join_by_name_v1` and `direct_add_v1`, and a no-feature-flag
+    build is byte-identical.
+  - Renderer `index.html` `bb7540ebf6a34cfa2eb20c1c5e2eac482431c23b1ed8d9e33c24948913bd24b8`, entry
+    `index-Dhc7AZv7.js`.
+- **Fixture.**
+  - **Attempt 1** (`crew-polish-live-20260925T203721Z-ffb025ea`, `i-01137e993db9bb9cd`) failed: EC2
+    answered `InvalidInstanceID.NotFound` just after launch. Its own cleanup path ran and was
+    independently checked; the provisioner copy now treats that answer as "not yet".
+  - **The run** was `crew-polish-live-20260925T203843Z-b99bc64b`: `i-016194bfe25d2bc2d` in
+    us-west-2, t3.small, Ubuntu 24.04, encrypted gp3, IMDSv2, dry runs first. The host key came
+    from the console only, `SHA256:ABehm9cE4WIUEFSW6pHxJD55nGGZtOUgYIWDIsdG0/E`. A 4-hour deadline
+    was held by supervisor PID 77520.
+  - **Accounts.** Two ordinary accounts, `crew_alice` (10001) and `crew_bob` (10002), each with its
+    own key and no sudo. The broker was installed as each user.
+  - **Ingress.** SSH was open from `169.230.180.159/32` (the VPN was down at provisioning), then
+    also from `169.230.248.97/32` once it came up. Nothing wider than a /32 was ever opened.
+- **Setup, all in the GUI, on private Versa `gpt-5.5-2026-04-24`.** Two fresh profiles, each daemon
+  on the frozen `biorouterd`, and each app attached only to its own daemon.
+  1. Alice hosted `polish-qa` with **Start it for me** and created team "Polish Lab".
+  2. She invited `@crew_bob`. Bob joined with the invitation and his code, and Alice let him in.
+  3. She added him to Polish Lab directly, which put him in `#general`.
+
+  Both apps ran with the development auto-confirm gate, as in the final lanes.
+
+| Item | Verdict | Deciding evidence |
+|---|---|---|
+| D-1 | **PASS** | After Alice removed Bob from a throwaway channel (journal seq 35), the CLI's next turn exited 1 with "Crew settings changed since access was granted. Grant access again from Crew." The GUI chat showed a **Crew access ended** card with the same sentence, no JSON and no Retry, and a held bar with **Grant access again**. `grants list` shows `expired: true, revocation: ended_by_workspace`. No model request, no message row and no journal change followed |
+| P-1 | **PASS** | Two unchanged `privacy set-personal private` saves: policy epoch 2 → 2, the same bridge PID, `connections.json` byte-identical. The grant then served a real read and post (journal seq 15) |
+| F3 | **PASS**, three times | With Bob's server unreachable, each revoke answered 503 with the new sentence. After the network was restored, the daemon re-dialled and confirmed with no click: journal `run.revoke` at seq 19, 21 and 37. `grants list` moved from `unconfirmed`/`false` to `confirmed`/`true`, and the pane read "Confirmed. The workspace has stopped this chat's access too." |
+| NEW-1 | **PASS** | A failed Connect during an outage read "Can't reach 184.32.228.165." After the daemon's own re-dial the view showed Connected with no click. No raw transport text, "Can't connect" or `role=alert` remained, and a 1 Hz poll saw no bar up to 21:15:37Z, about 9½ minutes later |
+| F1 | **PASS** | Edit in place on a revoked chat raised "Can't send · Crew access to #general was removed…". The editor kept the text, `sessions.db` stayed at 28 rows, and no model request was written |
+| F2 | **PASS** | While offline, the Agents row opened the Chat access pane with **Revoke access**. Its 503 read "Stopped on this device" |
+| F5 | **PASS** for revokes confirmed at once (200) | Two revokes of one chat read "Revoked · 2:05 PM" and "Revoked · 2:04 PM". A revoke confirmed later by the daemon gets no time; see NEW-3 |
+| F-1 | **PASS**, with no on-screen check | After Alice removed Bob from `#polish-tmp`, the renderer's own requests (issued from page script with the renderer's captured headers) ended the download `failed` with "That channel isn't available to you…". The CLI said the same, and no file was written. Crew closes the channel as soon as access ends, so no file card was left to click |
+| O-1 (denial matrix) | **PASS** | `location.hash` was sampled every second in both apps for about 45 minutes (2,711 and 2,710 samples). Each of the 13 moves into `#/crew` came within 1 s of a trusted click or Enter from the lane's action log. Both apps stayed on Home through grant, revoke, upload and message events on their own daemons |
+
+B-1's binary also passed on `dc274655` after teardown: 1 passed, 0 failed. That is a local run of a
+deterministic test, not a live-model check.
+
+**New findings from the re-check.** None of these leaks data.
+
+- **NEW-2 (P2).** Open Crew after the connection has dropped while you were in a chat, and it stays
+  "Offline" after the daemon has reconnected.
+  - It was measured at 11 min 34 s with no click, and 5 min 21 s in another outage. Only a person's
+    Connect cleared it, and that replaced a working bridge.
+  - Cause: `useCrewController.ts` arms the offline follow only when Crew is on screen at the drop,
+    or after a failed Connect.
+- **NEW-3 (P3).** Past access does not date a revoke the daemon confirmed after a 503, and the row
+  disappears once the chat is granted again. `useCrewGrants.ts` records the time only on an
+  immediate 200. F5's goal fails on exactly F3's path.
+- **NEW-4 (P3).** "Confirmed." is visible for about 7 s, until Crew swaps the offline layout for the
+  channel layout and the pane remounts.
+- **Observations, not graded:**
+  - While offline, the chat's own bar offers **Connect in Crew** but no Revoke.
+  - Past access says "Expired" for a workspace-ended grant, where the CLI says "Ended: Crew settings
+    changed".
+  - While offline, the consent form names "a channel you can't see".
+
+**Deviations.**
+
+- **Harness copies.** The lane used patched copies of the stage tools in
+  `/private/tmp/crew-ui-redesign/live/polish-tools/`, hashed in the receipts. It used the patched
+  `crew_qa.py`, because the recon copy points at the stale `~/.config` key.
+- **Page script.** Two pass-through `fetch` wrappers ran in Bob's renderer. One logged revoke, grant
+  and connect answers; the other kept the renderer's own headers in memory for F-1. Neither wrote a
+  header to disk.
+- **Network outages.** These edited only Bob's `~/.ssh/config`, and it was restored byte-identical
+  each time.
+
+**Teardown, 21:28–21:30Z** (`raw/teardown/`):
+
+- **Stage stopped.** Samplers, pollers, both apps and both daemons were stopped by exact PID, and the
+  two agent-browser sessions closed by name. A scan of every process's command line and environment
+  found nothing, and its positive control hit.
+- **Cleanup.** `cleanup.py` recorded `cleanup_verified` at 21:28:58Z, with instance, volume, security
+  group, key pairs and local keys each verified. Supervisor 77520 was then stopped.
+- **Independent check.** Read-only `describe-*` calls at 21:29:28Z found:
+  - `i-016194bfe25d2bc2d` `terminated` ("User initiated (2026-09-25 21:28:22 GMT)") with no volume or
+    ENI, and attempt 1's instance also `terminated`;
+  - the volume, both security groups, both ingress rules, the key pairs and the ENI each `NotFound`;
+  - nothing tagged `Project=biorouter-crew-qa` live in us-west-2, and no Elastic IP.
+- **Keys and secrets.** The fixture's local keys are gone. The Versa key line was deleted from both
+  polish profiles, and a sweep of 756 files found no Versa key value. `~/.config/biorouter` was only
+  read.
+
 ## What remains unverified
 
 - **The native share confirmation in the GUI lanes.** Every stage app ran with the development
   auto-confirm gate, so the GUI critics never saw the real sheet. Security saw it in rounds 3 and 4, with
   the gate off, and it was accurate.
-- **The daemon's worker allowlist exercised live** (G12 (b)): the model never sent an out-of-schema
-  method. A deterministic tool-call harness under a private capability is needed.
+- **The daemon's worker allowlist exercised by a live model** (G12 (b)): the model never sent an
+  out-of-schema method. Since the final polish, the deterministic harness this item asked for
+  exists (`crew_worker_allowlist`, `9f84b4f08`). It runs a real agent loop under a private capability
+  with a scripted provider, the allowlist refuses all five person-only methods, and it passes on
+  `dc274655`. No live model has sent one.
 - **The download-destination rules and the added credential stores on a live build** (`b7585ba1a`,
   `6aca6c18a`, `7339e6d9d`): unit-tested only.
 - **The daemon honouring the fourth profile's proxy on `461f7899`** (institution lane 5c).
@@ -456,12 +677,27 @@ None of these is a leak. They were found after the last fix round, so none is fi
 - **SSH authentication breadth:** the fixture used keys only; no MFA, jump host or changed host key
   was exercised in this campaign.
 - **Load and faults:** no 10/30/50-user load, storage fault, power loss or concurrent-writer run.
-- **Hosted CI on `461f7899`:** not run at this writing. The local tracking ref puts the last pushed
-  head at `b1c87edc`, 33 commits earlier, and no hosted result for it is recorded here either.
+- **Hosted CI on the final head:** not recorded here. `461f7899` was pushed later, inside
+  `262560c0b`. That docs-only commit's hosted Frontend run (36165935329) failed one vitest case,
+  `ChatCrewAccessBar.test.tsx` "says Crew is offline, offers Connect in Crew…", which had passed on
+  the identical code one commit earlier (`ec305ddf5`). Its Rust, Apps smoke, Computer Use and
+  commit-message runs passed. `dc274655` and the documentation commit that carries this
+  section were pushed together at the final polish. A commit cannot record its own CI, so their
+  hosted result is recorded in PR #366's description.
+- **The other final lanes on `dc274655`:** three users' files and agents, the institution gate,
+  mixed GUI and CLI, fairness and the self-test are results on `461f7899`. The 15 commits after it
+  change grant, revocation, transfer and connection-save code, and those lanes were not re-run.
+- **The final polish's leftovers:**
+  - NEW-2, NEW-3 and NEW-4 from its re-check.
+  - F1's hold is renderer-only: the daemon's in-place edit has no Crew check.
+  - The desktop does not list `replaced_grants`.
 - **The closeout gate's verdict:** its logs show every command passing except `just generate-openapi`,
   which hit "No space left on device" and was followed by a direct schema regeneration and a passing
   `check-openapi-schema.sh`; no file records the gate runner's own verdict
   (see the [validation report](../validation-report.md#crew-ui-redesign-campaign-2026-09-24-to-2026-09-25)).
+  For the final code head this is superseded: the final polish's gate returned ALL_GREEN on
+  `dc274655`, `just generate-openapi` included ([Local gate on `dc274655`](#local-gate-on-dc274655)).
+  Its per-gate logs were written to the running session's scratch directory, which is not kept.
 - **Human review:** the security-sensitive commits listed in the [handoff](../handoff-2026-09-24.md#close-out-handoff-2026-09-25)
   have had independent agent review, not the human review CLAUDE.md requires before merge.
 
@@ -475,6 +711,7 @@ All paths are local to the machine that ran the campaign and are not published.
 | Round triage and critic reports | `/private/tmp/crew-ui-redesign/live/reports/` (`TRIAGE-r1.md`…`TRIAGE-r4.md`, `security-r1.md`…`security-r4.md`, per-person reports) |
 | Structured round results (task tables, groups, gates) | `/private/tmp/crew-ui-redesign/live/round1-result.json`…`round4-result.json` |
 | Final lanes | `/private/tmp/crew-ui-redesign/live/evidence-final/<lane>/RESULT.md` with `raw/` |
+| Final polish: live re-check, its fixture and its teardown | `/private/tmp/crew-ui-redesign/live/evidence-final/polish-live/RESULT.md` with `raw/` and `raw/teardown/`; artifacts in `live/artifacts/native-dc274655/` and `live/artifacts/linux-broker-dc274655/`; fixture state in `live/fixture-polish/` |
 | Redeploy receipts | `/private/tmp/crew-ui-redesign/live/receipts/` (`r2-*`…`r4-*`, `final-*`) |
 | Resume-time evidence (broker upgrade, fourth profile, fairness, self-test) | `/private/tmp/crew-ui-redesign/evidence/`, `/private/tmp/crew-ui-redesign/fixture/evidence/` |
 | Screenshots (never published) | `/private/tmp/crew-ui-redesign/live/shots/` |
