@@ -101,6 +101,11 @@ export const workspaceSettingsCopy = {
   keepInvitation: 'Keep',
   memberOptions: (name: string) => `${name} options`,
   copyUsername: 'Copy username',
+  /**
+   * The one submenu that holds a menu's machine-ID copies, last, after a separator (QA Q3-26):
+   * everyday menus keep only the copies a person uses.
+   */
+  copyForSupport: 'Copy for support',
   copyPersonId: 'Copy person ID',
   removeFrom: (workspace: string) => `Remove from ${workspace}…`,
   yourConnection: 'Your connection',

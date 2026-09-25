@@ -20,7 +20,58 @@ import { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog';
 
 installResizeObserverStub();
 
-afterEach(() => vi.clearAllMocks());
+// Privacy reads the configured providers for the names they publish for an institution ID, as the
+// sidebar chip does (Q2-38, Q3-40). Stable callbacks, as the real context's are.
+const config = vi.hoisted(() => {
+  const state = { providers: [] as unknown[] };
+  return { state, getProviders: async () => state.providers, read: async () => null };
+});
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return {
+    ...actual,
+    useConfig: () => ({ getProviders: config.getProviders, read: config.read }),
+  };
+});
+
+/** A configured provider whose affiliation publishes "UCSF" as the name of `ucsf`. */
+const ucsfProvider = {
+  name: 'versa_azure',
+  is_configured: true,
+  affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+};
+
+afterEach(() => {
+  vi.clearAllMocks();
+  config.state.providers = [];
+});
+
+/**
+ * Open a member menu's "Copy for support" submenu the keyboard's way (→ opens it and moves into it)
+ * and return it, its one item focused. jsdom has no layout, so Radix's pointer grace area cannot tell
+ * a pointer on its way into the submenu from one leaving it; Enter chooses.
+ */
+async function openSupport(user: ReturnType<typeof userEvent.setup>, menu: HTMLElement) {
+  const trigger = within(menu).getByRole('menuitem', { name: copy.copyForSupport });
+  expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+  act(() => trigger.focus());
+  await user.keyboard('{ArrowRight}');
+  await waitFor(() => expect(screen.getAllByRole('menu')).toHaveLength(2));
+  const support = screen.getAllByRole('menu')[1];
+  await waitFor(() => expect(within(support).getAllByRole('menuitem')[0]).toHaveFocus());
+  return support;
+}
+
+const DIALOGS_CSS = readFileSync(join(__dirname, 'dialogs.css'), 'utf8').replace(
+  /\/\*[\s\S]*?\*\//g,
+  ' '
+);
+
+/** The declarations of the one rule in `dialogs.css` whose selector is exactly `selector`. */
+function cssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(DIALOGS_CSS)?.[1] ?? '';
+}
 
 function renderSettings(
   props: Partial<Parameters<typeof WorkspaceSettingsDialog>[0]> = {},
@@ -143,8 +194,13 @@ describe('WorkspaceSettingsDialog', () => {
     expect(dialog).not.toHaveTextContent(bob.id);
 
     await user.click(within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Copy person ID' }));
-    expect(writeText).toHaveBeenCalledWith(bob.id);
+    // A machine ID is behind "Copy for support", never among the everyday items (QA Q3-26).
+    expect(screen.queryByRole('menuitem', { name: 'Copy person ID' })).toBeNull();
+    const support = await openSupport(user, await screen.findByRole('menu'));
+    expect(within(support).getByRole('menuitem', { name: 'Copy person ID' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(bob.id));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
 
     await user.click(within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Remove from lab…' }));
@@ -408,31 +464,33 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
     );
   }
 
-  const firstLabel = (panel: HTMLElement) =>
-    panel.firstElementChild?.querySelector('h3.text-caps')?.textContent;
+  /** The caps labels a panel draws, in order. */
+  const capsLabels = (panel: HTMLElement) =>
+    Array.from(panel.querySelectorAll('.text-caps')).map((node) => node.textContent);
 
-  it('opens every tab with the same caps label', async () => {
+  it('opens no tab with a label repeating its name; MEMBERS is a section label (QA Q3-40)', async () => {
     const user = userEvent.setup();
     renderSettings({ tab: 'general', agentAccess: <AgentAccessFixture /> });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
-    for (const [tab, label] of [
-      ['General', copy.tabs.general],
-      ['People', copy.tabs.people],
-      ['Privacy', copy.tabs.privacy],
-      ['Agent access', copy.tabs.agentAccess],
-    ] as const) {
+    const expected: Record<string, string[]> = {
+      General: [],
+      People: [copy.members],
+      Privacy: [],
+      'Agent access': [],
+    };
+    for (const [tab, labels] of Object.entries(expected)) {
       await user.click(within(dialog).getByRole('tab', { name: tab }));
       const panel = within(dialog).getByRole('tabpanel');
-      expect(firstLabel(panel)).toBe(label);
+      expect(capsLabels(panel)).toEqual(labels);
+      for (const name of Object.values(copy.tabs)) {
+        expect(within(panel).queryByRole('heading', { name })).toBeNull();
+      }
     }
     // The access area's own heading repeats the tab's name: its panel is marked for the rule that
     // hides it there, and that rule is read at the source (jsdom applies no stylesheet).
     const access = within(dialog).getByRole('tabpanel');
     expect(access).toHaveAttribute('data-crew-tab', 'agent-access');
-    const css = readFileSync(join(__dirname, 'dialogs.css'), 'utf8').replace(
-      /\/\*[\s\S]*?\*\//g,
-      ' '
-    );
+    const css = DIALOGS_CSS;
     const hide =
       /\.crew-settings-panel\[data-crew-tab='agent-access'\]\s*>\s*\[aria-labelledby\]\s*>\s*:first-child\s*\{([^}]*)\}/.exec(
         css
@@ -481,5 +539,115 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
       'Workspace host: runs lab on the server'
     );
     expect(copy.hostTooltip('lab')).toBe('Workspace host: runs lab on the server');
+  });
+});
+
+describe('WorkspaceSettingsDialog, the seams (QA Q3-40, Q3-26, Q3-33)', () => {
+  it('shows the institution as the sidebar does, and the connection as one badge', async () => {
+    config.state.providers = [ucsfProvider];
+    renderSettings({ tab: 'privacy' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const panel = within(dialog).getByRole('tabpanel', { name: 'Privacy' });
+    // Read-only, in its display form: never "ucsf" beside the sidebar's "UCSF".
+    const badge = await waitFor(() => {
+      const found = panel.querySelector('[data-crew-privacy-badge]');
+      expect(found).toHaveTextContent('Private · UCSF');
+      return found!;
+    });
+    // One piece: the institution inside the badge, not a second chip beside it.
+    expect(badge).toHaveClass('crew-settings-privacy-badge');
+    expect(within(badge as HTMLElement).getByTestId('privacy-badge')).toBeInTheDocument();
+    const institutionRow = within(panel).getByText(copy.institution).parentElement!;
+    expect(institutionRow).toHaveTextContent('UCSF');
+    expect(institutionRow.textContent).not.toContain('ucsf');
+    expect(cssRule('.crew-settings-privacy-badge')).toMatch(
+      /background-color:\s*var\(--background-muted\)/
+    );
+  });
+
+  it('keeps the raw ID on the control that writes it', async () => {
+    config.state.providers = [ucsfProvider];
+    const snapshot = makeSnapshot();
+    snapshot.workspace.institution_id = null;
+    renderSettings({ tab: 'privacy' }, { snapshot });
+    expect(
+      await screen.findByRole('button', { name: copy.setInstitution('ucsf') })
+    ).toBeInTheDocument();
+  });
+
+  it('puts machine IDs, and only they, in a "Copy for support" submenu, last', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    await user.click(within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' }));
+    const menu = await screen.findByRole('menu');
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map(
+      (node) => (node.getAttribute('role') === 'separator' ? '—' : node.textContent)
+    );
+    expect(items).toEqual(['Copy username', '—', 'Remove from lab…', '—', copy.copyForSupport]);
+
+    const support = await openSupport(user, menu);
+    expect(
+      within(support)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual(['Copy person ID']);
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(bob.id));
+    // "Copied" holds in the item until the menu goes, as in the message menu.
+    expect(await within(support).findByRole('menuitem', { name: 'Copied' })).toHaveAttribute(
+      'data-crew-copy-state',
+      'copied'
+    );
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull(), { timeout: 2000 });
+  });
+
+  it('opens a member menu beside its ⋯, inside the dialog’s body, never over Done', async () => {
+    const user = userEvent.setup();
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    await user.click(within(dialog).getByRole('button', { name: 'Dan Wu (@dan) options' }));
+    const menu = await screen.findByRole('menu');
+    expect(menu).toHaveAttribute('data-side', 'left');
+    // The collision boundary is the dialog's scrolling body, which the footer is outside.
+    const body = dialog.querySelector('.crew-settings-body');
+    expect(body).not.toBeNull();
+    expect(body!.contains(within(dialog).getByRole('button', { name: 'Done' }))).toBe(false);
+  });
+
+  it('hides a member’s ⋯ at rest and shows it on hover, focus and while open', async () => {
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const trigger = within(dialog).getByRole('button', { name: 'Bob Lee (@bob) options' });
+    const hook = trigger.closest('[data-row-action]');
+    expect(hook).not.toBeNull();
+    expect(hook!.closest('li')).toHaveClass('crew-settings-member');
+    // jsdom applies no stylesheet: the rules are read at the source.
+    expect(cssRule('.crew-settings-member [data-row-action]')).toMatch(/opacity:\s*0;/);
+    expect(
+      cssRule(
+        ".crew-settings-member:is(:hover, :focus-within) [data-row-action],\n.crew-settings-member [data-row-action]:has([data-state='open'])"
+      )
+    ).toMatch(/opacity:\s*1;/);
+  });
+
+  it('swaps tab panels without painting two at once, and rings a focused panel inside its padding', () => {
+    // The outgoing panel hides at once; the incoming one fades.
+    const inactive = cssRule(".crew-settings-panel[data-state='inactive']");
+    expect(inactive).toMatch(/visibility:\s*hidden;/);
+    expect(inactive).toMatch(/transition:\s*visibility 0s,\s*opacity 0s;/);
+    const panel = cssRule('.crew-settings-panel');
+    expect(panel).toMatch(/transition:\s*opacity var\(--dur-fast\) var\(--ease-out\);/);
+    // The shared TabsContent's enter animation, whose duration also held `visibility`, is off.
+    expect(panel).toMatch(/animation:\s*none;/);
+    expect(panel).toMatch(/padding:\s*6px;/);
+    expect(cssRule('.crew-settings-panel:focus-visible')).toMatch(
+      /outline:\s*2px solid var\(--ring\);\s*outline-offset:\s*-2px;/
+    );
+    expect(DIALOGS_CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.crew-settings-panel\s*\{\s*transition:\s*none;/
+    );
   });
 });

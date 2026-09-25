@@ -26,13 +26,94 @@
   display: grid;
 }
 
+/* Switching tabs never paints two panels at once (QA Q3-40). The shared `TabsContent` carries an
+   enter animation and a duration utility, and with `transition-property` left at its initial `all`
+   that duration also delayed `visibility`: the outgoing panel stayed visible and opaque for 175ms
+   over the incoming one. Here the outgoing panel hides at once and the incoming one fades in over
+   `--dur-fast`; the transition list names only what is meant to move.
+
+   The padding is the room for the panel's own focus ring (a panel takes a Tab stop): drawn inset,
+   so it never touches the text inside. */
 .crew-settings-panel {
   grid-area: 1 / 1;
   min-width: 0;
+  padding: 6px;
+  animation: none;
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 
 .crew-settings-panel[data-state='inactive'] {
   visibility: hidden;
+  opacity: 0;
+  transition:
+    visibility 0s,
+    opacity 0s;
+}
+
+/* A panel mounted as it is selected (Agent access) fades in like the others. */
+@starting-style {
+  .crew-settings-panel[data-state='active'] {
+    opacity: 0;
+  }
+}
+
+.crew-settings-panel:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-settings-panel {
+    transition: none;
+  }
+}
+
+/* A member row's ⋯ is hidden at rest and shown on the row's hover and focus, and while its menu is
+   open (design.md §4.14; QA Q3-33). The hook is a wrapper around the button, so the button's own
+   transitions stay its own. A device with no hover keeps it shown: nothing would reveal it. */
+.crew-settings-member [data-row-action] {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.crew-settings-member:is(:hover, :focus-within) [data-row-action],
+.crew-settings-member [data-row-action]:has([data-state='open']) {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .crew-settings-member [data-row-action] {
+    opacity: 1;
+  }
+}
+
+/* Settings → Privacy's own connection, as ONE badge, `🔒 Private · UCSF` (QA Q2-45, Q3-40): the
+   sidebar chip's shape. The inner `PrivacyBadge` keeps its geometry and fill (the same token), so
+   the two read as one pill; this box supplies the fill under the institution and the end inset. */
+.crew-settings-privacy-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-settings-privacy-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 /* A focused text field in a Crew dialog firms its edge to the accent, exactly as it does inside the
@@ -65,10 +146,10 @@
   white-space: pre;
 }
 
-/* Workspace settings → Agent access opens with the dialog's own caps label, like every other tab
-   (QA Q2-29). The access area's content brings a heading of its own that repeats the tab's name
-   (QA Q2-66): hidden here, where the tab already names it. It stays the section's accessible name —
-   `aria-labelledby` reads a hidden node — and it still shows wherever else that content mounts. */
+/* Workspace settings → Agent access, like every tab, opens with no label repeating its name (QA
+   Q3-40). The access area's content brings a heading of its own that does (QA Q2-66): hidden here,
+   where the tab already names it. It stays the section's accessible name — `aria-labelledby` reads a
+   hidden node — and it still shows wherever else that content mounts. */
 .crew-settings-panel[data-crew-tab='agent-access'] > [aria-labelledby] > :first-child {
   display: none;
 }

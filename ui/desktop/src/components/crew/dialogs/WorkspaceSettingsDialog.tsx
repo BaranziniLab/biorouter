@@ -9,6 +9,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Note } from '../../ui/note';
@@ -26,7 +29,9 @@ import {
 } from '../identity';
 import { connectionServerLabel } from '../onboarding/joinText';
 import { sidebarCopy } from '../sidebar/copy';
+import { useKnownInstitutions } from '../sidebar/sidebarView';
 import { useFocusReturn } from '../state/focusReturn';
+import { useMenuCopy } from '../timeline/TimelineCopy';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/types';
 import { copyText } from './clipboard';
@@ -63,9 +68,14 @@ export interface WorkspaceSettingsDialogProps {
  *
  * The dialog is as tall as its tallest own tab whichever is showing (QA T-30): General, People and
  * Privacy stay mounted, stacked in one grid cell, and only the selected one is visible and in the
- * accessibility tree, so switching tabs never moves the footer. The tab list is named, and
- * Shift+Tab from it leaves the list (to the dialog's last control, as a focus trap wraps) instead
- * of Radix's roving group handing focus straight back to the selected tab (QA T-39).
+ * accessibility tree, so switching tabs never moves the footer. The outgoing panel hides at once
+ * and the incoming one fades in, so two never paint over each other (QA Q3-40; `dialogs.css`).
+ * The tab list is named, and Shift+Tab from it leaves the list (to the dialog's last control, as a
+ * focus trap wraps) instead of Radix's roving group handing focus straight back to the selected
+ * tab (QA T-39). A panel that takes a Tab stop draws a ring inside its own padding.
+ *
+ * No tab repeats its own name as a caps label (QA Q3-40): the tab says it. The only section labels
+ * are the ones that divide a tab — People's MEMBERS and WAITING TO JOIN.
  */
 export function WorkspaceSettingsDialog({
   tab,
@@ -104,6 +114,8 @@ export function WorkspaceSettingsDialog({
       size="lg"
       purpose="info"
       scrollBody
+      // The member menus' collision boundary: a menu opens inside the body, never over Done.
+      bodyClassName="crew-settings-body"
       title={copy.title(workspace)}
       footer={<Button onClick={onClose}>{copy.done}</Button>}
     >
@@ -139,15 +151,14 @@ export function WorkspaceSettingsDialog({
           </TabsContent>
           {/* The access area's content mounts only while it is selected: it is not ours to run
               hidden. It shares the cell, so the dialog is at least as tall as the tallest of ours.
-              It opens with the same caps label as every other tab; the access area's own heading
-              repeated the tab's name, so `dialogs.css` hides it here (QA Q2-29, Q2-66). */}
+              Like every tab it opens with no label repeating its name: the access area's own
+              heading does, so `dialogs.css` hides it here (QA Q2-66, Q3-40). */}
           {agentAccess !== undefined ? (
             <TabsContent
               value="agent-access"
               className="crew-settings-panel"
               data-crew-tab="agent-access"
             >
-              <TabLabel title={copy.tabs.agentAccess} />
               {agentAccess}
             </TabsContent>
           ) : null}
@@ -232,29 +243,26 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /**
- * The caps label every tab opens with — GENERAL, PEOPLE, PRIVACY, AGENT ACCESS — so no tab starts
- * with a different kind of heading, or with none (QA Q2-29).
+ * A group of people rows under its own caps label — the only labels the dialog draws (QA Q3-40): a
+ * real list, so it is announced as one. `action` sits at the label's end (People's Invite).
  */
-function TabLabel({ title, id, action }: { title: string; id?: string; action?: React.ReactNode }) {
-  return (
-    <div className="biorouter-settings-section-header flex min-w-0 items-center justify-between gap-3">
-      <h3 id={id} className="text-caps text-text-muted">
-        {title}
-      </h3>
-      {action}
-    </div>
-  );
-}
-
-/** A group of people rows under its own caps label: a real list, so it is announced as one. */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   const headingId = React.useId();
   return (
     <section className="biorouter-settings-section" aria-labelledby={headingId}>
       <div className="biorouter-settings-section-header flex min-w-0 items-center justify-between gap-3">
-        <h4 id={headingId} className="text-caps text-text-muted">
+        <h3 id={headingId} className="text-caps text-text-muted">
           {title}
-        </h4>
+        </h3>
+        {action}
       </div>
       <ul role="list" className="biorouter-settings-list">
         {children}
@@ -271,7 +279,6 @@ function GeneralTab({ view }: { view: DialogView }) {
   const alias = connectionServerLabel(savedConnection(view));
   return (
     <div className="flex flex-col">
-      <TabLabel title={copy.tabs.general} />
       <div className="biorouter-settings-list">
         <Row label={copy.hostedBy}>
           <PersonName person={dir.host} context="inline" dir={dir} />
@@ -329,30 +336,26 @@ function PeopleTab({
   const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
 
+  const invite = isHost ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => crew.openDialog({ kind: 'invite-people' })}
+    >
+      {copy.invite}
+    </Button>
+  ) : undefined;
+
   return (
     <div className="flex flex-col">
-      <TabLabel
-        title={copy.tabs.people}
-        action={
-          isHost ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => crew.openDialog({ kind: 'invite-people' })}
-            >
-              {copy.invite}
-            </Button>
-          ) : undefined
-        }
-      />
       {waiting.length > 0 ? (
-        <Section title={copy.waiting}>
+        <Section title={copy.waiting} action={invite}>
           {waiting.map((join) => (
             <WaitingRow key={join.username} join={join} view={view} />
           ))}
         </Section>
       ) : null}
-      <Section title={copy.members}>
+      <Section title={copy.members} action={waiting.length > 0 ? undefined : invite}>
         {people.map((person) => (
           <MemberRow
             key={person.id ?? person.username}
@@ -386,8 +389,18 @@ function MemberRow({
   onRemove(): void;
 }) {
   const { dir, workspace } = view;
+  const [open, setOpen] = React.useState(false);
+  // "Copied" in the item, then the menu closes — the message menu's timing (QA Q3-26).
+  const menuCopy = useMenuCopy<'username' | 'person-id'>(copyText, setOpen);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const [boundary, setBoundary] = React.useState<Element | null>(null);
+  const onOpenChange = (next: boolean) => {
+    // The dialog's body, read as the menu opens: the menu stays inside it, never over Done.
+    if (next) setBoundary(triggerRef.current?.closest('.crew-settings-body') ?? null);
+    menuCopy.onOpenChange(next);
+  };
   return (
-    <li className="biorouter-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
+    <li className="crew-settings-member biorouter-settings-row flex min-w-0 items-center gap-3 px-3 py-2">
       <Avatar
         size={24}
         fallback={person.avatar}
@@ -411,36 +424,64 @@ function MemberRow({
           <TooltipContent>{copy.hostTooltip(workspace)}</TooltipContent>
         </Tooltip>
       ) : null}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            shape="round"
-            aria-label={copy.memberOptions(personLabel(person, 'inline', dir))}
+      {/* Hidden at rest, shown on the row's hover and focus and while its menu is open
+          (`dialogs.css`, design.md §4.14; QA Q3-33). On a wrapper, so the button keeps its own
+          transitions. */}
+      <span data-row-action="" className="inline-flex shrink-0">
+        <DropdownMenu open={open} onOpenChange={onOpenChange}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              ref={triggerRef}
+              variant="ghost"
+              size="sm"
+              shape="round"
+              aria-label={copy.memberOptions(personLabel(person, 'inline', dir))}
+            >
+              <MoreHorizontal aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          {/* Beside the ⋯, inside the dialog's body: a menu below the last rows covered Done
+            (QA Q3-40). */}
+          <DropdownMenuContent
+            side="left"
+            align="start"
+            collisionBoundary={boundary}
+            collisionPadding={8}
           >
-            <MoreHorizontal aria-hidden />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => void copyText(person.username)}>
-            {copy.copyUsername}
-          </DropdownMenuItem>
-          {person.id ? (
-            <DropdownMenuItem onSelect={() => void copyText(person.id!)}>
-              {copy.copyPersonId}
+            <DropdownMenuItem
+              onSelect={menuCopy.select('username', person.username)}
+              data-crew-copy-state={menuCopy.state('username')}
+            >
+              {menuCopy.label('username', copy.copyUsername)}
             </DropdownMenuItem>
-          ) : null}
-          {canRemove ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-                {copy.removeFrom(workspace)}
-              </DropdownMenuItem>
-            </>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+            {canRemove ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+                  {copy.removeFrom(workspace)}
+                </DropdownMenuItem>
+              </>
+            ) : null}
+            {person.id ? (
+              // Machine IDs, and only they, in one submenu, last (QA Q3-26).
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>{copy.copyForSupport}</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem
+                      onSelect={menuCopy.select('person-id', person.id)}
+                      data-crew-copy-state={menuCopy.state('person-id')}
+                    >
+                      {menuCopy.label('person-id', copy.copyPersonId)}
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </span>
     </li>
   );
 }
@@ -557,6 +598,10 @@ function PrivacyTab({
   const connectionInstitution = saved?.institution_id ?? connection?.institution_id ?? null;
   const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
   const makePrivateKey = 'connection.update';
+  // Read-only institutions in their display form — `UCSF` where a configured provider publishes
+  // that name — as the sidebar chip shows them (QA Q3-40). The button that WRITES an institution
+  // keeps the raw ID, as its confirmation does.
+  const known = useKnownInstitutions();
 
   const makePrivate = () => {
     if (!saved) return;
@@ -582,18 +627,24 @@ function PrivacyTab({
 
   return (
     <div className="flex flex-col">
-      <TabLabel title={copy.tabs.privacy} />
       <div className="biorouter-settings-list">
         <Row label={copy.yourConnection}>
           {connection ? (
             <>
-              <PrivacyBadge tier={connection.mode} enforcementOff={false} />
-              {connection.mode === 'private' && connectionInstitution ? (
-                <span>
-                  {'· '}
-                  <InstitutionName id={connectionInstitution} />
-                </span>
-              ) : null}
+              {/* ONE badge, `🔒 Private · UCSF`, as the sidebar chip draws it (QA Q2-45, Q3-40):
+                  the institution inside the badge's fill, never a second chip beside it. */}
+              <span
+                className="crew-settings-privacy-badge"
+                data-crew-privacy-badge={connection.mode}
+              >
+                <PrivacyBadge tier={connection.mode} enforcementOff={false} />
+                {connection.mode === 'private' && connectionInstitution ? (
+                  <span className="crew-settings-privacy-institution">
+                    {' · '}
+                    <InstitutionName id={connectionInstitution} known={known} />
+                  </span>
+                ) : null}
+              </span>
               {connection.mode === 'private' ? (
                 <Button
                   variant="secondary"
@@ -642,7 +693,7 @@ function PrivacyTab({
         </Row>
         <Row label={copy.institution}>
           {workspaceInstitution ? (
-            <InstitutionName id={workspaceInstitution} />
+            <InstitutionName id={workspaceInstitution} known={known} />
           ) : (
             <span>{copy.notSet}</span>
           )}

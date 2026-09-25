@@ -24,6 +24,14 @@ import {
 
 installResizeObserverStub();
 
+// Workspace settings → Privacy reads the configured providers for an institution's display name, as
+// the sidebar chip does. Stable callbacks, as the real context's are.
+const config = vi.hoisted(() => ({ getProviders: async () => [], read: async () => null }));
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return { ...actual, useConfig: () => config };
+});
+
 beforeEach(() => {
   Object.assign(window, {
     electron: { ...window.electron, crewCredentials: vi.fn(async () => ({ cancelled: true })) },
