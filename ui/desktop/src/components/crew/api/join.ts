@@ -66,6 +66,13 @@ export interface CrewInvitationPreview {
   /** The institution saving would use: a default, not the workspace's word. */
   institution_id: string | null;
   ssh_host: string | null;
+  /**
+   * What to call the server on screen (D-ALIAS): the person's own SSH alias for the address saving
+   * would use, when one maps to it, else that address's host. Display only: `ssh_host` stays the
+   * invitation's resolved address, and it is what a login is built from. Absent from an older
+   * daemon, and from a paste that names no server.
+   */
+  server_label?: string | null;
   ssh_port: number | null;
   proxy_jump: string | null;
   /** The username the host invited, used to prefill "Your username on {server}". */
@@ -219,6 +226,8 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
     mode: modeFrom(body.mode),
     institution_id: orNull(nullableText(body.institution_id)),
     ssh_host: orNull(nullableText(body.ssh_host)),
+    // Only when the daemon named one: absent, the address is what the dialog shows.
+    ...(optionalText(body.server_label) ? { server_label: optionalText(body.server_label) } : {}),
     ssh_port: typeof port === 'number' && Number.isSafeInteger(port) && port > 0 ? port : null,
     proxy_jump: orNull(nullableText(body.proxy_jump)),
     invitee_username: orNull(nullableText(body.invitee_username)),

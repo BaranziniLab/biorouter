@@ -129,6 +129,21 @@ describe('previewInvitation', () => {
     await expect(previewInvitation(LINE)).resolves.toEqual(expected);
   });
 
+  it('carries the daemon’s name for the server, display only, beside the address (D-ALIAS)', async () => {
+    mocks.crewHttp.mockResolvedValueOnce({
+      ...summary,
+      ssh_host: '52.33.141.141',
+      server_label: 'lab-server',
+    });
+    await expect(previewInvitation(LINE)).resolves.toMatchObject({
+      ssh_host: '52.33.141.141',
+      server_label: 'lab-server',
+    });
+    // An older daemon names none: nothing is made up.
+    mocks.crewHttp.mockResolvedValueOnce(summary);
+    expect((await previewInvitation(LINE)).server_label).toBeUndefined();
+  });
+
   it('reads the fields an older status paste lacks as null', async () => {
     mocks.crewHttp.mockResolvedValue({
       workspace_id: 'workspace-1',

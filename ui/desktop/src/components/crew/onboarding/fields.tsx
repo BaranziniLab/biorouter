@@ -8,8 +8,10 @@ import {
   useState,
   type FormEvent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import CustomRadio from '../../ui/CustomRadio';
+import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { cn } from '../../../utils';
@@ -302,6 +304,141 @@ export function PrivacyFields({
       ) : null}
     </>
   );
+}
+
+/** Whether a remote work folder holds a value its field would refuse (not an absolute path). */
+export function remoteFolderInvalid(remoteRoot: string): boolean {
+  const folder = remoteRoot.trim();
+  return Boolean(folder) && !folder.startsWith('/');
+}
+
+/**
+ * "Agent on {server}" (Q2-37): what the person's agent may do on the server, in its own labelled
+ * row rather than among the SSH settings. Folded to one line that states it ("No work folder ·
+ * agent commands off"), off unless the person turns it on. The folder lets the agent read and write
+ * files there; the switch lets it run commands in that folder, and needs the folder first.
+ */
+export function AgentAccessFields({
+  server,
+  open,
+  onOpenChange,
+  remoteRoot,
+  remoteExecution,
+  disabled,
+  onRemoteRoot,
+  onRemoteExecution,
+}: {
+  server: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  remoteRoot: string;
+  remoteExecution: boolean;
+  disabled?: boolean;
+  onRemoteRoot: (value: string) => void;
+  onRemoteExecution: (value: boolean) => void;
+}) {
+  const folder = remoteRoot.trim();
+  return (
+    <Disclosure
+      label={joinCopy.agentHeading(server || 'the server')}
+      open={open}
+      onOpenChange={onOpenChange}
+      summary={joinCopy.agentSummary(folder, Boolean(folder) && remoteExecution)}
+    >
+      <div className="crew-onboard-form" data-testid="crew-onboard-agent">
+        <Field
+          label={joinCopy.remoteFolder}
+          helper={joinCopy.remoteFolderHelper}
+          invalidMessage={joinCopy.remoteFolderInvalid}
+        >
+          {(props) => (
+            <Input
+              {...props}
+              disabled={disabled}
+              pattern="/.*"
+              value={remoteRoot}
+              spellCheck={false}
+              onChange={(event) => {
+                onRemoteRoot(event.target.value);
+                if (!event.target.value.trim()) onRemoteExecution(false);
+              }}
+            />
+          )}
+        </Field>
+        <SwitchRow
+          label={joinCopy.remoteExecution}
+          checked={Boolean(folder) && remoteExecution}
+          disabled={disabled || !folder}
+          hint={folder ? undefined : joinCopy.remoteExecutionNeedsFolder}
+          onCheckedChange={onRemoteExecution}
+        />
+      </div>
+    </Disclosure>
+  );
+}
+
+/** How long after a dialog opens its first field holds focus against the surface that opened it. */
+export const INITIAL_FOCUS_HOLD_MS = 1000;
+
+/**
+ * Put focus on `target` when a dialog opens (Q2-27), and keep it there while the surface that
+ * opened the dialog finishes closing. A menu item opens Join or Host, and the menu, closing a moment
+ * later, hands focus back to its own trigger (or drops it to `<body>`), after the field's own
+ * `autoFocus` already ran: the dialog opened with focus nowhere in it. For a short while after
+ * opening, focus that lands outside the dialog, on `<body>`, or on the dialog's own frame is put
+ * back on `target`. The person's first key or click ends it, so nothing they do is ever overridden.
+ */
+export function useInitialFocus(target: RefObject<HTMLElement | null>, active: boolean): void {
+  useEffect(() => {
+    if (!active || typeof document === 'undefined') return;
+    const dialogOf = () =>
+      target.current?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]') ?? null;
+    const lost = () => {
+      const current = document.activeElement;
+      if (!current || current === document.body || current === document.documentElement)
+        return true;
+      if (!current.isConnected) return true;
+      const dialog = dialogOf();
+      return !dialog || current === dialog || !dialog.contains(current);
+    };
+    const reclaim = () => {
+      const element = target.current;
+      if (element?.isConnected && lost()) element.focus();
+    };
+    let frame: number | null = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      const run = () => {
+        frame = null;
+        reclaim();
+      };
+      frame =
+        typeof window.requestAnimationFrame === 'function'
+          ? window.requestAnimationFrame(run)
+          : window.setTimeout(run, 0);
+    };
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      document.removeEventListener('focusin', schedule, true);
+      document.removeEventListener('focusout', schedule, true);
+      document.removeEventListener('keydown', stop, true);
+      document.removeEventListener('pointerdown', stop, true);
+      window.clearTimeout(timer);
+      if (frame !== null) {
+        if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame);
+        window.clearTimeout(frame);
+      }
+    };
+    reclaim();
+    document.addEventListener('focusin', schedule, true);
+    document.addEventListener('focusout', schedule, true);
+    document.addEventListener('keydown', stop, true);
+    document.addEventListener('pointerdown', stop, true);
+    const timer = window.setTimeout(stop, INITIAL_FOCUS_HOLD_MS);
+    return stop;
+  }, [active, target]);
 }
 
 /**

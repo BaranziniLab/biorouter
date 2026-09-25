@@ -246,12 +246,27 @@ describe('JoinStatusCard', () => {
     expect(trouble).toHaveAttribute('aria-expanded', 'false');
     // Folded: no second join form, token field or device key competes with the code.
     expect(screen.queryByLabelText('Enrollment invitation')).toBeNull();
-    expect(screen.queryByText(joinStateCopy.otherBody)).toBeNull();
+    expect(screen.queryByText(joinStateCopy.otherBody('@alice'))).toBeNull();
     expect(document.body.textContent).not.toMatch(/Device key/);
 
     fireEvent.click(trouble);
-    expect(screen.getByText(joinStateCopy.otherBody)).toBeInTheDocument();
-    expect(screen.getByLabelText('Enrollment invitation')).toBeInTheDocument();
+    // Opened, it starts from its condition, never "Send this join request to your host" (Q2-35).
+    expect(screen.getByText(joinStateCopy.otherBody('@alice'))).toBeInTheDocument();
+    expect(screen.getByText('If @alice asks for it, send this instead:')).toBeInTheDocument();
+    expect(screen.queryByText(legacyJoinCopy.sendRequest)).toBeNull();
+    // The 64-character device key stays folded behind its own control.
+    expect(document.body.textContent).not.toMatch(/Device key/);
+    const show = screen.getByRole('button', { name: legacyJoinCopy.showRequest });
+    expect(show).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(show);
+    expect(screen.getByRole('button', { name: legacyJoinCopy.hideRequest })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+    expect(screen.getByText(new RegExp(`Device key: ${DEVICE_KEY}`))).toBeInTheDocument();
+    // The token field says it is only for a token the host sent.
+    const token = screen.getByLabelText('Enrollment invitation');
+    expect(token).toHaveAccessibleDescription('Only if @alice sent you a token.');
   });
 
   it('opens straight on the token path when the probe already found it', () => {

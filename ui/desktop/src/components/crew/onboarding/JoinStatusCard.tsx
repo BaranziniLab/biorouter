@@ -390,14 +390,16 @@ export function JoinStatusCard() {
   // A connect the card started is running, whichever mount started it.
   const reconnecting = link === 'reconnecting' || claimState.connecting;
 
-  // The token path, folded under "Having trouble joining?" with one sentence on when it is
-  // needed, so it never reads as a second step after the code (T-35).
+  // The token path, folded under "Having trouble joining?". It opens on its condition ("If @alice
+  // asks for it, send this instead:") with the device key folded again, so it never reads as a
+  // second thing to send after the code (T-35, Q2-35).
   const otherWays = (
     <Disclosure label={joinStateCopy.other}>
-      <div className="crew-onboard-stack">
-        <p className="text-supporting text-text-muted">{joinStateCopy.otherBody}</p>
-        <LegacyJoinForm workspace={workspace} username={username || null} />
-      </div>
+      <LegacyJoinForm
+        workspace={workspace}
+        username={username || null}
+        host={inviter ? `@${inviter.username}` : joinStateCopy.yourHost}
+      />
     </Disclosure>
   );
 

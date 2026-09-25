@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { joinerPerson, personFromProjection } from '../identity';
 import {
+  connectionServerLabel,
   firstName,
   groupWorkspaceFingerprint,
   hostKeyFingerprints,
@@ -103,6 +104,53 @@ describe('hostStartCommands', () => {
       '"$HOME/.local/bin/biorouter-crew" status --state-dir "$HOME/.local/share/biorouter-crew/lab"'
     );
     expect(commands.split('\n')[0]).toBe('umask 077');
+  });
+
+  it('carries no shell syntax from whatever the host typed as the name (D-HOST)', () => {
+    // The daemon runs its own copy of this text, built from the same two values under the same
+    // grammar, and refuses anything else; the dialog shows only what the slug rule lets through.
+    for (const typed of [
+      'Lab Data',
+      'lab; rm -rf ~',
+      '$(id)',
+      '`id`',
+      'a"b',
+      "a'b",
+      'lab\nwhoami',
+      'ÜBER lab',
+      '../../etc',
+    ]) {
+      const slug = workspaceSlug(typed);
+      expect(slug).toMatch(/^[a-z0-9-]*$/);
+      const commands = hostStartCommands(slug, 'c'.repeat(64));
+      expect(commands.split('\n')).toHaveLength(4);
+      expect(commands).not.toMatch(/[;`|&<>]|\$\(/);
+    }
+  });
+});
+
+describe('connectionServerLabel', () => {
+  it('prefers the daemon’s name for the server, the person’s own SSH alias (D-ALIAS)', () => {
+    expect(
+      connectionServerLabel({ ssh_target: 'bob@52.33.141.141', server_label: 'lab-server' })
+    ).toBe('lab-server');
+  });
+
+  it('falls back to the login’s host when the daemon named none', () => {
+    expect(connectionServerLabel({ ssh_target: 'bob@hpc.ucsf.edu' })).toBe('hpc.ucsf.edu');
+    expect(connectionServerLabel({ ssh_target: 'bob@hpc.ucsf.edu', server_label: '' })).toBe(
+      'hpc.ucsf.edu'
+    );
+    expect(connectionServerLabel({ ssh_target: 'bob@hpc.ucsf.edu', server_label: 7 })).toBe(
+      'hpc.ucsf.edu'
+    );
+    expect(connectionServerLabel(null)).toBe('');
+  });
+
+  it('shows a label only as display text', () => {
+    expect(
+      connectionServerLabel({ ssh_target: 'bob@hpc', server_label: 'lab\u202eserver\u0007' })
+    ).toBe('labserver');
   });
 });
 

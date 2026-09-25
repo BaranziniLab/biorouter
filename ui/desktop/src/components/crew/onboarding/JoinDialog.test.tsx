@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
@@ -19,7 +19,15 @@ const mocks = vi.hoisted(() => ({
   previewInvitation: vi.fn(),
   saveFromInvitation: vi.fn(),
   savedConnectionIds: vi.fn(),
+  getProviders: vi.fn(),
+  read: vi.fn(),
 }));
+
+// The configured providers publish the name "UCSF" for the ID `ucsf` (Q2-38).
+vi.mock('../../ConfigContext', async () => {
+  const actual = await vi.importActual<typeof import('../../ConfigContext')>('../../ConfigContext');
+  return { ...actual, useConfig: () => ({ getProviders: mocks.getProviders, read: mocks.read }) };
+});
 
 vi.mock('../api/join', async () => {
   const actual = await vi.importActual<typeof import('../api/join')>('../api/join');
@@ -84,6 +92,14 @@ beforeEach(() => {
   mocks.saveFromInvitation.mockReset();
   // Nothing saved before the submit, unless a test says otherwise.
   mocks.savedConnectionIds.mockReset().mockResolvedValue([]);
+  mocks.getProviders.mockReset().mockResolvedValue([
+    {
+      name: 'versa',
+      is_configured: true,
+      affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+    },
+  ]);
+  mocks.read.mockReset().mockResolvedValue(null);
   resetJoinContextForTests();
 });
 
@@ -100,6 +116,15 @@ describe('JoinDialog', () => {
     expect(field).toHaveFocus();
     expect(field).toBeRequired();
     expect(screen.getByRole('button', { name: joinCopy.submitFallback })).toBeDisabled();
+    // Pinned at the top, so it grows downward as sections open instead of re-centring (Q2-26),
+    // and carrying Crew's focused-field edge outside `.crew-app` (Q2-25).
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    expect(dialog).toHaveClass('crew-dialog');
+    // One Cancel style across Crew's dialogs (Q2-26): secondary, not ghost.
+    expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass(
+      'bg-background-medium'
+    );
 
     await paste();
     await waitFor(() =>
@@ -118,14 +143,63 @@ describe('JoinDialog', () => {
       'Hosted by Alice Chen (@alice) on hpc.ucsf.edu'
     );
     expect(screen.getByTestId('crew-join-workspace-privacy')).toHaveTextContent('Private');
-    expect(screen.getByTestId('crew-join-workspace-privacy')).toHaveTextContent('ucsf');
-    expect(within(summary).getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
-    // The fingerprint says what it is for (T-34).
-    expect(screen.getByTestId('crew-join-fingerprint-helper')).toHaveTextContent(
-      'Check this matches the fingerprint Alice sees.'
+    // The name a configured provider publishes for `ucsf`, not the lowercase ID (Q2-38).
+    await waitFor(() =>
+      expect(screen.getByTestId('crew-join-workspace-privacy')).toHaveTextContent('UCSF')
     );
     expect(screen.getByLabelText(joinCopy.username('hpc.ucsf.edu'))).toHaveValue('bob');
     expect(screen.getByRole('button', { name: 'Join lab' })).toBeEnabled();
+  });
+
+  it('folds the fingerprint away, uncopyable, and says it is not the code to send (Q2-04)', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+
+    const summary = await screen.findByTestId('crew-join-summary');
+    // Four groups of four is the join code's shape: nothing of it shows until asked for.
+    expect(document.body.textContent).not.toContain('3F2A 9C1E 77B0 D4E1');
+    expect(screen.queryByTestId('crew-join-fingerprint-helper')).toBeNull();
+    const check = within(summary).getByRole('button', { name: joinCopy.fingerprintCheck });
+    expect(check).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(check);
+
+    const helper = screen.getByTestId('crew-join-fingerprint-helper');
+    expect(helper).toHaveTextContent(
+      'Fingerprint 3F2A 9C1E 77B0 D4E1. This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask @alice to read theirs from Crew (their workspace menu shows it).'
+    );
+    // No Copy anywhere in the summary: the joiner never sends this.
+    expect(within(summary).queryByRole('button', { name: /copy/i })).toBeNull();
+    expect(helper).not.toHaveTextContent(/Check this matches/);
+  });
+
+  it('names the server by the person’s own SSH alias, and builds logins from the address (D-ALIAS)', async () => {
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      ssh_host: '52.33.141.141',
+      server_label: 'lab-server',
+    });
+    renderDialog();
+    await paste();
+
+    await screen.findByTestId('crew-join-summary');
+    expect(screen.getByTestId('crew-join-hosted-by')).toHaveTextContent(
+      'Hosted by Alice Chen (@alice) on lab-server'
+    );
+    expect(screen.getByLabelText(joinCopy.username('lab-server'))).toHaveValue('bob');
+    expect(screen.getByRole('button', { name: joinCopy.agentHeading('lab-server') })).toBeVisible();
+    // The login the Advanced override replaces is written as it is saved: with the address.
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    expect(screen.getByLabelText(joinCopy.serverLogin)).toHaveAccessibleDescription(
+      joinCopy.serverLoginHelper('bob@52.33.141.141')
+    );
+  });
+
+  it('names the server by its address when the daemon found no alias', async () => {
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, server_label: null });
+    renderDialog();
+    await paste();
+    expect(await screen.findByTestId('crew-join-hosted-by')).toHaveTextContent('on hpc.ucsf.edu');
   });
 
   it('states the privacy the person joins with, and reveals the choice only on Change', async () => {
@@ -134,9 +208,9 @@ describe('JoinDialog', () => {
     await paste();
 
     const line = await screen.findByTestId('crew-join-as');
-    expect(line).toHaveTextContent('You’ll join as');
-    expect(line).toHaveTextContent('Private');
-    expect(line).toHaveTextContent('ucsf');
+    // It names what the choice governs, the models, and the institution by its name (Q2-36, Q2-38).
+    await waitFor(() => expect(line).toHaveTextContent('Models: private and UCSF-approved only'));
+    expect(line).not.toHaveTextContent(/join as/i);
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
 
@@ -151,14 +225,75 @@ describe('JoinDialog', () => {
     expect(institution).toHaveAttribute('pattern', INSTITUTION_ID_PATTERN);
 
     fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
-    expect(screen.getByTestId('crew-join-mismatch')).toHaveTextContent(
-      'lab is Private for ucsf. Your connection will be Public.'
+    // Public on a Private workspace states its consequence, in warning ink (Q2-36): only clauses
+    // the daemon and broker enforce. A Private workspace still blocks public models, and a Public
+    // connection limits nothing the person reads, so neither "can't use UCSF models" nor
+    // "can't read Restricted channels" may appear.
+    const note = screen.getByTestId('crew-join-public-consequence');
+    expect(note).toHaveTextContent(
+      'lab is Private, so nothing changes yet: your agent still uses only private and UCSF-approved models here. If @alice makes lab Public, public models could read its public-safe channels through your agent. @alice isn’t told what you chose.'
     );
+    expect(note).not.toHaveTextContent(/Restricted/);
+    expect(note).not.toHaveTextContent(/can’t use/);
+    expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
     expect(screen.queryByPlaceholderText('For example, ucsf or sdsc')).toBeNull();
 
     // The institution survives a trip to Public and back.
     fireEvent.click(screen.getByRole('radio', { name: /^Private/ }));
     expect(screen.getByPlaceholderText('For example, ucsf or sdsc')).toHaveValue('ucsf');
+    expect(screen.queryByTestId('crew-join-public-consequence')).toBeNull();
+  });
+
+  it('folds the privacy choice back to its line with Done, and hands focus to Change (Q2-36)', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: joinCopy.change }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Public/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.privacyDone }));
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent(
+      joinCopy.privacyLine('public', null)
+    );
+    // Done left with the fields: focus is on the Change that replaced them, not on the page.
+    expect(screen.getByRole('button', { name: joinCopy.change })).toHaveFocus();
+    // The consequence stays said while the choice stands.
+    expect(screen.getByTestId('crew-join-public-consequence')).toBeInTheDocument();
+  });
+
+  it('offers no Done while the line could not state the choice (a Private with no institution)', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: joinCopy.change }));
+    fireEvent.change(screen.getByPlaceholderText('For example, ucsf or sdsc'), {
+      target: { value: '' },
+    });
+    expect(screen.queryByRole('button', { name: joinCopy.privacyDone })).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('For example, ucsf or sdsc'), {
+      target: { value: 'UCSF' },
+    });
+    expect(screen.queryByRole('button', { name: joinCopy.privacyDone })).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('For example, ucsf or sdsc'), {
+      target: { value: 'ucsf' },
+    });
+    expect(screen.getByRole('button', { name: joinCopy.privacyDone })).toBeInTheDocument();
+  });
+
+  it('keeps focus on the invitation box while the menu that opened the dialog closes (Q2-27)', async () => {
+    renderDialog();
+    const box = screen.getByLabelText(joinCopy.invitation);
+    expect(box).toHaveFocus();
+    // The menu, closing a moment later, drops focus to the page.
+    act(() => box.blur());
+    expect(document.activeElement).toBe(document.body);
+    await waitFor(() => expect(box).toHaveFocus());
+    // Once the person acts, their focus is theirs: nothing is pulled back.
+    fireEvent.keyDown(document.body, { key: 'Tab' });
+    act(() => box.blur());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(box).not.toHaveFocus();
   });
 
   it('asks for the institution up front when the invitation names none', async () => {
@@ -198,7 +333,7 @@ describe('JoinDialog', () => {
     expect(screen.queryByLabelText(joinCopy.invitation)).toBeNull();
   });
 
-  it('keeps the optional settings behind Advanced with their defaults stated', async () => {
+  it('keeps the SSH settings behind Advanced with their defaults stated', async () => {
     mocks.previewInvitation.mockResolvedValue(PREVIEW);
     renderDialog();
     await paste();
@@ -207,7 +342,22 @@ describe('JoinDialog', () => {
     expect(screen.queryByLabelText(joinCopy.identityFile)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByLabelText(joinCopy.identityFile)).toBeInTheDocument();
+    // The agent's permission is not an SSH setting: it is not in Advanced (Q2-37).
+    expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
+    expect(screen.queryByLabelText(joinCopy.remoteFolder)).toBeNull();
+  });
+
+  it('gives the agent’s permissions their own labelled row, off by default (Q2-37)', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
+    // Folded, it still says what it holds: off.
+    expect(row).toHaveAccessibleDescription('No work folder · agent commands off');
+    fireEvent.click(row);
     const agent = screen.getByRole('switch', { name: joinCopy.remoteExecution });
+    expect(agent).not.toBeChecked();
     expect(agent).toBeDisabled();
     // A switch that is off limits says why (T-42).
     expect(agent).toHaveAccessibleDescription(joinCopy.remoteExecutionNeedsFolder);
@@ -216,6 +366,27 @@ describe('JoinDialog', () => {
     });
     expect(agent).toBeEnabled();
     expect(agent).not.toHaveAccessibleDescription(joinCopy.remoteExecutionNeedsFolder);
+    fireEvent.click(agent);
+    fireEvent.click(row);
+    expect(row).toHaveAccessibleDescription('/work/lab · agent commands on');
+  });
+
+  it('opens the agent row to report a work folder it would refuse', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
+    fireEvent.click(row);
+    fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+      target: { value: 'work/lab' },
+    });
+    fireEvent.click(row);
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    const folder = await screen.findByLabelText(joinCopy.remoteFolder);
+    expect(await screen.findByText(joinCopy.remoteFolderInvalid)).toBeInTheDocument();
+    expect(folder).toHaveAttribute('aria-invalid', 'true');
+    expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
   });
 
   it('saves the connection as the invitation pins it, then selects and connects it', async () => {
@@ -268,6 +439,7 @@ describe('JoinDialog', () => {
     fireEvent.change(screen.getByLabelText(joinCopy.connectionName), {
       target: { value: 'UCSF lab' },
     });
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
     fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
       target: { value: '/work/lab' },
     });
@@ -579,7 +751,9 @@ describe('JoinDialog', () => {
     const stated = await screen.findByTestId('crew-join-workspace-privacy');
     expect(stated).toHaveTextContent('Public');
     expect(stated).not.toHaveTextContent('Private');
-    expect(screen.getByTestId('crew-join-as')).toHaveTextContent('Public');
+    expect(screen.getByTestId('crew-join-as')).toHaveTextContent(
+      joinCopy.privacyLine('public', null)
+    );
     expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
     await waitFor(() =>

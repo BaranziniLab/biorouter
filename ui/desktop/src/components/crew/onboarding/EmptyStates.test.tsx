@@ -64,6 +64,100 @@ describe('connection states', () => {
     expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
   });
 
+  it('names the server by the person’s own SSH alias when the daemon found one (D-ALIAS)', () => {
+    const aliased = {
+      ...fakeConnection({ ssh_target: 'bob@52.33.141.141' }),
+      server_label: 'lab-server',
+    };
+    renderWithCrew(<ConnectingCard />, crewWith({ connection: aliased, connections: [aliased] }));
+    expect(screen.getByText(emptyCopy.connecting('lab-server'))).toBeInTheDocument();
+  });
+
+  describe('Connect keeps keyboard focus off the page (Q2-20)', () => {
+    afterEach(() => {
+      document.querySelectorAll('[data-test-landing]').forEach((node) => node.remove());
+    });
+
+    it('takes focus when the screen arrives with focus nowhere', () => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      const crew = crewWith({ connection: fakeConnection({ status: 'disconnected' }) });
+      renderWithCrew(<OfflineState />, crew);
+      expect(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })).toHaveFocus();
+    });
+
+    it('leaves focus where it already is', () => {
+      const elsewhere = document.createElement('button');
+      elsewhere.setAttribute('data-test-landing', '');
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+      renderWithCrew(
+        <OfflineState />,
+        crewWith({ connection: fakeConnection({ status: 'disconnected' }) })
+      );
+      expect(elsewhere).toHaveFocus();
+    });
+
+    it('stays focusable while connecting, and connects once however often it is pressed', () => {
+      const crew = crewWith({
+        connection: fakeConnection({ status: 'disconnected' }),
+        isPending: vi.fn((key: string) => key === 'connect'),
+      });
+      renderWithCrew(<OfflineState />, crew);
+      const connect = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      connect.focus();
+      // Busy, not disabled: a disabled control would drop focus to the page.
+      expect(connect).toHaveAttribute('aria-disabled', 'true');
+      expect(connect).not.toBeDisabled();
+      fireEvent.click(connect);
+      expect(crew.connect).not.toHaveBeenCalled();
+      expect(connect).toHaveFocus();
+    });
+
+    it('lands on the channel once Connect has left with the offline screen', async () => {
+      let finish!: () => void;
+      const connect = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const view = renderWithCrew(
+        <OfflineState />,
+        crewWith({ connection: fakeConnection({ status: 'disconnected' }), connect })
+      );
+      const button = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      button.focus();
+      fireEvent.click(button);
+      // Connecting replaces the offline screen, and the channel opens a moment later.
+      view.unmount();
+      expect(document.activeElement).toBe(document.body);
+      await act(async () => finish());
+      const app = document.createElement('div');
+      app.className = 'crew-app';
+      app.setAttribute('data-test-landing', '');
+      const heading = document.createElement('h1');
+      const headingButton = document.createElement('button');
+      headingButton.textContent = '# general';
+      heading.appendChild(headingButton);
+      app.appendChild(heading);
+      await act(async () => {
+        document.body.appendChild(app);
+      });
+      await waitFor(() => expect(headingButton).toHaveFocus());
+    });
+
+    it('keeps focus on Connect when the connect failed and the screen stayed', async () => {
+      const crew = crewWith({ connection: fakeConnection({ status: 'disconnected' }) });
+      renderWithCrew(<OfflineState />, crew);
+      const button = screen.getByRole('button', { name: emptyCopy.offlineAction('lab') });
+      button.focus();
+      fireEvent.click(button);
+      await waitFor(() => expect(crew.connect).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(button).toHaveFocus();
+    });
+  });
+
   it('offers Sign in when the server wants a password', () => {
     const crew = crewWith();
     renderWithCrew(<SignInNeededState />, crew);

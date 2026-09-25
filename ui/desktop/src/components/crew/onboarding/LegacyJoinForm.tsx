@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Note } from '../../ui/note';
@@ -6,28 +6,40 @@ import { SecretInput } from '../../ui/secret-input';
 import { useCrew } from '../state/CrewControllerContext';
 import { failureMessage } from '../state/observationFailure';
 import { crewActionCopy } from '../state/copy';
-import { legacyJoinCopy } from './copy';
+import { joinStateCopy, legacyJoinCopy } from './copy';
 import { updateJoinContext } from './joinContext';
 import { useMounted } from './fields';
 
 /**
  * The invitation-token path (`auth.enroll`), for a workspace whose server cannot join by
- * invitation code, or behind "Other ways to join". The person sends their host a join request —
- * their username and this computer's public device key, never a secret — and pastes back the
- * token the host's older invitation form produced. The broker decides; this only carries it.
+ * invitation code, or behind "Having trouble joining?". The person sends their host a join
+ * request — their username and this computer's public device key, never a secret — and pastes back
+ * the token the host's older invitation form produced. The broker decides; this only carries it.
+ *
+ * `host` makes it the fallback (Q2-35): it opens on the condition ("If @alice asks for it, send
+ * this instead:"), keeps the 64-character key folded behind "Show join request", and says the
+ * token field is only for a token the host sent. Without it, this is the only way in, and the
+ * request is shown outright.
  */
 export function LegacyJoinForm({
   workspace,
   username,
+  host,
 }: {
   workspace: string;
   username: string | null;
+  /** The host, as a sentence names them (`@alice`, or "your host"): marks this as the fallback. */
+  host?: string;
 }) {
   const crew = useCrew();
   const mounted = useMounted();
   const [token, setToken] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requestShown, setRequestShown] = useState(false);
+  const requestId = useId();
+  const tokenHelperId = useId();
+  const fallback = host !== undefined;
   const publicKey = crew.connection?.public_key ?? '';
   const connectionId = crew.connectionId;
 
@@ -56,7 +68,32 @@ export function LegacyJoinForm({
 
   return (
     <div className="crew-onboard-stack" data-testid="crew-legacy-join">
-      {publicKey ? (
+      {publicKey && fallback ? (
+        <>
+          <p className="text-body text-text-default">{joinStateCopy.otherBody(host)}</p>
+          <div className="crew-onboard-row">
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0"
+              aria-expanded={requestShown}
+              aria-controls={requestShown ? requestId : undefined}
+              onClick={() => setRequestShown((shown) => !shown)}
+            >
+              {requestShown ? legacyJoinCopy.hideRequest : legacyJoinCopy.showRequest}
+            </Button>
+          </div>
+          {requestShown ? (
+            <div id={requestId}>
+              <CopyField
+                multiline
+                label={legacyJoinCopy.requestLabel}
+                value={legacyJoinCopy.request(workspace, username, publicKey)}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : publicKey ? (
         <>
           <p className="text-body text-text-default">{legacyJoinCopy.sendRequest}</p>
           <CopyField
@@ -74,8 +111,14 @@ export function LegacyJoinForm({
           required
           disabled={pending}
           value={token}
+          aria-describedby={fallback ? tokenHelperId : undefined}
           onChange={(event) => setToken(event.target.value)}
         />
+        {fallback ? (
+          <p id={tokenHelperId} className="text-supporting text-text-muted">
+            {legacyJoinCopy.tokenHelper(host)}
+          </p>
+        ) : null}
         <div className="crew-onboard-actions">
           <Button type="submit" disabled={pending || !token.trim()}>
             {pending ? legacyJoinCopy.submitting : legacyJoinCopy.submit}

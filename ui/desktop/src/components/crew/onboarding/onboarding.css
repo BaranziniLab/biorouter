@@ -130,9 +130,48 @@
   gap: 8px;
 }
 
+/* The Join dialog's invitation box and the Host dialog's paste box: at least
+   four lines, growing with what is in them up to a height where they scroll
+   inside themselves. They size themselves, so they offer no native resize grip
+   (Q2-30): a grip on a field that already grows is a second, competing size.
+   14px is the padding and border (`py-1.5`, a 1px border). */
 .crew-onboard-textarea {
-  min-height: 88px;
-  resize: vertical;
+  field-sizing: content;
+  min-height: calc(4lh + 14px);
+  max-height: calc(12lh + 14px);
+  resize: none;
+}
+
+/* A focused text field in the Join or Host dialog firms its edge to the
+   accent, as it does inside the Crew area (`crew-app.css`, T-16). Both portal
+   to <body>, outside `.crew-app`, so that rule never reached them and a
+   keyboard user saw no change at all (Q2-25); they carry `crew-dialog`
+   themselves, because `CrewDialogs` (which gives its dialogs the class) does
+   not mount them. `:read-write` is exactly the editable fields, and an invalid
+   field keeps its danger edge. */
+.crew-dialog :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}
+
+/* "Start it for me" while it runs: it keeps focus and says it is busy with
+   `aria-disabled` rather than `disabled`, which would drop focus to the page. */
+.crew-onboard-waiting[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* What the start commands print, as it arrives (D-HOST): a terminal-like box
+   that keeps its lines and scrolls inside itself, newest at the bottom. */
+.crew-onboard-output {
+  max-height: calc(10lh + 16px);
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* The invitation box once the daemon read it: "✓ Invitation read · Edit",

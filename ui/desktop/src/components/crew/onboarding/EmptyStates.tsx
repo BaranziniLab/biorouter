@@ -1,9 +1,9 @@
+import { useEffect, useRef } from 'react';
 import { Hash, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
 import {
   connectionNames,
-  connectionServer,
   personFromProjection,
   personLabel,
   teamName,
@@ -12,8 +12,10 @@ import {
 } from '../identity';
 import type { Invitation, Snapshot } from '../crewApi';
 import { useCrew } from '../state/CrewControllerContext';
+import { canFocus, focusIsLost, restoreFocusSoon } from '../state/focusReturn';
 import type { CrewController } from '../state/types';
 import { emptyCopy } from './copy';
+import { connectionServerLabel } from './joinText';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 import { SetupChecklist } from './SetupChecklist';
 
@@ -28,10 +30,13 @@ function viewOf(crew: CrewController): Snapshot | null {
   return crew.snapshot ?? crew.lastVerified?.snapshot ?? null;
 }
 
-/** The server a connection reaches, for "Connecting to {server}…" and "Sign in to {server}". */
+/**
+ * The server a connection reaches, for "Connecting to {server}…" and "Sign in to {server}": the
+ * person's own SSH alias for it when the daemon found one (D-ALIAS), else its host.
+ */
 function useServer(): string {
   const { connection } = useCrew();
-  return connectionServer(connection) || connection?.name || '';
+  return connectionServerLabel(connection) || connection?.name || '';
 }
 
 /** The connection's local label: its name, or `name — server` when two share a name. */
@@ -52,9 +57,24 @@ export function ConnectingCard() {
   );
 }
 
+/** Where focus lands once Connect has left with the offline screen: the channel, when it opens. */
+export const CONNECTED_FOCUS_TARGETS: readonly string[] = [
+  '.crew-app h1 button',
+  '.crew-app textarea[aria-label^="Message"]',
+];
+
 export function OfflineState() {
   const { connect, isPending } = useCrew();
   const workspace = useConnectionLabel();
+  const connectRef = useRef<HTMLButtonElement>(null);
+  const pending = isPending('connect');
+
+  // The screen replaced what had focus (Retry's note, a closed dialog's opener): put it on the one
+  // thing to do here rather than leave it on the page (Q2-20).
+  useEffect(() => {
+    if (focusIsLost()) connectRef.current?.focus();
+  }, []);
+
   return (
     <SetupScreen>
       <EmptyState
@@ -63,9 +83,22 @@ export function OfflineState() {
         description={emptyCopy.offlineBody}
         actions={
           <Button
+            ref={connectRef}
             type="button"
-            disabled={isPending('connect')}
-            onClick={() => void connect({ userInitiated: true })}
+            // Not `disabled` while connecting: a disabled control drops focus to the page.
+            aria-disabled={pending || undefined}
+            className="crew-onboard-waiting"
+            onClick={(event) => {
+              if (pending) return;
+              const origin = event.currentTarget;
+              void connect({ userInitiated: true }).then(() => {
+                // Still here (the connect failed and this screen stayed): focus stays on it.
+                if (origin.isConnected) return;
+                // Connect left with this screen: land on the channel once it opens (Q2-20).
+                restoreFocusSoon(null, CONNECTED_FOCUS_TARGETS);
+                focusOnceMounted(origin, CONNECTED_FOCUS_TARGETS);
+              });
+            }}
           >
             {emptyCopy.offlineAction(workspace)}
           </Button>
@@ -108,6 +141,18 @@ let stopLandingFocus: (() => void) | null = null;
  * already put it somewhere themselves (then nothing moves). Returns a stop.
  */
 export function focusComposerOnceMounted(origin: HTMLElement | null): () => void {
+  return focusOnceMounted(origin, [COMPOSER_SELECTOR]);
+}
+
+/**
+ * A control that unmounts itself as it acts (Join {team}, Connect): once the first of `selectors`
+ * mounts, put focus on it, unless the person has already put focus somewhere themselves (then
+ * nothing moves). Gives up after `LANDING_FOCUS_TIMEOUT_MS`. Returns a stop.
+ */
+export function focusOnceMounted(
+  origin: HTMLElement | null,
+  selectors: readonly string[]
+): () => void {
   stopLandingFocus?.();
   if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
   let stopped = false;
@@ -133,10 +178,13 @@ export function focusComposerOnceMounted(origin: HTMLElement | null): () => void
       stop();
       return;
     }
-    const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
-    if (!composer) return;
-    composer.focus();
-    stop();
+    for (const selector of selectors) {
+      const target = document.querySelector<HTMLElement>(selector);
+      if (!canFocus(target)) continue;
+      target.focus();
+      stop();
+      return;
+    }
   }
   stopLandingFocus = stop;
   attempt();

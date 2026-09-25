@@ -1,4 +1,10 @@
-import { displayNameIsUsername, sanitizeUsername, type CrewPerson } from '../identity';
+import {
+  connectionServer,
+  displayNameIsUsername,
+  sanitizeDisplayText,
+  sanitizeUsername,
+  type CrewPerson,
+} from '../identity';
 
 /**
  * Pure text helpers for the onboarding surfaces. None of them decides anything: the daemon parses
@@ -12,6 +18,23 @@ export function sshUsername(target: string | null | undefined): string | null {
   const at = target.lastIndexOf('@');
   if (at <= 0) return null;
   return sanitizeUsername(target.slice(0, at)) || null;
+}
+
+/**
+ * What to call a saved connection's server on screen (D-ALIAS): the daemon's `server_label` — the
+ * person's own SSH alias for the address, when one maps to it — else the host of its SSH login.
+ * Display only: the login itself (`ssh_target`) is what connects, and a value being written (a login
+ * in Advanced, Connection settings' details) keeps the address.
+ */
+export function connectionServerLabel(
+  connection: { ssh_target?: string | null; server_label?: unknown } | null | undefined
+): string {
+  const label =
+    typeof connection?.server_label === 'string'
+      ? sanitizeDisplayText(connection.server_label)
+      : '';
+  if (label) return label;
+  return connection ? connectionServer({ id: '', ssh_target: connection.ssh_target ?? '' }) : '';
 }
 
 /**

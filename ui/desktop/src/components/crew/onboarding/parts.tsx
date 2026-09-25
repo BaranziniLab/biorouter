@@ -5,7 +5,7 @@ import { Check, Copy, Terminal } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField, COPY_FIELD_FEEDBACK_MS } from '../../ui/copy-field';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
-import { InstitutionName } from '../identity';
+import { InstitutionName, type KnownInstitution } from '../identity';
 import { hostCopy, trustCopy } from './copy';
 import './onboarding.css';
 
@@ -77,9 +77,12 @@ export function Spinner() {
 export function PrivacyLabel({
   mode,
   institutionId,
+  known,
 }: {
   mode: 'private' | 'public';
   institutionId?: string | null;
+  /** The institutions configured providers publish names for, so `ucsf` reads as UCSF (Q2-38). */
+  known?: readonly KnownInstitution[] | null;
 }) {
   return (
     <span className="crew-onboard-privacy" data-privacy={mode}>
@@ -91,7 +94,7 @@ export function PrivacyLabel({
           <span aria-hidden="true" className="text-text-muted">
             ·
           </span>
-          <InstitutionName id={institutionId} className="text-label" />
+          <InstitutionName id={institutionId} known={known} className="text-label" />
         </>
       ) : null}
     </span>
