@@ -21,9 +21,11 @@ import {
   DropdownMenuSubTrigger,
 } from '../../ui/dropdown-menu';
 import { StatusDot, type StatusDotTone } from '../../ui/status-dot';
+import { connectErrorText } from '../channel/ConnectionBar';
 import type { CrewConnection } from '../crewApi';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { connectionNames, PersonName } from '../identity';
+import { CONNECT_FAILURE_CODES } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
@@ -185,10 +187,23 @@ export function WorkspaceMenu({
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
   const connecting = isPending('connect') || isPending('sign-in') || signIn.open;
-  const lastError = lastConnectFailure?.message || connection.last_error || '';
   const snapshotReady = verified && Boolean(crew.snapshot);
   const reason = unavailableReason(status, snapshotReady);
   const server = serverLabel(connection);
+  // Never the transport's words (NEW-1): the daemon's saved `last_error` for an SSH drop is its
+  // record ("Crew SSH failure [ssh_eof; …]"), read here by its typed code, or plainly.
+  const savedCode = connection.last_error_code;
+  const lastError = lastConnectFailure
+    ? connectErrorText(lastConnectFailure.kind, lastConnectFailure.message, server)
+    : connection.last_error
+      ? connectErrorText(
+          savedCode && Object.prototype.hasOwnProperty.call(CONNECT_FAILURE_CODES, savedCode)
+            ? CONNECT_FAILURE_CODES[savedCode]
+            : undefined,
+          connection.last_error,
+          server
+        )
+      : '';
   const me = verified ? dir.me : null;
   const fingerprint =
     fingerprintHex && status === 'connected' ? groupedFingerprint(fingerprintHex) : '';

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { groupedFingerprint, workspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { forgetJoinContext, updateJoinContext } from '../onboarding/joinContext';
+import { connectionBarCopy } from '../channel/copy';
 import { crewStatusCopy } from '../state/copy';
 import { sidebarCopy } from './copy';
 import { offersReconnect, unavailableReason } from './WorkspaceMenu';
@@ -296,8 +297,51 @@ describe('WorkspaceSwitcher', () => {
       })
     );
     const { menu } = await openMenu();
-    expect(within(menu).getByText('ssh: connection refused')).toBeInTheDocument();
+    // In words: a failure's `code: ` prefix never reaches the person (NEW-1, T-08).
+    expect(within(menu).getByText(/^Connection refused$/)).toBeInTheDocument();
     expect(within(menu).getByText(crewStatusCopy.cantConnect)).toBeInTheDocument();
+  });
+
+  it('never shows the transport’s words for a failure, saved or just made (NEW-1)', async () => {
+    const TRANSPORT =
+      'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying';
+    const RAW = /Crew SSH failure|ssh_eof|child_before_cleanup|Submitted operation/;
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'offline',
+        connection: {
+          ...connection,
+          status: 'disconnected',
+          last_error: TRANSPORT,
+          last_error_code: 'crew_ssh_unreachable',
+        },
+      })
+    );
+    const { menu } = await openMenu();
+    expect(
+      within(menu).getByText(connectionBarCopy.unreachable('hpc.ucsf.edu'))
+    ).toBeInTheDocument();
+    expect(menu).not.toHaveTextContent(RAW);
+  });
+
+  it('says a failed Connect by its kind, not in the daemon’s words (NEW-1)', async () => {
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'cant-connect',
+        lastConnectFailure: {
+          kind: 'ssh_failed',
+          message:
+            'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect.',
+        },
+      })
+    );
+    const { menu } = await openMenu();
+    expect(
+      within(menu).getByText(connectionBarCopy.cantConnect('hpc.ucsf.edu'))
+    ).toBeInTheDocument();
+    expect(menu).not.toHaveTextContent(/ssh_eof|child_before_cleanup/);
   });
 
   it('lists the workspace items, the connection tools, and Add a workspace', async () => {
