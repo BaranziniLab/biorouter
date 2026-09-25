@@ -211,6 +211,102 @@ export function unsharedFileNames(
 }
 
 /**
+ * One file shared in the channel (an attachment or a server path), by every name it answers to,
+ * and when it was last shared there: `sharedAt` is the newest sharing message's `created_at`
+ * (Unix seconds, or milliseconds from a newer daemon), `order` that message's place in the loaded
+ * list, which breaks a tie between two messages stamped in the same second.
+ */
+export interface SharedFile {
+  names: readonly string[];
+  sharedAt: number;
+  order: number;
+}
+
+/** A name the task mentions that two or more different shared files carry (Q3-02). */
+export interface SameNamedFiles {
+  /** The name as the newest of those files carries it. */
+  name: string;
+  count: number;
+  /** When the newest one was shared: what the agent is told to use. */
+  sharedAt: number;
+}
+
+function sameFileName(a: string, b: string): boolean {
+  return (
+    fileBaseName(a).trim().normalize('NFC').toLowerCase() ===
+    fileBaseName(b).trim().normalize('NFC').toLowerCase()
+  );
+}
+
+/**
+ * The mentioned names that two or more DIFFERENT shared files carry, in mention order (Q3-02).
+ * Gina shared `gina-assay.csv` twice — dragged, then pasted — which made two files with identical
+ * cards, and her agent silently read the older one. The daemon now tells the agent to use the
+ * newest copy and to say so; the pane says the same before Start.
+ *
+ * A file answers a mention only by its WHOLE name (its last path segment), case aside — never by
+ * the shortened word `fileNameKey` compares for the "No file named …" warning, where erring towards
+ * a match keeps that warning silent. Here a loose match would make "2 files named reader.csv" out
+ * of `Reader.csv` and `Plate Reader.csv`, which is false; an exact one can only miss a note.
+ * The same file shared in two messages is one file.
+ */
+export function sameNamedFiles(
+  mentioned: readonly string[],
+  shared: readonly SharedFile[]
+): SameNamedFiles[] {
+  const found: SameNamedFiles[] = [];
+  for (const mention of mentioned) {
+    const matching = shared.filter((file) =>
+      file.names.some((name) => sameFileName(name, mention))
+    );
+    if (matching.length < 2) continue;
+    const newest = matching.reduce((best, file) =>
+      file.sharedAt > best.sharedAt || (file.sharedAt === best.sharedAt && file.order > best.order)
+        ? file
+        : best
+    );
+    const name = newest.names.find((candidate) => sameFileName(candidate, mention)) ?? mention;
+    found.push({
+      name: fileBaseName(name).trim(),
+      count: matching.length,
+      sharedAt: newest.sharedAt,
+    });
+  }
+  return found;
+}
+
+const SHARED_LOCALE = 'en-US';
+
+/**
+ * When a file was shared, in the viewer's local time and the timeline's `en-US` words (so it can
+ * be found beside the message's own time): "at 1:55 AM" today, "yesterday at 1:55 AM", "Sep 24 at
+ * 1:55 AM" earlier this year, "Sep 24, 2025 at 1:55 AM" before that. `null` for a stamp that is
+ * not a time, so a sentence can leave the time out rather than print 1970.
+ */
+export function sharedWhen(createdAt: number, now: Date = new Date()): string | null {
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
+  const date = new Date(createdAt < 1e12 ? createdAt * 1000 : createdAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const time = date.toLocaleTimeString(SHARED_LOCALE, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  const startOf = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((startOf(now) - startOf(date)) / (24 * 60 * 60 * 1000));
+  if (days === 0) return `at ${time}`;
+  if (days === 1) return `yesterday at ${time}`;
+  const day = date.toLocaleDateString(
+    SHARED_LOCALE,
+    date.getFullYear() === now.getFullYear()
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' }
+  );
+  return `${day} at ${time}`;
+}
+
+/**
  * A model as the chat composer's model chip names it (T-47): `getModelDisplayName` (the
  * predefined-model alias, else the id) and `getProviderDisplayName` (the predefined subtext), then
  * the provider's own display name. Imported, never re-implemented, so the two surfaces agree.

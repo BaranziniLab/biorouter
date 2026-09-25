@@ -20,7 +20,7 @@ import {
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
-import { mentionedFileNames, unsharedFileNames } from './presentation';
+import { mentionedFileNames, sameNamedFiles, sharedWhen, unsharedFileNames } from './presentation';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -354,6 +354,15 @@ describe('AgentTaskPane', () => {
       // The grip was Tailwind's `resize-y`; the field grows by itself (`field-sizing: content`).
       expect(task.className).not.toMatch(/(^|\s)resize(-[xy])?(\s|$)/);
       expect(cssRule('.crew-agent-task')).toMatch(/resize:\s*none;/);
+    });
+
+    it('does not spell-check file names and sample IDs (Q3-34)', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      // Dave and Gina saw `dave-plate-reader.csv`, `gina-assay.csv` and `15b` underlined.
+      // The attribute, not the IDL property: jsdom does not implement `spellcheck`.
+      expect(task).toHaveAttribute('spellcheck', 'false');
     });
   });
 
@@ -1012,6 +1021,159 @@ describe('AgentTaskPane', () => {
       fireEvent.change(task, { target: { value: 'Average counts.csv' } });
       await act(async () => undefined);
       expect(fileWarning()).toBeNull();
+    });
+
+    describe('two shared files by the name the task names (Q3-02)', () => {
+      const sameName = () => screen.queryByTestId('crew-agent-same-name-note');
+      /** Today at 1:55 AM local time, in Unix seconds, as the broker stamps a message. */
+      const todayAt = (hours: number, minutes: number) => {
+        const date = new Date();
+        date.setHours(hours, minutes, 0, 0);
+        return Math.floor(date.getTime() / 1000);
+      };
+
+      it('says how many there are and that the agent will use the newest, before Start', async () => {
+        const user = userEvent.setup();
+        // Gina's case: the same CSV dragged in, then pasted — two files with identical cards.
+        installFiles({ 'blob-drag': 'gina-assay.csv', 'blob-paste': 'gina-assay.csv' });
+        installObserver({
+          messages: [
+            { ...message('1'), attachments: ['blob-drag'], created_at: todayAt(1, 54) },
+            { ...message('2'), attachments: ['blob-paste'], created_at: todayAt(1, 55) },
+          ],
+        });
+        renderCrew(Layout);
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(2));
+        const task = await openAgent(user);
+        fireEvent.change(task, {
+          target: { value: 'Compute per-sample means from gina-assay.csv and name the file.' },
+        });
+        const note = await screen.findByTestId('crew-agent-same-name-note');
+        const words = agentCopy.sameNameShared(
+          2,
+          'gina-assay.csv',
+          '#general',
+          sharedWhen(todayAt(1, 55))
+        );
+        expect(words).toBe(
+          '2 files named gina-assay.csv are shared in #general. Your agent will use the newest one, shared at 1:55 AM.'
+        );
+        expect(note).toHaveTextContent(words);
+        // The file IS shared, so there is no "No file named …" warning beside it.
+        expect(fileWarning()).toBeNull();
+        // It is before Start in the footer, describes it, and is not a gate.
+        expect(note.compareDocumentPosition(startButton()) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+          Node.DOCUMENT_POSITION_FOLLOWING
+        );
+        expect(startButton()).toHaveAccessibleDescription(words);
+        await chooseModel(user, 'fixture-model');
+        expect(startButton()).toBeEnabled();
+        await user.click(startButton());
+        await waitFor(() => expect(runPosts()).toHaveLength(1));
+      });
+
+      it('dates the newest copy by the later message even when that one is listed first', async () => {
+        const user = userEvent.setup();
+        installFiles({ 'blob-a': 'Counts.csv', 'blob-b': 'counts.csv', 'blob-c': 'counts.csv' });
+        installObserver({
+          messages: [
+            { ...message('1'), attachments: ['blob-a'], created_at: todayAt(9, 5) },
+            { ...message('2'), attachments: ['blob-b'], created_at: todayAt(9, 30) },
+            { ...message('3'), attachments: ['blob-c'], created_at: todayAt(9, 10) },
+          ],
+        });
+        renderCrew(Layout);
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(3));
+        const task = await openAgent(user);
+        fireEvent.change(task, { target: { value: 'Average COUNTS.CSV' } });
+        expect(await screen.findByTestId('crew-agent-same-name-note')).toHaveTextContent(
+          agentCopy.sameNameShared(3, 'counts.csv', '#general', 'at 9:30 AM')
+        );
+      });
+
+      it('says nothing for one file shared twice, or for a single file by that name', async () => {
+        const user = userEvent.setup();
+        installFiles({ 'blob-1': 'counts.csv', 'blob-2': 'layout.xlsx' });
+        installObserver({
+          messages: [
+            { ...message('1'), attachments: ['blob-1'] },
+            // The same file again: one file, not two.
+            { ...message('2'), attachments: ['blob-1', 'blob-2'] },
+          ],
+        });
+        renderCrew(Layout);
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(2));
+        const task = await openAgent(user);
+        fireEvent.change(task, { target: { value: 'Join counts.csv with layout.xlsx' } });
+        await waitFor(() =>
+          expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'blob.status')).toBe(
+            true
+          )
+        );
+        await act(async () => undefined);
+        expect(sameName()).toBeNull();
+        expect(fileWarning()).toBeNull();
+      });
+
+      it('stays quiet while the loaded messages may not be the whole channel', async () => {
+        const user = userEvent.setup();
+        installFiles({ 'blob-1': 'counts.csv', 'blob-2': 'counts.csv' });
+        const page = Array.from({ length: 200 }, (_, index) => ({
+          ...message(String(index + 1)),
+          attachments: index === 198 ? ['blob-1'] : index === 199 ? ['blob-2'] : [],
+        }));
+        installObserver({ messages: page });
+        renderCrew(Layout);
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(200));
+        const task = await openAgent(user);
+        fireEvent.change(task, { target: { value: 'Average counts.csv' } });
+        await act(async () => undefined);
+        // A third copy could sit further back, so "2 files" might be false.
+        expect(sameName()).toBeNull();
+      });
+
+      it('counts only files by that whole name, and dates the newest one', () => {
+        const file = (names: string[], sharedAt: number, order = 0) => ({
+          names,
+          sharedAt,
+          order,
+        });
+        // `Reader.csv` is how an unquoted task reads `Plate Reader.csv`, but the two are not
+        // "2 files named Reader.csv".
+        expect(
+          sameNamedFiles(['Reader.csv'], [file(['Plate Reader.csv'], 1), file(['Reader.csv'], 2)])
+        ).toEqual([]);
+        // A server path answers by its file name; case aside; newest by time, then by order.
+        expect(
+          sameNamedFiles(
+            ['counts.tsv', 'qc.json'],
+            [
+              file(['Counts', 'Counts.TSV'], 10, 0),
+              file(['counts.tsv'], 20, 1),
+              file(['COUNTS.tsv'], 20, 2),
+              file(['qc.json'], 5, 3),
+            ]
+          )
+        ).toEqual([{ name: 'COUNTS.tsv', count: 3, sharedAt: 20 }]);
+      });
+
+      it('says when in the viewer’s local time, and never prints 1970', () => {
+        const now = new Date(2026, 8, 24, 15, 0);
+        const at = (date: Date) => date.getTime() / 1000;
+        expect(sharedWhen(at(new Date(2026, 8, 24, 1, 55)), now)).toBe('at 1:55 AM');
+        expect(sharedWhen(at(new Date(2026, 8, 23, 13, 5)), now)).toBe('yesterday at 1:05 PM');
+        expect(sharedWhen(at(new Date(2026, 8, 2, 9, 0)), now)).toBe('Sep 2 at 9:00 AM');
+        expect(sharedWhen(at(new Date(2025, 11, 31, 23, 59)), now)).toBe(
+          'Dec 31, 2025 at 11:59 PM'
+        );
+        // Milliseconds from a newer daemon read as the same time.
+        expect(sharedWhen(new Date(2026, 8, 24, 1, 55).getTime(), now)).toBe('at 1:55 AM');
+        expect(sharedWhen(0, now)).toBeNull();
+        expect(sharedWhen(Number.NaN, now)).toBeNull();
+        expect(agentCopy.sameNameShared(2, 'a.csv', '#data', null)).toBe(
+          '2 files named a.csv are shared in #data. Your agent will use the newest one.'
+        );
+      });
     });
 
     it('finds the names a task mentions, and not the ones inside a URL', () => {

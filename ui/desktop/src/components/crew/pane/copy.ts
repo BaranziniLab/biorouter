@@ -65,6 +65,11 @@ export const aboutCopy = {
   transfer: 'Transfer ownership…',
   dangerZone: 'Danger zone',
   archive: 'Archive channel…',
+  /**
+   * The quiet disclosure that holds Copy channel ID (Q3-26): a machine ID is for a support
+   * request, not an everyday row. Connection settings names its own the same way.
+   */
+  idsForSupport: 'IDs for support',
   copyId: 'Copy channel ID',
   /** Copy channel ID's label for a moment after a copy (Q2-34). */
   copied: 'Copied',
@@ -85,6 +90,11 @@ export const membersCopy = {
   remove: (channel: string) => `Remove from ${channel}…`,
   /** Without the `@`, as Workspace settings copies it. */
   copyUsername: 'Copy username',
+  /**
+   * The submenu that holds a menu's machine-ID copies, last, after a separator (Q3-26, the shared
+   * "Copy for support" contract). Copy username is a human copy and stays top level.
+   */
+  copyForSupport: 'Copy for support',
   copyPersonId: 'Copy person ID',
   /** A copy item's label for a moment after it is chosen; the menu then closes (Q2-34). */
   copied: 'Copied',
@@ -167,6 +177,17 @@ export const agentCopy = {
     names.length === 1
       ? `No file named ${names[0]} is shared in ${channel}. Your agent will say what it used instead.`
       : `No files named ${joinOr(names)} are shared in ${channel}. Your agent will say what it used instead.`,
+  /**
+   * The task names a file that two or more different shared files carry (Q3-02: Gina's agent read
+   * the older of two identical `gina-assay.csv` cards and never said which). Said before Start,
+   * which it does not disable. True only together with the daemon's instruction to use the most
+   * recently shared copy and say so (`OWNED_TASK_INSTRUCTIONS`, `routes/crew.rs`); keep the two
+   * together. `channel` is already `#slug`; `when` is `sharedWhen`'s "at 1:55 AM", or `null`.
+   */
+  sameNameShared: (count: number, name: string, channel: string, when: string | null) =>
+    `${count} files named ${name} are shared in ${channel}. Your agent will use the newest one${
+      when ? `, shared ${when}` : ''
+    }.`,
   /** A picker row whose model the workspace's institution has not approved. */
   notApproved: (institution: string) => `Not approved for ${institution}`,
   /**
