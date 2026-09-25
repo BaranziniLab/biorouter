@@ -115,7 +115,13 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   };
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'channel') : null;
-  const fieldError = nameError ?? errors[nameId] ?? (touched ? problem : null);
+  // Once a Create press has put a message under the field, the message follows the name as typed
+  // — an empty name is `channelEmpty` too — rather than repeating what `useFormValidation`
+  // recorded. That record is stale by one keystroke: the form's `onInput` reads `validity` before
+  // this keystroke's problem reaches the input (`useCustomValidity` sets it in an effect, after
+  // the render), so the keystroke that makes the name valid kept the old message (QA Q3-38).
+  const submittedError = nameId in errors ? channelSlugProblem(slug) : null;
+  const fieldError = nameError ?? submittedError ?? (touched ? problem : null);
   const helper = slug && !problem ? copy.preview(slug) : undefined;
   const consequenceId = `${formId}-consequence`;
   // The preview or the error, then the consequence line — both describe the name (QA T-72).

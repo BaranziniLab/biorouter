@@ -237,16 +237,70 @@ describe('CreateChannelDialog, the name field (QA Q3-38)', () => {
     expect(name).toHaveFocus();
     expect(requestsFor(crew, 'channel.create')).toEqual([]);
 
-    // Spaces are no name either, and typing a real one clears the message.
-    fireEvent.change(name, { target: { value: '   ' } });
+    // Spaces are no name either.
+    fireEvent.input(name, { target: { value: '   ' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
     });
     expect(screen.getByText(nameRuleCopy.channelEmpty)).toBeInTheDocument();
-    fireEvent.change(name, { target: { value: 'data' } });
-    fireEvent.input(name, { target: { value: 'data' } });
-    await waitFor(() => expect(screen.queryByText(nameRuleCopy.channelEmpty)).toBeNull());
     expect(requestsFor(crew, 'channel.create')).toEqual([]);
+  });
+
+  /**
+   * After a Create press has said something under the field, each keystroke is judged as typed
+   * (QA Q3-38). Every step is ONE `input` event, as a browser sends per keystroke: the form's own
+   * `onInput` reads `validity` before the keystroke's problem reaches the field, so a test that
+   * fires a second event for the same value hides a message that is one keystroke stale.
+   */
+  describe('after a Create press, one keystroke at a time', () => {
+    async function pressCreateWith(value: string) {
+      const view = renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+      const name = await screen.findByLabelText('Name');
+      fireEvent.input(name, { target: { value } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+      });
+      return { ...view, name };
+    }
+
+    async function type(name: HTMLElement, value: string) {
+      await act(async () => {
+        fireEvent.input(name, { target: { value } });
+      });
+    }
+
+    it('clears "can’t be empty" on the first letter typed after spaces', async () => {
+      const { name } = await pressCreateWith('   ');
+      expect(screen.getByText(nameRuleCopy.channelEmpty)).toBeInTheDocument();
+      await type(name, '   d');
+      expect(name).toHaveValue('   d');
+      expect(screen.queryByText(nameRuleCopy.channelEmpty)).toBeNull();
+      expect(name).not.toHaveAttribute('aria-invalid');
+      expect(name).toHaveAccessibleDescription(
+        `${createChannelCopy.preview('d')} ${nameRuleCopy.consequence}`
+      );
+    });
+
+    it('clears a reserved character’s message when that character is deleted', async () => {
+      const { name } = await pressCreateWith('a/b');
+      expect(screen.getByText(nameRuleCopy.channelReserved)).toBeInTheDocument();
+      await type(name, 'ab');
+      expect(screen.queryByText(nameRuleCopy.channelReserved)).toBeNull();
+      expect(name).not.toHaveAttribute('aria-invalid');
+    });
+
+    it('says the problem the name has now, not the one it had', async () => {
+      const { name, crew } = await pressCreateWith('   ');
+      await type(name, '   /');
+      expect(screen.getByText(nameRuleCopy.channelReserved)).toBeInTheDocument();
+      expect(screen.queryByText(nameRuleCopy.channelEmpty)).toBeNull();
+      expect(name).toHaveAttribute('aria-invalid', 'true');
+      // Emptied again, it is empty again.
+      await type(name, '');
+      expect(screen.getByText(nameRuleCopy.channelEmpty)).toBeInTheDocument();
+      expect(screen.queryByText(nameRuleCopy.channelReserved)).toBeNull();
+      expect(requestsFor(crew, 'channel.create')).toEqual([]);
+    });
   });
 });
 
