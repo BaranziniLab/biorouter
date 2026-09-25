@@ -3237,6 +3237,21 @@ impl CrewManager {
             },
         )
     }
+    /// Whether the workspace has confirmed revoking `run_id`, the run of `session`'s stopped
+    /// grant (F3). The daemon's own retry confirms without anyone pressing Retry, so a task's
+    /// ledger reads this to follow it.
+    pub async fn remote_revocation_confirmed(&self, session: &str, run_id: &str) -> bool {
+        self.registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| {
+                scope.run_id == run_id
+                    && scope.expired
+                    && scope.revocation == Some(Revocation::Confirmed)
+            })
+    }
     /// Ask the workspace to revoke `run_id`, the run of `session`'s stopped grant, and record
     /// its confirmation on that grant while it is still the session's (F3). Revoking is
     /// idempotent at the workspace, so asking again after an answer that was lost is safe.

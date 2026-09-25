@@ -1693,6 +1693,8 @@ async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<St
 /// Text recorded on a completed task whose grant was stopped on this device but not confirmed
 /// by the workspace.
 const COMPLETED_REVOCATION_UNCONFIRMED: &str = "Task finished. Its Crew access is stopped on this computer, but the workspace didn't confirm removing it; it also ends when the grant expires.";
+/// What a failed task's error ends with when stopping its grant was not confirmed.
+const FAILED_REVOCATION_UNCONFIRMED: &str = " Remote grant revocation is unconfirmed. Retry cancellation; remote jobs may continue until their enforced timeout.";
 
 /// T-25: a task's grant is "for this task only", so a task that finished revokes it once its
 /// result is posted, exactly as a failed or cancelled one does; it no longer lingers in Access
@@ -1743,7 +1745,7 @@ async fn finish_failed_run(ledger: &RunLedger, run_id: &str, error: String, revo
     run.view.error = Some(if revoked {
         error
     } else {
-        format!("{error} Remote grant revocation is unconfirmed. Retry cancellation; remote jobs may continue until their enforced timeout.")
+        format!("{error}{FAILED_REVOCATION_UNCONFIRMED}")
     });
     let _ = persist_run_status(ledger, &mut stored, run_id);
 }
@@ -1916,9 +1918,17 @@ pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult
 }
 
 /// This connection's owned runs, newest first. The ledger is a map, so its order says nothing;
-/// a run recorded before `started_at` was kept sorts after every run that has one.
+/// a run recorded before `started_at` was kept sorts after every run that has one. A task whose
+/// revocation the daemon has since had confirmed by itself reads as settled (F3).
 pub(super) async fn owned_run_views(id: &str) -> anyhow::Result<Vec<RunView>> {
     let ledger = run_ledger().await?;
+    if let Ok(crew) = manager() {
+        settle_confirmed_revocations(&ledger, id, |session, run_id| {
+            let crew = crew.clone();
+            async move { crew.remote_revocation_confirmed(&session, &run_id).await }
+        })
+        .await;
+    }
     let mut views: Vec<RunView> = ledger
         .state
         .lock()
@@ -1930,6 +1940,70 @@ pub(super) async fn owned_run_views(id: &str) -> anyhow::Result<Vec<RunView>> {
         .collect();
     sort_newest_first(&mut views);
     Ok(views)
+}
+
+/// F3: the daemon asks the workspace again by itself for a revocation it could not confirm,
+/// with no Retry pressed, so a task the ledger left waiting on that confirmation (a stop, or a
+/// failure, whose revocation was unconfirmed; a finished task's "didn't confirm" note) would
+/// otherwise keep saying so after the workspace confirmed. Each such task on `connection_id`
+/// whose run `confirmed(session, run_id)` says is now confirmed is settled as a confirmed
+/// Retry would have left it: a stop reads `cancelled`, a failure its own failure, and a
+/// finished task loses the note. Nothing else is touched.
+async fn settle_confirmed_revocations<C, F>(ledger: &RunLedger, connection_id: &str, confirmed: C)
+where
+    C: Fn(String, String) -> F,
+    F: std::future::Future<Output = bool>,
+{
+    let waiting: Vec<(String, String)> = ledger
+        .state
+        .lock()
+        .await
+        .runs
+        .values()
+        .filter(|run| {
+            run.view.connection_id == connection_id
+                && (run.view.status == "cancellation_unconfirmed"
+                    || (run.view.status == "completed"
+                        && run.view.error.as_deref() == Some(COMPLETED_REVOCATION_UNCONFIRMED)))
+        })
+        .map(|run| (run.view.run_id.clone(), run.view.session_id.clone()))
+        .collect();
+    let mut settled = Vec::new();
+    for (run_id, session_id) in waiting {
+        if confirmed(session_id, run_id.clone()).await {
+            settled.push(run_id);
+        }
+    }
+    if settled.is_empty() {
+        return;
+    }
+    let mut stored = ledger.state.lock().await;
+    for run_id in settled {
+        let Some(run) = stored.runs.get_mut(&run_id) else {
+            continue;
+        };
+        match run.view.status.as_str() {
+            "cancellation_unconfirmed" => {
+                let failure = run
+                    .view
+                    .error
+                    .as_deref()
+                    .and_then(|error| error.strip_suffix(FAILED_REVOCATION_UNCONFIRMED))
+                    .map(str::to_owned);
+                run.view.status = match &failure {
+                    Some(_) if !run.cancel.is_cancelled() => "failed",
+                    _ => "cancelled",
+                }
+                .into();
+                run.view.error = failure;
+            }
+            "completed" if run.view.error.as_deref() == Some(COMPLETED_REVOCATION_UNCONFIRMED) => {
+                run.view.error = None;
+            }
+            _ => continue,
+        }
+        let _ = persist_run_status(ledger, &mut stored, &run_id);
+    }
 }
 
 /// Newest first by `started_at`, then by `run_id` so the order is stable.
@@ -2334,9 +2408,9 @@ mod tests {
         cancel_owned_run_with, cancellation_response, drive_run_events, finish_cancellation,
         finish_completed_run_with, finish_failed_run, finish_run_outcome, owns_task_run,
         prepare_run_projection, publish_run_finished, reserve_cancellation, run_with_deadline,
-        transition_run_status, CancelReservation, LedgerState, OwnedCancellation, OwnedRun,
-        RunLedger, RunProjection, RunStatusUpdate, RunView, ToolActivity,
-        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
+        settle_confirmed_revocations, transition_run_status, CancelReservation, LedgerState,
+        OwnedCancellation, OwnedRun, RunLedger, RunProjection, RunStatusUpdate, RunView,
+        ToolActivity, COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -2958,6 +3032,76 @@ mod tests {
             &view.session_id,
             "run-2"
         ));
+    }
+
+    /// F3: the daemon confirms an unconfirmed revocation by itself later, with no Retry, and
+    /// the task's ledger follows: a stop reads `cancelled`, a failure its own failure, and a
+    /// finished task loses its "didn't confirm" note. Until then, and for another connection,
+    /// nothing moves.
+    #[tokio::test]
+    async fn a_task_follows_a_revocation_the_daemon_confirmed_by_itself() {
+        let status_of = |ledger: &Arc<RunLedger>| {
+            let ledger = ledger.clone();
+            async move {
+                let state = ledger.state.lock().await;
+                let run = state.runs.get("run-1").expect("run");
+                (run.view.status.clone(), run.view.error.clone())
+            }
+        };
+        let never = |_: String, _: String| async { false };
+        let always = |_: String, _: String| async { true };
+
+        // A stop whose revocation was unconfirmed.
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        reserve_cancellation(&ledger, "connection-1", "run-1")
+            .await
+            .expect("reservation");
+        finish_cancellation(&ledger, "run-1", false).await;
+        settle_confirmed_revocations(&ledger, "connection-1", never).await;
+        assert_eq!(status_of(&ledger).await.0, "cancellation_unconfirmed");
+        settle_confirmed_revocations(&ledger, "connection-2", always).await;
+        assert_eq!(status_of(&ledger).await.0, "cancellation_unconfirmed");
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        settle_confirmed_revocations(&ledger, "connection-1", move |session, run| {
+            seen.lock().unwrap().push((session, run));
+            async { true }
+        })
+        .await;
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [(view.session_id.clone(), "run-1".to_owned())]
+        );
+        assert_eq!(status_of(&ledger).await, ("cancelled".into(), None));
+        assert_eq!(persisted_status(&ledger.path), "cancelled");
+
+        // A failure whose revocation was unconfirmed keeps its own words.
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        finish_failed_run(&ledger, "run-1", "synthetic runner failure".into(), false).await;
+        settle_confirmed_revocations(&ledger, "connection-1", always).await;
+        assert_eq!(
+            status_of(&ledger).await,
+            ("failed".into(), Some("synthetic runner failure".into()))
+        );
+        assert_eq!(persisted_status(&ledger.path), "failed");
+
+        // A finished task loses the note, and stays finished.
+        let (_temp, ledger, view) = ledger_fixture("running", false).await;
+        finish_completed_run_with(&ledger, &view, |_, _| async {
+            Err(anyhow::anyhow!("synthetic transport down"))
+        })
+        .await;
+        assert_eq!(
+            status_of(&ledger).await.1.as_deref(),
+            Some(COMPLETED_REVOCATION_UNCONFIRMED)
+        );
+        settle_confirmed_revocations(&ledger, "connection-1", always).await;
+        assert_eq!(status_of(&ledger).await, ("completed".into(), None));
+
+        // Anything else is never touched.
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        settle_confirmed_revocations(&ledger, "connection-1", always).await;
+        assert_eq!(status_of(&ledger).await, ("running".into(), None));
     }
 
     #[tokio::test]
