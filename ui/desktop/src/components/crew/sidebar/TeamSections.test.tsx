@@ -221,38 +221,69 @@ describe('team sections', () => {
     });
   });
 
-  it('offers Add people and Rename only to the team’s owner and the host (Q2-41)', async () => {
+  it('offers Add people and Rename only to whom the broker lets change the team (Q2-41)', async () => {
     const user = userEvent.setup();
-    // Bob is neither: a member of a team Alice created, in a workspace Alice hosts.
-    const member = renderTeams({ snapshot: makeSnapshot({ actor: bob }), isHost: false }, true);
-    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
-    let menu = await screen.findByRole('menu');
-    expect(
-      within(menu)
+    const menuItems = async () => {
+      await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+      const menu = await screen.findByRole('menu');
+      return within(menu)
         .getAllByRole('menuitem')
-        .map((item) => item.textContent)
-    ).toEqual([sidebarCopy.teamMenu.createChannel, sidebarCopy.teamMenu.copyId]);
+        .map((item) => item.textContent);
+    };
+
+    // Bob is neither owner nor host: a member of a team Alice created, in a workspace Alice hosts.
+    const member = renderTeams(
+      { snapshot: makeSnapshot({ actor: bob }), isHost: false, capabilities: ['direct_add_v1'] },
+      true
+    );
+    expect(await menuItems()).toEqual([
+      sidebarCopy.teamMenu.createChannel,
+      sidebarCopy.teamMenu.copyId,
+    ]);
     member.unmount();
 
-    // The host, who did not create the team, may manage it (the broker lets the host act on any
-    // channel it can see; `dialogs/people.ts`).
-    const snapshot = makeSnapshot({
+    // Bob hosts the workspace but did not create the team. Where the broker adds people directly,
+    // `team.add_member` lets the host add to any team, so Add people is offered; `team.rename`
+    // is the creator's alone, with no host exception, so Rename is NOT — it could only end in
+    // "forbidden: team creator required".
+    const hostSnapshot = makeSnapshot({
       actor: bob,
       workspace: { id: 'workspace-1', host_uid: 1001, mode: 'private', policy_epoch: 1 },
     });
-    renderTeams({ snapshot, isHost: true }, true);
-    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
-    menu = await screen.findByRole('menu');
-    expect(
-      within(menu)
-        .getAllByRole('menuitem')
-        .map((item) => item.textContent)
-    ).toEqual([
+    const directHost = renderTeams(
+      { snapshot: hostSnapshot, isHost: true, capabilities: ['direct_add_v1'] },
+      true
+    );
+    expect(await menuItems()).toEqual([
       sidebarCopy.teamMenu.createChannel,
       sidebarCopy.teamMenu.addPeople('Analysis Lab'),
-      sidebarCopy.teamMenu.rename,
       sidebarCopy.teamMenu.copyId,
     ]);
+    directHost.unmount();
+
+    // On a broker that only invites, `invitation.create` is the team owner's alone: the same host
+    // is offered neither item (AddPeopleDialog would only say they can't add anyone).
+    const invitingHost = renderTeams(
+      { snapshot: hostSnapshot, isHost: true, capabilities: null },
+      true
+    );
+    expect(await menuItems()).toEqual([
+      sidebarCopy.teamMenu.createChannel,
+      sidebarCopy.teamMenu.copyId,
+    ]);
+    invitingHost.unmount();
+
+    // The owner (Alice created the team) gets both, whichever way the broker adds people.
+    for (const capabilities of [null, ['direct_add_v1']]) {
+      const owner = renderTeams({ capabilities }, true);
+      expect(await menuItems()).toEqual([
+        sidebarCopy.teamMenu.createChannel,
+        sidebarCopy.teamMenu.addPeople('Analysis Lab'),
+        sidebarCopy.teamMenu.rename,
+        sidebarCopy.teamMenu.copyId,
+      ]);
+      owner.unmount();
+    }
   });
 
   it('copies the team ID, says "Copied" on the item for a moment, then closes (Q2-34)', async () => {

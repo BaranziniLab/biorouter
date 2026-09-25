@@ -162,6 +162,42 @@ describe('WorkspaceSwitcher', () => {
     expect(menu.querySelector('[data-crew-menu-fingerprint]')).toBeNull();
   });
 
+  // A joiner took the fingerprint for the code to send (the Join dialog folds it away), and beside
+  // "Your join code stays the same." it read as that code. It explains "identity verified" only.
+  it.each([
+    'not-joined',
+    'checking',
+    'connecting',
+    'sign-in-needed',
+    'cant-verify',
+    'cant-connect',
+    'offline',
+  ] as const)('shows no fingerprint while the status is %s (Q2-04)', async (status) => {
+    const key = '9dacd3e46f083a8a5b76c22ba7c39d939c81538ed20c6ee33e46c9d92931cad3';
+    const expected = groupedFingerprint((await workspaceKeyFingerprint(key)) ?? '');
+    const keyed = { ...connection, workspace_public_key: key };
+    const overrides = { connection: keyed, connections: [keyed] };
+    const view = renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        ...overrides,
+        status,
+        // A reconnect over a verified view reads "Connecting…"; every other status has no
+        // verified snapshot yet.
+        ...(status === 'connecting' ? {} : { snapshot: null, observedPrivacy: null }),
+      })
+    );
+    await openMenu();
+    const header = () => screen.getByRole('menu').querySelector('[data-crew-menu-header]');
+    // The status line has rendered, and the key's digest has had its turn.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(header()).not.toHaveTextContent(copy.fingerprint);
+    expect(header()).not.toHaveTextContent(expected);
+    // The same key, once verified: the line appears, so its absence above was the status alone.
+    view.update(makeController({ ...overrides, status: 'connected' }));
+    expect(await within(header() as HTMLElement).findByText(expected)).toBeInTheDocument();
+  });
+
   it('tells a joiner that Reconnect and Disconnect keep their join code (Q2-43)', async () => {
     renderWithCrew(
       <WorkspaceSwitcher />,

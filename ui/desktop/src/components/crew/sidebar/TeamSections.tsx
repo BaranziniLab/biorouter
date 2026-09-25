@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Plus } from '../../icons/app-icons';
 import type { Snapshot } from '../crewApi';
-import { liveInvitations } from '../dialogs/people';
+import { directAddSupported, liveInvitations } from '../dialogs/people';
 import { personLabel, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
@@ -74,6 +74,10 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
   const collapsedTeams = useCollapsedTeams(crew.connectionId);
   const [archivedOpen, setArchivedOpen] = useState<ReadonlySet<string>>(() => new Set());
   const actionable = verified;
+  // Who the broker lets change a team (Q2-41). Rename is `team.rename`: the creator only, with no
+  // exception for the host. Adding is `team.add_member` (owner or host) where the broker adds
+  // people directly, else `invitation.create` (owner only) — `AddPeopleDialog`'s own rule.
+  const directAdd = directAddSupported(crew.capabilities);
 
   const keys = useMemo(() => {
     const list: string[] = [];
@@ -119,7 +123,8 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
           key={section.id}
           section={section}
           role={roles.get(section.id) ?? { kind: 'member' }}
-          canManage={roles.get(section.id)?.kind === 'owner' || dir.viewerIsHost}
+          canAddPeople={roles.get(section.id)?.kind === 'owner' || (directAdd && dir.viewerIsHost)}
+          canRename={roles.get(section.id)?.kind === 'owner'}
           collapsed={collapsedTeams.isCollapsed(section.id)}
           onCollapsedChange={(collapsed) => collapsedTeams.setCollapsed(section.id, collapsed)}
           archivedOpen={archivedOpen.has(section.id)}

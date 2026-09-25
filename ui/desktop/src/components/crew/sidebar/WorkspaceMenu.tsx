@@ -95,7 +95,11 @@ export function unavailableReason(status: string | null, ready: boolean): string
  *   person to name, so it states the server only.
  * - After the status line, the workspace key's fingerprint, grouped as the Join dialog shows it
  *   (`Fingerprint 6682 327B A040 C709`), so a host asked "does it match?" finds it beside
- *   "identity verified" instead of under Connection settings' IDs for support (Q2-04).
+ *   "identity verified" instead of under Connection settings' IDs for support (Q2-04). Shown
+ *   ONLY in that status — "Connected · identity verified" is the line it explains. A joiner the
+ *   host has not let in yet took the fingerprint for the code to send (the Join dialog folds it
+ *   away for that reason), and in the menu it would sit unexplained beside "Your join code stays
+ *   the same."; before verification there is nothing for it to confirm.
  * - While a join waits for the host, Reconnect and Disconnect each say "Your join code stays the
  *   same." (Q2-43): the code is computed from this computer's saved device key and the pinned
  *   workspace key (`device_code_of`), which neither action touches.
@@ -139,7 +143,8 @@ export function WorkspaceMenu({ title }: { title: string }) {
   const reason = unavailableReason(status, snapshotReady);
   const server = serverLabel(connection);
   const me = verified ? dir.me : null;
-  const fingerprint = fingerprintHex ? groupedFingerprint(fingerprintHex) : '';
+  const fingerprint =
+    fingerprintHex && status === 'connected' ? groupedFingerprint(fingerprintHex) : '';
   const joining = status === 'not-joined';
 
   return (

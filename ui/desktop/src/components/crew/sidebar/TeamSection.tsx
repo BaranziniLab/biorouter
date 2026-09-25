@@ -72,11 +72,18 @@ export interface TeamSectionProps {
   /** Whether the viewer owns the team (and whom it invited), or is a member. */
   role: TeamRole;
   /**
-   * The viewer may add people to this team and rename it: its owner, or the workspace's host
-   * (the same rule `dialogs/people.ts` applies to channels). Nobody else is offered either item
-   * (Q2-41): the broker would refuse them, so a member only ever met a dead end.
+   * The viewer may add people to this team: its owner, or — only where the broker adds people
+   * directly (`direct_add_v1`) — the workspace's host. The same rule `AddPeopleDialog` states;
+   * inviting stays the owner's alone (`invitation.create`), so without direct add a host who did
+   * not create the team is not offered it (Q2-41).
    */
-  canManage: boolean;
+  canAddPeople: boolean;
+  /**
+   * The viewer may rename this team: its owner (creator) only. The broker's `team.rename` gives
+   * the host no exception, so offering it to a host who did not create the team led straight to
+   * "forbidden: team creator required" (Q2-41).
+   */
+  canRename: boolean;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
   archivedOpen: boolean;
@@ -103,16 +110,19 @@ export interface TeamSectionProps {
  * section ends in a quiet line saying other channels appear once someone adds them (T-28): the
  * snapshot holds only the channels they are in, so nothing else would tell them.
  *
- * The team menu offers "Add people to {team}…" and "Rename team…" only to the team's owner and
- * the host (Q2-41). "Copy team ID" sits last, after a separator, and answers ON THE ITEM: the menu
- * stays open reading "Copied" for {@link TEAM_COPY_CLOSE_MS}, then closes; a refused copy reads
- * "Couldn't copy" and the menu stays (Q2-34). Either result is spoken too, and neither reaches the
+ * The team menu offers "Add people to {team}…" only to those the broker would let add someone —
+ * the team's owner, and the host where people are added directly — and "Rename team…" only to the
+ * owner (Q2-41). Anyone else would meet a refusal, never an action. "Copy team ID" sits last,
+ * after a separator, and answers ON THE ITEM: the menu stays open reading "Copied" for
+ * {@link TEAM_COPY_CLOSE_MS}, then closes; a refused copy reads "Couldn't copy" and the menu stays
+ * (Q2-34). Either result is spoken too, and neither reaches the
  * channel's connection bar.
  */
 export function TeamSection({
   section,
   role,
-  canManage,
+  canAddPeople,
+  canRename,
   collapsed,
   onCollapsedChange,
   archivedOpen,
@@ -260,7 +270,7 @@ export function TeamSection({
               <DropdownMenuItem disabled={!actionable} onSelect={createChannel}>
                 {copy.teamMenu.createChannel}
               </DropdownMenuItem>
-              {canManage && (
+              {canAddPeople && (
                 <DropdownMenuItem
                   disabled={!actionable}
                   onSelect={() =>
@@ -270,7 +280,7 @@ export function TeamSection({
                   {copy.teamMenu.addPeople(section.name)}
                 </DropdownMenuItem>
               )}
-              {canManage && renameEnabled && (
+              {canRename && renameEnabled && (
                 <DropdownMenuItem
                   disabled={!actionable}
                   onSelect={() =>
