@@ -305,11 +305,33 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     expect(
       within(dialog).getByText('Invited to lab, not joined yet: @crew_frank.')
     ).toBeInTheDocument();
+    expect(addPeopleCopy.invitedNotJoined('lab', 'Jack Moreno (@crew_jack) and @crew_frank')).toBe(
+      'Invited to lab, not joined yet: Jack Moreno (@crew_jack) and @crew_frank.'
+    );
     // One Done, and no Add to press, disabled or otherwise.
     expect(within(dialog).queryByRole('button', { name: /^Add/ })).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'Cancel' })).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('names an invitee by the name on their server account, as Let in did (QA Q4-42)', async () => {
+    const snapshot = makeSnapshot({
+      principals: [alice, bob, carol],
+      pending_joins: [
+        { username: 'crew_jack', full_name: 'Jack Moreno' },
+        { username: 'crew_frank' },
+      ],
+    });
+    renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+      snapshot,
+    });
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByText(
+        'Invited to lab, not joined yet: Jack Moreno (@crew_jack) and @crew_frank.'
+      )
+    ).toBeInTheDocument();
   });
 
   it('tells someone who may not add people here who may, with one Done', async () => {
@@ -358,6 +380,61 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
         .getAllByRole('button')
         .map((button) => button.textContent)
     ).toEqual(['Done', expect.anything()]);
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+  });
+
+  it('opens "Members of {team}…" on the member list for the owner, with Add people one step away (QA Q4-35)', async () => {
+    // Alice is the host and Analysis Lab's owner; Dan is not in the team yet.
+    renderDirect({ target: 'team', targetId: 'team-1', view: 'members' });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    const list = within(dialog).getByRole('list', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    expect(
+      within(list)
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('[data-person-context]')?.textContent)
+    ).toEqual([
+      expect.stringContaining('Alice Chen'),
+      expect.stringContaining('Bob Lee'),
+      expect.stringContaining('Carol Diaz'),
+    ]);
+    // The list first, then the way to add, secondary; nothing to tick yet, and one Done.
+    const addMore = within(dialog).getByRole('button', {
+      name: addPeopleCopy.addToTeam('Analysis Lab'),
+    });
+    expect(addMore).toHaveClass('bg-background-medium');
+    expect(list.compareDocumentPosition(addMore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+    expect(within(dialog).queryByText(/can add people to/)).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument();
+
+    // In place: the same dialog becomes Add people, focus in its search.
+    fireEvent.click(addMore);
+    const adding = await screen.findByRole('dialog', {
+      name: addPeopleCopy.titleTeam('Analysis Lab'),
+    });
+    expect(rowNames(await checklist())).toEqual(['Dan Wu (@dan)']);
+    await waitFor(() =>
+      expect(within(adding).getByRole('searchbox', { name: addPeopleCopy.search })).toHaveFocus()
+    );
+  });
+
+  it('opens "Members of {team}…" on the member list for someone who may not add, as before (QA Q4-35)', async () => {
+    const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
+    renderDirect({ target: 'team', targetId: 'team-1', view: 'members' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    const text = 'Only @alice or the host can add people to Analysis Lab.';
+    expect(within(dialog).getByText(text)).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleDescription(text);
+    expect(
+      within(dialog).queryByRole('button', { name: addPeopleCopy.addToTeam('Analysis Lab') })
+    ).toBeNull();
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
   });
 

@@ -5,7 +5,7 @@ import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
-import { channelName, PersonName, teamName, type CrewPerson } from '../identity';
+import { channelName, PersonName, teamName, usableName, type CrewPerson } from '../identity';
 import { focusIsLost } from '../state/focusReturn';
 import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
@@ -37,6 +37,11 @@ const CHANNEL_ADD_KEY = 'mutate:channel.add_member';
 export interface AddPeopleDialogProps {
   target: 'team' | 'channel';
   targetId: string;
+  /**
+   * `members`: opened by the team menu's "Members of {team}…" — the team's member list first, for
+   * everyone, with "Add people to {team}…" below it for whoever may add (QA Q4-35). A team only.
+   */
+  view?: 'members';
   onClose(): void;
 }
 
@@ -75,11 +80,17 @@ interface Summary {
  * offers the next step, and shows one Done — no disabled Add.
  *
  * For a team, someone who may not add people there gets the team's member list instead (QA Q3-44):
- * "Members of {team}", the members first — host, you, then by name — then, muted, who may add
- * people, and one Done. It is what the team menu's "Members of {team}…" opens, for everyone; the
- * owner and the host see the Add people dialog there.
+ * "Members of {team}", the members first — owner, you, then by name (Q4-32) — then, muted, who may
+ * add people, and one Done. The team menu's "Members of {team}…" (`view: 'members'`) opens that
+ * list for everyone, the owner and the host included (QA Q4-35): it answers the question the menu
+ * item asked. For them a secondary "Add people to {team}…" under the list turns the dialog into
+ * the Add people dialog in place, focus moving to its search.
+ *
+ * The workspace's invitees who have not joined are named as the host knows them: "Jack Moreno
+ * (@crew_jack)" where the invitation carries the name on their server account, the same name Let
+ * in used for them (QA Q4-42).
  */
-export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogProps) {
+export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDialogProps) {
   const { crew, snapshot, dir, workspace } = useDialogView();
   const formId = React.useId();
   const labelId = `${formId}-label`;
@@ -90,6 +101,9 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
   const [added, setAdded] = React.useState<ReadonlySet<string>>(() => new Set());
   const [summary, setSummary] = React.useState<Summary | null>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
+  const doneRef = React.useRef<HTMLButtonElement>(null);
+  // "Members of {team}…" asked for the list; its "Add people to {team}…" switches to adding.
+  const [adding, setAdding] = React.useState(false);
   const directAdd = directAddSupported(crew.capabilities);
   const channel =
     target === 'channel' ? (snapshot?.channels.find((item) => item.id === targetId) ?? null) : null;
@@ -126,8 +140,9 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
   const ownerId = target === 'team' ? team?.created_by : channel?.owner_id;
   const owner = ownerId ? dir.byId(ownerId) : null;
   const mayAdd = !ownerId || ownerId === dir.me?.id || (directAdd && dir.viewerIsHost);
-  // A team's member list, for someone who may not add people to it (QA Q3-44).
-  const membersView = target === 'team' && !mayAdd;
+  // A team's member list: for someone who may not add people to it (QA Q3-44), and for everyone
+  // when the team menu's "Members of {team}…" asked for it, until they choose to add (QA Q4-35).
+  const membersView = target === 'team' && (!mayAdd || (view === 'members' && !adding));
   const onlyWho = directAdd
     ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
     : copy.onlyOwner(owner ? `@${owner.username}` : null, place);
@@ -185,6 +200,12 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
     if (focusIsLost() || (active instanceof HTMLButtonElement && active.disabled))
       searchRef.current?.focus();
   }, [summary]);
+
+  // "Add people to {team}…" is gone once pressed: carry on from the search it opened, or from Done
+  // where no one is left to add.
+  React.useEffect(() => {
+    if (adding) (searchRef.current ?? doneRef.current)?.focus();
+  }, [adding]);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -307,28 +328,38 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
     : offered.length === 0
       ? emptyState()
       : null;
-  const members = message ? targetMembers(snapshot, dir, pickerTarget, added) : [];
+  const members = message || membersView ? targetMembers(snapshot, dir, pickerTarget, added) : [];
+  // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =
     invitees.length > 0
-      ? copy.invitedNotJoined(workspace, listOf(invitees.map((join) => `@${join.username}`)))
+      ? copy.invitedNotJoined(
+          workspace,
+          listOf(
+            invitees.map((join) => {
+              const name = usableName(join.full_name);
+              return name ? `${name} (@${join.username})` : `@${join.username}`;
+            })
+          )
+        )
       : null;
 
-  const footer = message ? (
-    // Takes the focus when it replaces the form the last run emptied; on open, the dialog's own
-    // first control does.
-    <Button key="done" type="button" autoFocus={summary !== null} onClick={onClose}>
-      {copy.done}
-    </Button>
-  ) : (
-    <>
-      <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
-        {summary ? copy.done : copy.cancel}
+  const footer =
+    message || membersView ? (
+      // Takes the focus when it replaces the form the last run emptied; on open, the dialog's own
+      // first control does.
+      <Button key="done" ref={doneRef} type="button" autoFocus={summary !== null} onClick={onClose}>
+        {copy.done}
       </Button>
-      <Button type="submit" form={formId} disabled={sending || chosen.length === 0}>
-        {chosen.length > 1 ? copy.addMany(chosen.length) : copy.submit}
-      </Button>
-    </>
-  );
+    ) : (
+      <>
+        <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
+          {summary ? copy.done : copy.cancel}
+        </Button>
+        <Button type="submit" form={formId} disabled={sending || chosen.length === 0}>
+          {chosen.length > 1 ? copy.addMany(chosen.length) : copy.submit}
+        </Button>
+      </>
+    );
 
   return (
     <ModalShell
@@ -343,7 +374,7 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
             ? copy.membersOf(teamName(team))
             : copy.titleTeam(teamName(team))
       }
-      describedBy={message ? noteId : undefined}
+      describedBy={message && (!membersView || !mayAdd) ? noteId : undefined}
       footer={footer}
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-3 pb-1">
@@ -361,11 +392,19 @@ export function AddPeopleDialog({ target, targetId, onClose }: AddPeopleDialogPr
         {membersView ? (
           <>
             {/* The list first: it is what this dialog is for here. Who may add people follows,
-                muted, as its description. */}
+                muted, as its description — or, for someone who may, the way to add them. */}
             <MemberList place={place} people={members} dir={dir} label={copy.membersOf(place)} />
-            <p id={noteId} className="text-supporting text-text-muted">
-              {onlyWho}
-            </p>
+            {mayAdd ? (
+              <div className="flex min-w-0">
+                <Button type="button" variant="secondary" size="sm" onClick={() => setAdding(true)}>
+                  {copy.addToTeam(place)}
+                </Button>
+              </div>
+            ) : (
+              <p id={noteId} className="text-supporting text-text-muted">
+                {onlyWho}
+              </p>
+            )}
           </>
         ) : message ? (
           <>

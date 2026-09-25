@@ -93,6 +93,31 @@ describe('CrewDialogs', () => {
     await waitFor(() => expect(field).toHaveFocus());
   });
 
+  it('opens a team menu’s "Members of {team}…" on the member list, for the owner too (QA Q4-35)', async () => {
+    // Alice owns Analysis Lab and hosts the workspace: she may add, and still gets the list.
+    renderWithCrew(<CrewDialogs />, {
+      dialog: { kind: 'add-people', target: 'team', targetId: 'team-1', view: 'members' },
+    });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    expect(
+      within(dialog).getByRole('list', { name: addPeopleCopy.membersOf('Analysis Lab') })
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: addPeopleCopy.addToTeam('Analysis Lab') })
+    ).toBeInTheDocument();
+  });
+
+  it('opens "Add people to {team}…" as the Add people dialog, as before', async () => {
+    renderWithCrew(<CrewDialogs />, {
+      dialog: { kind: 'add-people', target: 'team', targetId: 'team-1' },
+    });
+    expect(
+      await screen.findByRole('dialog', { name: addPeopleCopy.titleTeam('Analysis Lab') })
+    ).toBeInTheDocument();
+  });
+
   it('titles Share a path with the server’s alias, not its address (QA Q3-39)', async () => {
     const labelled = {
       ...connection,

@@ -141,7 +141,17 @@ export type DialogIntent =
   | { kind: 'let-in'; username: string }
   | { kind: 'create-team' }
   | { kind: 'create-channel'; teamId: string }
-  | { kind: 'add-people'; target: 'team' | 'channel'; targetId: string }
+  | {
+      kind: 'add-people';
+      target: 'team' | 'channel';
+      targetId: string;
+      /**
+       * `members`: opened by a team menu's "Members of {team}…", so the dialog is that team's
+       * member list first, for everyone, with Add people one step away for whoever may add
+       * (QA Q4-35). Absent: the Add people dialog.
+       */
+      view?: 'members';
+    }
   | { kind: 'transfer-ownership'; channelId: string; successorId?: string }
   | { kind: 'rename'; target: 'team' | 'channel' | 'workspace'; targetId: string }
   | { kind: 'edit-profile' }

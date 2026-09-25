@@ -133,6 +133,7 @@ function HostedDialog({ intent, agentAccess }: { intent: DialogIntent; agentAcce
           key={key}
           target={intent.target}
           targetId={intent.targetId}
+          view={intent.view}
           onClose={closeDialog}
         />
       );
