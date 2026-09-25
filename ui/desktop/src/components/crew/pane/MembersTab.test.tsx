@@ -260,6 +260,39 @@ describe('MembersTab', () => {
     ).toEqual([membersCopy.copyPersonId]);
   });
 
+  it('opens the owner’s menu for an unknown member on Make owner…, never on a separator', async () => {
+    const user = userEvent.setup();
+    installObserver({
+      snapshot: makeSnapshot({
+        principals: [alice, bob],
+        channels: [{ ...general, members: [alice.id, bob.id, ghost] }, methods],
+      }),
+    });
+    renderCrew(Members);
+    const tab = await shown();
+    // An unknown member has no username, but the owner can still manage them, so the row keeps
+    // its ⋯ — and the menu starts with the owner's actions, not a rule with nothing above it.
+    await user.click(within(tab).getByRole('button', { name: membersCopy.more('Unknown member') }));
+    const menu = await screen.findByRole('menu');
+    const lines = Array.from(menu.children).map((child) =>
+      child.getAttribute('role') === 'separator' ? '—' : child.textContent
+    );
+    expect(lines).toEqual([
+      membersCopy.makeOwner,
+      membersCopy.remove('#general'),
+      '—',
+      membersCopy.copyForSupport,
+    ]);
+    expect(menu.firstElementChild).not.toHaveAttribute('role', 'separator');
+    expect(within(menu).queryByRole('menuitem', { name: membersCopy.copyUsername })).toBeNull();
+    const submenu = await openSupport(user, menu);
+    expect(
+      within(submenu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([membersCopy.copyPersonId]);
+  });
+
   it('never draws a ⋯ that holds only Copy person ID (T-33)', async () => {
     const user = userEvent.setup();
     // A member who is not the owner, looking at a named member, a former one and an unknown one.

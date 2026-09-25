@@ -70,7 +70,9 @@ type CopyItem = 'username' | 'id';
  * result is also spoken through the tab's live region, since a menu item's new name is not.
  *
  * Copy username is a human copy and stays top level. Copy person ID is a machine ID, for a support
- * request, so it sits in the "Copy for support" submenu, last, after a separator (Q3-26).
+ * request, so it sits in the "Copy for support" submenu, last, after a separator (Q3-26). A
+ * separator only ever sits between two groups: an unknown member has no username, so the owner's
+ * menu for them opens on Make owner…, not on a rule.
  *
  * The `⋯` is hidden at rest and shown on the row's hover and focus, and while its menu is open
  * (`.crew-member-actions` in `pane.css`, design.md §4.14): opacity only, so it stays in the tab
@@ -164,7 +166,8 @@ function MemberActions({
         )}
         {canManage && (
           <>
-            <DropdownMenuSeparator />
+            {/* Never the menu's first line: nothing sits above it without a username. */}
+            {username !== '' && <DropdownMenuSeparator />}
             <DropdownMenuItem
               onSelect={() =>
                 crew.openDialog({
