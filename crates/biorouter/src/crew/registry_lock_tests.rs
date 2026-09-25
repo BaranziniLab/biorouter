@@ -64,6 +64,7 @@ fn grant(connection_id: &str, run_id: &str) -> Scope {
         expires_at: None,
         labels: None,
         session_incarnation: None,
+        revocation: None,
     }
 }
 

@@ -69,6 +69,7 @@ fn grant(run_id: &str, incarnation: Option<i64>) -> Scope {
         expires_at: None,
         labels: None,
         session_incarnation: incarnation,
+        revocation: None,
     }
 }
 

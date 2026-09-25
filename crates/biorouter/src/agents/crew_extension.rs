@@ -242,6 +242,22 @@ mod tests {
         assert_eq!(text_of(&result), "method is required");
     }
 
+    /// D-1: a run the workspace no longer honors (`grant_expired`, after a policy change there)
+    /// reads as the policy change it is, in the words a change on this device gets, never as
+    /// the broker's envelope or its code.
+    #[test]
+    fn a_run_the_workspace_ended_reads_as_a_policy_change() {
+        let envelope = json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"});
+        let result = tool_result(Err(anyhow::anyhow!(
+            "Crew broker refused request: {envelope}"
+        )));
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            text_of(&result),
+            "Crew settings changed since access was granted. Grant access again from Crew."
+        );
+    }
+
     /// Q4-11: a chat that is not connected yet is told so as an answer, not drawn as a failed
     /// tool call. It is words only: the request it answers did nothing.
     #[test]

@@ -116,8 +116,11 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// would; `other-node-after-1` answers later `hello`s from a different node; `revoked`
 /// answers `hello` and `auth.challenge` but refuses every other request as a device the
 /// workspace does not know (`unauthorized: unknown device`), and `member-then-revoked` does
-/// so after answering the first; `auth` and `unreachable` fail before any request, as OpenSSH
-/// does. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
+/// so after answering the first; `grant-expired` refuses every worker request (one carrying a
+/// run credential) as a run the workspace no longer honors (`grant_expired`), and
+/// `channel-gone` as a channel the person is no longer in (`forbidden: channel unavailable`);
+/// `refuse-revoke` refuses `run.revoke` as a run the workspace does not know; `auth` and
+/// `unreachable` fail before any request, as OpenSSH does. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
 /// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]) and refuse any other blob, as
 /// the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
@@ -194,6 +197,12 @@ while IFS= read -r line; do
       join-drop-after-1) body='{hello_join}' ;;
     esac
     printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
+  elif [ "$plan" = grant-expired ] && printf '%s\n' "$line" | grep -q '"credential":'; then
+    printf '{{"id":"%s","error":{{"code":"grant_expired","message":"grant_expired: run revoked, expired or policy changed"}}}}\n' "$id"
+  elif [ "$plan" = channel-gone ] && printf '%s\n' "$line" | grep -q '"credential":'; then
+    printf '{{"id":"%s","error":{{"code":"forbidden","message":"forbidden: channel unavailable"}}}}\n' "$id"
+  elif [ "$plan" = refuse-revoke ] && printf '%s\n' "$line" | grep -q '"method":"run.revoke"'; then
+    printf '{{"id":"%s","error":{{"code":"forbidden","message":"forbidden: owned run unavailable"}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q '"method":"enrollment.pending"'; then
     printf '{{"id":"%s","result":{{"invited":false}}}}\n' "$id"
   elif printf '%s\n' "$line" | grep -q '"method":"auth.challenge"'; then
@@ -325,6 +334,8 @@ fn fast(retry: Duration) -> KeepaliveTiming {
         late_retry_every: retry,
         late_retry_for: Duration::ZERO,
         ended_check: Duration::from_millis(40),
+        revocation_retry_first: Duration::from_millis(40),
+        revocation_retry_max: Duration::from_millis(160),
     }
 }
 
@@ -592,6 +603,8 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             late_retry_every: Duration::from_secs(600),
             late_retry_for: Duration::ZERO,
             ended_check: Duration::from_secs(600),
+            revocation_retry_first: Duration::from_secs(600),
+            revocation_retry_max: Duration::from_secs(600),
         },
     )
     .await;
@@ -732,6 +745,8 @@ fn slept() -> KeepaliveTiming {
         late_retry_every: Duration::from_secs(600),
         late_retry_for: Duration::ZERO,
         ended_check: Duration::from_secs(600),
+        revocation_retry_first: Duration::from_secs(600),
+        revocation_retry_max: Duration::from_secs(600),
     }
 }
 
@@ -773,6 +788,7 @@ async fn a_scoped_worker_request_after_a_long_idle_dials_again_first() {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         },
     );
     f.manager
@@ -854,6 +870,7 @@ async fn grant_worker(f: &Fixture) {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         },
     );
     f.manager
@@ -1659,4 +1676,556 @@ fn the_default_pace_keeps_every_gap_well_inside_the_brokers_timeout() {
     // The broker's own timeout is the number this pace is measured against.
     let broker = include_str!("../../../biorouter-crew/src/broker.rs");
     assert!(broker.contains("set_read_timeout(Some(Duration::from_secs(300)))"));
+}
+
+/// A provider bound to a scoped chat, for the turn-start check (`check_provider_dispatch`).
+struct TurnProvider;
+
+#[async_trait::async_trait]
+impl crate::providers::base::Provider for TurnProvider {
+    fn metadata() -> crate::providers::base::ProviderMetadata {
+        crate::providers::base::ProviderMetadata::new(
+            "keepalive-turn",
+            "Keepalive turn",
+            "",
+            "fixture",
+            vec![],
+            "",
+            vec![],
+        )
+    }
+    fn get_name(&self) -> &str {
+        "keepalive-turn"
+    }
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::Private
+    }
+    async fn complete_with_model(
+        &self,
+        _model_config: &crate::model::ModelConfig,
+        _system: &str,
+        _messages: &[crate::conversation::message::Message],
+        _tools: &[rmcp::model::Tool],
+    ) -> std::result::Result<
+        (
+            crate::conversation::message::Message,
+            crate::providers::base::ProviderUsage,
+        ),
+        crate::providers::errors::ProviderError,
+    > {
+        unreachable!("the turn-start check never calls the model")
+    }
+    fn get_model_config(&self) -> crate::model::ModelConfig {
+        crate::model::ModelConfig::new_or_fail("keepalive-turn-model")
+    }
+}
+
+/// The saved registry's copy of `WORKER`'s grant.
+fn saved_grant(f: &Fixture) -> Value {
+    let saved: Value = serde_json::from_slice(
+        &fs::read(f.root.join("manager").join("connections.json")).expect("the registry is saved"),
+    )
+    .unwrap();
+    saved["scopes"][WORKER].clone()
+}
+
+/// `WORKER`'s row in the grants list.
+async fn listed_grant(manager: &CrewManager) -> Value {
+    let listed = manager.session_grants(CONNECTION_ID).await.unwrap();
+    listed["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session_id"] == WORKER)
+        .cloned()
+        .expect("the grant is listed")
+}
+
+/// The requests any bridge received that carried the run's credential: the worker's own.
+fn worker_frames(root: &Path) -> usize {
+    frames(root)
+        .iter()
+        .filter(|frame| frame.get("credential").is_some())
+        .count()
+}
+
+/// D-1: a policy change at the workspace (a channel's membership toggled) moves its epoch, and
+/// the broker refuses the run as `grant_expired`. That used to reach the person as the broker's
+/// raw envelope while the grant still read live. Now the refusal is the sentence a policy
+/// change on this device gets, the grant stops here (and is saved stopped, as ended by the
+/// workspace), the list says so, and nothing more is sent under it: no second worker request
+/// and no revocation, because the workspace already refused the run.
+#[tokio::test]
+async fn a_run_the_workspace_ended_stops_here_with_the_policy_sentence() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("grant-expired", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let refused = f
+        .manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, GRANT_POLICY_CHANGED);
+    assert!(!refused.contains('{') && !refused.contains("grant_expired"));
+    assert_eq!(worker_frames(&f.root), 1);
+
+    let stopped = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert!(stopped.expired);
+    assert_eq!(stopped.revocation, Some(Revocation::EndedByWorkspace));
+    let saved = saved_grant(&f);
+    assert_eq!(saved["expired"], true);
+    assert_eq!(saved["revocation"], "ended_by_workspace");
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["expired"], true);
+    assert_eq!(listed["revocation"], "ended_by_workspace");
+    assert!(listed["remote_revocation_confirmed"].is_null());
+
+    // Every later use is refused here, in the same words, without asking the workspace.
+    for _ in 0..2 {
+        assert_eq!(
+            f.manager
+                .agent_request(WORKER, &cap, CONNECTION_ID, "messages.history", json!({}))
+                .await
+                .unwrap_err()
+                .to_string(),
+            GRANT_POLICY_CHANGED
+        );
+        assert_eq!(
+            f.manager
+                .check_dispatch(WORKER, &cap)
+                .await
+                .unwrap_err()
+                .to_string(),
+            GRANT_POLICY_CHANGED
+        );
+    }
+    assert_eq!(worker_frames(&f.root), 1);
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .any(|(_, method)| method == "run.revoke"),
+        "the workspace ended the run itself; nothing is revoked there"
+    );
+    // A person's revoke afterwards is still theirs to make, and reads as a revocation.
+    f.manager.revoke_session(WORKER).await.unwrap();
+    assert_eq!(
+        f.manager
+            .check_dispatch(WORKER, &cap)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_REVOKED
+    );
+}
+
+/// D-1 at turn start: the check every model call makes on a scoped chat reads the workspace,
+/// and the `grant_expired` answer is the policy sentence there too (the CLI's and the chat's
+/// "Model request failed"), never `Crew broker refused request: {…}`.
+#[tokio::test]
+async fn a_turn_the_workspace_refuses_says_so_in_words() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("turn-grant-expired", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+    let refused = f
+        .manager
+        .check_provider_dispatch(WORKER, &provider)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, GRANT_POLICY_CHANGED);
+    assert_eq!(listed_grant(&f.manager).await["expired"], true);
+    // The next turn is refused before anything is sent.
+    assert_eq!(
+        f.manager
+            .check_provider_dispatch(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
+    assert_eq!(worker_frames(&f.root), 1);
+}
+
+/// Any other refusal the workspace answers at turn start is a sentence too, and does not stop
+/// the grant: only `grant_expired` means the workspace ended the run.
+#[tokio::test]
+async fn another_refusal_at_turn_start_is_a_sentence_and_leaves_the_grant_alone() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("turn-channel-gone", &["channel-gone"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+    let refused = f
+        .manager
+        .check_provider_dispatch(WORKER, &provider)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, "Crew refused the request: channel unavailable.");
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["expired"], false);
+    assert!(listed["revocation"].is_null());
+}
+
+/// A run that simply ran out of time is refused as `grant_expired` too. It is not a policy
+/// change and not a revocation: its own sentence, and the grant is left as it is, since its
+/// `expires_at` already reads Expired everywhere.
+#[tokio::test]
+async fn a_run_that_ran_out_of_time_says_so_and_is_not_marked_revoked() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("grant-timed-out", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .expires_at = Some(1);
+    let refused = f
+        .manager
+        .worker_request(WORKER, "context.manifest", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, GRANT_TIMED_OUT);
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["expired"], false);
+    assert!(listed["revocation"].is_null());
+}
+
+/// F3: a revoke while the workspace cannot be reached stops the grant here and says the
+/// workspace has not confirmed; the grants list says so too. When a person connects again,
+/// the daemon asks the workspace to revoke the run by itself, with no Retry: the list then
+/// reads confirmed, and the run is revoked exactly once.
+#[tokio::test]
+async fn an_unconfirmed_revocation_is_confirmed_by_itself_on_reconnect() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("revoke-reconnect", &["serve", "serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    let outcome = f.manager.revoke_session(WORKER).await.unwrap();
+    assert!(!outcome.remote_confirmed);
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["expired"], true);
+    assert_eq!(listed["revocation"], "unconfirmed");
+    assert_eq!(listed["remote_revocation_confirmed"], false);
+    assert_eq!(saved_grant(&f)["revocation"], "unconfirmed");
+    // Refused here at once, whatever the workspace says.
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert_eq!(
+        f.manager
+            .check_dispatch(WORKER, &cap)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_REVOKED
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!requests(&f.root)
+        .iter()
+        .any(|(_, method)| method == "run.revoke"));
+
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    until(async || listed_grant(&manager).await["remote_revocation_confirmed"] == true).await;
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["revocation"], "confirmed");
+    assert_eq!(listed["expired"], true);
+    assert_eq!(saved_grant(&f)["revocation"], "confirmed");
+    let revokes: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "run.revoke")
+        .collect();
+    assert_eq!(revokes.len(), 1, "{revokes:?}");
+    assert_eq!(revokes[0]["params"]["run_id"], "keepalive-run");
+    assert_eq!(
+        methods_on(&f.root, 2).last().map(String::as_str),
+        Some("run.revoke")
+    );
+
+    // Confirmed is final: a later connect asks nothing again.
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        frames(&f.root)
+            .iter()
+            .filter(|frame| frame["method"] == "run.revoke")
+            .count(),
+        1
+    );
+}
+
+/// F3 without anyone pressing anything: the revoke's own request loses its bridge, the
+/// keepalive's re-dial brings the connection back, and that connect asks the workspace again.
+#[tokio::test]
+async fn a_keepalive_redial_confirms_an_unconfirmed_revocation() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let timing = KeepaliveTiming {
+        retry_delays: [Duration::from_millis(50); 3],
+        ..quiet()
+    };
+    let f = fixture("revoke-redial", &["drop-after-1", "serve"], timing).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let outcome = f.manager.revoke_session(WORKER).await.unwrap();
+    assert!(!outcome.remote_confirmed, "the bridge dropped mid-request");
+    let manager = f.manager.clone();
+    until(async || listed_grant(&manager).await["remote_revocation_confirmed"] == true).await;
+    assert!(spawns(&f.root) >= 2);
+    assert_eq!(
+        methods_on(&f.root, spawns(&f.root))
+            .last()
+            .map(String::as_str),
+        Some("run.revoke")
+    );
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
+}
+
+/// A run the workspace answered and refused to revoke is not asked about again and again
+/// while the connection stays up; it stays unconfirmed, is shown so, and is asked again at the
+/// next reconnect.
+#[tokio::test]
+async fn a_revocation_the_workspace_refused_is_asked_again_only_at_reconnect() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let timing = KeepaliveTiming {
+        revocation_retry_first: Duration::from_millis(20),
+        revocation_retry_max: Duration::from_millis(40),
+        ..quiet()
+    };
+    let f = fixture("revoke-refused", &["refuse-revoke", "serve"], timing).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let outcome = f.manager.revoke_session(WORKER).await.unwrap();
+    assert!(!outcome.remote_confirmed);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let revokes = |root: &Path| {
+        requests(root)
+            .iter()
+            .filter(|(_, method)| method == "run.revoke")
+            .count()
+    };
+    assert_eq!(revokes(&f.root), 1);
+    assert_eq!(listed_grant(&f.manager).await["revocation"], "unconfirmed");
+
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    until(async || listed_grant(&manager).await["revocation"] == "confirmed").await;
+    assert_eq!(revokes(&f.root), 2);
+}
+
+/// F3 across a restart: the stop is saved as unconfirmed, and the next daemon to connect
+/// asks the workspace again by itself.
+#[tokio::test]
+async fn an_unconfirmed_revocation_survives_a_restart_and_is_asked_again() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("revoke-restart", &["serve", "serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    assert!(
+        !f.manager
+            .revoke_session(WORKER)
+            .await
+            .unwrap()
+            .remote_confirmed
+    );
+    assert_eq!(saved_grant(&f)["revocation"], "unconfirmed");
+
+    let restarted = CrewManager::shared(f.root.join("manager")).unwrap();
+    restarted.set_keepalive_timing(quiet());
+    assert_eq!(listed_grant(&restarted).await["revocation"], "unconfirmed");
+    restarted.connect(CONNECTION_ID).await.unwrap();
+    let manager = restarted.clone();
+    until(async || listed_grant(&manager).await["revocation"] == "confirmed").await;
+    assert_eq!(saved_grant(&f)["revocation"], "confirmed");
+    restarted.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// A confirmation heard by one process is never replaced by another's "not yet" when their
+/// registries meet (D8), whichever way round.
+#[test]
+fn a_confirmed_revocation_is_never_forgotten_across_processes() {
+    let registry = |revocation: Option<Revocation>| {
+        let mut scope = Scope {
+            connection_id: CONNECTION_ID.into(),
+            run_id: "keepalive-run".into(),
+            channel_id: "keepalive-channel".into(),
+            source_channels: vec![],
+            epoch: 1,
+            provider_binding: "keepalive-provider".into(),
+            public_provider: false,
+            origin_restricted: false,
+            institution_ids: BTreeSet::new(),
+            institution_policy: true,
+            expired: true,
+            expires_at: None,
+            labels: None,
+            session_incarnation: None,
+            revocation: None,
+        };
+        scope.revocation = revocation;
+        Registry {
+            connections: vec![],
+            scopes: HashMap::from([(WORKER.to_owned(), scope)]),
+            pending_device: None,
+            completed_preparations: HashMap::new(),
+        }
+    };
+    for (here, theirs, merged) in [
+        (
+            Some(Revocation::Confirmed),
+            Some(Revocation::Unconfirmed),
+            Some(Revocation::Confirmed),
+        ),
+        (
+            Some(Revocation::Unconfirmed),
+            Some(Revocation::Confirmed),
+            Some(Revocation::Confirmed),
+        ),
+        (
+            Some(Revocation::Unconfirmed),
+            None,
+            Some(Revocation::Unconfirmed),
+        ),
+        (
+            None,
+            Some(Revocation::EndedByWorkspace),
+            Some(Revocation::EndedByWorkspace),
+        ),
+        (
+            Some(Revocation::EndedByWorkspace),
+            Some(Revocation::Unconfirmed),
+            Some(Revocation::EndedByWorkspace),
+        ),
+    ] {
+        let mut file = registry(theirs);
+        carry_process_state(&registry(here), &mut file);
+        assert_eq!(
+            file.scopes[WORKER].revocation, merged,
+            "{here:?} over {theirs:?}"
+        );
+    }
+}
+
+/// P-1: saving a connection exactly as it is (`privacy set-personal` with the mode it already
+/// has) is not a save: the policy epoch stays, the bridge stays up, and every grant keeps
+/// working. A save that does change something still ends the grants, as it must.
+#[tokio::test]
+async fn saving_a_connection_unchanged_changes_nothing() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("unchanged-save", &["serve", "serve"], quiet()).await;
+    // A save checks the server group's ID, which the other tests never need.
+    f.manager.registry.lock().await.connections[0].cluster_connection_id =
+        "5a5a5a5a-5a5a-45a5-85a5-5a5a5a5a5a5a".into();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let before = f.manager.connection(CONNECTION_ID).await.unwrap();
+    let bridge = f.manager.transport(CONNECTION_ID).await.unwrap();
+    let same = |c: &Connection, mode: ClusterMode| SaveConnection {
+        preparation_id: None,
+        name: c.name.clone(),
+        ssh_target: c.ssh_target.clone(),
+        port: c.port,
+        identity_file: c.identity_file.clone(),
+        proxy_jump: c.proxy_jump.clone(),
+        socket_path: c.socket_path.clone(),
+        owner_uid: c.owner_uid,
+        workspace_id: c.workspace_id.clone(),
+        workspace_public_key: c.workspace_public_key.clone(),
+        remote_root: c.remote_root.clone(),
+        remote_execution: c.remote_execution,
+        cluster_connection_id: Some(c.cluster_connection_id.clone()),
+        mode,
+        institution_id: c.institution_id.clone(),
+    };
+    for cluster in [true, false] {
+        let mut input = same(&before, before.mode);
+        if !cluster {
+            input.cluster_connection_id = None;
+        }
+        let answered = f.manager.update(CONNECTION_ID, input).await.unwrap();
+        assert_eq!(answered.policy_epoch, before.policy_epoch);
+        assert_eq!(answered.status, "connected");
+    }
+    let after = f.manager.connection(CONNECTION_ID).await.unwrap();
+    assert_eq!(after.policy_epoch, before.policy_epoch);
+    assert_eq!(after.status, "connected");
+    assert!(Arc::ptr_eq(
+        &bridge,
+        &f.manager.transport(CONNECTION_ID).await.unwrap()
+    ));
+    assert_eq!(spawns(&f.root), 1, "the bridge was never dropped");
+    let listed = listed_grant(&f.manager).await;
+    assert_eq!(listed["expired"], false);
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    f.manager.check_dispatch(WORKER, &cap).await.unwrap();
+
+    // A refused edit changes nothing either, the bridge included.
+    let mut refused = same(&before, before.mode);
+    refused.ssh_target = "bad target;".into();
+    assert!(f.manager.update(CONNECTION_ID, refused).await.is_err());
+    assert_eq!(
+        f.manager.connection(CONNECTION_ID).await.unwrap().status,
+        "connected"
+    );
+
+    // A real change is a save: the epoch moves, the bridge drops, and the grant ends.
+    let mut renamed = same(&before, before.mode);
+    renamed.name = "renamed fixture".into();
+    let saved = f.manager.update(CONNECTION_ID, renamed).await.unwrap();
+    assert!(saved.policy_epoch > before.policy_epoch);
+    assert_eq!(saved.status, "disconnected");
+    assert_eq!(
+        f.manager
+            .check_dispatch(WORKER, &cap)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
 }

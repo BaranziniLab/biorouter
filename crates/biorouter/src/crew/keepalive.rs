@@ -99,6 +99,11 @@ pub(super) struct KeepaliveTiming {
     /// How often, between ticks, the keepalive checks whether its bridge's `ssh` has exited:
     /// local process state only, never a request (Q4-08).
     pub ended_check: Duration,
+    /// The first gap before an unconfirmed revocation is asked again while the connection
+    /// stays up (F3, `revocation.rs`); each later gap doubles.
+    pub revocation_retry_first: Duration,
+    /// The largest gap between those tries.
+    pub revocation_retry_max: Duration,
 }
 
 impl Default for KeepaliveTiming {
@@ -115,6 +120,8 @@ impl Default for KeepaliveTiming {
             late_retry_every: Duration::from_secs(5 * 60),
             late_retry_for: Duration::from_secs(60 * 60),
             ended_check: Duration::from_secs(5),
+            revocation_retry_first: Duration::from_secs(5),
+            revocation_retry_max: Duration::from_secs(5 * 60),
         }
     }
 }

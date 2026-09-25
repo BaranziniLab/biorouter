@@ -14,6 +14,7 @@ pub use host_start::{
     HostStartRefused, HostStartRequest, HostStartState, HostStartStatus, StartOutput,
 };
 mod keepalive;
+mod revocation;
 mod server_label;
 pub use server_label::server_label;
 #[cfg(test)]
@@ -144,6 +145,60 @@ struct Scope {
     /// [`CrewManager::standing`]. `None` only for a grant recorded before this was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_incarnation: Option<i64>,
+    /// Where a stopped grant stands with the workspace (F3, D-1). `None` while the grant is
+    /// live, and for one stopped before this was recorded or by removing its connection,
+    /// whose standing with the workspace is not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revocation: Option<Revocation>,
+}
+
+/// Where a grant that stopped on this device stands with the workspace.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Revocation {
+    /// Stopped here; the workspace has not yet confirmed `run.revoke`. The daemon asks it
+    /// again by itself whenever the connection comes back, until it does (F3).
+    Unconfirmed,
+    /// The workspace confirmed `run.revoke`.
+    Confirmed,
+    /// The workspace itself refused the run as ended (`grant_expired`: its policy moved since
+    /// the grant, the run's context became protected, or the run was ended there), so there
+    /// is nothing left to revoke at the workspace (D-1).
+    EndedByWorkspace,
+}
+
+impl Revocation {
+    /// The grants list's words for it.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "unconfirmed",
+            Self::Confirmed => "confirmed",
+            Self::EndedByWorkspace => "ended_by_workspace",
+        }
+    }
+    /// How much the workspace is known to have said: a confirmation (or the workspace's own
+    /// refusal of the run) is never forgotten for a later "not yet".
+    fn rank(revocation: Option<Self>) -> u8 {
+        match revocation {
+            None => 0,
+            Some(Self::Unconfirmed) => 1,
+            Some(Self::EndedByWorkspace) => 2,
+            Some(Self::Confirmed) => 3,
+        }
+    }
+}
+
+impl Scope {
+    /// What a stopped grant's chat is told when it tries to use Crew: the workspace ending the
+    /// run because its policy moved reads as the policy change it is (D-1), anything else as
+    /// the access that was removed.
+    fn stopped_text(&self) -> &'static str {
+        if self.revocation == Some(Revocation::EndedByWorkspace) {
+            GRANT_POLICY_CHANGED
+        } else {
+            GRANT_REVOKED
+        }
+    }
 }
 
 /// The display names of a run's identifiers, captured under the person's action when the
@@ -281,9 +336,15 @@ impl std::error::Error for RevocationUnconfirmed {
 /// Shown to the person (and the model) when a revoked chat tries to use Crew.
 const GRANT_REVOKED: &str =
     "This chat's Crew access was removed. Start a new chat, or grant access again from Crew.";
-/// Shown when the connection's privacy or policy moved after the grant was made.
+/// Shown when the connection's privacy or policy moved after the grant was made, and when the
+/// workspace refuses the run as ended (`grant_expired`) because its own policy moved (D-1).
 const GRANT_POLICY_CHANGED: &str =
     "Crew settings changed since access was granted. Grant access again from Crew.";
+/// Shown when the workspace refuses a run whose time ran out (`expires_at` has passed).
+const GRANT_TIMED_OUT: &str =
+    "This chat's Crew access has ended. Grant access again from Crew to continue.";
+/// The broker's code for a run it no longer honors: revoked, expired or its policy changed.
+const BROKER_GRANT_EXPIRED: &str = "grant_expired";
 /// Shown when a chat with no Crew access asks for a Crew run, or a revocation finds none. It
 /// names the one step that connects this chat, in this chat (Q3-29): "Grant it access from
 /// Crew" sent people to Crew, whose empty state sent them back. It is written to the person,
@@ -375,7 +436,9 @@ fn registry_digest(bytes: &[u8]) -> [u8; 32] {
 /// - a grant's binding to its chat, when this process bound a grant recorded before grants
 ///   were bound ([`CrewManager::adopt_binding`]) and the file still has it unbound;
 /// - a stop: a grant this process expired stays expired even if its save failed, because
-///   nothing may bring a revoked run back to life.
+///   nothing may bring a revoked run back to life;
+/// - what the workspace said about a stop ([`Revocation`]), so a confirmation heard here is
+///   never replaced by an older "not yet confirmed".
 ///
 /// Only for the same grant, matched by run: a grant the file no longer holds, or holds for a
 /// newer run, is the file's to decide.
@@ -407,6 +470,11 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
         scope.expired |= mine.expired;
         if scope.session_incarnation.is_none() {
             scope.session_incarnation = mine.session_incarnation;
+        }
+        // What the workspace said about a stop, whichever process heard it: a confirmation
+        // this process got (and failed to save) is not lost to the file's "not yet".
+        if Revocation::rank(mine.revocation) > Revocation::rank(scope.revocation) {
+            scope.revocation = mine.revocation;
         }
     }
 }
@@ -473,6 +541,9 @@ pub struct CrewManager {
     /// What each chat's Crew requests read (Q3-02), for the provenance line a task's result
     /// ends with. Memory only; see [`RunReads`].
     run_reads: StdMutex<HashMap<String, RunReads>>,
+    /// Connections whose unconfirmed revocations the daemon is asking the workspace about
+    /// again (F3), each with the token of the pass doing it; see `revocation.rs`.
+    revocation_retries: StdMutex<HashMap<String, u64>>,
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -545,6 +616,7 @@ pub(crate) async fn install_test_scope(
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         },
     );
     drop(registry);
@@ -933,6 +1005,7 @@ impl CrewManager {
             members: StdMutex::new(std::collections::HashSet::new()),
             error_codes: StdMutex::new(HashMap::new()),
             run_reads: StdMutex::new(HashMap::new()),
+            revocation_retries: StdMutex::new(HashMap::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -996,6 +1069,12 @@ impl CrewManager {
     /// The grants on `connection_id`, one per chat. A grant stored under an id now held by
     /// another chat is not listed, and is pruned (SCOPE-BIND); one whose chat is gone is,
     /// so the person can still revoke it at the workspace.
+    ///
+    /// A stopped grant (`expired`) says where it stands with the workspace: `revocation` is
+    /// `unconfirmed` (stopped here; the daemon keeps asking the workspace to confirm),
+    /// `confirmed`, `ended_by_workspace` (the workspace itself refused the run, D-1), or
+    /// `null` when not known; `remote_revocation_confirmed` is the same as a boolean for the
+    /// first two and `null` otherwise.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
         self.connection(connection_id).await?;
         let sessions: Vec<String> = self
@@ -1015,7 +1094,16 @@ impl CrewManager {
                 continue;
             };
             if scope.connection_id == connection_id {
-                grants.push(json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels}));
+                // Where a stop stands with the workspace (F3): `remote_revocation_confirmed`
+                // is `false` only while the daemon is still asking the workspace to confirm
+                // it, `true` once it has, and `null` for a live grant or a stop whose
+                // standing is not a revocation this device sent (see `revocation`).
+                let confirmed = match scope.revocation {
+                    Some(Revocation::Unconfirmed) => Some(false),
+                    Some(Revocation::Confirmed) => Some(true),
+                    Some(Revocation::EndedByWorkspace) | None => None,
+                };
+                grants.push(json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels,"revocation":scope.revocation.map(Revocation::as_str),"remote_revocation_confirmed":confirmed}));
             }
         }
         Ok(json!({ "grants": grants }))
@@ -1341,10 +1429,66 @@ impl CrewManager {
     pub async fn save(&self, input: SaveConnection) -> Result<Connection> {
         self.save_inner(None, input).await
     }
+    /// Save `input` over the connection `id`. A save changes the connection's policy (its epoch
+    /// moves, which ends every grant on it) and drops its bridge, so one that would change
+    /// nothing is not a save at all (P-1): the connection is answered as it stands, still
+    /// connected, and every grant keeps working. A refused edit changes nothing either.
     pub async fn update(&self, id: &str, input: SaveConnection) -> Result<Connection> {
         let _lifecycle = self.connection_guard(id).await?;
+        Self::validate_connection(&input)?;
+        if let Some(unchanged) = self.unchanged_by(id, &input).await? {
+            return Ok(unchanged);
+        }
         self.disconnect_locked(id).await?;
         self.save_inner(Some(id), input).await
+    }
+    /// The connection `id` as it stands, when saving `input` over it would change nothing
+    /// the save decides: every setting the person gave, the privacy mode and the institution
+    /// (an omitted institution keeps the saved one, as a save does), and the server group the
+    /// save would put it in. `None` when anything would change, and for input a save would
+    /// refuse, which the save then refuses in its own words.
+    async fn unchanged_by(&self, id: &str, input: &SaveConnection) -> Result<Option<Connection>> {
+        if input.preparation_id.is_some() {
+            return Ok(None);
+        }
+        let institution_id = match input.institution_id.as_deref() {
+            Some(given) => match institution::normalize(given) {
+                Ok(normalized) => Some(normalized),
+                Err(_) => return Ok(None),
+            },
+            None => None,
+        };
+        let registry = self.registry.lock().await;
+        let Some(current) = registry.connections.iter().find(|c| c.id == id) else {
+            return Ok(None);
+        };
+        // The group a save would put it in: the first saved connection with this workspace
+        // or SSH target, as `build_connection` finds it.
+        let group = registry
+            .connections
+            .iter()
+            .find(|c| c.workspace_id == input.workspace_id || c.ssh_target == input.ssh_target)
+            .map(|c| c.cluster_connection_id.as_str());
+        let unchanged = current.name == input.name
+            && current.ssh_target == input.ssh_target
+            && current.port == input.port
+            && current.identity_file == input.identity_file
+            && current.proxy_jump == input.proxy_jump
+            && current.socket_path == input.socket_path
+            && current.owner_uid == input.owner_uid
+            && current.workspace_id == input.workspace_id
+            && current.workspace_public_key == input.workspace_public_key
+            && current.remote_root == input.remote_root
+            && current.remote_execution == input.remote_execution
+            && input
+                .cluster_connection_id
+                .as_deref()
+                .is_none_or(|cluster| cluster == current.cluster_connection_id)
+            && group == Some(current.cluster_connection_id.as_str())
+            && current.mode == input.mode
+            && institution_id
+                .is_none_or(|given| current.institution_id.as_deref() == Some(given.as_str()));
+        Ok(unchanged.then(|| current.clone()))
     }
     fn validate_connection(input: &SaveConnection) -> Result<()> {
         ensure!(
@@ -1763,6 +1907,11 @@ impl CrewManager {
         self.disarm_idle_redial(id);
         self.clear_error_code(id);
         self.start_keepalive(id, &transport);
+        // Whoever connected (a person, the keepalive's re-dial, a request finding its bridge
+        // gone), a revocation the workspace has not confirmed is asked again now (F3).
+        if !self.unconfirmed_revocations(id).await.is_empty() {
+            self.schedule_revocation_retries(id);
+        }
         Ok(connected)
     }
     /// Pin the verified node, merge its cluster, persist, and only then remember what the
@@ -2413,7 +2562,7 @@ impl CrewManager {
         let Some((s, c)) = self.checked_scope(session).await? else {
             return Ok(());
         };
-        ensure!(!s.expired, GRANT_REVOKED);
+        ensure!(!s.expired, s.stopped_text());
         // A scope granted before institution policy existed never passed today's admission.
         ensure!(s.institution_policy, GRANT_POLICY_CHANGED);
         let c = c.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
@@ -2481,8 +2630,18 @@ impl CrewManager {
         self.check_tier(session, provider.tier(), provider.affiliation())
             .await?;
         if self.is_scoped(session).await {
+            // A turn refused here is shown to the person as it stands ("Model request
+            // failed"), in the chat and in the terminal: a refusal the workspace answered is
+            // said as a sentence, never as the broker's envelope (D-1).
             self.worker_request(session, "context.manifest", json!({}))
-                .await?;
+                .await
+                .map_err(|error| {
+                    if refused_by_workspace(&error) {
+                        anyhow::anyhow!(agent_error_text(&error))
+                    } else {
+                        error
+                    }
+                })?;
         }
         Ok(())
     }
@@ -2634,6 +2793,7 @@ impl CrewManager {
                 expires_at,
                 labels: Some(labels.clone()),
                 session_incarnation: Some(session_incarnation),
+                revocation: None,
             };
             // Recorded here even when the save fails, as it always was: the abandon below
             // then finds it and stops it here too.
@@ -2848,7 +3008,7 @@ impl CrewManager {
             !method.starts_with("remote.") || !s.public_provider,
             "Public models cannot access remote files/jobs"
         );
-        ensure!(!s.expired, GRANT_REVOKED);
+        ensure!(!s.expired, s.stopped_text());
         let c = self.connection(&s.connection_id).await?;
         ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
         ensure!(params.is_object(), "Crew params must be an object");
@@ -2880,7 +3040,10 @@ impl CrewManager {
             self.retire_broken_bridge(&s.connection_id, &transport, &result)
                 .await?;
         }
-        let result = result?;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => return Err(self.heed_worker_refusal(session, &s, error).await),
+        };
         self.validate_worker_scope(session, &s, &c).await?;
         match method {
             "messages.history" | "messages.search" | "context.manifest" => {
@@ -2923,6 +3086,56 @@ impl CrewManager {
             ACCESS_CHANGED
         );
         Ok(())
+    }
+    /// What a worker request the workspace refused becomes (D-1). A `grant_expired` refusal
+    /// means the workspace no longer honors the run: its policy moved since the grant (another
+    /// channel's membership changed, say), the run's context became protected, its institution
+    /// changed, or the run was ended there. So the grant stops here too, recorded as ended by
+    /// the workspace: lists read it stopped, the chat shows it, and every later request is
+    /// refused here without asking. The person reads the sentence a policy change on this
+    /// device gets, never the broker's envelope. A run that simply ran out of time is left as
+    /// it is (its `expires_at` already says so) and gets its own sentence. Any other error is
+    /// returned unchanged.
+    async fn heed_worker_refusal(
+        &self,
+        session: &str,
+        scope: &Scope,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        let Some((code, _)) = keepalive::broker_refusal(&error) else {
+            return error;
+        };
+        if code != BROKER_GRANT_EXPIRED {
+            return error;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        if scope.expires_at.is_some_and(|at| at <= now) {
+            return anyhow::anyhow!(GRANT_TIMED_OUT);
+        }
+        let run_id = scope.run_id.clone();
+        let stopped = self
+            .update_registry_keeping(|registry| {
+                if let Some(current) = registry
+                    .scopes
+                    .get_mut(session)
+                    .filter(|current| current.run_id == run_id)
+                {
+                    current.expired = true;
+                    if current.revocation.is_none() {
+                        current.revocation = Some(Revocation::EndedByWorkspace);
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = stopped {
+            // It holds in this process all the same (`update_registry_keeping`).
+            tracing::warn!(session, %error, "Couldn't save a Crew grant the workspace ended");
+        }
+        self.forget_run_reads(session);
+        anyhow::anyhow!(GRANT_POLICY_CHANGED)
     }
     pub async fn publish_run(&self, session: &str, body: &str, status: &str) -> Result<Value> {
         self.worker_request(session, "run.project", json!({"body":body,"status":status}))
@@ -2985,6 +3198,11 @@ impl CrewManager {
                     REPLACED_RUN
                 );
                 current.expired = true;
+                // Until the workspace confirms, the stop is recorded as not yet confirmed, so a
+                // restart still knows to ask again (F3). A confirmation heard earlier stands.
+                if current.revocation != Some(Revocation::Confirmed) {
+                    current.revocation = Some(Revocation::Unconfirmed);
+                }
                 Ok((current.connection_id.clone(), current.run_id.clone()))
             })
             .await
@@ -2994,7 +3212,7 @@ impl CrewManager {
         self.forget_run_reads(session);
         Ok(
             match self
-                .human_request(&connection_id, "run.revoke", json!({"run_id":run_id}), None)
+                .confirm_revocation(&connection_id, session, &run_id)
                 .await
             {
                 Ok(run) => RevokeOutcome {
@@ -3002,13 +3220,52 @@ impl CrewManager {
                     run: Some(run),
                     remote_error: None,
                 },
-                Err(error) => RevokeOutcome {
-                    remote_confirmed: false,
-                    run: None,
-                    remote_error: Some(error),
-                },
+                Err(error) => {
+                    // Asked again by the daemon itself, with growing gaps while the connection is
+                    // up, and at every reconnect after that, until the workspace confirms (F3). A
+                    // refusal the workspace answered is asked again at the next reconnect only:
+                    // asking now would only repeat its answer.
+                    if !refused_by_workspace(&error) {
+                        self.schedule_revocation_retries(&connection_id);
+                    }
+                    RevokeOutcome {
+                        remote_confirmed: false,
+                        run: None,
+                        remote_error: Some(error),
+                    }
+                }
             },
         )
+    }
+    /// Ask the workspace to revoke `run_id`, the run of `session`'s stopped grant, and record
+    /// its confirmation on that grant while it is still the session's (F3). Revoking is
+    /// idempotent at the workspace, so asking again after an answer that was lost is safe.
+    pub(super) async fn confirm_revocation(
+        &self,
+        connection_id: &str,
+        session: &str,
+        run_id: &str,
+    ) -> Result<Value> {
+        let run = self
+            .human_request(connection_id, "run.revoke", json!({"run_id":run_id}), None)
+            .await?;
+        let recorded = self
+            .update_registry_keeping(|registry| {
+                if let Some(current) = registry
+                    .scopes
+                    .get_mut(session)
+                    .filter(|current| current.run_id == run_id && current.expired)
+                {
+                    current.revocation = Some(Revocation::Confirmed);
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = recorded {
+            // It holds in this process all the same, and the next save carries it.
+            tracing::warn!(session, run_id, %error, "Couldn't save a confirmed Crew revocation");
+        }
+        Ok(run)
     }
     async fn attach_remote(&self, session: &str, params: Value) -> Result<Value> {
         let scope = self.scope(session).await?;
@@ -3777,6 +4034,12 @@ pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
     if !text.starts_with("Crew broker refused request:") {
         return text;
     }
+    // A run the workspace no longer honors reads as the policy change it (almost always) is,
+    // the same sentence a change on this device gets (D-1). The worker path already says so
+    // and stops the grant ([`CrewManager::heed_worker_refusal`]); this covers any other path.
+    if keepalive::broker_refusal(error).is_some_and(|(code, _)| code == BROKER_GRANT_EXPIRED) {
+        return GRANT_POLICY_CHANGED.to_owned();
+    }
     let reason = keepalive::broker_refusal(error)
         .map(|(code, message)| {
             let message = message.trim();
@@ -3794,6 +4057,75 @@ pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
         Some(reason) => format!("Crew refused the request: {reason}."),
         None => "Crew refused the request.".to_owned(),
     }
+}
+
+/// The broker's technical texts that name something a person can act on, said as sentences
+/// (Q2-76), matched on the text after its code, in lowercase, without a closing full stop. The
+/// CLI keeps the same table for the refusals it reads over HTTP (`commands/crew/output.rs`).
+const REFUSAL_SENTENCES: &[(&str, &str)] = &[
+    (
+        "unknown device",
+        "This computer isn't a member of this workspace.",
+    ),
+    (
+        "signed device required",
+        "This computer isn't signed in to this workspace.",
+    ),
+    (
+        "channel unavailable",
+        "That channel isn't available to you. It may be archived, or you may not be in it.",
+    ),
+    (
+        "principal unavailable",
+        "That person isn't a member of this workspace.",
+    ),
+    (
+        "invalid grant",
+        "This task's access to the workspace has ended.",
+    ),
+];
+
+/// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
+/// person (F-1): a known technical text in words, else the broker's own message without its
+/// code, with a capital and a full stop. `None` when the workspace did not answer with a
+/// refusal (the connection or the transport failed, or this device refused first).
+pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
+    let (code, message) = error.chain().find_map(|link| {
+        let text = link.to_string();
+        let envelope: Value =
+            serde_json::from_str(text.strip_prefix("Crew broker refused request: ")?).ok()?;
+        let code = envelope.get("code")?.as_str()?.to_owned();
+        let message = envelope
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Some((code, message))
+    })?;
+    let message = message.trim();
+    let reason = message
+        .strip_prefix(code.as_str())
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(message);
+    let reason = plain_label(reason);
+    let key = reason
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
+    if let Some((_, sentence)) = REFUSAL_SENTENCES.iter().find(|(text, _)| *text == key) {
+        return Some((*sentence).to_owned());
+    }
+    if reason.is_empty() || key == code {
+        return Some("The workspace refused this request.".to_owned());
+    }
+    let mut chars = reason.chars();
+    let mut sentence: String = chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    Some(sentence)
 }
 
 /// Whether the workspace refused this one request (for one file, say), as against the
@@ -4555,6 +4887,7 @@ mod tests {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         };
         let manager = CrewManager::new(root.clone())?;
         {
@@ -4834,6 +5167,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         };
         (connection, scope)
     }
@@ -5123,6 +5457,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -5218,6 +5553,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         };
         let registry = Registry {
             connections: vec![connection.clone()],
@@ -5410,6 +5746,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            revocation: None,
         };
         let registry = Registry {
             connections: vec![connection],
@@ -5597,6 +5934,7 @@ done
                     expires_at: None,
                     labels: None,
                     session_incarnation: None,
+                    revocation: None,
                 },
             )]),
             pending_device: None,
@@ -6067,6 +6405,76 @@ done
             GRANT_REVOKED
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// F-1: a refusal the workspace answered, wherever it sits in an error's chain, as a
+    /// sentence a person can read; `None` for anything the workspace did not answer.
+    #[test]
+    fn a_workspace_refusal_reads_as_a_sentence() {
+        let refused = |code: &str, message: &str| {
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": code, "message": message})
+            )
+        };
+        for (error, sentence) in [
+            (
+                refused("forbidden", "forbidden: channel unavailable"),
+                "That channel isn't available to you. It may be archived, or you may not be in it.",
+            ),
+            (
+                refused("unauthorized", "unauthorized: unknown device"),
+                "This computer isn't a member of this workspace.",
+            ),
+            (
+                refused("forbidden", "forbidden: attachment unavailable"),
+                "Attachment unavailable.",
+            ),
+            (
+                refused("forbidden", "forbidden"),
+                "The workspace refused this request.",
+            ),
+            (
+                refused("forbidden", ""),
+                "The workspace refused this request.",
+            ),
+            (
+                refused("request_denied", "Message too long."),
+                "Message too long.",
+            ),
+            (
+                refused("forbidden", "forbidden: channel unavailable")
+                    .context("Couldn't start the transfer"),
+                "That channel isn't available to you. It may be archived, or you may not be in it.",
+            ),
+        ] {
+            assert_eq!(
+                refusal_sentence(&error).as_deref(),
+                Some(sentence),
+                "{error:#}"
+            );
+        }
+        assert_eq!(
+            refusal_sentence(&anyhow::anyhow!(
+                "Crew connection is disconnected; authenticate and connect in Crew"
+            )),
+            None
+        );
+        assert_eq!(
+            refusal_sentence(&anyhow::anyhow!("Crew broker refused request: <garbled>")),
+            None
+        );
+    }
+
+    /// D-1: the broker's `grant_expired` reads as the policy sentence wherever an agent error
+    /// is shown, never as its envelope.
+    #[test]
+    fn a_grant_the_workspace_ended_reads_as_the_policy_sentence() {
+        let error = anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"})
+        );
+        assert_eq!(agent_error_text(&error), GRANT_POLICY_CHANGED);
     }
 
     #[tokio::test]
