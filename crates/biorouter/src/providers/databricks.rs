@@ -47,7 +47,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 600;
 pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-sonnet-4-6";
 const DATABRICKS_DEFAULT_FAST_MODEL: &str = "databricks-gemini-3-5-flash";
 /// Default first — the desktop model switcher preselects entry 0 — then each
-/// family newest first.
+/// family by generation, newest generation first.
 ///
 /// NOT listed: `databricks-claude-opus-5-5` and `databricks-claude-fable-5-1`.
 /// Databricks documents both only on its Anthropic Messages API

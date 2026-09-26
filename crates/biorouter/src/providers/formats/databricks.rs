@@ -568,11 +568,13 @@ pub fn create_request(
 
     let model_name = model_config.model_name.to_string();
     let is_openai_reasoning_model = is_openai_reasoning_model(&model_name);
+    // Can be biorouter- or databricks- prefixed.
     let is_claude_sonnet =
-        model_name.contains("claude-3-7-sonnet") || model_name.contains("claude-4-sonnet"); // can be biorouter- or databricks-
-                                                                                            // No custom sampling for models that reject it: OpenAI reasoning models,
-                                                                                            // and Claude endpoints that accept only adaptive thinking. `top_p` and
-                                                                                            // `top_k` are never sent from here at all.
+        model_name.contains("claude-3-7-sonnet") || model_name.contains("claude-4-sonnet");
+
+    // No custom sampling for models that reject it: OpenAI reasoning models,
+    // and Claude endpoints that accept only adaptive thinking. `top_p` and
+    // `top_k` are never sent from here at all.
     let sends_temperature =
         !is_openai_reasoning_model && !is_adaptive_only_claude(&model_config.model_name);
     // A reasoning model's output cap is `max_completion_tokens` in OpenAI's
@@ -603,7 +605,7 @@ pub fn create_request(
             ),
         }
     } else {
-        // For non-O family models, use the model name as is and no reasoning effort
+        // Every other model: the name as is, and no reasoning effort
         (model_config.model_name.to_string(), None)
     };
 
