@@ -13,7 +13,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-/// Default models for Tetrate Agent Router Service configuration
+/// Default model for Tetrate Agent Router Service configuration. Re-checked
+/// Sep 25, 2026: Haiku 4.5 is still active on Anthropic (no deprecation
+/// announced), live in Tetrate's public catalog, and has no newer Haiku.
 pub const TETRATE_DEFAULT_MODEL: &str = "claude-haiku-4-5";
 
 // Auth endpoints are on the main web domain
