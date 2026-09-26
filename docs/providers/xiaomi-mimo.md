@@ -1,7 +1,7 @@
 # Xiaomi MiMo provider
 
 > **What this is.** The integration reference for the Xiaomi MiMo provider (`xiaomi_mimo`): how it is wired into the provider registry, every surface where a user can select it, and the checks that verify it works.
-> **Status:** Current — written 2026-06-19 against v1.85.3 alongside the commit that added the provider; the module, default model, and environment-variable contract described here still match the shipped code.
+> **Status:** Current. Written 2026-06-19 against v1.85.3 alongside the commit that added the provider. The default model and model list were re-derived from `xiaomi_mimo.rs` on 2026-09-25.
 > **Audience:** maintainers working on LLM providers.
 
 Xiaomi's **MiMo** LLM family is integrated as a first-class, OpenAI-compatible provider. Because every model-selection surface in BioRouter is registry-driven, the provider appears automatically once it is registered and configured — only display polish needed explicit wiring. This document records that wiring so a maintainer can re-derive it, and gives the commands to re-verify the integration.
@@ -15,16 +15,19 @@ Run the verification section after changing `crates/biorouter/src/providers/xiao
 - **Native provider module:** `crates/biorouter/src/providers/xiaomi_mimo.rs`
   (`XiaomiMimoProvider`), registered in `crates/biorouter/src/providers/factory.rs`.
   Provider id `xiaomi_mimo`, display name **Xiaomi MiMo**, default model
-  `mimo-v2.5`.
+  `mimo-v2.6-flash`.
 - **Auth / endpoint:** Bearer `XIAOMI_MIMO_API_KEY`. Default host is the
   live-verified Singapore Token-Plan endpoint
   `https://token-plan-sgp.xiaomimimo.com/v1`; override with `XIAOMI_MIMO_HOST`
   for another region/tier:
   - Pay-as-you-go (`sk-` keys): `https://api.xiaomimimo.com/v1`
   - Token Plan (`tp-` keys): `https://token-plan-{cn,sgp,ams}.xiaomimimo.com/v1`
-- **Models:** `mimo-v2.5`, `mimo-v2.5-pro` (~1M ctx), `mimo-v2-pro`,
-  `mimo-v2-omni` (~256k ctx). Context limits also registered in
-  `crates/biorouter/src/model.rs` (`MODEL_SPECIFIC_LIMITS`).
+- **Models:** `mimo-v2.6-flash`, `mimo-v2.6-pro` (1,048,576 tokens each; both
+  take text, image, video and audio input). Context limits are registered per id
+  in `MODEL_CONTEXT_WINDOWS` in `crates/biorouter/src/model.rs`. Xiaomi shuts
+  down `mimo-v2.5` and `mimo-v2.5-pro` on 2026-10-21 with no replacement
+  routing, and the `mimo-v2-pro` and `mimo-v2-omni` names expired on
+  2026-06-30, so none of them is listed.
 
 > **Why.** The model list, default model, and default host above are copied from
 > code and will drift as the catalog changes. The authoritative values are the
@@ -46,7 +49,7 @@ backend-driven and required no MiMo-specific code.
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `mimo-*` models appear in the picker | Backend-driven |
 | Leader/Worker mode | MiMo models selectable for both lead and worker | `LeadWorkerSettings.tsx`, backend-driven |
 | Knowledge base ingestion/digestion | MiMo models selectable for ingest | `IngestModelPicker.tsx`, backend-driven |
-| CLI (`biorouter configure`) | Appears in the provider list under Commercial; usable via `biorouter run --provider xiaomi_mimo --model mimo-v2.5` | Registry-driven |
+| CLI (`biorouter configure`) | Appears in the provider list under Commercial; usable via `biorouter run --provider xiaomi_mimo --model mimo-v2.6-flash` | Registry-driven |
 | TUI | Stores the selected provider/model string; no separate list | — |
 | Daemon/server | `GET /config/providers`, `GET /config/providers/xiaomi_mimo/models`, and `/config/detect-provider` all surface it | Registry-driven; no allowlist |
 
@@ -55,7 +58,7 @@ backend-driven and required no MiMo-specific code.
 ### Live endpoint reachable
 
 `POST {host}/v1/chat/completions` with the key returns HTTP 200 and a
-`mimo-v2.5` completion.
+completion from the default model.
 
 > **Note.** On 2026-06-19 this returned `BIOROUTER-OK` with `reasoning_tokens: 0`
 > and thinking disabled. That is a record of one run against one key and region,
@@ -88,8 +91,8 @@ Exercises factory → `XiaomiMimoProvider::from_env` → live HTTP.
 
 ### Context window
 
-`mimo-v2.5` reports ~1M tokens for token accounting, from
-`MODEL_SPECIFIC_LIMITS` in `crates/biorouter/src/model.rs`.
+`mimo-v2.6-flash` and `mimo-v2.6-pro` report 1,048,576 tokens for token
+accounting, from `MODEL_CONTEXT_WINDOWS` in `crates/biorouter/src/model.rs`.
 
 ## Gotchas
 

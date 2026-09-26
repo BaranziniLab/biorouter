@@ -520,7 +520,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
   <div class="step-num">1</div>
   <div class="step-body">
     <h3>Switch the model mid-chat</h3>
-    <p>Click the model chip in the composer toolbar (the brain icon with the current model name, for example <code>gpt-5.6</code>). Pick a different model, or a different provider, from the list. The next turn uses the new model; the transcript so far is unchanged.</p>
+    <p>Click the model chip in the composer toolbar (the brain icon with the current model name, for example <code>gpt-6-sol</code>). Pick a different model, or a different provider, from the list. The next turn uses the new model; the transcript so far is unchanged.</p>
   </div>
 </div>
 
@@ -1114,7 +1114,7 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
 </table></div>
 <pre><code>biorouter models current
 biorouter models list ollama --format json
-biorouter models set --provider openai --model gpt-5.5
+biorouter models set --provider openai --model gpt-6-sol
 biorouter models local pull qwen3.6</code></pre>
 
 <h3>configure</h3>
@@ -1398,7 +1398,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 <div class="info-box">
   <h4>The in-app model picker is the source of truth</h4>
   <p>Model lineups change constantly, so Biorouter does not ship a fixed per-model list. It reads each provider's <strong>live catalog</strong> and shows it in <strong>Settings &rarr; Models</strong> (and via <code>biorouter models list &lt;provider&gt;</code>). Trust the picker for the exact models available to you today.</p>
-  <p>What a provider does ship is a <strong>default model</strong>: the one Biorouter selects when you configure that provider without naming a model. Those defaults are listed below, and they reflect <code>biorouter v1.91.2</code>.</p>
+  <p>What a provider does ship is a <strong>default model</strong>: the one Biorouter selects when you configure that provider without naming a model. Those defaults are listed below, and they were last checked against the source code on 2026-09-25.</p>
 </div>
 
 <h2>Local: zero setup</h2>
@@ -1428,7 +1428,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 <p>UCSF-managed endpoints keep prompts and completions inside UCSF's own cloud tenant, which is what makes them appropriate for institution-approved, sensitive work.</p>
 <ul>
   <li><strong>Versa API Azure</strong> (<code>versa_azure</code>) serves the UCSF ChatGPT models (OpenAI models inside UCSF's Azure tenant). Default model: <code>gpt-5.5-2026-04-24</code>.</li>
-  <li><strong>Versa API Bedrock</strong> (<code>versa_bedrock</code>) serves the UCSF-hosted Anthropic models through Amazon Bedrock. Default model: <code>us.anthropic.claude-opus-4-6-v1</code>.</li>
+  <li><strong>Versa API Bedrock</strong> (<code>versa_bedrock</code>) serves the UCSF-hosted Anthropic models through Amazon Bedrock. Default model: <code>us.anthropic.claude-opus-4-8</code>.</li>
 </ul>
 
 <h2>Commercial cloud</h2>
@@ -1437,28 +1437,28 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
   <thead><tr><th>Provider</th><th>Default model</th><th>Notes</th></tr></thead>
   <tbody>
     <tr><td><strong>Anthropic</strong></td><td><code>claude-opus-4-8</code></td><td>Direct access to Claude models.</td></tr>
-    <tr><td><strong>OpenAI</strong></td><td><code>gpt-5.6</code></td><td>Direct access to GPT and o-series models.</td></tr>
+    <tr><td><strong>OpenAI</strong></td><td><code>gpt-6-sol</code></td><td>Direct access to GPT models, including GPT-6 Sol, Astra and Luna.</td></tr>
     <tr><td><strong>Google Gemini</strong></td><td><code>gemini-3.1-pro-preview</code></td><td>Direct access to Gemini models.</td></tr>
-    <tr><td><strong>GCP Vertex AI</strong></td><td>none</td><td>Google and Anthropic models through Google Cloud (service-account or application-default credentials). Pick the model when you configure it.</td></tr>
-    <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-5.4-2026-03-05</code></td><td>OpenAI models on Azure; works with the Azure credential chain and single sign-on.</td></tr>
+    <tr><td><strong>GCP Vertex AI</strong></td><td><code>gemini-3.8-flash</code></td><td>Google and Anthropic models through Google Cloud (service-account or application-default credentials). <code>GCP_LOCATION</code> may be a region, <code>global</code>, or the <code>us</code> or <code>eu</code> multi-region. Gemini 3.x and Claude 5.x models go to the global endpoint automatically when it names a single region.</td></tr>
+    <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-6-sol-2026-09-22</code></td><td>OpenAI models on Azure; works with the Azure credential chain and single sign-on. GPT-6, GPT-5.6, GPT-5.5 and GPT-5.4 use <code>POST {endpoint}/openai/v1/responses</code> with your deployment name as the model, so <code>AZURE_OPENAI_API_VERSION</code> applies only to the older Chat Completions models.</td></tr>
     <tr><td><strong>Amazon Bedrock</strong></td><td><code>us.anthropic.claude-sonnet-4-6</code></td><td>Anthropic and other models on AWS (AWS credential chain, including SSO profiles).</td></tr>
-    <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td><td>Claude, Llama, and DBRX models through Databricks (supports OAuth).</td></tr>
+    <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td><td>Claude, GPT, Gemini, and Llama models through Databricks (supports OAuth).</td></tr>
     <tr><td><strong>Snowflake Cortex</strong></td><td><code>claude-sonnet-4-6</code></td><td>Claude and other models through Snowflake Cortex.</td></tr>
-    <tr><td><strong>OpenRouter</strong></td><td><code>anthropic/claude-sonnet-4.6</code></td><td>A single API that fans out to many upstream providers.</td></tr>
+    <tr><td><strong>OpenRouter</strong></td><td><code>anthropic/claude-sonnet-5</code></td><td>A single API that fans out to many upstream providers.</td></tr>
     <tr><td><strong>LiteLLM</strong></td><td><code>gpt-4o-mini</code></td><td>A proxy or gateway that unifies many backends behind an OpenAI-compatible interface. The default is a placeholder; your gateway decides what is actually available.</td></tr>
     <tr><td><strong>Venice AI</strong></td><td><code>llama-3.3-70b</code></td><td>A privacy-focused inference provider (Llama and Mistral families).</td></tr>
     <tr><td><strong>GitHub Copilot</strong></td><td><code>gpt-5.3-codex</code></td><td>GPT, Claude, Gemini, and Grok models through Copilot (device-code OAuth, no API key).</td></tr>
-    <tr><td><strong>X.AI (Grok)</strong></td><td><code>grok-4.3</code></td><td>Direct access to Grok models from xAI.</td></tr>
-    <tr><td><strong>z.ai (GLM)</strong></td><td><code>glm-4.6</code></td><td>The GLM model family on an OpenAI-compatible surface.</td></tr>
-    <tr><td><strong>Xiaomi MiMo</strong></td><td><code>mimo-v2.5</code></td><td>Xiaomi's MiMo models, with regional endpoints.</td></tr>
-    <tr><td><strong>Tetrate Agent Router</strong></td><td>none</td><td>A routing service across upstream models (the quickstart path).</td></tr>
+    <tr><td><strong>X.AI (Grok)</strong></td><td><code>grok-4.7</code></td><td>Direct access to Grok models from xAI.</td></tr>
+    <tr><td><strong>z.ai (GLM)</strong></td><td><code>glm-5.3</code></td><td>The GLM model family on an OpenAI-compatible surface.</td></tr>
+    <tr><td><strong>Xiaomi MiMo</strong></td><td><code>mimo-v2.6-flash</code></td><td>Xiaomi's MiMo models, with regional endpoints.</td></tr>
+    <tr><td><strong>Tetrate Agent Router</strong></td><td><code>claude-haiku-4-5</code></td><td>A routing service across upstream models (the quickstart path).</td></tr>
     <tr><td><strong>AWS SageMaker TGI</strong></td><td>none</td><td>Models you deploy on SageMaker endpoints using Text Generation Inference. You name the endpoint, so there is no default model.</td></tr>
-    <tr><td><strong>DeepSeek</strong></td><td>none</td><td>DeepSeek models on an OpenAI-compatible surface (<code>DEEPSEEK_API_KEY</code>).</td></tr>
-    <tr><td><strong>Groq</strong></td><td>none</td><td>Open-weight models served on Groq hardware (<code>GROQ_API_KEY</code>).</td></tr>
-    <tr><td><strong>Inception</strong></td><td>none</td><td>Inception's diffusion language models (<code>INCEPTION_API_KEY</code>).</td></tr>
-    <tr><td><strong>Mistral AI</strong></td><td>none</td><td>Direct access to Mistral models (<code>MISTRAL_API_KEY</code>).</td></tr>
-    <tr><td><strong>Moonshot AI (Kimi)</strong></td><td>none</td><td>The Kimi model family (<code>MOONSHOT_API_KEY</code>).</td></tr>
-    <tr><td><strong>Claude Code</strong></td><td><code>claude-fable-5-1</code></td><td>Runs inference on your own Claude subscription by driving the <code>claude</code> CLI you have already installed and signed in to. No API key and no base URL; Biorouter never sees a credential. Override discovery with <code>CLAUDE_CODE_COMMAND</code>. It is a <strong>public</strong> provider, so it carries no BAA and must never see PHI.</td></tr>
+    <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td><td>DeepSeek models on an OpenAI-compatible surface (<code>DEEPSEEK_API_KEY</code>).</td></tr>
+    <tr><td><strong>Groq</strong></td><td><code>openai/gpt-oss-120b</code></td><td>Open-weight models served on Groq hardware (<code>GROQ_API_KEY</code>).</td></tr>
+    <tr><td><strong>Inception</strong></td><td><code>mercury-2.5</code></td><td>Inception's diffusion language models (<code>INCEPTION_API_KEY</code>).</td></tr>
+    <tr><td><strong>Mistral AI</strong></td><td><code>mistral-medium-3-5</code></td><td>Direct access to Mistral models (<code>MISTRAL_API_KEY</code>).</td></tr>
+    <tr><td><strong>Moonshot AI (Kimi)</strong></td><td><code>kimi-k3</code></td><td>The Kimi model family (<code>MOONSHOT_API_KEY</code>).</td></tr>
+    <tr><td><strong>Claude Code</strong></td><td><code>claude-opus-5-5</code></td><td>Runs inference on your own Claude subscription by driving the <code>claude</code> CLI you have already installed and signed in to. No API key and no base URL; Biorouter never sees a credential. Override discovery with <code>CLAUDE_CODE_COMMAND</code>. It is a <strong>public</strong> provider, so it carries no BAA and must never see PHI.</td></tr>
     <tr><td><strong>Codex</strong></td><td><code>gpt-6-astra</code></td><td>The same arrangement on your own ChatGPT subscription, driving the <code>codex</code> CLI. Override discovery with <code>CODEX_COMMAND</code>. Also a <strong>public</strong> provider, so never for PHI.</td></tr>
     <tr><td><strong>Custom (OpenAI-compatible)</strong></td><td>none</td><td>Any OpenAI-compatible endpoint, added through the "Add Custom Provider" card (display name, base URL, key variable, models, streaming).</td></tr>
   </tbody>
