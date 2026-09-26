@@ -236,7 +236,8 @@ pub enum ResponsesStreamEvent {
     ///
     /// ⚠ **Not defensive tidiness — without it a single unmodelled tag costs
     /// the whole turn.** `parse_stream_event` is called with `?` inside the
-    /// reader, `openai.rs` turns that error into
+    /// reader, [`stream_responses_api`] (the decoder `openai.rs` and `azure.rs`
+    /// share) turns that error into
     /// `RequestFailed("Stream decode error: …")`, and `with_retry` wraps only
     /// the POST, never stream consumption — so nothing retries and every delta
     /// already yielded is discarded along with the response.
@@ -1678,7 +1679,8 @@ data: [DONE]
 
     // ── Issue #147: an unmodelled shape must not cost the turn ──────────────
     //
-    // `parse_stream_event` is called with `?` inside the reader; `openai.rs`
+    // `parse_stream_event` is called with `?` inside the reader;
+    // `stream_responses_api` (the decoder `openai.rs` and `azure.rs` share)
     // turns the error into `RequestFailed("Stream decode error: …")`, and
     // `with_retry` wraps only the POST, so nothing retries.
     //
