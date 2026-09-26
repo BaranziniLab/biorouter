@@ -17,24 +17,40 @@ use super::base::MessageStream;
 use super::formats::bedrock::{
     bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
     classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
-    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_message, to_bedrock_tool_config,
+    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_messages, to_bedrock_tool_config,
 };
 
 pub const BEDROCK_DOC_LINK: &str =
     "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html";
 
 pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
-// Verified against AWS Bedrock model cards + lifecycle page (June 2026).
-// Short-form IDs (e.g. claude-sonnet-4-6) are cross-region inference profiles.
-// Versioned IDs (v1:0 suffix) are the full inference-profile ARN names.
-// Removed: claude-sonnet-4-20250514 (Bedrock Legacy since Apr 2026, retired
-// by Anthropic Jun 15, 2026) and claude-opus-4-1 (deprecated, retires Aug
-// 2026).
+// Verified against the AWS Bedrock model cards + lifecycle page (2026-09-25).
+// Every id is a `us.` geo cross-region inference profile. The id shape follows
+// the model generation, not a rule: Opus 4.7 and everything newer (and Sonnet
+// 4.6) are un-suffixed, Opus 4.6 alone is `-v1`, and the 4.5 generation keeps
+// its dated `-v1:0` id. Removed earlier: claude-sonnet-4-20250514 (Bedrock
+// Legacy since Apr 2026, EOL 2026-10-14) and claude-opus-4-1 (Legacy since
+// 2026-07-08).
+//
+// The list is newest → oldest because the UI auto-selects the first entry when
+// a user switches providers; BEDROCK_DEFAULT_MODEL is a separate choice and
+// stays on Sonnet 4.6.
 pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
-    // Claude Sonnet 5 / Opus 4.8 — newest public Bedrock Claude models
+    // Claude Opus 5.5 (Bedrock launch 2026-09-22, 1M context, 128K output).
+    // Its reasoning blocks are bound to the conversation prefix, so
+    // `to_bedrock_messages` strips them from the history it replays.
+    "us.anthropic.claude-opus-5-5",
+    // Claude Fable 5.1 (2026-09-01, 1M). Same preserved-thinking handling.
+    // The AWS account must set Bedrock's data-retention mode to `aws_review`
+    // or every request fails, and it runs blocking cyber/life-science
+    // classifiers that end a turn with stop_reason `refusal`.
+    "us.anthropic.claude-fable-5-1",
+    // Claude Opus 5 (2026-07-24, 1M)
+    "us.anthropic.claude-opus-5",
+    // Claude Sonnet 5 / Opus 4.8
     "us.anthropic.claude-sonnet-5",
     "us.anthropic.claude-opus-4-8",
-    // Claude Sonnet 4.6 — latest, preferred default (1M context)
+    // Claude Sonnet 4.6 — BEDROCK_DEFAULT_MODEL (1M context)
     "us.anthropic.claude-sonnet-4-6",
     // Claude Opus 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
@@ -214,13 +230,7 @@ impl BedrockProvider {
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
             .model_id(model_name.to_string())
             .inference_config(bedrock_blocking_inference_config(model_config))
-            .set_messages(Some(
-                messages
-                    .iter()
-                    .filter(|m| m.is_agent_visible())
-                    .map(to_bedrock_message)
-                    .collect::<Result<_>>()?,
-            ));
+            .set_messages(Some(to_bedrock_messages(model_name, messages)?));
 
         if !tools.is_empty() {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
@@ -258,13 +268,10 @@ impl BedrockProvider {
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
             .model_id(model_config.model_name.clone())
             .inference_config(bedrock_inference_config(model_config))
-            .set_messages(Some(
-                messages
-                    .iter()
-                    .filter(|m| m.is_agent_visible())
-                    .map(to_bedrock_message)
-                    .collect::<Result<_>>()?,
-            ));
+            .set_messages(Some(to_bedrock_messages(
+                &model_config.model_name,
+                messages,
+            )?));
 
         if !tools.is_empty() {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
@@ -280,7 +287,9 @@ impl BedrockProvider {
 #[async_trait]
 impl Provider for BedrockProvider {
     fn metadata() -> ProviderMetadata {
-        // All listed Bedrock models are Claude variants (Sonnet 4.x, Opus 4.x), all vision-capable.
+        // All listed Bedrock models are Claude variants (the 4.5 generation
+        // through Opus 5.5 / Fable 5.1), all vision-capable per their AWS
+        // model cards.
         let models: Vec<ModelInfo> = BEDROCK_KNOWN_MODELS
             .iter()
             .map(|&name| {

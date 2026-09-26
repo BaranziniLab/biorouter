@@ -401,6 +401,32 @@ mod tests {
             .to_string()
     }
 
+    /// Opus 5.5 binds each thinking block to the conversation prefix, and
+    /// BioRouter's prefix moves on every request, so a replayed block would be
+    /// a 400 for a new account. Snowflake is safe only because this formatter
+    /// never replays thinking at all — pinned here, so that adding thinking
+    /// replay later has to face the preserved-thinking rule
+    /// (`formats::anthropic::uses_preserved_thinking`) instead of shipping past
+    /// it.
+    #[test]
+    fn thinking_is_never_replayed_to_snowflake() {
+        let history = [
+            Message::user().with_text("first"),
+            Message::assistant()
+                .with_thinking("private reasoning", "sig-1")
+                .with_redacted_thinking("opaque")
+                .with_text("answer"),
+            Message::user().with_text("second"),
+        ];
+        let config = ModelConfig::new_or_fail("claude-opus-5-5");
+        let request = create_request(&config, "system", &history, &[]).unwrap();
+        let rendered = request.to_string();
+        for leaked in ["private reasoning", "sig-1", "opaque"] {
+            assert!(!rendered.contains(leaked), "{leaked}: {rendered}");
+        }
+        assert!(rendered.contains("answer"));
+    }
+
     /// Every audience case, through the real Snowflake formatter. Snowflake
     /// flattens a whole message into one string, so a withheld block would be
     /// invisible in the transcript and still be paid for in tokens.
