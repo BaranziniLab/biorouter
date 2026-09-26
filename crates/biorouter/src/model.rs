@@ -79,9 +79,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gpt-5.2", 400_000),
         ("gpt-5.2-2025-12-11", 400_000),
         ("gpt-5.3-codex", 400_000),
-        // Codex renamed this model: `codex app-server` -> `model/list` reports
-        // only the `-spark` id, so the bare name above is kept for sessions
-        // stored under it and is no longer offered.
+        // Retired: absent from `codex app-server` -> `model/list` on codex-cli
+        // 0.153.4 and 0.157.0 as of 2026-09-25, and no provider offers it. Kept
+        // only so sessions stored under this id still resolve their window.
         ("gpt-5.3-codex-spark", 400_000),
         ("gpt-5.4", 1_050_000),
         ("gpt-5.4-2026-03-05", 1_050_000),

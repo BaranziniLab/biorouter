@@ -509,7 +509,10 @@ fn deepseek_pricing(model: &str) -> Option<ProviderModelPricing> {
 /// The async resolved path prefers the JSON metadata; this table serves
 /// sync-only callers and is the async fallback.
 pub(crate) const MOONSHOT_SYNC_PRICING: &[(&str, f64, f64, u32)] = &[
+    // GA 2026-07-16.
+    ("kimi-k3", 3.00, 15.00, 1_048_576),
     ("kimi-k2.7-code", 0.95, 4.00, 262_144),
+    ("kimi-k2.7-code-highspeed", 1.90, 8.00, 262_144),
     ("kimi-k2.6", 0.95, 4.00, 262_144),
 ];
 
@@ -517,19 +520,13 @@ pub(crate) const MOONSHOT_SYNC_PRICING: &[(&str, f64, f64, u32)] = &[
 /// guard checks them in one direction only: a row the JSON does list must
 /// still match it exactly, but the JSON may leave a row out.
 ///
-/// Two kinds live here. `kimi-k2.5` was discontinued on 2026-08-31 (it now
-/// answers "model not found") and stays priced because stored usage rows
-/// still name it; requiring it in the JSON would force a dead model back into
-/// the picker. `kimi-k3` (GA 2026-07-16, $3/$15, 1M context) and
-/// `kimi-k2.7-code-highspeed` ($1.90/$8.00) are Moonshot's current models,
-/// verified 2026-09-25 and priced here ahead of the catalog: once moonshot.json
-/// lists one, move its row into [`MOONSHOT_SYNC_PRICING`] so the guard covers
-/// it both ways.
-pub(crate) const MOONSHOT_UNLISTED_PRICING: &[(&str, f64, f64, u32)] = &[
-    ("kimi-k3", 3.00, 15.00, 1_048_576),
-    ("kimi-k2.7-code-highspeed", 1.90, 8.00, 262_144),
-    ("kimi-k2.5", 0.60, 3.00, 262_144),
-];
+/// `kimi-k2.5` was discontinued on 2026-08-31 (it now answers "model not
+/// found") and stays priced because stored usage rows still name it; requiring
+/// it in the JSON would force a dead model back into the picker. A current
+/// model belongs in [`MOONSHOT_SYNC_PRICING`] instead, so the guard covers it
+/// both ways.
+pub(crate) const MOONSHOT_UNLISTED_PRICING: &[(&str, f64, f64, u32)] =
+    &[("kimi-k2.5", 0.60, 3.00, 262_144)];
 
 fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
     MOONSHOT_SYNC_PRICING
@@ -868,9 +865,9 @@ mod tests {
     fn direct_moonshot_uses_direct_platform_prices_for_all_shipped_models() {
         // The sync path (CLI cost line, /config/pricing, BR-35 budget) must
         // serve the direct-platform rates for every Moonshot model — the
-        // listed ones, the current ones priced ahead of the catalog, and the
-        // discontinued k2.5 that stored usage rows still name — never fall
-        // through to the OpenRouter-derived canonical record.
+        // ones moonshot.json lists and the discontinued k2.5 that stored
+        // usage rows still name — never fall through to the OpenRouter-derived
+        // canonical record.
         for (model, want_in, want_out, want_ctx) in [
             ("kimi-k3", 3.00, 15.00, 1_048_576),
             ("kimi-k2.7-code-highspeed", 1.90, 8.00, 262_144),
