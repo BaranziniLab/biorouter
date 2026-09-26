@@ -2,7 +2,7 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
 use crate::providers::formats::audience;
-use crate::providers::formats::openai::model_reasoning_effort;
+use crate::providers::formats::openai::{model_reasoning_effort, model_supports_reasoning_effort};
 use anyhow::{anyhow, Error};
 use async_stream::try_stream;
 use chrono;
@@ -599,11 +599,21 @@ pub fn create_responses_request(
             .insert("tools".to_string(), json!(tools_spec));
     }
 
+    // A reasoning model refuses `temperature` (and `top_p`, which this builder
+    // never sends): GPT-6 whenever the effort is not `none`, and the GPT-5.x and
+    // o-series models BioRouter routes here outright. The Chat Completions
+    // builder has always dropped it for these models (`is_ox_model` in
+    // `formats::openai::create_request`); this one inserted it for any model
+    // with a configured temperature, so every Responses-routed turn of a chat
+    // with one set would 400. Dropped rather than refused, exactly as the chat
+    // builder does — the setting is a preference the model cannot honour.
     if let Some(temp) = model_config.temperature {
-        payload
-            .as_object_mut()
-            .unwrap()
-            .insert("temperature".to_string(), json!(temp));
+        if !model_supports_reasoning_effort(&model_config.model_name) {
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("temperature".to_string(), json!(temp));
+        }
     }
 
     if let Some(tokens) = model_config.max_tokens {
@@ -1324,6 +1334,39 @@ where
     }
 }
 
+/// Decode a streamed Responses API HTTP response into a provider message stream,
+/// logging every item it yields.
+///
+/// The one decoder both Responses-routed providers use — OpenAI's
+/// `v1/responses` and Azure's `openai/v1/responses` — so a fix to how a stream
+/// is framed or logged cannot land in one of them and not the other. It was
+/// written inline in `OpenAiProvider::stream` until the Azure provider gained a
+/// Responses route (2026-09-25).
+pub fn stream_responses_api(
+    response: reqwest::Response,
+    mut log: crate::providers::utils::RequestLog,
+) -> crate::providers::base::MessageStream {
+    use crate::providers::errors::ProviderError;
+    use futures::{StreamExt, TryStreamExt};
+    use tokio_util::codec::{FramedRead, LinesCodec};
+    use tokio_util::io::StreamReader;
+
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+
+    Box::pin(try_stream! {
+        let stream_reader = StreamReader::new(stream);
+        let framed = FramedRead::new(stream_reader, LinesCodec::new()).map_err(anyhow::Error::from);
+
+        let message_stream = responses_api_to_streaming_message(framed);
+        tokio::pin!(message_stream);
+        while let Some(message) = message_stream.next().await {
+            let (message, usage, pending) = message.map_err(|e| ProviderError::RequestFailed(format!("Stream decode error: {}", e)))?;
+            log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
+            yield (message, usage, pending);
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1494,6 +1537,71 @@ mod tests {
         )?;
 
         assert!(payload.get("reasoning").is_none());
+        Ok(())
+    }
+
+    /// A configured temperature reaches the Responses API only for a model that
+    /// can take it. GPT-6 and the GPT-5.x/o-series models routed here refuse it,
+    /// so sending it failed every turn of a chat that had one set.
+    #[test]
+    fn temperature_is_dropped_for_reasoning_models_and_kept_otherwise() -> anyhow::Result<()> {
+        for model_name in [
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol-2026-09-22",
+            "gpt-5.6",
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "o4-mini-2025-04-16",
+        ] {
+            let model_config = ModelConfig::new_or_fail(model_name).with_temperature(Some(0.3));
+            let payload = create_responses_request(
+                &model_config,
+                "system",
+                &[Message::user().with_text("hi")],
+                &[],
+            )?;
+            assert!(
+                payload.get("temperature").is_none(),
+                "{model_name} refuses temperature"
+            );
+            assert!(payload.get("top_p").is_none(), "{model_name}");
+        }
+
+        // A non-reasoning model still gets the setting it asked for.
+        let model_config = ModelConfig::new_or_fail("gpt-4.1").with_temperature(Some(0.3));
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+        let sent = payload["temperature"]
+            .as_f64()
+            .expect("gpt-4.1 takes a temperature");
+        assert!((sent - 0.3).abs() < 1e-6, "sent {sent}");
+        Ok(())
+    }
+
+    /// Dropping the temperature must not take the effort or the output cap
+    /// with it — the three are independent settings on the same request.
+    #[test]
+    fn gpt_6_keeps_effort_and_output_cap_when_temperature_is_dropped() -> anyhow::Result<()> {
+        let model_config = ModelConfig::new_or_fail("gpt-6-sol")
+            .with_temperature(Some(0.7))
+            .with_max_tokens(Some(2048))
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+        assert!(payload.get("temperature").is_none());
+        assert_eq!(payload["max_output_tokens"], json!(2048));
+        assert_eq!(payload["reasoning"]["effort"], json!("high"));
+        assert_eq!(payload["model"], json!("gpt-6-sol"));
         Ok(())
     }
 
