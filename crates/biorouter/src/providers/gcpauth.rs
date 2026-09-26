@@ -361,6 +361,25 @@ impl GcpAuth {
         })
     }
 
+    /// A handler that never reads the operator's real ADC credentials, for
+    /// tests of callers (the Vertex provider's URL routing) that need a
+    /// `GcpAuth` to exist but never ask it for a token. Its token URI is a
+    /// closed loopback port, so a test that does ask fails instead of reaching
+    /// Google.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            credentials: AdcCredentials::AuthorizedUser(AuthorizedUserCredentials {
+                client_id: "test".to_string(),
+                client_secret: "test".to_string(),
+                refresh_token: "test".to_string(),
+                token_uri: "http://127.0.0.1:9/token".to_string(),
+            }),
+            client: reqwest::Client::new(),
+            cached_token: Arc::new(RwLock::new(None)),
+        }
+    }
+
     /// Retrieves a valid authentication token.
     ///
     /// This method implements an efficient token management strategy:

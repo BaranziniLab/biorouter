@@ -47,9 +47,22 @@ use rmcp::model::Tool;
 // gpt-6-terra; Terra exists only as gpt-5.6-terra.
 //
 // Plan gating is GitHub's, not ours: Opus 4.8/5.5, Fable 5.1, GPT-6 Astra/Sol
-// and GPT-5.6 Sol are not included on Copilot Pro, and Fable is off by default
-// for Business/Enterprise, so `fetch_supported_models` is what a given account
-// can really use.
+// and GPT-5.6 Sol are not included on Copilot Pro, and Fable and Kimi K3 are
+// off by default for Business/Enterprise, so `fetch_supported_models` is what
+// a given account can really use.
+//
+// Kimi K3 (GA on Copilot 2026-08-06, GitHub changelog and the copilot-cli
+// changelog; the supported-models page names it the replacement for Kimi K2.7
+// Code, which leaves Copilot on 2026-10-02) is listed from 2026-09-25. It
+// rejects any non-default temperature, which
+// `formats::openai::model_rejects_sampling_params` drops for the bare id.
+//
+// Not listed, each deliberately: grok-4.6 (superseded by 4.7 at the same
+// price and window; its Copilot vision support rests on models.dev alone),
+// claude-opus-5 and claude-fable-5 (superseded by 5.5 and 5.1 at the same
+// price and window; the dotted Opus 5 id has no primary source), and
+// mai-code-1.1-flash (medium confidence, no registry window). Each can still
+// be typed through "Enter a model not listed".
 pub const GITHUB_COPILOT_DEFAULT_MODEL: &str = "gpt-5.3-codex";
 pub const GITHUB_COPILOT_KNOWN_MODELS: &[&str] = &[
     "gpt-5.3-codex",
@@ -66,6 +79,7 @@ pub const GITHUB_COPILOT_KNOWN_MODELS: &[&str] = &[
     "claude-haiku-4.5",
     "gemini-3.8-flash",
     "grok-4.7",
+    "kimi-k3",
 ];
 
 /// Model-id prefixes that stream. Claude has never been on this list: it stays
@@ -81,6 +95,7 @@ pub const GITHUB_COPILOT_STREAM_MODELS: &[&str] = &[
     "gpt-5.6-luna",
     "gemini-3.8-flash",
     "grok-4.7",
+    "kimi-k3",
     // No longer advertised, but Copilot still serves them until their removal
     // date (gemini-3.5-flash Oct 2, 2026; the GPT-5.x ids Oct 19, 2026), so a
     // chat already bound to one keeps streaming until then. "gpt-5.4" also
@@ -113,7 +128,9 @@ fn github_copilot_model_supports_vision(name: &str) -> bool {
         || normalized.starts_with("gpt-6")
         || normalized.starts_with("gpt-5")
         || normalized.starts_with("gpt-4.1")
-        || normalized.starts_with("grok-4"))
+        || normalized.starts_with("grok-4")
+        // Kimi K3 takes text and images (platform.kimi.ai; moonshot.json).
+        || normalized.starts_with("kimi-k3"))
         && !normalized.contains("codex")
 }
 
@@ -717,6 +734,7 @@ mod tests {
             "claude-fable-5.1",
             "gemini-3.8-flash",
             "grok-4.7",
+            "kimi-k3",
         ] {
             let info = metadata
                 .known_models

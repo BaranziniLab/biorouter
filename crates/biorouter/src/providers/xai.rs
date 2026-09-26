@@ -244,6 +244,13 @@ mod tests {
 
     #[test]
     fn chat_models_take_png_and_jpeg_images() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
         for name in ["grok-4.7", "grok-4.6", "grok-4.5", "grok-build-0.1"] {
             let info = known(name);
             assert_eq!(info.supports_vision, Some(true), "{name} accepts images");

@@ -104,7 +104,17 @@ pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
 /// [`deployment_for_model`] does, until the retirement date — from that day
 /// the model is refused locally, with the list of models to switch to, rather
 /// than sent to a deployment that is gone or that Azure has auto-upgraded to
-/// a different model. Remove a row once its date has passed.
+/// a different model.
+///
+/// ⚠ Never remove a row, even after its date. Past the date a row no longer
+/// routes (that stops by itself), but it still does two jobs:
+/// [`is_catalog_deployment`] reads it, so a session row that stored this
+/// deployment while the model routed is not mistaken for an override that
+/// would pin EVERY model in that chat — a subagent's and a fast model's
+/// included — to a retired deployment; and [`no_deployment_error`] reads it to
+/// name the retirement. This sentence used to say "Remove a row once its date
+/// has passed", which would have reopened F1 for every chat bound to one of
+/// these models. `every_deployment_ever_routed_stays_a_non_override` pins it.
 ///
 /// `(model, deployment, retires on)`, the date as `YYYY-MM-DD`.
 pub const VERSA_AZURE_RETIRING_DEPLOYMENTS: &[(&str, &str, &str)] = &[
@@ -1152,6 +1162,68 @@ mod tests {
         );
     }
 
+    /// Every deployment a shipped build ever stored as a chat's route, written
+    /// out literally rather than read back from either table — so deleting a
+    /// row (as the retiring table's doc once told maintainers to, after its
+    /// date) fails here instead of turning the stored value into an override
+    /// that pins every model in a reopened chat to that deployment.
+    #[test]
+    fn every_deployment_ever_routed_stays_a_non_override() {
+        for shipped in [
+            "gpt-5.5-2026-04-24",
+            "gpt-5.4-mini-2026-03-17",
+            "gpt-5.4-nano-2026-03-17",
+            "gpt-5.2-2025-12-11",
+            "gpt-5-2025-08-07",
+            "gpt-5-mini-2025-08-07",
+            "gpt-5-nano-2025-08-07",
+            "gpt-4o-2024-11-20",
+            // Offered from faf525961 (2026-09-11); retiring since 2026-09-25.
+            "o4-mini-2025-04-16",
+            "gpt-4.1-2025-04-14",
+            "gpt-4.1-mini-2025-04-14",
+        ] {
+            assert_eq!(
+                explicit_override(Some(shipped)),
+                None,
+                "{shipped} was stored as a route by a shipped build; keep recognising it"
+            );
+        }
+    }
+
+    /// The ⚠ note on `VERSA_AZURE_DEPLOYMENTS`, enforced: GPT-6 and GPT-5.6
+    /// refuse function tools combined with `reasoning_effort` on Chat
+    /// Completions, and this provider posts only to
+    /// `openai/deployments/{d}/chat/completions`. A row for either family would
+    /// fail every tool-bearing turn, however it answers a one-shot probe — and
+    /// the routing tests' mock accepts any body, so they cannot catch it.
+    ///
+    /// Keyed on the two prefixes, not on `formats::openai::model_uses_responses_api`:
+    /// that also matches gpt-5.4 and gpt-5.5, which this gateway serves
+    /// correctly over Chat Completions (both answered 200 on 2026-09-25).
+    #[test]
+    fn no_gpt_6_or_gpt_5_6_row_while_the_provider_speaks_only_chat_completions() {
+        let rows = VERSA_AZURE_DEPLOYMENTS
+            .iter()
+            .map(|(model, deployment)| (*model, *deployment))
+            .chain(
+                VERSA_AZURE_RETIRING_DEPLOYMENTS
+                    .iter()
+                    .map(|(model, deployment, _)| (*model, *deployment)),
+            );
+        for (model, deployment) in rows {
+            for name in [model, deployment] {
+                let name = name.to_ascii_lowercase();
+                assert!(
+                    !name.starts_with("gpt-6") && !name.starts_with("gpt-5.6"),
+                    "`{name}` needs the Responses route (`POST openai/v1/responses`, the \
+                     deployment as `model`; see the ⚠ note on VERSA_AZURE_DEPLOYMENTS). \
+                     Teach VersaAzureProvider that route before adding the row."
+                );
+            }
+        }
+    }
+
     #[test]
     fn only_a_deployment_the_catalog_does_not_know_is_an_override() {
         assert_eq!(explicit_override(None), None);
@@ -1746,9 +1818,7 @@ mod routing_tests {
                     assert_eq!(request.url.path(), path_of(model));
                     assert_eq!(body["model"], model);
                     assert_eq!(body["tools"][0]["function"]["name"], "test_tool");
-                    // `gpt-6` too, so the day a GPT-6 deployment joins this
-                    // list it is held to the reasoning-model shape.
-                    if model.starts_with("gpt-5") || model.starts_with("gpt-6") {
+                    if model.starts_with("gpt-5") {
                         assert_eq!(body["reasoning_effort"], expected);
                         assert!(body.get("temperature").is_none());
                         assert_eq!(body["messages"][0]["role"], "developer");

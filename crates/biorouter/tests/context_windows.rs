@@ -46,13 +46,24 @@ async fn every_advertised_model_has_its_own_declared_window() {
     );
 }
 
+/// The one provider whose window is not the model's: Codex drives the user's
+/// ChatGPT sign-in, which the Codex backend gives a smaller working window than
+/// the OpenAI API serves for the same model id (258,400 against 1,050,000,
+/// measured 2026-09-25). The registry is keyed by bare id and shared with the
+/// OpenAI API provider, so it keeps the API window and Codex states its own.
+const CODEX: &str = "codex";
+
 #[tokio::test]
 async fn provider_declared_windows_match_the_registry() {
     let rows = advertised_models().await;
     let drifted: Vec<_> = rows
         .iter()
         .filter_map(|(provider, model, declared)| {
-            let resolved = ModelConfig::context_window_for(model);
+            let resolved = if provider == CODEX {
+                biorouter::providers::codex::CODEX_CONTEXT_WINDOW
+            } else {
+                ModelConfig::context_window_for(model)
+            };
             (resolved != *declared).then(|| {
                 format!("  {provider}/{model}: declares {declared}, registry says {resolved}")
             })
@@ -78,7 +89,9 @@ async fn same_family_models_with_different_windows_stay_distinct() {
         ("gpt-5.4-mini", 400_000),
         ("gpt-5.4-nano", 400_000),
         // GPT-6: Astra, Sol and Luna are 1.05M, and "gpt-5"/"gpt-5.6" must not
-        // claim them. The dated Azure spellings resolve to the same window.
+        // claim them. The dated Azure id below has its own exact entry; dated
+        // ids the registry does not list, which reach the pattern rows, are
+        // covered by `exact_registry_beats_the_substring_fallback` in model.rs.
         ("gpt-6-astra", 1_050_000),
         ("gpt-6-sol", 1_050_000),
         ("gpt-6-luna", 1_050_000),

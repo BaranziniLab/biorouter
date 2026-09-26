@@ -22,8 +22,8 @@ use crate::providers::base::{
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::gcpvertexai::{
     create_request, get_usage, response_to_message, response_to_streaming_message, GcpLocation,
-    ModelAvailability, ModelProvider, RequestContext, DEFAULT_MODEL, GLOBAL_LOCATION, KNOWN_MODELS,
-    MULTI_REGION_LOCATIONS,
+    ModelProvider, RequestContext, DEFAULT_MODEL, EU_MULTI_REGION, GLOBAL_LOCATION, KNOWN_MODELS,
+    MULTI_REGION_LOCATIONS, US_MULTI_REGION,
 };
 use crate::providers::gcpauth::GcpAuth;
 use crate::providers::retry::RetryConfig;
@@ -75,6 +75,17 @@ fn vertex_host(location: &str) -> String {
         format!("https://aiplatform.{location}.rep.googleapis.com")
     } else {
         format!("https://{location}-aiplatform.googleapis.com")
+    }
+}
+
+/// Whether `location` keeps a request inside the geography the user chose.
+/// Only the `us` / `eu` multi-regions state a geography; a single region or
+/// `global` promises nothing, so anything is inside it.
+fn in_configured_geography(configured: &str, location: &str) -> bool {
+    match configured {
+        EU_MULTI_REGION => location == EU_MULTI_REGION || location.starts_with("europe-"),
+        US_MULTI_REGION => location == US_MULTI_REGION || location.starts_with("us-"),
+        _ => true,
     }
 }
 
@@ -288,20 +299,21 @@ impl GcpVertexAIProvider {
     /// `GcpVertexAIModel::preferred_location` for why a model can be routed
     /// away from the configured location before any request is made.
     ///
-    /// A model served at the `us` / `eu` multi-region the user configured
-    /// gets no fallback: honouring that choice is what keeps the request in
-    /// that geography, and the fallback fires on any non-auth error (a 400 or
-    /// a 500 as much as a 404), so it would resend the same conversation to
-    /// the global endpoint. The model is served there, so a retry elsewhere
-    /// has nothing to fix.
+    /// With the `us` / `eu` multi-region configured there is never a fallback
+    /// outside that geography: honouring that choice is what keeps the
+    /// request there, and the fallback fires on any non-auth error (a 400 or a
+    /// 500 as much as a 404), so it would resend the whole conversation to the
+    /// global endpoint or a US region. ⚠ Until 2026-09-25 only a multi-region
+    /// MODEL was held to this; a regional one (Claude Sonnet 4.6, Gemini 2.x,
+    /// MaaS) kept its us-east5 / us-central1 fallback under `eu`, and since
+    /// `eu` does not serve those models, every turn went to the US. A single
+    /// region or `global` keeps the old fallback.
     fn route(configured_location: &str, context: &RequestContext) -> (String, Option<String>) {
         let primary = context.model.preferred_location(configured_location);
-        let stays_in_configured_multi_region = primary == configured_location
-            && MULTI_REGION_LOCATIONS.contains(&configured_location)
-            && context.model.availability() == ModelAvailability::MultiRegion;
         let fallback = context.model.known_location().to_string();
-        let fallback =
-            (fallback != primary && !stays_in_configured_multi_region).then_some(fallback);
+        let fallback = (fallback != primary
+            && in_configured_geography(configured_location, &fallback))
+        .then_some(fallback);
         (primary, fallback)
     }
 
@@ -893,6 +905,42 @@ mod tests {
         );
     }
 
+    fn provider_bound_to(model: &str, location: &str) -> GcpVertexAIProvider {
+        GcpVertexAIProvider {
+            client: Client::new(),
+            auth: GcpAuth::for_test(),
+            host: vertex_host(location),
+            project_id: "test-project".to_string(),
+            location: location.to_string(),
+            model: ModelConfig::new_or_fail(model),
+            retry_config: RetryConfig::new(0, 1, 1.0, 1),
+            name: "gcp_vertex_ai".to_string(),
+        }
+    }
+
+    /// The URL is what names the model on Vertex (a Claude body carries
+    /// none), so `complete_with_model` / `complete_fast` asking for a model
+    /// other than the bound one must get that model's URL. It used to be
+    /// built from `self.model`, which posted a fast-model Claude request to
+    /// the chat model's path — a 404 that `complete_fast` then quietly fell
+    /// back from on every call.
+    #[test]
+    fn request_url_names_the_requested_model_not_the_bound_one() {
+        let provider = provider_bound_to("gemini-3.8-flash", "us-central1");
+        let context = RequestContext::new("claude-opus-5-5").unwrap();
+        let (primary, _) = GcpVertexAIProvider::route(&provider.location, &context);
+        let url = provider
+            .build_request_url(&context, &primary, false)
+            .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/\
+             publishers/anthropic/models/claude-opus-5-5:rawPredict"
+        );
+        assert!(!url.as_str().contains("gemini-3.8-flash"));
+    }
+
     fn route_for(configured: &str, model: &str) -> (String, Option<String>) {
         GcpVertexAIProvider::route(configured, &RequestContext::new(model).unwrap())
     }
@@ -945,8 +993,9 @@ mod tests {
     // A user who chose a multi-region for data residency keeps it where the
     // model is served there, with NO fallback to global: the fallback fires on
     // any non-auth error and would resend the conversation outside that
-    // geography. A global-only preview still has to go global, and a regional
-    // model the multi-region does not serve keeps its known-region fallback.
+    // geography. A global-only preview still has to go global (the docs say
+    // so). A regional model the multi-region does not serve goes to a single
+    // region inside it.
     #[test]
     fn a_configured_multi_region_is_honoured_where_the_model_is_served() {
         assert_eq!(
@@ -957,7 +1006,11 @@ mod tests {
         assert_eq!(route_for("eu", "claude-opus-4-7"), ("eu".to_string(), None));
         assert_eq!(
             route_for("us", "claude-sonnet-4-6"),
-            ("us".to_string(), Some("us-east5".to_string()))
+            ("us-east5".to_string(), None)
+        );
+        assert_eq!(
+            route_for("us", "gemini-2.5-flash"),
+            ("us-central1".to_string(), None)
         );
         assert_eq!(
             route_for("eu", "gemini-3-flash-preview"),
@@ -967,5 +1020,69 @@ mod tests {
             route_for("global", "claude-sonnet-5"),
             ("global".to_string(), None)
         );
+    }
+
+    // `GCP_LOCATION=eu` is a residency choice, and the docs say requests stay
+    // in that geography. A regional model is not served at the `eu`
+    // multi-region, so it used to fail there on every turn and fall back to
+    // us-east5 / us-central1 with the whole conversation. Now it goes to
+    // europe-west1 (listed by every regional Claude and Gemini page), and no
+    // slot of any `eu` route names a US location or `global` — except the
+    // global-only previews, whose primary the docs disclose.
+    #[test]
+    fn an_eu_configuration_never_routes_a_regional_model_to_the_us() {
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5@20251001",
+            "claude-sonnet-4-5@20250929",
+            "claude-opus-4-5@20251101",
+            "gemini-2.5-flash",
+        ] {
+            assert_eq!(
+                route_for("eu", model),
+                ("europe-west1".to_string(), None),
+                "{model}"
+            );
+        }
+        // A MaaS model keeps the multi-region and surfaces its own error
+        // rather than retrying in Iowa.
+        assert_eq!(
+            route_for("eu", "mistral-large-maas"),
+            ("eu".to_string(), None)
+        );
+
+        for model in KNOWN_MODELS
+            .iter()
+            .copied()
+            .chain(["gemini-2.5-flash", "mistral-large-maas"])
+            .filter(|model| !model.contains("-preview"))
+        {
+            let (primary, fallback) = route_for("eu", model);
+            for location in std::iter::once(primary).chain(fallback) {
+                assert!(
+                    location == "eu" || location.starts_with("europe-"),
+                    "{model} routed to {location} under GCP_LOCATION=eu"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_us_configuration_never_routes_outside_the_us() {
+        for model in KNOWN_MODELS
+            .iter()
+            .copied()
+            .chain(["gemini-2.5-flash", "mistral-large-maas"])
+            .filter(|model| !model.contains("-preview"))
+        {
+            let (primary, fallback) = route_for("us", model);
+            for location in std::iter::once(primary).chain(fallback) {
+                assert!(
+                    location == "us" || location.starts_with("us-"),
+                    "{model} routed to {location} under GCP_LOCATION=us"
+                );
+            }
+        }
     }
 }

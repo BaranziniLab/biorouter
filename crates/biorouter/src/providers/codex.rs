@@ -182,8 +182,45 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because
-/// `tests/context_windows.rs` compares the two.
+/// The context window the Codex backend gives a ChatGPT sign-in: 272,000
+/// tokens (`max_context_window` 872,000), of which Codex uses 95%
+/// (`effective_context_window_percent`). Read from the backend catalog that
+/// codex-cli 0.157.0 caches as `~/.codex/models_cache.json` on 2026-09-25, the
+/// same for all three GPT-6 models and all three GPT-5.6 models.
+const CODEX_CHATGPT_CONTEXT_WINDOW: usize = 272_000;
+
+/// The window Codex actually works in for a ChatGPT sign-in — 95% of
+/// [`CODEX_CHATGPT_CONTEXT_WINDOW`], 258,400 tokens — and the one Codex itself
+/// reports per turn (`modelContextWindow` 258400 in a live app-server frame).
+/// It is what the picker advertises and what compaction sizes against, so the
+/// gauge and the point compaction fires agree.
+///
+/// ⚠ Until 2026-09-25 every Codex model advertised OpenAI's API window,
+/// 1,050,000, shared through `MODEL_CONTEXT_WINDOWS`. Each turn resends the
+/// whole flattened conversation as one fresh Codex prompt, so once a chat
+/// passed about 258K tokens every prompt was larger than what Codex uses while
+/// BioRouter's gauge read a quarter full and compaction had not fired. The
+/// registry keeps 1,050,000 because the OpenAI API provider really does serve
+/// it; `tests/context_windows.rs` exempts this provider by name.
+pub const CODEX_CONTEXT_WINDOW: usize = CODEX_CHATGPT_CONTEXT_WINDOW / 100 * 95;
+
+/// `model`, sized to the window Codex works in unless the user pinned one.
+///
+/// A limit that differs from the model's registry window came from the user
+/// (`BIOROUTER_CONTEXT_LIMIT`, a predefined model) and is kept. Otherwise the
+/// Codex window caps the model's own, so a typed-in model with a smaller
+/// declared window keeps it.
+fn with_codex_window(mut model: ModelConfig) -> ModelConfig {
+    let registry = ModelConfig::context_window_for(&model.model_name);
+    let pinned = model.context_limit.is_some_and(|limit| limit != registry);
+    if !pinned {
+        model.context_limit = Some(registry.min(CODEX_CONTEXT_WINDOW));
+    }
+    model
+}
+
+/// Every model gets [`CODEX_CONTEXT_WINDOW`], not its `MODEL_CONTEXT_WINDOWS`
+/// entry; see there for why, and `tests/context_windows.rs` for the exemption.
 fn known_models() -> Vec<ModelInfo> {
     // Read from the CLI itself, not from a blog post: `codex app-server`
     // answers `model/list` with the catalog the signed-in account actually
@@ -209,19 +246,12 @@ fn known_models() -> Vec<ModelInfo> {
     // first to offer them ("Choose GPT-6 Sol or GPT-6 Luna from the model
     // picker"). `cli_floor_hint` exists because that sentence misleads.
     //
-    // Every window is OpenAI's published API figure
-    // (developers.openai.com/api/docs/models/<id>; 1,050,000 in, 128,000 out
-    // for all six). `model/list` carries no context-window field, so the
-    // window can never come from that probe. ⚠ The Codex backend's own
-    // catalog, which 0.157.0 caches as `models_cache.json`, says something
-    // smaller for a ChatGPT sign-in: `context_window` 272,000 with
-    // `max_context_window` 872,000 and `effective_context_window_percent` 95,
-    // read for all three GPT-6 models and `gpt-5.6-sol`. So a turn that
-    // flattens more than roughly 258K tokens into one Codex prompt may exceed
-    // what Codex actually uses. Not changed here, because
-    // `MODEL_CONTEXT_WINDOWS` is keyed by bare id and shared with the OpenAI
-    // API provider (`tests/context_windows.rs` forces the two to agree), so a
-    // Codex-only 272K is a design change, not an edit to this list.
+    // Every window is the one Codex works in for a ChatGPT sign-in,
+    // [`CODEX_CONTEXT_WINDOW`] (258,400), not OpenAI's published API figure
+    // (1,050,000 in, 128,000 out for all six), which the OpenAI API provider
+    // keeps. `model/list` carries no context-window field, so the window can
+    // never come from that probe; it comes from the backend catalog 0.157.0
+    // caches as `models_cache.json`.
     //
     // Ids that used to be advertised here and are gone, newest first:
     //
@@ -239,12 +269,18 @@ fn known_models() -> Vec<ModelInfo> {
     //     and `with_unlisted_models` still lets a user type it; it is simply
     //     not offered as a choice with three weeks to live. This is Codex only:
     //     the OpenAI API has not deprecated `gpt-5.5`.
-    //   * `gpt-5.4` and `gpt-5.4-mini` — **retired** 2026-08-31 per OpenAI's
-    //     models page (replacements `gpt-5.6-terra` and `gpt-5.6-luna`).
-    //     `codex exec -m gpt-5.4` fails with the ChatGPT-account 400.
-    //   * `gpt-5.3-codex` — refused with the ChatGPT-account 400 by 2026-09-08
-    //     and listed as deprecated by OpenAI. `gpt-5.3-codex-spark` was a
-    //     different model, not its rename.
+    //   * `gpt-5.4` and `gpt-5.4-mini` — gone from **Codex**: they have left
+    //     `model/list` on both CLIs, and `codex exec -m gpt-5.4` fails with the
+    //     ChatGPT-account 400. The Codex-side replacements are `gpt-5.6-terra`
+    //     and `gpt-5.6-luna`. Codex only: both are still active on the OpenAI
+    //     API (untagged on its models page, 2026-09-25), and `openai.rs` still
+    //     advertises them. This bullet used to say OpenAI retired them on
+    //     2026-08-31; no source on record says that.
+    //   * `gpt-5.3-codex` — refused with the ChatGPT-account 400 by 2026-09-08.
+    //     It is still an active OpenAI API model (untagged on the models page;
+    //     `openai.rs` advertises it, and it is GitHub Copilot's default). The
+    //     "Deprecated" tag on that page belongs to GPT-5.2-Codex.
+    //     `gpt-5.3-codex-spark` was a different model, not its rename.
     //
     // Ids deliberately not offered, for two different reasons, and the two
     // must not be collapsed, because only the first group is a model the
@@ -266,12 +302,12 @@ fn known_models() -> Vec<ModelInfo> {
     // Re-derive rather than trusting this comment:
     //   codex app-server --strict-config   # then: {"id":1,"method":"model/list"}
     vec![
-        ModelInfo::new("gpt-6-astra", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-6-sol", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-6-luna", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.6-sol", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.6-terra", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.6-luna", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-6-astra", CODEX_CONTEXT_WINDOW).with_vision(),
+        ModelInfo::new("gpt-6-sol", CODEX_CONTEXT_WINDOW).with_vision(),
+        ModelInfo::new("gpt-6-luna", CODEX_CONTEXT_WINDOW).with_vision(),
+        ModelInfo::new("gpt-5.6-sol", CODEX_CONTEXT_WINDOW).with_vision(),
+        ModelInfo::new("gpt-5.6-terra", CODEX_CONTEXT_WINDOW).with_vision(),
+        ModelInfo::new("gpt-5.6-luna", CODEX_CONTEXT_WINDOW).with_vision(),
     ]
 }
 
@@ -356,7 +392,7 @@ fn cli_floor_hint(model: &str, failure: &str) -> String {
     format!(
         " — `{model}` needs codex-cli {floor} or newer, and an older CLI is refused \
          with exactly this sentence rather than told to upgrade. Check `codex \
-         --version`; if it is older than {floor}, update it (`{}`) and try again",
+         --version`; if it is older than {floor}, update it (`{}`) and try again.",
         KIND.install_hint()
     )
 }
@@ -1832,8 +1868,12 @@ impl Provider for CodexProvider {
         }
     }
 
+    /// Sized to [`CODEX_CONTEXT_WINDOW`], which is what compaction reads; the
+    /// desktop gauge reads the same number from `known_models`. `self.model`
+    /// itself keeps the registry window, so the restore binding records the
+    /// model exactly as it was chosen.
     fn get_model_config(&self) -> ModelConfig {
-        self.model.clone()
+        with_codex_window(self.model.clone())
     }
 
     async fn complete_with_model(
@@ -3075,6 +3115,57 @@ for line in sys.stdin:
         assert_eq!(parse_usage(None).total_tokens, None);
     }
 
+    /// Compaction sizes against `get_model_config().context_limit()`, so the
+    /// provider must hand it the window Codex works in rather than the
+    /// registry's 1,050,000 (the OpenAI API window). A limit the user pinned
+    /// still wins, a typed-in model with a smaller window keeps it, and
+    /// `self.model` — what the restore binding records — is untouched.
+    #[test]
+    fn compaction_sizes_against_the_codex_window() {
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        let bound = |model: ModelConfig| CodexProvider {
+            command: PathBuf::from("codex"),
+            model,
+            name: KIND.provider_id().to_string(),
+        };
+        assert_eq!(CODEX_CONTEXT_WINDOW, 258_400, "95% of 272,000");
+
+        for id in [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.5",
+        ] {
+            let provider = bound(ModelConfig::new_or_fail(id));
+            assert_eq!(
+                provider.get_model_config().context_limit(),
+                CODEX_CONTEXT_WINDOW,
+                "{id}"
+            );
+            assert_eq!(
+                provider.model.context_limit(),
+                1_050_000,
+                "{id}: the chosen model keeps its registry window"
+            );
+        }
+
+        let pinned = bound(ModelConfig::new_or_fail("gpt-6-sol").with_context_limit(Some(64_000)));
+        assert_eq!(pinned.get_model_config().context_limit(), 64_000);
+
+        let smaller = ModelConfig::context_window_for("gpt-4o");
+        assert!(smaller < CODEX_CONTEXT_WINDOW);
+        assert_eq!(
+            bound(ModelConfig::new_or_fail("gpt-4o"))
+                .get_model_config()
+                .context_limit(),
+            smaller
+        );
+    }
+
     #[test]
     fn metadata_is_public_and_keyless_with_one_defaulted_key() {
         let m = CodexProvider::metadata();
@@ -3131,8 +3222,10 @@ for line in sys.stdin:
         );
         for model in &m.known_models {
             assert_eq!(
-                model.context_limit, 1_050_000,
-                "{}: OpenAI's published window for every model in this catalog",
+                model.context_limit, 258_400,
+                "{}: the window Codex works in for a ChatGPT sign-in (95% of \
+                 272,000, models_cache.json on codex-cli 0.157.0), not the \
+                 OpenAI API's 1,050,000",
                 model.name
             );
         }
@@ -3142,9 +3235,10 @@ for line in sys.stdin:
         //     and 0.157.0 even with includeHidden, and refused by `codex exec`.
         //   * `gpt-5.5` retires from Codex on 2026-10-14 (its own `upgradeInfo`
         //     says so); it still runs until then and can still be typed.
-        //   * `gpt-5.4` and `gpt-5.4-mini` retired on 2026-08-31.
-        //   * `gpt-5.3-codex` is deprecated and refused by the account; Spark
-        //     was a different model, not its rename.
+        //   * `gpt-5.4` and `gpt-5.4-mini` are no longer served to a ChatGPT
+        //     sign-in in Codex (still active on the OpenAI API).
+        //   * `gpt-5.3-codex` is refused by the account in Codex (still active
+        //     on the OpenAI API); Spark was a different model, not its rename.
         //   * `gpt-6-terra` does not exist; Terra is only `gpt-5.6-terra`.
         for gone in [
             "gpt-5.3-codex-spark",
@@ -3379,6 +3473,68 @@ for line in sys.stdin:
             model: ModelConfig::new("gpt-5.5").unwrap(),
             name: KIND.provider_id().to_string(),
         }
+    }
+
+    /// The blocking path (`complete`, and so `complete_fast`, titles and
+    /// summaries) must end with the same CLI-floor hint as a streamed turn.
+    /// Without it the reader sees only the vendor's plan-limitation sentence
+    /// for a model a `codex` update makes work. The streaming twin is
+    /// `a_streamed_turn_refused_by_an_old_cli_ends_with_the_update_hint`.
+    #[tokio::test]
+    async fn a_blocking_turn_refused_by_an_old_cli_ends_with_the_update_hint() {
+        let script = FakeCli::new(
+            r#"#!/usr/bin/env python3
+import sys, json
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+ENVELOPE = json.dumps({"type":"error","status":400,"error":{
+    "type":"invalid_request_error",
+    "message":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."}})
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
+    elif method == "account/read":
+        send({"jsonrpc":"2.0","id":m["id"],
+              "result":{"account":{"type":"chatgpt","planType":"pro"},
+                        "requiresOpenaiAuth":True}})
+    elif method == "thread/start":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"thread":{"id":"t-1"}}})
+    elif method == "turn/start":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"turn":{"id":"turn-1"}}})
+        send({"jsonrpc":"2.0","method":"turn/failed",
+              "params":{"threadId":"t-1","turnId":"turn-1","error":ENVELOPE}})
+"#,
+        );
+        let provider = CodexProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("gpt-6-sol").unwrap(),
+            name: KIND.provider_id().to_string(),
+        };
+
+        let err = provider
+            .complete("SYS", &[Message::user().with_text("hello")], &[])
+            .await
+            .expect_err("a refused turn must fail");
+        let text = match err {
+            ProviderError::RequestFailed(text) => text,
+            other => panic!("expected RequestFailed, got {other:?}"),
+        };
+        assert!(
+            text.contains("The 'gpt-6-sol' model is not supported when using Codex"),
+            "the vendor's sentence comes first and unchanged: {text}"
+        );
+        assert!(
+            text.contains("codex-cli 0.156.1 or newer"),
+            "the blocking path must append the CLI-floor hint too: {text}"
+        );
     }
 
     async fn drive() -> (Vec<Message>, Vec<ProviderUsage>) {

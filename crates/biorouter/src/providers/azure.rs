@@ -645,6 +645,13 @@ mod tests {
 
     #[test]
     fn gpt_6_and_gpt_5_6_advertise_vision_and_their_full_window() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
         let meta = AzureProvider::metadata();
         for id in [
             "gpt-6-sol-2026-09-22",

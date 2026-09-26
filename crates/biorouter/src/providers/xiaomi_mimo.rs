@@ -267,6 +267,13 @@ mod tests {
 
     #[test]
     fn test_metadata_structure() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
         let metadata = XiaomiMimoProvider::metadata();
 
         assert_eq!(metadata.name, "xiaomi_mimo");

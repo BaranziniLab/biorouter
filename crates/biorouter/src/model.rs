@@ -160,6 +160,11 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
         ("us.anthropic.claude-opus-4-7", 1_000_000),
         ("us.anthropic.claude-opus-4-8", 1_000_000),
+        // Not a valid Bedrock id: AWS lists only `us.anthropic.claude-opus-4-8`,
+        // and the Versa proxy rejects the `-v1` spelling as an invalid model
+        // identifier. No provider advertises it; the row keeps a typed-in id
+        // sized consistently (name_builder.rs relies on it), and deleting it
+        // would change nothing — the `claude-opus-4-8` pattern answers 1M too.
         ("us.anthropic.claude-opus-4-8-v1", 1_000_000),
         // Bedrock ids from Opus 4.7 on are un-suffixed geo inference profiles
         // (AWS model cards); only the 4.5 generation carries `-v1:0` and Opus
@@ -229,6 +234,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("glm-5.2", 1_048_576),
         ("glm-5.3", 1_048_576),
         ("glm-5.3-flash", 1_048_576),
+        ("glm-5.3-flashx", 1_048_576),
         // ── xAI Grok ──
         ("grok-4.20-0309-non-reasoning", 1_000_000),
         ("grok-4.20-0309-reasoning", 1_000_000),
@@ -283,7 +289,11 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // Now an alias of mistral-medium-3-5 (256k).
         ("mistral-medium-latest", 262_144),
         ("mistral-small-2603", 262_144),
-        ("mistral-small-3-2-24b-instruct", 128_000),
+        // Venice serves it at 256k: `/api/v1/models` reports
+        // availableContextTokens 256000 (and supportsVision) and its docs
+        // table says 256K, read 2026-09-25. 128k halved the gauge and made
+        // compaction fire early for a model Venice advertises.
+        ("mistral-small-3-2-24b-instruct", 256_000),
         // ── MiniMax ──
         ("minimax/minimax-m3", 1_048_576),
         // ── Groq-hosted ──
@@ -1800,6 +1810,28 @@ mod tests {
         );
         assert!(ModelConfig::has_declared_context_window("gpt-6-astra"));
         assert!(ModelConfig::has_declared_context_window("claude-fable-5-1"));
+        // Dated GPT-6 ids the registry does not list reach the scoped pattern
+        // rows (`gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna`), not the exact map.
+        // Asserted undeclared first, so this cannot pass by way of an exact
+        // entry — every dated id any other test names has one.
+        for dated in [
+            "gpt-6-astra-2026-12-01",
+            "gpt-6-sol-2026-12-01",
+            "gpt-6-luna-2026-12-01",
+        ] {
+            assert!(
+                !ModelConfig::has_declared_context_window(dated),
+                "{dated} must exercise the pattern table"
+            );
+            assert_eq!(ModelConfig::context_window_for(dated), 1_050_000, "{dated}");
+        }
+        // The rows are scoped per model on purpose: an unreleased GPT-6
+        // variant must not inherit 1.05M from a bare "gpt-6" pattern.
+        assert!(!ModelConfig::has_declared_context_window("gpt-6-mini"));
+        assert_eq!(
+            ModelConfig::context_window_for("gpt-6-mini"),
+            DEFAULT_CONTEXT_LIMIT
+        );
         // An id nobody declared still falls back to the pattern table.
         assert_eq!(ModelConfig::context_window_for("qwen3.6:latest"), 262_144);
         // And an id nothing matches gets the default.

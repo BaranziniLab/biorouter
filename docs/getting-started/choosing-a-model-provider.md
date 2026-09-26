@@ -146,7 +146,7 @@ Available models include:
 
 There is no `gpt-6-terra`; Terra exists only as `gpt-5.6-terra`. `gpt-5`, `gpt-5-mini`, `gpt-5-nano` and `o3` are no longer listed, because OpenAI shuts them down on 2026-12-11. OpenAI names `gpt-5.6-sol` as the replacement for `gpt-5` and `o3`, `gpt-5.6-terra` for `gpt-5-mini`, and `gpt-5.6-luna` for `gpt-5-nano`.
 
-GPT-6, GPT-5.6, GPT-5.5, GPT-5.4 and `gpt-5.3-codex` go through OpenAI's Responses API (`/v1/responses`); the older models use Chat Completions. Biorouter picks the route from the model name.
+GPT-6, GPT-5.6, GPT-5.5, GPT-5.4 and `gpt-5.3-codex` go through OpenAI's Responses API (`/v1/responses`); the older models use Chat Completions. Biorouter picks the route from the model name. `OPENAI_BASE_PATH` changes only the Chat Completions path, so a proxy set through `OPENAI_HOST` must also serve `/v1/responses` for those newer models.
 
 Optional configuration: `OPENAI_HOST`, `OPENAI_BASE_PATH`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_CUSTOM_HEADERS`, `OPENAI_TIMEOUT`
 
@@ -184,7 +184,7 @@ Available models include:
 
 A Claude model must first be enabled in your project's Model Garden.
 
-`GCP_LOCATION` may be a single region such as `us-central1`, the `global` endpoint, or the `us` or `eu` multi-region. Vertex serves Gemini 3.x, Claude 5.x, Claude Opus 4.7 and Claude Opus 4.8 at `global` and the `us` and `eu` multi-regions rather than in single regions like `us-central1`. So when `GCP_LOCATION` names a single region, Biorouter sends those models to the `global` endpoint automatically. When it is `us` or `eu`, Biorouter keeps that multi-region, so requests stay in that geography; the two preview models always go to `global`. Older Claude models and Gemini 2.x use the configured region.
+`GCP_LOCATION` may be a single region such as `us-central1`, the `global` endpoint, or the `us` or `eu` multi-region. Vertex serves Gemini 3.x, Claude 5.x, Claude Opus 4.7 and Claude Opus 4.8 at `global` and the `us` and `eu` multi-regions rather than in single regions like `us-central1`. So when `GCP_LOCATION` names a single region, Biorouter sends those models to the `global` endpoint automatically. When it is `us` or `eu`, Biorouter keeps that multi-region, so requests stay in that geography; the two preview models always go to `global`. Older Claude models and Gemini 2.x use the configured region. The `us` and `eu` multi-regions do not serve them, so with either one they go to a single region in that geography instead (`europe-west1` for `eu`; `us-east5` for Claude or `us-central1` for Gemini with `us`), and a failed request is never retried outside that geography.
 
 #### Azure OpenAI
 
@@ -329,10 +329,10 @@ Default model: `glm-5.3`
 
 Available models include:
 
-- `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`
+- `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flashx`, `glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`
 - `glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`
 
-GLM-5.3 and GLM-5.3 Flash always reason. Of the listed models, only `glm-5.3-flash` accepts images.
+GLM-5.3, GLM-5.3 Flash and GLM-5.3 FlashX always reason. Of the listed models, only `glm-5.3-flash` and its faster variant `glm-5.3-flashx` accept images.
 
 #### Xiaomi MiMo
 
