@@ -152,6 +152,31 @@ pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-opus-5-5";
 
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless";
 
+/// Ids that are deliberately NOT advertised but are still real: Anthropic's
+/// model overview labels every one "Legacy (still available)" (read
+/// 2026-09-25), Anthropic still serves them, and the CLI recognizes each name.
+/// The first three (`claude-opus-5`, `claude-fable-5`, `claude-sonnet-4-6`)
+/// were in the picker until recently, so a chat may already be bound to one;
+/// the rest are older ids a user can type by hand, which is exactly what
+/// `with_unlisted_models` is there to allow.
+///
+/// `unknown_model_hint` stays silent for these. Without the list, dropping an
+/// id from `known_models` would have turned every later failure on it — a rate
+/// limit, a dropped connection — into "probably a typo", which sends the reader
+/// after the wrong thing. Exact ids only, and short on purpose: this is not a
+/// second catalog. Remove an id once Anthropic retires it, because from then
+/// on the hint's pointer to the current lineup is the right advice.
+const CLAUDE_CODE_LEGACY_MODELS: &[&str] = &[
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+];
+
 /// The sentence to append to a failed turn when the model name is the likely
 /// cause. Codex's twin, `codex::unknown_model_hint`, and written to the same
 /// rules; read that one for the reasoning about hinting on the failure path
@@ -171,11 +196,12 @@ pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless"
 /// identical failures here did not.
 ///
 /// ⚠ **Only ever additive to text the vendor already produced.** It never
-/// replaces a real explanation, and it is empty for a listed model, so a genuine
-/// outage on a known id reads exactly as it did before.
+/// replaces a real explanation, and it is empty for a listed model or a
+/// recognized legacy one (`CLAUDE_CODE_LEGACY_MODELS`), so a genuine outage on
+/// a known id reads exactly as it did before.
 fn unknown_model_hint(model: &str) -> String {
     let known = known_models();
-    if known.iter().any(|m| m.name == model) {
+    if known.iter().any(|m| m.name == model) || CLAUDE_CODE_LEGACY_MODELS.contains(&model) {
         return String::new();
     }
     let names: Vec<&str> = known.iter().map(|m| m.name.as_str()).collect();
@@ -2433,6 +2459,33 @@ mod tests {
         }
     }
 
+    /// A legacy id is not advertised but is not a typo either: Anthropic still
+    /// serves it and the CLI recognizes it. Its failures must read as they
+    /// did while it was listed, and a nonsense id beside it still gets the
+    /// hint, so the exemption is the list and not a loosened check.
+    #[test]
+    fn a_recognized_legacy_model_is_not_called_a_typo() {
+        let advertised: Vec<String> = known_models().into_iter().map(|m| m.name).collect();
+        for legacy in CLAUDE_CODE_LEGACY_MODELS {
+            assert!(
+                !advertised.iter().any(|name| name == legacy),
+                "{legacy} is advertised, so it does not belong on the legacy list"
+            );
+            assert_eq!(
+                unknown_model_hint(legacy),
+                "",
+                "{legacy} is a legacy id Anthropic still serves, not a typo"
+            );
+        }
+
+        for nonsense in ["claude-opus-99", "claude-sonet-5", "claude-opus-5-"] {
+            assert!(
+                unknown_model_hint(nonsense).contains("only a warning"),
+                "{nonsense} is not a model and must still get the hint"
+            );
+        }
+    }
+
     /// The hint reaches the message a user actually sees. An empty answer from
     /// the child is the most anonymous failure this provider has, and it named
     /// nothing at all before.
@@ -2608,12 +2661,7 @@ mod tests {
         // advertised. `with_unlisted_models` is what keeps them reachable.
         // `claude-opus-5` joined them on 2026-09-25, when Opus 5.5 superseded
         // it at the same tier and the CLI's `opus` alias moved to Opus 5.5.
-        for legacy in [
-            "claude-opus-5",
-            "claude-fable-5",
-            "claude-sonnet-4-6",
-            "claude-opus-4-8",
-        ] {
+        for &legacy in CLAUDE_CODE_LEGACY_MODELS {
             assert!(
                 !advertised.contains(&legacy),
                 "{legacy} is a legacy model and must not be in the picker"

@@ -95,7 +95,7 @@ pub struct ModelParam {
     /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default)]
     pub provider: Option<String>,
-    /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
+    /// Model name (e.g. "mimo-v2.6-flash", "claude-opus-4-8").
     #[serde(default)]
     pub model: Option<String>,
     /// Optional provider-agnostic generation settings.
