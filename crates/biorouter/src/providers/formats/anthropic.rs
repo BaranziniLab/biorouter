@@ -554,8 +554,10 @@ pub fn create_request(
 /// Fable 5 / Mythos 5, and Opus 4.7/4.8 all removed `budget_tokens` and
 /// sampling; Opus 4.6 / Sonnet 4.6 merely deprecate `budget_tokens` (still
 /// functional) and still accept temperature, so they stay on the legacy path
-/// below along with everything older. Dotted variants cover
-/// OpenRouter/Copilot-style ids.
+/// below along with everything older. Opus 5.5 and Fable 5.1 / Mythos 5.1
+/// (September 2026) are covered by the `opus-5` / `fable-5` / `mythos-5`
+/// patterns, which is correct: they removed both as well. Dotted variants
+/// cover OpenRouter/Copilot-style ids.
 fn uses_adaptive_thinking(model_name: &str) -> bool {
     const ADAPTIVE_ONLY: &[&str] = &[
         "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
@@ -563,6 +565,153 @@ fn uses_adaptive_thinking(model_name: &str) -> bool {
     ADAPTIVE_ONLY
         .iter()
         .any(|pattern| model_name.contains(pattern))
+}
+
+/// The `anthropic-beta` value that unlocks `thinking.block_binding` on the
+/// Claude API. Sending `block_binding` without it is a 400 ("block_binding:
+/// Extra inputs are not permitted"), so the header and the body field always
+/// travel together — see [`apply_thinking_block_binding`].
+pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
+
+/// Models whose thinking blocks are bound to the conversation that produced
+/// them ("preserved thinking"): Claude Opus 5.5, Fable 5.1 and Mythos 5.1.
+///
+/// A block's signature records the prefix it was produced under — the system
+/// prompt, the tool list and every earlier message — and a replayed block
+/// whose prefix changed is a 400 ("Invalid `signature` in `thinking` block.
+/// The block is bound to a different conversation"). Anthropic enforces that
+/// by default for accounts created on or after 2026-08-31, on the Claude API
+/// and on Bedrock / Vertex alike (Anthropic migration guide, "preserved
+/// thinking", checked 2026-09-25).
+///
+/// BioRouter edits that prefix on almost every request, so replaying these
+/// blocks as they are cannot work for a new account:
+/// - the system prompt carries an hourly timestamp
+///   (`agents/prompt_manager.rs::current_hour_timestamp`) and changes when an
+///   extension is toggled;
+/// - the MOIM `<info-msg>` block is injected into the newest user message of
+///   every provider call and is never persisted (`agents/moim.rs`), so the
+///   copy the previous call carried is gone from the next one — every earlier
+///   block's prefix differs on every request, even inside one tool loop.
+///
+/// The direct API answers that with [`apply_thinking_block_binding`]; Bedrock
+/// and Vertex, where the controls beta is not offered yet, strip the blocks
+/// with [`without_replayed_thinking`].
+///
+/// Dotted variants cover OpenRouter/Copilot-style ids and the patterns match
+/// platform-prefixed ids (`us.anthropic.claude-opus-5-5`). `opus-5` alone is
+/// deliberately NOT a pattern: Claude Opus 5 has no prefix check.
+pub fn uses_preserved_thinking(model_name: &str) -> bool {
+    const PRESERVED_THINKING: &[&str] = &[
+        "opus-5-5",
+        "opus-5.5",
+        "fable-5-1",
+        "fable-5.1",
+        "mythos-5-1",
+        "mythos-5.1",
+    ];
+    let lower = model_name.to_ascii_lowercase();
+    PRESERVED_THINKING
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+}
+
+/// Opt a direct-API request for a preserved-thinking model into
+/// `prefix_mismatch_behavior: "drop_block"`, and report whether the caller
+/// must add [`THINKING_BINDING_CONTROLS_BETA`] to `anthropic-beta`.
+///
+/// With `drop_block` the API drops the first replayed block whose prefix no
+/// longer matches, and every thinking block after it, instead of failing the
+/// request. It applies to one request only, which is why this runs on every
+/// request rather than as a recovery. The model is read from the payload
+/// itself so the header can never be decided for a different model than the
+/// body names.
+///
+/// `thinking` is sent as `adaptive` explicitly. These models always think
+/// (`disabled` and `budget_tokens` are both 400s), so this changes nothing
+/// about the request except making room for `block_binding`, which is only
+/// accepted inside the `thinking` object. A `display` the caller already set
+/// is kept.
+///
+/// Claude API only: the controls beta arrives per model on Bedrock and Vertex
+/// and is rejected there until then, so those paths must not call this.
+pub fn apply_thinking_block_binding(payload: &mut Value) -> bool {
+    let preserved = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(uses_preserved_thinking);
+    if !preserved {
+        return false;
+    }
+    let Some(obj) = payload.as_object_mut() else {
+        return false;
+    };
+    let display = obj
+        .get("thinking")
+        .and_then(|thinking| thinking.get("display"))
+        .cloned();
+    let mut thinking = json!({
+        "type": "adaptive",
+        "block_binding": { "prefix_mismatch_behavior": "drop_block" },
+    });
+    if let Some(display) = display {
+        thinking["display"] = display;
+    }
+    obj.insert("thinking".to_string(), thinking);
+    true
+}
+
+/// The conversation with every replayed thinking and redacted-thinking block
+/// removed — the path for preserved-thinking models on platforms where
+/// `drop_block` is not available (Bedrock, Vertex).
+///
+/// Why every block, and not only those of completed turns: the MOIM block (see
+/// [`uses_preserved_thinking`]) moves on each provider call, so even the blocks
+/// of the tool loop still in progress were produced under a prefix the next
+/// request no longer carries. Keeping them would 400 on the second request of
+/// every tool loop for a new account. On the Claude API `drop_block` reaches
+/// the same result from the other side — the first block mismatches, so it
+/// and every later one are dropped — so the two paths agree about what the
+/// model sees. Removing blocks from the front of the history is what
+/// Anthropic's rules allow (each block chains to the one before it), and
+/// removing all of them trivially satisfies that; text and tool calls stay.
+///
+/// An assistant message that held nothing but thinking would be left empty,
+/// which both platforms reject, so it is dropped, and the two messages it
+/// separated are joined when they now share a role — both APIs require the
+/// roles to alternate.
+///
+/// Only agent-visible messages are returned: this is the history as the model
+/// will see it, and filtering first is what keeps that join from folding a
+/// UI-only message into one the model reads.
+pub fn without_replayed_thinking<'a, I>(messages: I) -> Vec<Message>
+where
+    I: IntoIterator<Item = &'a Message>,
+{
+    let mut out: Vec<Message> = Vec::new();
+    let mut dropped_between = false;
+    for message in messages.into_iter().filter(|m| m.is_agent_visible()) {
+        let mut stripped = message.clone();
+        let before = stripped.content.len();
+        stripped.content.retain(|content| {
+            !matches!(
+                content,
+                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+            )
+        });
+        if stripped.content.is_empty() && before > 0 {
+            dropped_between = true;
+            continue;
+        }
+        match out.last_mut() {
+            Some(previous) if dropped_between && previous.role == stripped.role => {
+                previous.content.extend(stripped.content);
+            }
+            _ => out.push(stripped),
+        }
+        dropped_between = false;
+    }
+    out
 }
 
 /// Process streaming response from Anthropic's API
@@ -1270,6 +1419,9 @@ mod tests {
     #[test]
     fn test_adaptive_thinking_gate_covers_all_id_spellings() {
         let adaptive_only = [
+            "claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5",
+            "claude-fable-5-1",
             "claude-opus-5",
             "anthropic/claude-opus-5",
             "us.anthropic.claude-opus-5-v1:0",
@@ -1358,6 +1510,198 @@ mod tests {
             json!(DEEP_THINKING_BUDGET_TOKENS)
         );
         Ok(())
+    }
+
+    // The preserved-thinking gate across every id spelling that reaches it,
+    // plus the near misses: Opus 5 and Fable 5 have no prefix check, and
+    // "opus-4-5" must not read as "opus-5-5".
+    #[test]
+    fn preserved_thinking_gate_covers_all_id_spellings() {
+        for model in [
+            "claude-opus-5-5",
+            "anthropic/claude-opus-5.5",
+            "us.anthropic.claude-opus-5-5",
+            "global.anthropic.claude-opus-5-5",
+            "claude-fable-5-1",
+            "us.anthropic.claude-fable-5-1",
+            "anthropic/claude-fable-5.1",
+            "claude-mythos-5-1",
+            "Claude-Opus-5-5",
+        ] {
+            assert!(uses_preserved_thinking(model), "{model}");
+        }
+        for model in [
+            "claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-opus-4-5",
+            "us.anthropic.claude-opus-4-5-20251101-v1:0",
+            "claude-haiku-4-5",
+        ] {
+            assert!(!uses_preserved_thinking(model), "{model}");
+        }
+    }
+
+    // A deep-effort Opus 5.5 turn already carries `{"type": "adaptive"}`; the
+    // binding must be added to it, not replace it with a budgeted shape, and
+    // must survive alongside max_tokens untouched.
+    #[test]
+    fn block_binding_rides_inside_adaptive_thinking() -> Result<()> {
+        let mut config = ModelConfig::new_or_fail("claude-opus-5-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        config.max_tokens = Some(8000);
+        let mut payload =
+            create_request(&config, "system", &[Message::user().with_text("hi")], &[])?;
+
+        assert!(apply_thinking_block_binding(&mut payload));
+        assert_eq!(payload["thinking"]["type"], "adaptive");
+        assert_eq!(
+            payload["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert!(payload["thinking"].get("budget_tokens").is_none());
+        assert_eq!(payload["max_tokens"], json!(8000));
+        Ok(())
+    }
+
+    #[test]
+    fn block_binding_keeps_a_display_the_caller_set() {
+        let mut payload = json!({
+            "model": "claude-fable-5-1",
+            "thinking": { "type": "adaptive", "display": "summarized" },
+        });
+        assert!(apply_thinking_block_binding(&mut payload));
+        assert_eq!(payload["thinking"]["display"], "summarized");
+        assert_eq!(
+            payload["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+    }
+
+    // Vertex builds its Claude body with this same `create_request`, and the
+    // controls beta is rejected there, so the body must stay clean unless the
+    // direct-API provider opts in.
+    #[test]
+    fn create_request_alone_never_sends_block_binding() -> Result<()> {
+        let config = ModelConfig::new_or_fail("claude-opus-5-5");
+        let payload = create_request(&config, "system", &[Message::user().with_text("hi")], &[])?;
+        assert!(payload
+            .get("thinking")
+            .and_then(|thinking| thinking.get("block_binding"))
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn block_binding_leaves_other_models_alone() -> Result<()> {
+        let config = ModelConfig::new_or_fail("claude-opus-5");
+        let mut payload =
+            create_request(&config, "system", &[Message::user().with_text("hi")], &[])?;
+        let before = payload.clone();
+        assert!(!apply_thinking_block_binding(&mut payload));
+        assert_eq!(payload, before);
+        Ok(())
+    }
+
+    fn thinking_blocks(messages: &[Message]) -> usize {
+        messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|content| {
+                matches!(
+                    content,
+                    MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                )
+            })
+            .count()
+    }
+
+    // Every replayed block goes — the completed turn's AND the tool loop in
+    // progress, because the MOIM moved since each was produced — while text,
+    // tool calls and tool results stay exactly where they were.
+    #[test]
+    fn without_replayed_thinking_strips_every_block_and_keeps_the_rest() {
+        let call = CallToolRequestParams {
+            task: None,
+            name: "shell".into(),
+            arguments: Some(object!({"command": "ls"})),
+            meta: None,
+        };
+        let history = vec![
+            Message::user().with_text("first question"),
+            Message::assistant()
+                .with_thinking("", "sig-1")
+                .with_text("first answer"),
+            Message::user().with_text("second question"),
+            Message::assistant()
+                .with_redacted_thinking("opaque")
+                .with_thinking("", "sig-2")
+                .with_tool_request("call-1", Ok(call.clone())),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![rmcp::model::Content::text("a.txt")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+        ];
+
+        let stripped = without_replayed_thinking(&history);
+
+        assert_eq!(thinking_blocks(&history), 3);
+        assert_eq!(thinking_blocks(&stripped), 0);
+        assert_eq!(stripped.len(), history.len());
+        assert_eq!(stripped[1].as_concat_text(), "first answer");
+        assert!(stripped[3].is_tool_call());
+        assert!(stripped[4].is_tool_response());
+        // Nothing else about a message changes.
+        for (before, after) in history.iter().zip(&stripped) {
+            assert_eq!(before.role, after.role);
+            assert_eq!(before.id, after.id);
+        }
+    }
+
+    // An assistant turn that held nothing but thinking would become an empty
+    // message, which the API rejects; dropping it must not leave two user
+    // messages side by side either.
+    #[test]
+    fn without_replayed_thinking_drops_a_thinking_only_turn_and_rejoins_its_neighbours() {
+        let history = vec![
+            Message::user().with_text("question"),
+            Message::assistant().with_thinking("", "sig-only"),
+            // A UI-only note must never be folded into what the model reads.
+            Message::user().with_text("ui-only note").user_only(),
+            Message::user().with_text("please continue"),
+            Message::assistant().with_text("answer"),
+        ];
+
+        let stripped = without_replayed_thinking(&history);
+
+        assert_eq!(stripped.len(), 2);
+        assert_eq!(stripped[0].role, Role::User);
+        assert_eq!(stripped[0].content.len(), 2);
+        assert!(!stripped[0].as_concat_text().contains("ui-only"));
+        assert_eq!(stripped[1].as_concat_text(), "answer");
+    }
+
+    // The stripped history must still format into a valid Anthropic request:
+    // alternating roles, no thinking blocks.
+    #[test]
+    fn stripped_history_formats_without_thinking_blocks() {
+        let history = vec![
+            Message::user().with_text("q"),
+            Message::assistant().with_thinking("", "sig").with_text("a"),
+            Message::user().with_text("q2"),
+        ];
+        let formatted = format_messages(&without_replayed_thinking(&history));
+        let rendered = serde_json::to_string(&formatted).unwrap();
+        assert!(!rendered.contains("\"thinking\""), "{rendered}");
+        assert_eq!(formatted.len(), 3);
     }
 
     #[test]

@@ -180,6 +180,35 @@ fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
     ADAPTIVE_ONLY.iter().any(|pattern| lower.contains(pattern))
 }
 
+/// The conversation as Converse messages: the agent-visible messages, in
+/// order, each through [`to_bedrock_message`]. Shared by Converse and
+/// ConverseStream on both Bedrock providers, so the four request builders
+/// cannot disagree about what history they send.
+///
+/// For a preserved-thinking model (Opus 5.5, Fable 5.1 — see
+/// `formats::anthropic::uses_preserved_thinking`) every replayed reasoning
+/// block is stripped first. Their signatures bind the conversation prefix,
+/// BioRouter's prefix moves on every request, and a new Bedrock account gets a
+/// 400 for a replayed block whose prefix changed. The Claude API answers that
+/// with `drop_block`, but on Bedrock the thinking-binding controls beta arrives
+/// per model and is rejected until then (Anthropic platform-availability
+/// table, 2026-09-25), so stripping is the only request that works for every
+/// account. Every other model replays its reasoning exactly as before.
+pub fn to_bedrock_messages(
+    model_name: &str,
+    messages: &[Message],
+) -> Result<Vec<bedrock::Message>> {
+    let visible = messages.iter().filter(|m| m.is_agent_visible());
+    if super::anthropic::uses_preserved_thinking(model_name) {
+        super::anthropic::without_replayed_thinking(visible)
+            .iter()
+            .map(to_bedrock_message)
+            .collect()
+    } else {
+        visible.map(to_bedrock_message).collect()
+    }
+}
+
 pub fn to_bedrock_message(message: &Message) -> Result<bedrock::Message> {
     bedrock::Message::builder()
         .role(to_bedrock_role(&message.role))
@@ -2973,6 +3002,74 @@ mod tests {
             bounded_by_context_window(BEDROCK_GENERIC_DEFAULT_MAX_TOKENS, 8_192),
             BEDROCK_GENERIC_DEFAULT_MAX_TOKENS
         );
+    }
+
+    fn reasoning_blocks(messages: &[bedrock::Message]) -> usize {
+        messages
+            .iter()
+            .flat_map(|message| message.content())
+            .filter(|block| matches!(block, bedrock::ContentBlock::ReasoningContent(_)))
+            .count()
+    }
+
+    /// Preserved-thinking models (Opus 5.5, Fable 5.1) bind a reasoning block
+    /// to the prefix it was produced under; BioRouter's prefix moves on every
+    /// request, and Bedrock has no `drop_block` yet, so their replayed
+    /// reasoning goes — all of it, including the tool loop in progress —
+    /// while the tool call itself stays. Every other model replays reasoning
+    /// exactly as before, and the agent-invisible filter still applies.
+    #[test]
+    fn to_bedrock_messages_strips_reasoning_only_for_preserved_thinking_models() {
+        let call = CallToolRequestParams {
+            task: None,
+            name: "shell".into(),
+            arguments: Some(object(json!({"command": "ls"}))),
+            meta: None,
+        };
+        let history = vec![
+            Message::user().with_text("first"),
+            Message::assistant()
+                .with_thinking("", "sig-1")
+                .with_text("answer"),
+            Message::user().with_text("second"),
+            Message::assistant()
+                .with_thinking("", "sig-2")
+                .with_tool_request("call-1", Ok(call)),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![Content::text("a.txt")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::user().with_text("ui only").user_only(),
+        ];
+
+        for model in [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-fable-5-1",
+            "claude-opus-5-5",
+        ] {
+            let sent = to_bedrock_messages(model, &history).unwrap();
+            assert_eq!(reasoning_blocks(&sent), 0, "{model}");
+            assert_eq!(sent.len(), 5, "{model}: the user-only message is filtered");
+            assert!(
+                matches!(sent[3].content()[0], bedrock::ContentBlock::ToolUse(_)),
+                "{model}: the tool call survives its reasoning"
+            );
+        }
+
+        for model in [
+            "us.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-4-8",
+            "us.anthropic.claude-sonnet-5",
+        ] {
+            let sent = to_bedrock_messages(model, &history).unwrap();
+            assert_eq!(reasoning_blocks(&sent), 2, "{model}");
+            assert_eq!(sent.len(), 5, "{model}");
+        }
     }
 
     #[test]
