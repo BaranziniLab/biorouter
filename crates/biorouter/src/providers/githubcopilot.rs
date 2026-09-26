@@ -117,6 +117,13 @@ fn github_copilot_model_supports_vision(name: &str) -> bool {
         && !normalized.contains("codex")
 }
 
+/// xAI's chat models take png/jpeg only (docs.x.ai), so Grok gets the narrower
+/// MIME list rather than `with_vision()`'s gif/webp, as it does on the xAI and
+/// OpenRouter providers.
+fn github_copilot_model_is_png_jpeg_only(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("grok-")
+}
+
 #[derive(Debug, Deserialize)]
 struct DeviceCodeInfo {
     device_code: String,
@@ -440,10 +447,12 @@ impl Provider for GithubCopilotProvider {
             .iter()
             .map(|&name| {
                 let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
-                if github_copilot_model_supports_vision(name) {
-                    info.with_vision()
-                } else {
+                if !github_copilot_model_supports_vision(name) {
                     info
+                } else if github_copilot_model_is_png_jpeg_only(name) {
+                    info.with_png_jpeg_image_inputs()
+                } else {
+                    info.with_vision()
                 }
             })
             .collect();
@@ -716,6 +725,28 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} should be advertised"));
             assert_eq!(info.supports_vision, Some(true), "{id} accepts images");
         }
+    }
+
+    /// Grok is png/jpeg only (docs.x.ai); the other vision models keep the
+    /// wider `with_vision()` list, gif and webp included.
+    #[test]
+    fn grok_is_limited_to_png_and_jpeg() {
+        let metadata = GithubCopilotProvider::metadata();
+        let mime_types = |id: &str| {
+            metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == id)
+                .unwrap_or_else(|| panic!("{id} should be advertised"))
+                .supported_input_mime_types
+                .clone()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            mime_types("grok-4.7"),
+            vec!["image/png", "image/jpeg", "image/jpg"]
+        );
+        assert!(mime_types("gemini-3.8-flash").contains(&"image/webp".to_string()));
     }
 
     /// Every non-Claude model streams; Claude stays on the non-streaming path,
