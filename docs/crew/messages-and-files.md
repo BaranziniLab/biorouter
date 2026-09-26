@@ -27,9 +27,10 @@ privacy before sending.", wait until the status row reads "Connected", then pres
 shows another word, such as "Offline", see
 [Connections and troubleshooting](connections-and-troubleshooting.md).
 
-A message holds at most 65,536 bytes (64 KB). Attach a long log as a file instead. Nobody can edit
+A message holds at most 64 KB of text. Attach a long log as a file instead. Nobody can edit
 or delete a posted message. There are no threads, reactions or pins. Typing `@bob` does not notify
-Bob. To search, use the [command line](#from-the-command-line).
+Bob. Only a terminal can search a channel: see
+[Post and read messages](command-line.md#post-and-read-messages).
 
 ## Format a message
 
@@ -87,8 +88,7 @@ is back when you return.
 
 - A pencil in the sidebar marks a channel that holds a draft.
 - Only text is kept. An attached file waits in the **Files** tab under "Uploaded, not sent".
-- Drafts are kept in memory only, so quitting Biorouter discards them. Crew keeps up to 50, and
-  none over 64 KB.
+- Drafts are kept in memory only, so quitting Biorouter discards them.
 - Crew clears a draft, and says so, when the workspace's or your connection's privacy or
   institution changes, or when you lose access to the channel.
 
@@ -153,8 +153,9 @@ shows a PNG, JPEG, GIF or WebP picture. **More actions** (⋯) holds the downloa
 
 1. Choose Save (tooltip "Save counts.csv") on the card.
 2. In the save window (the Finder panel on macOS), choose a folder, then **Save**.
-3. If a file with that name exists, choose **Replace file** or **Cancel**. The old file stays until
-   the download passes its check.
+3. If a file with that name exists, the save window asks whether to replace it. Choose **Replace**.
+   Crew then asks "Replace counts.csv after the download is verified?". Choose **Replace file**, or
+   **Cancel**. The old file stays until the download passes its check.
 4. A bar on the card shows "Downloading 42%". When the bar goes away, the file is saved.
 
 Crew checks each download before it saves it. If the check fails, the card gives the reason, and
@@ -203,26 +204,10 @@ check that it exists.
 
 1. Choose the paperclip button, then **Share a server path…**.
 2. In **Path**, type the full path, starting with `/`.
-3. To name it, open **Advanced** and fill in **Label (optional)**, up to 255 bytes. By default Crew
-   uses the file name.
+3. To name it, open **Advanced** and fill in **Label (optional)**. By default Crew uses the file
+   name.
 4. Choose **Add to message**, then press Send. Readers see the label, "Not uploaded" and the path
    with a **Copy** button. A reader copies the path to use the file on the server.
-
-## From the command line
-
-Only a terminal can search a channel. Run these in Terminal on your own Mac or Linux computer.
-[Installation](../getting-started/installation.md) says how to add the `biorouter` command. Each
-command first asks for your approval secret.
-
-| Task | Command |
-|---|---|
-| Search a channel | `biorouter crew search '#methods' od600` |
-| Read the newest 100 messages | `biorouter crew history '#methods' --latest` |
-| Download a file | `biorouter crew files download <file ID> --output ./counts.csv` |
-
-To get the file ID, choose **More actions** (⋯) on the file's card, then **Copy for support**, then
-**Copy file ID**. `--output` names the file to save. See [Command line](command-line.md) for every
-command.
 
 ## Related documentation
 

@@ -20,18 +20,19 @@ Privacy, **Private** or **Public**, controls which AI models may read the worksp
 
 1. Send your host your exact username on the lab server.
 2. [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer).
-3. Open Crew and choose **Join a workspace**.
-4. Paste the whole invitation message your host sends you.
-5. Choose the Join button, for example **Join chen-lab**. Crew shows a code.
-6. Send the code to your host.
+3. [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account), or ask IT to.
+4. Open Crew and choose **Join a workspace**.
+5. Paste the whole invitation message your host sends you.
+6. Choose the Join button, for example **Join chen-lab**. Crew shows a code.
+7. Send the code to your host.
 
 When your host lets you in and adds you to a team, your team's channels appear. See [Joining a workspace](joining-a-workspace.md).
 
 ### Host a workspace
 
-1. [Install Crew](hosting-a-workspace.md#install-crew-on-the-server) in your server account, and [verify the server](joining-a-workspace.md#verify-the-server-on-this-computer) on this computer.
+1. [Verify the server](joining-a-workspace.md#verify-the-server-on-this-computer) on this computer, then [install Crew](hosting-a-workspace.md#install-crew-on-the-server) in your server account.
 2. Open Crew, choose **Host a new workspace**, and follow the dialog and the checklist after it.
-3. Install Crew in each person's server account too, or they see "Crew isn’t set up for your account" and cannot join.
+3. Make sure each person has Crew in their own server account. They install it themselves, or IT does ([Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account)).
 4. Invite each person by server username. Send them Crew's invitation message and the server's `SHA256:` fingerprint from IT.
 5. When a person sends their code, choose **Let in…** beside their name and enter it.
 6. When Crew says the person joined, tick channels and choose **Add to {team}**. A person in no team sees no channels.

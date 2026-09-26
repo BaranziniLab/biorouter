@@ -12,6 +12,7 @@ A task is one job for your agent. A connected chat is a Biorouter conversation t
 - Your agent runs on this computer with your model. Keep the computer on until the task shows "Done". On a Mac or Linux, quitting Biorouter does not stop a task. Quitting on Windows, or restarting or shutting down the computer, stops it.
 - One computer runs at most four tasks at once. A task stops after 20 model turns or 60 tool calls, so split long work into several tasks.
 - Access lists show only your own chats and tasks, never other people's agents.
+- From a terminal, see [Run an agent task](command-line.md#run-an-agent-task) and [Give a chat access to Crew](command-line.md#give-a-chat-access-to-crew).
 
 Workspaces and connections start Private, so you usually need a model approved for your institution, or a local model such as Llama Server or Ollama. A public model, such as one used with your own OpenAI key, is refused. A Private workspace or connection, or a Restricted channel, needs the following. See [Privacy and security](privacy-and-security.md).
 
@@ -66,7 +67,7 @@ If the connection drops as you start, starting again could run the task twice. T
 
 1. Choose **Show task in channel** or **Open chat history**, and check what the task did.
 2. Open **Ask my agent** and tick **I checked the previous task and its effects.**
-3. Check **Task**, then choose **Start a new task**.
+3. Check **Task**, then choose **Start a new task**. The pane closes, and Crew highlights the new task in the channel.
 
 Quitting Biorouter or reloading the window also clears the warning.
 
@@ -120,7 +121,11 @@ This works only for a chat never connected before.
 2. Choose the channel in the Crew sidebar.
 3. On the note "Connect “Plot review” to #imaging?", choose **Review access**, then continue from step 4.
 
-To change such a chat's model, choose the model name under its message box (brain icon), then **Change model**. Pick an approved or local model, and type `/crew` again.
+To change such a chat's model:
+
+1. Choose the model name under the chat's message box (brain icon), then **Change model**.
+2. Pick an approved or local model.
+3. Type `/crew` again. Crew opens the Chat access pane, and you continue from step 3 of [Connect a chat with /crew](#connect-a-chat-with-crew).
 
 ### While a chat is connected
 
@@ -130,7 +135,7 @@ The chat can read and search its channels (the 200 most recent messages at once)
 
 It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
 
-### A chat keeps its first channel and model
+### A chat's fixed channel and model
 
 The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. For other work, start a new chat, send it a message, then type `/crew`.
 
@@ -146,7 +151,7 @@ Most refusals say what to do. For these:
 
 | Message contains | What to do |
 |---|---|
-| "isn’t approved for", "public model" | Choose a Private model approved for the institution, or a local model. |
+| "isn’t approved for", "public model", "Public models" | Choose a Private model approved for the institution, or a local model. |
 | "external tools" | Choose a provider other than Claude Code or Codex. |
 | "Task must contain between 1 and 32768 bytes." | Shorten the task. Share long data as a file. |
 | "Refresh the workspace to verify connection privacy" | Wait for "Connected" in the status row, or choose **Connect to {workspace}**. |
@@ -206,19 +211,6 @@ Access ends when:
 - in a Public workspace with a Public connection, a channel it reads gets a Restricted message or file.
 
 Renaming a team, channel or the workspace does not end access. A workspace change shows only at the chat's next use of Crew, so an idle chat can look active until then.
-
-## Command line
-
-Each `biorouter crew` command first asks for your [approval secret](command-line.md#the-approval-secret).
-
-| What you want | Command |
-|---|---|
-| List chats and tasks with access | `biorouter crew grants list` |
-| Connect a chat | `biorouter crew grants grant <SESSION> <CHANNEL>`. Find the chat's session ID with `biorouter session list`. See [Command line](command-line.md#give-a-chat-access-to-crew). |
-| Revoke | `biorouter crew grants revoke <SESSION>`. Status 0 means the workspace confirmed. |
-| Start, list or stop tasks | `biorouter crew tasks start`, `tasks list --show-ids`, `tasks cancel <RUN>` |
-
-Add `--context-channel <CHANNEL>` for each extra channel to read. [Command line](command-line.md) has every option.
 
 ## Related documentation
 

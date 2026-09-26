@@ -48,7 +48,7 @@ The team's `#general` channel opens, and you own it.
 
 ### Team name rules
 
-A team name has up to 64 letters, numbers, spaces and `- _ . ' & ( ) +`, including a letter or number. It must be unique in the workspace, including teams you cannot see. Differences in capitals, spaces, dashes, dots, underscores or look alike letters do not count, so "Analysis Lab" and "analysis-lab" are one name.
+A team name has up to 64 letters, numbers, spaces and `- _ . ' & ( ) +`, including a letter or number. It must be unique in the workspace, including teams you cannot see. Differences in capitals, spaces, dashes, dots, underscores or lookalike letters do not count, so "Analysis Lab" and "analysis-lab" are one name.
 
 A refusal says what to change. After ten taken names in ten minutes, Crew says "Too many name attempts. Try again later." Wait up to ten minutes.
 
@@ -94,9 +94,9 @@ The channel name opens the channel menu. It has **Mark as read**, **Refresh chan
 Only the owner can rename, and not an archived channel.
 
 1. Choose **Rename team…** in the team's **⋯** menu, or **Rename…** in the channel menu.
-2. Type the new name and choose **Rename**.
+2. Type the new name and choose **Rename**. The new name appears in the sidebar.
 
-History, files and members stay, and the old name is free at once. If the item is missing, you are not the owner, or the server runs an older Crew.
+History, files and members stay, and the old name is free at once. If the item is missing, you are not the owner.
 
 ### Hand a channel to someone else
 
@@ -156,7 +156,7 @@ Only the host removes someone from the workspace: see [Remove someone from the w
 
 ### Changes that end agent access
 
-Adding or removing people, archiving a channel and handing one over end every chat's and agent task's access in the workspace, but renaming does not. See [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) for the full list and how to grant access again.
+Several changes on this page end every chat's and agent task's access in the workspace. [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) lists them and says how to grant access again.
 
 ## Names and avatars
 
@@ -179,7 +179,7 @@ People have round avatars, and agents square ones with a robot. An avatar shows 
 
 ## Less common situations
 
-- With an older Crew on the server, only owners add people, and adding sends an invitation. The person chooses **Join** under "Invitations" in the sidebar, and the owner sees "{n} invited" beside the team until then.
+- With an older Crew on the server, only owners add people, and adding sends an invitation. The person chooses **Join** under "Invitations" in the sidebar, and the owner sees "{n} invited" beside the team until then. The rename items can also be missing.
 - If "Available once the connection is verified" stays on a menu item, see [Connections and troubleshooting](connections-and-troubleshooting.md).
 
 ## Related documentation

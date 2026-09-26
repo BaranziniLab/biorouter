@@ -53,12 +53,12 @@ Names are not private: a taken team or channel name reveals that it exists, and 
 
 ## Change your connection's privacy
 
-Crew does not show your choice to the host or other members. Your messages, uploads and agent tasks carry it to the server, where the host's server account can read it.
+Crew does not show your choice to the host or other members. Your messages, uploads and agent tasks carry it to the server, where the host's server account can read it. To change it from a terminal, see [Privacy settings](command-line.md#privacy-settings), where the commands ask for no typed confirmation.
 
 ### Make your connection Public
 
 1. Choose the privacy chip, then **Make my connection public…**, offered when the workspace allows Public. The **Privacy** tab has the same button, and saving **Public** in **Connection settings…** opens the same dialog.
-2. Type the workspace name in "Type {workspace} to confirm", then choose **Make public**.
+2. Type the workspace name in **Type {workspace} to confirm**, then choose **Make public**.
 
 The chip reads "Public". Your unsent draft is cleared, and chat access granted through this connection ends. A connected chat says "Crew settings changed since access was granted. Grant access again from Crew."
 
@@ -87,16 +87,9 @@ Your invitation usually fills in your connection's institution, and you can chan
 
 One computer uses one institution per server. Saved workspaces on one server also share one privacy: if any is Private, all are.
 
-## Messages you may see
+## Privacy refusals
 
-| Message | What to do |
-|---|---|
-| "Refresh the workspace to verify connection privacy before …" | Crew has not confirmed your connection's privacy yet. See [Other messages](connections-and-troubleshooting.md#other-messages). |
-| "Private workspace blocks public models", "… cannot be sent to a public model" or "Public models cannot access remote files/jobs" | Choose a private model, or leave out the Restricted channel. In a connected chat, start a new chat. |
-| "Confirm this workspace's institution before granting an agent; …" | Ask the host to set the institution. |
-| "Set this private SSH connection's institution before granting an agent" | Add it in **Connection settings…**. |
-| "privacy_denied: connection and workspace institutions differ", "… one computer can't mix institutions on the same server." or "Crew aliases have different institutions; …" | Use the workspace's institution in **Connection settings…**, for every workspace on that server. |
-| "This conversation contains another institution's context; …" | Start a new chat. |
+When Crew refuses an agent or a setting for privacy, the message names the rule. [Refusals when you start or allow](agents-and-chat-access.md#refusals-when-you-start-or-allow) covers the refusals for agents and chats, and [Other messages](connections-and-troubleshooting.md#other-messages) covers the institution and privacy checks on your connection.
 
 ## Keys, fingerprints and codes
 
@@ -114,7 +107,7 @@ A vault keeps your device keys in a file locked by a passphrase, instead of the 
 
 1. Open **Keys and security…** from the You menu.
 2. Choose **Use an encrypted vault instead**, then **Set up vault…**.
-3. In "Initialize Crew encrypted vault", type a new passphrase. It must differ from the approval secret and be at most 1024 bytes.
+3. In "Initialize Crew encrypted vault", type a new passphrase. It must differ from the approval secret.
 4. In "Confirm Crew vault passphrase", type it again.
 
 **Keys and security…** now reads "Stored in an encrypted vault" and offers **Lock**. When the vault is locked, the connection bar says "Your Crew vault is locked." Choose **Unlock** there or in **Keys and security…**, then type the passphrase.
@@ -135,17 +128,11 @@ Your remote work folder, under **Advanced** in **Connection settings…**, canno
 
 Other members see your name, `@username` and posts in channels you share, with their "Restricted" labels. Your agent posts as "{your name}'s agent", and a task's Source line names the shared files it read. Members never see channels they are not in, your privacy, institution, devices or connected chats.
 
-In Crew, the host sees only the channels the host is in, plus the members, people waiting to join, and a warning when a computer shows a different code. The host never sees your password, the verification codes you sign in with, or your keys, and cannot start, stop or approve your agent. Some workspace changes end every agent's access, yours included: adding or removing people, archiving a channel, changing a channel's owner, and changing the workspace's privacy or institution. See [Changes that end agent access](hosting-a-workspace.md#changes-that-end-agent-access).
+In Crew, the host sees only the channels the host is in, plus the members, people waiting to join, and a warning when a computer shows a different code. The host never sees your password, the verification codes you sign in with, or your keys, and cannot start, stop or approve your agent. Some workspace changes end every agent's access, yours included ([Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access)).
 
 > **Warning.** The workspace's data sits in files owned by the host's server account. That account, programs running under it and the server's administrators can read everything, including Restricted messages and channels the host is not in.
 
 A history file under the host's account records each change and who made it. Nothing is removed from it, but the host's account can edit it. Crew has no screen for it. See [Administration](administration.md).
-
-## Privacy from the command line
-
-From a terminal, `biorouter crew privacy show` shows these settings, `privacy set-personal` changes your connection and `privacy set-workspace` changes the workspace (host only). Add `--expected-mode private` to make a command refuse rather than act under Public. See [Command line](command-line.md).
-
-> **Warning.** `set-personal public` and `set-workspace public` act at once, with no typed confirmation.
 
 ## Related documentation
 

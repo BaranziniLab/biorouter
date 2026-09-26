@@ -6,7 +6,7 @@
 
 A Crew workspace holds a lab's channels, shared files and AI agents. The host runs `biorouter-crew` on a Linux server as their own account. This broker keeps the workspace in files owned by that account, listens only on a Unix socket under `/tmp`, and learns each caller's account from the kernel. When a member connects, Biorouter starts the same program over SSH in their account, as a bridge to that socket. Crew needs no administrator rights, system service or open network port. For the app, see [Hosting a workspace](hosting-a-workspace.md).
 
-Examples: host `@alice`, member `@bob`, server `hpc.example.edu`, workspace `chen-lab`.
+Examples: host `@alice`, member `@bob`, server `hpc.example.edu`, workspace `chen-lab`. Angle brackets, such as `<version>`, mark a value you fill in.
 
 ## Server requirements
 
@@ -92,7 +92,7 @@ With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host
 
 ## Install biorouter-crew
 
-Every account needs its own copy at exactly `~/.local/bin/biorouter-crew`. A copy only elsewhere on `PATH` does not count.
+Every account that connects, the host's included, needs its own copy at exactly `~/.local/bin/biorouter-crew`. A copy only elsewhere on `PATH` does not count. The person installs it signed in as themselves, or an administrator installs it into their account. The host's ordinary account cannot write into another account, so hosts send these requests to you. [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account) is the member's view.
 
 ### Get a verified file
 
@@ -100,7 +100,7 @@ Every account needs its own copy at exactly `~/.local/bin/biorouter-crew`. A cop
 - Either package installs `/usr/bin/biorouter-crew`. To extract it instead, run `dpkg-deb --extract biorouter-cli_<version>_amd64.deb staging` and use `staging/usr/bin/biorouter-crew`.
 - Or build it on Linux with `cargo build --locked --release -p biorouter-crew`, following [Linux artifact portability](../research/biorouter-crew/linux-portability.md).
 
-[Hosting a workspace](hosting-a-workspace.md) walks a host through this from a Mac.
+[Install Crew on the server](hosting-a-workspace.md#install-crew-on-the-server) gives these steps for a person on a Mac.
 
 ### Install commands
 
@@ -113,7 +113,7 @@ install -m 0755 "$VERIFIED_BINARY" "$HOME/.local/bin/biorouter-crew"
 "$HOME/.local/bin/biorouter-crew" --version
 ```
 
-The last line prints the version. The Host dialog shows these commands under **Crew isn’t on hpc.example.edu yet?**. The Invite dialog shows the `command -v` form under **If Bob sees “Crew isn’t set up”**.
+The last line prints the version. The Host dialog shows these commands under **Crew isn’t on hpc.example.edu yet?**, and a member's "Crew isn’t set up" screen under **Install it yourself**. The Invite dialog shows the `command -v` form under **If Bob sees “Crew isn’t set up”**.
 
 Without a copy, a member sees "Crew isn’t set up for your account on hpc.example.edu", and `biorouter crew connect` fails with `crew_bridge_missing`. After the install, they choose **Try again**.
 
@@ -201,9 +201,15 @@ Upgrade at a quiet time, because members disconnect while the broker restarts. A
 
 4. Tell members to connect again if the workspace shows as offline.
 
-The new broker reads the journal as it is. To roll back, stop the broker, run `mv -f biorouter-crew.previous biorouter-crew`, and start it. Members replace their own copy the same way. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", upgrade the broker.
+The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 
-After a Biorouter update, the background service can stay old, because reopening Biorouter does not replace it. "Needs a newer Biorouter background service" or `Restart the shared Biorouter daemon to …` means this. Run `biorouter crew daemon stop` or restart the computer, which affects every window and terminal using it.
+1. Stop the broker as in step 2 of the upgrade, and check for `"stopped":true`.
+2. Run `mv -f biorouter-crew.previous biorouter-crew`.
+3. Run `./biorouter-crew start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"`. It prints `"state":"running"`.
+
+Members replace their own copy the same way. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", upgrade the broker.
+
+After a Biorouter update, each computer's background service stays old until it restarts, because reopening Biorouter on macOS or Linux attaches to the running one. "…needs a newer Biorouter background service…" in the app, or `Restart the shared Biorouter daemon to …` in a terminal, means this. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
 
 ## Back up a workspace
 
@@ -212,7 +218,7 @@ Crew has no export, backup, restore, retention or deletion tools, and never dele
 1. Stop the broker and check for `"stopped":true`.
 2. Make sure nobody starts it while you copy.
 3. Copy the whole state directory to equally private storage, and check the copy with `sha256sum`.
-4. Start the broker again.
+4. Start the broker again. The `start` line prints `"state":"running"`, and members can connect.
 
 Never edit `journal.jsonl`, because a broker refuses records that fail their checksums. A copy cannot run on another machine (`node_identity_changed`) or account (`host_identity_changed`), and Crew has no failover. The host's account and root can change the journal, so keep tamper resistant audit records elsewhere.
 
@@ -233,7 +239,7 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 
 The state limit decides capacity, because each message's text counts about twice: fewer than 8,192 messages of 1 KiB fit, or 1,024 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". Preserve it and start a new workspace with a new state directory.
 
-A load test of 50 accounts posting 1,500 messages in 30 minutes peaked near 1.2 GiB of broker memory. No test ran 50 people in the app.
+Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 
 ## Server messages
 

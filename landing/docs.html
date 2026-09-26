@@ -107,6 +107,10 @@
        --output-format from its name. Command blocks keep every line whole and
        scroll inside the block. */
     .docs-content pre { white-space: pre; overflow-x: auto; }
+    /* A step body is a flex item. Without min-width: 0 it grows to fit its longest
+       command line and pushes the whole step past the page. With it, the command
+       block scrolls inside its own box. */
+    .docs-content .step-body { min-width: 0; }
     /* wide reference tables scroll inside their own box instead of pushing the
        page sideways or colliding columns on narrow screens */
     .doc-table-scroll { overflow-x: auto; max-width: 100%; }
@@ -1885,9 +1889,9 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <li><a href="#crew-connect-a-chat">Connect a chat with /crew</a></li>
     <li><a href="#crew-privacy">Privacy and institutions</a></li>
     <li><a href="#crew-staying-connected">Staying connected</a></li>
-    <li><a href="#crew-troubleshooting">Troubleshooting</a></li>
+    <li><a href="#crew-troubleshooting">Fix common messages</a></li>
     <li><a href="#crew-command-line">Command line</a></li>
-    <li><a href="#crew-administrators">For administrators</a></li>
+    <li><a href="#crew-administrators">Server setup for administrators</a></li>
   </ul>
 </nav>
 
@@ -1907,7 +1911,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   <tbody>
     <tr><td>The Biorouter desktop app</td><td>Tested on macOS. The <code>biorouter crew</code> commands also work in a terminal.</td></tr>
     <tr><td>An account on the lab's Linux server</td><td>Your own login, with an SSH key, a password or a verification code. Your IT team provides it.</td></tr>
-    <tr><td><code>biorouter-crew</code> in your server account</td><td>Every account that connects, the host's included, needs its own copy. See <a href="#crew-administrators">For administrators</a>.</td></tr>
+    <tr><td><code>biorouter-crew</code> in your server account</td><td>Every account that connects, the host's included, needs its own copy. You install it in your own account, or IT does. See <a href="#crew-administrators">Server setup for administrators</a>.</td></tr>
     <tr><td>The server already verified</td><td>Crew connects only to a server whose SSH host key is in your known hosts file. Check the server's fingerprint with your IT team once.</td></tr>
     <tr><td>An invitation</td><td>The host sends it. It expires after 24 hours.</td></tr>
   </tbody>
@@ -1972,7 +1976,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   <li>Tick channels under "Channels in {team}" and choose <strong>Add to {team}</strong>. A person in no team sees no channels.</li>
 </ol>
 <div class="alert alert-warning"><strong>Approve only codes the person sent you.</strong> If Crew says "A computer trying to join as @bob showed a different code.", compare it with the code the person sent. To correct a mistyped code, choose <strong>Let in…</strong>, enter the right code, and choose <strong>Replace code</strong>.</div>
-<p><strong>People…</strong> and <strong>Privacy…</strong> in the workspace menu rename the workspace, cancel invitations, remove people and change the workspace privacy. Nothing is ever deleted from the workspace's history. After the server restarts, start the workspace again, as <a href="#crew-administrators">For administrators</a> shows. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/hosting-a-workspace.md" target="_blank">Hosting a workspace</a>.</p>
+<p><strong>People…</strong> and <strong>Privacy…</strong> in the workspace menu rename the workspace, cancel invitations, remove people and change the workspace privacy. Nothing is ever deleted from the workspace's history. After the server restarts, start the workspace again, as <a href="#crew-administrators">Server setup for administrators</a> shows. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/hosting-a-workspace.md" target="_blank">Hosting a workspace</a>.</p>
 
 <h2 id="crew-teams-channels-people">Teams, channels and people</h2>
 <div class="doc-table-scroll"><table class="doc-table">
@@ -2075,10 +2079,10 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>Connected</td><td>Nothing.</td></tr>
     <tr><td>Connecting…, Reconnecting…</td><td>Wait.</td></tr>
     <tr><td>Offline</td><td>Choose <strong>Connect to chen-lab</strong>. You see this after <strong>Disconnect</strong>, after you save <strong>Connection settings…</strong>, and after the background service restarts.</td></tr>
-    <tr><td>Can’t connect</td><td>Read the reason in the connection bar, then choose <strong>Try again</strong>.</td></tr>
+    <tr><td>Can’t connect</td><td>Read the reason in the connection bar, then choose <strong>Connect to chen-lab</strong> in the main area.</td></tr>
     <tr><td><strong>Sign-in needed</strong></td><td>Choose it and type your password or code.</td></tr>
     <tr><td>Can’t verify server</td><td>See <a href="#crew-server-identity">Server identity</a>.</td></tr>
-    <tr><td>Not set up on this server</td><td>Ask your host or IT team to install <code>biorouter-crew</code> in your account.</td></tr>
+    <tr><td>Not set up on this server</td><td>Install <code>biorouter-crew</code> in your own server account, as <strong>Install it yourself</strong> on that screen or <a href="#crew-administrators">Server setup for administrators</a> shows, or ask IT. Then choose <strong>Try again</strong>.</td></tr>
   </tbody>
 </table></div>
 <p>When the network drops, Crew reconnects by itself for up to an hour. It never sends a message a second time, so if the connection broke while you sent something, check whether it arrived.</p>
@@ -2095,7 +2099,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 </table></div>
 <p><strong>Connection settings…</strong> in the workspace menu changes your server login, privacy, institution, port, identity file, jump hosts and remote work folder. At its bottom, <strong>Remove chen-lab from this computer…</strong> removes the workspace from this computer and deletes its key here. To use it here again, ask the host to invite you with <strong>Add another device for @bob</strong> turned on. A host must never remove it from their only computer, because nobody could then invite, let in or remove people. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/connections-and-troubleshooting.md" target="_blank">Connections and troubleshooting</a>.</p>
 
-<h2 id="crew-troubleshooting">Troubleshooting</h2>
+<h2 id="crew-troubleshooting">Fix common messages</h2>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Message</th><th>What to do</th></tr></thead>
   <tbody>
@@ -2104,7 +2108,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>"You’re not in chen-lab yet"</td><td>Check <strong>Your server login</strong> in <strong>Connection settings…</strong>, then send the host the message Crew offers.</td></tr>
     <tr><td>"Can’t reach lab.example.edu."</td><td>Check your network, and your VPN if your lab uses one.</td></tr>
     <tr><td>"Confirm this workspace's institution before granting an agent…"</td><td>Ask the host to set the workspace's institution.</td></tr>
-    <tr><td>"This feature needs a newer Biorouter background service."</td><td>Quit and reopen Biorouter.</td></tr>
+    <tr><td>"This feature needs a newer Biorouter background service."</td><td>On a Mac or a Linux computer, reopening Biorouter keeps the old service running. Restart the computer, or run <code>daemon stop</code> as <a href="#crew-command-line">Command line</a> shows, then open Biorouter. On Windows, quit and reopen Biorouter. See <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#upgrade-crew" target="_blank">Upgrade Crew</a>.</td></tr>
     <tr><td>"Authorize this action in the Crew panel…"</td><td>Do the action yourself in Crew. If it repeats, quit and reopen Biorouter.</td></tr>
     <tr><td>"This workspace has grown past the size Crew supports…"</td><td>Reading still works. Ask the host about a new workspace.</td></tr>
   </tbody>
@@ -2140,10 +2144,13 @@ biorouter crew send methods --attachment ATTACHMENT_ID
 biorouter crew tasks start methods --text "Summarize this week" \
   --provider PROVIDER --model MODEL --allow-posting
 biorouter crew grants grant SESSION_ID methods
-biorouter crew grants revoke SESSION_ID</code></pre>
+biorouter crew grants revoke SESSION_ID
+
+# Stop the background service on this computer
+biorouter crew daemon stop</code></pre>
 <p>An upload alone posts nothing. The upload prints a transfer ID. When <code>files watch</code> reads <code>Transfer Ready.</code>, <code>files status</code> shows the <code>Attachment ID:</code> to send. <code>privacy set-personal public</code> and <code>privacy set-workspace public</code> take effect at once, with no typed confirmation. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md" target="_blank">Command line</a>.</p>
 
-<h2 id="crew-administrators">For administrators</h2>
+<h2 id="crew-administrators">Server setup for administrators</h2>
 <p>The host's copy of <code>biorouter-crew</code> stores the workspace and checks every request. Each member's Biorouter starts the same program in the member's own account over SSH, which passes requests to the host's copy through a Unix socket under <code>/tmp</code>. Crew needs no root, no system service, no open network port and no database.</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
@@ -2155,7 +2162,7 @@ biorouter crew grants revoke SESSION_ID</code></pre>
     <tr><td>SSH</td><td>Crew uses each member's own OpenSSH settings and turns on strict host key checking. Jump hosts must use <code>ProxyJump</code>.</td></tr>
   </tbody>
 </table></div>
-<p>To install, take the Linux <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm package, and compare its <code>sha256sum</code> with the value from whoever provided it. Then run these commands in each account that connects. They need no administrator rights.</p>
+<p>To install, download the <code>biorouter-cli</code> deb or rpm from the <a href="https://github.com/BaranziniLab/biorouter/releases" target="_blank">release page</a>, check that its <code>sha256sum</code> matches the <code>sha256:</code> value beside it, then take <code>/usr/bin/biorouter-crew</code> out of the package (<a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#get-a-verified-file" target="_blank">Get a verified file</a>). In each account that connects, run these commands with that file's path. They need no administrator rights.</p>
 <pre><code>mkdir -p "$HOME/.local/bin"
 install -m 0755 /path/to/verified/biorouter-crew "$HOME/.local/bin/biorouter-crew"
 "$HOME/.local/bin/biorouter-crew" --version</code></pre>
@@ -2634,7 +2641,7 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
 <figcaption>The agent has exactly the three placements you have by hand. A value it does not recognize is refused, not guessed at.</figcaption>
 </figure>
 
-<p>Two defaults are worth knowing because they are the opposite of what people expect. <strong>New tabs open in the background</strong>, so your focus stays where you are typing; the agent has to ask for focus explicitly and rarely should. And <strong>a new conversation inherits your working directory</strong> unless the agent is told otherwise, in which case you are told where it landed. Opening a conversation never moves an existing one's working directory; only a newly created session gets one, and it gets it at creation.</p>
+<p>Two defaults differ from what many people expect. <strong>New tabs open in the background</strong>, so your focus stays where you are typing; the agent has to ask for focus explicitly and rarely should. And <strong>a new conversation inherits your working directory</strong> unless the agent is told otherwise, in which case you are told where it landed. Opening a conversation never moves an existing one's working directory; only a newly created session gets one, and it gets it at creation.</p>
 
 <p>If a split is refused because the window is already at six panes, the agent is told the conversation was <em>not</em> opened and why, so it can say so rather than claim a pane exists.</p>
 

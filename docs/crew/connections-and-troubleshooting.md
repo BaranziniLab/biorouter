@@ -17,7 +17,7 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 | "Updates unavailable" | Live updates stopped. Choose **Retry** in the connection bar. |
 | **Sign-in needed** | Choose the word to [sign in](#sign-in-to-the-server). |
 | "Can’t verify server" | See [Server identity checks](#server-identity-checks). |
-| "Not set up on this server" | See [Crew is not set up on the server](#crew-is-not-set-up-on-the-server). |
+| "Not set up on this server" | See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "Not joined yet" | Your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
 | "Offline" | You are not connected. This follows a computer restart, **Disconnect**, a saved change in **Connection settings…**, or a dropped connection. After a drop, Crew [reconnects by itself](#automatic-reconnection). Otherwise, choose **Connect to {workspace}**. |
 | "Can’t connect" | The last attempt failed. See [Messages and what to do](#messages-and-what-to-do). |
@@ -30,7 +30,7 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 2. In the main area, choose **Connect to {workspace}**.
 3. If the Sign in window opens, [sign in](#sign-in-to-the-server).
 
-The status row shows "Connected", and your channels appear. A failed attempt adds "Tried again at {time}. {reason}." under the button. **Reconnect**, **Try again**, **Connect now** and **Connect in Crew** start the same attempt.
+The status row shows "Connected", and your channels appear. A failed attempt adds "Tried again at {time}. {reason}." under the button. **Reconnect**, **Try again**, **Connect now** and **Connect in Crew** start the same attempt. From a terminal, see [Sign in and stay connected](command-line.md#sign-in-and-stay-connected).
 
 ### When you reopen Biorouter
 
@@ -70,7 +70,7 @@ Some lab servers ask for a password, a verification code, or both. A verificatio
 1. In the window "Sign in to {server address}", wait for the server's question.
 2. Type your password and press Enter. The characters do not appear.
 3. If the server asks for a verification code, type it and press Enter.
-4. If the server lists numbered options, such as "Passcode or option (1-3):", type a number and press Enter. Approve any request sent to your phone. Phone approval has not been tested.
+4. If the server lists numbered options, such as "Passcode or option (1-3):", type a number and press Enter. Approve any request sent to your phone.
 
 The window closes when the server accepts you. To stop, choose **Close**. Escape does nothing.
 
@@ -80,7 +80,7 @@ The window closes when the server accepts you. To stop, choose **Close**. Escape
 
 Every server has a host key that proves its identity. Your computer keeps the keys it trusts in its known hosts file, `~/.ssh/known_hosts`. Crew connects only to a server whose key is there, and checks that the workspace key matches your invitation. Crew never adds a key for you. A failed check shows "Can’t verify server" and one of three screens.
 
-### Crew cannot verify the server yet
+### An unverified server
 
 "Can’t verify {server address} yet" means the server's key is not in your known hosts file. This is normal the first time on each computer.
 
@@ -88,29 +88,29 @@ Every server has a host key that proves its identity. Your computer keeps the ke
 2. Follow [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer). **How do I verify it?** offers **Open a terminal here**. If terminals are new to you, ask IT to help.
 3. Choose **Try again**. Crew connects, and the Sign in window opens if the server asks.
 
-### The server's identity changed
+### A changed server identity
 
-"{server address}’s identity changed" means the server was rebuilt, or another machine is pretending to be it. Treat it as a security problem until IT says otherwise.
+"{server address}’s identity changed" means the server was rebuilt, or another machine is answering in its place. Treat it as a security problem until IT says otherwise.
 
 1. Choose **Copy details for IT**, and send the details to IT. Do not connect until IT confirms the change.
 2. Remove the old key, or ask IT to. In a terminal, type `ssh-keygen -R lab.example.edu` with your server's address, or `ssh-keygen -R '[lab.example.edu]:2222'` for another port.
 3. Choose the workspace name, then **Reconnect**. Expect "Can’t verify {server address} yet".
-4. Follow [Crew cannot verify the server yet](#crew-cannot-verify-the-server-yet) with the new fingerprint.
+4. Follow [An unverified server](#an-unverified-server) with the new fingerprint.
 
-### This is not the workspace you joined
+### A different workspace
 
-"This isn’t the workspace you joined" means the server answered with a different workspace key. Choose **Copy details**, send them to your host, and wait for an explanation. **Connection settings…** on that screen shows your server. If the workspace was created again, you need a new invitation.
+"This isn’t the workspace you joined" means the server answered with a different workspace key. **Connection settings…** on that screen shows your server.
 
-## Crew is not set up on the server
+1. Choose **Copy details**. "Copied" appears beside the button.
+2. Paste the details into a message to your host, and send it.
+3. Wait for your host to explain what changed. If the workspace was created again, your host sends you a new invitation. Otherwise, when your host says the server is fixed, choose **Reconnect** in the workspace menu. The status row reads "Connected".
 
-Crew needs `biorouter-crew` at exactly `~/.local/bin/biorouter-crew` in your own account on the server. A copy anywhere else does not count. Your host cannot install it for you. You install it once, or IT does. Without it, the main area reads "Crew isn’t set up for your account on {server address}".
+## Crew missing from your server account
 
-1. Copy the ready message on the screen, and send it to IT, or to your host to pass on.
-2. When IT says it is installed, choose **Try again**. Crew connects.
+"Crew isn’t set up for your account on {server address}" in the main area means your own server account has no `~/.local/bin/biorouter-crew`. [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account) says who can install it and how.
 
-To install it yourself, follow [Install Crew on the server](hosting-a-workspace.md#install-crew-on-the-server) signed in as yourself. You download the file and copy it with `scp` on your computer, then run the rest on the server after you sign in with `ssh`. At the end, choose **Try again** here, not **Start it for me**.
-
-If a verified file is already on the server, use the lines under **Install it yourself** instead. Run them in your `ssh` session on the server, not on your own computer. Type the first line with the file's full path on the server, and press Enter. Then paste the other three. When the last line prints the version, choose **Try again**.
+1. Install it yourself, or copy the ready message on the screen and send it to IT, or to your host to pass on.
+2. When it is installed, choose **Try again**. Crew connects.
 
 ## Connection settings
 
@@ -133,13 +133,9 @@ Choose **Save connection**. If you changed something, Crew disconnects the works
 
 Workspaces on one server share one privacy setting and one institution. If any is Private, all stay Private.
 
-To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. To use it on this computer again, ask your host to invite you with **Add another device for @{username}** turned on, then join with that invitation and send the new code. See [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account).
+To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account).
 
-> **Warning.** If you are the host, do not remove the workspace from your only computer. [Host actions](hosting-a-workspace.md), such as inviting people and changing privacy, work only from your own computers. Nobody can invite you back, so no one can do them again. To move to a new computer, first invite your own username with **Add another device for @{username}** turned on, join on the new computer, and let it in from the old one.
-
-## Connect from the command line
-
-`biorouter crew status` lists your connections and their state. `biorouter crew connect` and `biorouter crew disconnect` connect and disconnect. `biorouter crew auth` signs you in at the terminal, connects, and prints "Authenticated. The connection is ready." Each command first asks for your approval secret. With several workspaces, add `--connection NAME`. See [Command line](command-line.md).
+If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace.
 
 ## Messages and what to do
 
@@ -150,10 +146,10 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | Message | What to do |
 |---|---|
 | "Can’t reach…" or "Couldn’t reach…" | Check that you are online, and on the VPN (virtual private network) if your institution requires one. Crew keeps trying for an hour. |
-| "Can’t connect…", "Crew can’t connect." or "It didn’t connect" | If it worked before, Crew may have [stopped on the server](hosting-a-workspace.md#after-the-server-restarts). Your server name may also reach a different login node from the one that runs Crew. Ask your host. Otherwise, check **Connection settings…** with IT. |
+| "Can’t connect…", "Crew can’t connect." or "It didn’t connect" | If it worked before, Crew may have [stopped on the server](hosting-a-workspace.md#after-the-server-restarts). Your server name may also reach a different machine from the one that runs Crew. Ask your host. Otherwise, check **Connection settings…** with IT. |
 | "…asked you to sign in" | [Sign in](#sign-in-to-the-server). |
 | "Crew couldn’t verify…" | See [Server identity checks](#server-identity-checks). |
-| "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | See [Crew is not set up on the server](#crew-is-not-set-up-on-the-server). |
+| "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "Crew SSH host…", such as "Crew SSH host gateway requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. |
 | "You already use this server for {other workspace}…" | One computer uses one institution for each server. Ask your host which is right. |
 | "…dropped while it was idle." | Wait, or choose **Reconnect**. |
@@ -181,7 +177,7 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | Message | What to do |
 |---|---|
 | "SSH authentication ended (exit {code})…" | Often a wrong password or code. **Reconnect**, and sign in again. |
-| "Authentication refused. Close and reconnect." | **Reconnect**. If "Crew isn’t set up" appears, see [Crew is not set up on the server](#crew-is-not-set-up-on-the-server). |
+| "Authentication refused. Close and reconnect." | **Reconnect**. If "Crew isn’t set up" appears, see [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "SSH authentication is already opening." | Choose **Close**, then open the Sign in window once. |
 | "Authentication input exceeds frame limit." | Type your answer instead of pasting it. |
 | "The local daemon is not available." or "Invalid daemon authentication session." | Quit and reopen Biorouter. |
@@ -193,12 +189,39 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | Message | What to do |
 |---|---|
 | "Choose this private SSH connection's institution…" or "…canonical institution ID…" | Enter a short ID in lowercase letters, numbers, `-` or `_`, such as `ucsf`. |
-| "Crew aliases have different institutions…" | Use the institution of the other workspace on that server, or ask your host. |
+| "Crew aliases have different institutions…", "privacy_denied: connection and workspace institutions differ" or "…one computer can't mix institutions on the same server." | Use the workspace's institution in **Connection settings…**, for every workspace on that server, or ask your host. |
 | "Identity file must be an absolute path" | Enter a path that starts with `/`, or leave the field empty. |
-| "…needs a newer Biorouter background service…", "…that Crew couldn't read…" or "This daemon cannot verify human Crew actions…" | Quit Biorouter, and open it again from its usual icon. |
+| "…needs a newer Biorouter background service…" or "This daemon cannot verify human Crew actions…" | See [Replace an old background service](#replace-an-old-background-service). |
+| "…that Crew couldn't read…" | Choose **Retry**. If it repeats, see [Replace an old background service](#replace-an-old-background-service). |
 | "Crew could not complete that action." | Try the action again. |
 | "Authorize this action in the Crew panel…" | Do the action yourself in Crew, or with `biorouter crew`. |
 | "…still checking this workspace’s privacy…" or "Refresh the workspace to verify connection privacy…" | Wait for "Connected", then try again. If the status is "Offline", connect first. |
+
+### Replace an old background service
+
+After a Biorouter update, the background service that was already running stays the old version. On a Mac or Linux computer, quitting and reopening Biorouter does not replace it, because Biorouter connects to the service that is still running. So these messages stay, even though some of them say to quit and reopen Biorouter:
+
+- "This feature needs a newer Biorouter background service…"
+- "Start it for me needs a newer Biorouter background service…"
+- "This daemon cannot verify human Crew actions…"
+
+To replace the service on a Mac or Linux computer:
+
+1. Quit Biorouter.
+2. Restart your computer.
+3. Open Biorouter, and set your approval secret when it asks ([The approval secret](getting-started.md#the-approval-secret)).
+
+The action that showed the message now works. The restart stops running agent tasks and file transfers, so check them afterward.
+
+If you use the `biorouter` command, you can end the service without a restart:
+
+1. Run `biorouter crew daemon stop`.
+2. Type your approval secret. The command prints "Biorouter daemon stopped."
+3. Open Biorouter. Biorouter asks you to set an approval secret.
+
+After "This daemon cannot verify human Crew actions…" that command is refused, so follow [If you forget the approval secret](command-line.md#if-you-forget-the-approval-secret) instead.
+
+On Windows, quitting Biorouter stops the service, so quit Biorouter and open it again.
 
 ## Related documentation
 

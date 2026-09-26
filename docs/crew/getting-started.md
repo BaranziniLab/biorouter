@@ -16,12 +16,10 @@ A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "C
 |---|---|
 | The Biorouter desktop app ([Installation and setup](../getting-started/installation.md)) | You or IT |
 | An account on the lab's Linux server, with its SSH key, password or verification code | Your IT team |
-| `biorouter-crew` installed for your account and the host's ([Install biorouter-crew](administration.md#install-biorouter-crew)) | Your host or IT |
 | The server's identity in your [known hosts file](#glossary-of-crew-terms) ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a new server by itself. | You, with the fingerprint from IT |
+| `biorouter-crew` in your own account on the server ([Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account)) | You or IT |
 | The host's invitation message, valid for 24 hours | The host |
 | For a Private workspace, your institution's short ID, such as `ucsf`. The invitation usually fills it in. | The host |
-
-Crew has been tested only on macOS desktops.
 
 ### Signing in to the server
 
@@ -63,8 +61,8 @@ After that, the main area shows what to do next. [What each status means](connec
 
 | Part | What it does |
 |---|---|
-| Workspace name | Opens the [workspace menu](connections-and-troubleshooting.md#connection-tools-in-the-workspace-menu). |
-| Status row | One word for your connection, such as "Connected" or "Offline" ([What each status means](connections-and-troubleshooting.md#what-each-status-means)). **Sign-in needed** is a button. The [privacy chip](#privacy) sits at its right. |
+| Workspace name | Opens the workspace menu: **People…**, **Privacy…** and **Agent access…** (Workspace settings), **Create team…**, the host's **Invite people to {workspace}…**, the [connection tools](connections-and-troubleshooting.md#connection-tools-in-the-workspace-menu), **Switch workspace** and **Add a workspace**. |
+| Status row | One word for your connection, such as "Connected" or "Offline" ([What each status means](connections-and-troubleshooting.md#what-each-status-means)). **Sign-in needed** is a button. The [privacy chip](#the-privacy-chip) sits at its right. |
 | "Invitations", "Waiting to join", "Joined, not in your teams" | Invitations for you (**Join**). For the host, people to let in (**Let in…**) or add to a team (**Add to a team…**). |
 | Teams and channels | Bold names have unread messages. A pencil marks unsent text ([Find your way around the sidebar](teams-channels-and-people.md#find-your-way-around-the-sidebar)). |
 | Agents | Your unfinished tasks and chats with access. "Needs you" marks a task that waits for your approval ([See which agents have access](agents-and-chat-access.md#see-which-agents-have-access)). |
@@ -75,7 +73,7 @@ After that, the main area shows what to do next. [What each status means](connec
 
 Outside Crew, a chat with access shows a **Crew · #{channel}** chip. Choose it to manage that access.
 
-### Privacy
+### The privacy chip
 
 The chip reads "Private · {institution}", such as "Private · UCSF", or "Public". Privacy decides which AI models may read the workspace, not which people see it. Public applies only when both your connection and the workspace allow it. The chip reads "Checking privacy…" while Crew checks, and is hidden while you are offline or waiting to join. Choose it for details ([Privacy and security](privacy-and-security.md#check-a-workspaces-privacy)).
 

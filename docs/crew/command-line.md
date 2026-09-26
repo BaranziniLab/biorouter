@@ -15,7 +15,7 @@ You need:
 - A Mac or Linux computer. On Windows, commands fail with `Shared Crew daemon IPC is unavailable on this platform`.
 - `biorouter` and `biorouterd` in the same folder, and the same Biorouter profile as your desktop app.
 - An account on the lab's Linux server, with an SSH key, password or code from your IT team.
-- Your own `~/.local/bin/biorouter-crew` in that account. Every connecting account needs one, the host's included. A copy in `/usr/bin` does not count. See [Administration](administration.md).
+- Your own `~/.local/bin/biorouter-crew` in that account, installed by you or IT. See [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account).
 - The server's SSH host key in your known hosts file. See [Connections and troubleshooting](connections-and-troubleshooting.md).
 
 ## The approval secret
@@ -84,7 +84,7 @@ Nothing is guessed. An unknown name says so, and an ambiguous one lists the matc
 - `daemon start` sets or asks for the secret. Most commands start the daemon for you.
 - `daemon stop` stops it for the desktop app too. Closing the app does not stop it.
 
-A message that starts `Restart the shared Biorouter daemon` means the daemon is older than the command, so stop and start it. `This daemon has no human approval authority` means it refuses every command, so end it as in [If you forget the approval secret](#if-you-forget-the-approval-secret). After `Stop accepted, but ... shutdown is unconfirmed`, wait until `daemon status` shows no daemon.
+A message that starts `Restart the shared Biorouter daemon` means the daemon is older than the command, so stop and start it. For the same problem in the desktop app, see [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service). `This daemon has no human approval authority` means it refuses every command, so end it as in [If you forget the approval secret](#if-you-forget-the-approval-secret). After `Stop accepted, but ... shutdown is unconfirmed`, wait until `daemon status` shows no daemon.
 
 ## Keep device keys in an encrypted vault
 
@@ -134,7 +134,7 @@ The daemon reconnects by itself after a network drop, but not after `disconnect`
 | `crew_ssh_host_key_unknown` | Get the key fingerprint from IT, check it, and add the key to your known hosts file. |
 | `crew_ssh_host_key_changed` | Do not connect. Ask IT to confirm the change. |
 | `crew_ssh_unreachable` | Check your network, or your VPN (the app that connects you to your institution's network). The daemon keeps trying. |
-| `crew_bridge_missing` | Ask your host or IT to install `~/.local/bin/biorouter-crew` in your account. |
+| `crew_bridge_missing` | Install `~/.local/bin/biorouter-crew` yourself, or ask IT. See [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account). |
 | `crew_workspace_identity_mismatch` | Stop. The server answered for a different workspace. Ask your host. |
 | `crew_ssh_failed` | SSH or Crew on the server failed, for example because Crew stopped when the server restarted. Ask your host to start it again as in [Server commands](#server-commands), then run `connect`. |
 
@@ -148,7 +148,7 @@ The daemon reconnects by itself after a network drop, but not after `disconnect`
 2. Run `connections join-invitation` with it, then `auth` and `join`, as in [Join a workspace](#join-a-workspace).
 3. Send the new code to the host. When the host enters it, `join` prints `You're in lab.`
 
-If you are the host, never remove the workspace from your only computer. Host tasks, such as inviting and removing people, work only from your computers, so nobody could do them again. Add a second computer first with `enroll invite @alice --add-device`.
+If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace.
 
 `connections save FILE` adds a connection from a JSON description, and `connections update FILE` replaces the selected one. The fields are listed in [Save a connection from a descriptor](../research/biorouter-crew/cli-guide.md#save-a-connection-from-a-descriptor). The output of `connections show` is not valid input.
 
@@ -165,7 +165,7 @@ In the desktop app, choose **Host a new workspace**, then **Start it for me**, a
 
 3. On your computer, run `biorouter crew connections join-invitation ./lab-start.txt --preparation-id 'PREPARATION_ID' --ssh-target alice@hpc.example.edu --institution ucsf`.
 4. Run `biorouter crew auth`, then `biorouter crew workspace bootstrap`, which works once, with the key you gave `start`. It prints `Signed in to lab as @alice.` Members see your display name after you run `profile set 'Alice Chen'`.
-5. Run `biorouter crew privacy set-workspace private --institution ucsf`. The institution can never change, so check it before anyone runs an agent.
+5. Run `biorouter crew privacy set-workspace private --institution ucsf`. The institution can never change, so check it before anyone runs an agent. The command prints a line such as `Workspace privacy: Private for everyone · institution ucsf · policy epoch 2`.
 
 `workspace show` lists its privacy, people, teams, channels, invitations and agent grants. `workspace rename NAME` (host) keeps the history and grants.
 
@@ -275,11 +275,7 @@ biorouter crew grants grant SESSION_ID methods --context-channel analysis-lab/ra
 
 The first channel is where the chat posts. Each `--context-channel` adds one to read, up to 20 channels in all. `grants list` shows each chat and task with access, its state and time left. `context SESSION_ID` shows one grant's channels.
 
-These changes end every grant and task in the workspace. `grants list` then shows `Ended: Crew settings changed`, and you grant access again:
-
-- adding or removing people, or accepting an invitation
-- archiving a channel, or offering or accepting its ownership
-- changing the workspace's privacy
+Some workspace changes end every grant and task in the workspace. `grants list` then shows `Ended: Crew settings changed`, and you grant access again. [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) lists the changes.
 
 `grants revoke SESSION_ID` exits with `0` only when the workspace confirms. After `Stopped on this device ...` (exit `1`), the chat already cannot use Crew, and Biorouter confirms later by itself. `Not revoked` means the chat still has access, so retry. A revoke does not prove that a command already running on the server stopped.
 
@@ -291,6 +287,8 @@ To use a terminal chat, create it with `biorouter session --shared-daemon --no-s
 
 - `privacy set-personal private --institution ID` or `public` changes how this computer treats the workspace.
 - `privacy set-workspace private` or `public` (host) changes the workspace's privacy. `--institution ID` confirms its institution, which never changes.
+
+> **Warning.** `set-personal public` and `set-workspace public` act at once, with no typed confirmation. The desktop app asks you to type the workspace name first.
 
 An institution ID is 1 to 64 lowercase letters, digits, `_` or `-`. Changing the workspace's privacy ends every agent grant. Switching to Public never exposes earlier Private content. See [Privacy and security](privacy-and-security.md).
 
@@ -326,13 +324,7 @@ Workspace refusals are plain sentences that name the fix, with the code in JSON 
 
 The server program `biorouter-crew` runs in the host's account. Members never run it, because their daemons start it over SSH. Its commands are in [Administration](administration.md). `status --name` and `stop --name` take the workspace's original name.
 
-Nothing starts the workspace when the server boots. After a reboot, the host runs this, without `--name`:
-
-```bash
-"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/<original name>"
-```
-
-The state folder keeps its original name after a rename, and adding `--name` then fails with `name_mismatch` or a `bootstrap_key` error.
+Nothing starts the workspace when the server boots. The host starts it again as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows.
 
 ## Related documentation
 
