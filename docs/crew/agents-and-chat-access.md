@@ -38,7 +38,11 @@ Crew posts your whole task in the channel as "Task: …", so do not paste data y
 
 ### Choose a model
 
-If the pane reads "No models are set up.", choose **Open Settings** and add one. Otherwise choose **Change** or "Choose a model", and type in **Search models** to filter. For an unlisted model, type its exact name and choose "Use “name” with provider".
+If the pane reads "No models are set up.", choose **Open Settings** and add one. Otherwise:
+
+1. Choose **Change** beside the model, or "Choose a model" when no model is shown.
+2. Type in **Search models** to filter the list.
+3. Choose a model. For an unlisted model, type its exact name and choose "Use “name” with provider". The list closes, and **Model** shows the model and its provider.
 
 | Chip | Meaning |
 |---|---|
@@ -137,7 +141,11 @@ It cannot use other Biorouter tools (no shell, web or local files), post elsewhe
 
 ### A chat's fixed channel and model
 
-The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. For other work, start a new chat, send it a message, then type `/crew`.
+The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. For other work:
+
+1. Start a new chat.
+2. Send it a message.
+3. Type `/crew`. Crew opens the Chat access pane for the new chat.
 
 ### When Crew goes offline
 
@@ -158,7 +166,7 @@ Most refusals say what to do. For these:
 | "Crew workspace policy changed", "Crew context channel is unavailable" | Choose the channel name at the top, then **Refresh channel**. |
 | "Confirm this workspace's institution", "Set this private SSH connection's institution" | See [Before you start](#before-you-start). |
 | "managed hooks", "managed policy could not be loaded" | Contact your administrator. |
-| "saved on this device", "another institution's context", "retains its original connection", "remains bound" | Start a new chat, send a message, then type `/crew`. |
+| "saved on this device", "another institution's context", "retains its original connection", "remains bound" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
 
 ## See which agents have access
 

@@ -77,7 +77,13 @@ When the install worked, the last line prints the version, such as `biorouter-cr
 
 ## Host the workspace
 
-On the first Crew screen, choose **Host a new workspace**. If you already have a workspace, choose its name at the top of the sidebar, then **Add a workspace**, then **Host a new workspace…**. The dialog has three steps: Name, Start and Create.
+On the first Crew screen, choose **Host a new workspace**. If you already have a workspace:
+
+1. Choose its name at the top of the sidebar.
+2. Choose **Add a workspace**.
+3. Choose **Host a new workspace…**. The dialog "Host a new workspace" opens.
+
+The dialog has three steps: Name, Start and Create.
 
 ### Name the workspace
 
@@ -106,7 +112,7 @@ Use this when **Start it for me** cannot sign in, or fails.
 2. Paste the `ssh` command shown there into the terminal, and press Enter. Check the fingerprint if asked, and type your password or code.
 3. Choose **Copy** beside the start commands, paste them into the terminal, and press Enter.
 4. Copy all the output, including the whole line from `{` to `}`, into **Paste what it printed**.
-5. When Crew shows "Found {workspace} on {server}", choose **Continue**.
+5. When Crew shows "Found {workspace} on {server}", choose **Continue**. The dialog moves to step 3, Create.
 
 #### If starting does not work
 

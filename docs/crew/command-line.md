@@ -34,7 +34,7 @@ Every command except `daemon status` first asks for your Crew approval secret, a
 1. Quit the desktop app. Quitting it does not stop the daemon.
 2. Run `biorouter crew daemon status` and note the pid in `Biorouter daemon running (pid 4242) for this profile.`
 3. Run `kill 4242` with your pid, or restart your computer. `daemon status` then prints `No such file or directory (os error 2)`.
-4. Run `daemon start`, or open the desktop app, and choose a new secret.
+4. Run `daemon start`, or open the desktop app, and choose a new secret. `daemon status` then prints a new pid.
 
 Your connections, keys and workspaces stay. A running task or transfer may stop, so follow [Recover after a restart](#recover-after-a-restart).
 
@@ -233,7 +233,7 @@ Uploading does not post. You upload, then attach:
 1. `biorouter crew --show-ids files upload methods ./counts.csv` prints the transfer ID.
 2. `files watch TRANSFER_ID` follows it to `Transfer Ready.`
 3. `--show-ids files status TRANSFER_ID` shows the `Attachment ID:`.
-4. `send methods --attachment ATTACHMENT_ID` posts it.
+4. `send methods --attachment ATTACHMENT_ID` posts it, and prints `Posted to #methods.`
 
 To download, get the ID from `history methods --latest --show-ids`, then run `files download ID --output ./counts.csv`. Add `--overwrite` to replace a file.
 
@@ -279,7 +279,13 @@ Some workspace changes end every grant and task in the workspace. `grants list` 
 
 `grants revoke SESSION_ID` exits with `0` only when the workspace confirms. After `Stopped on this device ...` (exit `1`), the chat already cannot use Crew, and Biorouter confirms later by itself. `Not revoked` means the chat still has access, so retry. A revoke does not prove that a command already running on the server stopped.
 
-To use a terminal chat, create it with `biorouter session --shared-daemon --no-start --create-only`, which prints its session ID. Grant it, then open it with `biorouter session --shared-daemon --no-start --resume --session-id SESSION_ID`, or send one prompt with `biorouter run` and the same options plus `--text`. Without `--shared-daemon`, the chat cannot use a grant.
+To use a terminal chat:
+
+1. Run `biorouter session --shared-daemon --no-start --create-only`. It prints the chat's session ID.
+2. Run `grants grant SESSION_ID methods`. `grants list` then shows the chat as `Active`.
+3. Open the chat with `biorouter session --shared-daemon --no-start --resume --session-id SESSION_ID`, or send one prompt with `biorouter run` and the same options plus `--text`. The chat opens in your terminal, or `biorouter run` prints its reply.
+
+Without `--shared-daemon`, the chat cannot use a grant.
 
 ## Privacy settings
 

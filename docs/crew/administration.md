@@ -199,7 +199,9 @@ Upgrade at a quiet time, because members disconnect while the broker restarts. A
    ./biorouter-crew start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"
    ```
 
-4. Tell members to connect again if the workspace shows as offline.
+   The `start` line prints `"state":"running"`.
+
+4. Tell members to choose **Connect to chen-lab** if the workspace shows as offline. Their status row reads "Connected" again.
 
 The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 

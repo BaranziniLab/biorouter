@@ -36,7 +36,11 @@ The status row shows "Connected", and your channels appear. A failed attempt add
 
 On a Mac or a Linux computer, quitting Biorouter leaves the background service running and the workspace connected. When you reopen Biorouter, type your approval secret in the window "Connect to existing BioRouter daemon". See [The approval secret](getting-started.md#the-approval-secret). A pending join shows the same code, or finishes by itself.
 
-After your computer restarts, and on Windows after every quit, the service stops. Reopen Biorouter, set an approval secret on a Mac or a Linux computer, and choose **Connect to {workspace}**.
+After your computer restarts, and on Windows after every quit, the service stops. To connect again:
+
+1. Open Biorouter.
+2. On a Mac or a Linux computer, set an approval secret when Biorouter asks.
+3. Choose **Connect to {workspace}**. The status row shows "Connected".
 
 ### Disconnect from a workspace
 
