@@ -26,7 +26,7 @@ compliance boundary is on [the compliance page](compliance.md).
 | Config key naming the executable | `CLAUDE_CODE_COMMAND` | `CODEX_COMMAND` |
 | Surface driven | `claude -p` (headless) | `codex app-server` (JSON-RPC over stdio) |
 | Default model | `claude-opus-5-5` | `gpt-6-astra` |
-| Advertised models | `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000). All accept images. | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (1,050,000 each). All accept images. |
+| Advertised models | `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000). All accept images. | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (258,400 each, the window Codex gives a ChatGPT sign-in). All accept images. |
 | Unlisted models | Accepted — a user may type an alias such as `sonnet` by hand | Accepted |
 | Vendor documentation | [Claude Code headless mode](https://code.claude.com/docs/en/headless) | [Codex CLI](https://developers.openai.com/codex/cli) |
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
@@ -129,9 +129,10 @@ On the Codex side, four ids have left the picker:
   the notice "GPT-5.5 retires on October 14, 2026. Switch to GPT-5.6 Sol to continue working in
   Codex." Until then it still runs if you type it. Only Codex is retiring it; the OpenAI API
   provider is unaffected.
-- `gpt-5.4` and `gpt-5.4-mini` were **retired by OpenAI on 2026-08-31**, with `gpt-5.6-terra` and
-  `gpt-5.6-luna` named as their replacements. A turn on one fails with the same
-  `not supported when using Codex with a ChatGPT account` 400.
+- `gpt-5.4` and `gpt-5.4-mini` have **left Codex**, with `gpt-5.6-terra` and `gpt-5.6-luna` as the
+  Codex replacements. A turn on one fails with the same
+  `not supported when using Codex with a ChatGPT account` 400. Only Codex dropped them; both are
+  still active on the OpenAI API provider.
 
 There is no `gpt-6-terra`. The GPT-6 family is Astra, Sol and Luna; Terra exists only as
 `gpt-5.6-terra`, and Codex refuses `gpt-6-terra` with the same 400. Two further models run but are
@@ -147,14 +148,16 @@ model catalogue each binary carries. The earlier round, on 2026-09-08 against `c
 CLI reported back in `modelUsage` then. The Opus 5.5 window comes from the CLI's own catalogue and
 Anthropic's model page, and should be re-read from `modelUsage` on a signed-in 2.1.280.
 
-`model/list` carries no context-window field, so the Codex windows come from OpenAI's published
-model pages. Those give 1,050,000 tokens for every model in the catalogue. The Codex backend's own
-model catalogue, which `codex-cli` 0.157.0 caches locally, gives a ChatGPT sign-in a smaller working
-window: 272,000 tokens (with a maximum of 872,000), of which it uses 95%. So a BioRouter turn that
-flattens more than about 258,000 tokens into one Codex prompt may be larger than what Codex actually
-uses. The context gauge still shows 1,050,000, because `MODEL_CONTEXT_WINDOWS` is keyed by model
-name and shared with the OpenAI API provider, which does serve the full window. Making the window a
-per-provider fact is a design change that has not been made.
+`model/list` carries no context-window field. OpenAI's published model pages give 1,050,000 tokens
+for every model in the catalogue, but that is the OpenAI API's window. The Codex backend's own model
+catalogue, which `codex-cli` 0.157.0 caches locally, gives a ChatGPT sign-in a smaller working
+window: 272,000 tokens (with a maximum of 872,000), of which it uses 95%, or 258,400. Codex reports
+that same 258,400 on every turn. Since 2026-09-25 the Codex provider advertises 258,400 for every
+model, and compaction sizes against it, so the context gauge and the point where BioRouter compacts
+match what Codex really uses. Before that both read 1,050,000, and a chat past about 258,000 tokens
+sent Codex prompts larger than its window while the gauge read a quarter full. A limit you set with
+`BIOROUTER_CONTEXT_LIMIT` still wins. The shared `MODEL_CONTEXT_WINDOWS` registry keeps 1,050,000,
+because the OpenAI API provider does serve the full window.
 
 ## Where each credential lives, and who reads it
 

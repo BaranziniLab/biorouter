@@ -21,8 +21,8 @@ Run the verification section after changing `crates/biorouter/src/providers/zai.
   `https://api.z.ai/api/anthropic` used by Claude Code — not used here; we
   integrate the OpenAI surface, matching the other ~16 OpenAI-compatible
   providers.)
-- **Models:** `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `glm-5.1`, `glm-5`,
-  `glm-5-turbo`, `glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`. Context limits
+- **Models:** `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flashx`, `glm-5.2`, `glm-5.1`,
+  `glm-5`, `glm-5-turbo`, `glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`. Context limits
   are registered per id in `MODEL_CONTEXT_WINDOWS` in
   `crates/biorouter/src/model.rs`, with the `glm-*` patterns in
   `MODEL_SPECIFIC_LIMITS` as the fallback for other ids.
@@ -33,9 +33,9 @@ Run the verification section after changing `crates/biorouter/src/providers/zai.
 > `crates/biorouter/src/providers/zai.rs` — re-derive from there rather than
 > trusting this page.
 
-> **Note.** GLM-5.3 and GLM-5.3 Flash reason on every request: z.ai rejects a
-> request that disables thinking. Of the listed models, only `glm-5.3-flash`
-> accepts image input.
+> **Note.** GLM-5.3, GLM-5.3 Flash and GLM-5.3 FlashX reason on every request:
+> z.ai rejects a request that disables thinking. Of the listed models, only
+> `glm-5.3-flash` and its faster variant `glm-5.3-flashx` accept image input.
 
 ## Where GLM appears
 
@@ -95,7 +95,7 @@ Exercises factory → `ZaiProvider::from_env` → live HTTP.
 ### Context window
 
 The default `glm-5.3` reports 1,048,576 tokens for token accounting, as do
-`glm-5.3-flash` and `glm-5.2`; `glm-4.6` and `glm-4.7` report 200,000. The
+`glm-5.3-flash`, `glm-5.3-flashx` and `glm-5.2`; `glm-4.6` and `glm-4.7` report 200,000. The
 values come from `MODEL_CONTEXT_WINDOWS` in `crates/biorouter/src/model.rs`.
 
 ## Gotchas

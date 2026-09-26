@@ -56,6 +56,16 @@ const DATABRICKS_DEFAULT_FAST_MODEL: &str = "databricks-gemini-3-5-flash";
 /// 2026-09-25). This provider posts OpenAI chat-completions bodies to
 /// `serving-endpoints/{name}/invocations`, so neither is advertised until a
 /// live request on that path succeeds.
+///
+/// Also NOT listed, though Databricks serves them (supported-models page,
+/// 2026-09-25): `databricks-grok-4-6`, `databricks-glm-5-3`,
+/// `databricks-glm-5-3-flash`, `databricks-kimi-k3` and
+/// `databricks-deepseek-v4-1-flash`. `formats::databricks` shapes requests
+/// only for the Claude, GPT and Gemini families it names, and these
+/// open-weight families carry constraints it does not model (Kimi K3 rejects
+/// any non-default sampling value; GLM-5.3 reasons on every request and
+/// refuses to have that disabled). With no Databricks key to try tool calling
+/// on the invocations path, none is advertised; each can still be typed.
 pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
     "databricks-claude-sonnet-4-6",
     // Claude

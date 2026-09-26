@@ -35,6 +35,12 @@ pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
 // The list is newest → oldest because the UI auto-selects the first entry when
 // a user switches providers; BEDROCK_DEFAULT_MODEL is a separate choice and
 // stays on Sonnet 4.6.
+//
+// Not listed although Active on Bedrock: `us.anthropic.claude-opus-4-7` and
+// `us.anthropic.claude-fable-5`. Opus 4.8 and Fable 5.1 supersede them at the
+// same price and 1M window. `model.rs` still sizes both for an id typed
+// through "Enter a model not listed", so its `us.anthropic.claude-opus-4-7`
+// row is deliberate, not an orphan.
 pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
     // Claude Opus 5.5 (Bedrock launch 2026-09-22, 1M context, 128K output).
     // Its reasoning blocks are bound to the conversation prefix, so

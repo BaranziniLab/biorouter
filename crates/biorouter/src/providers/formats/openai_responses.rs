@@ -1,4 +1,4 @@
-use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::message::{Message, MessageContent, ToolRequest, ToolResponse};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
 use crate::providers::formats::audience;
@@ -7,7 +7,7 @@ use anyhow::{anyhow, Error};
 use async_stream::try_stream;
 use chrono;
 use futures::Stream;
-use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, Role, Tool};
+use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, RawContent, Role, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -411,145 +411,182 @@ pub enum ContentPart {
     Unknown,
 }
 
-fn add_conversation_history(input_items: &mut Vec<Value>, messages: &[Message]) {
+/// The text and user images of one message, as one Responses role item, or
+/// `None` when it carries neither (a message holding only tool traffic).
+fn role_item(message: &Message) -> Option<Value> {
+    let role = match message.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    };
+
+    let mut content_items = Vec::new();
+    for content in &message.content {
+        match content {
+            MessageContent::Text(text) if !text.text.is_empty() => {
+                let content_type = if message.role == Role::Assistant {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                content_items.push(json!({
+                    "type": content_type,
+                    "text": text.text
+                }));
+            }
+            MessageContent::Image(image) if message.role == Role::User => {
+                // Responses API user-message image format: data URL inline.
+                // Assistant messages don't carry image inputs.
+                content_items.push(json!({
+                    "type": "input_image",
+                    "image_url": format!(
+                        "data:{};base64,{}",
+                        image.mime_type, image.data
+                    ),
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    (!content_items.is_empty()).then(|| {
+        json!({
+            "role": role,
+            "content": content_items
+        })
+    })
+}
+
+fn function_call_item(request: &ToolRequest) -> Option<Value> {
+    let tool_call = request.tool_call.as_ref().ok()?;
+    let arguments_str = tool_call
+        .arguments
+        .as_ref()
+        .map(|args| serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+
+    tracing::debug!(
+        "Replaying function_call with call_id: {}, name: {}",
+        request.id,
+        tool_call.name
+    );
+    Some(json!({
+        "type": "function_call",
+        "call_id": request.id,
+        "name": tool_call.name,
+        "arguments": arguments_str
+    }))
+}
+
+/// Said in a tool's output where it returned an image, which follows as a user
+/// item — the wording `formats::openai::format_messages` has always used.
+const TOOL_IMAGE_PLACEHOLDER: &str =
+    "This tool result included an image that is uploaded in the next message.";
+
+/// The one `function_call_output` a tool response owes its call. Each image the
+/// tool addressed to the model is replaced by [`TOOL_IMAGE_PLACEHOLDER`] and
+/// pushed onto `images` as an `input_image`, for the caller to send in a user
+/// item after the outputs.
+///
+/// ⚠ An image used to vanish here: `audience::flattened_text` has no text for
+/// one, so a screenshot or a rendered figure reached the model as an empty
+/// output while Chat Completions forwarded it. Only a `function_call_output`'s
+/// `output` string is accepted in this position, hence the separate user item.
+fn function_call_output_item(response: &ToolResponse, images: &mut Vec<Value>) -> Value {
+    match &response.tool_result {
+        Ok(contents) => {
+            let mut text_content: Vec<String> = Vec::new();
+            // Send only what the tool addressed to the model.
+            for content in contents
+                .content
+                .iter()
+                .filter(|c| audience::is_for_model(c))
+            {
+                if let RawContent::Image(image) = &content.raw {
+                    text_content.push(TOOL_IMAGE_PLACEHOLDER.to_string());
+                    images.push(json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{};base64,{}", image.mime_type, image.data),
+                    }));
+                } else if let Some(text) = audience::flattened_text(content) {
+                    text_content.push(text);
+                }
+            }
+
+            // Emitted even when nothing survives the filter. The Err
+            // arm below already knows why: a `function_call` with no
+            // matching output is the "No tool output found" error,
+            // and the Responses API takes an empty string happily.
+            // A tool that addresses every block to the user alone
+            // used to skip this push and fail the whole request one
+            // turn later.
+            tracing::debug!("Sending function_call_output with call_id: {}", response.id);
+            json!({
+                "type": "function_call_output",
+                "call_id": response.id,
+                "output": text_content.join("\n")
+            })
+        }
+        Err(error_data) => {
+            // Handle error responses - must send them back to the API
+            // to avoid "No tool output found" errors
+            tracing::debug!(
+                "Sending function_call_output error with call_id: {}",
+                response.id
+            );
+            json!({
+                "type": "function_call_output",
+                "call_id": response.id,
+                "output": format!("Error: {}", error_data.message)
+            })
+        }
+    }
+}
+
+/// The conversation as Responses input items, in the order it happened.
+///
+/// ⚠ This was three passes over the whole history — every text message, then
+/// every `function_call`, then every `function_call_output` — so a multi-turn
+/// tool conversation reached the model with earlier turns' calls after the
+/// latest user message, each cut off from the text that announced it. The API
+/// accepts any order, so nothing failed; the model read a scrambled transcript.
+/// It mattered more from 2026-09-25, when Azure's GPT-5.4/5.5 moved here from
+/// Chat Completions, whose `format_messages` was always chronological.
+///
+/// Within one message: an assistant's text precedes the calls it announced; a
+/// user message answers the previous turn's calls first (outputs, then the
+/// images they returned) and any text it carries was written after the tool
+/// ran, so it comes last. Tool images never sit between a call and its output.
+fn add_conversation_items(input_items: &mut Vec<Value>, messages: &[Message]) {
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
-        let has_only_tool_content = message.content.iter().all(|c| {
-            matches!(
-                c,
-                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-            )
-        });
+        let mut text = role_item(message);
+        let mut calls = Vec::new();
+        let mut outputs = Vec::new();
+        let mut tool_images = Vec::new();
 
-        if has_only_tool_content {
-            continue;
-        }
-
-        if message.role != Role::User && message.role != Role::Assistant {
-            continue;
-        }
-
-        let role = match message.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-        };
-
-        let mut content_items = Vec::new();
         for content in &message.content {
             match content {
-                MessageContent::Text(text) if !text.text.is_empty() => {
-                    let content_type = if message.role == Role::Assistant {
-                        "output_text"
-                    } else {
-                        "input_text"
-                    };
-                    content_items.push(json!({
-                        "type": content_type,
-                        "text": text.text
-                    }));
+                MessageContent::ToolRequest(request) if message.role == Role::Assistant => {
+                    calls.extend(function_call_item(request));
                 }
-                MessageContent::Image(image) if message.role == Role::User => {
-                    // Responses API user-message image format: data URL inline.
-                    // Assistant messages don't carry image inputs.
-                    content_items.push(json!({
-                        "type": "input_image",
-                        "image_url": format!(
-                            "data:{};base64,{}",
-                            image.mime_type, image.data
-                        ),
-                    }));
+                MessageContent::ToolResponse(response) => {
+                    outputs.push(function_call_output_item(response, &mut tool_images));
                 }
                 _ => {}
             }
         }
 
-        if !content_items.is_empty() {
+        if message.role == Role::Assistant {
+            input_items.extend(text.take());
+        }
+        input_items.extend(calls);
+        input_items.extend(outputs);
+        if !tool_images.is_empty() {
             input_items.push(json!({
-                "role": role,
-                "content": content_items
+                "role": "user",
+                "content": tool_images
             }));
         }
-    }
-}
-
-fn add_function_calls(input_items: &mut Vec<Value>, messages: &[Message]) {
-    for message in messages.iter().filter(|m| m.is_agent_visible()) {
-        if message.role == Role::Assistant {
-            for content in &message.content {
-                if let MessageContent::ToolRequest(request) = content {
-                    if let Ok(tool_call) = &request.tool_call {
-                        let arguments_str = tool_call
-                            .arguments
-                            .as_ref()
-                            .map(|args| {
-                                serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
-                            })
-                            .unwrap_or_else(|| "{}".to_string());
-
-                        tracing::debug!(
-                            "Replaying function_call with call_id: {}, name: {}",
-                            request.id,
-                            tool_call.name
-                        );
-                        input_items.push(json!({
-                            "type": "function_call",
-                            "call_id": request.id,
-                            "name": tool_call.name,
-                            "arguments": arguments_str
-                        }));
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn add_function_call_outputs(input_items: &mut Vec<Value>, messages: &[Message]) {
-    for message in messages.iter().filter(|m| m.is_agent_visible()) {
-        for content in &message.content {
-            if let MessageContent::ToolResponse(response) = content {
-                match &response.tool_result {
-                    Ok(contents) => {
-                        let text_content: Vec<String> = contents
-                            .content
-                            .iter()
-                            // Send only what the tool addressed to the model.
-                            .filter(|c| audience::is_for_model(c))
-                            .filter_map(audience::flattened_text)
-                            .collect();
-
-                        // Emitted even when nothing survives the filter. The Err
-                        // arm below already knows why: a `function_call` with no
-                        // matching output is the "No tool output found" error,
-                        // and the Responses API takes an empty string happily.
-                        // A tool that addresses every block to the user alone,
-                        // or returns only an image, used to skip this push and
-                        // fail the whole request one turn later.
-                        tracing::debug!(
-                            "Sending function_call_output with call_id: {}",
-                            response.id
-                        );
-                        input_items.push(json!({
-                            "type": "function_call_output",
-                            "call_id": response.id,
-                            "output": text_content.join("\n")
-                        }));
-                    }
-                    Err(error_data) => {
-                        // Handle error responses - must send them back to the API
-                        // to avoid "No tool output found" errors
-                        tracing::debug!(
-                            "Sending function_call_output error with call_id: {}",
-                            response.id
-                        );
-                        input_items.push(json!({
-                            "type": "function_call_output",
-                            "call_id": response.id,
-                            "output": format!("Error: {}", error_data.message)
-                        }));
-                    }
-                }
-            }
-        }
+        input_items.extend(text);
     }
 }
 
@@ -571,9 +608,7 @@ pub fn create_responses_request(
         }));
     }
 
-    add_conversation_history(&mut input_items, messages);
-    add_function_calls(&mut input_items, messages);
-    add_function_call_outputs(&mut input_items, messages);
+    add_conversation_items(&mut input_items, messages);
 
     let mut payload = json!({
         "model": model_config.model_name,
@@ -1389,7 +1424,7 @@ mod tests {
         );
 
         let mut items = Vec::new();
-        add_function_call_outputs(&mut items, &[message]);
+        add_conversation_items(&mut items, &[message]);
         assert_eq!(items.len(), 1, "one output per tool response");
         items[0]["output"]
             .as_str()
@@ -1441,6 +1476,162 @@ mod tests {
                 .with_audience(vec![rmcp::model::Role::User])]);
 
         assert_eq!(sent, "", "the output is present and empty, not absent");
+    }
+
+    fn call(id: &str, name: &str) -> Message {
+        Message::assistant()
+            .with_text(format!("calling {name}"))
+            .with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: name.to_string().into(),
+                    arguments: Some(object!({})),
+                    meta: None,
+                }),
+            )
+    }
+
+    fn answer(id: &str, content: Vec<rmcp::model::Content>) -> Message {
+        Message::user().with_tool_response(
+            id,
+            Ok(rmcp::model::CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        )
+    }
+
+    /// One short label per input item, so an ordering assertion reads as the
+    /// transcript it describes.
+    fn labels(payload: &Value) -> Vec<String> {
+        payload["input"]
+            .as_array()
+            .expect("input is an array")
+            .iter()
+            .map(|item| match item["type"].as_str() {
+                Some("function_call") => format!("call:{}", item["call_id"].as_str().unwrap()),
+                Some("function_call_output") => {
+                    format!("out:{}", item["call_id"].as_str().unwrap())
+                }
+                _ => {
+                    let first = &item["content"][0];
+                    let body = first["text"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| first["type"].as_str().unwrap().to_string());
+                    format!("{}:{body}", item["role"].as_str().unwrap())
+                }
+            })
+            .collect()
+    }
+
+    /// A two-turn tool conversation reaches the model in the order it
+    /// happened. The builder used to emit all text, then every call, then every
+    /// output, which put turn one's call after turn two's question — accepted
+    /// by the API, so nothing failed and the model read a scrambled transcript.
+    #[test]
+    fn a_multi_turn_tool_conversation_is_sent_in_order() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("u1"),
+            call("c1", "first"),
+            answer("c1", vec![rmcp::model::Content::text("r1")]),
+            Message::user().with_text("u2"),
+            call("c2", "second"),
+            answer("c2", vec![rmcp::model::Content::text("r2")]),
+        ];
+        let payload = create_responses_request(
+            &ModelConfig::new_or_fail("gpt-6-sol"),
+            "sys",
+            &messages,
+            &[],
+        )?;
+
+        assert_eq!(
+            labels(&payload),
+            [
+                "system:sys",
+                "user:u1",
+                "assistant:calling first",
+                "call:c1",
+                "out:c1",
+                "user:u2",
+                "assistant:calling second",
+                "call:c2",
+                "out:c2",
+            ]
+        );
+        Ok(())
+    }
+
+    /// An image a tool returns to the model (a Copilot screen capture, the
+    /// developer image processor) reaches it. `flattened_text` has no text for
+    /// an image, so it used to vanish into an empty output; now the output
+    /// says an image follows, and the image comes as a user item after it —
+    /// never between the call and its output. Chat Completions'
+    /// `format_messages` has always done the same.
+    #[test]
+    fn a_tool_result_image_follows_its_output_as_a_user_item() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("look"),
+            call("c1", "screen_capture"),
+            answer(
+                "c1",
+                vec![
+                    rmcp::model::Content::text("captured"),
+                    rmcp::model::Content::image("aGVsbG8=", "image/png"),
+                ],
+            ),
+        ];
+        let payload =
+            create_responses_request(&ModelConfig::new_or_fail("gpt-6-sol"), "", &messages, &[])?;
+
+        assert_eq!(
+            labels(&payload),
+            [
+                "user:look",
+                "assistant:calling screen_capture",
+                "call:c1",
+                "out:c1",
+                "user:input_image",
+            ]
+        );
+        let input = payload["input"].as_array().unwrap();
+        assert_eq!(
+            input[3]["output"],
+            format!("captured\n{TOOL_IMAGE_PLACEHOLDER}"),
+            "the output says an image follows"
+        );
+        assert_eq!(
+            input[4]["content"][0]["image_url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+        Ok(())
+    }
+
+    /// An image the tool addressed to the user alone stays out, exactly like a
+    /// user-only text block.
+    #[test]
+    fn a_user_only_tool_image_is_not_forwarded() -> anyhow::Result<()> {
+        let messages = vec![
+            call("c1", "render"),
+            answer(
+                "c1",
+                vec![rmcp::model::Content::image("aGVsbG8=", "image/png")
+                    .with_audience(vec![rmcp::model::Role::User])],
+            ),
+        ];
+        let payload =
+            create_responses_request(&ModelConfig::new_or_fail("gpt-6-sol"), "", &messages, &[])?;
+
+        assert_eq!(
+            labels(&payload),
+            ["assistant:calling render", "call:c1", "out:c1"]
+        );
+        assert_eq!(payload["input"][2]["output"], "");
+        Ok(())
     }
 
     // BR-63: the Responses API takes the effort nested under `reasoning`, not as

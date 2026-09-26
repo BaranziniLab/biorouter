@@ -59,7 +59,16 @@ pub const GLOBAL_LOCATION: &str = "global";
 /// Vertex's multi-region locations. Each serves the models that are not in any
 /// single region while keeping requests inside that geography; they are used
 /// only when the user configures one as `GCP_LOCATION`.
-pub const MULTI_REGION_LOCATIONS: &[&str] = &["us", "eu"];
+pub const MULTI_REGION_LOCATIONS: &[&str] = &[US_MULTI_REGION, EU_MULTI_REGION];
+/// Vertex's United States multi-region.
+pub const US_MULTI_REGION: &str = "us";
+/// Vertex's Europe multi-region.
+pub const EU_MULTI_REGION: &str = "eu";
+/// The single region a regional model goes to when the user configured the
+/// `eu` multi-region: every regional Claude and Gemini model Vertex lists is
+/// served in europe-west1 (Belgium). See
+/// [`GcpVertexAIModel::preferred_location`].
+pub const EU_REGIONAL_LOCATION: &str = "europe-west1";
 
 /// Where Vertex serves a model — which decides where a request must go.
 ///
@@ -261,10 +270,29 @@ impl GcpVertexAIModel {
     /// configured single region that happens to serve one of these models
     /// (3.5 Flash is in a few non-US regions) is not consulted — setting
     /// `us` or `eu` is how a user keeps them in one geography.
+    ///
+    /// ⚠ A regional Claude or Gemini model is NOT served at the `us` / `eu`
+    /// multi-region (the Sonnet 4.6, Opus 4.6, Haiku 4.5 and Gemini 2.5 pages
+    /// list single regions and `global` under "Model availability"; checked
+    /// 2026-09-25), so a multi-region configuration sends it to a single
+    /// region inside that geography instead: europe-west1, which every one of
+    /// them lists, for `eu`, and the family's US region for `us`. Passing the
+    /// multi-region through failed every turn and handed the conversation to
+    /// the US fallback — a residency leak the `eu` setting exists to prevent.
+    /// A MaaS model keeps the multi-region, and the provider's `route` gives
+    /// it no fallback outside it, so an unserved model surfaces its error.
     pub fn preferred_location(&self, configured: &str) -> String {
         let configured_is_multi_region = MULTI_REGION_LOCATIONS.contains(&configured);
         match self.availability() {
-            ModelAvailability::Regional => configured.to_string(),
+            ModelAvailability::Regional => match (configured, self) {
+                (EU_MULTI_REGION, Self::Claude(_) | Self::Gemini(_)) => {
+                    EU_REGIONAL_LOCATION.to_string()
+                }
+                (US_MULTI_REGION, Self::Claude(_) | Self::Gemini(_)) => {
+                    self.known_location().to_string()
+                }
+                _ => configured.to_string(),
+            },
             ModelAvailability::MultiRegion
                 if configured == GLOBAL_LOCATION || configured_is_multi_region =>
             {

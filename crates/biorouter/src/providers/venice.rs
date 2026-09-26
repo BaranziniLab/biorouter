@@ -536,4 +536,16 @@ mod tests {
         assert_eq!(metadata.config_keys[2].name, "VENICE_BASE_PATH");
         assert_eq!(metadata.config_keys[3].name, "VENICE_MODELS_PATH");
     }
+
+    /// Venice serves Mistral Small 3.2 at 256k (`/api/v1/models` reports
+    /// availableContextTokens 256000, read 2026-09-25). The registry said 128k,
+    /// which halved the gauge and compacted early for an advertised model.
+    #[test]
+    fn mistral_small_gets_venices_256k_window() {
+        assert!(FALLBACK_MODELS.contains(&"mistral-small-3-2-24b-instruct"));
+        assert_eq!(
+            ModelConfig::context_window_for("mistral-small-3-2-24b-instruct"),
+            256_000
+        );
+    }
 }

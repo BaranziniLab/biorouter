@@ -82,6 +82,12 @@ pub struct CatalogEntry {
 /// 35B MoE stays in the catalog as an explicit opt-in "large" choice on every
 /// tier (issue #35: it is a 24 GB download and heavy to load, so it makes a
 /// poor silent default even on big machines).
+///
+/// Not listed yet: Qwen3.8 27B (2026-08-14). It has not been smoke-tested
+/// against the pinned `llama-server` build, and Ollama's `qwen3.8` tags now
+/// carry an MTP draft layer with the same `application/vnd.ollama.image.model`
+/// media type as the weights, which `ollama_model_blob_path_in_dir` (first
+/// matching layer) may pick instead of them (checked 2026-09-25).
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gemma4",

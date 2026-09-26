@@ -771,31 +771,47 @@ mod tests {
 
     /// Kimi K3 fixes `temperature` at 1.0 and `top_p` at 0.95 and rejects any
     /// other value; thinking is always on and `reasoning_effort` takes only
-    /// low/high/max (platform.kimi.ai, read 2026-09-25). The OpenAI engine
-    /// this provider runs on sends `temperature` only when the operator set
-    /// `BIOROUTER_TEMPERATURE`, never sends `top_p`, and never sends a
-    /// `reasoning_effort` to a Kimi model — so the default request is one K3
-    /// accepts. Pinned here so a default sampling value added to the engine
-    /// has to meet this model.
+    /// low/high/max (platform.kimi.ai, read 2026-09-25). The OpenAI engine this
+    /// provider runs on CAN carry a temperature — Quick effort fills 0.0 when
+    /// nothing is pinned, and `BIOROUTER_TEMPERATURE` or a provider preset pins
+    /// one — and `formats::openai::model_rejects_sampling_params` is what drops
+    /// it for K3 whatever its source. `top_p`/`top_k` are never sent, and K3 is
+    /// not a `reasoning_effort` model on this engine.
+    ///
+    /// ⚠ This comment used to say the engine sends `temperature` only when the
+    /// operator set `BIOROUTER_TEMPERATURE`, and the test built only the
+    /// default request, so it exercised neither the Quick path nor the gate —
+    /// the gate could be removed with this test still green while every Quick
+    /// turn on K3 got a 400. It now drives the default, Quick and a pinned
+    /// temperature through the id this catalog ships.
     #[test]
     fn kimi_k3_default_request_sends_no_sampling_overrides() {
-        let model = crate::model::ModelConfig::new_or_fail("kimi-k3").with_temperature(None);
-        let payload = crate::providers::formats::openai::create_request(
-            &model,
-            "system",
-            &[],
-            &[],
-            &crate::providers::utils::ImageFormat::OpenAi,
-            true,
-        )
-        .expect("request builds");
+        use crate::agents::effort::ReasoningEffort;
+        use crate::model::ModelConfig;
 
-        assert_eq!(payload["model"], "kimi-k3");
-        for key in ["temperature", "top_p", "top_k", "reasoning_effort"] {
-            assert!(
-                payload.get(key).is_none(),
-                "kimi-k3 rejects a non-default {key}; got {payload}"
-            );
+        let default = ModelConfig::new_or_fail("kimi-k3").with_temperature(None);
+        let quick = ReasoningEffort::Quick.apply_to_model(default.clone());
+        assert!(quick.temperature.is_some(), "Quick fills a temperature");
+        let pinned = ModelConfig::new_or_fail("kimi-k3").with_temperature(Some(0.7));
+
+        for (label, model) in [("default", default), ("quick", quick), ("pinned", pinned)] {
+            let payload = crate::providers::formats::openai::create_request(
+                &model,
+                "system",
+                &[],
+                &[],
+                &crate::providers::utils::ImageFormat::OpenAi,
+                true,
+            )
+            .expect("request builds");
+
+            assert_eq!(payload["model"], "kimi-k3");
+            for key in ["temperature", "top_p", "top_k", "reasoning_effort"] {
+                assert!(
+                    payload.get(key).is_none(),
+                    "{label}: kimi-k3 rejects a non-default {key}; got {payload}"
+                );
+            }
         }
     }
 }

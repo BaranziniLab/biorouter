@@ -138,7 +138,7 @@
       '<span class="chip">' + svgI('skills') + '5</span>' +
       '<span class="chip">' + svgI('book') + '6 KBs visible</span>' +
       '<span class="chip">' + svgI('dollar') + '0.0000</span>' +
-      '<span class="chip">' + svgI('brain') + 'gpt-5.5</span>' +
+      '<span class="chip">' + svgI('brain') + 'gpt-6-sol</span>' +
       '<span class="grow"></span>' + right + '</div></div>';
   }
 
@@ -479,16 +479,16 @@
       '<h2>Provider Configuration</h2>' +
       '<div class="lead">Configure your AI model providers. API keys are encrypted and stored locally.</div>' +
       '<div class="bw-grp"><i class="local"></i>Local models</div>' +
-      prow('L', 'Llama Server', 'Bundled llama.cpp runtime. Default qwen3.5-4b; no external install required.', true) +
+      prow('L', 'Llama Server', 'Bundled llama.cpp runtime. Gemma 4 E4B laptop default; Gemma 4 12B on 64 GiB systems.', true) +
       prow('O', 'Ollama', 'Local open source models. Default qwen3.', true) +
       '<div class="bw-grp"><i class="inst"></i>Institutional models</div>' +
-      prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.2-2025-12-11.', true) +
+      prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.5-2026-04-24.', true) +
       prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-8.', true) +
       '<div class="bw-grp"><i class="comm"></i>Commercial models</div>' +
       prow('A', 'Azure OpenAI', 'Models through Azure OpenAI Service (uses Azure credential chain by default).', false) +
       prow('A', 'Amazon Bedrock', 'Run models through Amazon Bedrock.', true) +
       prow('A', 'Anthropic', 'Claude and other models from Anthropic.', true) +
-      prow('O', 'OpenAI', 'GPT-4 and other OpenAI models, including OpenAI compatible ones.', true) +
+      prow('O', 'OpenAI', 'OpenAI models with gpt-6-sol as the default, plus compatible endpoints.', true) +
       prow('G', 'Google Gemini', 'Gemini models from Google AI.', false) +
       prow('R', 'OpenRouter', 'Route to Claude, Gemini, Grok, DeepSeek, Qwen, and more.', false) +
       '</div>';

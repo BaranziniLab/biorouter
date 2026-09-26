@@ -29,12 +29,15 @@ pub const ZAI_API_HOST: &str = "https://api.z.ai/api/paas/v4";
 pub const ZAI_DEFAULT_MODEL: &str = "glm-5.3";
 /// Newest first, default first: the desktop model switcher preselects entry 0.
 pub const ZAI_KNOWN_MODELS: &[&str] = &[
-    // GLM-5 family. 5.3 and 5.3-Flash are 1M-context and always reason.
+    // GLM-5 family. 5.3, 5.3-Flash and 5.3-FlashX are 1M-context and always
+    // reason. FlashX (2026-09-18) is the faster Flash (about 200 tok/s), in
+    // z.ai's model enum and price list (2026-09-25).
     // glm-5-turbo is gone from z.ai's price list and model enum but has no
     // deprecation notice and its guide page is live (2026-09-25), so it stays
     // until z.ai says otherwise.
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
     "glm-5.1",
     "glm-5",
@@ -47,9 +50,10 @@ pub const ZAI_KNOWN_MODELS: &[&str] = &[
 ];
 
 /// The listed models that take image input. GLM-5.3-Flash is natively
-/// multimodal (video, image, text and file input); GLM-5.3 itself and every
-/// other listed model are text-only (docs.z.ai model pages, 2026-09-25).
-const ZAI_VISION_MODELS: &[&str] = &["glm-5.3-flash"];
+/// multimodal (video, image, text and file input), and so is its FlashX
+/// variant, which z.ai's vision-model enum lists beside it; GLM-5.3 itself and
+/// every other listed model are text-only (docs.z.ai model pages, 2026-09-25).
+const ZAI_VISION_MODELS: &[&str] = &["glm-5.3-flash", "glm-5.3-flashx"];
 
 pub const ZAI_DOC_URL: &str = "https://docs.z.ai/guides/overview/pricing";
 
@@ -235,30 +239,39 @@ mod tests {
     }
 
     #[test]
-    fn glm_5_3_flash_is_the_only_listed_vision_model() {
+    fn the_glm_5_3_flash_pair_are_the_only_listed_vision_models() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
         let metadata = ZaiProvider::metadata();
-        let flash = metadata
-            .known_models
-            .iter()
-            .find(|m| m.name == "glm-5.3-flash")
-            .expect("glm-5.3-flash listed");
-        assert_eq!(flash.supports_vision, Some(true));
-        assert!(flash
-            .supported_input_mime_types
-            .as_ref()
-            .is_some_and(|mimes| mimes.iter().any(|m| m == "image/png")));
+        for name in ["glm-5.3-flash", "glm-5.3-flashx"] {
+            let flash = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("{name} listed"));
+            assert_eq!(flash.supports_vision, Some(true), "{name}");
+            assert!(flash
+                .supported_input_mime_types
+                .as_ref()
+                .is_some_and(|mimes| mimes.iter().any(|m| m == "image/png")));
+        }
 
         // GLM-5.3 itself is text-only; so is every other listed model.
         for model in metadata
             .known_models
             .iter()
-            .filter(|m| m.name != "glm-5.3-flash")
+            .filter(|m| !ZAI_VISION_MODELS.contains(&m.name.as_str()))
         {
             assert_eq!(model.supports_vision, None, "{} is text-only", model.name);
         }
 
-        // Both 5.3 models are 1M-context, from the registry, not a pattern.
-        for name in ["glm-5.3", "glm-5.3-flash"] {
+        // Every 5.3 model is 1M-context, from the registry, not a pattern.
+        for name in ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"] {
             let info = metadata
                 .known_models
                 .iter()
@@ -277,7 +290,7 @@ mod tests {
     fn zai_request_never_disables_glm_5_3_reasoning() {
         use crate::agents::effort::ReasoningEffort;
 
-        for name in ["glm-5.3", "glm-5.3-flash"] {
+        for name in ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"] {
             for effort in [
                 None,
                 Some(ReasoningEffort::Quick),

@@ -2478,10 +2478,16 @@ data: [DONE]
         assert!(!model_uses_responses_api("databricks-gpt-6-sol"));
     }
 
-    /// Chat Completions is still reachable with a GPT-6 id — a custom
-    /// `OPENAI_BASE_PATH`, or a gateway that only speaks it — and there it must be
-    /// shaped as the reasoning model it is: GPT-6 refuses `temperature` whenever
-    /// the effort is not `none`, and refuses `max_tokens` outright.
+    /// Chat Completions is still reachable with a GPT-6 id through providers
+    /// that always speak it (LiteLLM, GitHub Copilot, Tetrate, or a
+    /// provider-prefixed id such as OpenRouter's `openai/gpt-6-sol`), and there
+    /// it must be shaped as the reasoning model it is: GPT-6 refuses
+    /// `temperature` whenever the effort is not `none`, and refuses
+    /// `max_tokens` outright. The OpenAI provider itself (and a declarative
+    /// provider built on it) never gets here for a bare GPT-6 id: it routes on
+    /// the model name to the hard-coded `v1/responses`, and `OPENAI_BASE_PATH`
+    /// is not consulted. (This comment said a custom `OPENAI_BASE_PATH` reached
+    /// Chat Completions until 2026-09-25; it never did.)
     #[test]
     fn gpt_6_chat_completions_request_is_shaped_as_a_reasoning_model() -> anyhow::Result<()> {
         for id in ["gpt-6-sol", "gpt-6-astra-2026-09-03"] {

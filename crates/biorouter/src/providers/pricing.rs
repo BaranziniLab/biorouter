@@ -442,6 +442,8 @@ fn zai_pricing(model: &str) -> Option<ProviderModelPricing> {
         // (2026-08-26), per docs.z.ai's price sheet on 2026-09-25.
         "glm-5.3" => Some(ProviderModelPricing::usd_per_million(1.40, 4.40, 1_048_576)),
         "glm-5.3-flash" => Some(ProviderModelPricing::usd_per_million(0.15, 0.50, 1_048_576)),
+        // FlashX (2026-09-18), the faster Flash; same price sheet.
+        "glm-5.3-flashx" => Some(ProviderModelPricing::usd_per_million(0.37, 1.25, 1_048_576)),
         "glm-5.2" => Some(ProviderModelPricing::usd_per_million(1.40, 4.40, 1_048_576)),
         "glm-5.1" => Some(ProviderModelPricing::usd_per_million(1.40, 4.40, 202_752)),
         "glm-5" => Some(ProviderModelPricing::usd_per_million(1.00, 3.20, 200_000)),
@@ -817,6 +819,7 @@ mod tests {
             ("inception", "mercury-2.5", (0.20, 0.75, 260_000)),
             ("zai", "glm-5.3", (1.40, 4.40, 1_048_576)),
             ("zai", "glm-5.3-flash", (0.15, 0.50, 1_048_576)),
+            ("zai", "glm-5.3-flashx", (0.37, 1.25, 1_048_576)),
             ("xiaomi_mimo", "mimo-v2.6-flash", (0.14, 0.28, 1_048_576)),
             ("xiaomi_mimo", "mimo-v2.6-pro", (0.435, 0.87, 1_048_576)),
         ] {
