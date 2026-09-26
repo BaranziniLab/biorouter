@@ -306,11 +306,14 @@ fn canonical_model_pricing(provider: &str, model: &str) -> Option<ProviderModelP
 /// A guessed price makes a partial report look exact and silently misstates a
 /// user's budget.
 ///
-/// Bedrock's regional endpoints (the `us.` / `eu.` / `jp.` / `au.` / `apac.`
-/// inference profiles) carry a 10% premium over global endpoints for Claude
-/// 4.5 and later. That premium is deliberately NOT modelled: the model id does
-/// not say whether the profile is global, so a regional Bedrock turn reads
-/// about 9% low here rather than a global one reading 10% high.
+/// Bedrock's regional endpoints carry a 10% premium over global ones for
+/// Claude Sonnet 4.5, Haiku 4.5, Opus 4.5 and every later model. The id does
+/// say which one ran (`global.anthropic.…` is global; the `us.` / `eu.` /
+/// `jp.` / `au.` / `apac.` geo profiles and a bare in-region `anthropic.…` id
+/// are regional), but the premium is deliberately NOT modelled: every Bedrock
+/// id bills the first-party rate here, so a turn on a regional or geo profile
+/// reads about 9% low. An application inference-profile ARN names no model at
+/// all and stays unpriced.
 fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
     if !model.contains("claude") {
         return None;
@@ -327,8 +330,10 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
         ("opus", 5, None) => cached(5.0, 25.0, 1_000_000),
         ("opus", 4, Some(6..=8)) => cached(5.0, 25.0, 1_000_000),
         ("opus", 4, Some(5)) => cached(5.0, 25.0, 200_000),
-        // Opus 4 / 4.1 and Claude 3 Opus: the legacy tier, still served on
-        // Bedrock and Google Cloud.
+        // Opus 4 / 4.1 and Claude 3 Opus: the legacy tier. All three are
+        // retired on the Claude API; Opus 4.1 is still served on Bedrock and
+        // Google Cloud and Opus 4 on Google Cloud, and stored usage names all
+        // three.
         ("opus", 4, None | Some(0 | 1)) | ("opus", 3, None) => cached(15.0, 75.0, 200_000),
         // Sonnet 5's $2/$10 launch price is now its standard price: the
         // increase to $3/$15 scheduled for 2026-09-01 was cancelled.
@@ -598,26 +603,30 @@ fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
 /// Estimated dollar cost of one completion, or `None` when the model's price is
 /// unknown (local models, subscription providers, an unrecognised model id).
 ///
-/// Same precedence the `/config/pricing` route and the CLI's cost line use:
-/// provider-specific overrides first, then the canonical model catalog. Lives
-/// here so the per-reply dollar budget (BR-35) and the display paths can never
-/// disagree about what a turn cost.
+/// Priced by [`provider_model_pricing`] and nothing else: provider-specific
+/// overrides first, then the canonical model catalog, except for the providers
+/// [`blocks_fallback_pricing`] keeps off the catalog. Lives here so the
+/// per-reply dollar budget (BR-35) and the display paths can never disagree
+/// about what a turn cost.
+///
+/// This used to fall back to the catalog on its own whenever
+/// `provider_model_pricing` said `None`. For an unblocked provider that lookup
+/// had already been made, so the fallback only ever fired for the blocked
+/// ones, and there it priced exactly what the block exists to leave unpriced:
+/// once the catalog gained `openai/gpt-6-sol`, a non-Claude Bedrock id
+/// (`us.openai.gpt-6-sol`) got OpenAI's list price in the CLI cost line and
+/// the budget while the usage report showed no cost for the same turn.
 pub fn estimate_cost_usd(
     provider: &str,
     model: &str,
     input_tokens: u64,
     output_tokens: u64,
 ) -> Option<f64> {
-    let (input_cost_per_token, output_cost_per_token) = if let Some(pricing) =
-        provider_model_pricing(provider, model)
-    {
-        (pricing.input_token_cost, pricing.output_token_cost)
-    } else {
-        let canonical = crate::providers::canonical::maybe_get_canonical_model(provider, model)?;
-        (canonical.pricing.prompt?, canonical.pricing.completion?)
-    };
-
-    Some(input_cost_per_token * input_tokens as f64 + output_cost_per_token * output_tokens as f64)
+    let pricing = provider_model_pricing(provider, model)?;
+    Some(
+        pricing.input_token_cost * input_tokens as f64
+            + pricing.output_token_cost * output_tokens as f64,
+    )
 }
 
 #[cfg(test)]
@@ -636,6 +645,32 @@ mod tests {
     fn estimate_cost_is_none_for_an_unknown_model() {
         assert!(estimate_cost_usd("ollama", "llama3", 1_000, 1_000).is_none());
         assert!(estimate_cost_usd("nope", "not-a-model", 1_000, 1_000).is_none());
+    }
+
+    #[test]
+    fn estimate_cost_never_prices_what_the_shared_resolver_leaves_unpriced() {
+        // A non-Claude model on Bedrock is unpriced (blocks_fallback_pricing),
+        // but the catalog does hold its first-party record: `us.openai.gpt-6-sol`
+        // maps to openai/gpt-6-sol. The CLI cost line and the BR-35 budget must
+        // agree with the usage report and leave it unpriced too.
+        for (provider, model) in [
+            ("bedrock", "us.openai.gpt-6-sol"),
+            ("aws_bedrock", "us.openai.gpt-5.6-terra"),
+        ] {
+            assert!(
+                crate::providers::canonical::maybe_get_canonical_model(provider, model).is_some(),
+                "{provider}/{model}: the catalog must hold a record, or this proves nothing"
+            );
+            assert!(provider_model_pricing(provider, model).is_none());
+            assert!(
+                estimate_cost_usd(provider, model, 1_000_000, 1_000_000).is_none(),
+                "{provider}/{model} must not be given an estimated cost"
+            );
+        }
+        // And where the resolver does price, the estimate is its figure: Opus
+        // 5.5 at $4 in + $20 out per MTok.
+        let cost = estimate_cost_usd("anthropic", "claude-opus-5-5", 1_000_000, 1_000_000).unwrap();
+        assert!((cost - 24.0).abs() < 1e-9, "got {cost}");
     }
 
     #[test]
@@ -1290,7 +1325,7 @@ mod tests {
     /// cases a per-token price would be fabricated, because the run billed the
     /// user's own CLI subscription rather than a metered API. So all four must
     /// stay unpriced on every entry point — including `estimate_cost_usd`,
-    /// which reaches the canonical catalog on its own rather than through
+    /// which once reached the canonical catalog on its own rather than through
     /// `blocks_fallback_pricing`.
     #[test]
     fn a_cli_agent_provider_is_never_priced_on_any_entry_point() {
