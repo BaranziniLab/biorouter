@@ -11,27 +11,23 @@
       "context_limit": 131072
     },
     {
-      "name": "llama-3.1-8b-instant",
-      "context_limit": 131072
+      "name": "qwen/qwen3.8-27b",
+      "context_limit": 131072,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
-      "name": "llama-3.3-70b-versatile",
+      "name": "openai/gpt-oss-20b",
       "context_limit": 131072
     },
     {
       "name": "openai/gpt-oss-safeguard-20b",
-      "context_limit": 131072
-    },
-    {
-      "name": "groq/compound",
-      "context_limit": 131072
-    },
-    {
-      "name": "groq/compound-mini",
-      "context_limit": 131072
-    },
-    {
-      "name": "openai/gpt-oss-20b",
       "context_limit": 131072
     }
   ],

@@ -7,6 +7,22 @@
   "base_url": "https://api.moonshot.ai/v1",
   "models": [
     {
+      "name": "kimi-k3",
+      "context_limit": 1048576,
+      "input_token_cost": 0.000003,
+      "output_token_cost": 0.000015,
+      "currency": "$",
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
       "name": "kimi-k2.7-code",
       "context_limit": 262144,
       "input_token_cost": 0.00000095,
@@ -23,10 +39,10 @@
       ]
     },
     {
-      "name": "kimi-k2.6",
+      "name": "kimi-k2.7-code-highspeed",
       "context_limit": 262144,
-      "input_token_cost": 0.00000095,
-      "output_token_cost": 0.000004,
+      "input_token_cost": 0.0000019,
+      "output_token_cost": 0.000008,
       "currency": "$",
       "supports_cache_control": null,
       "supports_vision": true,
@@ -39,10 +55,10 @@
       ]
     },
     {
-      "name": "kimi-k2.5",
+      "name": "kimi-k2.6",
       "context_limit": 262144,
-      "input_token_cost": 0.0000006,
-      "output_token_cost": 0.000003,
+      "input_token_cost": 0.00000095,
+      "output_token_cost": 0.000004,
       "currency": "$",
       "supports_cache_control": null,
       "supports_vision": true,

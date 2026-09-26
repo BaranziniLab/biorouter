@@ -8,35 +8,87 @@
   "models": [
     {
       "name": "mistral-medium-3-5",
-      "context_limit": 262144
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "mistral-large-2512",
-      "context_limit": 262144
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "mistral-small-2603",
-      "context_limit": 262144
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
-      "name": "devstral-2512",
-      "context_limit": 262144
+      "name": "ministral-14b-2512",
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "ministral-8b-2512",
-      "context_limit": 262144
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
+      "name": "ministral-3b-2512",
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "mistral-medium-latest",
-      "context_limit": 262144
-    },
-    {
-      "name": "mistral-medium-2508",
-      "context_limit": 128000
-    },
-    {
-      "name": "magistral-medium-2509",
-      "context_limit": 128000
+      "context_limit": 262144,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "codestral-2508",

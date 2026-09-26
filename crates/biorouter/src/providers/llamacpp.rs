@@ -134,14 +134,20 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         family: "Gemma 4",
         ollama_name: Some("gemma4:26b"),
         official_url: "https://ollama.com/library/gemma4:26b",
-        hf_spec: "google/gemma-4-26B-it-qat-q4_0-gguf:Q4_0",
+        // Google publishes the 26B QAT GGUF under its MoE name, "26B-A4B"
+        // (ungated; holds gemma-4-26B_q4_0-it.gguf). The spec used to name
+        // `google/gemma-4-26B-it-qat-q4_0-gguf`, a repo that does not exist
+        // — Hugging Face answers 401 for it, as it does for any missing repo
+        // (checked 2026-09-25) — so the fallback download failed every time.
+        hf_spec: "google/gemma-4-26B-A4B-it-qat-q4_0-gguf:Q4_0",
         download_size: "18 GB",
-        description: "Large Gemma 4 model for high-memory local workstations",
+        description: "Large Gemma 4 mixture-of-experts model (26B total, ~4B active) for high-memory local workstations",
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 48,
         context_limit: 262_144,
-        active_params_b: 26,
-        speed_hint: "Moderate, dense 26B",
+        // 25.2B total, 3.8B active per token (the "A4B" in Google's name).
+        active_params_b: 4,
+        speed_hint: "Fast per token, ~4B active (MoE)",
     },
     CatalogEntry {
         name: "gemma4-31b",
@@ -960,6 +966,24 @@ mod tests {
                 .as_deref(),
             Some("gemma4:latest")
         );
+    }
+
+    /// The 26B fallback named `google/gemma-4-26B-it-qat-q4_0-gguf`, a repo
+    /// that does not exist: Google's repo carries the MoE name, `26B-A4B`,
+    /// with the same `<size>_q4_0-it.gguf` file layout as the E2B/E4B/31B
+    /// repos, and its model runs ~4B parameters per token, not 26B.
+    #[test]
+    fn gemma4_26b_falls_back_to_googles_a4b_repo() {
+        assert_eq!(
+            resolve_hf_spec("gemma4-26b").unwrap(),
+            "google/gemma-4-26B-A4B-it-qat-q4_0-gguf:Q4_0"
+        );
+        let entry = MODEL_CATALOG
+            .iter()
+            .find(|e| e.name == "gemma4-26b")
+            .expect("gemma4-26b is in the catalog");
+        assert_eq!(entry.active_params_b, 4);
+        assert!(!entry.speed_hint.contains("dense"), "{}", entry.speed_hint);
     }
 
     #[test]
