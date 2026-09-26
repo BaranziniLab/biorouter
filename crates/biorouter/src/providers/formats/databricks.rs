@@ -380,6 +380,51 @@ fn is_claude_model(model_name: &str) -> bool {
     model_name.contains("claude")
 }
 
+/// The upstream model id behind a serving-endpoint name, lower-cased: the
+/// `databricks-` prefix of a Databricks-hosted pay-per-token endpoint
+/// (`databricks-gpt-5-5`) or the `biorouter-` prefix of an endpoint an
+/// operator named after this app, removed.
+fn upstream_model_id(model_name: &str) -> String {
+    let lower = model_name.to_ascii_lowercase();
+    lower
+        .strip_prefix("databricks-")
+        .or_else(|| lower.strip_prefix("biorouter-"))
+        .unwrap_or(&lower)
+        .to_string()
+}
+
+/// OpenAI reasoning models: o1, o3, and every GPT-5.x and GPT-6 model, under
+/// any of the endpoint spellings above. They always reason, take
+/// `reasoning_effort`, and reject a custom `temperature` — Databricks lists
+/// every GPT-5.x and GPT-6 endpoint as "Reasoning only" (query-reason-models,
+/// read 2026-09-25).
+///
+/// This used to test `starts_with("gpt-5")` on the raw endpoint name, which
+/// no Databricks-hosted endpoint satisfies (they are all `databricks-gpt-…`)
+/// and which knew nothing of GPT-6, so every GPT endpoint in the catalog was
+/// sent a user-set temperature and no reasoning effort.
+fn is_openai_reasoning_model(model_name: &str) -> bool {
+    let id = upstream_model_id(model_name);
+    id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("gpt-5")
+        || id.starts_with("gpt-6")
+}
+
+/// Claude endpoints that accept only adaptive thinking and reject any
+/// non-default `temperature`, `top_p` or `top_k` with a 400 — Anthropic's
+/// deprecations page says so for every Claude 4.7-and-later model, and
+/// Databricks repeats it for Sonnet 5 (2026-09-25). Same list as
+/// `formats::anthropic::uses_adaptive_thinking` and
+/// `formats::bedrock::bedrock_uses_adaptive_thinking`; keep the three together.
+fn is_adaptive_only_claude(model_name: &str) -> bool {
+    const ADAPTIVE_ONLY: &[&str] = &[
+        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+    ];
+    let lower = model_name.to_ascii_lowercase();
+    is_claude_model(&lower) && ADAPTIVE_ONLY.iter().any(|pattern| lower.contains(pattern))
+}
+
 /// Add Anthropic-style cache_control fields to the request payload for Claude models.
 /// This enables prompt caching to reduce costs when using Claude via Databricks.
 ///
@@ -522,14 +567,27 @@ pub fn create_request(
     }
 
     let model_name = model_config.model_name.to_string();
-    let is_o1 = model_name.starts_with("o1") || model_name.starts_with("biorouter-o1");
-    let is_o3 = model_name.starts_with("o3") || model_name.starts_with("biorouter-o3");
-    let is_gpt_5 = model_name.starts_with("gpt-5") || model_name.starts_with("biorouter-gpt-5");
-    let is_openai_reasoning_model = is_o1 || is_o3 || is_gpt_5;
+    let is_openai_reasoning_model = is_openai_reasoning_model(&model_name);
     let is_claude_sonnet =
         model_name.contains("claude-3-7-sonnet") || model_name.contains("claude-4-sonnet"); // can be biorouter- or databricks-
+                                                                                            // No custom sampling for models that reject it: OpenAI reasoning models,
+                                                                                            // and Claude endpoints that accept only adaptive thinking. `top_p` and
+                                                                                            // `top_k` are never sent from here at all.
+    let sends_temperature =
+        !is_openai_reasoning_model && !is_adaptive_only_claude(&model_config.model_name);
+    // A reasoning model's output cap is `max_completion_tokens` in OpenAI's
+    // own API, which a directly named or `biorouter-` external-model endpoint
+    // passes through. Databricks-hosted endpoints document only `max_tokens` —
+    // the chat request reference lists no other cap, and its own GPT-5.1
+    // example sends `max_tokens` (api-reference and query-reason-models, read
+    // 2026-09-25) — so those keep it.
+    let uses_max_completion_tokens = is_openai_reasoning_model
+        && !model_config
+            .model_name
+            .to_ascii_lowercase()
+            .starts_with("databricks-");
 
-    // Only extract reasoning effort for O1/O3 models
+    // Only extract reasoning effort for OpenAI reasoning models
     let (model_name, reasoning_effort) = if is_openai_reasoning_model {
         let parts: Vec<&str> = model_config.model_name.split('-').collect();
         let last_part = parts.last().unwrap();
@@ -617,8 +675,7 @@ pub fn create_request(
             .unwrap()
             .insert("temperature".to_string(), json!(2));
     } else {
-        // open ai reasoning models currently don't support temperature
-        if !is_openai_reasoning_model {
+        if sends_temperature {
             if let Some(temp) = model_config.temperature {
                 payload
                     .as_object_mut()
@@ -627,9 +684,8 @@ pub fn create_request(
             }
         }
 
-        // open ai reasoning models use max_completion_tokens instead of max_tokens
         if let Some(tokens) = model_config.max_tokens {
-            let key = if is_openai_reasoning_model {
+            let key = if uses_max_completion_tokens {
                 "max_completion_tokens"
             } else {
                 "max_tokens"
@@ -1495,6 +1551,158 @@ mod tests {
         let tools = request["tools"].as_array().unwrap();
         assert!(tools[0]["function"].get("cache_control").is_none());
 
+        Ok(())
+    }
+
+    fn sampled_model(name: &str) -> ModelConfig {
+        ModelConfig {
+            model_name: name.to_string(),
+            context_limit: Some(128_000),
+            temperature: Some(0.7),
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model: None,
+            request_params: None,
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn openai_reasoning_detection_covers_every_endpoint_spelling() {
+        for name in [
+            "gpt-5",
+            "biorouter-gpt-5",
+            "databricks-gpt-5-5",
+            "databricks-gpt-5-5-pro",
+            "databricks-gpt-5-4-mini",
+            "databricks-gpt-5-6-terra",
+            "databricks-gpt-6-astra",
+            "databricks-gpt-6-sol",
+            "databricks-gpt-6-luna",
+            "gpt-6-sol",
+            "biorouter-gpt-6-luna",
+            "DATABRICKS-GPT-6-ASTRA",
+            "o3-mini",
+            "biorouter-o1",
+        ] {
+            assert!(
+                is_openai_reasoning_model(name),
+                "{name} is a reasoning model"
+            );
+        }
+        for name in [
+            "gpt-4o",
+            "databricks-gpt-oss-120b",
+            "databricks-claude-sonnet-4-6",
+            "databricks-gemini-3-5-flash",
+            "databricks-meta-llama-3-3-70b-instruct",
+        ] {
+            assert!(!is_openai_reasoning_model(name), "{name} is not");
+        }
+    }
+
+    /// Databricks-hosted GPT-5.x / GPT-6 endpoints get a reasoning effort and
+    /// no temperature, and keep the `max_tokens` cap Databricks documents.
+    #[test]
+    fn databricks_gpt_reasoning_endpoints_drop_temperature() -> anyhow::Result<()> {
+        for name in [
+            "databricks-gpt-5-5",
+            "databricks-gpt-5-6-sol",
+            "databricks-gpt-6-astra",
+            "databricks-gpt-6-luna",
+        ] {
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            assert!(request.get("temperature").is_none(), "{name}: {request}");
+            assert_eq!(request["reasoning_effort"], "medium", "{name}");
+            assert_eq!(request["max_tokens"], 1024, "{name}");
+            assert!(request.get("max_completion_tokens").is_none(), "{name}");
+            assert_eq!(request["model"], name);
+        }
+        Ok(())
+    }
+
+    /// An endpoint named straight after the OpenAI model keeps OpenAI's own
+    /// reasoning-model cap, `max_completion_tokens`.
+    #[test]
+    fn external_gpt_endpoints_use_max_completion_tokens() -> anyhow::Result<()> {
+        for name in ["gpt-6-sol", "biorouter-gpt-5"] {
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            assert!(request.get("temperature").is_none(), "{name}");
+            assert_eq!(request["max_completion_tokens"], 1024, "{name}");
+            assert!(request.get("max_tokens").is_none(), "{name}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_reasoning_endpoints_keep_sampling() -> anyhow::Result<()> {
+        for name in [
+            "databricks-gpt-oss-120b",
+            "databricks-claude-sonnet-4-6",
+            "databricks-claude-opus-4-6",
+            "databricks-gemini-3-5-flash",
+        ] {
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            let temperature = request["temperature"].as_f64().expect("temperature sent");
+            assert!((temperature - 0.7).abs() < 1e-6, "{name}");
+            assert_eq!(request["max_tokens"], 1024, "{name}");
+            assert!(request.get("reasoning_effort").is_none(), "{name}");
+        }
+        Ok(())
+    }
+
+    /// Claude 4.7 and later — Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5 —
+    /// return 400 for a non-default temperature, top_p or top_k.
+    #[test]
+    fn adaptive_only_claude_endpoints_get_no_sampling_params() -> anyhow::Result<()> {
+        for name in [
+            "databricks-claude-sonnet-5",
+            "databricks-claude-opus-5",
+            "databricks-claude-fable-5",
+            "databricks-claude-opus-4-8",
+            "databricks-claude-opus-4-7",
+        ] {
+            assert!(is_adaptive_only_claude(name), "{name}");
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            for key in ["temperature", "top_p", "top_k"] {
+                assert!(request.get(key).is_none(), "{name}: {key} in {request}");
+            }
+            assert!(request.get("reasoning_effort").is_none(), "{name}");
+            assert_eq!(request["max_tokens"], 1024, "{name}");
+        }
+        for name in [
+            "databricks-claude-sonnet-4-6",
+            "databricks-claude-opus-4-6",
+            "databricks-claude-haiku-4-5",
+            "databricks-gpt-5-5",
+        ] {
+            assert!(!is_adaptive_only_claude(name), "{name}");
+        }
         Ok(())
     }
 }

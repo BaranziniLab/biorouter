@@ -7,31 +7,23 @@
   "base_url": "https://api.deepseek.com",
   "models": [
     {
+      "name": "deepseek-flash",
+      "context_limit": 1000000,
+      "input_token_cost": null,
+      "output_token_cost": null,
+      "currency": null,
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
       "name": "deepseek-v4-pro",
-      "context_limit": 1000000,
-      "input_token_cost": null,
-      "output_token_cost": null,
-      "currency": null,
-      "supports_cache_control": null
-    },
-    {
-      "name": "deepseek-v4-flash",
-      "context_limit": 1000000,
-      "input_token_cost": null,
-      "output_token_cost": null,
-      "currency": null,
-      "supports_cache_control": null
-    },
-    {
-      "name": "deepseek-chat",
-      "context_limit": 1000000,
-      "input_token_cost": null,
-      "output_token_cost": null,
-      "currency": null,
-      "supports_cache_control": null
-    },
-    {
-      "name": "deepseek-reasoner",
       "context_limit": 1000000,
       "input_token_cost": null,
       "output_token_cost": null,

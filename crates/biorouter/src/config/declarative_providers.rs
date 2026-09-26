@@ -366,31 +366,53 @@ mod tests {
         assert_eq!(moonshot.base_url, "https://api.moonshot.ai/v1");
         assert_eq!(moonshot.supports_streaming, Some(true));
 
-        // Newest-first: the first entry becomes the UI's default model.
+        // Newest-first: the first entry becomes the UI's default model. Kimi
+        // K3 (GA 2026-07-16) is Moonshot's flagship and its named replacement
+        // for every discontinued model; kimi-k2.5 was discontinued on
+        // 2026-08-31 and now answers "model not found" (platform.kimi.ai,
+        // read 2026-09-25).
         let names: Vec<&str> = moonshot.models.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(names, ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5"]);
+        assert_eq!(
+            names,
+            [
+                "kimi-k3",
+                "kimi-k2.7-code",
+                "kimi-k2.7-code-highspeed",
+                "kimi-k2.6"
+            ]
+        );
 
         // Real token costs so pricing flows from provider metadata
         // (pricing_from_provider_metadata) with no pricing.rs entry.
-        // Direct-platform rates: k2.7-code/k2.6 $0.95/$4.00, k2.5 $0.60/$3.00
-        // per MTok — distinct from OpenRouter's rates for the same models.
+        // Direct-platform rates per MTok (platform.kimi.ai, 2026-09-25):
+        // k3 $3.00/$15.00, k2.7-code-highspeed $1.90/$8.00, k2.7-code and
+        // k2.6 $0.95/$4.00 — distinct from OpenRouter's rates for the same
+        // models.
         for model in &moonshot.models {
-            assert_eq!(model.context_limit, 262_144, "{}", model.name);
+            // K3 is the one 1M-window Kimi (1,048,576); the K2 line is 256k.
+            let want_context = if model.name == "kimi-k3" {
+                1_048_576
+            } else {
+                262_144
+            };
+            assert_eq!(model.context_limit, want_context, "{}", model.name);
             let input = model.input_token_cost.expect("input cost set");
             let output = model.output_token_cost.expect("output cost set");
-            let (want_in, want_out) = if model.name == "kimi-k2.5" {
-                (0.60 / 1_000_000.0, 3.00 / 1_000_000.0)
-            } else {
-                (0.95 / 1_000_000.0, 4.00 / 1_000_000.0)
+            let (want_in, want_out) = match model.name.as_str() {
+                "kimi-k3" => (3.00 / 1_000_000.0, 15.00 / 1_000_000.0),
+                "kimi-k2.7-code-highspeed" => (1.90 / 1_000_000.0, 8.00 / 1_000_000.0),
+                _ => (0.95 / 1_000_000.0, 4.00 / 1_000_000.0),
             };
             assert!((input - want_in).abs() < 1e-15, "{}", model.name);
             assert!((output - want_out).abs() < 1e-15, "{}", model.name);
 
             // Vision: per Moonshot's platform docs ("Use the Kimi Vision
-            // Model", platform.kimi.ai, verified 2026-07), kimi-k2.5,
-            // kimi-k2.6, and kimi-k2.7-code ALL accept image input in
-            // png/jpeg/webp/gif. Without this declaration the metadata
-            // reports None and the desktop rejects image attachments.
+            // Model", platform.kimi.ai, verified 2026-07 and again
+            // 2026-09-25), kimi-k2.6 and kimi-k2.7-code accept image input in
+            // png/jpeg/webp/gif, K3 takes image and video, and
+            // kimi-k2.7-code-highspeed is listed under "Multi-modal Model".
+            // Without this declaration the metadata reports None and the
+            // desktop rejects image attachments.
             assert_eq!(
                 model.supports_vision,
                 Some(true),
@@ -544,5 +566,236 @@ mod tests {
             moonshot.display_name, "Moonshot AI (Kimi)",
             "a multi-letter parenthetical is a name, not a marker, and stays legal"
         );
+    }
+
+    fn bundled(providers: &[DeclarativeProviderConfig], name: &str) -> Vec<String> {
+        providers
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name}.json is bundled"))
+            .models
+            .iter()
+            .map(|m| m.name.clone())
+            .collect()
+    }
+
+    /// The bundled catalogs as of the 2026-09-25 refresh. The first entry is
+    /// the provider's default (`register_with_name` takes `models.first()`),
+    /// and the desktop's model switcher preselects it too, so the order is
+    /// load-bearing, not cosmetic.
+    ///
+    /// Every id retired upstream is named with its date, because a retired id
+    /// that stays listed is worse than a missing one: the picker offers it and
+    /// the first request fails.
+    #[test]
+    fn bundled_catalogs_list_current_models_default_first() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+
+        let cases: &[(&str, &[&str], &[&str])] = &[
+            (
+                // deepseek-flash is DeepSeek-V4.1-Flash (GA 2026-09-10), the id
+                // DeepSeek tells users to adopt. deepseek-chat and
+                // deepseek-reasoner were discontinued 2026-07-24; V4-Flash was
+                // retired 2026-09-10 and its name is only temporarily routed to
+                // V4.1-Flash (api-docs.deepseek.com, read 2026-09-24).
+                "custom_deepseek",
+                &["deepseek-flash", "deepseek-v4-pro"],
+                &["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"],
+            ),
+            (
+                // groq/compound and compound-mini were decommissioned
+                // 2026-09-21; both Llama models shut down for free and
+                // developer tiers on 2026-08-16 and are enterprise-only now.
+                // qwen/qwen3.8-27b (preview) replaces qwen/qwen3.6-27b.
+                "groq",
+                &[
+                    "openai/gpt-oss-120b",
+                    "qwen/qwen3.8-27b",
+                    "openai/gpt-oss-20b",
+                    "openai/gpt-oss-safeguard-20b",
+                ],
+                &[
+                    "groq/compound",
+                    "groq/compound-mini",
+                    "llama-3.1-8b-instant",
+                    "llama-3.3-70b-versatile",
+                ],
+            ),
+            (
+                // Mercury 2.5 (GA 2026-09-08) is Inception's most capable
+                // production model; Mercury Coder is no longer offered to new
+                // users.
+                "inception",
+                &["mercury-2.5", "mercury-2"],
+                &["mercury-coder"],
+            ),
+            (
+                // Mistral Medium 3.1 retired 2026-08-31; Devstral 2 and
+                // Magistral Medium 1.2 retired 2026-07-31. Mistral names
+                // Medium 3.5 as the alternative for all three.
+                "mistral",
+                &[
+                    "mistral-medium-3-5",
+                    "mistral-large-2512",
+                    "mistral-small-2603",
+                    "ministral-14b-2512",
+                    "ministral-8b-2512",
+                    "ministral-3b-2512",
+                    "mistral-medium-latest",
+                    "codestral-2508",
+                ],
+                &[
+                    "mistral-medium-2508",
+                    "devstral-2512",
+                    "magistral-medium-2509",
+                ],
+            ),
+            (
+                "moonshot",
+                &[
+                    "kimi-k3",
+                    "kimi-k2.7-code",
+                    "kimi-k2.7-code-highspeed",
+                    "kimi-k2.6",
+                ],
+                &["kimi-k2.5"],
+            ),
+        ];
+
+        for (provider, want, retired) in cases {
+            let names = bundled(&providers, provider);
+            assert_eq!(names, *want, "{provider}: catalog or default drifted");
+            for id in *retired {
+                assert!(
+                    !names.iter().any(|n| n == id),
+                    "{provider}: {id} is retired upstream and must not be offered"
+                );
+            }
+        }
+
+        // Each bundled window must be the registry's own entry for that id —
+        // not an approximation, and not one inherited from a substring
+        // pattern. `tests/context_windows.rs` checks the same thing across
+        // every provider; this keeps the failure next to the JSON.
+        for provider in &providers {
+            for model in &provider.models {
+                assert!(
+                    crate::model::ModelConfig::has_declared_context_window(&model.name),
+                    "{}/{}: no MODEL_CONTEXT_WINDOWS entry",
+                    provider.name,
+                    model.name
+                );
+                assert_eq!(
+                    model.context_limit,
+                    crate::model::ModelConfig::context_window_for(&model.name),
+                    "{}/{}",
+                    provider.name,
+                    model.name
+                );
+            }
+        }
+    }
+
+    /// Which bundled models take images, per each vendor's own model page
+    /// (read 2026-09-24/25). A model left out of this table must not claim
+    /// vision, and one in it must declare the MIME types the desktop uses to
+    /// accept an attachment — `supports_vision` alone leaves the picker to
+    /// guess.
+    #[test]
+    fn bundled_vision_declarations_follow_vendor_docs() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+
+        let vision: &[(&str, &str)] = &[
+            // DeepSeek's pricing table lists vision for deepseek-flash and
+            // "Not supported" for deepseek-v4-pro.
+            ("custom_deepseek", "deepseek-flash"),
+            // Groq: text plus up to 3 images per request.
+            ("groq", "qwen/qwen3.8-27b"),
+            // Mistral documents these as multimodal; codestral-2508 is
+            // text-only. mistral-medium-latest is an alias of Medium 3.5.
+            ("mistral", "mistral-medium-3-5"),
+            ("mistral", "mistral-large-2512"),
+            ("mistral", "mistral-small-2603"),
+            ("mistral", "ministral-14b-2512"),
+            ("mistral", "ministral-8b-2512"),
+            ("mistral", "ministral-3b-2512"),
+            ("mistral", "mistral-medium-latest"),
+            ("moonshot", "kimi-k3"),
+            ("moonshot", "kimi-k2.7-code"),
+            ("moonshot", "kimi-k2.7-code-highspeed"),
+            ("moonshot", "kimi-k2.6"),
+        ];
+
+        for provider in &providers {
+            for model in &provider.models {
+                let expected = vision
+                    .iter()
+                    .any(|(p, m)| *p == provider.name && *m == model.name);
+                if expected {
+                    assert_eq!(
+                        model.supports_vision,
+                        Some(true),
+                        "{}/{} takes images",
+                        provider.name,
+                        model.name
+                    );
+                    let mimes = model
+                        .supported_input_mime_types
+                        .as_ref()
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{}/{}: image MIME types declared",
+                                provider.name, model.name
+                            )
+                        });
+                    for mime in ["image/png", "image/jpeg"] {
+                        assert!(
+                            mimes.iter().any(|m| m == mime),
+                            "{}/{}: {mime}",
+                            provider.name,
+                            model.name
+                        );
+                    }
+                } else {
+                    assert_ne!(
+                        model.supports_vision,
+                        Some(true),
+                        "{}/{} is text-only",
+                        provider.name,
+                        model.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Kimi K3 fixes `temperature` at 1.0 and `top_p` at 0.95 and rejects any
+    /// other value; thinking is always on and `reasoning_effort` takes only
+    /// low/high/max (platform.kimi.ai, read 2026-09-25). The OpenAI engine
+    /// this provider runs on sends `temperature` only when the operator set
+    /// `BIOROUTER_TEMPERATURE`, never sends `top_p`, and never sends a
+    /// `reasoning_effort` to a Kimi model — so the default request is one K3
+    /// accepts. Pinned here so a default sampling value added to the engine
+    /// has to meet this model.
+    #[test]
+    fn kimi_k3_default_request_sends_no_sampling_overrides() {
+        let model = crate::model::ModelConfig::new_or_fail("kimi-k3").with_temperature(None);
+        let payload = crate::providers::formats::openai::create_request(
+            &model,
+            "system",
+            &[],
+            &[],
+            &crate::providers::utils::ImageFormat::OpenAi,
+            true,
+        )
+        .expect("request builds");
+
+        assert_eq!(payload["model"], "kimi-k3");
+        for key in ["temperature", "top_p", "top_k", "reasoning_effort"] {
+            assert!(
+                payload.get(key).is_none(),
+                "kimi-k3 rejects a non-default {key}; got {payload}"
+            );
+        }
     }
 }
