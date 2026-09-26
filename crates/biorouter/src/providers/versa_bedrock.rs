@@ -17,31 +17,38 @@ use super::base::MessageStream;
 use super::formats::bedrock::{
     bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
     classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
-    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_message, to_bedrock_tool_config,
+    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_messages, to_bedrock_tool_config,
 };
 use super::provider_binding::{
     model_without_restore_marker, PersistedRetryConfig, ProviderRestoreBinding, SecretFreeEndpoint,
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
-pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
-// Ordered newest → oldest. The UI auto-selects the first entry as the default
-// model when switching providers. Model IDs follow the AWS Bedrock format
-// documented at
-// https://platform.claude.com/docs/en/about-claude/models, prefixed with the
-// `us.` cross-region inference profile required by the UCSF MuleSoft proxy.
+// Opus 4.8: the newest id verified end-to-end through the UCSF MuleSoft proxy
+// (a converse round-trip on 2026-07-26). Same price and window as the Opus 4.6
+// default it replaced (1M context, $5.50/$27.50 us geo), so a new user's first
+// chat cannot get worse. It must also stay FIRST in the list below: the UI
+// auto-selects `known_models[0]` when a user switches providers, not this
+// constant (SwitchModelModal `findFirstAvailableModel`).
+pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
+// Model IDs follow the AWS Bedrock format documented at
+// https://platform.claude.com/docs/en/about-claude/models/overview, prefixed
+// with the `us.` cross-region inference profile required by the UCSF MuleSoft
+// proxy. The proxy forwards ids verbatim — AWS's own ValidationException text
+// comes back for a wrong spelling — so the id shape is whatever AWS publishes;
+// the only open question for a new id is UCSF's entitlement.
 //
-// Only models that UCSF's Bedrock account is entitled to invoke are listed —
-// every entry below has been verified end-to-end via the Versa proxy, except
-// where noted. Users can type a newer ID via the "Enter a model not listed..."
-// option once UCSF enables it.
+// The verified entries come first, newest → oldest; the entries not yet
+// verified through the proxy come last, so none of them is ever the model the
+// UI picks for a user. Users can type any other ID via the "Enter a model not
+// listed..." option once UCSF enables it.
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     // Claude 4.8 (1M context). Added 2026-07 (issue #29). Verified live
     // through the MuleSoft proxy on 2026-07-26: the short un-suffixed form
     // below answered a real converse round-trip, while the `-v1` spelling
     // (which opus-4-6 uses) was rejected with "The provided model
     // identifier is invalid" — 4.8 and 4.6 genuinely differ in id shape on
-    // this account. The default model stays on 4.6 for now.
+    // this account.
     "us.anthropic.claude-opus-4-8",
     // Claude 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
@@ -52,6 +59,27 @@ pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     // Sonnet 4 removed: Anthropic retires claude-sonnet-4-20250514 on
     // June 15, 2026 (Bedrock marked it Legacy in April 2026).
+    //
+    // NOT YET VERIFIED THROUGH THE UCSF PROXY. These are AWS's exact us-geo
+    // ids (AWS model cards, 2026-09-25; all 1M context), but whether UCSF's
+    // account may invoke them is unknown: on 2026-09-25 the Versa Bedrock keys
+    // available on the maintainer's machine got HTTP 403 for EVERY id,
+    // including the previously verified opus-4-8 and opus-4-6-v1, so
+    // entitlement could not be checked. A second key pair from the same
+    // machine, tried through this provider and through the AWS CLI, got the
+    // gateway's "The request signature we calculated does not match the
+    // signature you provided. Check your Mule client id and signing method."
+    // for every id — a credential rejection, so it says nothing about any
+    // model. Move an entry above this note once a real round-trip succeeds.
+    // Opus 5.5's reasoning is stripped from replayed history by
+    // `to_bedrock_messages` (preserved thinking).
+    //
+    // Fable 5 / 5.1 are deliberately absent: Bedrock requires the account's
+    // data-retention mode to be `aws_review` for them, which an institutional
+    // PHI account is unlikely to have chosen.
+    "us.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5",
+    "us.anthropic.claude-sonnet-5",
 ];
 
 // UCSF MuleSoft Bedrock proxy. UCSF-issued access keys are signed against this
@@ -321,13 +349,7 @@ impl VersaBedrockProvider {
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
             .model_id(model_name.to_string())
             .inference_config(bedrock_blocking_inference_config(model_config))
-            .set_messages(Some(
-                messages
-                    .iter()
-                    .filter(|m| m.is_agent_visible())
-                    .map(to_bedrock_message)
-                    .collect::<Result<_>>()?,
-            ));
+            .set_messages(Some(to_bedrock_messages(model_name, messages)?));
 
         if !tools.is_empty() {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
@@ -365,13 +387,10 @@ impl VersaBedrockProvider {
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
             .model_id(model_config.model_name.clone())
             .inference_config(bedrock_inference_config(model_config))
-            .set_messages(Some(
-                messages
-                    .iter()
-                    .filter(|m| m.is_agent_visible())
-                    .map(to_bedrock_message)
-                    .collect::<Result<_>>()?,
-            ));
+            .set_messages(Some(to_bedrock_messages(
+                &model_config.model_name,
+                messages,
+            )?));
 
         if !tools.is_empty() {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
@@ -776,6 +795,67 @@ mod tests {
             )
             .await;
         assert_inference_wire(captured, 45_678, Some(0.5));
+    }
+
+    /// The UI auto-selects `known_models[0]` on a provider switch, so the
+    /// default and the first entry must agree — and must be the verified id,
+    /// never one of the entries still waiting on a proxy round-trip.
+    #[test]
+    fn the_default_is_the_first_and_verified_entry() {
+        assert_eq!(VERSA_BEDROCK_DEFAULT_MODEL, "us.anthropic.claude-opus-4-8");
+        assert_eq!(VERSA_BEDROCK_KNOWN_MODELS[0], VERSA_BEDROCK_DEFAULT_MODEL);
+
+        let unverified = [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5",
+            "us.anthropic.claude-sonnet-5",
+        ];
+        let tail =
+            &VERSA_BEDROCK_KNOWN_MODELS[VERSA_BEDROCK_KNOWN_MODELS.len() - unverified.len()..];
+        assert_eq!(
+            tail, unverified,
+            "unverified ids stay at the end of the list"
+        );
+        assert!(
+            !VERSA_BEDROCK_KNOWN_MODELS
+                .iter()
+                .any(|model| model.contains("fable")),
+            "Fable needs Bedrock's aws_review retention mode; not offered on Versa"
+        );
+    }
+
+    /// A Converse request for a preserved-thinking model carries no replayed
+    /// reasoning, on the real wire, while the same history for Opus 4.8 keeps
+    /// it — the stripping is keyed on the model and nothing else.
+    #[tokio::test]
+    async fn converse_strips_replayed_reasoning_only_for_preserved_thinking_models() {
+        let history = [
+            Message::user().with_text("first"),
+            Message::assistant()
+                .with_thinking("", "sig-1")
+                .with_text("answer"),
+            Message::user().with_text("second"),
+        ];
+
+        for (model, expect_reasoning) in [
+            ("us.anthropic.claude-opus-5-5", false),
+            ("us.anthropic.claude-opus-4-8", true),
+        ] {
+            let (provider, captured) = capturing_provider().await;
+            let _ = provider
+                .converse(&ModelConfig::new_or_fail(model), "system", &history, &[])
+                .await;
+            let request = captured.expect_request();
+            let body = request.body().bytes().expect("buffered request body");
+            let json: serde_json::Value = serde_json::from_slice(body).expect("JSON body");
+            let rendered = json["messages"].to_string();
+            assert_eq!(
+                rendered.contains("reasoningContent"),
+                expect_reasoning,
+                "{model}: {rendered}"
+            );
+            assert_eq!(json["messages"].as_array().unwrap().len(), 3, "{model}");
+        }
     }
 
     #[tokio::test]

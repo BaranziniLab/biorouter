@@ -725,6 +725,13 @@ pub fn create_request(
         })
     };
 
+    // No `thinkingConfig` is sent: the BR-63 effort only reaches Gemini as the
+    // temperature `Quick` fills in. That is deliberate. Mapping Quick onto
+    // `thinkingLevel: "minimal"` would 400 on gemini-3.8-flash, which supports
+    // only low/medium/high (ai.google.dev model page, Sep 2026). Anyone adding
+    // a thinking level here must clamp Quick to "low" for such models. Google
+    // deprecated temperature on the 3.x models but still accepts it, so it
+    // stays (see the test `quick_effort_never_sends_a_thinking_level`).
     let generation_config =
         if model_config.temperature.is_some() || model_config.max_tokens.is_some() {
             Some(GenerationConfig {
@@ -757,6 +764,32 @@ mod tests {
 
     fn set_up_text_message(text: &str, role: Role) -> Message {
         Message::new(role, 0, vec![MessageContent::text(text.to_string())])
+    }
+
+    /// gemini-3.8-flash rejects `thinkingLevel: "minimal"` with an error, so
+    /// the Quick effort must not be translated into one. Today no effort sends
+    /// a thinking config at all; this pins that for every effort on the model
+    /// that is strictest about it.
+    #[test]
+    fn quick_effort_never_sends_a_thinking_level() {
+        use crate::agents::effort::ReasoningEffort;
+
+        let messages = vec![set_up_text_message("hi", Role::User)];
+        for effort in [
+            ReasoningEffort::Quick,
+            ReasoningEffort::Normal,
+            ReasoningEffort::Deep,
+        ] {
+            let config = effort.apply_to_model(ModelConfig::new_or_fail("gemini-3.8-flash"));
+            let payload = create_request(&config, "system", &messages, &[]).unwrap();
+            let body = payload.to_string();
+            assert!(
+                !body.contains("thinkingConfig")
+                    && !body.contains("thinkingLevel")
+                    && !body.contains("minimal"),
+                "{effort:?} must not send a thinking level: {body}"
+            );
+        }
     }
 
     fn set_up_tool_request_message(id: &str, tool_call: CallToolRequestParams) -> Message {

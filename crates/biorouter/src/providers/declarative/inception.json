@@ -7,11 +7,11 @@
   "base_url": "https://api.inceptionlabs.ai",
   "models": [
     {
-      "name": "mercury-2",
-      "context_limit": 128000
+      "name": "mercury-2.5",
+      "context_limit": 260000
     },
     {
-      "name": "mercury-coder",
+      "name": "mercury-2",
       "context_limit": 128000
     }
   ],

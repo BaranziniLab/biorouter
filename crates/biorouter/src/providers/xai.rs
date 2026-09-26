@@ -16,33 +16,64 @@ use async_trait::async_trait;
 use rmcp::model::Tool;
 use serde_json::Value;
 pub const XAI_API_HOST: &str = "https://api.x.ai/v1";
-// Verified against docs.x.ai (June 2026). xAI retired the entire grok-2 /
-// grok-3 / grok-4-0709 / grok-code-fast-1 lineup on (or before) May 15, 2026;
-// retired slugs auto-redirect to grok-4.3 at grok-4.3 pricing.
-pub const XAI_DEFAULT_MODEL: &str = "grok-4.3";
+// Verified against docs.x.ai (Sep 25, 2026; docs last updated Sep 21). xAI
+// retired the entire grok-2 / grok-3 / grok-4-0709 / grok-4-fast /
+// grok-code-fast-1 lineup on (or before) May 15, 2026; retired slugs
+// auto-redirect (grok-code-fast-1 is now an alias of grok-build-0.1).
+//
+// Default: docs.x.ai says "for everything else, including code, use Grok 4.7.
+// It is the most capable model we've built". It costs more than grok-4.3
+// ($2/$6 vs $1.25/$2.50 per MTok) and has half the window (500K vs 1M), so
+// grok-4.3 stays listed as the cheap 1M option.
+//
+// Removed Sep 2026:
+// - grok-4.20-multi-agent-0309: xAI documents that the multi-agent model does
+//   not work with the Chat Completions API, the only API this provider calls.
+// - grok-imagine-image-quality: image generation only, and xAI retires it on
+//   Nov 2, 2026.
+pub const XAI_DEFAULT_MODEL: &str = "grok-4.7";
 pub const XAI_KNOWN_MODELS: &[&str] = &[
-    // Flagship (1M context)
+    // Flagship family (500K context; text + image in, function calling)
+    "grok-4.7",
+    "grok-4.6",
+    "grok-4.5",
+    // 1M context. grok-latest is the exception: docs.x.ai documents only
+    // per-model aliases such as grok-4.3-latest, so model.rs gives this
+    // undocumented alias a conservative 131,072.
     "grok-4.3",
     "grok-4.3-latest",
     "grok-latest",
     // grok-4.20 family (1M context)
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
-    "grok-4.20-multi-agent-0309",
     // Fast agentic coding (256K context; successor to grok-code-fast-1)
     "grok-build-0.1",
-    // Image generation
+    // Image generation. xAI serves it on /v1/images/generations, not on the
+    // chat/completions endpoint this provider calls, so it cannot answer a
+    // chat here. The Sep 2026 refresh removed only the -quality model that
+    // xAI is retiring; whether to drop this one too is still open.
     "grok-imagine-image",
-    "grok-imagine-image-quality",
 ];
 
 pub const XAI_DOC_URL: &str = "https://docs.x.ai/docs/overview";
 
+/// xAI's chat models take png/jpeg images alongside text. grok-build-0.1 and
+/// Grok 4.5-4.7 are listed as "text, image -> text" on docs.x.ai (Sep 2026);
+/// only the image-generation model is left out.
 fn xai_model_supports_vision(name: &str) -> bool {
+    const IMAGE_INPUT_PREFIXES: &[&str] = &[
+        "grok-4.3",
+        "grok-4.20",
+        "grok-4.5",
+        "grok-4.6",
+        "grok-4.7",
+        "grok-build-",
+    ];
     let normalized = name.to_ascii_lowercase();
     normalized == "grok-latest"
-        || normalized.starts_with("grok-4.3")
-        || normalized.starts_with("grok-4.20")
+        || IMAGE_INPUT_PREFIXES
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
 }
 
 #[derive(serde::Serialize)]
@@ -189,5 +220,65 @@ impl Provider for XaiProvider {
             })?;
 
         stream_openai_compat(response, log)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn known(name: &str) -> ModelInfo {
+        XaiProvider::metadata()
+            .known_models
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("{name} should be advertised"))
+    }
+
+    #[test]
+    fn default_is_grok_4_7_and_advertised() {
+        assert_eq!(XAI_DEFAULT_MODEL, "grok-4.7");
+        assert!(XAI_KNOWN_MODELS.contains(&XAI_DEFAULT_MODEL));
+        assert_eq!(XaiProvider::metadata().default_model, XAI_DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn chat_models_take_png_and_jpeg_images() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        for name in ["grok-4.7", "grok-4.6", "grok-4.5", "grok-build-0.1"] {
+            let info = known(name);
+            assert_eq!(info.supports_vision, Some(true), "{name} accepts images");
+            assert_eq!(
+                info.supported_input_mime_types,
+                Some(vec![
+                    "image/png".to_string(),
+                    "image/jpeg".to_string(),
+                    "image/jpg".to_string()
+                ]),
+                "{name} is limited to png/jpeg"
+            );
+        }
+        assert_eq!(known("grok-4.7").context_limit, 500_000);
+        assert_eq!(known("grok-imagine-image").supports_vision, None);
+    }
+
+    /// The multi-agent model does not work with Chat Completions and the
+    /// -quality image model is being retired. (grok-imagine-image cannot
+    /// answer through Chat Completions either, but it is still listed; see
+    /// the comment on XAI_KNOWN_MODELS.)
+    #[test]
+    fn multi_agent_and_retiring_image_models_are_not_advertised() {
+        for removed in ["grok-4.20-multi-agent-0309", "grok-imagine-image-quality"] {
+            assert!(
+                !XAI_KNOWN_MODELS.contains(&removed),
+                "{removed} should no longer be advertised"
+            );
+        }
     }
 }

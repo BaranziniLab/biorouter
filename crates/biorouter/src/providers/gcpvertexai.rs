@@ -22,7 +22,8 @@ use crate::providers::base::{
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::gcpvertexai::{
     create_request, get_usage, response_to_message, response_to_streaming_message, GcpLocation,
-    ModelProvider, RequestContext, DEFAULT_MODEL, KNOWN_MODELS,
+    ModelProvider, RequestContext, DEFAULT_MODEL, EU_MULTI_REGION, GLOBAL_LOCATION, KNOWN_MODELS,
+    MULTI_REGION_LOCATIONS, US_MULTI_REGION,
 };
 use crate::providers::gcpauth::GcpAuth;
 use crate::providers::retry::RetryConfig;
@@ -58,6 +59,36 @@ const OVERLOADED_ERROR_MSG: &str =
     "Vertex AI Provider API is temporarily overloaded. This is similar to a rate limit \
      error but indicates backend processing capacity issues.";
 
+/// The Vertex API host that serves `location`.
+///
+/// Only single regions follow the `{region}-aiplatform.googleapis.com`
+/// pattern. The global endpoint is the bare `aiplatform.googleapis.com` —
+/// `global-aiplatform.googleapis.com` does not exist (measured 2026-09-25: 404
+/// against the documented host's 401) — and the multi-regions have their own
+/// `aiplatform.{us,eu}.rep.googleapis.com` hosts (Anthropic's "Claude on
+/// Vertex AI" endpoint docs). Before this, `GCP_LOCATION=global` produced the
+/// non-existent host, so no configuration could reach a global-only model.
+fn vertex_host(location: &str) -> String {
+    if location == GLOBAL_LOCATION {
+        "https://aiplatform.googleapis.com".to_string()
+    } else if MULTI_REGION_LOCATIONS.contains(&location) {
+        format!("https://aiplatform.{location}.rep.googleapis.com")
+    } else {
+        format!("https://{location}-aiplatform.googleapis.com")
+    }
+}
+
+/// Whether `location` keeps a request inside the geography the user chose.
+/// Only the `us` / `eu` multi-regions state a geography; a single region or
+/// `global` promises nothing, so anything is inside it.
+fn in_configured_geography(configured: &str, location: &str) -> bool {
+    match configured {
+        EU_MULTI_REGION => location == EU_MULTI_REGION || location.starts_with("europe-"),
+        US_MULTI_REGION => location == US_MULTI_REGION || location.starts_with("us-"),
+        _ => true,
+    }
+}
+
 fn build_vertex_url(
     host: &str,
     configured_location: &str,
@@ -70,7 +101,7 @@ fn build_vertex_url(
     let host_url = if configured_location == target_location {
         host.to_string()
     } else {
-        host.replace(configured_location, target_location)
+        vertex_host(target_location)
     };
 
     let base_url =
@@ -157,7 +188,7 @@ impl GcpVertexAIProvider {
         let config = crate::config::Config::global();
         let project_id = config.get_param("GCP_PROJECT_ID")?;
         let location = Self::determine_location(config)?;
-        let host = format!("https://{}-aiplatform.googleapis.com", location);
+        let host = vertex_host(&location);
 
         let client = Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
@@ -215,11 +246,16 @@ impl GcpVertexAIProvider {
         )
     }
 
-    /// Determines the appropriate GCP location for model deployment.
+    /// Determines the configured GCP location for model deployment.
     ///
     /// Location is determined in the following order:
-    /// 1. Custom location from GCP_LOCATION environment variable
-    /// 2. Global default location (Iowa)
+    /// 1. Custom location from GCP_LOCATION environment variable — a region,
+    ///    `global`, or the `us` / `eu` multi-region
+    /// 2. Default location (Iowa, us-central1)
+    ///
+    /// This is where a regional model's request goes. A model Vertex serves
+    /// only at global or multi-region is routed per request instead; see
+    /// `GcpVertexAIModel::preferred_location`.
     fn determine_location(config: &crate::config::Config) -> Result<String> {
         Ok(config
             .get_param("GCP_LOCATION")
@@ -237,9 +273,13 @@ impl GcpVertexAIProvider {
             .map_err(|e| GcpVertexAIError::AuthError(e.to_string()))
     }
 
+    /// The URL for `context`'s model at `location`. The model comes from the
+    /// request context, not `self.model`: `complete_with_model` may be asked
+    /// for a different model than the provider was built with, and the URL is
+    /// what names the model on Vertex (the Claude body carries none).
     fn build_request_url(
         &self,
-        provider: ModelProvider,
+        context: &RequestContext,
         location: &str,
         streaming: bool,
     ) -> Result<Url, GcpVertexAIError> {
@@ -247,11 +287,34 @@ impl GcpVertexAIProvider {
             &self.host,
             &self.location,
             &self.project_id,
-            &self.model.model_name,
-            provider,
+            &context.model.to_string(),
+            context.provider(),
             location,
             streaming,
         )
+    }
+
+    /// Where to send `context`'s request first, and where to retry if that
+    /// fails — `None` when there is nowhere else to try. See
+    /// `GcpVertexAIModel::preferred_location` for why a model can be routed
+    /// away from the configured location before any request is made.
+    ///
+    /// With the `us` / `eu` multi-region configured there is never a fallback
+    /// outside that geography: honouring that choice is what keeps the
+    /// request there, and the fallback fires on any non-auth error (a 400 or a
+    /// 500 as much as a 404), so it would resend the whole conversation to the
+    /// global endpoint or a US region. ⚠ Until 2026-09-25 only a multi-region
+    /// MODEL was held to this; a regional one (Claude Sonnet 4.6, Gemini 2.x,
+    /// MaaS) kept its us-east5 / us-central1 fallback under `eu`, and since
+    /// `eu` does not serve those models, every turn went to the US. A single
+    /// region or `global` keeps the old fallback.
+    fn route(configured_location: &str, context: &RequestContext) -> (String, Option<String>) {
+        let primary = context.model.preferred_location(configured_location);
+        let fallback = context.model.known_location().to_string();
+        let fallback = (fallback != primary
+            && in_configured_geography(configured_location, &fallback))
+        .then_some(fallback);
+        (primary, fallback)
     }
 
     async fn send_request_with_retry(
@@ -347,7 +410,7 @@ impl GcpVertexAIProvider {
         location: &str,
     ) -> Result<Value, ProviderError> {
         let url = self
-            .build_request_url(context.provider(), location, false)
+            .build_request_url(context, location, false)
             .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
 
         let response = self.send_request_with_retry(url, payload).await?;
@@ -363,26 +426,16 @@ impl GcpVertexAIProvider {
         payload: &Value,
         context: &RequestContext,
     ) -> Result<Value, ProviderError> {
-        let result = self
-            .post_with_location(payload, context, &self.location)
-            .await;
+        let (primary, fallback) = Self::route(&self.location, context);
+        let result = self.post_with_location(payload, context, &primary).await;
 
-        if self.location == context.model.known_location().to_string() || result.is_ok() {
-            return result;
-        }
-
-        match &result {
-            Err(ProviderError::RequestFailed(msg)) => {
+        match (&result, fallback) {
+            (Err(ProviderError::RequestFailed(msg)), Some(fallback)) => {
                 let model_name = context.model.to_string();
-                let configured_location = &self.location;
-                let known_location = context.model.known_location().to_string();
-
                 tracing::warn!(
-                    "Trying known location {known_location} for {model_name} instead of {configured_location}: {msg}"
+                    "Trying known location {fallback} for {model_name} instead of {primary}: {msg}"
                 );
-
-                self.post_with_location(payload, context, &known_location)
-                    .await
+                self.post_with_location(payload, context, &fallback).await
             }
             _ => result,
         }
@@ -395,7 +448,7 @@ impl GcpVertexAIProvider {
         location: &str,
     ) -> Result<reqwest::Response, ProviderError> {
         let url = self
-            .build_request_url(context.provider(), location, true)
+            .build_request_url(context, location, true)
             .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
 
         self.send_request_with_retry(url, payload).await
@@ -406,25 +459,18 @@ impl GcpVertexAIProvider {
         payload: &Value,
         context: &RequestContext,
     ) -> Result<reqwest::Response, ProviderError> {
+        let (primary, fallback) = Self::route(&self.location, context);
         let result = self
-            .post_stream_with_location(payload, context, &self.location)
+            .post_stream_with_location(payload, context, &primary)
             .await;
 
-        if self.location == context.model.known_location().to_string() || result.is_ok() {
-            return result;
-        }
-
-        match &result {
-            Err(ProviderError::RequestFailed(msg)) => {
+        match (&result, fallback) {
+            (Err(ProviderError::RequestFailed(msg)), Some(fallback)) => {
                 let model_name = context.model.to_string();
-                let configured_location = &self.location;
-                let known_location = context.model.known_location().to_string();
-
                 tracing::warn!(
-                    "Trying known location {known_location} for {model_name} instead of {configured_location}: {msg}"
+                    "Trying known location {fallback} for {model_name} instead of {primary}: {msg}"
                 );
-
-                self.post_stream_with_location(payload, context, &known_location)
+                self.post_stream_with_location(payload, context, &fallback)
                     .await
             }
             _ => result,
@@ -613,7 +659,7 @@ impl Provider for GcpVertexAIProvider {
 
         // Convert response to message
         let message = response_to_message(response, context)?;
-        let provider_usage = ProviderUsage::new(self.model.model_name.clone(), usage);
+        let provider_usage = ProviderUsage::new(model_config.model_name.clone(), usage);
 
         Ok((message, provider_usage))
     }
@@ -797,8 +843,246 @@ mod tests {
     fn test_provider_metadata() {
         let metadata = GcpVertexAIProvider::metadata();
         assert!(!metadata.known_models.is_empty());
-        assert_eq!(metadata.default_model, "gemini-3.5-flash");
+        assert_eq!(metadata.default_model, "gemini-3.8-flash");
+        // The UI auto-selects the first entry on a provider switch.
+        assert_eq!(metadata.known_models[0].name, metadata.default_model);
         assert_eq!(metadata.config_keys.len(), 6);
         assert!(metadata.allows_unlisted_models);
+    }
+
+    #[test]
+    fn retired_and_invalid_vertex_ids_are_not_advertised() {
+        let names: Vec<String> = GcpVertexAIProvider::metadata()
+            .known_models
+            .into_iter()
+            .map(|model| model.name)
+            .collect();
+        for gone in [
+            "gemini-3-pro",
+            "gemini-3.1-pro",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ] {
+            assert!(!names.iter().any(|name| name == gone), "{gone}");
+        }
+        assert!(names.iter().any(|name| name == "gemini-3.1-pro-preview"));
+    }
+
+    #[test]
+    fn vertex_host_knows_global_and_multi_region_hosts() {
+        assert_eq!(vertex_host("global"), "https://aiplatform.googleapis.com");
+        assert_eq!(
+            vertex_host("us"),
+            "https://aiplatform.us.rep.googleapis.com"
+        );
+        assert_eq!(
+            vertex_host("eu"),
+            "https://aiplatform.eu.rep.googleapis.com"
+        );
+        assert_eq!(
+            vertex_host("us-central1"),
+            "https://us-central1-aiplatform.googleapis.com"
+        );
+    }
+
+    #[test]
+    fn global_target_uses_the_global_host_and_location() {
+        let url = build_vertex_url(
+            &vertex_host("us-central1"),
+            "us-central1",
+            "test-project",
+            "gemini-3.8-flash",
+            ModelProvider::Google,
+            "global",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/\
+             publishers/google/models/gemini-3.8-flash:generateContent"
+        );
+    }
+
+    fn provider_bound_to(model: &str, location: &str) -> GcpVertexAIProvider {
+        GcpVertexAIProvider {
+            client: Client::new(),
+            auth: GcpAuth::for_test(),
+            host: vertex_host(location),
+            project_id: "test-project".to_string(),
+            location: location.to_string(),
+            model: ModelConfig::new_or_fail(model),
+            retry_config: RetryConfig::new(0, 1, 1.0, 1),
+            name: "gcp_vertex_ai".to_string(),
+        }
+    }
+
+    /// The URL is what names the model on Vertex (a Claude body carries
+    /// none), so `complete_with_model` / `complete_fast` asking for a model
+    /// other than the bound one must get that model's URL. It used to be
+    /// built from `self.model`, which posted a fast-model Claude request to
+    /// the chat model's path — a 404 that `complete_fast` then quietly fell
+    /// back from on every call.
+    #[test]
+    fn request_url_names_the_requested_model_not_the_bound_one() {
+        let provider = provider_bound_to("gemini-3.8-flash", "us-central1");
+        let context = RequestContext::new("claude-opus-5-5").unwrap();
+        let (primary, _) = GcpVertexAIProvider::route(&provider.location, &context);
+        let url = provider
+            .build_request_url(&context, &primary, false)
+            .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/\
+             publishers/anthropic/models/claude-opus-5-5:rawPredict"
+        );
+        assert!(!url.as_str().contains("gemini-3.8-flash"));
+    }
+
+    fn route_for(configured: &str, model: &str) -> (String, Option<String>) {
+        GcpVertexAIProvider::route(configured, &RequestContext::new(model).unwrap())
+    }
+
+    // The default GCP_LOCATION (us-central1) serves none of the Gemini 3.x
+    // models, the default among them, and none of the Claude 5.x models. They
+    // go straight to global rather than failing at us-central1 first.
+    #[test]
+    fn models_no_region_serves_route_to_global_from_the_default_location() {
+        for model in [
+            DEFAULT_MODEL,
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-opus-4-8",
+            // Vertex lists Opus 4.7 at global + us/eu only, like 4.8.
+            "claude-opus-4-7",
+        ] {
+            assert_eq!(
+                route_for("us-central1", model),
+                ("global".to_string(), None),
+                "{model}"
+            );
+        }
+    }
+
+    // Regional models keep exactly the old behaviour: the configured region
+    // first, the family's known region as the fallback.
+    #[test]
+    fn regional_models_keep_the_configured_location_and_old_fallback() {
+        assert_eq!(
+            route_for("us-central1", "claude-opus-4-6"),
+            ("us-central1".to_string(), Some("us-east5".to_string()))
+        );
+        assert_eq!(
+            route_for("us-central1", "claude-sonnet-4-6"),
+            ("us-central1".to_string(), Some("us-east5".to_string()))
+        );
+        assert_eq!(
+            route_for("us-east5", "claude-sonnet-4-5@20250929"),
+            ("us-east5".to_string(), None)
+        );
+        assert_eq!(
+            route_for("europe-west1", "gemini-2.5-flash"),
+            ("europe-west1".to_string(), Some("us-central1".to_string()))
+        );
+    }
+
+    // A user who chose a multi-region for data residency keeps it where the
+    // model is served there, with NO fallback to global: the fallback fires on
+    // any non-auth error and would resend the conversation outside that
+    // geography. A global-only preview still has to go global (the docs say
+    // so). A regional model the multi-region does not serve goes to a single
+    // region inside it.
+    #[test]
+    fn a_configured_multi_region_is_honoured_where_the_model_is_served() {
+        assert_eq!(
+            route_for("eu", "gemini-3.8-flash"),
+            ("eu".to_string(), None)
+        );
+        assert_eq!(route_for("us", "claude-opus-5-5"), ("us".to_string(), None));
+        assert_eq!(route_for("eu", "claude-opus-4-7"), ("eu".to_string(), None));
+        assert_eq!(
+            route_for("us", "claude-sonnet-4-6"),
+            ("us-east5".to_string(), None)
+        );
+        assert_eq!(
+            route_for("us", "gemini-2.5-flash"),
+            ("us-central1".to_string(), None)
+        );
+        assert_eq!(
+            route_for("eu", "gemini-3-flash-preview"),
+            ("global".to_string(), None)
+        );
+        assert_eq!(
+            route_for("global", "claude-sonnet-5"),
+            ("global".to_string(), None)
+        );
+    }
+
+    // `GCP_LOCATION=eu` is a residency choice, and the docs say requests stay
+    // in that geography. A regional model is not served at the `eu`
+    // multi-region, so it used to fail there on every turn and fall back to
+    // us-east5 / us-central1 with the whole conversation. Now it goes to
+    // europe-west1 (listed by every regional Claude and Gemini page), and no
+    // slot of any `eu` route names a US location or `global` — except the
+    // global-only previews, whose primary the docs disclose.
+    #[test]
+    fn an_eu_configuration_never_routes_a_regional_model_to_the_us() {
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5@20251001",
+            "claude-sonnet-4-5@20250929",
+            "claude-opus-4-5@20251101",
+            "gemini-2.5-flash",
+        ] {
+            assert_eq!(
+                route_for("eu", model),
+                ("europe-west1".to_string(), None),
+                "{model}"
+            );
+        }
+        // A MaaS model keeps the multi-region and surfaces its own error
+        // rather than retrying in Iowa.
+        assert_eq!(
+            route_for("eu", "mistral-large-maas"),
+            ("eu".to_string(), None)
+        );
+
+        for model in KNOWN_MODELS
+            .iter()
+            .copied()
+            .chain(["gemini-2.5-flash", "mistral-large-maas"])
+            .filter(|model| !model.contains("-preview"))
+        {
+            let (primary, fallback) = route_for("eu", model);
+            for location in std::iter::once(primary).chain(fallback) {
+                assert!(
+                    location == "eu" || location.starts_with("europe-"),
+                    "{model} routed to {location} under GCP_LOCATION=eu"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_us_configuration_never_routes_outside_the_us() {
+        for model in KNOWN_MODELS
+            .iter()
+            .copied()
+            .chain(["gemini-2.5-flash", "mistral-large-maas"])
+            .filter(|model| !model.contains("-preview"))
+        {
+            let (primary, fallback) = route_for("us", model);
+            for location in std::iter::once(primary).chain(fallback) {
+                assert!(
+                    location == "us" || location.starts_with("us-"),
+                    "{model} routed to {location} under GCP_LOCATION=us"
+                );
+            }
+        }
     }
 }

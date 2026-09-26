@@ -144,7 +144,7 @@
       '<span class="chip">' + svgI('skills') + '5</span>' +
       '<span class="chip">' + svgI('book') + '6 KBs visible</span>' +
       '<span class="chip">' + svgI('dollar') + '0.0000</span>' +
-      '<span class="chip">' + svgI('brain') + 'gpt-5.6</span>' +
+      '<span class="chip">' + svgI('brain') + 'gpt-6-sol</span>' +
       '<span class="grow"></span>' + right + '</div></div>';
   }
 
@@ -488,10 +488,10 @@
       prow('O', 'Ollama', 'Local open source models. Default qwen3.', true) +
       '<div class="bw-grp"><i class="inst"></i>Institutional models</div>' +
       prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.5-2026-04-24.', true) +
-      prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-6-v1.', true) +
+      prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-8.', true) +
       '<div class="bw-grp"><i class="comm"></i>Commercial models</div>' +
       prow('A', 'Anthropic', 'Claude and other models from Anthropic.', true) +
-      prow('O', 'OpenAI', 'OpenAI models with gpt-5.6 as the default, plus compatible endpoints.', true) +
+      prow('O', 'OpenAI', 'OpenAI models with gpt-6-sol as the default, plus compatible endpoints.', true) +
       prow('G', 'Google Gemini', 'Gemini models from Google AI.', false) +
       prow('R', 'OpenRouter', 'Route to Claude, Gemini, Grok, DeepSeek, Qwen, and more.', false) +
       '</div>';

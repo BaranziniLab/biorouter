@@ -7,8 +7,8 @@ use super::formats::openai::{
     response_to_message, stamp_reasoning_provenance,
 };
 use super::formats::openai_responses::{
-    create_responses_request, get_responses_usage, responses_api_to_message,
-    responses_api_to_streaming_message, ResponsesApiResponse,
+    create_responses_request, get_responses_usage, responses_api_to_message, stream_responses_api,
+    ResponsesApiResponse,
 };
 use super::retry::ProviderRetry;
 use super::utils::{
@@ -18,35 +18,60 @@ use super::utils::{
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
 use anyhow::Result;
-use async_stream::try_stream;
 use async_trait::async_trait;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io;
-use tokio::pin;
-use tokio_util::codec::{FramedRead, LinesCodec};
-use tokio_util::io::StreamReader;
 
 use crate::model::ModelConfig;
 use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.6";
-pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-5.4-mini";
-// Verified against OpenAI docs (July 2026). Context windows are per-model
-// pages at developers.openai.com/api/docs/models. Removed (API-deprecated,
-// shutdown 2026): o1, o3-mini, o4-mini, gpt-4.1-nano, gpt-4o, gpt-5.1-codex.
-// Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
+/// GPT-6 Sol (GA 2026-09-22): the like-for-like successor of the previous
+/// default `gpt-5.6` (an alias of `gpt-5.6-sol`) at half its price — $2 in /
+/// $10 out per MTok against $4 / $20 — with the same 1,050,000-token window.
+/// Astra is the more capable tier, at five times Sol's price.
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-6-sol";
+/// GPT-6 Luna ($0.10 / $0.50 per MTok, 1,050,000 tokens) replaced `gpt-5.4-mini`
+/// ($0.75 / $4.50, 400,000 tokens): cheaper and a wider window, for the
+/// background calls — titles, summaries — the fast model exists for.
+pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-6-luna";
+// Verified against OpenAI's model pages, deprecations page and changelog on
+// 2026-09-25. Context windows are per-model pages at
+// developers.openai.com/api/docs/models. Models marked [responses] route to
+// /v1/responses instead of /v1/chat/completions.
+//
+// Not advertised, and why (developers.openai.com/api/docs/deprecations):
+//   * gpt-5, gpt-5-2025-08-07, gpt-5-mini, gpt-5-nano and o3 — OpenAI
+//     deprecated the only snapshot behind each (gpt-5-2025-08-07,
+//     gpt-5-mini-2025-08-07, gpt-5-nano-2025-08-07, o3-2025-04-16) on
+//     2026-06-11, with API shutdown on 2026-12-11. The named replacements are
+//     gpt-5.6-sol (for gpt-5 and o3), gpt-5.6-terra and gpt-5.6-luna, all listed
+//     below. Their `MODEL_CONTEXT_WINDOWS` entries stay, so a stored session
+//     that names one still resolves its window until the shutdown.
+//   * o1, o3-mini, o4-mini and gpt-4.1-nano — shutting down 2026-10-23.
+//   * gpt-5.1-codex — shut down 2026-07-23.
+//   * gpt-4o is NOT API-deprecated: only its gpt-4o-2024-05-13 snapshot is
+//     (shutdown 2026-10-23). It is simply not offered; gpt-4.1 and gpt-4o-mini
+//     cover the non-reasoning tier.
+//   * There is no gpt-6-terra. Terra exists only as gpt-5.6-terra.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
-    // GPT-5.6 family [responses] — frontier, released 2026-07-09. All three
-    // variants share a 1,050,000 context window / 128k max output. `gpt-5.6` is
-    // OpenAI's documented alias for `gpt-5.6-sol` and is kept first so it stays
-    // the default the UI resolves to. Sol prices >272k-token prompts at 2x input
-    // / 1.5x output for the whole request.
+    // GPT-6 family [responses] — Astra GA 2026-09-03, Sol and Luna GA
+    // 2026-09-22. All three: 1,050,000-token window (922,000 in), 128k max
+    // output, text + image input. Tool calling needs /v1/responses: Chat
+    // Completions allows function tools only with reasoning_effort `none`. Sol
+    // is kept first so it stays the default the UI resolves to. Prompts over
+    // 272k input tokens bill 2x input / 1.5x output for the whole request.
+    ("gpt-6-sol", 1_050_000),
+    ("gpt-6-astra", 1_050_000),
+    ("gpt-6-luna", 1_050_000),
+    // GPT-5.6 family [responses] — released 2026-07-09. All three variants
+    // share a 1,050,000 context window / 128k max output. `gpt-5.6` is OpenAI's
+    // documented alias for `gpt-5.6-sol`. Sol prices >272k-token prompts at 2x
+    // input / 1.5x output for the whole request.
     ("gpt-5.6", 1_050_000),
     ("gpt-5.6-sol", 1_050_000),
     ("gpt-5.6-terra", 1_050_000),
@@ -61,20 +86,14 @@ pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
     ("gpt-5.4-nano", 400_000),
     // Codex (agentic coding) [responses]
     ("gpt-5.3-codex", 400_000),
-    // GPT-5 .. 5.2 family (previous generation, still active)
+    // GPT-5.2 / 5.1 (previous generation, still active; Chat Completions)
     ("gpt-5.2", 400_000),
     ("gpt-5.1", 400_000),
-    ("gpt-5", 400_000),
-    ("gpt-5-2025-08-07", 400_000),
-    ("gpt-5-mini", 400_000),
-    ("gpt-5-nano", 400_000),
-    // GPT-4.1 family
+    // GPT-4.1 family (non-reasoning)
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
-    // GPT-4o family (gpt-4o is deprecated; mini remains active)
+    // GPT-4o mini (active; non-reasoning)
     ("gpt-4o-mini", 128_000),
-    // o-series reasoning models (o3 still active)
-    ("o3", 200_000),
 ];
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
@@ -83,20 +102,28 @@ pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
 /// model name, so a user's saved config keeps working after the vendor removes
 /// the old id. Keyed by the API host; returns `old id -> live id`.
 ///
-/// DeepSeek retires `deepseek-chat` / `deepseek-reasoner` on 2026-07-24 (both
-/// have been aliases of V4-Flash since the V4 launch). Rewriting them on the
-/// wire makes the transition seamless for anyone still selecting the old ids —
-/// including custom providers pointed at a `deepseek.com` host. Mapping both to
-/// `deepseek-v4-flash` (not `-pro`) is faithful: Flash has thinking enabled by
+/// DeepSeek discontinued `deepseek-chat` / `deepseek-reasoner` on 2026-07-24
+/// (both had been aliases of V4-Flash since the V4 launch), and retired the
+/// V4-Flash model itself on 2026-09-10: `deepseek-v4-flash` is now only
+/// "temporarily routed" to V4.1-Flash, whose id is `deepseek-flash` — the name
+/// DeepSeek's docs tell callers to use (api-docs.deepseek.com, read
+/// 2026-09-25). Rewriting all three on the wire keeps a saved config working —
+/// including a custom provider pointed at a `deepseek.com` host — and stops
+/// depending on a compatibility route DeepSeek has given no end date for.
+/// Mapping to Flash (not `-pro`) is faithful: V4.1-Flash has thinking on by
 /// default, so `deepseek-reasoner` behaviour is preserved with no cost jump.
 fn builtin_model_aliases(host: &str) -> Option<HashMap<String, String>> {
     let host = host.trim().to_ascii_lowercase();
     if host == "deepseek.com" || host == "api.deepseek.com" || host.ends_with(".deepseek.com") {
         return Some(HashMap::from([
-            ("deepseek-chat".to_string(), "deepseek-v4-flash".to_string()),
+            ("deepseek-chat".to_string(), "deepseek-flash".to_string()),
             (
                 "deepseek-reasoner".to_string(),
+                "deepseek-flash".to_string(),
+            ),
+            (
                 "deepseek-v4-flash".to_string(),
+                "deepseek-flash".to_string(),
             ),
         ]));
     }
@@ -296,10 +323,14 @@ impl OpenAiProvider {
 #[async_trait]
 impl Provider for OpenAiProvider {
     fn metadata() -> ProviderMetadata {
-        // Per OpenAI's published model docs, all GPT-4o, GPT-4.1, GPT-5.x, and
-        // most o-series models accept image inputs. Excluded: codex variants
-        // (text-focused).
+        // Per OpenAI's published model docs, every model in the catalog accepts
+        // image input. That includes gpt-5.3-codex: its model page lists "Input
+        // modalities: text, image" (read 2026-09-25), so the old exclusion of
+        // codex variants as text-focused was wrong for it.
         const OPEN_AI_VISION_MODELS: &[&str] = &[
+            "gpt-6-sol",
+            "gpt-6-astra",
+            "gpt-6-luna",
             "gpt-5.6",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
@@ -310,16 +341,12 @@ impl Provider for OpenAiProvider {
             "gpt-5.4-pro",
             "gpt-5.4-mini",
             "gpt-5.4-nano",
-            "gpt-5",
-            "gpt-5-2025-08-07",
-            "gpt-5-mini",
-            "gpt-5-nano",
+            "gpt-5.3-codex",
             "gpt-5.1",
             "gpt-5.2",
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-4o-mini",
-            "o3",
         ];
         let models = OPEN_AI_KNOWN_MODELS
             .iter()
@@ -520,20 +547,7 @@ impl Provider for OpenAiProvider {
                     let _ = log.error(e);
                 })?;
 
-            let stream = response.bytes_stream().map_err(io::Error::other);
-
-            Ok(Box::pin(try_stream! {
-                let stream_reader = StreamReader::new(stream);
-                let framed = FramedRead::new(stream_reader, LinesCodec::new()).map_err(anyhow::Error::from);
-
-                let message_stream = responses_api_to_streaming_message(framed);
-                pin!(message_stream);
-                while let Some(message) = message_stream.next().await {
-                    let (message, usage, pending) = message.map_err(|e| ProviderError::RequestFailed(format!("Stream decode error: {}", e)))?;
-                    log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
-                    yield (message, usage, pending);
-                }
-            }))
+            Ok(stream_responses_api(response, log))
         } else {
             let mut payload =
                 create_request(model, system, messages, tools, &ImageFormat::OpenAi, true)?;
@@ -669,14 +683,25 @@ mod alias_tests {
     #[test]
     fn deepseek_host_aliases_retired_ids() {
         let aliases = builtin_model_aliases("api.deepseek.com").expect("deepseek host has aliases");
-        assert_eq!(
-            aliases.get("deepseek-chat").map(String::as_str),
-            Some("deepseek-v4-flash")
-        );
-        assert_eq!(
-            aliases.get("deepseek-reasoner").map(String::as_str),
-            Some("deepseek-v4-flash")
-        );
+        // Discontinued 2026-07-24, and V4-Flash (their old target) retired
+        // 2026-09-10: all three land on V4.1-Flash's own id.
+        for retired in ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"] {
+            assert_eq!(
+                aliases.get(retired).map(String::as_str),
+                Some("deepseek-flash"),
+                "{retired}"
+            );
+        }
+        // No alias may point at an id that is itself retired, or a rewrite would
+        // only move the failure.
+        for target in aliases.values() {
+            assert!(
+                !aliases.contains_key(target),
+                "{target} is both a target and a retired id"
+            );
+        }
+        // V4-Pro is still served (repriced 2026-08-16), so it is not rewritten.
+        assert!(!aliases.contains_key("deepseek-v4-pro"));
     }
 
     #[test]
@@ -698,14 +723,23 @@ mod alias_tests {
         let p = provider_for_host("https://api.deepseek.com");
 
         let chat = model("deepseek-chat");
-        assert_eq!(p.resolve_model(&chat).model_name, "deepseek-v4-flash");
+        assert_eq!(p.resolve_model(&chat).model_name, "deepseek-flash");
 
         let reasoner = model("deepseek-reasoner");
-        assert_eq!(p.resolve_model(&reasoner).model_name, "deepseek-v4-flash");
+        assert_eq!(p.resolve_model(&reasoner).model_name, "deepseek-flash");
 
-        // A live id is passed through untouched (no allocation/rewrite).
-        let v4 = model("deepseek-v4-pro");
-        assert_eq!(p.resolve_model(&v4).model_name, "deepseek-v4-pro");
+        let v4_flash = model("deepseek-v4-flash");
+        assert_eq!(p.resolve_model(&v4_flash).model_name, "deepseek-flash");
+
+        // Live ids are passed through untouched (no allocation/rewrite).
+        for live in ["deepseek-flash", "deepseek-v4-pro"] {
+            let config = model(live);
+            assert!(
+                matches!(p.resolve_model(&config), Cow::Borrowed(_)),
+                "{live} must not be rewritten"
+            );
+            assert_eq!(p.resolve_model(&config).model_name, live);
+        }
     }
 
     #[test]
@@ -820,14 +854,133 @@ mod model_capability_tests {
     }
 
     #[test]
-    fn default_model_is_gpt_5_6_and_is_a_listed_model() {
-        assert_eq!(OPEN_AI_DEFAULT_MODEL, "gpt-5.6");
-        assert!(
-            OPEN_AI_KNOWN_MODELS
-                .iter()
-                .any(|(name, _)| *name == OPEN_AI_DEFAULT_MODEL),
-            "the default model must appear in the catalog so the UI can resolve it"
+    fn default_model_is_gpt_6_sol_and_is_a_listed_model() {
+        assert_eq!(OPEN_AI_DEFAULT_MODEL, "gpt-6-sol");
+        assert_eq!(
+            OPEN_AI_KNOWN_MODELS.first().map(|(name, _)| *name),
+            Some(OPEN_AI_DEFAULT_MODEL),
+            "the default is kept first in the catalog"
         );
+        assert_eq!(OPEN_AI_DEFAULT_FAST_MODEL, "gpt-6-luna");
+        for id in [OPEN_AI_DEFAULT_MODEL, OPEN_AI_DEFAULT_FAST_MODEL] {
+            assert!(
+                OPEN_AI_KNOWN_MODELS.iter().any(|(name, _)| *name == id),
+                "{id} must appear in the catalog so the UI can resolve it"
+            );
+        }
+    }
+
+    /// GPT-6 on the OpenAI API: Astra (GA 2026-09-03), Sol and Luna (GA
+    /// 2026-09-22). There is no `gpt-6-terra`.
+    const GPT_6_IDS: &[&str] = &["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"];
+
+    #[test]
+    fn gpt_6_family_is_advertised_with_its_window_vision_and_responses_route() {
+        let meta = OpenAiProvider::metadata();
+        for id in GPT_6_IDS {
+            let (_, limit) = OPEN_AI_KNOWN_MODELS
+                .iter()
+                .find(|(name, _)| name == id)
+                .unwrap_or_else(|| panic!("{id} missing from known models"));
+            assert_eq!(*limit, 1_050_000, "{id} should have a 1,050,000 ctx window");
+            let model = meta
+                .known_models
+                .iter()
+                .find(|m| m.name == *id)
+                .unwrap_or_else(|| panic!("{id} missing from provider metadata"));
+            assert_eq!(
+                model.supports_vision,
+                Some(true),
+                "{id} accepts image input per OpenAI"
+            );
+            // Chat Completions takes GPT-6 function tools only with effort
+            // `none`, which BioRouter never sends.
+            assert!(
+                OpenAiProvider::uses_responses_api(id),
+                "{id} must route to /v1/responses"
+            );
+            assert!(
+                model_supports_reasoning_effort(id),
+                "{id} is a reasoning model"
+            );
+        }
+        assert!(
+            !OPEN_AI_KNOWN_MODELS
+                .iter()
+                .any(|(name, _)| *name == "gpt-6-terra"),
+            "gpt-6-terra does not exist; Terra is gpt-5.6-terra"
+        );
+    }
+
+    #[test]
+    fn gpt_6_context_limit_resolves_from_model_config() {
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        for id in GPT_6_IDS {
+            let cfg = ModelConfig::new(id).unwrap();
+            assert_eq!(cfg.context_limit(), 1_050_000, "{id} ctx limit");
+        }
+    }
+
+    /// OpenAI deprecated the only snapshot behind each of these on 2026-06-11
+    /// (API shutdown 2026-12-11), so a new chat is not offered them. A stored
+    /// chat that names one still resolves its own window and is still shaped
+    /// and routed as before, until the shutdown turns it into an API error.
+    #[test]
+    fn deprecated_gpt_5_and_o3_ids_are_not_advertised_but_stored_chats_still_resolve() {
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        let meta = OpenAiProvider::metadata();
+        for (id, window) in [
+            ("gpt-5", 400_000),
+            ("gpt-5-2025-08-07", 400_000),
+            ("gpt-5-mini", 400_000),
+            ("gpt-5-nano", 400_000),
+            ("o3", 200_000),
+        ] {
+            assert!(
+                !OPEN_AI_KNOWN_MODELS.iter().any(|(name, _)| *name == id),
+                "{id} is deprecated (shutdown 2026-12-11) and must not be offered"
+            );
+            assert!(
+                !meta.known_models.iter().any(|m| m.name == id),
+                "{id} leaked into provider metadata"
+            );
+            assert!(
+                meta.allows_unlisted_models,
+                "a stored {id} chat stays selectable"
+            );
+            assert_eq!(
+                ModelConfig::new(id).unwrap().context_limit(),
+                window,
+                "{id} lost its window"
+            );
+            assert!(
+                model_supports_reasoning_effort(id),
+                "{id} is still a reasoning model"
+            );
+            assert!(
+                !OpenAiProvider::uses_responses_api(id),
+                "{id} still answers on /v1/chat/completions"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt_5_3_codex_advertises_vision() {
+        // developers.openai.com/api/docs/models/gpt-5.3-codex lists "Input
+        // modalities: text, image".
+        let meta = OpenAiProvider::metadata();
+        let codex = meta
+            .known_models
+            .iter()
+            .find(|m| m.name == "gpt-5.3-codex")
+            .expect("gpt-5.3-codex is advertised");
+        assert_eq!(codex.supports_vision, Some(true));
     }
 
     #[test]

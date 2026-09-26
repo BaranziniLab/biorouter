@@ -18,13 +18,17 @@ pub type StreamingMessageStream = std::pin::Pin<
 
 /// Sensible default values of Google Cloud Platform (GCP) locations for model deployment.
 ///
-/// Each variant corresponds to a specific GCP region where models can be hosted.
+/// `Iowa` and `Ohio` are single regions; `Global` is Vertex's global endpoint
+/// (host `aiplatform.googleapis.com`, path `locations/global`), the only place
+/// some models are served at all — see [`ModelAvailability`].
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum GcpLocation {
     /// Represents the us-central1 region in Iowa
     Iowa,
     /// Represents the us-east5 region in Ohio
     Ohio,
+    /// Vertex's global endpoint (`locations/global`)
+    Global,
 }
 
 impl fmt::Display for GcpLocation {
@@ -32,6 +36,7 @@ impl fmt::Display for GcpLocation {
         match self {
             Self::Iowa => write!(f, "us-central1"),
             Self::Ohio => write!(f, "us-east5"),
+            Self::Global => write!(f, "{GLOBAL_LOCATION}"),
         }
     }
 }
@@ -43,9 +48,65 @@ impl TryFrom<&str> for GcpLocation {
         match s {
             "us-central1" => Ok(Self::Iowa),
             "us-east5" => Ok(Self::Ohio),
+            GLOBAL_LOCATION => Ok(Self::Global),
             _ => Err(ModelError::UnsupportedLocation(s.to_string())),
         }
     }
+}
+
+/// Vertex's name for its global endpoint location.
+pub const GLOBAL_LOCATION: &str = "global";
+/// Vertex's multi-region locations. Each serves the models that are not in any
+/// single region while keeping requests inside that geography; they are used
+/// only when the user configures one as `GCP_LOCATION`.
+pub const MULTI_REGION_LOCATIONS: &[&str] = &[US_MULTI_REGION, EU_MULTI_REGION];
+/// Vertex's United States multi-region.
+pub const US_MULTI_REGION: &str = "us";
+/// Vertex's Europe multi-region.
+pub const EU_MULTI_REGION: &str = "eu";
+/// The single region a regional model goes to when the user configured the
+/// `eu` multi-region: every regional Claude and Gemini model Vertex lists is
+/// served in europe-west1 (Belgium). See
+/// [`GcpVertexAIModel::preferred_location`].
+pub const EU_REGIONAL_LOCATION: &str = "europe-west1";
+
+/// Where Vertex serves a model — which decides where a request must go.
+///
+/// Checked against the "Supported regions" tables of the Vertex model pages
+/// on 2026-09-25 (e.g. `.../models/gemini/3-8-flash`, `.../gemini/3-1-pro`,
+/// `.../partner-models/claude/opus-5-5`, `.../claude/opus-4-8`):
+/// - Gemini 3.x GA models (3.8 / 3.7 / 3.6 Flash, 3.5 Flash-Lite, 3.1
+///   Flash-Lite) are served at `global` plus the `us` / `eu` multi-regions;
+///   3.5 Flash adds some non-US regions but neither us-central1 nor us-east5.
+/// - The Gemini 3 previews (3.1 Pro Preview, 3 Flash Preview) are `global`
+///   ONLY.
+/// - Claude Opus 4.7, Opus 4.8 and every Claude 5.x model (Sonnet 5, Opus 5,
+///   Opus 5.5, Fable 5, Fable 5.1) are served at `global` plus `us` / `eu`
+///   only (`.../claude/opus-4-7` lists no single region).
+/// - Older Claude (Opus 4.6 / Sonnet 4.6 and below: us-east5, europe-west1,
+///   global) and Gemini 2.x are regional, which is what this provider always
+///   assumed.
+///
+/// So with the provider's default `GCP_LOCATION` (us-central1) none of the
+/// first three groups is reachable at the configured region; a request for
+/// one is routed by [`GcpVertexAIModel::preferred_location`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelAvailability {
+    /// Served in single regions: the configured `GCP_LOCATION` is honoured.
+    Regional,
+    /// Served at `global` and the `us` / `eu` multi-regions, in no single
+    /// region the provider would pick.
+    MultiRegion,
+    /// Served at `global` and nowhere else.
+    GlobalOnly,
+}
+
+/// The first number in a model id — `gemini-3.8-flash` → 3,
+/// `claude-opus-5-5` → 5, `claude-sonnet-4-5@20250929` → 4.
+fn major_version(model_name: &str) -> Option<u32> {
+    model_name
+        .split(['-', '.', '@'])
+        .find_map(|segment| segment.parse::<u32>().ok())
 }
 
 /// Represents errors that can occur during model operations.
@@ -66,15 +127,42 @@ pub enum ModelError {
     UnsupportedLocation(String),
 }
 
-/// Default model for GCP Vertex AI.
-pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
+/// Default model for GCP Vertex AI: Gemini 3.8 Flash, GA on Vertex since
+/// 2026-09-02 and the first featured model on its Google-models page. Like
+/// every Gemini 3.x model it is not served in us-central1, so it reaches the
+/// global endpoint through [`GcpVertexAIModel::preferred_location`].
+pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
 
-// Verified against the Vertex AI partner-model docs (June 2026). Claude 4.6+
-// models have no @date suffix on Vertex; older ones keep it. Removed:
-// claude-opus-4@20250514 / claude-sonnet-4@20250514 (retired Jun 15, 2026),
-// claude-opus-4-1@20250805 (deprecated, retires Aug 2026), claude-3-5-haiku /
-// claude-3-haiku (retired), gemini-2.0-flash(-lite) (discontinued Jun 1, 2026).
+// Verified against Anthropic's Vertex model-id table and the Vertex model and
+// lifecycle pages (2026-09-25). Claude 4.6+ models have no @date suffix on
+// Vertex; the 4.5 generation keeps it. Removed on 2026-09-25: gemini-3-pro
+// (never a Vertex id — only gemini-3-pro-preview was ever published, and it is
+// gone), gemini-3.1-pro (the id is gemini-3.1-pro-preview), and gemini-2.5-pro
+// / -flash / -flash-lite (Vertex retires all three on 2026-10-20). Removed
+// earlier: claude-opus-4@20250514 / claude-sonnet-4@20250514 (retired Jun 15,
+// 2026), claude-opus-4-1@20250805, claude-3-5-haiku / claude-3-haiku
+// (retired), gemini-2.0-flash(-lite) (discontinued Jun 1, 2026).
+// Not listed: claude-mythos-5 / -5-1 (limited availability on Vertex).
+//
+// DEFAULT_MODEL comes first: the UI auto-selects `known_models[0]` when a
+// user switches providers (SwitchModelModal), not the declared default, and a
+// Gemini model works in any project while a Claude model must first be
+// enabled in the project's Model Garden.
 pub const KNOWN_MODELS: &[&str] = &[
+    DEFAULT_MODEL,
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    // Claude Opus 5.5 (GA 2026-09-22) and Fable 5.1 (GA 2026-09-01) bind
+    // their thinking blocks to the conversation; `create_anthropic_request`
+    // strips replayed ones.
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-opus-5",
     "claude-fable-5",
     "claude-sonnet-5",
     "claude-opus-4-8",
@@ -84,14 +172,6 @@ pub const KNOWN_MODELS: &[&str] = &[
     "claude-opus-4-5@20251101",
     "claude-sonnet-4-5@20250929",
     "claude-haiku-4-5@20251001",
-    "gemini-3.5-flash",
-    "gemini-3.1-pro",
-    "gemini-3.1-flash-lite",
-    "gemini-3-pro",
-    "gemini-3-flash-preview",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
 ];
 
 /// Represents available GCP Vertex AI models for biorouter.
@@ -120,17 +200,107 @@ impl fmt::Display for GcpVertexAIModel {
 }
 
 impl GcpVertexAIModel {
-    /// Returns the default GCP location for the model.
+    /// Where Vertex serves this model; see [`ModelAvailability`].
     ///
-    /// Each model family has a well-known location based on availability:
+    /// Decided by family and major version rather than a list of ids, so a
+    /// model typed in through "Enter a model not listed" lands on the same
+    /// side as its siblings: Gemini 3+ and Claude 5+ are multi-region (their
+    /// `-preview` Gemini ids global-only), Claude Opus 4.7 and 4.8 are the
+    /// 4.x models served only at global and multi-region, and everything
+    /// older stays regional.
+    pub fn availability(&self) -> ModelAvailability {
+        /// Claude 4.x ids Vertex serves at global and multi-region only.
+        const MULTI_REGION_CLAUDE_4: &[&str] = &["claude-opus-4-7", "claude-opus-4-8"];
+        match self {
+            Self::Gemini(name) => match major_version(name) {
+                Some(major) if major >= 3 => {
+                    if name.contains("-preview") {
+                        ModelAvailability::GlobalOnly
+                    } else {
+                        ModelAvailability::MultiRegion
+                    }
+                }
+                _ => ModelAvailability::Regional,
+            },
+            Self::Claude(name) => {
+                let multi_region = MULTI_REGION_CLAUDE_4
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+                    || major_version(name).is_some_and(|major| major >= 5);
+                if multi_region {
+                    ModelAvailability::MultiRegion
+                } else {
+                    ModelAvailability::Regional
+                }
+            }
+            Self::MaaS(_, _) => ModelAvailability::Regional,
+        }
+    }
+
+    /// Returns the location to fall back to when the first attempt fails.
+    ///
+    /// A regional model keeps its family's well-known region:
     /// - Claude models default to Ohio (us-east5)
     /// - Gemini models default to Iowa (us-central1)
     /// - MaaS models default to Iowa (us-central1)
+    ///
+    /// A model no single region serves falls back to the global endpoint.
     pub fn known_location(&self) -> GcpLocation {
+        if self.availability() != ModelAvailability::Regional {
+            return GcpLocation::Global;
+        }
         match self {
             Self::Claude(_) => GcpLocation::Ohio,
             Self::Gemini(_) => GcpLocation::Iowa,
             Self::MaaS(_, _) => GcpLocation::Iowa,
+        }
+    }
+
+    /// The location to send this model's request to first, given the
+    /// configured `GCP_LOCATION`.
+    ///
+    /// A regional model goes where it is configured, as before. A model only
+    /// served outside the single regions goes straight to the global endpoint
+    /// instead of failing at the configured region first — which, with the
+    /// default us-central1, is every Gemini 3.x model including the default,
+    /// and every Claude 5.x model. A user who configured the `us` or `eu`
+    /// multi-region keeps it for the models served there, so data stays in
+    /// that geography (the provider's `route` gives such a request no
+    /// fallback to global); global-only previews still have to go global. A
+    /// configured single region that happens to serve one of these models
+    /// (3.5 Flash is in a few non-US regions) is not consulted — setting
+    /// `us` or `eu` is how a user keeps them in one geography.
+    ///
+    /// ⚠ A regional Claude or Gemini model is NOT served at the `us` / `eu`
+    /// multi-region (the Sonnet 4.6, Opus 4.6, Haiku 4.5 and Gemini 2.5 pages
+    /// list single regions and `global` under "Model availability"; checked
+    /// 2026-09-25), so a multi-region configuration sends it to a single
+    /// region inside that geography instead: europe-west1, which every one of
+    /// them lists, for `eu`, and the family's US region for `us`. Passing the
+    /// multi-region through failed every turn and handed the conversation to
+    /// the US fallback — a residency leak the `eu` setting exists to prevent.
+    /// A MaaS model keeps the multi-region, and the provider's `route` gives
+    /// it no fallback outside it, so an unserved model surfaces its error.
+    pub fn preferred_location(&self, configured: &str) -> String {
+        let configured_is_multi_region = MULTI_REGION_LOCATIONS.contains(&configured);
+        match self.availability() {
+            ModelAvailability::Regional => match (configured, self) {
+                (EU_MULTI_REGION, Self::Claude(_) | Self::Gemini(_)) => {
+                    EU_REGIONAL_LOCATION.to_string()
+                }
+                (US_MULTI_REGION, Self::Claude(_) | Self::Gemini(_)) => {
+                    self.known_location().to_string()
+                }
+                _ => configured.to_string(),
+            },
+            ModelAvailability::MultiRegion
+                if configured == GLOBAL_LOCATION || configured_is_multi_region =>
+            {
+                configured.to_string()
+            }
+            ModelAvailability::MultiRegion | ModelAvailability::GlobalOnly => {
+                GLOBAL_LOCATION.to_string()
+            }
         }
     }
 }
@@ -230,6 +400,21 @@ fn create_anthropic_request(
     messages: &[Message],
     tools: &[Tool],
 ) -> Result<Value> {
+    // Opus 5.5 / Fable 5.1 bind each thinking block to the conversation
+    // prefix, which BioRouter changes on every request (see
+    // `anthropic::uses_preserved_thinking`), and a new Google Cloud project
+    // gets a 400 for a replayed block whose prefix moved. The Claude API's
+    // `drop_block` control is rejected on Vertex until Google enables it per
+    // model (Anthropic platform-availability table, 2026-09-25), so the
+    // replayed blocks are stripped here instead. Everything else replays as
+    // before.
+    let stripped;
+    let messages = if anthropic::uses_preserved_thinking(&model_config.model_name) {
+        stripped = anthropic::without_replayed_thinking(messages);
+        stripped.as_slice()
+    } else {
+        messages
+    };
     let mut request = anthropic::create_request(model_config, system, messages, tools)?;
 
     let obj = request
@@ -379,6 +564,144 @@ mod tests {
         let gemini_model = GcpVertexAIModel::try_from("gemini-2.5-flash")?;
         assert_eq!(gemini_model.known_location(), GcpLocation::Iowa);
 
+        Ok(())
+    }
+
+    #[test]
+    fn availability_follows_family_and_major_version() -> Result<()> {
+        let cases = [
+            // Gemini 3.x GA: global + multi-region, in no single region.
+            ("gemini-3.8-flash", ModelAvailability::MultiRegion),
+            ("gemini-3.5-flash", ModelAvailability::MultiRegion),
+            ("gemini-3.5-flash-lite", ModelAvailability::MultiRegion),
+            ("gemini-3.1-flash-lite", ModelAvailability::MultiRegion),
+            // An unlisted future Gemini lands with its siblings.
+            ("gemini-4.0-ultra", ModelAvailability::MultiRegion),
+            // Gemini 3 previews: global only.
+            ("gemini-3.1-pro-preview", ModelAvailability::GlobalOnly),
+            ("gemini-3-flash-preview", ModelAvailability::GlobalOnly),
+            // Claude 5.x and Opus 4.7 / 4.8: global + multi-region.
+            ("claude-opus-5-5", ModelAvailability::MultiRegion),
+            ("claude-fable-5-1", ModelAvailability::MultiRegion),
+            ("claude-sonnet-5", ModelAvailability::MultiRegion),
+            ("claude-opus-4-8", ModelAvailability::MultiRegion),
+            ("claude-opus-4-7", ModelAvailability::MultiRegion),
+            // Regional, exactly as the provider always assumed.
+            ("claude-opus-4-6", ModelAvailability::Regional),
+            ("claude-sonnet-4-6", ModelAvailability::Regional),
+            ("claude-sonnet-4-5@20250929", ModelAvailability::Regional),
+            ("claude-sonnet-4@20250514", ModelAvailability::Regional),
+            ("claude-future-version", ModelAvailability::Regional),
+            ("gemini-2.5-flash", ModelAvailability::Regional),
+            ("qwen-maas", ModelAvailability::Regional),
+        ];
+        for (model, expected) in cases {
+            assert_eq!(
+                GcpVertexAIModel::try_from(model)?.availability(),
+                expected,
+                "{model}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_regional_models_fall_back_to_global() -> Result<()> {
+        assert_eq!(
+            GcpVertexAIModel::try_from(DEFAULT_MODEL)?.known_location(),
+            GcpLocation::Global
+        );
+        assert_eq!(
+            GcpVertexAIModel::try_from("claude-opus-5-5")?.known_location(),
+            GcpLocation::Global
+        );
+        assert_eq!(GcpLocation::Global.to_string(), "global");
+        assert_eq!(GcpLocation::try_from("global")?, GcpLocation::Global);
+        Ok(())
+    }
+
+    /// Every advertised model is reachable with the default `GCP_LOCATION`:
+    /// either it is regional (so us-central1 or its family's region serves
+    /// it), or it is routed away from us-central1 before the request is made.
+    ///
+    /// The classification is checked against the vendor's "Supported regions"
+    /// tables (2026-09-25), one row per advertised id — deriving it from
+    /// `availability()` itself would only restate the code. Adding a model to
+    /// KNOWN_MODELS means looking up its regions and adding its row here.
+    #[test]
+    fn every_listed_model_has_a_route_from_the_default_location() -> Result<()> {
+        use ModelAvailability::{GlobalOnly, MultiRegion, Regional};
+        let vendor_regions = [
+            ("gemini-3.8-flash", MultiRegion),
+            ("gemini-3.7-flash", MultiRegion),
+            ("gemini-3.6-flash", MultiRegion),
+            ("gemini-3.5-flash", MultiRegion),
+            ("gemini-3.5-flash-lite", MultiRegion),
+            ("gemini-3.1-pro-preview", GlobalOnly),
+            ("gemini-3.1-flash-lite", MultiRegion),
+            ("gemini-3-flash-preview", GlobalOnly),
+            ("claude-opus-5-5", MultiRegion),
+            ("claude-fable-5-1", MultiRegion),
+            ("claude-opus-5", MultiRegion),
+            ("claude-fable-5", MultiRegion),
+            ("claude-sonnet-5", MultiRegion),
+            ("claude-opus-4-8", MultiRegion),
+            ("claude-opus-4-7", MultiRegion),
+            ("claude-opus-4-6", Regional),
+            ("claude-sonnet-4-6", Regional),
+            ("claude-opus-4-5@20251101", Regional),
+            ("claude-sonnet-4-5@20250929", Regional),
+            ("claude-haiku-4-5@20251001", Regional),
+        ];
+        let mut listed: Vec<&str> = KNOWN_MODELS.to_vec();
+        let mut tabled: Vec<&str> = vendor_regions.iter().map(|(model, _)| *model).collect();
+        listed.sort_unstable();
+        tabled.sort_unstable();
+        assert_eq!(listed, tabled, "every advertised id needs a vendor row");
+        for (model, expected) in vendor_regions {
+            assert_eq!(
+                GcpVertexAIModel::try_from(model)?.availability(),
+                expected,
+                "{model}"
+            );
+        }
+
+        let default_location = GcpLocation::Iowa.to_string();
+        for model in KNOWN_MODELS {
+            let parsed = GcpVertexAIModel::try_from(*model)?;
+            let preferred = parsed.preferred_location(&default_location);
+            match parsed.availability() {
+                ModelAvailability::Regional => assert_eq!(preferred, default_location, "{model}"),
+                _ => assert_eq!(preferred, GLOBAL_LOCATION, "{model}"),
+            }
+        }
+        Ok(())
+    }
+
+    // Opus 5.5 on Vertex: replayed thinking is stripped (no drop_block on
+    // Vertex yet), and no binding control or beta leaks into the body. Opus
+    // 4.8 replays its thinking exactly as before.
+    #[test]
+    fn claude_requests_strip_thinking_only_for_preserved_thinking_models() -> Result<()> {
+        let history = [
+            Message::user().with_text("first"),
+            Message::assistant()
+                .with_thinking("", "sig-1")
+                .with_text("answer"),
+            Message::user().with_text("second"),
+        ];
+
+        let config = ModelConfig::new_or_fail("claude-opus-5-5");
+        let (request, _) = create_request(&config, "system", &history, &[])?;
+        let rendered = request.to_string();
+        assert!(!rendered.contains("sig-1"), "{rendered}");
+        assert!(!rendered.contains("block_binding"), "{rendered}");
+        assert_eq!(request["anthropic_version"], "vertex-2023-10-16");
+        assert_eq!(request["messages"].as_array().unwrap().len(), 3);
+
+        let config = ModelConfig::new_or_fail("claude-opus-4-8");
+        let (request, _) = create_request(&config, "system", &history, &[])?;
+        assert!(request.to_string().contains("sig-1"));
         Ok(())
     }
 

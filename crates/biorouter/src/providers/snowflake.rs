@@ -15,13 +15,34 @@ use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use rmcp::model::Tool;
 
-// Verified against the Snowflake Cortex AISQL availability page (June 2026).
-// Removed models no longer listed there: claude-4-opus, claude-3-7-sonnet,
-// claude-3-5-sonnet.
+// Verified against Snowflake's Cortex AI regional-availability page
+// (2026-09-25). Removed on 2026-09-25: claude-4-sonnet — Snowflake moved it to
+// legacy on 2026-08-12 (only accounts that had already used it can call it; a
+// new account's call fails) and ends it on 2026-10-14. Removed earlier:
+// claude-4-opus, claude-3-7-sonnet, claude-3-5-sonnet. Not listed:
+// claude-fable-5 / -5-1, which Snowflake offers only as a private preview to
+// accounts it has enabled.
+//
+// The default stays on Sonnet 4.6, which Snowflake serves in more regions
+// than any newer Claude, so a new account's first chat works wherever it is.
+// It is also listed FIRST, ahead of the newer models: the UI auto-selects
+// `known_models[0]` when a user switches providers (SwitchModelModal), not
+// this constant, and the regional-coverage argument holds for that pick too.
 pub const SNOWFLAKE_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 pub const SNOWFLAKE_KNOWN_MODELS: &[&str] = &[
+    // Claude Sonnet 4.6 (1M context) — the default, see above.
+    SNOWFLAKE_DEFAULT_MODEL,
+    // Claude 5 series (1M context). Snowflake caps Sonnet 5's output at 64K,
+    // half of what the Claude API allows.
+    "claude-sonnet-5",
+    "claude-opus-5",
+    // Claude Opus 5.5 is a PUBLIC PREVIEW on Snowflake, which calls previews
+    // "not suitable for production workloads" — listed for users who want it,
+    // never the default. Its thinking blocks are bound to the conversation
+    // prefix, but this provider never replays thinking (see
+    // `formats::snowflake::format_messages`), so there is nothing to strip.
+    "claude-opus-5-5",
     // Claude 4.6+ series (1M context)
-    "claude-sonnet-4-6",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -29,12 +50,10 @@ pub const SNOWFLAKE_KNOWN_MODELS: &[&str] = &[
     "claude-opus-4-5",
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
-    // Claude 4 series (legacy, select regions only)
-    "claude-4-sonnet",
 ];
 
 pub const SNOWFLAKE_DOC_URL: &str =
-    "https://docs.snowflake.com/user-guide/snowflake-cortex/aisql#choosing-a-model";
+    "https://docs.snowflake.com/en/user-guide/snowflake-cortex/aisql-regional-availability";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SnowflakeAuth {
@@ -349,5 +368,34 @@ impl Provider for SnowflakeProvider {
         log.write(&response, Some(&usage))?;
 
         Ok((message, ProviderUsage::new(response_model, usage)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The UI auto-selects `known_models[0]` on a provider switch, so the
+    /// widest-coverage default must be the first entry, not merely declared.
+    #[test]
+    fn the_default_is_the_first_entry() {
+        let metadata = SnowflakeProvider::metadata();
+        assert_eq!(metadata.default_model, "claude-sonnet-4-6");
+        assert_eq!(metadata.known_models[0].name, metadata.default_model);
+    }
+
+    #[test]
+    fn catalog_tracks_snowflakes_lifecycle() {
+        // Legacy since 2026-08-12 and a new account's call fails; EOL 2026-10-14.
+        assert!(!SNOWFLAKE_KNOWN_MODELS.contains(&"claude-4-sonnet"));
+        for model in ["claude-sonnet-5", "claude-opus-5", "claude-opus-5-5"] {
+            assert!(SNOWFLAKE_KNOWN_MODELS.contains(&model), "{model}");
+        }
+        // Opus 5.5 is a public preview on Snowflake: offered, never the default.
+        assert_ne!(SNOWFLAKE_DEFAULT_MODEL, "claude-opus-5-5");
+        // Fable is a private preview there; not offered.
+        assert!(!SNOWFLAKE_KNOWN_MODELS
+            .iter()
+            .any(|model| model.contains("fable")));
     }
 }

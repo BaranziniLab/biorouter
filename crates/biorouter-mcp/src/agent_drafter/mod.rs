@@ -60,7 +60,9 @@ use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 /// Biorouter (any supported provider). A specific provider+model is stored only
 /// when the caller explicitly chooses one. These constants are not auto-applied.
 pub const DEFAULT_APP_PROVIDER: &str = "xiaomi_mimo";
-pub const DEFAULT_APP_MODEL: &str = "mimo-v2.5";
+// mimo-v2.5 shuts down 2026-10-21 with no replacement routing; V2.6 Flash is
+// its same-price successor and the xiaomi_mimo provider's default.
+pub const DEFAULT_APP_MODEL: &str = "mimo-v2.6-flash";
 
 // ---------------------------------------------------------------------------
 // Tool parameter structs
@@ -93,7 +95,7 @@ pub struct ModelParam {
     /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default)]
     pub provider: Option<String>,
-    /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
+    /// Model name (e.g. "mimo-v2.6-flash", "claude-opus-4-8").
     #[serde(default)]
     pub model: Option<String>,
     /// Optional provider-agnostic generation settings.

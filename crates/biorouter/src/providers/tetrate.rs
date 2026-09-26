@@ -18,32 +18,58 @@ use crate::model::ModelConfig;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use rmcp::model::Tool;
 
-// Tetrate Agent Router Service can run many models; its full catalog is
-// auth-gated (router.tetrate.ai/models), so this static list is a fallback —
-// the provider's dynamic /v1/models fetch is authoritative. Removed models
-// retired upstream: claude-3-7-sonnet-latest (retired Feb 19, 2026),
-// claude-sonnet-4-20250514 (retires Jun 15, 2026), gemini-2.0-flash(-lite)
-// (shut down Jun 1, 2026).
+// Tetrate Agent Router Service can run many models. Its full catalog is
+// public (GET https://router.tetrate.ai/api/public/models?limit=1000 needs no
+// key; it also lives at github.com/tetrateio/agent-router-models), but the
+// provider's authenticated /v1/models fetch is what decides what a given key
+// can route, so this static list is only a fallback. Verified against the
+// public catalog on Sep 25, 2026.
+//
+// Removed models retired upstream: claude-opus-4-1 (Anthropic retired it
+// Aug 5, 2026), gpt-5 / gpt-5-mini / gpt-5-nano (OpenAI deprecated them on
+// Jun 11, 2026 with removal on Dec 11, 2026; Tetrate marks them deprecated),
+// claude-3-7-sonnet-latest (retired Feb 19, 2026), claude-sonnet-4-20250514
+// (retired Jun 15, 2026), gemini-2.0-flash(-lite) (shut down Jun 1, 2026).
+//
+// GPT-6 and GPT-5.6 are deliberately NOT listed, although Tetrate routes them.
+// This provider always posts to v1/chat/completions, and Tetrate catalogs
+// them as `mode: responses`. OpenAI's GPT-6 Sol/Luna pages say Chat
+// Completions supports function calling only with reasoning_effort=none
+// (Astra does not accept none), and BioRouter's own OpenAI provider sends
+// GPT-5.6 through the Responses API for the same reason. Nothing Tetrate
+// publishes says its Chat Completions path translates those calls to
+// Responses, so a tool call is not known to work. gpt-4.1 is `mode: responses`
+// too, but it is a non-reasoning model, so the restriction does not reach it.
+//
+// Gemini 3 (gemini-3.8-flash, gemini-3.1-pro-preview) is deliberately NOT
+// listed either, although Tetrate routes it. Tetrate's public catalog backs
+// those ids with Google's OpenAI-compatible endpoint
+// (generativelanguage.googleapis.com/v1beta/openai/), where Gemini 3 function
+// calling requires the model's thought signatures to be sent back on every
+// later turn, carried in each tool call's `extra_content`. BioRouter's OpenAI
+// format (formats/openai.rs) neither keeps nor replays `extra_content`, so the
+// turn after a tool call would be rejected. List them again once that format
+// round-trips the signature.
+//
+// gemini-2.5-pro / -flash are not deprecated on the Gemini API (Google, Sep 18,
+// 2026) and Tetrate still routes them.
 pub const TETRATE_KNOWN_MODELS: &[&str] = &[
-    "claude-opus-4-1",
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-5-nano",
     "gpt-4.1",
 ];
 pub const TETRATE_DOC_URL: &str = "https://router.tetrate.ai";
 
 fn tetrate_model_supports_vision(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
-    (normalized.starts_with("claude-")
+    normalized.starts_with("claude-")
         || normalized.starts_with("gemini-")
         || normalized.starts_with("gpt-4.1")
-        || normalized.starts_with("gpt-5"))
-        && !normalized.contains("codex")
 }
 
 #[derive(serde::Serialize)]
@@ -329,5 +355,64 @@ impl Provider for TetrateProvider {
 
     fn supports_streaming(&self) -> bool {
         self.supports_streaming
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_is_advertised() {
+        assert!(TETRATE_KNOWN_MODELS.contains(&TETRATE_DEFAULT_MODEL));
+        assert_eq!(
+            TetrateProvider::metadata().default_model,
+            TETRATE_DEFAULT_MODEL
+        );
+    }
+
+    #[test]
+    fn current_claude_and_gemini_models_are_advertised_with_vision() {
+        let metadata = TetrateProvider::metadata();
+        for id in [
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-sonnet-5",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+        ] {
+            let info = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == id)
+                .unwrap_or_else(|| panic!("{id} should be advertised"));
+            assert_eq!(info.supports_vision, Some(true), "{id} accepts images");
+        }
+    }
+
+    /// Retired or deprecated upstream, or (GPT-6 / GPT-5.6) not known to
+    /// support tool calls on the Chat Completions path this provider uses.
+    #[test]
+    fn retired_and_responses_only_models_are_not_advertised() {
+        for id in TETRATE_KNOWN_MODELS {
+            assert!(
+                !id.starts_with("gpt-5") && !id.starts_with("gpt-6"),
+                "{id} should not be advertised on Tetrate's chat/completions path"
+            );
+        }
+        assert!(!TETRATE_KNOWN_MODELS.contains(&"claude-opus-4-1"));
+    }
+
+    /// Gemini 3 on Tetrate needs its thought signatures replayed through the
+    /// tool call's `extra_content`, which the OpenAI format does not carry, so
+    /// a multi-turn tool call would fail. It stays off the list until it does.
+    #[test]
+    fn gemini_3_is_not_advertised_without_thought_signature_replay() {
+        for id in TETRATE_KNOWN_MODELS {
+            assert!(
+                !id.starts_with("gemini-3"),
+                "{id} needs thought-signature replay the OpenAI format lacks"
+            );
+        }
     }
 }
