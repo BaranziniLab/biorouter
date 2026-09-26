@@ -558,7 +558,12 @@ pub fn create_request(
 /// (September 2026) are covered by the `opus-5` / `fable-5` / `mythos-5`
 /// patterns, which is correct: they removed both as well. Dotted variants
 /// cover OpenRouter/Copilot-style ids.
-fn uses_adaptive_thinking(model_name: &str) -> bool {
+///
+/// The OpenAI-compatible and Databricks builders ask this too, through
+/// `formats::openai::model_rejects_sampling_params`, so a gateway that serves
+/// these models never gets a sampling parameter they refuse. The match is
+/// case-sensitive; that caller lower-cases the id first.
+pub(crate) fn uses_adaptive_thinking(model_name: &str) -> bool {
     const ADAPTIVE_ONLY: &[&str] = &[
         "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
     ];

@@ -1,7 +1,9 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
+use crate::providers::formats::anthropic as anthropic_format;
 use crate::providers::formats::audience;
 use crate::providers::formats::google as gemini_schema;
+use crate::providers::formats::openai as openai_format;
 use crate::providers::utils::{
     convert_image, detect_image_path, is_valid_function_name, load_image_file, safely_parse_json,
     sanitize_function_name, ImageFormat,
@@ -411,20 +413,6 @@ fn is_openai_reasoning_model(model_name: &str) -> bool {
         || id.starts_with("gpt-6")
 }
 
-/// Claude endpoints that accept only adaptive thinking and reject any
-/// non-default `temperature`, `top_p` or `top_k` with a 400 — Anthropic's
-/// deprecations page says so for every Claude 4.7-and-later model, and
-/// Databricks repeats it for Sonnet 5 (2026-09-25). Same list as
-/// `formats::anthropic::uses_adaptive_thinking` and
-/// `formats::bedrock::bedrock_uses_adaptive_thinking`; keep the three together.
-fn is_adaptive_only_claude(model_name: &str) -> bool {
-    const ADAPTIVE_ONLY: &[&str] = &[
-        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
-    ];
-    let lower = model_name.to_ascii_lowercase();
-    is_claude_model(&lower) && ADAPTIVE_ONLY.iter().any(|pattern| lower.contains(pattern))
-}
-
 /// Add Anthropic-style cache_control fields to the request payload for Claude models.
 /// This enables prompt caching to reduce costs when using Claude via Databricks.
 ///
@@ -573,10 +561,13 @@ pub fn create_request(
         model_name.contains("claude-3-7-sonnet") || model_name.contains("claude-4-sonnet");
 
     // No custom sampling for models that reject it: OpenAI reasoning models,
-    // and Claude endpoints that accept only adaptive thinking. `top_p` and
-    // `top_k` are never sent from here at all.
-    let sends_temperature =
-        !is_openai_reasoning_model && !is_adaptive_only_claude(&model_config.model_name);
+    // and the models that 400 on any non-default `temperature`/`top_p`/`top_k`
+    // — Claude 4.7 and later (Anthropic's deprecations page; Databricks repeats
+    // it for Sonnet 5, 2026-09-25) and Kimi K3. That second set is the one
+    // gate every OpenAI-shaped builder asks, so it is not re-spelled here.
+    // `top_p` and `top_k` are never sent from here at all.
+    let sends_temperature = !is_openai_reasoning_model
+        && !openai_format::model_rejects_sampling_params(&model_config.model_name);
     // A reasoning model's output cap is `max_completion_tokens` in OpenAI's
     // own API, which a directly named or `biorouter-` external-model endpoint
     // passes through. Databricks-hosted endpoints document only `max_tokens` —
@@ -614,6 +605,23 @@ pub fn create_request(
         content: system.into(),
         tool_calls: None,
         tool_call_id: None,
+    };
+
+    // `format_messages` replays every thinking block with its signature. Claude
+    // Opus 5.5 and Fable 5.1 bind a block to the prefix it was produced under,
+    // and BioRouter changes that prefix on every request (the per-call MOIM
+    // block, the hourly system-prompt timestamp — see
+    // `formats::anthropic::uses_preserved_thinking`), so wherever Anthropic
+    // enforces the binding (by default for accounts created on or after
+    // 2026-08-31) every replayed block is a 400. This request carries no
+    // `block_binding` to ask for `drop_block`, so strip them all, as Bedrock
+    // and Vertex do; text and tool calls stay.
+    let stripped;
+    let messages = if anthropic_format::uses_preserved_thinking(&model_config.model_name) {
+        stripped = anthropic_format::without_replayed_thinking(messages);
+        stripped.as_slice()
+    } else {
+        messages
     };
 
     let messages_spec = format_messages(messages, image_format);
@@ -1672,8 +1680,8 @@ mod tests {
         Ok(())
     }
 
-    /// Claude 4.7 and later — Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5 —
-    /// return 400 for a non-default temperature, top_p or top_k.
+    /// Claude 4.7 and later — Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5/5.1 —
+    /// and Kimi K3 return 400 for a non-default temperature, top_p or top_k.
     #[test]
     fn adaptive_only_claude_endpoints_get_no_sampling_params() -> anyhow::Result<()> {
         for name in [
@@ -1682,8 +1690,12 @@ mod tests {
             "databricks-claude-fable-5",
             "databricks-claude-opus-4-8",
             "databricks-claude-opus-4-7",
+            "databricks-claude-opus-5-5",
+            "databricks-claude-fable-5-1",
+            "biorouter-claude-opus-5-5",
+            "databricks-kimi-k3",
         ] {
-            assert!(is_adaptive_only_claude(name), "{name}");
+            assert!(openai_format::model_rejects_sampling_params(name), "{name}");
             let request = create_request(
                 &sampled_model(name),
                 "system",
@@ -1702,8 +1714,120 @@ mod tests {
             "databricks-claude-opus-4-6",
             "databricks-claude-haiku-4-5",
             "databricks-gpt-5-5",
+            "databricks-gemini-3-8-flash",
         ] {
-            assert!(!is_adaptive_only_claude(name), "{name}");
+            assert!(
+                !openai_format::model_rejects_sampling_params(name),
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A conversation whose assistant turns carry signed thinking: one beside
+    /// text, one beside a tool call, one that is thinking alone.
+    fn conversation_with_signed_thinking() -> Vec<Message> {
+        vec![
+            Message::user().with_text("first question"),
+            Message::assistant()
+                .with_thinking("reasoning one", "SIG-ONE")
+                .with_text("first answer"),
+            Message::user().with_text("second question"),
+            Message::assistant()
+                .with_thinking("reasoning two", "SIG-TWO")
+                .with_redacted_thinking("REDACTED-TWO")
+                .with_tool_request(
+                    "tool1",
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        name: "example".into(),
+                        arguments: Some(object!({"param1": "value1"})),
+                        meta: None,
+                    }),
+                ),
+            Message::user().with_tool_response(
+                "tool1",
+                Ok(CallToolResult {
+                    content: vec![Content::text("Result")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::assistant().with_thinking("reasoning three", "SIG-THREE"),
+            Message::assistant().with_text("second answer"),
+        ]
+    }
+
+    /// Opus 5.5 and Fable 5.1 bind each thinking block to its prefix, which
+    /// BioRouter changes on every request, so no replayed block may reach
+    /// them; the text and the tool call around each block still do.
+    #[test]
+    fn preserved_thinking_endpoints_get_no_replayed_thinking() -> anyhow::Result<()> {
+        let messages = conversation_with_signed_thinking();
+        for name in [
+            "databricks-claude-opus-5-5",
+            "databricks-claude-fable-5-1",
+            "biorouter-claude-opus-5.5",
+        ] {
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &messages,
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            let body = request.to_string();
+            for replayed in [
+                "SIG-ONE",
+                "SIG-TWO",
+                "SIG-THREE",
+                "REDACTED-TWO",
+                "reasoning one",
+                "\"reasoning\"",
+            ] {
+                assert!(!body.contains(replayed), "{name}: {replayed} in {body}");
+            }
+            let sent = request["messages"].as_array().unwrap();
+            let roles: Vec<&str> = sent.iter().map(|m| m["role"].as_str().unwrap()).collect();
+            // The thinking-only turn is gone; every other turn keeps its place.
+            assert_eq!(
+                roles,
+                [
+                    "system",
+                    "user",
+                    "assistant",
+                    "user",
+                    "assistant",
+                    "tool",
+                    "assistant"
+                ],
+                "{name}"
+            );
+            assert!(body.contains("first answer"), "{name}");
+            assert!(body.contains("second answer"), "{name}");
+            assert_eq!(sent[4]["tool_calls"][0]["id"], "tool1", "{name}");
+        }
+        Ok(())
+    }
+
+    /// Claude models without the prefix check — Opus 5 among them — keep
+    /// their replayed reasoning and its signature.
+    #[test]
+    fn other_claude_endpoints_still_replay_thinking() -> anyhow::Result<()> {
+        let messages = conversation_with_signed_thinking();
+        for name in ["databricks-claude-opus-5", "databricks-claude-sonnet-4-6"] {
+            let request = create_request(
+                &sampled_model(name),
+                "system",
+                &messages,
+                &[],
+                &ImageFormat::OpenAi,
+            )?;
+            let body = request.to_string();
+            for replayed in ["SIG-ONE", "SIG-TWO", "SIG-THREE", "REDACTED-TWO"] {
+                assert!(body.contains(replayed), "{name}: {replayed} missing");
+            }
         }
         Ok(())
     }
