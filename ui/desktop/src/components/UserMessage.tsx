@@ -35,7 +35,15 @@ type ClampState = 'collapsed' | 'expanding' | 'open';
 
 interface UserMessageProps {
   message: Message;
-  onMessageUpdate?: (messageId: string, newContent: string, editType?: 'diverge' | 'edit') => void;
+  /**
+   * Save an edit. Returning `false` refuses it before anything changed — a chat held for its Crew
+   * access (F1) — and the editor stays open with the person's words in it.
+   */
+  onMessageUpdate?: (
+    messageId: string,
+    newContent: string,
+    editType?: 'diverge' | 'edit'
+  ) => unknown;
   /**
    * D4: send this message's text as a new message. Offered only for a steer
    * the daemon stored as unanswered, and only while no turn is running —
@@ -213,16 +221,17 @@ export default function UserMessage({
         return;
       }
 
-      setIsEditing(false);
-
       if (editContent.trim() === displayText.trim()) {
+        setIsEditing(false);
         return;
       }
 
       if (onMessageUpdate && message.id) {
-        onMessageUpdate(message.id, editContent, editType);
+        // Refused before anything changed: keep the editor, and the words, where they are.
+        if (onMessageUpdate(message.id, editContent, editType) === false) return;
         setHasBeenEdited(true);
       }
+      setIsEditing(false);
     },
     [editContent, displayText, onMessageUpdate, message.id]
   );

@@ -8,7 +8,7 @@ use biorouter::config::{
     extensions::get_extension_by_name, get_all_extensions, BioRouterMode, Config, ExtensionConfig,
     PermissionManager,
 };
-use biorouter::providers::create;
+use biorouter::providers::{create, create_from_saved_session};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, ExtensionState, SessionManager};
 use biorouter::workflow::Workflow;
@@ -428,11 +428,21 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
 /// early-exit paths call [`close_ephemeral_store_with_manager`] before
 /// `process::exit` (which skips destructors) so the pool is closed and the
 /// directory removed; panics unwind and drop it normally.
+///
+/// ⚠ **`new_ephemeral`, never `new` — security-relevant (SCOPE-BIND).** A
+/// separate database is not separate identities. Built with `new`, this store
+/// was the first the process minted from, so it took the date and minted
+/// `<date>_1`: the id the desktop's first chat of the day already held. Crew's
+/// grants, the per-chat knowledge-base selection and checkpoint repositories
+/// are keyed by session id outside any `sessions.db`, and a run inherited that
+/// chat's expired Crew grant ("Crew run was revoked"); a live one would have
+/// let it act under a grant nobody gave it. An ephemeral store's ids carry a
+/// namespace of their own, so they can never name a saved chat.
 fn ephemeral_session_store() -> anyhow::Result<(tempfile::TempDir, Arc<SessionManager>)> {
     let dir = tempfile::Builder::new()
         .prefix("biorouter-no-session-")
         .tempdir()?;
-    let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    let manager = Arc::new(SessionManager::new_ephemeral(dir.path().to_path_buf()));
     Ok((dir, manager))
 }
 
@@ -688,6 +698,26 @@ fn agent_with_session_manager(session_manager: Arc<SessionManager>) -> Agent {
     ))
 }
 
+fn should_restore_saved_provider(
+    saved_provider: Option<&str>,
+    saved_model: Option<&biorouter::model::ModelConfig>,
+    provider_name: &str,
+    model_name: &str,
+    workflow_temperature: Option<f32>,
+) -> anyhow::Result<bool> {
+    let Some(saved_model) = saved_model else {
+        return Ok(false);
+    };
+    if saved_provider != Some(provider_name) || saved_model.model_name != model_name {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        !workflow_temperature.is_some_and(|temperature| saved_model.temperature != Some(temperature)),
+        "The workflow temperature differs from the saved provider configuration. Resume without that override to preserve the saved provider binding."
+    );
+    Ok(true)
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let config = Config::global();
@@ -736,16 +766,19 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // somebody mailed them, the global default — so "why will this chat not
     // start" has four answers and only one of them is obvious.
     let workflow_provider = workflow_settings.and_then(|s| s.biorouter_provider.clone());
-    let (resolved_provider, provider_source) =
-        match (session_config.provider, saved_provider, workflow_provider) {
-            (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
-            (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
-            (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
-            (None, None, None) => (
-                config.get_biorouter_provider().ok(),
-                ProviderSource::GlobalDefault,
-            ),
-        };
+    let (resolved_provider, provider_source) = match (
+        session_config.provider,
+        saved_provider.clone(),
+        workflow_provider,
+    ) {
+        (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
+        (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
+        (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
+        (None, None, None) => (
+            config.get_biorouter_provider().ok(),
+            ProviderSource::GlobalDefault,
+        ),
+    };
     let resolved_model = session_config
         .model
         .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
@@ -767,16 +800,26 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let provider_name = resolved_provider.expect("checked by unconfigured_precondition above");
     let model_name = resolved_model.expect("checked by unconfigured_precondition above");
 
-    let model_config = if session_config.resume
-        && saved_model_config
-            .as_ref()
-            .is_some_and(|mc| mc.model_name == model_name)
-    {
-        let mut config = saved_model_config.unwrap();
-        if let Some(temp) = workflow_settings.and_then(|s| s.temperature) {
-            config = config.with_temperature(Some(temp));
+    let restore_saved_provider = if session_config.resume {
+        match should_restore_saved_provider(
+            saved_provider.as_deref(),
+            saved_model_config.as_ref(),
+            &provider_name,
+            &model_name,
+            workflow_settings.and_then(|settings| settings.temperature),
+        ) {
+            Ok(restore) => restore,
+            Err(error) => {
+                output::render_error(&error.to_string());
+                close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+                process::exit(1);
+            }
         }
-        config
+    } else {
+        false
+    };
+    let model_config = if restore_saved_provider {
+        saved_model_config.unwrap()
     } else {
         let temperature = workflow_settings.and_then(|s| s.temperature);
         match biorouter::model::ModelConfig::new(&model_name) {
@@ -827,7 +870,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         process::exit(1);
     }
 
-    let new_provider = match create(&provider_name, model_config).await {
+    let provider_result = if restore_saved_provider {
+        create_from_saved_session(
+            &session_manager,
+            session_config
+                .session_id
+                .as_deref()
+                .expect("saved provider requires a session"),
+            &provider_name,
+            &model_name,
+        )
+        .await
+    } else {
+        create(&provider_name, model_config).await
+    };
+    let new_provider = match provider_result {
         Ok(provider) => provider,
         Err(e) => {
             // `render_error` already prints `error:`, and `end_sentence` already
@@ -1374,6 +1431,96 @@ mod tests {
             shared_mtime_before, shared_mtime_after,
             "a --no-session run must not touch the shared session store"
         );
+    }
+
+    /// SCOPE-BIND regression (a), security-relevant. A `--no-session` run minted
+    /// `<date>_1` in its private store — this binary links `biorouter` without
+    /// `cfg(test)`, so a first store here mints the date exactly as the shipped
+    /// CLI does — and inherited the Crew grant saved for the desktop's own
+    /// `<date>_1` ("Crew run was revoked"). A live grant would have let the run
+    /// act under a grant nobody gave it.
+    ///
+    /// The run's store is built first, the order that reproduced it, and live
+    /// grants are saved under the ids a desktop's first chats of the day hold.
+    /// The run's ids are in a namespace no saved chat can hold, so no grant
+    /// reaches them.
+    ///
+    /// ⚠ Nothing here may touch the shared store — not even a read, which opens
+    /// (and can create) `sessions.db` — or the mtime check in
+    /// `no_session_store_is_private_and_functional`, running beside it, fails
+    /// for a reason that is not its own. So the Crew calls below are only ever
+    /// asked about the run's own ids, which no grant is saved under: that
+    /// answer needs no lookup.
+    #[tokio::test]
+    async fn a_no_session_run_never_holds_a_saved_chats_crew_grant() {
+        let (dir, ephemeral) = ephemeral_session_store().expect("ephemeral store");
+        let mut run_ids = Vec::new();
+        for _ in 0..2 {
+            run_ids.push(
+                ephemeral
+                    .create_session(
+                        dir.path().to_path_buf(),
+                        "CLI Session".to_string(),
+                        SessionType::Hidden,
+                    )
+                    .await
+                    .expect("create session in the private store")
+                    .id,
+            );
+        }
+
+        let today = chrono::Utc::now().format("%Y%m%d").to_string();
+        let desktop_chats = [format!("{today}_1"), format!("{today}_2")];
+        let crew_root = tempfile::tempdir().unwrap();
+        let grant = |run: &str| {
+            serde_json::json!({
+                "connection_id": "connection-methods",
+                "run_id": run,
+                "channel_id": "channel-methods",
+                "source_channels": ["channel-methods"],
+                "epoch": 1,
+                "provider_binding": "versa_azure",
+                "public_provider": false,
+                "institution_policy": true,
+                "expired": false,
+                "session_incarnation": 7,
+            })
+        };
+        std::fs::write(
+            crew_root.path().join("connections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "connections": [],
+                "scopes": {
+                    desktop_chats[0].as_str(): grant("run-first"),
+                    desktop_chats[1].as_str(): grant("run-second"),
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let crew = biorouter::crew::CrewManager::new(crew_root.path().to_path_buf()).unwrap();
+
+        for id in &run_ids {
+            assert!(
+                SessionManager::is_ephemeral_session_id(id),
+                "a --no-session run minted `{id}`, which a saved chat could also hold"
+            );
+            assert!(
+                !id.starts_with(&today) && !desktop_chats.contains(id),
+                "a --no-session run took the date prefix: `{id}`"
+            );
+            assert!(
+                !crew.is_scoped_session(id).await,
+                "a --no-session run `{id}` was treated as holding a saved chat's Crew grant"
+            );
+            assert!(crew.run_metadata(id).await.is_none());
+            crew.authorize_session_tool(id, "developer__shell")
+                .await
+                .expect("a --no-session run's own tools must not be taken away");
+        }
+
+        ephemeral.close().await;
+        close_ephemeral_store(Some(dir)).await;
     }
 
     /// A run that cannot name a provider or a model is refused with something
@@ -2062,6 +2209,62 @@ mod tests {
         assert_eq!(error_message, "test error");
     }
 
+    #[test]
+    fn restore_decision_accepts_exact_identity_and_rejects_drift_or_temperature_change() {
+        let mut saved = biorouter::model::ModelConfig::new_or_fail("synthetic-resume-model");
+        saved.temperature = Some(0.4);
+
+        assert!(should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            None,
+        )
+        .unwrap());
+        assert!(should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.4),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("other-provider"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.9),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "different-model",
+            Some(0.9),
+        )
+        .unwrap());
+        assert!(!should_restore_saved_provider(
+            Some("versa"),
+            None,
+            "versa",
+            "synthetic-resume-model",
+            None,
+        )
+        .unwrap());
+        let error = should_restore_saved_provider(
+            Some("versa"),
+            Some(&saved),
+            "versa",
+            "synthetic-resume-model",
+            Some(0.9),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("temperature differs"));
+    }
+
     /// Issue #56 Task 31, the half the plan writes as `assert_eq!(turns_started(),
     /// 0)`. There is no turn counter to read here — `build_session` calls
     /// `process::exit` and cannot be driven from a test at all — so what is
@@ -2086,10 +2289,13 @@ mod tests {
         let create = src
             .find("create(&provider_name, model_config)")
             .expect("`providers::create` is no longer called the way this audit looks for");
+        let saved_create = src
+            .find("create_from_saved_session(")
+            .expect("trusted saved-session provider construction is gone");
         assert!(
-            check < create,
-            "the privacy check moved BELOW `providers::create`; a refused chat now builds a \
-             provider (and, a few lines later, binds it) before saying no"
+            check < create && check < saved_create,
+            "the privacy check moved BELOW provider construction; a refused chat now builds a \
+             provider (fresh or trusted saved restore) before saying no"
         );
     }
 

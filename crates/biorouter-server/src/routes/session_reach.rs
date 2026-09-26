@@ -697,6 +697,19 @@ pub async fn session_reach(
     session_id: &str,
     headers: &HeaderMap,
 ) -> Result<(), SessionOutOfReach> {
+    if user_action_proof(headers) != UserActionProof::Proven {
+        let crew = biorouter::crew::manager().map_err(|_| SessionOutOfReach {
+            status: StatusCode::FORBIDDEN,
+            message: SESSION_OUT_OF_REACH,
+        })?;
+        if crew.is_scoped_session(session_id).await {
+            return Err(SessionOutOfReach {
+                status: StatusCode::FORBIDDEN,
+                message: SESSION_OUT_OF_REACH,
+            });
+        }
+    }
+
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: an HTTP request naming a session is not a tool call and
     // has no admitted capability to inherit.
@@ -998,7 +1011,26 @@ impl HttpCaller {
     /// answers its cancel the same way. Registrants that know their chat say so
     /// (`ActiveWorkItem::session_id`), which keeps this arm for work that
     /// genuinely has none.
+    pub async fn excluded_crew_sessions(
+        &self,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        if self.proof == UserActionProof::Proven {
+            return Ok(Default::default());
+        }
+        Ok(biorouter::crew::manager()?.scoped_session_ids().await)
+    }
+
     pub async fn lists_work(&self, manager: &SessionManager, owner: Option<&str>) -> bool {
+        if self.proof != UserActionProof::Proven {
+            let Ok(crew) = biorouter::crew::manager() else {
+                return false;
+            };
+            if let Some(id) = owner {
+                if crew.is_scoped_session(id).await {
+                    return false;
+                }
+            }
+        }
         // A caller admitted to a chat this daemon cannot even read is admitted
         // to every chat — `refuse_unless_reachable` answers `Unreadable` as it
         // answers `Private`, and `Public` always — so it is answered without a

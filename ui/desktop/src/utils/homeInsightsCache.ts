@@ -1,3 +1,4 @@
+import { userActionHeaders } from './userAction';
 import { getSessionActivity, type ActivityWindow } from '../api';
 
 export const HOME_ACTIVITY_DAYS = 155;
@@ -61,10 +62,14 @@ export function cacheHomeActivity(activity: ActivityWindow): void {
 export async function refreshHomeActivity(): Promise<ActivityWindow> {
   if (inFlightActivity) return inFlightActivity;
 
-  inFlightActivity = getSessionActivity<true>({
-    query: { days: HOME_ACTIVITY_DAYS },
-    throwOnError: true,
-  })
+  inFlightActivity = userActionHeaders()
+    .then((headers) =>
+      getSessionActivity<true>({
+        headers,
+        query: { days: HOME_ACTIVITY_DAYS },
+        throwOnError: true,
+      })
+    )
     .then((response) => {
       cacheHomeActivity(response.data);
       return response.data;

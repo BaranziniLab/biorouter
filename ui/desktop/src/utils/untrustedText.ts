@@ -17,6 +17,20 @@
  * the whole class, which is why this is a category match and not a list of
  * ranges somebody has to remember to extend.
  *
+ * {@link stripHiddenCharacters} is the ONE definition of that drop set in the
+ * renderer. A surface that needs a stricter rule (a Crew display name also
+ * refuses private use, unassigned code points and every default-ignorable)
+ * removes its extra classes FIRST and then calls it, rather than restating
+ * these two — `annotationChannel.test.ts` fails on a second copy, because a
+ * copy is the one that drifts.
+ *
+ * ⚠ The order is not a matter of taste. Any lone-surrogate (`\p{Cs}`) removal
+ * in particular must run before this one: deleting a format character can
+ * leave a high and a low surrogate adjacent and fuse them into a real pair, so
+ * `\uD800\u2066\uDC00` stripped here first becomes U+10000, which a `\p{Cs}`
+ * pass run afterwards can no longer see. The reference implementation is
+ * `components/crew/identity/displayText.ts`.
+ *
  * Markup is deliberately left alone: callers frame these values into different
  * syntaxes and each owns the escaping its own syntax needs.
  *
@@ -28,14 +42,20 @@
 
 export const UNTRUSTED_LABEL_MAX_CHARS = 256;
 
+/**
+ * Removes every control (`\p{Cc}`) and format (`\p{Cf}`) character, and
+ * nothing else — no trimming, no cap. The shared primitive; see the module
+ * comment for what the two categories hold and why there is only one copy.
+ */
+export function stripHiddenCharacters(value: string): string {
+  return value.replace(/[\p{Cc}\p{Cf}]/gu, '');
+}
+
 export function sanitizeUntrustedLabel(
   value: string,
   maxChars: number = UNTRUSTED_LABEL_MAX_CHARS
 ): string {
-  return value
-    .replace(/[\p{Cc}\p{Cf}]/gu, '')
-    .trim()
-    .slice(0, maxChars);
+  return stripHiddenCharacters(value).trim().slice(0, maxChars);
 }
 
 /** A label that always names something, for surfaces with nowhere to put a blank. */

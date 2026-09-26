@@ -377,8 +377,144 @@ pub const NO_KEY_REFUSAL: &str =
      so it cannot accept credentials over HTTP. Configure them at a terminal with \
      `biorouter extension install <bundle>`, which prompts with echo off.";
 
+#[derive(Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ElicitationResponseRequest {
+    session_id: String,
+    id: String,
+    data: Option<Value>,
+    #[serde(default)]
+    cancelled: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/action-required/elicitation",
+    request_body = ElicitationResponseRequest,
+    responses(
+        (status = 200, description = "Delivered to the live ordinary elicitation", body = Value),
+        (status = 400, description = "Invalid response shape", body = Value),
+        (status = 403, description = "Verified human authority required", body = Value),
+        (status = 409, description = "No matching live ordinary elicitation, or answer recorded after waiter ended", body = Value),
+        (status = 413, description = "Response exceeds size bound"),
+        (status = 500, description = "Persistence failed or completion outcome is unknown", body = Value)
+    )
+)]
+pub async fn respond_to_elicitation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ElicitationResponseRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !matches!(user_action_proof(&headers), UserActionProof::Proven) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "status":"refused", "error":"Verified human authority is required to answer this request"
+            })),
+        ));
+    }
+    let valid_id =
+        |id: &str| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control);
+    let valid_answer = match (&request.data, request.cancelled) {
+        (Some(data), false) => {
+            data.is_object() && serde_json::to_vec(data).is_ok_and(|bytes| bytes.len() <= 16 * 1024)
+        }
+        (None, true) => true,
+        _ => false,
+    };
+    if !valid_id(&request.session_id) || !valid_id(&request.id) || !valid_answer {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status":"refused", "error":"Provide bounded session_id and id, and either an object data response of at most 16 KiB or cancelled:true"
+            })),
+        ));
+    }
+    let claim = biorouter::action_required_manager::ActionRequiredManager::global()
+        .claim_ordinary_elicitation(&request.session_id, &request.id)
+        .filter(|claim| !claim.is_closed())
+        .ok_or_else(elicitation_unknown)?;
+    // The claimed decision owns its completion even if the HTTP client leaves.
+    // Cancelling mid-persist could otherwise record an answer without delivery.
+    tokio::spawn(complete_elicitation(state, claim, request.id, request.data))
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "status":"outcome_unknown", "error":"Elicitation response completion was interrupted; inspect session history before continuing"
+        }))))?
+}
+
+fn elicitation_unknown() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "status":"unknown", "error":"No matching live ordinary elicitation is waiting in this session; refresh the session before continuing"
+        })),
+    )
+}
+
+async fn complete_elicitation(
+    state: Arc<AppState>,
+    claim: biorouter::action_required_manager::OrdinaryElicitationClaim,
+    request_id: String,
+    data: Option<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    use biorouter::agents::{AgentEvent, PersistedMessage};
+    use biorouter::conversation::message::{Message, MessageContent};
+    use biorouter::session_events::{publish, SessionBusEvent};
+    if claim.is_closed() {
+        return Err(elicitation_unknown());
+    }
+    let session_id = claim.session_id().to_owned();
+    let mut message = match &data {
+        Some(data) => Message::user()
+            .with_content(MessageContent::action_required_elicitation_response(
+                request_id,
+                data.clone(),
+            ))
+            .agent_only(),
+        None => Message::user()
+            .with_text(format!("Cancelled input request {request_id}."))
+            .user_only(),
+    };
+    state.session_manager().add_message_adopting_uid(&session_id, &mut message).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "status":"persistence_failed", "error":"The answer could not be recorded; the waiting request was interrupted without delivering it"
+        }))))?;
+    let message_id = message.id.clone().ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"status":"outcome_unknown","error":"The recorded answer has no authoritative message identity"}))))?;
+    let persisted = PersistedMessage {
+        id: message_id.clone(),
+        user_visible: message.is_user_visible(),
+    };
+    publish(
+        &session_id,
+        SessionBusEvent::Agent(AgentEvent::Message(message)),
+    );
+    publish(
+        &session_id,
+        SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![persisted])),
+    );
+    if claim.deliver(data) == biorouter::pending_user_action::ResolveOutcome::Delivered {
+        Ok(Json(
+            serde_json::json!({"status":"delivered","message_id":message_id}),
+        ))
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "status":"recorded_not_delivered", "message_id":message_id,
+                "error":"The answer was recorded, but the waiting request ended before delivery; inspect session history before continuing"
+            })),
+        ))
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route(
+            "/action-required/elicitation",
+            post(respond_to_elicitation).layer(axum::extract::DefaultBodyLimit::max(20 * 1024)),
+        )
         .route(
             "/action-required/tool-confirmation",
             post(confirm_tool_action),
@@ -718,6 +854,418 @@ mod tests {
             assert_eq!(body_json(response).await["status"], "already_resolved");
 
             approval_relay::forget(&origin);
+        }
+    }
+
+    mod elicitation_tests {
+        use super::*;
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        use axum::http::HeaderMap;
+        use biorouter::action_required_manager::ActionRequiredManager;
+        use biorouter::agents::AgentEvent;
+        use biorouter::conversation::message::{
+            ActionRequiredData, MessageContent, SecretDestination, SecretKeyRequest,
+        };
+        use biorouter::pending_user_action::{
+            PendingUserActions, SecretsRequest, ToolApprovalRequest, UserActionRequest,
+        };
+        use biorouter::session_events::{self, SessionBusEvent};
+        use serial_test::serial;
+
+        async fn wait_for_ordinary_card(
+            session_id: &str,
+        ) -> (
+            String,
+            tokio::task::JoinHandle<anyhow::Result<Option<Value>>>,
+        ) {
+            let manager = ActionRequiredManager::global();
+            let session_id = session_id.to_owned();
+            let waiter_session_id = session_id.clone();
+            let waiter = tokio::spawn(async move {
+                manager
+                    .request_and_wait(
+                        "Which cohort?".into(),
+                        serde_json::json!({"type":"object"}),
+                        std::time::Duration::from_secs(5),
+                        Some(&waiter_session_id),
+                    )
+                    .await
+            });
+            for _ in 0..100 {
+                for message in manager.drain_requests(&session_id) {
+                    for content in message.content {
+                        if let MessageContent::ActionRequired(action) = content {
+                            if let ActionRequiredData::Elicitation { id, .. } = action.data {
+                                return (id, waiter);
+                            }
+                        }
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+            waiter.abort();
+            panic!("ordinary elicitation card was not published");
+        }
+
+        fn proven_headers() -> HeaderMap {
+            install_test_user_action_key();
+            let mut headers = HeaderMap::new();
+            headers.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+            headers
+        }
+
+        fn secret_request() -> SecretsRequest {
+            SecretsRequest {
+                prompt: "Synthetic secret".into(),
+                keys: vec![SecretKeyRequest {
+                    key: "SYNTHETIC_SECRET".into(),
+                    label: "Synthetic secret".into(),
+                    description: None,
+                    required: true,
+                }],
+                destination: SecretDestination::Keyring,
+            }
+        }
+
+        async fn respond(
+            state: Arc<AppState>,
+            headers: HeaderMap,
+            request: ElicitationResponseRequest,
+        ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+            respond_to_elicitation(State(state), headers, Json(request)).await
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn live_ordinary_elicitation_delivers_only_to_its_exact_session() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let _env = crate::test_sandbox::relocate_path_root(root.path());
+            let state = AppState::new().await.unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    root.path().to_path_buf(),
+                    "Synthetic ordinary elicitation".into(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            let (id, waiter) = wait_for_ordinary_card(&session).await;
+            let before_wrong = state
+                .session_manager()
+                .get_session(&session, true)
+                .await
+                .unwrap()
+                .message_count;
+            let wrong = respond(
+                Arc::clone(&state),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: "ordinary-other-session".into(),
+                    id: id.clone(),
+                    data: Some(serde_json::json!({"cohort":"wrong"})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("a foreign session must not answer the card");
+            assert_eq!(wrong.0, StatusCode::CONFLICT);
+            assert_eq!(
+                state
+                    .session_manager()
+                    .get_session(&session, true)
+                    .await
+                    .unwrap()
+                    .message_count,
+                before_wrong
+            );
+            let mut events = session_events::subscribe(&session);
+
+            let delivered = respond(
+                Arc::clone(&state),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id: id.clone(),
+                    data: Some(serde_json::json!({"cohort":"synthetic"})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect("live ordinary answer delivers");
+            assert_eq!(delivered.0["status"], "delivered");
+            assert!(delivered.0["message_id"].as_str().is_some());
+            assert_eq!(
+                waiter.await.unwrap().unwrap(),
+                Some(serde_json::json!({"cohort":"synthetic"}))
+            );
+            let stored = state
+                .session_manager()
+                .get_session(&session, true)
+                .await
+                .unwrap();
+            let conversation = stored.conversation.unwrap_or_default();
+            let answer = conversation
+                .iter()
+                .find(|message| message.id.as_deref() == delivered.0["message_id"].as_str())
+                .expect("delivered answer is persisted under the response message id");
+            assert!(!answer.is_user_visible(), "answer remains agent-only");
+            assert!(answer.is_agent_visible());
+            let answer_json = serde_json::to_string(answer).unwrap();
+            assert!(answer_json.contains("synthetic"));
+            let first = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let second = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                first,
+                SessionBusEvent::Agent(AgentEvent::Message(_))
+            ));
+            assert!(matches!(
+                second,
+                SessionBusEvent::Agent(AgentEvent::MessagesPersisted(_))
+            ));
+
+            let before_replay = state
+                .session_manager()
+                .get_session(&session, true)
+                .await
+                .unwrap()
+                .message_count;
+            let replay = respond(
+                Arc::clone(&state),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id,
+                    data: Some(serde_json::json!({"cohort":"replay"})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("a stale replay must be unknown");
+            assert_eq!(replay.0, StatusCode::CONFLICT);
+            assert_eq!(
+                state
+                    .session_manager()
+                    .get_session(&session, true)
+                    .await
+                    .unwrap()
+                    .message_count,
+                before_replay
+            );
+
+            let (cancel_id, cancel_waiter) = wait_for_ordinary_card(&session).await;
+            let cancelled = respond(
+                state.clone(),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id: cancel_id,
+                    data: None,
+                    cancelled: true,
+                },
+            )
+            .await
+            .expect("ordinary cancellation is durably recorded");
+            assert_eq!(cancelled.0["status"], "delivered");
+            assert!(cancel_waiter.await.unwrap().unwrap().is_none());
+            let cancelled_session = state
+                .session_manager()
+                .get_session(&session, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap_or_default();
+            let cancelled_row = cancelled_session
+                .iter()
+                .find(|message| {
+                    serde_json::to_string(message)
+                        .map(|value| value.contains("Cancelled input request"))
+                        .unwrap_or(false)
+                })
+                .expect("cancellation receipt is persisted");
+            assert!(cancelled_row.is_user_visible());
+            assert!(!cancelled_row.is_agent_visible());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn cancellation_cannot_consume_tool_or_secret_asks() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let _env = crate::test_sandbox::relocate_path_root(root.path());
+            let state = AppState::new().await.unwrap();
+            let session = format!("ordinary-cancel-{}", uuid::Uuid::new_v4());
+            let approval = PendingUserActions::global().park(
+                Some(&session),
+                None,
+                UserActionRequest::ToolApproval(ToolApprovalRequest {
+                    tool_name: "synthetic_tool".into(),
+                    arguments: serde_json::Map::new(),
+                    prompt: None,
+                    risk: None,
+                    preview: None,
+                    requires_user_proof: false,
+                }),
+            );
+            let id = approval.id().to_string();
+            let response = respond(
+                Arc::clone(&state),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id: id.clone(),
+                    data: None,
+                    cancelled: true,
+                },
+            )
+            .await
+            .expect_err("ordinary cancellation cannot answer a tool approval");
+            assert_eq!(response.0, StatusCode::CONFLICT);
+            assert!(PendingUserActions::global().is_pending(&id));
+            drop(approval);
+
+            let secret = PendingUserActions::global().park(
+                Some(&session),
+                None,
+                UserActionRequest::Secrets(secret_request()),
+            );
+            let secret_id = secret.id().to_string();
+            let response = respond(
+                state,
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session,
+                    id: secret_id.clone(),
+                    data: None,
+                    cancelled: true,
+                },
+            )
+            .await
+            .expect_err("ordinary cancellation cannot answer a secret request");
+            assert_eq!(response.0, StatusCode::CONFLICT);
+            assert!(PendingUserActions::global().is_pending(&secret_id));
+            drop(secret);
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn persistence_failure_does_not_deliver_or_publish_an_answer() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let _env = crate::test_sandbox::relocate_path_root(root.path());
+            let state = AppState::new().await.unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    root.path().to_path_buf(),
+                    "Synthetic persistence failure".into(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            let (id, waiter) = wait_for_ordinary_card(&session).await;
+            let mut events = biorouter::session_events::subscribe(&session);
+            state.session_manager().close().await;
+
+            let failure = respond(
+                state,
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session,
+                    id,
+                    data: Some(serde_json::json!({"cohort":"must-not-deliver"})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("closed persistence must refuse delivery");
+            assert_eq!(failure.0, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(failure.1["status"], "persistence_failed");
+            let waiter_result = tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+                .await
+                .expect("persistence failure must settle the live waiter without an answer")
+                .unwrap();
+            assert!(
+                waiter_result.is_err() || waiter_result.as_ref().is_ok_and(Option::is_none),
+                "persistence failure must not deliver an answer"
+            );
+            assert!(
+                events.try_recv().is_err(),
+                "failed persistence publishes no events"
+            );
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn ordinary_elicitation_rejects_unproven_wrong_shapes_and_oversized_data() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let _env = crate::test_sandbox::relocate_path_root(root.path());
+            let state = AppState::new().await.unwrap();
+            let session = format!("ordinary-shape-{}", uuid::Uuid::new_v4());
+            let id = "synthetic-request";
+            let mut headers = HeaderMap::new();
+            let unproven = respond(
+                Arc::clone(&state),
+                headers.clone(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id: id.into(),
+                    data: Some(serde_json::json!({})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("ordinary response requires proof");
+            assert_eq!(unproven.0, StatusCode::FORBIDDEN);
+
+            headers = proven_headers();
+            let wrong_shape = respond(
+                Arc::clone(&state),
+                headers.clone(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id: id.into(),
+                    data: Some(serde_json::json!("scalar")),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("ordinary response data must be an object");
+            assert_eq!(wrong_shape.0, StatusCode::BAD_REQUEST);
+
+            let oversized = respond(
+                state,
+                headers,
+                ElicitationResponseRequest {
+                    session_id: session,
+                    id: id.into(),
+                    data: Some(serde_json::json!({"answer":"x".repeat(16 * 1024 + 1)})),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect_err("ordinary response data has a 16 KiB bound");
+            assert_eq!(oversized.0, StatusCode::BAD_REQUEST);
         }
     }
 

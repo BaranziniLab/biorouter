@@ -13,6 +13,7 @@ import {
   observeSessionEvents,
   reply,
   resumeAgent,
+  respondToElicitation,
   Session,
   SessionClassification,
   SessionType,
@@ -45,7 +46,6 @@ import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly'
 import { mergeStopRecord } from '../components/conversation/turnStoppedNotice';
 import { isBrowserSurface } from '../utils/surface';
 import {
-  createElicitationResponseMessage,
   createUserMessage,
   getCompactingMessage,
   getElicitationContent,
@@ -4281,15 +4281,24 @@ class ChatStreamController {
   ): Promise<void> => {
     await this.loadSession();
 
-    if (!this.canSubmitMessage()) {
-      return;
+    if (isReadOnlySubagentChat(this.snapshot.session?.session_type)) {
+      throw new Error('Answer this request from the owning session.');
     }
 
     this.lastInteractionTime = Date.now();
-    const responseMessage = createElicitationResponseMessage(elicitationId, userData);
-    const currentMessages = [...this.messagesRef, responseMessage];
-
-    await this.submitPreparedMessage(responseMessage, currentMessages, true);
+    const response = await respondToElicitation({
+      body: { session_id: this.sessionId, id: elicitationId, data: userData },
+      headers: await userActionHeaders(),
+      throwOnError: true,
+    });
+    if (
+      typeof response.data !== 'object' ||
+      response.data === null ||
+      !('status' in response.data) ||
+      response.data.status !== 'delivered'
+    ) {
+      throw new Error('This information request is no longer waiting. Refresh the session.');
+    }
   };
 
   setWorkflowUserParams = async (user_workflow_values: Record<string, string>): Promise<void> => {

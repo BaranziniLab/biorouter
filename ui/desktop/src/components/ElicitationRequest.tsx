@@ -3,12 +3,13 @@ import { ActionRequired } from '../api';
 import JsonSchemaForm from './ui/JsonSchemaForm';
 import type { JsonSchema } from './ui/JsonSchemaForm';
 import { Check } from './icons/app-icons';
+import { errorMessage } from '../utils/conversionUtils';
 
 interface ElicitationRequestProps {
   isCancelledMessage: boolean;
   isClicked: boolean;
   actionRequiredContent: ActionRequired & { type: 'actionRequired' };
-  onSubmit: (elicitationId: string, userData: Record<string, unknown>) => void;
+  onSubmit: (elicitationId: string, userData: Record<string, unknown>) => Promise<void>;
 }
 
 export default function ElicitationRequest({
@@ -18,6 +19,8 @@ export default function ElicitationRequest({
   onSubmit,
 }: ElicitationRequestProps) {
   const [submitted, setSubmitted] = useState(isClicked);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (actionRequiredContent.data.actionType !== 'elicitation') {
     return null;
@@ -25,9 +28,18 @@ export default function ElicitationRequest({
 
   const { id: elicitationId, message, requested_schema } = actionRequiredContent.data;
 
-  const handleSubmit = (formData: Record<string, unknown>) => {
-    setSubmitted(true);
-    onSubmit(elicitationId, formData);
+  const handleSubmit = async (formData: Record<string, unknown>) => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(elicitationId, formData);
+      setSubmitted(true);
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (isCancelledMessage) {
@@ -55,11 +67,18 @@ export default function ElicitationRequest({
         {message || 'Biorouter needs some information from you.'}
       </div>
       <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 text-body">
-        <JsonSchemaForm
-          schema={requested_schema as JsonSchema}
-          onSubmit={handleSubmit}
-          submitLabel="Submit"
-        />
+        {error && (
+          <p role="alert" className="mb-2 text-text-default">
+            {error}
+          </p>
+        )}
+        <fieldset disabled={submitting}>
+          <JsonSchemaForm
+            schema={requested_schema as JsonSchema}
+            onSubmit={handleSubmit}
+            submitLabel={submitting ? 'Submitting…' : 'Submit'}
+          />
+        </fieldset>
       </div>
     </div>
   );

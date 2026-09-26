@@ -1,0 +1,76 @@
+/* Crew — the channel header and the connection bar.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and data/aria hooks
+   only, tokens only, and a reduced-motion rest for anything that moves. These
+   rules only PLACE primitives; the look of every control is its primitive's. */
+
+/* The `# name ▾` trigger: content-sized, but a long channel name truncates
+   instead of pushing the header's right-hand controls out of the band. */
+.crew-channel-title {
+  max-width: 22rem;
+}
+
+/* The chevron turns over while the menu is open (Radix sets `data-state` on
+   the trigger). Only real menus carry a chevron, so this is the one place the
+   header animates, and it never animates security state. */
+.crew-channel-chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.crew-channel-title[data-state='open'] .crew-channel-chevron {
+  transform: rotate(180deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+/* The details toggle while the pane is open: the pressed look of the chat
+   header's panel toggle, so "on" is visible and not only announced. Focus
+   still reads as focus on top of it. */
+.crew-details-toggle[aria-pressed='true'] {
+  background-color: var(--background-medium);
+  color: var(--text-default);
+}
+
+.crew-details-toggle[aria-pressed='true']:focus-visible {
+  background-color: var(--background-focus);
+}
+
+/* The classification chip ("Restricted", "Public-safe") is a button drawn as
+   a badge. Forced colours drop its fill, and it read as plain text beside the
+   channel name (Q3-25): it keeps a button's outline there. */
+@media (forced-colors: active) {
+  .crew-channel-classification {
+    border: 1px solid ButtonText;
+  }
+}
+
+/* Refresh channel's brief "Up to date", beside the badges. */
+.crew-channel-refreshed {
+  white-space: nowrap;
+}
+
+/* The member stack: up to three 20px avatars overlapping by 4px. Each avatar's
+   2px ring paints the band's own ground, so the overlap reads as a cut. */
+.crew-member-stack {
+  --biorouter-avatar-ring: var(--sidebar);
+}
+
+/* The connection bar sits under the header, above the timeline. Empty when
+   everything is healthy, so it takes no room at all then. */
+.crew-connection-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px 0;
+}
+
+.crew-connection-bar:empty {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-channel-chevron,
+  .crew-channel-title[data-state='open'] .crew-channel-chevron {
+    transition: none;
+  }
+}

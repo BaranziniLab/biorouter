@@ -83,13 +83,8 @@ impl CredentialSpec {
         self.vars.iter().find(|v| v.key == key)
     }
 
-    /// Keys the card cannot be satisfied without.
-    fn required_keys(&self) -> Vec<&str> {
-        self.vars
-            .iter()
-            .filter(|v| v.required)
-            .map(|v| v.key.as_str())
-            .collect()
+    fn required_vars(&self) -> impl Iterator<Item = &BrxtEnvVar> {
+        self.vars.iter().filter(|v| v.required)
     }
 }
 
@@ -256,16 +251,15 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
     }
 
     let missing: Vec<String> = spec
-        .required_keys()
-        .into_iter()
-        .filter(|key| {
+        .required_vars()
+        .filter(|var| {
             values
-                .get(*key)
+                .get(&var.key)
                 .map(|v| v.trim().is_empty())
                 .unwrap_or(true)
-                && !super::brxt::secret_already_stored(key)
+                && !var.has_stored_secret()
         })
-        .map(str::to_string)
+        .map(|var| var.key.clone())
         .collect();
     if !missing.is_empty() {
         // Deliberately does NOT resolve: the user is looking at the form and can
@@ -430,6 +424,47 @@ mod tests {
         .await;
         assert_eq!(outcome, SubmitOutcome::Incomplete { missing: vec![key] });
         assert!(registry.is_pending(&id), "the install must still be parked");
+
+        CredentialRequests::global().forget(&id);
+        registry.resolve_trusted_sessionless_secret(&id, UserActionOutcome::Cancelled);
+        drop(parked);
+    }
+
+    #[tokio::test]
+    async fn a_stored_same_named_secret_does_not_satisfy_an_ordinary_setting() {
+        let registry = PendingUserActions::global();
+        let parked = registry.park(
+            Some("s-ordinary-setting"),
+            None,
+            UserActionRequest::Secrets(SecretsRequest {
+                prompt: "Configure".to_string(),
+                keys: vec![var("SHARED_NAME", true, false).as_key_request()],
+                destination: SecretDestination::Keyring,
+            }),
+        );
+        let id = parked.id().to_string();
+        CredentialRequests::global().register(&id, spec(vec![var("SHARED_NAME", true, false)]));
+
+        let outcome = crate::config::with_config_overrides(
+            HashMap::from([(String::from("SHARED_NAME"), String::from("stored-secret"))]),
+            async {
+                submit_credentials(
+                    &id,
+                    HashMap::from([(String::from("SHARED_NAME"), String::new())]),
+                )
+            },
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            SubmitOutcome::Incomplete {
+                missing: vec!["SHARED_NAME".to_string()]
+            }
+        );
+        assert!(
+            registry.is_pending(&id),
+            "the ordinary setting must remain pending"
+        );
 
         CredentialRequests::global().forget(&id);
         registry.resolve_trusted_sessionless_secret(&id, UserActionOutcome::Cancelled);

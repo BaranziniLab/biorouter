@@ -23,6 +23,11 @@ activities:
   - Test error boundaries and security controls
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
+  - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
+  - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
+  - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
+  - Exercise Crew CLI and daemon parity against an isolated synthetic profile, including help/version and explicit failure reporting
+  - Verify Crew transfer lifecycle receipts, resume/forget behavior, and bounded file cleanup using disposable fixtures only
   - Measure performance and resource usage
   - Generate comprehensive test report
 
@@ -31,7 +36,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -173,6 +178,16 @@ instructions: |
   sequential control against the explicitly supplied disposable app/window fixture. A missing
   fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
 
+  For a Crew-enabled fixture, additionally:
+  - Confirm the empty `/crew` view identifies the isolated profile and does not imply authentication success when no workspace exists
+  - Exercise the workspace form's required connection, invitation, and pinned-key validation using synthetic values only
+  - Verify first-host preparation is explicit, host-key trust is visible, and no private key or provider credential is entered into the fixture
+  - Repeat a start request with the same synthetic request id and verify the UI preserves one durable receipt; a changed payload must be rejected
+  - Verify human-only Crew session/history access remains available before provider selection, while a normal-chat tool request outside the scoped allowlist is refused
+  - From the same isolated profile, run the built CLI's `crew --help` and version commands and query the local daemon status endpoint; record exact binary paths, target, and exit codes, and treat an unavailable Linux artifact as NOT OBSERVABLE rather than PASS.
+  - With a preauthorized synthetic Crew fixture only, register one small text file, verify its transfer SHA-256 and durable receipt, resume it after a simulated interrupted acknowledgement, then forget it; assert only the owned partial artifact and receipt are cleaned up while the caller-owned source remains intact, and that a duplicate request id does not create a second receipt.
+  - Without acquiring human proof, first-host approval, or credentials, exercise one refusal for an unapproved symlink/capability boundary and one refusal for an unknown transfer id; capture the refusal reason and verify no file, receipt, or profile state was created.
+
   {% endif %}
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "subagents" in test_phases) %}
@@ -252,12 +267,14 @@ instructions: |
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
-# {% if test_depth != "fixture_only" %}
+# {% if test_depth != "fixture_only" and test_phases != "crew" %}
   - type: platform
     name: skills
     bundled: true
     description: Discover and load the built-in contexts under test
 
+# {% endif %}
+# {% if test_depth != "fixture_only" %}
   - type: builtin
     name: developer
     display_name: Developer
@@ -265,7 +282,15 @@ extensions:
     bundled: true
     description: Core tool for file operations, shell commands, and code analysis
 
+# {% if test_phases == "all" or "crew" in test_phases %}
+  - type: platform
+    name: crew
+    bundled: true
+    description: Crew request and scope-denial tools for the isolated Crew contract phase
 # {% endif %}
+
+# {% endif %}
+# {% if test_phases != "crew" %}
   - type: builtin
     name: computercontroller
     display_name: Biorouter Copilot
@@ -273,7 +298,9 @@ extensions:
     bundled: true
     description: Native application observation and control after per-chat task approval
 
+# {% endif %}
 # {% if test_depth != "fixture_only" %}
+# {% if test_phases != "crew" %}
   - type: builtin
     name: webdocuments
     display_name: Web & Documents
@@ -301,7 +328,11 @@ extensions:
     description: Sandboxed JavaScript orchestration for nested extension and artifact validation
   
 # {% endif %}
+# {% endif %}
 prompt: |
+  {% if test_phases == "crew" %}
+  /no_think
+  {% endif %}
   Execute the BioRouter Self-Testing Integration Suite in {{ workspace_dir }}.
   Test phases: {{ test_phases }}, Depth: {{ test_depth }}, Parallel: {{ parallel_tests }}
 
@@ -493,6 +524,67 @@ prompt: |
      helper version, exact fixture, tool results and remaining gaps in
      {{ workspace_dir }}/phase2d_computer_use.md.
   {% endif %}
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "crew" in test_phases) %}
+  ## PHASE 2E: Crew CLI and MCP scope without human proof
+
+  This phase is selected explicitly with `test_phases=crew` (and is included by
+  `test_phases=all`). It is a headless Crew contract check. Use
+  only phase-owned state rooted under `{{ workspace_dir }}` for model-driven
+  tool actions. The test harness may initialize the already-authorized Versa
+  GPT-5.5 provider from the dedicated synthetic Alice provider host, without
+  copying or exporting its API key, approval secret, private key, SSH key,
+  keyring entry, saved credential, or profile files into this phase. Keep that
+  provider host and all secret-bearing files outside model tools and audit logs.
+  Never request or manufacture human proof, start a daemon, open an SSH
+  connection, select or mutate a provider, create a team, create a connection,
+  send an invitation, or write to a live workspace.
+
+  1. For every model-driven child CLI command, set
+     `BIOROUTER_PATH_ROOT` to a fresh root below `{{ workspace_dir }}` and set
+     `BIOROUTER_DISABLE_KEYRING=1`; do not let child commands inherit the
+     provider host's profile or secret-bearing environment. Snapshot only
+     phase-owned files below that root and phase-owned process/socket resources
+     created by this run. Do not inspect the user's normal home, SSH directory,
+     keyring, provider configuration, or resources owned by another task.
+  2. With no Crew grant or bound connection, make exactly one read-only built-in
+     MCP request through `crew__request` from a new standalone, ungranted test
+     conversation before attempting any shell or HTTP command. Use exactly these
+     synthetic arguments, omitting `connection_id` and any `--shared-daemon`
+     or saved-connection discovery:
+     `{"method":"messages.history","params":{"channel_id":"00000000-0000-4000-8000-0000000002e5","limit":1}}`.
+     Require an explicit denial/refusal before any message content is returned.
+     A success, returned content, a grant attempt, or a retry is a failure. Do
+     not call `crew__connections` to discover real saved connections. Do not
+     emulate this MCP call with `curl`, an invented localhost endpoint, a
+     daemon, or any other shell command; only the actual `crew__request` tool
+     result is evidence.
+  3. After that single request, resolve the locally installed native binaries
+     without building or starting anything. Run `<biorouter> --version`,
+     `<biorouter> crew --help`, `<biorouterd> --version`,
+     `<biorouterd> --help`, `<biorouter> crew privacy set-personal --help`,
+     and `<biorouter> crew privacy set-workspace --help`; record exact paths,
+     exit codes, bounded output, and require `--institution` in both privacy
+     command help outputs. These six help/version assertions qualify the CLI
+     surface and no-grant refusal only; same-institution and foreign-institution
+     admission remain separate synthetic acceptance coverage.
+     An unavailable binary is NOT OBSERVABLE, not a pass, and must not trigger a
+     build or fallback.
+  4. Recheck the isolated snapshots and audit the harness metadata. Allow only
+     expected new test-session metadata from the standalone conversation; do
+     not falsely claim that no session row or run metadata was created. Require
+     no daemon process, listener, SSH file, team, connection, invitation,
+     provider mutation, credential mutation, or live-workspace write. Record
+     only synthetic paths, session metadata identifiers, and refusal metadata;
+     scrub secrets and provider/profile paths from logs. If an assertion cannot
+     be observed without human proof or credentials, mark it NOT OBSERVABLE
+     rather than PASS.
+  5. Log the exact commands, exit codes, denial result, and before/after
+     mutation audit to `{{ workspace_dir }}/phase2e_crew.md`. Keep all test
+     inputs synthetic and remove only artifacts created by this phase when
+     `cleanup_after` is true.
+
   {% endif %}
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "apps" in test_phases) %}

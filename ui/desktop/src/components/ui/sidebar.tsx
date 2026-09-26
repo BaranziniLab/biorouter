@@ -38,6 +38,105 @@ const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
 /** Marks the drag on `<body>` so the width transitions stop lagging the pointer. */
 const SIDEBAR_RESIZING_CLASS = 'biorouter-sidebar-resizing';
+/**
+ * The class that makes an open sidebar an OVERLAY rather than a column.
+ *
+ * `AppLayout` puts it on `<body>` below rung 1 of the yield ladder
+ * (`SIDEBAR_COMPACT_WIDTH`), and `main.css` keys the overlay on it: the gap
+ * collapses, the inset stops making room and the panel floats over the page.
+ * The class IS the presentation, so it is also the test for "the user is
+ * looking at an overlay" — a second width rule here could only drift from the
+ * one that actually draws it. `sidebar.test.tsx` pins all three places to it.
+ */
+export const SIDEBAR_OVERLAY_BODY_CLASS = 'biorouter-sidebar-compact';
+/**
+ * What a person activates to CHOOSE something in the sidebar: a destination, a
+ * chat, an action. A disclosure or a menu opener is not a choice (it changes what
+ * the sidebar shows, and the user is still choosing), so it is excluded below by
+ * its ARIA state rather than listed here.
+ */
+const SIDEBAR_CHOICE_SELECTOR =
+  'a[href], button, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+
+function sidebarIsOverlay(): boolean {
+  return document.body.classList.contains(SIDEBAR_OVERLAY_BODY_CLASS);
+}
+
+/**
+ * Whether a click inside the panel chose something, so an overlay should get
+ * out of the way of what was chosen (triage T-66).
+ *
+ * The DOM containment check is load-bearing: a context menu or a confirmation
+ * opened from a row is portalled to `<body>`, and React still bubbles its clicks
+ * through the row — but acting in that menu is not picking a destination here.
+ */
+function isSidebarChoice(target: EventTarget | null, panel: HTMLElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest(SIDEBAR_CHOICE_SELECTOR);
+  if (!control || !panel.contains(control)) return false;
+  if (control.hasAttribute('aria-expanded') || control.hasAttribute('aria-haspopup')) return false;
+  return !control.matches(':disabled, [aria-disabled="true"]');
+}
+
+/** The panel's first keyboard stop, skipping the resize edge, which sits last anyway. */
+const SIDEBAR_FOCUSABLE =
+  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]';
+
+function firstFocusableIn(panel: HTMLElement): HTMLElement | null {
+  for (const element of panel.querySelectorAll<HTMLElement>(SIDEBAR_FOCUSABLE)) {
+    if (element.tabIndex < 0) continue;
+    if (element.closest('[inert], [hidden], [aria-hidden="true"]')) continue;
+    if (element.matches('[data-slot="sidebar-resize-handle"]')) continue;
+    return element;
+  }
+  return null;
+}
+
+/**
+ * Put focus on the page's content region: the route's `<main>` inside the inset, or the inset
+ * itself when a layout supplies no landmark. For a choice made in the overlay (live QA round 4,
+ * Q4-54): the panel is going inert with focus on the row that was chosen, and the toggle is the
+ * wrong place to hand it — the person asked for the page. The destination's own focus (a
+ * composer, a field) lands in a later effect and wins; a destination that focuses nothing
+ * leaves focus here, so the next Tab walks into the page rather than back along the titlebar.
+ *
+ * `<main>` is not focusable by itself, so it gets `tabindex="-1"` for exactly as long as it
+ * holds this focus, and loses it when focus moves on — a lasting `tabindex` would make every
+ * click on the page's blank space focus the whole region. Its outline is held back meanwhile:
+ * like a tab panel (D-15 in `main.css`), a region the next Tab leaves for a control inside
+ * gets no ring of its own, and the UA's `outline: auto` would draw one around the whole page.
+ * The `prefers-contrast` / `forced-colors` ring is `!important` and still draws, as it does on
+ * every `[tabindex]`.
+ *
+ * Returns false when there is no region, or it would not take focus.
+ */
+function focusContentRegion(): boolean {
+  const inset = document.querySelector<HTMLElement>('[data-slot="sidebar-inset"]');
+  const region = inset?.querySelector<HTMLElement>('main') ?? inset;
+  if (!region || region.closest('[inert]')) return false;
+
+  const lent = !region.hasAttribute('tabindex');
+  const outlineBefore = region.style.getPropertyValue('outline');
+  const release = () => {
+    // The window losing focus blurs the region too, but focus comes back to it.
+    if (document.activeElement === region) return;
+    region.removeEventListener('blur', release);
+    region.removeAttribute('tabindex');
+    if (outlineBefore) region.style.setProperty('outline', outlineBefore);
+    else region.style.removeProperty('outline');
+  };
+  if (lent) {
+    region.setAttribute('tabindex', '-1');
+    region.style.setProperty('outline', 'none');
+  }
+  region.focus({ preventScroll: true });
+  if (document.activeElement === region) {
+    if (lent) region.addEventListener('blur', release);
+    return true;
+  }
+  if (lent) release();
+  return false;
+}
 
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed';
@@ -57,7 +156,16 @@ type SidebarContextProps = {
   nudgeWidth: (delta: number) => void;
   /** Restore the default width (the handle's double-click). */
   resetWidth: () => void;
+  /**
+   * Set by the ⌘B / Ctrl+B shortcut, for the one render its toggle causes: what had focus when
+   * it was pressed. The panel reads it to move focus into an overlay the shortcut opened, and to
+   * hand focus back when the shortcut closes it (Q2-51). `null` means no shortcut is pending.
+   */
+  shortcutToggleRef: React.RefObject<SidebarShortcutToggle | null>;
 };
+
+/** A ⌘B press, remembered long enough for the panel to act on the toggle it caused. */
+type SidebarShortcutToggle = { focusedBefore: Element | null };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
 
@@ -110,11 +218,21 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
   }, [isMobile, setOpen, setOpenMobile]);
 
+  const shortcutToggleRef = React.useRef<SidebarShortcutToggle | null>(null);
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        // The panel acts on this in the layout effect of the render the toggle causes, which
+        // React flushes before any timer; a toggle that changed nothing (the mobile sheet, a
+        // controlled parent that refused) must not leave it for a later, unrelated one.
+        const toggle: SidebarShortcutToggle = { focusedBefore: document.activeElement };
+        shortcutToggleRef.current = toggle;
+        window.setTimeout(() => {
+          if (shortcutToggleRef.current === toggle) shortcutToggleRef.current = null;
+        }, 0);
         toggleSidebar();
       }
     };
@@ -287,6 +405,7 @@ function SidebarProvider({
       startResize,
       nudgeWidth,
       resetWidth,
+      shortcutToggleRef,
     }),
     [
       state,
@@ -341,7 +460,133 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset';
   collapsible?: 'offcanvas' | 'icon' | 'none';
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile, shortcutToggleRef } =
+    useSidebar();
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  /** What had focus before ⌘B opened the overlay, to hand focus back to when ⌘B closes it. */
+  const overlayReturnRef = React.useRef<Element | null>(null);
+  /**
+   * Set when a choice made in the overlay closes it, for the one render that close causes, so
+   * the layout effect below hands focus to the page rather than the toggle (Q4-54). A token, as
+   * with ⌘B: a close a controlled parent refused must not steer a later, unrelated one.
+   */
+  const choiceCloseRef = React.useRef<object | null>(null);
+
+  /*
+   * OFF-CANVAS MEANS OUT OF THE TAB ORDER (triage T-20). The collapsed panel is
+   * only translated off-screen, so its seven controls stayed Tab stops at
+   * x = -272: focus vanished for seven presses, and Enter on an invisible row
+   * opened Settings by accident. `inert` takes the whole panel out of focus,
+   * pointer and the accessibility tree while it is away, and opening it (⌘B,
+   * the titlebar toggle) gives it all back. An `icon` sidebar keeps its rail on
+   * screen, so it is never inert; the mobile sheet is a separate branch.
+   */
+  const offCanvas = collapsible === 'offcanvas' && state === 'collapsed';
+
+  // A panel that goes inert while it holds focus would drop that focus on
+  // <body>, and the next Tab would restart from the top of the document. Hand
+  // it to the toggle that brings the panel back — the control the user would
+  // reach for next. A route that focuses something itself (the composer) does
+  // so in a later effect, and wins.
+  //
+  // ⌘B AND THE OVERLAY (live QA round 2, Q2-51). Below rung 1 an open sidebar
+  // floats OVER the page, and ⌘B used to open it with focus left underneath:
+  // erin's focus stayed on Crew's "Add channel", now hidden behind the panel,
+  // and her next Tabs walked controls she could not see. So when the SHORTCUT
+  // opens the overlay, focus moves to the panel's first stop; when the shortcut
+  // closes it again, focus goes back to where it was before the panel opened.
+  // A docked column covers nothing, so it takes no focus; a pointer toggle
+  // leaves focus on the toggle the person just used.
+  //
+  // A CHOICE MADE IN THE OVERLAY HANDS FOCUS TO THE PAGE (live QA round 4, Q4-54).
+  // It used to go to the toggle, like any other close, and erin arrived in Crew
+  // with focus back up in the titlebar: one extra Tab, and her place lost on
+  // arrival. The person asked for the page, so the page's content region takes
+  // focus (`focusContentRegion`), and a destination that focuses something
+  // itself does so in a later effect and wins. That region is the layout's
+  // `<main>`, which outlives the route inside it, so it is there whatever the
+  // choice replaced. The toggle stays the fallback for a layout with no region.
+  React.useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const shortcut = shortcutToggleRef.current;
+    shortcutToggleRef.current = null;
+    const chosen = choiceCloseRef.current !== null;
+    choiceCloseRef.current = null;
+    if (!panel) return;
+
+    if (!offCanvas) {
+      if (!shortcut || !sidebarIsOverlay()) return;
+      const first = firstFocusableIn(panel);
+      if (!first) return;
+      overlayReturnRef.current = shortcut.focusedBefore;
+      first.focus();
+      return;
+    }
+
+    const returnTo = shortcut ? overlayReturnRef.current : null;
+    overlayReturnRef.current = null;
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !panel.contains(focused)) return;
+    if (
+      returnTo instanceof HTMLElement &&
+      returnTo !== document.body &&
+      returnTo.isConnected &&
+      !panel.contains(returnTo)
+    ) {
+      returnTo.focus();
+      if (document.activeElement === returnTo) return;
+    }
+    if (chosen && focusContentRegion()) return;
+    document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus();
+  }, [offCanvas, shortcutToggleRef]);
+
+  // ESCAPE CLOSES THE OVERLAY (live QA round 3, Q3-60). Below rung 1 an open
+  // sidebar is a floating surface over the page, and every other floating
+  // surface in the app steps aside on Escape. This one did not: erin opened it
+  // with the titlebar toggle (focus stays on the toggle, which is right), pressed
+  // Escape, and nothing happened — the panel went on covering Crew's rail until
+  // she found the toggle again. ⌘B had the same gap.
+  //
+  // Escape closes it however it was opened, from where the overlay's own focus
+  // is: inside the panel, on its toggle, or nowhere (<body>). Focus then lands on
+  // the toggle — the layout effect above moves it there from inside the panel,
+  // and from <body> it is moved here. Three things are left alone, each on
+  // purpose:
+  //   - an Escape something else already answered (`defaultPrevented`): a menu,
+  //     a popover or a dialog opened from a row closes first, and only the next
+  //     Escape reaches the panel. Radix's layers listen in the capture phase and
+  //     prevent the default when they dismiss, so a window listener in the bubble
+  //     phase runs after them and can tell;
+  //   - an Escape pressed on the page BEHIND the overlay: that control's own
+  //     Escape (clear a field, cancel an edit) is what the person meant;
+  //   - a docked column, which covers nothing and has nothing to dismiss.
+  // A native listener, not a React `onKeyDown` on the panel: React bubbles a
+  // portalled menu's keys through the row that opened it, and the toggle lives
+  // outside the panel entirely.
+  const overlayOpen = open && !isMobile && collapsible !== 'none';
+  React.useEffect(() => {
+    if (!overlayOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (!sidebarIsOverlay()) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const target = event.target;
+      const trigger =
+        target instanceof Element ? target.closest<HTMLElement>('[data-sidebar="trigger"]') : null;
+      const fromPanel = target instanceof Node && panel.contains(target);
+      const fromNowhere =
+        target === document.body || target === document.documentElement || target === document;
+      if (!fromPanel && !trigger && !fromNowhere) return;
+      event.preventDefault();
+      setOpen(false);
+      if (!fromPanel) {
+        (trigger ?? document.querySelector<HTMLElement>('[data-sidebar="trigger"]'))?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [overlayOpen, setOpen]);
 
   if (collapsible === 'none') {
     return (
@@ -383,6 +628,27 @@ function Sidebar({
     );
   }
 
+  const { onClick: onPanelClick, ...panelProps } = props;
+
+  // AN OVERLAY STEPS ASIDE ONCE SOMETHING IS CHOSEN (triage T-66). Below rung 1
+  // the open sidebar floats over the page, so leaving it open after a choice
+  // kept it covering the very page the user just asked for — Crew's banner, the
+  // start of the chat. A docked column is beside the content, not over it, and
+  // stays exactly as the user left it.
+  const handlePanelClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    onPanelClick?.(event);
+    // `defaultPrevented` is deliberately NOT a veto: a client-side link cancels
+    // the browser's navigation precisely because it is navigating.
+    if (!open || !sidebarIsOverlay()) return;
+    if (!isSidebarChoice(event.target, event.currentTarget)) return;
+    const choice = {};
+    choiceCloseRef.current = choice;
+    window.setTimeout(() => {
+      if (choiceCloseRef.current === choice) choiceCloseRef.current = null;
+    }, 0);
+    setOpen(false);
+  };
+
   return (
     <div
       className="group peer text-sidebar-foreground hidden md:block"
@@ -405,7 +671,10 @@ function Sidebar({
         )}
       />
       <div
+        ref={panelRef}
         data-slot="sidebar-container"
+        inert={offCanvas}
+        onClick={handlePanelClick}
         className={cn(
           'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-[var(--motion-slow)] ease-[var(--ease-out)] will-change-transform md:flex',
           side === 'left'
@@ -417,7 +686,7 @@ function Sidebar({
             : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className
         )}
-        {...props}
+        {...panelProps}
       >
         <div
           data-sidebar="sidebar"
@@ -436,10 +705,11 @@ function Sidebar({
  * The sidebar's drag edge.
  *
  * WHY IT SITS INSIDE THE SIDEBAR'S OWN BOX. `sidebar-container` is `z-10` and
- * `SidebarInset`'s `<main>` is `z-[60]`, so any part of this handle that hung
- * past the sidebar's right edge would be painted under the content pane and
- * silently un-grabbable — a control that looks present and does nothing. The
- * 8px target therefore sits wholly within the sidebar, flush to the edge.
+ * the route's `<main>` inside `SidebarInset` is `z-[60]`, so any part of this
+ * handle that hung past the sidebar's right edge would be painted under the
+ * content pane and silently un-grabbable — a control that looks present and
+ * does nothing. The 8px target therefore sits wholly within the sidebar, flush
+ * to the edge.
  *
  * WHY THE STYLING IS AUTHORED CSS. The hover hairline and `cursor: col-resize`
  * are the only affordance the control has, and a Tailwind utility can silently
@@ -502,7 +772,7 @@ function SidebarTrigger({
   size = 'sm',
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar();
 
   return (
     <Button
@@ -511,6 +781,8 @@ function SidebarTrigger({
       variant="ghost"
       size={size}
       className={cn(className)}
+      // A disclosure: it shows and hides the sidebar, so it says which (Q2-51).
+      aria-expanded={isMobile ? openMobile : open}
       onClick={(event) => {
         onClick?.(event);
         toggleSidebar();
@@ -524,13 +796,14 @@ function SidebarTrigger({
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar();
 
   return (
     <button
       data-sidebar="rail"
       data-slot="sidebar-rail"
       aria-label="Toggle sidebar"
+      aria-expanded={isMobile ? openMobile : open}
       tabIndex={-1}
       onClick={toggleSidebar}
       title="Toggle sidebar"
@@ -548,9 +821,16 @@ function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
   );
 }
 
-function SidebarInset({ className, ...props }: React.ComponentProps<'main'>) {
+/**
+ * The content column beside the sidebar. A `<div>`, deliberately NOT a `<main>`
+ * (triage T-61): the app's one main landmark is the route container that
+ * `AppLayout` renders INSIDE this box, and shadcn's `<main>` here nested a
+ * second one around it, so a screen reader's landmark list offered "main" twice
+ * for one page. `sidebar.test.tsx` renders the real layout and counts them.
+ */
+function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
   return (
-    <main
+    <div
       data-slot="sidebar-inset"
       className={cn(
         'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
@@ -789,15 +1069,23 @@ function SidebarMenuButton({
     };
   }
 
+  // A row's tooltip is for the collapsed icon rail, where the row shows no label. Anywhere else
+  // it could never be seen, so it must never OPEN (live QA round 4, Q4-53). Drawing it `hidden`
+  // was not enough: a hidden tooltip still opens on focus, and an open tooltip is a dismissable
+  // layer. After Erin tabbed onto Home in the overlay, that invisible layer took her first Escape
+  // and the overlay only closed on the second.
+  //
+  // The row keeps its Tooltip wrapper and holds it shut, rather than dropping the wrapper while
+  // expanded: a wrapper that comes and goes changes the element type at this position, so React
+  // would remount the button on every expand and collapse, and a row holding focus (the Escape
+  // that closes the overlay is pressed on one) would drop that focus on <body>.
+  // `sidebar.test.tsx` pins both halves.
+  const tooltipHidden = state !== 'collapsed' || isMobile;
+
   return (
-    <Tooltip>
+    <Tooltip open={tooltipHidden ? false : undefined}>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="center"
-        hidden={state !== 'collapsed' || isMobile}
-        {...tooltip}
-      />
+      <TooltipContent side="right" align="center" hidden={tooltipHidden} {...tooltip} />
     </Tooltip>
   );
 }

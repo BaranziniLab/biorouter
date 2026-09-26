@@ -1,0 +1,444 @@
+/* Crew — files: attachment cards, server paths, transfer rows, upload chips,
+   the Files tab and the drop zone (`crew/files/`).
+
+   Bound by the stylesheet contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and data/aria
+   hooks, tokens only, no pixel font sizes, and no keyframes of its own. The
+   spinner is the app's one spinner, the progress bar is `ui/progress`; this
+   file places them, and never re-skins a primitive.
+
+   **Names.** The card is `.crew-attachment-card` because the old layout's
+   global `crew/crew.css` styled a card called `.crew-attachment`. That
+   stylesheet is deleted, and `integration/legacyStylesheet.test.ts` keeps it
+   deleted. A class styled here or in `composer/` must still not be one another
+   Crew area's stylesheet also styles — `stylesheets.sourceGuard.test.ts` holds
+   that.
+
+   ⚠ **Focus.** These rules are unlayered, and the D-15 focus fill lives in
+   `@layer base`, so any `color` or `background-color` set here on something
+   focusable beats that fill whatever the specificity. Every such rule restates
+   the fill under `:focus-visible` (never the outline: the base block's
+   `prefers-contrast` / `forced-colors` ring must still reach it). */
+
+/* ── Menus opened from a file row ─────────────────────────────────────────── */
+
+/* A help line inside a menu item ("Remove from list") wraps instead of
+   stretching the menu across the window. */
+.crew-menu {
+  max-width: 20rem;
+}
+
+.crew-menu-help {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: normal;
+}
+
+/* ── Chips (composer) ─────────────────────────────────────────────────────── */
+
+.crew-chip {
+  min-width: 0;
+}
+
+.crew-chip-icon {
+  flex-shrink: 0;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+/* The 16px remove / pause / resume control inside a 24px chip. Focus is the
+   app's focused-control fill (D-15), not a ring — restated below, because the
+   muted ink and transparent ground here would otherwise beat it. */
+.crew-chip-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  margin-right: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.crew-chip-action:hover {
+  background-color: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+/* After `:hover` at the same specificity, so a focused control keeps the fill
+   under the pointer too. */
+.crew-chip-action:focus-visible {
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+.crew-progress-ring {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  /* The fill starts at twelve o'clock. */
+  transform: rotate(-90deg);
+}
+
+.crew-progress-ring-track,
+.crew-progress-ring-fill {
+  fill: none;
+  stroke-width: 2;
+}
+
+.crew-progress-ring-track {
+  stroke: var(--background-strong);
+}
+
+.crew-progress-ring-fill {
+  stroke: var(--background-accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--dur-med-min) var(--ease-out);
+}
+
+/* ── Attachment card and server path (timeline and Files tab) ─────────────── */
+
+.crew-attachment-card,
+.crew-server-path {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 28rem;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+}
+
+.crew-attachment-row,
+.crew-server-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  min-width: 0;
+  padding-inline: 12px 4px;
+}
+
+.crew-server-path-row {
+  padding-inline-end: 12px;
+}
+
+.crew-attachment-icon {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+}
+
+/* The name wins the row (Q4-03). It gave way first: `flex: 0 1 auto` against a
+   meta that never shrank left "da…" in the Files tab — 28 of the 125px the
+   name needed, while the size and date kept their 152px — and cut the name
+   first in the timeline at 1048px too.
+
+   The name and its meta share one box, `.crew-attachment-label`, which takes
+   the row's room between the glyph and the controls (at least 3ch of it).
+   Inside it the name does not shrink but never outgrows the box, and the meta
+   shrinks, with an ellipsis, into whatever the name leaves: the size and date
+   give way wholly before the name loses a letter, and the name is cut only
+   when it does not fit even alone. (Two siblings with shrink weights cannot
+   promise that: however lopsided the weights, the name still takes a sliver of
+   the shrink, and a sliver is an ellipsis — measured, "dave-plate-reader.c…".)
+   The whole name is in the name's tooltip either way. */
+.crew-attachment-label,
+.crew-file-row-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 3ch;
+  overflow: hidden;
+}
+
+.crew-attachment-name {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  font-weight: 500;
+  line-height: var(--text-secondary--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-attachment-meta,
+.crew-server-path-note {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.crew-attachment-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crew-server-path-note {
+  flex-shrink: 0;
+}
+
+/* "Not uploaded" takes a tab stop so a keyboard can reach its tooltip; its
+   muted ink above would otherwise beat the focus fill's. */
+.crew-server-path-note {
+  margin-left: auto;
+  border-radius: var(--radius-inner);
+  cursor: help;
+}
+
+.crew-server-path-note:focus-visible {
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+.crew-attachment-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* The download's thin bar along the card's bottom edge. The selector is two
+   classes deep so it outranks the primitive's own 8px track wherever the two
+   stylesheets land in the cascade. */
+.crew-attachment-card .crew-attachment-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 0;
+}
+
+.crew-attachment-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 350px;
+  margin: 0 12px 12px;
+  object-fit: contain;
+  border-radius: var(--radius-inner);
+}
+
+.crew-server-path-field {
+  margin: 0 12px 12px;
+}
+
+/* ── Transfer rows (Files tab) ────────────────────────────────────────────── */
+
+/* No padding of its own: the tab panel's 8px is the inset, as it is for About
+   and Members, so every tab's words start on one left edge (Q4-29). Its own
+   16px put Files 16px right of About. */
+.crew-files-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.crew-files-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-files-heading {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  font-weight: 500;
+  line-height: var(--text-supporting--line-height);
+}
+
+.crew-file-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew-file-list-cards {
+  gap: 12px;
+}
+
+/* "In this channel": who shared the file and when, over its card (Q3-13). */
+.crew-file-shared {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crew-file-shared-by {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.crew-file-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 4px;
+}
+
+.crew-file-row + .crew-file-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-file-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-md);
+  min-width: 0;
+}
+
+.crew-file-row-icon {
+  flex-shrink: 0;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+}
+
+/* Beside its meta in a `.crew-file-row-label`, the name fills first as on the
+   card (Q4-03); a transfer row lays the two out by wrapping instead (below). */
+.crew-file-row-name {
+  flex: 1 1 auto;
+  min-width: 3ch;
+  overflow: hidden;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-file-row-label > .crew-file-row-name {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.crew-file-row-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A transfer row keeps at least 12 characters of the name: in the 360px pane
+   "Uploading 0% · 148 bytes" and Pause left "da…" (Q3-16). The name asks for
+   12ch before it gives way, and what does not fit beside it — the state and
+   Pause — moves to a second line, at the row's end, rather than eat the name. */
+.crew-file-row[data-transfer-state] > .crew-file-row-main {
+  flex-wrap: wrap;
+}
+
+.crew-file-row[data-transfer-state] .crew-file-row-name {
+  flex: 1 1 12ch;
+  min-width: min(12ch, 100%);
+}
+
+.crew-file-row[data-transfer-state] .crew-file-row-meta {
+  margin-inline-start: auto;
+}
+
+.crew-file-row .crew-file-row-progress {
+  height: 4px;
+}
+
+.crew-file-row-error {
+  margin: 0;
+  padding-inline: 12px;
+  color: var(--text-danger);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
+}
+
+.crew-file-row .crew-file-row-error,
+.crew-files-tab > .crew-file-row-error {
+  padding-inline: 0;
+}
+
+.crew-files-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/* ── Drop zone ────────────────────────────────────────────────────────────── */
+
+/* The zone is a box its content fills; the overlay tints it while files are
+   dragged over, saying where they will go. A tint, never an opaque blank: the
+   conversation stays readable under it, so a person can still see where the
+   file is going (Q2-60). The words sit on their own opaque label so they read
+   on any message. It appears and goes with the drag and never animates. */
+.crew-drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.crew-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border-accent);
+  border-radius: var(--radius-container);
+  background-color: color-mix(in srgb, var(--background-canvas) 55%, transparent);
+  pointer-events: none;
+}
+
+.crew-drop-overlay-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-container);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  color: var(--text-accent);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--text-label--line-height);
+}

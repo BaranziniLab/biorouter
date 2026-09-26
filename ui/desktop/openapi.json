@@ -13,6 +13,69 @@
     "version": "1.91.2"
   },
   "paths": {
+    "/action-required/elicitation": {
+      "post": {
+        "tags": [
+          "super::routes::action_required"
+        ],
+        "operationId": "respond_to_elicitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElicitationResponseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Delivered to the live ordinary elicitation",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid response shape",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Verified human authority required",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "No matching live ordinary elicitation, or answer recorded after waiter ended",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds size bound"
+          },
+          "500": {
+            "description": "Persistence failed or completion outcome is unknown",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/action-required/secrets": {
       "post": {
         "tags": [
@@ -1977,6 +2040,1487 @@
         }
       }
     },
+    "/crew/authentication/{id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Authentication session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/authentication/{id}/terminal": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_terminal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Authentication session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Human-authorized terminal websocket"
+          }
+        }
+      }
+    },
+    "/crew/connections": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "list_connections",
+        "responses": {
+          "200": {
+            "description": "`connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "save_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/from-invitation": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_connection_from_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromInvitationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`preview` for a preview (nothing saved), else `connection`: the saved connection, pinned exactly as the invitation says",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FromInvitationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "remove_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "update_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/auth-plan": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "authentication_plan",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/authentication": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_authentication_prepare",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Prepare"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/connect": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "connect",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message and `detail`, when present, OpenSSH's own bounded words for Copy details",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/disconnect": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "disconnect",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/grants": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "The chats and tasks holding a grant on this connection (RV-D2). Each row adds, to what",
+        "description": "the Crew registry records:\n\n- `kind`: `task` when the grant is one of this device's ledger tasks (the ledger holds its\nsession and its current run), else `chat`; `null` when the ledger could not be read, so\nthe list still answers while the task ledger is unavailable.\n- `session_name`: the conversation's title, or `null` when the conversation is gone or\nuntitled.\n- `expires_at`: when the workspace ends the grant on its own, from grant time; `null` for\na grant recorded before that was kept.\n\nAll three are display only: revoking still decides on the registry and the ledger.\n\n`replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,\nF3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a\ndifferent conversation, whose title would mislabel the grant.",
+        "operationId": "crew_profile_grants",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/invitation": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_connection_invitation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The host's saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invitee",
+            "in": "query",
+            "description": "The invited person's username on the server, `@bob` or `bob`. The message then names\nthem, and prefills their username when they paste it.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The message to send, and the `brcrew1:` line inside it. Built from this computer's verified connection, the workspace's own word about its name and privacy, and `ssh -G` (never a local alias or the connection's local name)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationText"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: connect first",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/join": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_connection_join_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The joiner's saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: connect first",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_connection_join",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The joiner's saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "This computer is a member. Idempotent: a member answers this without asking the workspace again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinClaimed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/observe": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "observe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObserveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded NDJSON room events (one schema instance per line)",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObserveEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/request": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/runs": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "start_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "cancel_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Crew run_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session_id}/grant": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "grant_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Crew session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session}/context": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_context",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session}/revoke": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Revoke a chat's or task's grant (RV-D1, RV-D3). The grant stops on this device first,",
+        "description": "and is saved, before the workspace is asked; so:\n\n- 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped\nhere and confirmed by the workspace. `run` is the workspace's revoked run.\n- 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon\nasks the workspace again by itself at every reconnect until it confirms (F3), and the\ngrants list says when it has; retrying asks at once.\n- 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500\n[`REVOCATION_NOT_SAVED`]: not revoked, or not durably.\n\nA ledger task's session is stopped through the task cancel path, so its ledger entry reads\n`cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds\n`task_status`. The request body, if any, is ignored.",
+        "operationId": "crew_profile_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Crew connection ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_credentials",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/init": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_init",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/lock": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_lock",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/credentials/unlock": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_profile_unlock",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/devices/prepare": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "prepare_device",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/files": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_register_file",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/files/{capability_id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_discard_file",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "description": "Unused file selection capability",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/files/{capability_id}/confirm": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_confirm_file",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "description": "Pending file selection capability",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/host/start": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Start Crew on the server for this computer's host setup (\"Start it for me\").",
+        "description": "D-HOST. On a person's click, run the Host dialog's fixed start and status commands on the\nserver, as the login they typed, for this computer's own pending host setup; see\n`biorouter::crew` `host_start`. The body names no command: the daemon builds it from the\nworkspace name and its own prepared hosting key.",
+        "operationId": "crew_host_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostStartStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/host/start/{job_id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Where a \"Start it for me\" run stands.",
+        "description": "Its output so far and, once done, what it read.",
+        "operationId": "crew_host_start_status",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The run `POST /crew/host/start` answered",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostStartStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_host_start_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Stop a \"Start it for me\" run.",
+        "operationId": "crew_host_start_cancel",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The run to stop",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{\"cancelled\": true}`; stopping a finished run changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_host_start_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/resolve": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Resolve typed names (`@bob`, `analysis-lab`, `#methods`, `analysis-lab/methods`, a saved",
+        "description": "connection's name) to IDs, against the person's own workspace snapshot and this device's\nsaved connections (naming design D7). It names a connection, not a chat, so proof of a\nperson is its gate. The answer is a lookup, never a permission: the broker authorizes every\nmutation that uses it.",
+        "operationId": "resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "One resolution per selector, in the order sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`), or no connection named while several are saved (`crew_connection_required`)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "The connection matches more than one saved connection (`ambiguous_name`, with `candidates`)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/preview": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Digest-verified bounded image"
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_forget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "",
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Resume"
+                  }
+                ],
+                "nullable": true
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}/pause": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_pause",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/transfers/{id}/resume": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "operationId": "crew_transfer_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/diagnostics/{session_id}": {
       "get": {
         "tags": [
@@ -3588,7 +5132,7 @@
             "description": "A proven user reply was retained as steering for a delegated child that is still initializing"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text). Or the request carried `conversation_so_far` for a chat whose Crew access has ended: nothing was written, and the body is the plain sentence the chat's next turn would be refused with"
           },
           "409": {
             "description": "A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
@@ -4635,7 +6179,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text). Or, to a request that carried that proof, refused because the chat's Crew access has ended: no chat was created, and the body is the plain sentence the chat's next turn would be refused with"
           },
           "404": {
             "description": "Session not found"
@@ -4698,7 +6242,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text). Or refused because the chat's Crew access has ended (removed, ended by the workspace or a settings change, or run out of time): nothing was changed, and the body is the plain sentence the chat's next turn would be refused with"
           },
           "404": {
             "description": "Session or message not found"
@@ -5503,6 +7047,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Human user-action proof required for aggregate billing data"
+          },
           "500": {
             "description": "Internal server error"
           }
@@ -5533,6 +7080,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Human user-action proof required for aggregate billing data"
           },
           "500": {
             "description": "Internal server error"
@@ -7054,7 +8604,7 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             },
-            "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.",
+            "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.\n\nOn a chat whose Crew access has ended the copy is refused with 403, and nothing is\nwritten: the turn it would seed is refused anyway.",
             "nullable": true
           },
           "from_seq": {
@@ -7129,6 +8679,13 @@
             "type": "string"
           }
         }
+      },
+      "ClusterMode": {
+        "type": "string",
+        "enum": [
+          "public",
+          "private"
+        ]
       },
       "CodingAgentKind": {
         "type": "string",
@@ -7572,6 +9129,23 @@
           "personal"
         ]
       },
+      "CrewRequest": {
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "params": {},
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CrossAffiliationGrantRequest": {
         "type": "object",
         "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n⚠ **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n— which is the one thing this control exists to prevent.",
@@ -7984,6 +9558,28 @@
           "diverge",
           "edit"
         ]
+      },
+      "ElicitationResponseRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "id"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "data": {
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "EmbeddedResource": {
         "type": "object",
@@ -8496,6 +10092,64 @@
           }
         }
       },
+      "FromInvitationRequest": {
+        "type": "object",
+        "description": "`POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on\nthe Join screen. Every choice is optional; an absent one takes the invitation's.",
+        "required": [
+          "invitation"
+        ],
+        "properties": {
+          "advanced": {
+            "$ref": "#/components/schemas/InvitationAdvanced"
+          },
+          "institution_id": {
+            "type": "string",
+            "description": "Default: the invitation's institution. Required for a Private connection.",
+            "nullable": true
+          },
+          "invitation": {
+            "type": "string",
+            "description": "What the person pasted: the host's whole message, the bare `brcrew1:` line, or the JSON\n`biorouter-crew status` prints."
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterMode"
+              }
+            ],
+            "nullable": true
+          },
+          "preview": {
+            "type": "boolean",
+            "description": "`true`: parse and describe it, and save nothing."
+          },
+          "username": {
+            "type": "string",
+            "description": "The joiner's account name on the server. Default: the username the host invited.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "FromInvitationResponse": {
+        "type": "object",
+        "description": "What `POST /crew/connections/from-invitation` answers: exactly one of the two fields.",
+        "properties": {
+          "connection": {
+            "type": "object",
+            "description": "The saved connection, pinned exactly as the invitation says (or the one this computer\nalready had for the same workspace and settings), in the shape `GET /crew/connections`\nlists.",
+            "nullable": true
+          },
+          "preview": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InvitationSummary"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
       "FrontendToolRequest": {
         "type": "object",
         "required": [
@@ -8525,6 +10179,48 @@
             "type": "string"
           }
         }
+      },
+      "GrantSessionRequest": {
+        "type": "object",
+        "required": [
+          "channel_id"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "context_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "expected_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "expected_workspace_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "Graph": {
         "type": "object",
@@ -8719,6 +10415,115 @@
           "limit": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "HostStartError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "HostStartRequest": {
+        "type": "object",
+        "description": "What the person asked to host: the name, and the SSH login and route they typed.",
+        "required": [
+          "preparation_id",
+          "workspace_name",
+          "ssh_target"
+        ],
+        "properties": {
+          "identity_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "preparation_id": {
+            "type": "string",
+            "description": "This computer's pending hosting identity, from `POST /crew/devices/prepare`."
+          },
+          "proxy_jump": {
+            "type": "string",
+            "nullable": true
+          },
+          "ssh_target": {
+            "type": "string",
+            "description": "The SSH login to start Crew as: an alias or `user@host`."
+          },
+          "workspace_name": {
+            "type": "string",
+            "description": "The workspace name, as the broker's rule allows it (`lab`, `chen-lab`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HostStartState": {
+        "type": "string",
+        "description": "Where a run stands.",
+        "enum": [
+          "running",
+          "finished",
+          "failed"
+        ]
+      },
+      "HostStartStatus": {
+        "type": "object",
+        "description": "A run, as `GET /crew/host/start/{id}` answers it.",
+        "required": [
+          "job_id",
+          "command",
+          "state",
+          "output"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The exact command text that runs, as the dialog shows it."
+          },
+          "error": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HostStartError"
+              }
+            ],
+            "nullable": true
+          },
+          "exit_code": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string",
+            "description": "Everything the commands printed so far (stdout and stderr, in arrival order), without\ncontrol characters, at most 64 KiB."
+          },
+          "result": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StartOutput"
+              }
+            ],
+            "nullable": true
+          },
+          "state": {
+            "$ref": "#/components/schemas/HostStartState"
           }
         }
       },
@@ -9003,6 +10808,13 @@
           }
         }
       },
+      "Initial": {
+        "type": "string",
+        "enum": [
+          "latest",
+          "all"
+        ]
+      },
       "InspectJobResponse": {
         "type": "object",
         "properties": {
@@ -9130,6 +10942,355 @@
           "turn_id": {
             "type": "string",
             "description": "Client idempotency key. For a delegated child still waiting for its\ninitial runtime it names the queued input; for a running turn it\nmakes a retry after a lost response safe — the same key is answered 202\nagain and the text is not queued twice.",
+            "nullable": true
+          }
+        }
+      },
+      "InvitationAdvanced": {
+        "type": "object",
+        "description": "The Join screen's Advanced settings. None of them can change the pinned workspace.",
+        "properties": {
+          "identity_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "This computer's name for the connection. Default: the workspace's name.",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "preparation_id": {
+            "type": "string",
+            "description": "A prepared hosting identity (`POST /crew/devices/prepare`), when a host saves their own\nworkspace from what `biorouter-crew start` printed.",
+            "nullable": true
+          },
+          "proxy_jump": {
+            "type": "string",
+            "description": "A jump route. An empty string means none, even when the invitation suggests one.",
+            "nullable": true
+          },
+          "remote_execution": {
+            "type": "boolean"
+          },
+          "remote_root": {
+            "type": "string",
+            "nullable": true
+          },
+          "ssh_target": {
+            "type": "string",
+            "description": "A server login from the person's own SSH settings (`hpc`, `bob@hpc.ucsf.edu`), used\ninstead of `{username}@{server}`. With one, the invitation's port and jump host are not\napplied: the person's SSH settings for that login decide them.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "InvitationMissing": {
+        "type": "string",
+        "description": "Something saving still needs, which the invitation did not say and the person has not given.",
+        "enum": [
+          "username",
+          "server",
+          "institution"
+        ]
+      },
+      "InvitationPreview": {
+        "type": "object",
+        "description": "A parsed invitation and what saving it would do. Labels are not authority: nothing here is\ntrusted until `hello` verifies against the pinned workspace key.",
+        "required": [
+          "source",
+          "workspace_id",
+          "socket_path",
+          "owner_uid",
+          "workspace_key_fingerprint",
+          "fingerprint",
+          "workspace_label",
+          "mode",
+          "mode_differs",
+          "name",
+          "missing"
+        ],
+        "properties": {
+          "existing_connection_id": {
+            "type": "string",
+            "description": "A connection on this computer that already pins this workspace.",
+            "nullable": true
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "The short form a person compares by eye (`3F2A 9C1E 77B0 D4E1`)."
+          },
+          "host_display_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "host_username": {
+            "type": "string",
+            "nullable": true
+          },
+          "institution_conflict": {
+            "type": "string",
+            "description": "Another saved connection reaches the same server under a different institution, in\npeople's words. Saving is still allowed; connecting would be refused, because one\ncomputer can't mix institutions on one server (T-52).",
+            "nullable": true
+          },
+          "institution_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "invitee_username": {
+            "type": "string",
+            "nullable": true
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationMissing"
+            },
+            "description": "What saving still needs; empty when it can save."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ClusterMode"
+          },
+          "mode_differs": {
+            "type": "boolean",
+            "description": "The chosen mode differs from the workspace's own."
+          },
+          "name": {
+            "type": "string",
+            "description": "The connection name saving would use."
+          },
+          "owner_uid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "proxy_jump": {
+            "type": "string",
+            "nullable": true
+          },
+          "server": {
+            "type": "string",
+            "description": "The server named by the invitation.",
+            "nullable": true
+          },
+          "server_label": {
+            "type": "string",
+            "description": "What to call the server on screen (D-ALIAS): the person's own SSH alias for the address\nsaving would use, when one maps to it, else that address's host. Display only; `server`\nand `ssh_target` stay the invitation's resolved address. See [`super::server_label`].",
+            "nullable": true
+          },
+          "socket_path": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/InvitationSourceKind"
+          },
+          "ssh_target": {
+            "type": "string",
+            "nullable": true
+          },
+          "username": {
+            "type": "string",
+            "description": "What saving would use: the username, the SSH login and route, and the privacy.",
+            "nullable": true
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "The pinned workspace: shown under Advanced only."
+          },
+          "workspace_institution_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "workspace_key_fingerprint": {
+            "type": "string",
+            "description": "SHA-256 of the workspace key, lowercase hex."
+          },
+          "workspace_label": {
+            "type": "string",
+            "description": "How to name the workspace: its name, else \"{host}'s workspace\", else \"a workspace\"."
+          },
+          "workspace_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterMode"
+              }
+            ],
+            "nullable": true
+          },
+          "workspace_name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "InvitationSourceKind": {
+        "type": "string",
+        "description": "Where a previewed invitation came from.",
+        "enum": [
+          "invitation",
+          "legacy_status"
+        ]
+      },
+      "InvitationSummary": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/InvitationPreview"
+          },
+          {
+            "type": "object",
+            "required": [
+              "workspace_public_key"
+            ],
+            "properties": {
+              "ssh_host": {
+                "type": "string",
+                "description": "The SSH server the invitation names (never a host's local alias); `null` for the legacy\nstatus JSON, which names none.",
+                "nullable": true
+              },
+              "ssh_port": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The SSH port the invitation names; `null` means 22.",
+                "nullable": true,
+                "minimum": 0
+              },
+              "workspace_public_key": {
+                "type": "string",
+                "description": "The Ed25519 workspace key the invitation pins, 64 lowercase hex characters."
+              }
+            }
+          }
+        ],
+        "description": "A previewed invitation: the daemon's summary ([`InvitationPreview`]) and the SSH hints and\npinned key exactly as the invitation states them.\n\n`ssh_host` and `ssh_port` are what the invitation *says*; `server` and `port` in the summary\nare what saving would *use* once the person's choices are applied. Labels are not authority:\nnothing here is trusted until `hello` verifies against the pinned workspace key."
+      },
+      "InvitationText": {
+        "type": "object",
+        "description": "The invitation a host sends: the whole message, and its `brcrew1:` line alone.",
+        "required": [
+          "message",
+          "line"
+        ],
+        "properties": {
+          "line": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "JoinClaimed": {
+        "type": "object",
+        "description": "What `POST /crew/connections/{id}/join` answers once this computer is a member.",
+        "required": [
+          "joined",
+          "status",
+          "add_device"
+        ],
+        "properties": {
+          "add_device": {
+            "type": "boolean",
+            "description": "This computer was added to an existing member."
+          },
+          "inviter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JoinPerson"
+              }
+            ],
+            "nullable": true
+          },
+          "joined": {
+            "type": "boolean",
+            "description": "Always `true`: a join that did not happen is a refusal, never this answer."
+          },
+          "status": {
+            "$ref": "#/components/schemas/JoinState"
+          },
+          "workspace_name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "JoinPerson": {
+        "type": "object",
+        "description": "A person named in a join status. Labels only.",
+        "required": [
+          "username",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "The username when they set no display name of their own."
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "JoinState": {
+        "type": "string",
+        "description": "Where this computer stands in joining a workspace.",
+        "enum": [
+          "invited",
+          "approved",
+          "code_mismatch",
+          "not_invited",
+          "expired",
+          "joined",
+          "unsupported"
+        ]
+      },
+      "JoinStatus": {
+        "type": "object",
+        "description": "The join status the Join screen shows.\n\n`code` is computed on this computer from its saved device key and the pinned workspace key.\nIt is never read from the workspace's answer.",
+        "required": [
+          "status",
+          "add_device"
+        ],
+        "properties": {
+          "add_device": {
+            "type": "boolean",
+            "description": "The invitation adds this computer to an existing member."
+          },
+          "code": {
+            "type": "string",
+            "description": "This computer's device code (`7QK2-M9XA-3JTP-WZ4D`), while invited, approved or refused.",
+            "nullable": true
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the invitation expires (seconds since the Unix epoch).",
+            "nullable": true,
+            "minimum": 0
+          },
+          "inviter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JoinPerson"
+              }
+            ],
+            "nullable": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/JoinState"
+          },
+          "workspace_name": {
+            "type": "string",
             "nullable": true
           }
         }
@@ -10833,6 +12994,228 @@
           }
         }
       },
+      "ObserveEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "connection_id",
+              "connection_mode",
+              "connection_policy_epoch",
+              "snapshot",
+              "runs",
+              "type"
+            ],
+            "properties": {
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What the connected broker's last verified `hello` said it supports (for example\n`unique_names_v1`). They decide only which requests a client offers; the broker still\nrefuses what it does not support. Absent before the first verified hello, and from a\ndaemon that predates it."
+              },
+              "connection_id": {
+                "type": "string"
+              },
+              "connection_institution_id": {
+                "type": "string",
+                "nullable": true
+              },
+              "connection_mode": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              },
+              "connection_policy_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "labels": {
+                "type": "object",
+                "description": "How each person the snapshot names is shown, keyed by principal ID. Absent from a\ndaemon that predates it; clients then compute their own.",
+                "additionalProperties": {
+                  "type": "object",
+                  "description": "How one person is shown, from the naming design's display rule. Display only: the daemon\ncomputes it from the same snapshot the frame carries, so every client applies one collision\nrule, including the confusable skeleton a renderer cannot reproduce.",
+                  "required": [
+                    "full",
+                    "short",
+                    "collides"
+                  ],
+                  "properties": {
+                    "collides": {
+                      "type": "boolean",
+                      "description": "Another person in this workspace has a display name that is, or looks like, this one.\nBoth are then shown with their `@username` everywhere."
+                    },
+                    "full": {
+                      "type": "string",
+                      "description": "`Display name (@username)`, or `@username` when the two are equal case-insensitively;\nalways both when the name collides with someone else's."
+                    },
+                    "short": {
+                      "type": "string",
+                      "description": "The display name alone, for chips and avatars; `@username` when the two are equal, and\nthe same as `full` when the name collides."
+                    }
+                  }
+                }
+              },
+              "runs": {
+                "type": "array",
+                "items": {}
+              },
+              "snapshot": {},
+              "type": {
+                "type": "string",
+                "enum": [
+                  "state"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "channel_id",
+              "messages",
+              "reset",
+              "type"
+            ],
+            "properties": {
+              "channel_id": {
+                "type": "string"
+              },
+              "channel_names": {
+                "type": "object",
+                "description": "The names of the channels this frame's messages name, limited by the broker to the\nchannels the viewer can read. Display only.",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cursor": {
+                "type": "string",
+                "nullable": true
+              },
+              "messages": {
+                "type": "array",
+                "items": {}
+              },
+              "page_size": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The largest page the observer asks the broker for right now. It shrinks when the\nbroker answers `response_too_large`, so a client must not assume a fixed size.",
+                "nullable": true,
+                "minimum": 0
+              },
+              "people": {
+                "type": "object",
+                "description": "How the broker names each author of this frame's messages, keyed by principal ID,\nincluding a person who has since left the workspace. Display only.",
+                "additionalProperties": {
+                  "type": "object",
+                  "description": "One entry of the `people` map the broker returns beside messages (`messages.history`).\nDisplay only: it names a message's author, and is the only name a client has for someone who\nhas left the workspace since they posted.",
+                  "required": [
+                    "username"
+                  ],
+                  "properties": {
+                    "active": {
+                      "type": "boolean",
+                      "description": "False for a person who was removed from the workspace.",
+                      "nullable": true
+                    },
+                    "display_name": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "username": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "remaining": {
+                "type": "integer",
+                "format": "int32",
+                "description": "How many messages of the page this frame was taken from are still to come. `0` ends\nthe page, so on the opening frames it marks the end of the channel's backlog. Absent\nfrom a daemon that predates it.",
+                "nullable": true,
+                "minimum": 0
+              },
+              "reset": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "messages"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "reconnect"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "error",
+              "clear",
+              "type"
+            ],
+            "properties": {
+              "clear": {
+                "type": "boolean"
+              },
+              "code": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "ObserveRequest": {
+        "type": "object",
+        "properties": {
+          "after": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "initial": {
+            "$ref": "#/components/schemas/Initial"
+          }
+        },
+        "additionalProperties": false
+      },
       "PackageSummary": {
         "type": "object",
         "description": "The part of an installed package's record the interface needs. The full\nrecord lives beside the skills as `biorouter-package.json`; see\n`crate::agents::skill_package`.",
@@ -11040,6 +13423,34 @@
             "description": "The frontmatter `name`, preserved exactly."
           }
         }
+      },
+      "Prepare": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "controller_id",
+          "cols",
+          "rows"
+        ],
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "controller_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "PreviewBody": {
         "type": "object",
@@ -11876,6 +14287,335 @@
           }
         }
       },
+      "ResolveRequest": {
+        "type": "object",
+        "description": "`POST /crew/resolve`.",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "The saved connection whose workspace the selectors are resolved in: its ID, its name\n(case-insensitive) or its SSH target. May be omitted when only one connection is saved.",
+            "nullable": true
+          },
+          "selectors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One name to look up.",
+              "required": [
+                "text"
+              ],
+              "properties": {
+                "kind": {
+                  "allOf": [
+                    {
+                      "type": "string",
+                      "description": "What a selector names.",
+                      "enum": [
+                        "person",
+                        "former_person",
+                        "team",
+                        "channel",
+                        "connection",
+                        "attachment"
+                      ]
+                    }
+                  ],
+                  "nullable": true
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResolveResponse": {
+        "type": "object",
+        "description": "The answer to `POST /crew/resolve`.",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "connection": {
+            "allOf": [
+              {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "description": "Exactly one object the caller can see has this name, or the text is an ID.",
+                    "required": [
+                      "kind",
+                      "text",
+                      "id",
+                      "status"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Send this to the broker. Never show it to a person."
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "What a selector names.",
+                        "enum": [
+                          "person",
+                          "former_person",
+                          "team",
+                          "channel",
+                          "connection",
+                          "attachment"
+                        ]
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "What to confirm the choice with: `Bob Lee (@bob)`, `Analysis Lab`, `#methods`.\nAbsent for an ID this workspace's snapshot does not show.",
+                        "nullable": true
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "resolved"
+                        ]
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "The selector's text, as sent."
+                      },
+                      "username": {
+                        "type": "string",
+                        "description": "A person's canonical username, to send as `expected_username`.",
+                        "nullable": true
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "description": "Nothing the caller can see has this name. It lists no candidates, so it cannot be used to\nlearn what exists.",
+                    "required": [
+                      "kind",
+                      "text",
+                      "status"
+                    ],
+                    "properties": {
+                      "did_you_mean": {
+                        "type": "string",
+                        "description": "The one member whose username differs from the text only in letter case. It is never\nresolved silently; the person must type it as shown.",
+                        "nullable": true
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "What a selector names.",
+                        "enum": [
+                          "person",
+                          "former_person",
+                          "team",
+                          "channel",
+                          "connection",
+                          "attachment"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "unknown_name"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "description": "More than one visible object matches, or the daemon's name rules and the broker's\ndisagree about one. Nothing is guessed.",
+                    "required": [
+                      "kind",
+                      "text",
+                      "candidates",
+                      "status"
+                    ],
+                    "properties": {
+                      "candidates": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Labels to choose between, never IDs."
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "What a selector names.",
+                        "enum": [
+                          "person",
+                          "former_person",
+                          "team",
+                          "channel",
+                          "connection",
+                          "attachment"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ambiguous_name"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ],
+                "description": "The answer to one selector.",
+                "discriminator": {
+                  "propertyName": "status"
+                }
+              }
+            ],
+            "nullable": true
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "description": "Exactly one object the caller can see has this name, or the text is an ID.",
+                  "required": [
+                    "kind",
+                    "text",
+                    "id",
+                    "status"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Send this to the broker. Never show it to a person."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "description": "What a selector names.",
+                      "enum": [
+                        "person",
+                        "former_person",
+                        "team",
+                        "channel",
+                        "connection",
+                        "attachment"
+                      ]
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "What to confirm the choice with: `Bob Lee (@bob)`, `Analysis Lab`, `#methods`.\nAbsent for an ID this workspace's snapshot does not show.",
+                      "nullable": true
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "resolved"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "The selector's text, as sent."
+                    },
+                    "username": {
+                      "type": "string",
+                      "description": "A person's canonical username, to send as `expected_username`.",
+                      "nullable": true
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "description": "Nothing the caller can see has this name. It lists no candidates, so it cannot be used to\nlearn what exists.",
+                  "required": [
+                    "kind",
+                    "text",
+                    "status"
+                  ],
+                  "properties": {
+                    "did_you_mean": {
+                      "type": "string",
+                      "description": "The one member whose username differs from the text only in letter case. It is never\nresolved silently; the person must type it as shown.",
+                      "nullable": true
+                    },
+                    "kind": {
+                      "type": "string",
+                      "description": "What a selector names.",
+                      "enum": [
+                        "person",
+                        "former_person",
+                        "team",
+                        "channel",
+                        "connection",
+                        "attachment"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "unknown_name"
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "description": "More than one visible object matches, or the daemon's name rules and the broker's\ndisagree about one. Nothing is guessed.",
+                  "required": [
+                    "kind",
+                    "text",
+                    "candidates",
+                    "status"
+                  ],
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Labels to choose between, never IDs."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "description": "What a selector names.",
+                      "enum": [
+                        "person",
+                        "former_person",
+                        "team",
+                        "channel",
+                        "connection",
+                        "attachment"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ambiguous_name"
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ],
+              "description": "The answer to one selector.",
+              "discriminator": {
+                "propertyName": "status"
+              }
+            },
+            "description": "One resolution per selector, in the order they were sent."
+          }
+        }
+      },
       "ResourceContents": {
         "anyOf": [
           {
@@ -11978,6 +14718,18 @@
             "type": "string"
           }
         }
+      },
+      "Resume": {
+        "type": "object",
+        "required": [
+          "file_capability"
+        ],
+        "properties": {
+          "file_capability": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "ResumeAgentRequest": {
         "type": "object",
@@ -12105,6 +14857,44 @@
         ],
         "properties": {
           "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "RunView": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "connection_id",
+          "channel_id",
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When this device admitted the task, in Unix milliseconds. Absent from a run recorded\nbefore it was kept.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "status": {
             "type": "string"
           }
         }
@@ -13278,6 +16068,14 @@
             },
             "nullable": true
           },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
           "workflow": {
             "allOf": [
               {
@@ -13298,6 +16096,117 @@
             "type": "string"
           }
         }
+      },
+      "StartOutput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The text to preview and pin: the `brcrew1:` line `start` printed, else the status\nJSON on one line.",
+            "required": [
+              "text",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "found"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Why the output can't pin a workspace: `starting` (Crew was still starting),\n`not_installed` (no `biorouter-crew` on the server), `server_error` (it printed an\nerror, in `detail`), or `unreadable` (nothing Crew printed).",
+            "required": [
+              "problem",
+              "kind"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string",
+                "nullable": true
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "problem"
+                ]
+              },
+              "problem": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "What the output says, read as the dialog reads a paste.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "StartRunRequest": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "prompt",
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "context_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "expected_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "expected_workspace_policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "posting_grant": {
+            "type": "boolean"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "SteerOutcome": {
         "type": "string",

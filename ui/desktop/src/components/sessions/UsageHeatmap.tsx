@@ -191,6 +191,52 @@ function buildGrid(window: ActivityWindow): { cells: Cell[]; weeks: number } {
   return { cells, weeks: Math.ceil(total / 7) };
 }
 
+/**
+ * Where an arrow key takes focus from cell `from`, or null when it stays put.
+ *
+ * The cells are stored column-major — a column is a week, Sunday first — so a
+ * step of 1 is a day and a step of 7 is a week:
+ *   · ↑ / ↓ move one DAY, and run on across the week boundary (Saturday → the
+ *     next Sunday), because the grid is a calendar and a day's neighbour in time
+ *     is the next day, not nothing.
+ *   · ← / → move one WEEK along the same weekday row, and stop at the edge.
+ *   · Home / End go to the first / last cell of the ROW (the grid pattern);
+ *     Ctrl or ⌘ with them go to the first day and to today.
+ */
+function nextHeatCell(
+  key: string,
+  from: number,
+  count: number,
+  toGridEdge: boolean
+): number | null {
+  const last = count - 1;
+  const day = from % 7;
+  let to: number;
+  switch (key) {
+    case 'ArrowDown':
+      to = from + 1;
+      break;
+    case 'ArrowUp':
+      to = from - 1;
+      break;
+    case 'ArrowRight':
+      to = from + 7;
+      break;
+    case 'ArrowLeft':
+      to = from - 7;
+      break;
+    case 'Home':
+      to = toGridEdge ? 0 : day;
+      break;
+    case 'End':
+      to = toGridEdge ? last : day + 7 * Math.floor((last - day) / 7);
+      break;
+    default:
+      return null;
+  }
+  return to >= 0 && to <= last ? to : null;
+}
+
 const LEVEL_CLASS: Record<number, string> = {
   0: 'bg-heat-0',
   1: 'bg-heat-1',
@@ -368,6 +414,58 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const fittedStyle = useFittedMetrics(rootRef, weeks, activity.tokensComplete);
 
+  /*
+   * ONE TAB STOP, NOT ONE PER DAY (triage T-20). Every day used to be its own
+   * `<button>`, so Tab crossed Home one DAY at a time — some 160 presses
+   * through a chart to get past it. The grid is now a single stop with a roving
+   * `tabIndex`: the entry cell is today (the last day), or the day the user
+   * last moved to, and the arrow keys walk the calendar from there
+   * (`nextHeatCell`). The active day is held by its DATE, not its index, so a
+   * refreshed window that shifts the columns keeps the same day focusable.
+   */
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const activeIndex = useMemo(() => {
+    const index = activeKey === null ? -1 : cells.findIndex((cell) => cell.key === activeKey);
+    return index >= 0 ? index : cells.length - 1;
+  }, [cells, activeKey]);
+  const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Row-major for the DOM, because an ARIA grid is rows of cells: row `d` holds
+  // weekday `d` of every week. The flex rows reproduce the old column-flow
+  // geometry exactly — same cell, same gap, and the unfinished last week still
+  // simply ends early in the rows after today.
+  const rows = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, day) =>
+        cells.flatMap((cell, index) => (index % 7 === day ? [{ cell, index }] : []))
+      ),
+    [cells]
+  );
+
+  const handleGridKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      // The tooltip is content shown on focus, so it must be dismissible
+      // without moving focus (WCAG 1.4.13). Only claim the key if it did so.
+      if (hovered) {
+        event.preventDefault();
+        event.stopPropagation();
+        setHovered(null);
+      }
+      return;
+    }
+    const from = Number((event.target as HTMLElement).dataset.index ?? activeIndex);
+    const to = nextHeatCell(event.key, from, cells.length, event.ctrlKey || event.metaKey);
+    if (to === null) {
+      // An arrow at the edge is still ours: letting it through would scroll the
+      // Home view under a keyboard user who only meant to stop at the last day.
+      if (event.key.startsWith('Arrow')) event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    setActiveKey(cells[to].key);
+    cellRefs.current[to]?.focus();
+  };
+
   // One label per month, placed on the first column whose Sunday falls in it.
   const months = useMemo(() => {
     const out: (string | null)[] = [];
@@ -433,41 +531,51 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
           ))}
         </div>
 
-        {/* `auto` implicit columns stretch to fill a definite-width grid, which
-            would pull the cells away from the month ruler. Pin them. */}
         <div
-          className="grid grid-flow-col justify-start gap-[var(--heat-gap)]"
-          style={{
-            gridTemplateRows: 'repeat(7, var(--heat-cell))',
-            gridAutoColumns: 'var(--heat-cell)',
-          }}
+          className="flex flex-col gap-[var(--heat-gap)]"
           role="grid"
           aria-label="Daily usage heatmap"
+          onKeyDown={handleGridKeyDown}
         >
-          {cells.map((cell) => (
-            <button
-              key={cell.key}
-              type="button"
-              // The tooltip is the only way to read the numbers, so it must open
-              // on keyboard focus, not hover alone.
-              onMouseEnter={show(cell)}
-              onFocus={show(cell)}
-              onMouseLeave={hide}
-              onBlur={hide}
-              aria-label={
-                cell.day
-                  ? `${cell.key}: ${cell.day.sessions} ${cell.day.sessions === 1 ? 'chat' : 'chats'}, ${tokenAria(cell.day)}${cell.inStreak ? ', part of current streak' : ''}`
-                  : `${cell.key}: no activity`
-              }
-              className={[
-                'relative h-[var(--heat-cell)] w-[var(--heat-cell)] appearance-none rounded-[var(--heat-radius,5px)] border-0 p-0',
-                // hover:z-10 lifts the grown cell above its neighbors so scaling
-                // up doesn't get clipped by later-painted cells.
-                'transition-transform duration-[var(--motion-fast)] hover:z-10 hover:scale-110',
-                LEVEL_CLASS[cell.day?.level ?? 0],
-                cell.inStreak ? 'shadow-[inset_0_0_0_2px_var(--text-default)]' : '',
-              ].join(' ')}
-            />
+          {rows.map((row, day) => (
+            <div key={day} role="row" className="flex h-[var(--heat-cell)] gap-[var(--heat-gap)]">
+              {row.map(({ cell, index }) => (
+                <div
+                  key={cell.key}
+                  ref={(element) => {
+                    cellRefs.current[index] = element;
+                  }}
+                  role="gridcell"
+                  data-index={index}
+                  tabIndex={index === activeIndex ? 0 : -1}
+                  // The tooltip is the only way to read the numbers, so it must open
+                  // on keyboard focus, not hover alone.
+                  onMouseEnter={show(cell)}
+                  onFocus={(event) => {
+                    setActiveKey(cell.key);
+                    show(cell)(event);
+                  }}
+                  onMouseLeave={hide}
+                  onBlur={hide}
+                  aria-label={
+                    cell.day
+                      ? `${cell.key}: ${cell.day.sessions} ${cell.day.sessions === 1 ? 'chat' : 'chats'}, ${tokenAria(cell.day)}${cell.inStreak ? ', part of current streak' : ''}`
+                      : `${cell.key}: no activity`
+                  }
+                  className={[
+                    'relative block h-[var(--heat-cell)] w-[var(--heat-cell)] flex-none rounded-[var(--heat-radius,5px)]',
+                    // hover:z-10 lifts the grown cell above its neighbors so scaling
+                    // up doesn't get clipped by later-painted cells.
+                    'transition-transform duration-[var(--motion-fast)] hover:z-10 hover:scale-110',
+                    // A cell's fill IS its data, so focus cannot be shown by the
+                    // app-wide focus fill; it is a ring outside the cell instead.
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus',
+                    LEVEL_CLASS[cell.day?.level ?? 0],
+                    cell.inStreak ? 'shadow-[inset_0_0_0_2px_var(--text-default)]' : '',
+                  ].join(' ')}
+                />
+              ))}
+            </div>
           ))}
         </div>
       </div>

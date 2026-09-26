@@ -4,7 +4,8 @@
 > model: the always-on deny floor, how a tool call's arguments are resolved before they are
 > judged, and the redaction of credential material in what a tool returns.
 > **Status:** Current. The argument scan was rebuilt and the output redaction added on
-> 2026-09-11, fixing QA-C finding H1; the sections below describe that code.
+> 2026-09-11, fixing QA-C finding H1; the sections below describe that code. Seven well-known
+> password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56).
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -23,9 +24,27 @@ The floor is `DEFAULT_SECRET_PATTERNS` in
 provider-key store), `*.pem`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `*.p12`, `*.pfx`,
 `.aws/credentials`, `.codex/auth.json` and `.claude/.credentials.json`, at any depth.
 
+Since 2026-09-25 it also names `.netrc`, `_netrc` (its Windows name), `.pgpass`,
+`.git-credentials`, `.docker/config.json`, `.kube/config` and `.config/gh/hosts.yml`. Crew's live
+QA (round 4, Q4-56) shared `~/.netrc`, `~/.pgpass`, `~/.git-credentials`, `~/.docker/config.json`
+and `~/.kube/config` from a renderer with a 200: none was on the floor, and what each holds — a
+netrc `password` line, a pgpass `host:port:db:user:pass` row, a `https://user:token@host` URL,
+docker's base64 `auth`, a lowercase kubeconfig `token:` — is a shape the output redaction below
+does not recognise, so the name is the only thing that stops a read.
+Their neighbours stay readable: `.git/config`, `.ssh/config`, `.docker/daemon.json`,
+`.kube/cache/…` and `.config/gh/config.yml`.
+
+The floor is not only the agent's. Crew's local file registration
+([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
+refuses an upload source or a download destination the floor names (Q3-01), consulting only the
+machine-wide statements: the floor and the global `.biorouterignore`.
+
 A `.biorouterignore` adds patterns: the project's own file for paths inside the project, and the
 global `<config>/.biorouterignore` for every path. Either can reopen one specific file with a
-gitignore negation (`!path`), because user patterns are layered after the floor.
+gitignore negation (`!path`), because user patterns are layered after the floor. A pattern with a
+slash is anchored, so reopening a store at any depth takes `**/`: `!**/.kube/config` in the global
+file reopens every kubeconfig, for the agent and for Crew, and leaves the rest of the floor
+standing (`q4_56_a_negation_reopens_one_store`).
 
 ## Where it runs
 
@@ -101,6 +120,22 @@ worth knowing:
 
 In each case a negation in `.biorouterignore` reopens one specific file on purpose.
 
+One consequence a negation does not undo: **a floor entry's last name reaches further than its
+path.** Where part of a path is unknown (next section) and in `find -name`, the known end is
+compared with the *end* of each floor pattern, so a pattern's final component refuses on its own.
+That is how `find . -name '*.json'` was already refused (it could name `.codex/auth.json`).
+Measured when Q4-56 landed, the new entries add `find . -name '*.yml'` and
+`find . -name hosts.yml` (from `.config/gh/hosts.yml`), `find . -name config` and
+`find . -name 'config*'` (from `.kube/config` and `.docker/config.json`),
+`cd "$(git rev-parse --show-toplevel)" && cat config.json`,
+`cat "$(git rev-parse --git-dir)/config"` and `cat $UNSET/config.json`. Known paths are
+unaffected: `cat .git/config`, `cat src/config.json`, `cat inventory/hosts.yml` and
+`git config --list` all run. This comparison reads the built-in floor only, so a
+`.biorouterignore` negation does not reach it; spelling the path in full does.
+`.config/gh/hosts.yml` buys the least for its cost, because the output redaction already
+recognises the `gh[pousr]_` token it can hold, and is the entry to revisit first if the collateral
+proves expensive.
+
 ### Paths that cannot be known before the command runs
 
 - When part of a path is a hole, the path is refused if the directory it would be read from
@@ -159,7 +194,8 @@ boundary against a determined adversary — the same ruling that governs
   scan; refusing every recursive command in a directory holding a `.env` would refuse ordinary
   work.
 - **Formats the redactor does not know** — a password in a file with no recognisable shape —
-  pass through.
+  pass through. That is why the stores holding such passwords are named on the floor instead; a
+  store it does not name (a tool's own token file under another name) is not protected.
 - **Live shell output** streamed to the desktop as progress notifications is not redacted. It
   reaches only the user's own screen; the model receives the final, redacted result.
 - **Images are not redacted.** `redact_call_tool_result` handles text parts and text resources
@@ -181,11 +217,15 @@ boundary against a determined adversary — the same ruling that governs
 ```bash
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
 ```
 
 The H1 tables run every measured spelling — and the families around them — against a throwaway
 HOME holding made-up credentials, through the dispatch scan, through the resolver alone, through
-`developer__shell`'s own check. The fake key material is
+`developer__shell`'s own check. The `q4_56_` tests hold the seven long-tail stores to the floor by
+name, by case and through the H1 spellings (`~`, `$HOME`, a glob, `cd`, `bash -c`,
+`find -name`), keep their neighbours readable, and prove a negation still reopens one;
+`crew::local_files` holds Crew's registration to the same floor. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

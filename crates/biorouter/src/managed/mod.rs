@@ -29,6 +29,7 @@ pub struct ManagedPolicy {
     /// The trusted path a policy was loaded from; `None` when absent/untrusted,
     /// which makes every query inert.
     source: Option<PathBuf>,
+    load_failed: bool,
 }
 
 impl ManagedPolicy {
@@ -73,19 +74,34 @@ impl ManagedPolicy {
             Ok(contents) => contents,
             Err(e) => {
                 warn!("managed policy: failed to read {}: {e}", path.display());
-                return Self::empty();
+                return Self {
+                    load_failed: true,
+                    ..Self::empty()
+                };
             }
         };
         match serde_yaml::from_str::<ManagedPolicyFile>(&contents) {
             Ok(file) => ManagedPolicy {
                 file,
                 source: Some(path),
+                load_failed: false,
             },
             Err(e) => {
                 warn!("managed policy: failed to parse {}: {e}", path.display());
-                Self::empty()
+                Self {
+                    load_failed: true,
+                    ..Self::empty()
+                }
             }
         }
+    }
+
+    pub fn ensure_crew_compatible(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.load_failed,
+            "Crew is unavailable because the managed policy could not be loaded. Contact your administrator.");
+        anyhow::ensure!(self.hooks().is_empty() && self.project_hooks_override() != Some(true),
+            "Crew is unavailable with required managed hooks. Contact your administrator for a compatible managed policy.");
+        Ok(())
     }
 
     /// Build directly from a parsed file (tests / in-memory policies). Marked
@@ -94,6 +110,7 @@ impl ManagedPolicy {
         ManagedPolicy {
             file,
             source: Some(PathBuf::from("<in-memory>")),
+            load_failed: false,
         }
     }
 
@@ -176,6 +193,42 @@ mod tests {
         assert!(policy.permission_for("developer__shell").is_none());
         assert!(policy.project_hooks_override().is_none());
         assert!(policy.hooks().is_empty());
+    }
+
+    #[test]
+    fn empty_policy_allows_ordinary_unscoped_admission() {
+        ManagedPolicy::empty()
+            .ensure_crew_compatible()
+            .expect("an absent managed policy must not block ordinary Crew admission");
+    }
+
+    #[test]
+    fn required_managed_hooks_refuse_crew_admission() {
+        let (_dir, policy) = load_with_managed_yaml(
+            "hooks:\n  PreToolUse:\n    - hooks: [{ type: command, command: 'echo managed' }]\n",
+        );
+        let error = policy
+            .ensure_crew_compatible()
+            .expect_err("required managed hooks must refuse Crew admission");
+        assert!(error.to_string().contains("required managed hooks"));
+    }
+
+    #[test]
+    fn forced_project_hooks_refuse_crew_admission() {
+        let file: ManagedPolicyFile = serde_yaml::from_str("allow_project_hooks: true\n").unwrap();
+        let error = ManagedPolicy::from_file(file)
+            .ensure_crew_compatible()
+            .expect_err("forced project hooks must refuse Crew admission");
+        assert!(error.to_string().contains("required managed hooks"));
+    }
+
+    #[test]
+    fn managed_policy_load_failure_refuses_crew_admission() {
+        let (_dir, policy) = load_with_managed_yaml("permissions: [not-a-map]\n");
+        let error = policy
+            .ensure_crew_compatible()
+            .expect_err("a managed load failure must fail closed for Crew");
+        assert!(error.to_string().contains("could not be loaded"));
     }
 
     #[test]

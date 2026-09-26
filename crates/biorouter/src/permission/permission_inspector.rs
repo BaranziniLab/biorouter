@@ -435,6 +435,12 @@ impl PermissionInspector {
         if candidates.is_empty() {
             return vec![];
         }
+        if crate::agents::mcp_client::crew_sampling_allowed(&self.provider)
+            .await
+            .is_err()
+        {
+            return vec![];
+        }
         let provider = { self.provider.lock().await.clone() };
         let Some(provider) = provider else {
             tracing::debug!("Smart-approve judge is enabled but no provider is installed");

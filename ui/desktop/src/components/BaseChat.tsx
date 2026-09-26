@@ -34,6 +34,9 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { ChatCrewAccessBar } from './crew/access/ChatCrewAccessBar';
+import { useChatCrewAccess } from './crew/access/chatCrewAccess';
+import { useCrewResendHold } from './crew/access/crewResendHold';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
@@ -1503,13 +1506,40 @@ function BaseChatContent({
     onStreamFinish,
   });
 
+  // Crew access (ui-redesign-spec, "Revoke"): a chat whose grant was revoked or ran out is refused
+  // by the daemon on every turn. Say so above the composer and hold it, instead of letting the next
+  // message fail with a model error. Display only — the daemon decides either way. A turn the
+  // daemon refuses for the chat's access while it is open moves the bar at once (D-1).
+  const crewAccess = useChatCrewAccess(sessionId, { turnError });
+  // F1: the hold covers every path that sends without the composer, and each asks BEFORE it
+  // changes anything — Edit in place used to truncate the stored chat, then be refused.
+  const refuseWhileCrewHeld = useCrewResendHold(crewAccess);
+  const heldMessageUpdate = useCallback(
+    (messageId: string, newContent: string, editType?: 'diverge' | 'edit') =>
+      refuseWhileCrewHeld() ? false : onMessageUpdate(messageId, newContent, editType),
+    [onMessageUpdate, refuseWhileCrewHeld]
+  );
+  const heldRetryTurn = useCallback(() => {
+    if (refuseWhileCrewHeld()) return;
+    void retryTurn();
+  }, [retryTurn, refuseWhileCrewHeld]);
+  const heldSteer = useCallback(
+    (text: string) => (refuseWhileCrewHeld() ? Promise.resolve(false) : steer(text)),
+    [steer, refuseWhileCrewHeld]
+  );
+  const heldSubmit = useCallback(
+    (text: string, attachments?: UserAttachment[]) =>
+      refuseWhileCrewHeld() ? Promise.resolve(false) : handleSubmit(text, attachments),
+    [handleSubmit, refuseWhileCrewHeld]
+  );
+
   // D4: re-send a steer the daemon stored as unanswered. Stable, so the message
   // list's memoised render is not rebuilt on every render of this component.
   const handleSendAgain = useCallback(
     (text: string) => {
-      void handleSubmit(text);
+      void heldSubmit(text);
     },
-    [handleSubmit]
+    [heldSubmit]
   );
   const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
@@ -1586,6 +1616,8 @@ function BaseChatContent({
 
   const submitArtifactRepairMessage = useCallback(
     (message: Message): boolean => {
+      // A chat held for its Crew access starts no turn of its own accord (F1).
+      if (refuseWhileCrewHeld({ quiet: true })) return false;
       if (!shouldAutoRepairArtifact(chatState, lastAgentActiveAtRef.current, Date.now())) {
         // Conversation is over — do not auto-resume it to repair a failure the
         // user almost certainly caused by editing or deleting the artifact.
@@ -1603,7 +1635,7 @@ function BaseChatContent({
       }
       return true;
     },
-    [chatState, submitSystemMessage]
+    [chatState, submitSystemMessage, refuseWhileCrewHeld]
   );
 
   const handleArtifactRenderError = useCallback(
@@ -1633,8 +1665,9 @@ function BaseChatContent({
     if (chatState !== ChatState.Idle || !pendingArtifactRenderFeedbackRef.current) return;
     const message = pendingArtifactRenderFeedbackRef.current;
     pendingArtifactRenderFeedbackRef.current = null;
+    if (refuseWhileCrewHeld({ quiet: true })) return;
     void submitSystemMessage(message);
-  }, [chatState, submitSystemMessage]);
+  }, [chatState, submitSystemMessage, refuseWhileCrewHeld]);
 
   const stageComposerMotion = useCallback(() => {
     const rect = composerMotionRef.current?.getBoundingClientRect();
@@ -1665,7 +1698,7 @@ function BaseChatContent({
       initialMessage,
       initialAttachments,
       shouldStartAgent: searchParams.get('shouldStartAgent') === 'true',
-      submit: handleSubmit,
+      submit: heldSubmit,
       clearRouterState: () =>
         navigate(location.pathname + location.search, {
           replace: true,
@@ -1683,7 +1716,7 @@ function BaseChatContent({
     initialMessage,
     initialAttachments,
     searchParams,
-    handleSubmit,
+    heldSubmit,
     navigate,
     location,
     onInitialMessageConsumed,
@@ -1785,7 +1818,9 @@ function BaseChatContent({
     if (workflow && textValue.trim()) {
       setHasStartedUsingWorkflow(true);
     }
-    return submitAndReturnToBottom({ sessionId, submit: handleSubmit }, textValue, attachments);
+    // The composer holds itself; a queued message, a compact and a steer that fell back to a send
+    // arrive here instead, and are handed back rather than refused by the daemon (F1).
+    return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
   const { sessionCosts, modelRows } = useCostTracking({ session });
@@ -2308,6 +2343,7 @@ function BaseChatContent({
         say, which is almost always.
       */}
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
+        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-2" />
         {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
         <ChatInput
           sessionId={sessionId}
@@ -2323,9 +2359,10 @@ function BaseChatContent({
           onAbandonContinuation={abandonContinuation}
           submissionBlocked={
             pendingContinuation?.ownership === 'foreign' ||
-            pendingContinuation?.ownership === 'settling'
+            pendingContinuation?.ownership === 'settling' ||
+            crewAccess.blocksComposer
           }
-          onSteer={steer}
+          onSteer={heldSteer}
           commandHistory={commandHistory}
           initialValue={initialPrompt}
           draftKey={inputDraftKey}
@@ -2652,7 +2689,7 @@ function BaseChatContent({
                     {workflow && (
                       <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
                         <WorkflowActivities
-                          append={(text: string) => handleSubmit(text)}
+                          append={(text: string) => heldSubmit(text)}
                           activities={
                             Array.isArray(workflow.activities) ? workflow.activities : null
                           }
@@ -2680,10 +2717,10 @@ function BaseChatContent({
                               onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
                               canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}
-                              onMessageUpdate={onMessageUpdate}
+                              onMessageUpdate={heldMessageUpdate}
                               // Finding 5.1 (the PR author's own follow-up).
-                              // `ElicitationRequest` posts its answer through
-                              // `/reply` — the same write the composer makes —
+                              // `ElicitationRequest` resolves a waiting tool
+                              // through the daemon's human-action endpoint,
                               // and it lives INSIDE the transcript, so removing
                               // the composer never reached it.
                               // `BioRouterMessage` renders the form only when it
@@ -2703,7 +2740,7 @@ function BaseChatContent({
                                 request lands (removed by id in the store). */}
                             <PendingToolCallList pending={pendingToolCalls} />
                             {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
-                              <ChatTurnError error={turnError} onRetry={retryTurn} />
+                              <ChatTurnError error={turnError} onRetry={heldRetryTurn} />
                             )}
                             {/* F5: a CONFIRMED Stop's outcome, in the slot a
                                 failed Stop's notice takes. Transient — the

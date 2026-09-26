@@ -1,0 +1,144 @@
+{
+  "run": "crew-three-user-20260922T094718Z-fbf9dd51",
+  "region": "us-west-2",
+  "started": "2026-09-22T09:47:18.706651+00:00",
+  "deadline": "2026-09-22T13:47:18.706654+00:00",
+  "state_dir": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6",
+  "evidence": "/Users/wgu/.codex/worktrees/biorouter-crew/BioRouter/docs/research/biorouter-crew/crew-three-user-20260922T094718Z-fbf9dd51.json",
+  "resources": {
+    "ami": "ami-075d448db8fb256af",
+    "vpc": "vpc-f7ff0c8e",
+    "subnet": "subnet-66ffc200",
+    "ingress": "169.230.180.159/32",
+    "bootstrap_key_pair": "crew-three-user-20260922T094718Z-fbf9dd51-bootstrap",
+    "user_keys": [
+      "crew_alice-ed25519",
+      "crew_bob-ed25519",
+      "crew_carol-ed25519"
+    ],
+    "security_group": "sg-0b6976a48c2117188",
+    "instance": "i-0b2896cc361853bf7",
+    "public_ip": "52.35.75.115",
+    "volumes": [
+      "vol-084c96be40d83a693"
+    ]
+  },
+  "accounts": [
+    {
+      "name": "crew_alice",
+      "uid": 10001,
+      "home": "/home/crew_alice",
+      "ssh_key_path": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_alice",
+      "ssh_key_id": "crew_alice-ed25519",
+      "connection_config": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_alice.ssh_config"
+    },
+    {
+      "name": "crew_bob",
+      "uid": 10002,
+      "home": "/home/crew_bob",
+      "ssh_key_path": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_bob",
+      "ssh_key_id": "crew_bob-ed25519",
+      "connection_config": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_bob.ssh_config"
+    },
+    {
+      "name": "crew_carol",
+      "uid": 10003,
+      "home": "/home/crew_carol",
+      "ssh_key_path": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_carol",
+      "ssh_key_id": "crew_carol-ed25519",
+      "connection_config": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/crew_carol.ssh_config"
+    }
+  ],
+  "checks": [
+    {
+      "name": "ec2_dry_run",
+      "result": "DryRunOperation"
+    },
+    {
+      "name": "instance_controls",
+      "result": {
+        "instance_type": "t3.small",
+        "metadata": {
+          "State": "applied",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 1,
+          "HttpEndpoint": "enabled",
+          "HttpProtocolIpv6": "disabled",
+          "InstanceMetadataTags": "disabled"
+        },
+        "delete_on_termination": [
+          true
+        ]
+      }
+    },
+    {
+      "name": "encrypted_root_volume",
+      "result": true
+    },
+    {
+      "name": "three_distinct_unprivileged_identities",
+      "result": [
+        {
+          "name": "crew_alice",
+          "uid": 10001,
+          "home": "/home/crew_alice",
+          "ssh_key_id": "crew_alice-ed25519"
+        },
+        {
+          "name": "crew_bob",
+          "uid": 10002,
+          "home": "/home/crew_bob",
+          "ssh_key_id": "crew_bob-ed25519"
+        },
+        {
+          "name": "crew_carol",
+          "uid": 10003,
+          "home": "/home/crew_carol",
+          "ssh_key_id": "crew_carol-ed25519"
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "status": "verified",
+    "command": "python3 /Users/wgu/.codex/worktrees/biorouter-crew/BioRouter/docs/research/biorouter-crew/smoke/aws/cleanup_fixture.py /tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/fixture-state.json",
+    "instance": "terminated",
+    "vol-084c96be40d83a693": "deleted",
+    "security_group": "deleted",
+    "bootstrap_key_pair": "deleted",
+    "verified_at": "2026-09-22T13:40:00Z",
+    "independent_verification": {
+      "instance": "terminated",
+      "volume": "InvalidVolume.NotFound",
+      "security_group": "InvalidGroup.NotFound",
+      "bootstrap_key_pair": "InvalidKeyPair.NotFound",
+      "local_fixture_key_files": [],
+      "remaining_fixture_files": [
+        "fixture-state.json",
+        "user-data.b64"
+      ],
+      "local_docker_gui_fixtures_touched": false
+    }
+  },
+  "aws_account": "882959136602",
+  "source_ip": "169.230.180.159",
+  "bootstrap_key_path": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/bootstrap",
+  "host_key": {
+    "source": "AWS GetConsoleOutput authenticated control plane",
+    "strict_host_key_checking": true,
+    "known_hosts_path": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/known_hosts",
+    "sha256": "f0d1ad5bf69e9cf815a0f62140a7a43986973d5f49701db8e3daf99f1ed68a0c"
+  },
+  "connection_config": "/tmp/crew-three-user-20260922T094718Z-fbf9dd51-613_n4x6/ssh_config",
+  "status": "ready",
+  "product_workflow": {
+    "privileged_setup_complete": true,
+    "expected_runtime_users": [
+      "crew_alice",
+      "crew_bob",
+      "crew_carol"
+    ],
+    "sudo": false,
+    "ssh_policy_changed": false
+  }
+}

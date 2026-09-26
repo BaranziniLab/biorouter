@@ -7,6 +7,7 @@ pub mod markdown;
 pub mod output;
 pub mod privacy;
 mod prompt;
+mod shell_output_order;
 mod stream_coalesce;
 mod task_execution_display;
 mod thinking;
@@ -1273,13 +1274,27 @@ impl CliSession {
         };
 
         let mut progress_bars = output::McpSpinners::new();
+        // Live shell output, put back in the order the command printed it (see
+        // `shell_output_order`). Only text mode feeds it, so it stays empty —
+        // and every release below prints nothing — in the structured modes.
+        let mut shell_order = shell_output_order::ShellOutputOrder::new();
         let cancel_token_clone = cancel_token.clone();
         let mut computer_use_challenge = None;
         let mut computer_use_poll = tokio::time::interval(std::time::Duration::from_millis(500));
 
         use futures::StreamExt;
         loop {
+            let shell_release_at = shell_order.next_release_at();
             tokio::select! {
+                // A line has waited out its gap: the line before it is not
+                // coming (a full channel dropped it), so stop holding the rest.
+                _ = shell_output_order::sleep_until(shell_release_at) => {
+                    print_shell_output_lines(
+                        shell_order.release_due(Instant::now()),
+                        &mut progress_bars,
+                        interactive,
+                    );
+                }
                 _ = computer_use_poll.tick() => {
                     if let Ok(status) = self.agent.extension_manager.computer_use_status(&self.session_id).await {
                         if computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
@@ -1520,6 +1535,15 @@ impl CliSession {
                                 log_tool_metrics(&message, &self.messages);
                                 self.messages.push(message.clone());
 
+                                // A tool call that has answered streams no more
+                                // lines: print whatever of its output is still
+                                // held, in order, above its response.
+                                print_shell_output_lines(
+                                    finish_shell_output_for_responses(&mut shell_order, &message),
+                                    &mut progress_bars,
+                                    interactive,
+                                );
+
                                 if interactive { output::hide_thinking() };
                                 let _ = progress_bars.hide();
 
@@ -1551,6 +1575,7 @@ impl CliSession {
                                 &extension_id,
                                 &notification,
                                 &mut progress_bars,
+                                &mut shell_order,
                                 is_stream_json_mode,
                                 interactive,
                                 is_json_mode,
@@ -1637,6 +1662,7 @@ impl CliSession {
                             ));
                             cancel_token_clone.cancel();
                             drop(stream);
+                            print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
                             if let Err(e) = self.handle_interrupted_messages(false).await {
                                 eprintln!("Error handling interruption: {}", e);
                             } else if !is_stream_json_mode {
@@ -1657,6 +1683,7 @@ impl CliSession {
                 _ = cancel_token_clone.cancelled() => {
                     self.agent.extension_manager.computer_use.revoke();
                     drop(stream);
+                    print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
                     if let Err(e) = self.handle_interrupted_messages(true).await {
                         eprintln!("Error handling interruption: {}", e);
                     }
@@ -1664,6 +1691,10 @@ impl CliSession {
                 }
             }
         }
+
+        // Whatever is still held (a call that never answered) belongs to this
+        // turn and prints before it ends.
+        print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
 
         self.emit_final_output().await
     }
@@ -2166,10 +2197,16 @@ fn find_elicitation_request(message: &Message) -> Option<(String, String, Value)
 }
 
 /// Handle MCP notification event (logging or progress)
+///
+/// `extension_id` is what the agent attaches to the event, which is the id of
+/// the tool request the notification arrived under — the key live shell output
+/// is reordered by.
+#[allow(clippy::too_many_arguments)]
 fn handle_mcp_notification(
     extension_id: &str,
     notification: &ServerNotification,
     progress_bars: &mut output::McpSpinners,
+    shell_order: &mut shell_output_order::ShellOutputOrder,
     is_stream_json_mode: bool,
     interactive: bool,
     is_json_mode: bool,
@@ -2192,6 +2229,11 @@ fn handle_mcp_notification(
                     &formatted,
                     subagent_id.as_deref(),
                     notif_type.as_deref(),
+                    ShellLine {
+                        key: extension_id,
+                        seq: shell_output_seq(&log_notif.params.data),
+                        order: shell_order,
+                    },
                     progress_bars,
                     interactive,
                     is_json_mode,
@@ -2280,11 +2322,60 @@ fn format_logging_notification(
     }
 }
 
+/// Where a `shell_output` line sits: the tool call it belongs to, its place in
+/// that command's output, and the buffer that puts it there.
+struct ShellLine<'a> {
+    key: &'a str,
+    seq: Option<u64>,
+    order: &'a mut shell_output_order::ShellOutputOrder,
+}
+
+/// The `seq` of a live `shell_output` notification: its place among the lines
+/// its command streamed. `None` from a server that predates the numbering, or
+/// for any other notification.
+fn shell_output_seq(data: &Value) -> Option<u64> {
+    data.get("seq").and_then(Value::as_u64)
+}
+
+/// Print live shell output lines the reorder buffer released, in the order it
+/// released them. Nothing at all — not even hiding the spinner — when there
+/// are none, which is the common case of a line that has to wait.
+fn print_shell_output_lines(
+    lines: Vec<String>,
+    progress_bars: &mut output::McpSpinners,
+    interactive: bool,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    if interactive {
+        let _ = progress_bars.hide();
+    }
+    for line in lines {
+        println!("{}", line);
+    }
+}
+
+/// Release the held live output of every tool call `message` answers.
+fn finish_shell_output_for_responses(
+    shell_order: &mut shell_output_order::ShellOutputOrder,
+    message: &Message,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for content in &message.content {
+        if let MessageContent::ToolResponse(response) = content {
+            lines.extend(shell_order.finish(&response.id));
+        }
+    }
+    lines
+}
+
 /// Display a logging notification based on its type and context
 fn display_log_notification(
     formatted_message: &str,
     subagent_id: Option<&str>,
     notification_type: Option<&str>,
+    shell_line: ShellLine<'_>,
     progress_bars: &mut output::McpSpinners,
     interactive: bool,
     is_json_mode: bool,
@@ -2308,11 +2399,12 @@ fn display_log_notification(
                 std::io::stdout().flush().unwrap();
             }
         } else if ntype == "shell_output" {
-            if interactive {
-                let _ = progress_bars.hide();
-            }
+            // Nothing is printed in json mode, so nothing is held for it
+            // either: the buffer only ever holds lines that will print.
             if !is_json_mode {
-                println!("{}", formatted_message);
+                let ShellLine { key, seq, order } = shell_line;
+                let ready = order.accept(key, seq, formatted_message.to_string(), Instant::now());
+                print_shell_output_lines(ready, progress_bars, interactive);
             }
         }
     } else if output::is_showing_thinking() {
@@ -3112,5 +3204,128 @@ mod tests {
         // 60.5 seconds should still show as 1m 00s (not 1m 00.5s)
         let duration = Duration::from_millis(60500);
         assert_eq!(format_elapsed_time(duration), "1m 00s");
+    }
+
+    /// A live `shell_output` logging notification as the developer extension
+    /// sends it; `seq: None` is a server from before the numbering.
+    fn shell_line_notification(output: &str, seq: Option<u64>) -> ServerNotification {
+        let mut data = serde_json::json!({
+            "type": "shell_output",
+            "stream": "stdout",
+            "output": output,
+        });
+        if let Some(seq) = seq {
+            data["seq"] = seq.into();
+        }
+        ServerNotification::LoggingMessageNotification(
+            rmcp::model::LoggingMessageNotification::new(
+                rmcp::model::LoggingMessageNotificationParam {
+                    level: rmcp::model::LoggingLevel::Info,
+                    logger: Some("shell_tool".to_string()),
+                    data,
+                },
+            ),
+        )
+    }
+
+    /// Route one notification the way the text-mode turn loop does.
+    fn route_text_mode(
+        key: &str,
+        notification: &ServerNotification,
+        order: &mut shell_output_order::ShellOutputOrder,
+    ) {
+        let mut spinners = output::McpSpinners::new();
+        handle_mcp_notification(
+            key,
+            notification,
+            &mut spinners,
+            order,
+            false, // stream-json
+            false, // interactive
+            false, // json
+            false, // debug
+        );
+    }
+
+    #[test]
+    fn shell_output_seq_reads_only_an_unsigned_integer() {
+        assert_eq!(shell_output_seq(&serde_json::json!({"seq": 3})), Some(3));
+        assert_eq!(shell_output_seq(&serde_json::json!({"seq": 0})), Some(0));
+        assert_eq!(shell_output_seq(&serde_json::json!({"output": "x"})), None);
+        assert_eq!(shell_output_seq(&serde_json::json!({"seq": "3"})), None);
+        assert_eq!(shell_output_seq(&serde_json::json!({"seq": -1})), None);
+        assert_eq!(shell_output_seq(&serde_json::json!("plain")), None);
+    }
+
+    /// The wiring, end to end short of stdout: a line that arrives ahead of its
+    /// place is held under the tool call it arrived with — indentation intact —
+    /// and that call's response releases it; another call's does not.
+    #[test]
+    fn a_shell_line_is_held_under_its_tool_call_until_that_call_answers() {
+        let mut order = shell_output_order::ShellOutputOrder::new();
+        route_text_mode(
+            "call_7",
+            &shell_line_notification("  second", Some(1)),
+            &mut order,
+        );
+        assert!(order.next_release_at().is_some(), "seq 1 waits for seq 0");
+
+        let other = Message::user()
+            .with_tool_response("call_8", Ok(rmcp::model::CallToolResult::success(vec![])));
+        assert!(finish_shell_output_for_responses(&mut order, &other).is_empty());
+        assert!(order.next_release_at().is_some());
+
+        let response = Message::user()
+            .with_tool_response("call_7", Ok(rmcp::model::CallToolResult::success(vec![])));
+        assert_eq!(
+            finish_shell_output_for_responses(&mut order, &response),
+            vec!["  second".to_string()]
+        );
+        assert_eq!(order.next_release_at(), None);
+    }
+
+    /// In-order lines and lines from a server without `seq` are never held.
+    #[test]
+    fn in_order_and_unnumbered_shell_lines_are_not_held() {
+        let mut order = shell_output_order::ShellOutputOrder::new();
+        route_text_mode(
+            "call_1",
+            &shell_line_notification("first", Some(0)),
+            &mut order,
+        );
+        route_text_mode(
+            "call_1",
+            &shell_line_notification("  second", Some(1)),
+            &mut order,
+        );
+        route_text_mode(
+            "call_2",
+            &shell_line_notification("legacy", None),
+            &mut order,
+        );
+        assert_eq!(order.next_release_at(), None);
+        assert!(order.finish_all().is_empty());
+    }
+
+    /// The structured modes print no live shell output, so they must hold none:
+    /// a held line would otherwise surface on stdout at the end of the turn.
+    #[test]
+    fn structured_modes_hold_no_shell_output() {
+        let mut order = shell_output_order::ShellOutputOrder::new();
+        let mut spinners = output::McpSpinners::new();
+        let early = shell_line_notification("  ahead", Some(5));
+        // json
+        handle_mcp_notification(
+            "call_1",
+            &early,
+            &mut spinners,
+            &mut order,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(order.next_release_at(), None);
+        assert!(order.finish_all().is_empty());
     }
 }

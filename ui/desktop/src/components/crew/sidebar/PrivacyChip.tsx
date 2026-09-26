@@ -1,0 +1,154 @@
+import { useId, useRef, useState } from 'react';
+import { Button } from '../../ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import { PrivacyBadge } from '../../ui/PrivacyBadge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { useCrew } from '../state/CrewControllerContext';
+import type { ConnectionStatusKey } from '../state/crewStatus';
+import { sidebarCopy } from './copy';
+import { PrivacyPopover } from './PrivacyPopover';
+import { useKnownInstitutions, verifiedPrivacy } from './sidebarView';
+import './crew-sidebar.css';
+
+const copy = sidebarCopy.chip;
+
+/**
+ * Statuses in which nothing is checking this connection's privacy, so the chip says nothing at
+ * all (Q2-17, Q2-01, Q2-43): "Offline · Checking privacy…" put a claim of work in progress beside
+ * a status that says none is possible. The status word is the whole story there — a connection
+ * that is down, reconnecting, waiting for sign-in or refused, a view whose updates stopped, and a
+ * joiner the host has not let in yet (the workspace reports nothing about a non-member).
+ *
+ * Every other unverified state (connecting, checking, updating) reads "Checking privacy…": the
+ * next snapshot verifies it.
+ */
+export const CHIP_SILENT_STATUSES: ReadonlySet<ConnectionStatusKey> = new Set<ConnectionStatusKey>([
+  'offline',
+  'reconnecting',
+  'sign-in-needed',
+  'cant-connect',
+  'cant-verify',
+  'not-set-up',
+  'not-joined',
+  'updates-unavailable',
+]);
+
+/**
+ * Statuses whose own word already says the check is running — "Checking connection",
+ * "Connecting…" — so an unverified chip beside them renders nothing too (Q3-55, extending Q2-17's
+ * rule): at 240px "Checking connection · Checking pri…" cut both facts short, and the row now reads
+ * its status whole. Privacy IS being checked here, unlike the {@link CHIP_SILENT_STATUSES}, so the
+ * status row says so to a screen reader after the word ({@link privacyCheckDeferred}). A verified
+ * chip still shows during a connect: it is verified, and the row's resting home for the mode.
+ * "Reconnecting…" is silent already, and "Updating…" keeps "Checking privacy…", which fits.
+ */
+export const CHIP_DEFERRED_STATUSES: ReadonlySet<ConnectionStatusKey> =
+  new Set<ConnectionStatusKey>(['checking', 'connecting']);
+
+/**
+ * Whether the status row, not the chip, carries "Checking privacy…" (for a screen reader only):
+ * privacy is unverified and the status is one of {@link CHIP_DEFERRED_STATUSES}.
+ */
+export function privacyCheckDeferred(
+  crew: Parameters<typeof verifiedPrivacy>[0] & { status: ConnectionStatusKey | null }
+): boolean {
+  return crew.status !== null && CHIP_DEFERRED_STATUSES.has(crew.status) && !verifiedPrivacy(crew);
+}
+
+/**
+ * The privacy chip on the status row (ui-redesign-spec, "Privacy and institution").
+ *
+ * It states the EFFECTIVE mode — the one the broker enforces for this person here — and the
+ * institution in force as ONE badge, `🔒 Private · UCSF` (Q2-45): the institution sits inside the
+ * badge's fill, never beside it as a second chip. The institution is worded by the name a
+ * configured provider publishes for its ID, else the ID itself (Q2-38). Its accessible name is
+ * the copy deck's `Privacy: Private · ucsf` / `Privacy: Public` (the regression tests' anchor).
+ *
+ * ⚠ **An unverified mode never looks verified.** Until the observer verifies this connection's
+ * privacy the chip has no padlock and nothing to open: the saved connection record and the last
+ * verified copy are not evidence of the mode in force now. While a connect or a refresh is
+ * re-verifying it ("Updating…"), it reads "Checking privacy…" with a tooltip, BELOW the row,
+ * saying what it waits for (T-06, T-68); in a status where nothing is verifying it
+ * ({@link CHIP_SILENT_STATUSES}), or whose word already says a check runs
+ * ({@link CHIP_DEFERRED_STATUSES}), it renders nothing. The verified badge carries no tooltip: its
+ * full words are its name and the popover's title, and a tooltip reading "UCSF" over "UCSF" would
+ * only repeat it (Q2-17).
+ *
+ * The popover is named by its own title and opens with focus on itself, never on an action: the
+ * first may be "Make my connection public…", and landing on it invites an Enter nobody meant
+ * (T-38). It aligns to the chip's start edge, so it stays over the Crew column.
+ *
+ * `enforcementOff={false}`: the broker enforces Crew mode on its own, whatever this machine's
+ * privacy master switch says, so the badge's "(enforcement off)" suffix would be false here.
+ * Privacy never animates: the chip swaps in place and takes no press scale.
+ */
+export function PrivacyChip() {
+  const crew = useCrew();
+  const [open, setOpen] = useState(false);
+  const titleId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const known = useKnownInstitutions();
+  const privacy = verifiedPrivacy(crew, known);
+
+  if (!privacy) {
+    if (
+      crew.status === null ||
+      CHIP_SILENT_STATUSES.has(crew.status) ||
+      CHIP_DEFERRED_STATUSES.has(crew.status)
+    )
+      return null;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="crew-sidebar-chip-text" data-crew-privacy="checking">
+            <span className="crew-sidebar-truncate">{copy.checking}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="end" data-crew-privacy-tooltip="">
+          {copy.checkingHint}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  const institution = privacy.effective === 'private' ? privacy.institution : null;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="crew-sidebar-chip no-drag min-w-0 shrink px-1 active:scale-100"
+          aria-label={copy.name(privacy.effective, institution)}
+          data-crew-privacy={privacy.effective}
+        >
+          <span className="crew-sidebar-chip-badge" data-crew-privacy-badge={privacy.effective}>
+            <PrivacyBadge tier={privacy.effective} enforcementOff={false} />
+            {institution && (
+              <span className="crew-sidebar-chip-institution">
+                {' · '}
+                <bdi className="crew-sidebar-truncate" translate="no">
+                  {institution}
+                </bdi>
+              </span>
+            )}
+          </span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        ref={contentRef}
+        align="start"
+        className="w-72 p-3 focus:outline-none"
+        tabIndex={-1}
+        aria-labelledby={titleId}
+        data-crew-privacy-popover-content=""
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          contentRef.current?.focus();
+        }}
+      >
+        <PrivacyPopover privacy={privacy} titleId={titleId} onClose={() => setOpen(false)} />
+      </PopoverContent>
+    </Popover>
+  );
+}

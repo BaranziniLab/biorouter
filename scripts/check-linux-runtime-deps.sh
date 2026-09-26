@@ -53,7 +53,7 @@ for arg in "$@"; do
   esac
 done
 
-for b in biorouterd biorouter; do
+for b in biorouterd biorouter biorouter-crew; do
   [ -f "$BIN_DIR/$b" ] || { echo "::error::missing binary $BIN_DIR/$b — run the cross build first"; exit 2; }
 done
 
@@ -74,9 +74,15 @@ libz.so.1:zlib1g:zlib"
 # was built for, so this works when the pinned image resolves to arm64 (a
 # developer's Mac) as well as on the amd64 CI runner. objdump is single-target
 # and would answer "File format not recognized" on the first of those.
-needed=$(docker run --rm -v "$PWD":/w -w /w "$LINUX_RUST_IMG" sh -c "
-    readelf -d $BIN_DIR/biorouter $BIN_DIR/biorouterd 2>/dev/null \
-      | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u")
+if ! dynamic=$(docker run --rm -v "$PWD":/w -w /w "$LINUX_RUST_IMG" sh -ec '
+    for binary do
+      readelf -d "$binary" || exit 2
+    done
+  ' sh "$BIN_DIR/biorouter" "$BIN_DIR/biorouterd" "$BIN_DIR/biorouter-crew"); then
+  echo "::error::could not inspect every Linux binary's runtime dependencies" >&2
+  exit 2
+fi
+needed=$(printf '%s\n' "$dynamic" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u)
 
 [ -n "$needed" ] || { echo "::error::could not read DT_NEEDED entries from $BIN_DIR"; exit 2; }
 

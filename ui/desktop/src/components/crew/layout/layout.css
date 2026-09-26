@@ -1,0 +1,181 @@
+/* Crew — the composition (`crew/layout/`): the frame the areas sit in.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and data/aria hooks
+   only, tokens only, and a reduced-motion rest for anything that moves.
+   `crew-app.css` owns the grid (`.crew-app`, `.crew-sidebar`, `.crew-main`,
+   `.crew-stage`, `.crew-channel`, `.crew-channel-body`, `.crew-pane`); every
+   area owns its own skin. This file only fills the gaps between them: the
+   timeline's slot, a main area outside a channel, and the loading skeleton.
+
+   Names here are `crew-frame-*`, a family no area and no other stylesheet
+   uses, so nothing styles these elements twice. */
+
+/* ── The channel body's top: the timeline's slot ────────────────────────────
+   Above the composer, taking the rest of the height. (The connection bar is
+   not in the body: it has its own row above it, which a covering pane never
+   covers — see `crew-app.css`.)
+   While Crew re-verifies it carries `inert`: the last verified view is shown,
+   dimmed by the timeline itself, and nothing in it acts. */
+.crew-frame-timeline {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The channel body's file drop zone, around the timeline and the composer:
+   it fills the body, so a file dropped anywhere on the messages is taken. */
+.crew-frame-drop {
+  flex: 1 1 auto;
+}
+
+/* Attachments and server paths under a message body. */
+.crew-frame-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+/* ── A main area outside a channel ───────────────────────────────────────────
+   The 44px band (so the top edge stays continuous with the sidebar's switcher
+   band at y=44), the connection bar, then the screen, scrolling on its own. */
+.crew-frame-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--background-canvas);
+}
+
+.crew-frame-band {
+  flex: none;
+  height: var(--chrome-height);
+  border-block-end: 1px solid var(--border-subtle);
+  background-color: var(--sidebar);
+}
+
+.crew-frame-screen-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* `updates-paused`: one quiet line under the connection bar, which holds the
+   one action (Retry). */
+.crew-frame-paused {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 100%;
+  padding: 24px 16px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── The loading skeleton ───────────────────────────────────────────────────
+   Nothing for the first 150ms (the component waits), then the sidebar's shape
+   and four message blocks in the chat column. The bones pulse with the
+   Skeleton primitive's own animation; nothing here moves. */
+.crew-frame-sidebar-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background-color: var(--sidebar);
+  border-inline-end: 1px solid var(--sidebar-border);
+}
+
+.crew-frame-bone-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-inline: 12px;
+}
+
+.crew-frame-bone-heading {
+  width: 40%;
+  height: 10px;
+}
+
+.crew-frame-bone-row {
+  width: 70%;
+  height: 14px;
+}
+
+.crew-frame-messages-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: var(--measure-chat);
+  margin-inline: auto;
+  padding: 24px 16px;
+}
+
+.crew-frame-bone-message {
+  display: grid;
+  grid-template-columns: calc(var(--crew-avatar) + 12px) minmax(0, 1fr);
+}
+
+.crew-frame-bone-avatar {
+  width: var(--crew-avatar);
+  height: var(--crew-avatar);
+  border-radius: var(--radius-full);
+}
+
+.crew-frame-bone-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.crew-frame-bone-name,
+.crew-frame-bone-name-wide,
+.crew-frame-bone-long,
+.crew-frame-bone-mid,
+.crew-frame-bone-short {
+  height: 12px;
+}
+
+.crew-frame-bone-name {
+  width: 96px;
+}
+
+.crew-frame-bone-name-wide {
+  width: 144px;
+}
+
+.crew-frame-bone-long {
+  width: 80%;
+}
+
+.crew-frame-bone-mid {
+  width: 60%;
+}
+
+.crew-frame-bone-short {
+  width: 36%;
+}
+
+/* Ask my agent, wrapped so the composer's toggle can name it in
+   `aria-controls` (Q3-23). It lays out exactly as the pane's own content
+   would: the column that holds the task form and its footer. */
+.crew-frame-agent-pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}

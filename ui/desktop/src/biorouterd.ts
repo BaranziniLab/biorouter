@@ -13,6 +13,13 @@ import { StringDecoder } from 'node:string_decoder';
 import { status } from './api';
 import { Client } from './api/client';
 import { ExternalBiorouterdConfig } from './utils/settings';
+import { isSharedDaemonEnabled } from './biorouterdSingleton';
+import {
+  createDaemonProxy,
+  discoverDaemonRuntime,
+  verifyDaemonRuntime,
+  type DaemonRuntime,
+} from './daemonRuntime';
 
 export const findAvailablePort = (): Promise<number> => {
   return new Promise((resolve, reject) => {
@@ -293,22 +300,120 @@ interface BiorouterProcessEnv {
  */
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+export function validateDaemonApprovalSecret(secret: string | undefined): asserts secret is string {
+  if (!secret || secret.length < 32 || secret.length > 4096 || /[^!-~]/.test(secret))
+    throw new Error(
+      'Approval secret must contain 32–4096 printable ASCII characters without spaces or other whitespace.'
+    );
+}
+
 export interface StartBiorouterdOptions {
   app: App;
   serverSecret: string;
-  /**
-   * Issue #56 DR-16: the proof that a tier-raising request came from the person
-   * at the keyboard. Minted per launch by the Electron main process, which keeps
-   * the raw key and gives the daemon only its digest, on stdin.
-   *
-   * Optional because a caller that omits it is a caller with no user-proof, and
-   * that is a legitimate state — the daemon then refuses every raise, which is
-   * exactly what a hand-started `biorouterd agent` does too.
+  /** Per-launch renderer proof retained by main. Shared daemons receive the
+   * digest of a separately supplied approval secret; the local proxy maps a
+   * valid renderer proof to that secret only for the authenticated instance.
+   * Legacy private daemons still receive this key's digest through stdin.
    */
   userActionKey?: string;
   dir: string;
   env?: Partial<BiorouterProcessEnv>;
   externalBiorouterd?: ExternalBiorouterdConfig;
+  requestNewUserActionKey?: () => Promise<string | undefined>;
+  requestUserActionKey?: (runtime: {
+    profileId: string;
+    instanceId: string;
+    userActionInstalled: boolean;
+  }) => Promise<string | undefined>;
+}
+
+async function attachSharedDaemon(
+  options: StartBiorouterdOptions,
+  runtime: DaemonRuntime,
+  workingDir: string,
+  ownedProcess?: ChildProcess,
+  errorLog: string[] = [],
+  ownedProof?: string
+): Promise<BiorouterdResult> {
+  await verifyDaemonRuntime(runtime);
+  const owned = ownedProcess?.pid === runtime.pid;
+  if (!owned && !runtime.user_action_installed)
+    throw new Error(
+      'This existing daemon has no installed human approval proof. Stop it explicitly and restart it through a trusted desktop launcher before attaching.'
+    );
+  const daemonProof = owned
+    ? ownedProof
+    : await options.requestUserActionKey?.({
+        profileId: runtime.profile_id,
+        instanceId: runtime.instance_id,
+        userActionInstalled: runtime.user_action_installed,
+      });
+  if (!owned && (!runtime.user_action_installed || !daemonProof))
+    throw new Error(
+      'This profile daemon requires its independently held approval secret. Enter it through the desktop attachment prompt; it is never loaded from daemon metadata.'
+    );
+  validateDaemonApprovalSecret(daemonProof);
+  const proxy = await createDaemonProxy(
+    runtime,
+    options.serverSecret,
+    options.userActionKey,
+    daemonProof,
+    options.env?.BIOROUTER_RENDERER_ORIGIN
+  );
+  try {
+    const response = await fetch(`${proxy.baseUrl}/crew/connections`, {
+      headers: {
+        'X-Secret-Key': options.serverSecret,
+        'X-User-Action': options.userActionKey || '',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    await response.body?.cancel();
+    if (!response.ok)
+      throw new Error(
+        'The daemon did not accept human-authorized access. Reopen the app to retry with its existing approval secret, or cancel attachment.'
+      );
+  } catch (error) {
+    proxy.close();
+    throw error;
+  }
+  const handle = new ChildProcess();
+  let detached = false;
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    options.app.removeListener('will-quit', detach);
+    proxy.close();
+    ownedProcess?.unref();
+    handle.emit('exit', 0, null);
+  };
+  handle.kill = () => {
+    detach();
+    return true;
+  };
+  options.app.on('will-quit', detach);
+  return { baseUrl: proxy.baseUrl, managed: true, workingDir, process: handle, errorLog };
+}
+
+async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise<boolean>((resolve) => {
+    let hardStop: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const finish = (exited: boolean) => {
+      clearTimeout(hardStop);
+      clearTimeout(deadline);
+      child.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    child.once('exit', onExit);
+    hardStop = setTimeout(() => {
+      deadline = setTimeout(() => finish(false), 1000);
+      child.kill('SIGKILL');
+    }, 2000);
+    child.kill('SIGINT');
+  });
 }
 
 export const startBiorouterd = async (
@@ -316,7 +421,10 @@ export const startBiorouterd = async (
 ): Promise<BiorouterdResult> => {
   const { app, serverSecret, userActionKey, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
-  const homeDir = os.homedir();
+  const profileRoot = !app.isPackaged ? process.env.BIOROUTER_DEV_PROFILE_ROOT : undefined;
+  const homeDir = profileRoot ? path.join(profileRoot, 'home') : os.homedir();
+  if (profileRoot && (externalBiorouterd?.enabled || process.env.BIOROUTER_EXTERNAL_BACKEND))
+    throw new Error('Isolated development profiles cannot reuse an external backend.');
   const dir = path.resolve(path.normalize(inputDir));
 
   if (externalBiorouterd?.enabled && externalBiorouterd.url) {
@@ -325,6 +433,39 @@ export const startBiorouterd = async (
 
   if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
     return connectToExternalBackend(dir, externalBackendUrlFromEnv(process.env));
+  }
+
+  const sharedRuntime = !isWindows && isSharedDaemonEnabled();
+  if (isWindows && process.env.BIOROUTER_SHARED_DAEMON !== undefined && isSharedDaemonEnabled())
+    throw new Error(
+      'Shared profile daemon attachment on Windows requires an owner-protected named pipe and is not available yet.'
+    );
+  let staleInstance: string | undefined;
+  if (sharedRuntime) {
+    const existing = discoverDaemonRuntime();
+    if (existing) {
+      try {
+        await verifyDaemonRuntime(existing);
+      } catch (error) {
+        const failure = error as Error & { code?: string; syscall?: string };
+        if (
+          failure.syscall !== 'connect' ||
+          !['ENOENT', 'ECONNREFUSED'].includes(failure.code || '')
+        )
+          throw error;
+        staleInstance = existing.instance_id;
+      }
+      if (!staleInstance) return attachSharedDaemon(options, existing, dir);
+    }
+  }
+
+  const newDaemonProof = sharedRuntime ? await options.requestNewUserActionKey?.() : undefined;
+  if (sharedRuntime) {
+    if (newDaemonProof === undefined)
+      throw new Error(
+        'Shared daemon startup cancelled. Reopen the app to supply your independently held approval secret. No daemon was started.'
+      );
+    validateDaemonApprovalSecret(newDaemonProof);
   }
 
   let biorouterdPath = getBiorouterdBinaryPath(app);
@@ -383,11 +524,46 @@ export const startBiorouterd = async (
     // offline/self-contained figures (no network needed at render time).
     BIOROUTER_AUTOVIS_CDN: process.env.BIOROUTER_AUTOVIS_CDN ?? '1',
     ...env,
+    ...(sharedRuntime ? { BIOROUTER_SHARED_DAEMON: '1' } : {}),
   } as BiorouterProcessEnv;
 
   const processEnv: BiorouterProcessEnv = {
-    ...process.env,
+    ...(profileRoot
+      ? Object.fromEntries(
+          Object.entries(process.env).filter(([key]) =>
+            [
+              'PATH',
+              'LANG',
+              'LC_ALL',
+              'TERM',
+              'SHELL',
+              'SystemRoot',
+              'WINDIR',
+              'ComSpec',
+              'PATHEXT',
+              'BIOROUTER_PATH_ROOT',
+              'BIOROUTER_DEV_PROFILE_ROOT',
+              'BIOROUTER_DEV_PROFILE_NAME',
+            ].includes(key)
+          )
+        )
+      : process.env),
     ...additionalEnv,
+    ...(profileRoot
+      ? {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          APPDATA: path.join(profileRoot, 'appdata'),
+          LOCALAPPDATA: path.join(profileRoot, 'localappdata'),
+          TMPDIR: path.join(profileRoot, 'temp'),
+          TMP: path.join(profileRoot, 'temp'),
+          TEMP: path.join(profileRoot, 'temp'),
+          XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+          XDG_DATA_HOME: path.join(homeDir, '.local/share'),
+          XDG_STATE_HOME: path.join(homeDir, '.local/state'),
+          BIOROUTER_DISABLE_KEYRING: 'true',
+        }
+      : {}),
   } as BiorouterProcessEnv;
 
   if (isWindows && !resolvedBiorouterdPath.toLowerCase().endsWith('.exe')) {
@@ -402,9 +578,14 @@ export const startBiorouterd = async (
     env: processEnv,
     // stdin is a pipe (it used to be 'ignore') for one reason: issue #56's
     // user-action digest is written down it and the pipe is closed immediately.
-    stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
+    // Shared daemons outlive Electron; their log sinks cannot depend on its pipes.
+    stdio: ['pipe', sharedRuntime ? 'ignore' : 'pipe', sharedRuntime ? 'ignore' : 'pipe'] as [
+      'pipe',
+      'ignore' | 'pipe',
+      'ignore' | 'pipe',
+    ],
     windowsHide: true,
-    detached: isWindows,
+    detached: isWindows || sharedRuntime,
     shell: false,
   };
 
@@ -421,8 +602,9 @@ export const startBiorouterd = async (
   // writer never closes would stall its startup. After `end()` fd 0 is at EOF,
   // so every process the daemon later spawns inherits a stdin that carries
   // nothing.
-  if (userActionKey) {
-    biorouterdProcess.stdin?.write(sha256Hex(userActionKey) + '\n');
+  const launchProof = sharedRuntime ? newDaemonProof : userActionKey;
+  if (launchProof) {
+    biorouterdProcess.stdin?.write(sha256Hex(launchProof) + '\n');
   }
   biorouterdProcess.stdin?.end();
 
@@ -469,6 +651,44 @@ export const startBiorouterd = async (
     // go through the logging path a second time).
     appendStderrLine(`error: failed to spawn biorouterd: ${err.message}`);
   });
+
+  if (sharedRuntime) {
+    try {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const runtime = discoverDaemonRuntime();
+        if (runtime && runtime.instance_id !== staleInstance)
+          return await attachSharedDaemon(
+            options,
+            runtime,
+            dir,
+            biorouterdProcess,
+            stderrLines,
+            newDaemonProof
+          );
+        if (
+          biorouterdProcess.exitCode !== null ||
+          stderrLines.some((line) => /^error:/i.test(line.trim()))
+        )
+          throw new Error(
+            'Shared profile daemon failed to start. Inspect its startup diagnostics.'
+          );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(
+        'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
+      );
+    } catch (error) {
+      const stopped = await stopFailedSharedStartup(biorouterdProcess);
+      if (!stopped)
+        throw Object.assign(
+          new Error(
+            'Shared daemon startup failed, and its owned child did not exit within the cleanup deadline. Inspect that daemon before retrying.'
+          ),
+          { cause: error }
+        );
+      throw error;
+    }
+  }
 
   const try_kill_biorouter = () => {
     try {

@@ -23,6 +23,8 @@ import { userActionHeaders } from '../../utils/userAction';
 import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
+import { isCrewExtensionName, useChatCrewAccessState } from '../crew/access/chatCrewAccess';
+import { accessCopy } from '../crew/access/copy';
 import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
@@ -73,6 +75,10 @@ export const BottomMenuExtensionSelection = ({
    * on it — a tier nobody could read must not wall a working tool.
    */
   const pairingTier = useBoundProviderTier();
+  // A Crew-scoped chat's access ends only through Revoke. Switching the Crew extension off leaves
+  // the grant active, so while it is active the Crew row stays on and says where Revoke is. Read
+  // from the chat's own lookup; this menu never fetches it.
+  const crewAccessState = useChatCrewAccessState(sessionId);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
@@ -307,9 +313,17 @@ export const BottomMenuExtensionSelection = ({
    * leaves the fourth looking broken, which is the failure this state exists to
    * remove.
    */
+  const crewLocked = useCallback(
+    (ext: FixedExtensionEntry) =>
+      crewAccessState === 'active' && ext.enabled && isCrewExtensionName(ext.name),
+    [crewAccessState]
+  );
   const toggleableExtensions = useMemo(
-    () => sortedExtensions.filter((ext) => !extensionPairingRefused(ext.name, pairingTier)),
-    [sortedExtensions, pairingTier]
+    () =>
+      sortedExtensions.filter(
+        (ext) => !extensionPairingRefused(ext.name, pairingTier) && !crewLocked(ext)
+      ),
+    [sortedExtensions, pairingTier, crewLocked]
   );
 
   /**
@@ -591,7 +605,8 @@ export const BottomMenuExtensionSelection = ({
               // row out instead would satisfy every other assertion here and
               // reintroduce the exact silence this state removes.
               const pairingRefused = extensionPairingRefused(ext.name, pairingTier);
-              const rowDisabled = bulkInFlight || pairingRefused;
+              const lockedByCrew = crewLocked(ext);
+              const rowDisabled = bulkInFlight || pairingRefused || lockedByCrew;
               return (
                 <DropdownMenuCheckboxItem
                   key={ext.name}
@@ -604,13 +619,19 @@ export const BottomMenuExtensionSelection = ({
                   // --radius-md, 13/18, --background-medium hover) — this call site
                   // adds only the toggle layout and the in-flight cursor.
                   className={`justify-between hover:bg-background-medium ${
-                    pairingRefused
+                    pairingRefused || lockedByCrew
                       ? 'h-auto cursor-not-allowed items-start py-1.5 opacity-70'
                       : rowDisabled
                         ? 'cursor-wait opacity-70'
                         : 'cursor-pointer'
                   }`}
-                  title={pairingRefused ? PAIRING_REFUSED_REASON : ext.description || ext.name}
+                  title={
+                    pairingRefused
+                      ? PAIRING_REFUSED_REASON
+                      : lockedByCrew
+                        ? accessCopy.extensionLocked
+                        : ext.description || ext.name
+                  }
                 >
                   <div className="flex min-w-0 flex-col gap-0.5 pr-2">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -622,6 +643,11 @@ export const BottomMenuExtensionSelection = ({
                     {pairingRefused && (
                       <div className="text-supporting text-text-muted">
                         Unavailable in this chat (public model)
+                      </div>
+                    )}
+                    {lockedByCrew && (
+                      <div className="text-supporting text-text-muted">
+                        {accessCopy.extensionLocked}
                       </div>
                     )}
                   </div>

@@ -16,3 +16,11 @@ src/styles/main.css
 # onto one line, which would make every regeneration show a whole-file diff and
 # would break that comparison. The generator owns this file's formatting.
 src/components/baam/registry.fallback.json
+
+# Generated, not authored. scripts/computer-use-resources.js stages the native
+# Biorouter Copilot helper here (the app, its manifest.json and pin.json), and
+# the repo .gitignore ignores the whole directory. Prettier run from ui/desktop
+# reads only this directory's ignore files, so without this line
+# `format:check` fails on a machine that has built the helper and passes on one
+# that has not. The staging script owns these files' bytes.
+src/computer-use/

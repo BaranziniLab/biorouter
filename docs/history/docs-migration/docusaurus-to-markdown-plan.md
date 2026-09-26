@@ -4,7 +4,7 @@
 > **Status:** Historical record — written 2026-05-07 and carried out. `documentation/` no longer exists, `docs/` is plain markdown in the getting-started / architecture / guides / extensions / troubleshooting layout this plan creates, and the throwaway `scripts/migrate-docs.py` was removed by Task 6 as designed. `scripts/verify-docs.sh` survives.
 > **Audience:** maintainers and agents tracing how a documentation page reached its current path.
 
-Two terms this plan assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree; its output mixes JSX components into Markdown (MDX) and ships generated HTML, feeds and media beside the source. **Goose** is the upstream open-source agent project BioRouter was forked from, published by the company **Block** — both appear as inherited branding the migration replaces with BioRouter.
+Two terms this plan assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree; its output mixes JSX components into Markdown (MDX) and ships generated HTML, feeds and media beside the source. **Goose** is the open source agent project whose design influenced BioRouter most, published by the company **Block**. Both appear as branding in the old pages, and the migration replaces that branding with BioRouter.
 
 The design this plan implements is [consolidation-design.md](consolidation-design.md), its sibling in this folder: that document holds the file-by-file move tables, the deletion list and the transformation rules, while this one holds the runnable steps.
 

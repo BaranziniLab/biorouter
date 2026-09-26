@@ -1,7 +1,8 @@
-use biorouter::workflow::build_workflow::build_workflow_from_template;
+use biorouter::workflow::{build_workflow::build_workflow_from_template, Workflow};
+use serde_json::Value;
 use std::path::Path;
 
-fn render_prompt(extra: &[(&str, &str)]) -> String {
+fn render_workflow(extra: &[(&str, &str)]) -> Workflow {
     let mut parameters = vec![
         ("test_phases".to_owned(), "apps,previews".to_owned()),
         ("parallel_tests".to_owned(), "false".to_owned()),
@@ -19,11 +20,33 @@ fn render_prompt(extra: &[(&str, &str)]) -> String {
         None::<fn(&str, &str) -> anyhow::Result<String>>,
     )
     .expect("self-test workflow renders without credentials or provider calls");
+    workflow
+}
+
+fn render_prompt(extra: &[(&str, &str)]) -> String {
+    let workflow = render_workflow(extra);
     format!(
         "{}\n{}",
         workflow.instructions.expect("self-test has instructions"),
         workflow.prompt.expect("self-test has an execution prompt")
     )
+}
+
+fn rendered_extension_names(workflow: &Workflow) -> Vec<String> {
+    workflow
+        .extensions
+        .as_ref()
+        .expect("self-test has rendered extensions")
+        .iter()
+        .map(|extension| {
+            serde_json::to_value(extension)
+                .expect("extension config serializes")
+                .get("name")
+                .and_then(Value::as_str)
+                .expect("extension config has a name")
+                .to_owned()
+        })
+        .collect()
 }
 
 #[test]
@@ -60,6 +83,30 @@ fn explicit_cleanup_is_limited_to_apps_created_by_this_run() {
     assert_eq!(prompt.matches("`delete_app`").count(), 2);
     assert_eq!(prompt.matches("only if this run created it").count(), 2);
     assert!(!prompt.contains("delete only it"));
+}
+
+#[test]
+fn crew_phase_is_selectable_and_headless() {
+    let workflow = render_workflow(&[("test_phases", "crew")]);
+    let extensions = rendered_extension_names(&workflow);
+    assert!(extensions.contains(&"developer".to_owned()));
+    assert!(extensions.contains(&"crew".to_owned()));
+    assert!(!extensions.contains(&"computercontroller".to_owned()));
+    assert!(!extensions.contains(&"webdocuments".to_owned()));
+
+    let all_workflow = render_workflow(&[("test_phases", "all")]);
+    let all_extensions = rendered_extension_names(&all_workflow);
+    assert!(all_extensions.contains(&"crew".to_owned()));
+    assert!(all_extensions.contains(&"computercontroller".to_owned()));
+
+    let prompt = render_prompt(&[("test_phases", "crew")]);
+    assert!(prompt.contains("PHASE 2E: Crew CLI and MCP scope without human proof"));
+    assert!(prompt.contains("/no_think"));
+    assert!(prompt.contains("`crew__request`"));
+    assert!(prompt.contains("messages.history"));
+    assert!(prompt.contains("<biorouterd> --version"));
+    assert!(!prompt.contains("PHASE 2D: Native Biorouter Copilot"));
+    assert!(!prompt.contains("computer_use_fixture"));
 }
 
 #[test]

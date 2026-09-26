@@ -39,6 +39,10 @@ pub struct BrxtEnvVar {
 }
 
 impl BrxtEnvVar {
+    pub(super) fn has_stored_secret(&self) -> bool {
+        self.secret && secret_already_stored(&self.key)
+    }
+
     /// The card field for this variable. Carries the name, a label and help
     /// text — never a value, and never the `default`, because a card that
     /// pre-filled a secret would be showing the user something the surface had
@@ -81,7 +85,7 @@ impl BrxtManifest {
     /// trains the user to paste secrets they did not need to.
     pub fn unmet_requirements(&self, supplied: &HashMap<String, String>) -> Vec<&BrxtEnvVar> {
         self.required_vars()
-            .filter(|v| !supplied.contains_key(&v.key) && !secret_already_stored(&v.key))
+            .filter(|v| !supplied.contains_key(&v.key) && !v.has_stored_secret())
             .collect()
     }
 }
@@ -400,6 +404,7 @@ pub fn validate_extension_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::with_config_overrides;
 
     /// A structurally valid `.brxt` whose manifest declares `name`, written
     /// into `dir` and nowhere else.
@@ -534,5 +539,47 @@ mod tests {
             !json.contains("hunter2"),
             "a default must never ride on the card: {json}"
         );
+    }
+
+    #[tokio::test]
+    async fn only_secret_variables_are_satisfied_by_a_stored_same_named_value() {
+        let stored = HashMap::from([(String::from("SHARED_NAME"), String::from("stored"))]);
+        let secret = BrxtEnvVar {
+            key: "SHARED_NAME".to_string(),
+            required: true,
+            auto_propagate: false,
+            default: None,
+            description: String::new(),
+            secret: true,
+        };
+        let ordinary = BrxtEnvVar {
+            secret: false,
+            ..secret.clone()
+        };
+
+        with_config_overrides(stored, async {
+            let secret_manifest = BrxtManifest {
+                name: "secret-case".to_string(),
+                display_name: "Secret case".to_string(),
+                description: String::new(),
+                version: "1".to_string(),
+                entry_point: "main.py".to_string(),
+                repository: "https://example.test/secret".to_string(),
+                tools_count: None,
+                env_vars: vec![secret],
+            };
+            assert!(secret_manifest
+                .unmet_requirements(&HashMap::new())
+                .is_empty());
+
+            let ordinary_manifest = BrxtManifest {
+                env_vars: vec![ordinary],
+                ..secret_manifest
+            };
+            let unmet = ordinary_manifest.unmet_requirements(&HashMap::new());
+            assert_eq!(unmet.len(), 1);
+            assert_eq!(unmet[0].key, "SHARED_NAME");
+        })
+        .await;
     }
 }

@@ -553,6 +553,8 @@ pub async fn declassify(
     authorization: Option<&SystemAuthorization>,
     ok: &UserConfirmation,
 ) -> Result<DeclassifyOutcome> {
+    anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+        "Crew source restrictions cannot be removed by declassifying a conversation. Start a fresh task in an authorized Public workspace.");
     declassify_in_one_transaction(sm, session_id, confirmation, authorization, ok)
         .await
         .map_err(|error| {

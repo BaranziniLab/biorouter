@@ -367,6 +367,7 @@ module.exports = {
           // scripts/check-linux-runtime-deps.sh asserts it stays in step with
           // what the binaries actually link.
           depends: [
+            'zenity',
             'libssl3',
             'libgomp1',
             'libxcb1',
@@ -403,6 +404,7 @@ module.exports = {
           // comment above for why the bundled binaries need it.
           // zlib provides libz.so.1 on RPM-based distributions.
           requires: [
+            'zenity',
             'openssl-libs',
             'libgomp',
             'libxcb',

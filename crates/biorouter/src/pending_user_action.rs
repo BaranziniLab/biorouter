@@ -499,6 +499,30 @@ impl PendingUserActions {
         })
     }
 
+    /// Claim only an ordinary elicitation at its origin. Escalation surfaces
+    /// cannot cause ordinary answer data to be persisted into another session.
+    pub(crate) fn claim_elicitation_in_session(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Option<crate::action_required_manager::OrdinaryElicitationClaim> {
+        let mut entries = self.lock();
+        let entry = entries.get_mut(id)?;
+        if entry.session_id.as_deref() != Some(session_id)
+            || !matches!(&entry.request, UserActionRequest::Elicitation(_))
+        {
+            return None;
+        }
+        let sender = entry.tx.take()?;
+        entries.remove(id);
+        Some(
+            crate::action_required_manager::OrdinaryElicitationClaim::pending(
+                session_id.into(),
+                sender,
+            ),
+        )
+    }
+
     /// Resolve a credential card from the trusted, proof-of-user surface that
     /// predates session-bearing credential submissions.
     ///

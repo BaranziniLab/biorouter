@@ -19,6 +19,28 @@
  * index.html, and that silently drifted.
  */
 
+/**
+ * How many person-avatar hues there are (D-AVATAR, Crew live QA round 2, carol
+ * F4). A people-heavy surface — a channel's member stack, a timeline where six
+ * people post — read as a row of identical grey tiles, so "who is this" had to
+ * be answered by reading every name. Each hue is a PAIR, a tile fill and the
+ * initials ink on it, and `check-contrast.mjs` holds the ink to 4.5:1 on its
+ * own fill in every family and mode (initials are 11–13px, so small text).
+ *
+ * An avatar picks its hue from the person's canonical `@username`, never from
+ * the display name, so a self-chosen name cannot borrow somebody else's colour.
+ * The hue is a recognition aid, not an identity proof: the `@username` stays on
+ * screen. The component sets `data-hue="1"…"8"` on `.biorouter-avatar`, and the
+ * rules in `main.css` paint the pair.
+ */
+export const AVATAR_HUE_COUNT = 8;
+
+/** `avatar-hue-1-bg`, `avatar-hue-1-fg`, … `avatar-hue-8-fg`, in that order. */
+export const AVATAR_HUE_TOKENS = Array.from({ length: AVATAR_HUE_COUNT }, (_, i) => [
+  `avatar-hue-${i + 1}-bg`,
+  `avatar-hue-${i + 1}-fg`,
+]).flat();
+
 /** Semantic colour tokens. Every family declares all of these, in both modes. */
 export const SEMANTIC_TOKENS = [
   // accent
@@ -97,6 +119,8 @@ export const SEMANTIC_TOKENS = [
   'sidebar-accent-foreground',
   'sidebar-border',
   'sidebar-ring',
+  // person avatars — eight fill + ink pairs; see AVATAR_HUE_COUNT above
+  ...AVATAR_HUE_TOKENS,
   // scrim — see note below
   'scrim',
   // shadows (compound strings, not colours)

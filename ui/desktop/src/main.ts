@@ -1,3 +1,7 @@
+import { developmentProfileRoot } from './developmentProfile';
+import { createDevelopmentApprovalReader } from './developmentApprovalInput';
+import { createCrewDaemonTerminal } from './crewDaemonTerminal';
+import { promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
 import type {
   MenuItemConstructorOptions,
@@ -37,7 +41,12 @@ import { spawn, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip } from './utils/safeZip';
 import 'dotenv/config';
-import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
+import {
+  checkServerStatus,
+  startBiorouterd,
+  getBiorouterCliBinaryPath,
+  validateDaemonApprovalSecret,
+} from './biorouterd';
 import {
   TerminalSessionRegistry,
   maxTerminalSessionsPerOwner,
@@ -85,10 +94,20 @@ import {
 } from './utils/artifactPreviewLimits';
 import { artifactSourceRevision } from './utils/artifactSourceRevision';
 import { sanitizeUntrustedLabel } from './utils/untrustedText';
+import {
+  CrewSharePending,
+  DEV_AUTO_CONFIRM_SHARE_ENV,
+  crewFileRefusal,
+  crewShareCopy,
+  parseCrewShareRequest,
+  resolveDevAutoConfirmShare,
+  shareDroppedFile,
+} from './utils/crewSharePath';
+import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
-import log from './utils/logger';
+import log, { logStartupFailure } from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
 import {
@@ -767,7 +786,9 @@ if (process.env.ENABLE_PLAYWRIGHT) {
 // Windows/Linux resolve the handler by executable path rather than bundle id,
 // and Electron's documented dev form (execPath + the app entry point) launches
 // the real app, so registering there is both safe and useful.
-if (process.platform === 'darwin') {
+if (process.env.BIOROUTER_DEV_PROFILE_ROOT) {
+  // An isolated development profile must not claim the installed app's URL scheme.
+} else if (process.platform === 'darwin') {
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient('biorouter');
   } else {
@@ -792,7 +813,7 @@ const WINDOW_OWNING_DEEPLINK_HOSTS = ['bot', 'workflow', 'diverge'];
 // Apply single instance lock on Windows and Linux where it's needed for deep links
 // macOS uses the 'open-url' event instead
 let gotTheLock = true;
-if (process.platform !== 'darwin') {
+if (process.platform !== 'darwin' || process.env.BIOROUTER_DEV_PROFILE_ROOT) {
   gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
@@ -1264,6 +1285,8 @@ let appConfig = {
   BIOROUTER_PREDEFINED_MODELS: predefinedModels,
   BIOROUTER_API_HOST: 'http://127.0.0.1',
   BIOROUTER_WORKING_DIR: '',
+  BIOROUTER_DEV_PROFILE_NAME: process.env.BIOROUTER_DEV_PROFILE_NAME || '',
+  BIOROUTER_DEV_PROFILE_ROOT: process.env.BIOROUTER_DEV_PROFILE_ROOT || '',
   // If BIOROUTER_ALLOWLIST_WARNING env var is not set, defaults to false (strict blocking mode)
   BIOROUTER_ALLOWLIST_WARNING: process.env.BIOROUTER_ALLOWLIST_WARNING === 'true',
 };
@@ -1342,6 +1365,32 @@ interface ChatWindowOptions {
   resumeSessionTitle?: string;
 }
 
+let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
+
+const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
+  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
+  const secret = await promptNativeSecret(
+    'Set approval secret for shared BioRouter daemon',
+    'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
+  );
+  if (secret === undefined)
+    throw new Error(
+      'Shared daemon startup cancelled. No daemon was started. Reopen the app when ready to supply your approval secret.'
+    );
+  validateDaemonApprovalSecret(secret);
+  const confirmation = await promptNativeSecret(
+    'Confirm shared daemon approval secret',
+    'Enter the same independently held approval secret again. BioRouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
+  );
+  if (confirmation === undefined)
+    throw new Error('Shared daemon startup cancelled. No daemon was started.');
+  if (confirmation !== secret)
+    throw new Error(
+      'Approval secrets did not match. No daemon was started. Reopen the app to try again.'
+    );
+  return secret;
+};
+
 const createChat = async (
   app: App,
   initialMessage?: string,
@@ -1368,7 +1417,7 @@ const createChat = async (
   // below), which is unchanged. Set BIOROUTER_SHARED_DAEMON=0 to revert to the
   // previous per-window daemon.
   const useSharedDaemon = isSharedDaemonEnabled();
-  const windowWorkingDir = path.resolve(path.normalize(dir || os.homedir()));
+  const windowWorkingDir = path.resolve(path.normalize(dir || app.getPath('home')));
 
   // The daemon's WebSocket gates admit a page only from the daemon's own
   // origin and, beside it, the one renderer its launcher declares (QA-D F7;
@@ -1394,17 +1443,53 @@ const createChat = async (
         app,
         serverSecret,
         userActionKey,
-        dir: os.homedir(),
+        dir: app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
+        requestNewUserActionKey: requestNewDaemonApprovalSecret,
+        requestUserActionKey: async (runtime) => {
+          if (!runtime.userActionInstalled)
+            throw new Error(
+              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+            );
+          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
+          const key = await promptNativeSecret(
+            'Connect to existing BioRouter daemon',
+            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+          );
+          if (!key)
+            throw new Error(
+              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+            );
+          validateDaemonApprovalSecret(key);
+          return key;
+        },
       })
     : await startBiorouterd({
         app,
         serverSecret,
         userActionKey,
-        dir: dir || os.homedir(),
+        dir: dir || app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
+        requestNewUserActionKey: requestNewDaemonApprovalSecret,
+        requestUserActionKey: async (runtime) => {
+          if (!runtime.userActionInstalled)
+            throw new Error(
+              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+            );
+          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
+          const key = await promptNativeSecret(
+            'Connect to existing BioRouter daemon',
+            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+          );
+          if (!key)
+            throw new Error(
+              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+            );
+          validateDaemonApprovalSecret(key);
+          return key;
+        },
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
@@ -4495,6 +4580,8 @@ const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
   log.warn('[terminal] failed to dispose session:', error)
 );
 let nodePtyModule: NodePtyModule | null | undefined;
+const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
+const crewAuthenticationPending = new Set<string>();
 
 /**
  * Free every shell a renderer owns once its document goes away.
@@ -4657,6 +4744,59 @@ function disposeTerminalSession(sessionId: string) {
   return terminalSessions.release(sessionId);
 }
 
+// D-DROP: a file dropped or pasted into Crew is shared after ONE confirmation in a
+// native dialog. The rules (what is refused, what the dialog says, the re-checks)
+// live in `utils/crewSharePath.ts`; this is only the Electron and daemon wiring.
+// Set once in `appMain` from `resolveDevAutoConfirmShare`, and false everywhere else.
+let crewShareAutoConfirm = false;
+const crewSharePending = new CrewSharePending();
+
+function registerCrewShareHandler() {
+  ipcMain.handle(CREW_SHARE_DROPPED_FILE_CHANNEL, async (event, raw: unknown) => {
+    const request = parseCrewShareRequest(raw);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    const ownerId = event.sender.id;
+    if (!crewSharePending.enter(ownerId))
+      return { outcome: 'refused', message: crewShareCopy.busy };
+    const windowClosed = () => event.sender.isDestroyed() || owner.isDestroyed();
+    const crewFiles = async (endpoint: string, method: 'POST' | 'DELETE', body: unknown) => {
+      const settings = loadSettings();
+      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Secret-Key': getServerSecret(settings),
+          'X-User-Action': getUserActionKey(settings),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      return { ok: response.ok, body: await response.json().catch(() => null) };
+    };
+    try {
+      return await shareDroppedFile(request, {
+        autoConfirm: crewShareAutoConfirm,
+        confirm: async (options) => (await dialog.showMessageBox(owner, options)).response,
+        register: async (body) => {
+          if (windowClosed()) throw new Error('The Crew window closed.');
+          return crewFiles('', 'POST', body);
+        },
+        // Deliberately no window check: a window that closed mid-share is exactly when a
+        // capability must go back, or the daemon holds it and its open file for 300 s.
+        discard: async (capabilityId) => {
+          await crewFiles(`/${encodeURIComponent(capabilityId)}`, 'DELETE', {});
+        },
+        isClosed: windowClosed,
+        log: (message) => log.warn(message),
+      });
+    } finally {
+      crewSharePending.leave(ownerId);
+    }
+  });
+}
+
 function registerCliInstallHandlers() {
   // Is the `biorouter` command callable from a terminal, and is it current?
   //
@@ -4711,6 +4851,328 @@ function registerCliInstallHandlers() {
       // `which` found a name but it won't run — a broken/dangling install.
       brokenOnPath: pathLocation !== null && pathVersion === null,
     };
+  });
+
+  ipcMain.handle('crew:credentials', async (event, action: unknown) => {
+    if (!['status', 'init', 'unlock', 'lock'].includes(String(action)))
+      throw new Error('Invalid Crew credential action.');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    const settings = loadSettings();
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Secret-Key': getServerSecret(settings),
+      'X-User-Action': getUserActionKey(settings),
+    };
+    let passphrase: string | undefined;
+    try {
+      if (action === 'init' || action === 'unlock') {
+        passphrase = await promptNativeSecret(
+          action === 'init' ? 'Initialize Crew encrypted vault' : 'Unlock Crew encrypted vault',
+          action === 'init'
+            ? 'Choose a new vault passphrase for this fresh Crew profile. This is separate from the daemon approval secret. Existing keyring identities are not migrated.'
+            : 'Enter this Crew vault’s passphrase. This is separate from the daemon approval secret.'
+        );
+        if (passphrase === undefined) return { cancelled: true };
+        if (Buffer.byteLength(passphrase, 'utf8') > 1024)
+          throw new Error('Vault passphrase must be at most 1024 UTF-8 bytes.');
+        if (action === 'init') {
+          const confirmation = await promptNativeSecret(
+            'Confirm Crew vault passphrase',
+            'Enter the new Crew vault passphrase again.'
+          );
+          if (confirmation === undefined) return { cancelled: true };
+          if (confirmation !== passphrase)
+            throw new Error('Passphrases do not match. The vault was not initialized.');
+        }
+      }
+      if (event.sender.isDestroyed()) throw new Error('The Crew window closed.');
+      if (action !== 'status') {
+        const response = await fetch(`${baseUrl}/crew/credentials/${action}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(passphrase === undefined ? {} : { passphrase }),
+          signal: AbortSignal.timeout(30000),
+        });
+        passphrase = undefined;
+        if (!response.ok)
+          throw new Error(
+            action === 'init'
+              ? 'Vault initialization was refused. Use a fresh Crew profile with no existing identities or credential backend.'
+              : action === 'unlock'
+                ? 'Vault unlock was refused. Check the passphrase and selected profile.'
+                : 'Vault lock was refused by the daemon.'
+          );
+      }
+      const response = await fetch(`${baseUrl}/crew/credentials`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error('Crew credential status is unavailable.');
+      const status = await response.json();
+      // `file` is the plain-file store, and only a development profile reports it: the daemon
+      // chooses it when `BIOROUTER_DISABLE_KEYRING=true` AND `BIOROUTER_DEV_PROFILE_ROOT` is an
+      // absolute path (`file_credentials_enabled`, crew/mod.rs), never as a fallback for a machine
+      // with no keyring (QA T-49). Refusing it left Keys and security unreadable (QA Q2-02).
+      if (
+        !['keyring', 'encrypted_vault', 'file'].includes(status.backend) ||
+        typeof status.initialized !== 'boolean' ||
+        typeof status.locked !== 'boolean'
+      )
+        throw new Error('Invalid Crew credential status.');
+      return { backend: status.backend, initialized: status.initialized, locked: status.locked };
+    } finally {
+      passphrase = undefined;
+    }
+  });
+
+  ipcMain.handle('crew:select-transfer-file', async (event, raw: unknown) => {
+    if (!raw || typeof raw !== 'object') throw new Error('Invalid transfer request.');
+    const options = raw as Record<string, unknown>;
+    if (
+      options.expectedMode !== undefined &&
+      options.expectedMode !== 'private' &&
+      options.expectedMode !== 'public'
+    )
+      throw new Error(
+        'Invalid expected transfer privacy. Refresh the workspace before choosing a file.'
+      );
+    if (
+      !['upload', 'download'].includes(String(options.direction)) ||
+      typeof options.connectionId !== 'string' ||
+      typeof options.channelId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.connectionId) ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.channelId)
+    )
+      throw new Error('Invalid transfer destination.');
+    for (const field of ['blobId', 'transferId']) {
+      const value = options[field];
+      if (
+        value !== undefined &&
+        (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
+      )
+        throw new Error('Invalid transfer capability binding.');
+    }
+    const purpose = options.purpose ?? 'transfer';
+    if (!['transfer', 'cleanup'].includes(String(purpose)))
+      throw new Error('Invalid transfer selection purpose.');
+    if (purpose === 'cleanup' && (options.direction !== 'download' || !options.transferId))
+      throw new Error('Temporary download cleanup needs its original transfer.');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+    if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+    let selected: string | undefined;
+    if (purpose === 'cleanup') {
+      if (
+        typeof options.suggestedName !== 'string' ||
+        !options.suggestedName ||
+        path.basename(options.suggestedName) !== options.suggestedName ||
+        ['.', '..'].includes(options.suggestedName)
+      )
+        throw new Error('The original download filename is unavailable.');
+      const folder = await dialog.showOpenDialog(owner, {
+        title: `Locate the original folder for ${options.suggestedName}`,
+        properties: ['openDirectory'],
+      });
+      if (folder.canceled || !folder.filePaths[0]) return null;
+      selected = path.join(folder.filePaths[0], options.suggestedName);
+      const cleanup = await dialog.showMessageBox(owner, {
+        type: 'question',
+        title: 'Remove incomplete Crew download',
+        message: `Remove the temporary download for ${options.suggestedName}?`,
+        detail:
+          'Only this transfer’s verified temporary file will be removed. The destination file and the attachment in Crew are kept.',
+        buttons: ['Cancel', 'Remove temporary file'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (cleanup.response !== 1) return null;
+    } else if (options.direction === 'upload') {
+      const result = await dialog.showOpenDialog(owner, {
+        title: 'Choose a file for Crew',
+        properties: ['openFile'],
+      });
+      if (!result.canceled) selected = result.filePaths[0];
+    } else {
+      const suggested =
+        typeof options.suggestedName === 'string'
+          ? Array.from(path.basename(options.suggestedName))
+              .filter((character) => character.charCodeAt(0) >= 32)
+              .join('')
+          : 'crew-download';
+      const result = await dialog.showSaveDialog(owner, {
+        title: 'Save Crew file',
+        defaultPath: suggested,
+      });
+      if (!result.canceled) selected = result.filePath;
+    }
+    if (!selected) return null;
+    const pendingDownload = options.direction === 'download' && purpose !== 'cleanup';
+    const postSelection = async (
+      endpoint: string,
+      body: Record<string, unknown>,
+      method: 'POST' | 'DELETE' = 'POST'
+    ) => {
+      if (event.sender.isDestroyed() || owner.isDestroyed())
+        throw new Error('The file selection window closed.');
+      const settings = loadSettings();
+      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Secret-Key': getServerSecret(settings),
+          'X-User-Action': getUserActionKey(settings),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        // Q3-01: the daemon's credential floor has a sentence of its own, rebuilt here from the
+        // name this process chose, never relayed from the daemon's text.
+        const credential = crewFileRefusal(
+          failure,
+          options.direction === 'upload' ? 'upload' : 'download',
+          path.basename(selected ?? '')
+        );
+        if (credential) throw new Error(credential);
+        if (
+          failure?.error ===
+          'Crew connection privacy changed; refresh the verified workspace before selecting a file'
+        )
+          throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
+        if (endpoint)
+          throw new Error(
+            'The selected destination could not be confirmed. Choose the destination again and review any replacement request.'
+          );
+        throw new Error(
+          'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
+        );
+      }
+      return method === 'DELETE' ? null : response.json();
+    };
+    let result = await postSelection('', {
+      direction: options.direction,
+      purpose,
+      path: selected,
+      overwrite: pendingDownload,
+      approval_pending: pendingDownload,
+      connection_id: options.connectionId,
+      channel_id: options.channelId,
+      blob_id: options.blobId,
+      transfer_id: options.transferId,
+      expected_mode: options.expectedMode,
+    });
+    if (
+      typeof result?.capability_id !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(result.capability_id) ||
+      typeof result.name !== 'string'
+    )
+      throw new Error('Invalid daemon file capability.');
+    if (pendingDownload) {
+      if (typeof result.target_exists !== 'boolean')
+        throw new Error(
+          'The daemon did not verify this destination. Update the daemon before downloading.'
+        );
+      if (event.sender.isDestroyed() || owner.isDestroyed())
+        throw new Error('The file selection window closed.');
+      if (result.target_exists) {
+        const replacement = await dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'Replace Crew download destination',
+          message: `Replace ${path.basename(selected)} after the download is verified?`,
+          detail:
+            'The daemon has checked the existing file. It remains in place until the download passes verification; any destination change requires a new selection.',
+          buttons: ['Cancel', 'Replace file'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (replacement.response !== 1) {
+          await postSelection(`/${encodeURIComponent(result.capability_id)}`, {}, 'DELETE').catch(
+            () => undefined
+          );
+          return null;
+        }
+      }
+      const capabilityId = result.capability_id;
+      result = await postSelection(`/${encodeURIComponent(capabilityId)}/confirm`, {});
+      if (result?.capability_id !== capabilityId || typeof result.name !== 'string')
+        throw new Error('The daemon did not confirm the selected destination. Choose it again.');
+    }
+    return {
+      capability_id: result.capability_id,
+      name: result.name,
+      ...(typeof result.size === 'number' ? { size: result.size } : {}),
+    };
+  });
+
+  ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
+    if (typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId))
+      return { success: false, error: 'Invalid Crew connection ID.' };
+    const owner = event.sender;
+    const ownerWindow = BrowserWindow.fromWebContents(owner);
+    const baseUrl = ownerWindow && biorouterdClients.get(ownerWindow.id)?.getConfig().baseUrl;
+    if (!baseUrl) return { success: false, error: 'The local daemon is not available.' };
+    const key = `${owner.id}:${connectionId}`;
+    const existing = crewAuthenticationSessions.get(key);
+    if (existing && terminalSessions.getOwned(existing.sessionId, owner.id))
+      return { success: true, sessionId: existing.sessionId, backend: 'pty', cwd: '' };
+    if (crewAuthenticationPending.has(key))
+      return { success: false, error: 'SSH authentication is already opening.' };
+    crewAuthenticationPending.add(key);
+    try {
+      if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner())
+        throw new Error('Close an existing terminal before opening SSH authentication.');
+      const settings = loadSettings();
+      const sessionId = crypto.randomUUID();
+      let ended = false;
+      const terminal = await createCrewDaemonTerminal(
+        { baseUrl, secret: getServerSecret(settings), userAction: getUserActionKey(settings) },
+        connectionId,
+        (data) => {
+          if (!owner.isDestroyed()) owner.send('terminal:data', { sessionId, data });
+        },
+        (exitCode) => {
+          ended = true;
+          if (crewAuthenticationSessions.get(key)?.sessionId === sessionId)
+            crewAuthenticationSessions.delete(key);
+          terminalSessions.forget(sessionId)?.removeOwnerDestroyedListener();
+          if (!owner.isDestroyed()) owner.send('terminal:exit', { sessionId, exitCode });
+        }
+      );
+      if (owner.isDestroyed() || ended) {
+        terminal.dispose();
+        throw new Error('The authentication window or connection closed.');
+      }
+      registerTerminalOwnerTeardown(owner);
+      const destroyed = () => disposeTerminalSession(sessionId);
+      owner.once('destroyed', destroyed);
+      terminalSessions.add(sessionId, {
+        ownerId: owner.id,
+        backend: 'pty',
+        cwd: '',
+        write: terminal.write,
+        resize: terminal.resize,
+        dispose: () => {
+          if (crewAuthenticationSessions.get(key)?.sessionId === sessionId)
+            crewAuthenticationSessions.delete(key);
+          terminal.dispose();
+        },
+        removeOwnerDestroyedListener: () => owner.removeListener('destroyed', destroyed),
+      });
+      crewAuthenticationSessions.set(key, { sessionId });
+      return { success: true, sessionId, backend: 'pty', cwd: '' };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'SSH authentication failed.',
+      };
+    } finally {
+      crewAuthenticationPending.delete(key);
+    }
   });
 
   ipcMain.handle('terminal:create', async (event, options?: TerminalCreateOptions) => {
@@ -5640,8 +6102,8 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
  * The one hook that stays on `defaultSession` alone, deliberately.
  *
  * It rewrites the `Origin` of every request in the session to the vite dev
- * origin. It has been here since the initial commit, inherited from upstream,
- * and it is **not** extended to the renderer's partition:
+ * origin. It has been here since the initial commit, and it is **not**
+ * extended to the renderer's partition:
  *
  * - The renderer does not need it. A packaged `file://` document sends NO
  *   `Origin` on `fetch` and Electron does not CORS-check a `file://` initiator
@@ -5670,7 +6132,32 @@ function installDefaultSessionOnlyHooks(): void {
 }
 
 async function appMain() {
-  // FIRST, and synchronously, before this function's first `await`.
+  readDevelopmentApprovalSecret = createDevelopmentApprovalReader({
+    args: process.argv,
+    isPackaged: app.isPackaged,
+    developmentProfileRoot,
+    testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),
+    sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,
+    input: process.stdin,
+    inputIsPipe: () => {
+      const stat = fsSync.fstatSync(0);
+      return stat.isFIFO() || stat.isSocket();
+    },
+    validate: validateDaemonApprovalSecret,
+  });
+  // The development auto-confirm for a dropped Crew file: the approval stdin's gate
+  // above, plus its own explicit switch. It fails closed (the native dialog stays on)
+  // and never throws, and says why when a set switch is ignored.
+  const crewShareAutoConfirmGate = resolveDevAutoConfirmShare({
+    value: process.env[DEV_AUTO_CONFIRM_SHARE_ENV],
+    isPackaged: app.isPackaged,
+    developmentProfileRoot,
+    testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),
+    sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,
+  });
+  crewShareAutoConfirm = crewShareAutoConfirmGate.enabled;
+  if (crewShareAutoConfirmGate.notice) log.warn(`[crew-share] ${crewShareAutoConfirmGate.notice}`);
+  // Install synchronously before this function's first `await`.
   //
   // A permission handler or a CSP header installed after a window exists has
   // already missed that window's first document load, and window creation does
@@ -5695,6 +6182,7 @@ async function appMain() {
   registerUpdateIpcHandlers();
   registerDependencyIpcHandlers();
   registerCliInstallHandlers();
+  registerCrewShareHandler();
 
   try {
     globalShortcut.register('CommandOrControl+Alt+Shift+G', () => {
@@ -6405,12 +6893,9 @@ app.whenReady().then(async () => {
     }
     await appMain();
   } catch (error) {
-    // Log BEFORE the dialog. `showErrorBox` is modal and blocks the main thread
-    // until someone dismisses it, so on a headless or automated launch the only
-    // record of a fatal startup error was a box nobody could see and no log line
-    // at all — the failure looked like a silent hang.
-    log.error('[Main] Fatal error during startup:', error);
-    if (error instanceof Error && error.stack) log.error(error.stack);
+    // Parentless macOS dialogs run a native modal loop, even with the Promise
+    // API. Complete the fatal log append before displaying the error.
+    logStartupFailure(error);
     dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
     app.quit();
   }
@@ -6462,8 +6947,7 @@ app.on('will-quit', async () => {
   }
   windowPowerSaveBlockers.clear();
 
-  // Unregister all shortcuts when quitting
-  globalShortcut.unregisterAll();
+  if (app.isReady()) globalShortcut.unregisterAll();
 
   try {
     await fs.access(biorouterTempDir); // Check if directory exists to avoid error on fs.rm if it doesn't

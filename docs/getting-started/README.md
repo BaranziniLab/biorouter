@@ -19,4 +19,5 @@ Come here if you have not yet got biorouter running, or if you have it running a
 - [Configuration](../configuration/README.md) — once you know *which* setting you want to change, this folder gives its name, accepted values, and default.
 - [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) — the full end-user guide to the three ways biorouter is extended, picking up where the quickstart's single extension example stops.
 - [Command-line interface](../cli/README.md) — the complete `biorouter` subcommand and flag reference, plus the slash commands and shortcuts inside an interactive session.
+- [Crew user manual](../crew/README.md): work with your lab in shared channels on a lab server, with shared files and agent tasks. Crew is included in the desktop app; the manual covers joining, hosting and the `biorouter crew` commands.
 - [Troubleshooting](../troubleshooting/README.md) — known problems and their fixes, and how to produce a diagnostics bundle when setup does not go as described here.

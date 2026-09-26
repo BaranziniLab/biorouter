@@ -60,7 +60,7 @@ describe('homeInsightsCache', () => {
     cache.preloadHomeActivity();
     const viewLoad = cache.refreshHomeActivity();
 
-    expect(mocks.getSessionActivity).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mocks.getSessionActivity).toHaveBeenCalledTimes(1));
     finishRequest?.({ data: activity });
     await viewLoad;
     expect(cache.getCachedHomeActivity()).toEqual(activity);

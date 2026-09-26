@@ -46,6 +46,10 @@ const CLIENT_INSERT_COMMANDS: Record<
     description: 'Use the Knowledge capability',
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
+  crew: {
+    description: 'Connect this chat to a Crew channel',
+    insert: '/crew',
+  },
   diverge: {
     description: 'Continue in a new chat with the full history. Press Enter',
     insert: '/diverge',
@@ -53,6 +57,40 @@ const CLIENT_INSERT_COMMANDS: Record<
 };
 
 const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
+
+// ── Crew in the palette (live QA round 2, Q2-71; round 3, Q3-31) ───────────────────────────────
+// "/cr" listed two rows that both read as "crew": the `/crew` command, which connects the chat, and
+// the Crew extension's reference, described as "Use saved Crew connections and human-approved
+// channel context…". People asked "which crew?". The command is the one a person means: it ranks
+// first for any query it starts with. Round 3 still found the second row confusing, so the
+// extension's row is left out of any list that shows the `/crew` command. It stays reachable: a
+// query aimed at extensions ("/ext", "/ext:crew") never matches the command, so that list shows
+// the extension's row — labelled as the tools, for someone who knows they want them.
+
+/** The Crew extension's row, when a query reaches it without the `/crew` command. */
+export const CREW_EXTENSION_DESCRIPTION = 'Crew tools extension (advanced)';
+
+/** The Crew platform extension's key (as `isCrewExtensionName` in `crew/access` reads it). */
+const isCrewExtensionItem = (item: DisplayItem) =>
+  item.itemType === 'Extension' && item.relativePath.trim().toLowerCase() === 'crew';
+
+const withoutSlash = (value: string) => value.replace(/^\/+/, '').toLowerCase();
+
+/** The client's `/crew` command (Q2-10): connects this chat to a Crew channel. */
+const isCrewCommandItem = (item: DisplayItem) =>
+  item.itemType === 'Builtin' && withoutSlash(item.name) === 'crew';
+
+/** A list showing the `/crew` command, without the Crew extension's row beside it (Q3-31). */
+const withoutCrewExtensionBesideCommand = <T extends DisplayItem>(items: T[]): T[] =>
+  items.some(isCrewCommandItem) ? items.filter((item) => !isCrewExtensionItem(item)) : items;
+
+/** A built-in command whose name the query starts: it outranks every fuzzy match. */
+const isBuiltinPrefixMatch = (item: DisplayItem, query: string) => {
+  const typed = withoutSlash(query.trim());
+  return (
+    item.itemType === 'Builtin' && typed.length > 0 && withoutSlash(item.name).startsWith(typed)
+  );
+};
 /** The resource a picked item refers to, for the composer's chip rail. */
 export interface MentionReference {
   kind: RefKind;
@@ -614,6 +652,8 @@ const MentionPopover = forwardRef<
             sessionId
               ? (sessionExtensions?.data?.extensions ?? [])
               : extensionsList.filter((extension) => extension.enabled)
+          ).map((item) =>
+            isCrewExtensionItem(item) ? { ...item, extra: CREW_EXTENSION_DESCRIPTION } : item
           )
         );
 
@@ -629,22 +669,26 @@ const MentionPopover = forwardRef<
     };
 
     const displayItems = useMemo((): DisplayItemWithMatch[] => {
+      const shown = (list: DisplayItemWithMatch[]) =>
+        isSlashCommand ? withoutCrewExtensionBesideCommand(list) : list;
       if (!query.trim()) {
-        return items
-          .map((file) => ({
-            ...file,
-            matchScore: 0,
-            matches: [],
-            matchedText: file.name,
-            depth: currentWorkingDir
-              ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
-              : 0,
-          }))
-          .sort((a, b) => {
-            if (a.depth !== b.depth) return a.depth - b.depth;
-            const typeComparison = compareByType(a, b);
-            return typeComparison || a.name.localeCompare(b.name);
-          });
+        return shown(
+          items
+            .map((file) => ({
+              ...file,
+              matchScore: 0,
+              matches: [],
+              matchedText: file.name,
+              depth: currentWorkingDir
+                ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
+                : 0,
+            }))
+            .sort((a, b) => {
+              if (a.depth !== b.depth) return a.depth - b.depth;
+              const typeComparison = compareByType(a, b);
+              return typeComparison || a.name.localeCompare(b.name);
+            })
+        );
       }
 
       const matchedItems = items
@@ -677,6 +721,12 @@ const MentionPopover = forwardRef<
         })
         .filter((file) => file.matchScore > 0)
         .sort((a, b) => {
+          // A built-in command the query starts ranks first: "/cr" means /crew (Q2-71).
+          if (isSlashCommand) {
+            const prefixDiff =
+              Number(isBuiltinPrefixMatch(b, query)) - Number(isBuiltinPrefixMatch(a, query));
+            if (prefixDiff) return prefixDiff;
+          }
           // Sort by score first, then prefer items over directories, then alphabetically
           const scoreDiff = b.matchScore - a.matchScore;
           if (Math.abs(scoreDiff) >= 1) return scoreDiff;
@@ -684,7 +734,7 @@ const MentionPopover = forwardRef<
           return typeComparison || a.name.localeCompare(b.name);
         });
 
-      return isSlashCommand ? matchedItems : matchedItems.slice(0, MAX_FILE_DISPLAY_RESULTS);
+      return isSlashCommand ? shown(matchedItems) : matchedItems.slice(0, MAX_FILE_DISPLAY_RESULTS);
     }, [items, query, currentWorkingDir, isSlashCommand]);
 
     // Expose methods to parent component

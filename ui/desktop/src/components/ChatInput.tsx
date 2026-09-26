@@ -7,7 +7,7 @@ import { useComposerToolbarCollapsed } from './bottom_menu/useComposerToolbarCol
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
-import type { View } from '../utils/navigationUtils';
+import type { View, ViewOptions } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
@@ -48,6 +48,7 @@ import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
 import { toastWarning } from '../toasts';
+import { useCrewComposerHold } from './crew/access/ChatCrewAccessBar';
 import { cn } from '../utils';
 import {
   appendComposerRef,
@@ -393,7 +394,7 @@ interface ChatInputProps {
   reasoningDraftKey?: string;
   droppedFiles?: DroppedFile[];
   onFilesProcessed?: () => void;
-  setView: (view: View) => void;
+  setView: (view: View, options?: ViewOptions) => void;
   totalTokens?: number;
   accumulatedInputTokens?: number;
   accumulatedOutputTokens?: number;
@@ -2289,7 +2290,44 @@ export default function ChatInput({
    * at the moment they try to send rather than the daemon's own error toast a
    * round trip later.
    */
-  const noModelConfigured = hasNoModelConfigured(modelConfigStatus, currentProvider);
+  const noModelConfigured = hasNoModelConfigured(
+    modelConfigStatus,
+    effectiveModel?.provider ?? currentProvider
+  );
+
+  // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
+  const crewHold = useCrewComposerHold(sessionId);
+
+  const hasCrewCommandExtras =
+    composerRefs.length > 0 || pastedImages.length > 0 || allDroppedFiles.length > 0;
+  const isCrewNavigationCommand = splitComposerText(displayValue).body.trim() === '/crew';
+  const openCrew = useCallback(() => {
+    if (hasCrewCommandExtras) {
+      toastWarning({
+        title: 'Draft kept',
+        msg: 'Remove the attached files, images, and reference chips before using /crew, or open Crew from the sidebar. Nothing was sent.',
+      });
+      return;
+    }
+    // A chat with no session yet (Home's composer, a new chat before its first send) has nothing
+    // Crew could connect: navigating anyway dropped the chat and showed no connect offer, while
+    // the Access tab's own instruction says to type /crew in the chat. Say what to do instead and
+    // keep the draft, as /diverge does.
+    if (!sessionId) {
+      toastWarning({
+        title: 'Start the chat first',
+        msg: 'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+      });
+      setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+      return;
+    }
+    displayValueRef.current = '';
+    setView('crew', { resumeSessionId: sessionId });
+    setDisplayValue('');
+    setValue('');
+    setHasUserTyped(false);
+    setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+  }, [hasCrewCommandExtras, sessionId, setView, setValue]);
 
   const canSubmit =
     !isLoading &&
@@ -2332,6 +2370,10 @@ export default function ChatInput({
       // would let an attached chip silently defeat a command that is — to the
       // user, correctly — the only thing in the box.
       const trimmedCandidate = splitComposerText(text ?? displayValue).body.trim();
+      if (trimmedCandidate === '/crew') {
+        openCrew();
+        return;
+      }
       if (trimmedCandidate === DIVERGE_TRIGGER) {
         if (!sessionId) {
           toastWarning({
@@ -2459,12 +2501,25 @@ export default function ChatInput({
       onFilesProcessed,
       pastedImages,
       sessionId,
+      openCrew,
       setLocalDroppedFiles,
       takeBack,
     ]
   );
 
   const handleKeyDown = (evt: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Navigation does not submit content, start a model, or grant access.
+    if (
+      evt.key === 'Enter' &&
+      !evt.shiftKey &&
+      !evt.altKey &&
+      !isComposing &&
+      isCrewNavigationCommand
+    ) {
+      evt.preventDefault();
+      openCrew();
+      return;
+    }
     // If mention popover is open, handle arrow keys and enter
     if (mentionPopover.isOpen && mentionPopoverRef.current) {
       if (evt.key === 'ArrowDown') {
@@ -2547,6 +2602,8 @@ export default function ChatInput({
 
       if (canSubmit && !submissionBlocked) {
         performSubmit();
+      } else if (canSubmit && submissionBlocked && crewHold) {
+        toastWarning({ title: crewHold.title, msg: crewHold.message });
       }
     }
   };
@@ -2564,6 +2621,10 @@ export default function ChatInput({
 
   const onFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCrewNavigationCommand) {
+      openCrew();
+      return;
+    }
     if (isLoading && hasSubmittableContent) {
       handleInterruptionAndQueue();
       return;
@@ -2585,6 +2646,11 @@ export default function ChatInput({
     const afterMention = composerBody.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
     );
+
+    if (`${beforeMention}${itemText}${afterMention}`.trim() === '/crew') {
+      openCrew();
+      return;
+    }
 
     // A picked resource is a reference, not prose: it goes to the chip rail and
     // the `@query` it replaced just disappears. Detected by running the inserted
@@ -2628,13 +2694,14 @@ export default function ChatInput({
   const visionMismatch = !currentModelSupportsVision && hasPastedImageAttachments;
 
   const isSubmitButtonDisabled =
-    noModelConfigured ||
-    !hasSubmittableContent ||
-    isAnyImageLoading ||
-    isAnyDroppedFileLoading ||
-    chatState === ChatState.RestartingAgent ||
-    submissionBlocked ||
-    visionMismatch;
+    !isCrewNavigationCommand &&
+    (noModelConfigured ||
+      !hasSubmittableContent ||
+      isAnyImageLoading ||
+      isAnyDroppedFileLoading ||
+      chatState === ChatState.RestartingAgent ||
+      submissionBlocked ||
+      visionMismatch);
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {
@@ -3262,7 +3329,10 @@ export default function ChatInput({
               // nothing yet; `messagesLength` is already a prop here (#22), so the
               // placeholder can simply tell the truth in both states.
               placeholder={
-                (messagesLength ?? 0) > 0 ? getNavigationShortcutText() : 'Ask Biorouter anything…'
+                crewHold?.placeholder ??
+                ((messagesLength ?? 0) > 0
+                  ? getNavigationShortcutText()
+                  : 'Ask Biorouter anything…')
               }
               value={composerBody}
               onChange={handleChange}

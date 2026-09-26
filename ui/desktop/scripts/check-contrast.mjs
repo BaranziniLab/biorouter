@@ -37,7 +37,9 @@ import {
   resolveHex,
   resolveRaw,
   contrast as ratioOf,
+  deltaE00,
 } from './lib/theme-tokens.mjs';
+import { AVATAR_HUE_COUNT } from './lib/theme-contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS_PATH = join(here, '..', 'src', 'styles', 'main.css');
@@ -389,6 +391,83 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     scope
   );
 
+  // The focus EDGE (live QA 2026-09-24, T-16). The fill above is deliberately
+  // soft — measured 1.10–1.44:1 against the resting control — so it is not an
+  // indicator on its own; every focused control also draws a 2px inset edge in
+  // `--border-focus` (main.css: the D-15 base rule, `.biorouter-focus-surface`),
+  // a focused tab rings its label in it (Q2-49), and a focused sidebar resize
+  // handle paints its 8px target with it. SC 1.4.11 asks 3:1 against every
+  // colour the edge touches: the focus fill inside it, and every ground and
+  // row fill the control can sit on outside it — including the sidebar's
+  // active and hover rows, where the app nav's selected item lives.
+  //
+  // ⚠ `--border-accent` was the audit's suggestion and is deliberately NOT the
+  // token: Roche Limit light's is `#ee6c1a`, 2.33:1 on the focus fill and
+  // 2.88:1 on the sidebar. Asserting the neutral edge here is what keeps a
+  // future swap from shipping that.
+  for (const g of [
+    '--background-focus',
+    ...RING_GROUNDS,
+    '--background-card',
+    '--sidebar-hover',
+    '--sidebar-active',
+  ]) {
+    assert(`${theme}: focus edge (border-focus) on ${g}`, '--border-focus', g, 3.0, scope);
+  }
+  // A solid accent control cannot take the neutral edge (1.00:1 on Parchment's
+  // hover fill), so `.biorouter-focus-surface-accent` draws its edge in the
+  // label ink instead. It sits on the hover fill (the focused state) and
+  // replaces the resting fill's pixels, so it owes 3:1 against both.
+  assert(
+    `${theme}: accent focus edge (text-on-accent) on accent-hover`,
+    '--text-on-accent',
+    '--background-accent-hover',
+    3.0,
+    scope
+  );
+
+  // Status ink ON ITS OWN WASH (live QA 2026-09-24, T-18). A `Note`
+  // (`ui/note.tsx`), a status chip and the tinted destructive button paint
+  // `--text-X` on `--wash-X` — the hue at a fraction over whatever ground they
+  // sit on — and the wash darkens (light) or lifts (dark) the ground under the
+  // text. The assertion above measures the ink on `--background-app` alone,
+  // which is how warning and danger shipped at 4.31:1 and 4.49:1 in Parchment
+  // light with every row here green: axe caught it on the Crew banners.
+  //
+  // The mix is READ from the stylesheet, not assumed: the wash must stay
+  // "this same ink at N% over transparent", and N is what is composited. A
+  // wash rewritten into another shape fails here as UNRESOLVED rather than
+  // being measured as something it no longer is. Grounds are the body-text
+  // grounds, because a Note lands wherever body text does.
+  for (const s of ['danger', 'success', 'warning', 'info']) {
+    const raw = resolveRaw(`--wash-${s}`, scope);
+    const m = raw?.match(
+      /^color-mix\(in [a-z]+,\s*var\((--[\w-]+)\)\s+(\d+(?:\.\d+)?)%,\s*transparent\)$/
+    );
+    if (!m || m[1] !== `--text-${s}`) {
+      failures++;
+      rows.push([
+        'UNRESOLVED',
+        '',
+        `${theme}: text-${s} on its wash`,
+        `--wash-${s} is ${JSON.stringify(raw)}; expected color-mix(in …, var(--text-${s}) N%, transparent)`,
+      ]);
+      continue;
+    }
+    const alpha = parseFloat(m[2]) / 100;
+    for (const g of TEXT_GROUNDS) {
+      assertOverTint(
+        `${theme}: text-${s} on its wash over ${g}`,
+        `--text-${s}`,
+        `--text-${s}`,
+        alpha,
+        g,
+        4.5,
+        scope
+      );
+    }
+  }
+
   // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
   // asks it against every row the icon can sit on — the resting sidebar, the
   // hover fill, and the active fill. The darkest row is what binds. Alma Mater
@@ -398,6 +477,50 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // trivially because its --sidebar-icon is a pass-through to the label ink.
   for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
     assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
+  }
+
+  // Person avatar hues (D-AVATAR). Three properties, each a way the set could
+  // quietly stop working:
+  //   - the initials are small text (11px at 20, 12 at 24, 13 at 32), so each
+  //     ink owes 4.5:1 on ITS OWN fill — never measured on a neutral, because
+  //     a pair is only ever painted together (`.biorouter-avatar[data-hue]`);
+  //   - a fill must be a step off every ground a tile sits on, or a coloured
+  //     avatar dissolves into the page. 1.1 flags a collapse, not a taste:
+  //     today's minimum is 1.24 in light and 1.57 in dark;
+  //   - the eight fills must stay apart, or two people read as one. ΔE00 8 is
+  //     well under the ~12 they measure, so a nudge passes and a copy-paste
+  //     (two slots with one value) fails. This is normal colour vision only;
+  //     under a dichromacy some pairs converge, which is accepted because the
+  //     initials and the @username beside the tile carry the identity.
+  {
+    const fills = [];
+    for (let n = 1; n <= AVATAR_HUE_COUNT; n++) {
+      const bg = `--avatar-hue-${n}-bg`;
+      assert(`${theme}: avatar ${n} initials on its fill`, `--avatar-hue-${n}-fg`, bg, 4.5, scope);
+      for (const g of TEXT_GROUNDS) assert(`${theme}: avatar ${n} fill vs ${g}`, bg, g, 1.1, scope);
+      fills.push([n, resolve(bg, scope)]);
+    }
+    let closest = null;
+    for (let i = 0; i < fills.length; i++) {
+      for (let j = i + 1; j < fills.length; j++) {
+        const [a, ha] = fills[i];
+        const [b, hb] = fills[j];
+        if (!ha || !hb) continue;
+        const d = deltaE00(ha, hb);
+        if (!closest || d < closest.d) closest = { a, b, d };
+      }
+    }
+    checks++;
+    const apart = closest !== null && closest.d >= 8;
+    if (!apart) failures++;
+    rows.push([
+      apart ? 'pass' : 'FAIL',
+      closest ? `ΔE ${closest.d.toFixed(1)}` : '',
+      `${theme}: the ${AVATAR_HUE_COUNT} avatar fills are distinguishable`,
+      closest
+        ? `closest pair: ${closest.a} and ${closest.b} (need ΔE00 >= 8)`
+        : 'no avatar fill resolved to a hex',
+    ]);
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to

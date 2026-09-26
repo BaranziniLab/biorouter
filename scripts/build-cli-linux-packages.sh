@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build the CLI-only Linux packages (.deb + .rpm) — just the headless
-# `biorouter` CLI and `biorouterd` daemon, no Electron/GUI.
+# `biorouter` CLI, `biorouterd` daemon and Crew SSH broker, no Electron/GUI.
 #
 # Prereqs: the linux-gnu binaries must already exist (built by
 # `scripts/release.sh backends <ver>`):
-#   target/x86_64-unknown-linux-gnu/release/{biorouter,biorouterd}
+#   target/x86_64-unknown-linux-gnu/release/{biorouter,biorouterd,biorouter-crew}
 #
 # The browser interface bundle is built HERE, on the host, because nothing else
 # in the CLI-only path runs npm. That makes this script share the GUI packaging
@@ -47,6 +47,11 @@ docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not ru
 br_require_command npm "The browser interface bundle is built with npm run build:web."
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
+[ -f "$REL/biorouter-crew" ] || die "missing $REL/biorouter-crew — run: scripts/release.sh backends $VERSION"
+# The bytes about to be packaged, not the ones a build step once checked: a broker without the
+# default `join-by-name` feature passes every smoke test below and lets nobody join by invitation.
+bash "$ROOT/scripts/check-crew-broker-join.sh" "$REL/biorouter-crew" \
+  || die "$REL/biorouter-crew was built without the join-by-name feature"
 
 python3 "$ROOT/scripts/computer-use-runtime.py" verify linux-x64
 
@@ -83,9 +88,12 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version
   python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
-  command -v biorouter && command -v biorouterd
+  command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  crew_version=$(biorouter-crew --version)
+  case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
+  biorouter-crew --help
   biorouter doctor --no-update --format json >/dev/null
   test -s /usr/share/biorouter/web/index.html
   test -n "$(ls -A /usr/share/biorouter/web/assets)"
@@ -101,9 +109,12 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version
   python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
-  command -v biorouter && command -v biorouterd
+  command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  crew_version=$(biorouter-crew --version)
+  case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
+  biorouter-crew --help
   biorouter doctor --no-update --format json >/dev/null
   test -s /usr/share/biorouter/web/index.html
   test -n "$(ls -A /usr/share/biorouter/web/assets)"

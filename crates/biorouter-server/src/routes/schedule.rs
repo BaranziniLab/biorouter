@@ -530,12 +530,18 @@ async fn sessions_handler(
     // leave a caller with an empty page and the impression there were none.
     let caller = crate::routes::session_reach::http_caller(&headers).await;
 
+    let excluded = caller
+        .excluded_crew_sessions()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match scheduler.sessions(&schedule_id_param, usize::MAX).await {
         Ok(session_tuples) => {
             let mut display_infos = Vec::new();
             for (session_name, session) in session_tuples
                 .into_iter()
-                .filter(|(_, session)| caller.lists_session(session.privacy_tier))
+                .filter(|(_, session)| {
+                    caller.lists_session(session.privacy_tier) && !excluded.contains(&session.id)
+                })
                 .take(query_params.limit)
             {
                 display_infos.push(SessionDisplayInfo {

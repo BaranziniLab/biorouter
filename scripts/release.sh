@@ -336,7 +336,7 @@ PY
 # now live in scripts/cross-env.sh (sourced above) — the SAME recipe the BR-70
 # `check-cross` CI gate uses, so what the gate checks is exactly what ships.
 
-# Linux x86_64 backend (biorouterd + biorouter). Extracted so it can be re-run
+# Linux x86_64 backend (biorouterd + biorouter + biorouter-crew). Extracted so it can be re-run
 # on its own. Cleans the target dir first to force a from-scratch compile
 # against the pinned glibc (cached objects would keep stale symbol versions).
 cmd_linux-backend() {
@@ -345,16 +345,24 @@ cmd_linux-backend() {
   ensure_docker
   log "cross-compiling linux-gnu backend (docker, $LINUX_RUST_IMG)"
   rm -rf "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
-         "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd"
+         "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" \
+         "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew"
   run_cross_release \
     cross_linux \
     biorouter-linux-release-target \
-    "cargo build --release --bin biorouterd --bin biorouter" \
+    "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew" \
     "mkdir -p /usr/src/myapp/target/x86_64-unknown-linux-gnu/release && \
      cp -f /cross-target/x86_64-unknown-linux-gnu/release/biorouter \
            /cross-target/x86_64-unknown-linux-gnu/release/biorouterd \
+           /cross-target/x86_64-unknown-linux-gnu/release/biorouter-crew \
            /usr/src/myapp/target/x86_64-unknown-linux-gnu/release/"
   assert_glibc_floor
+  # The broker must carry `join-by-name` (on by default since 2026-09-25, naming design D17).
+  # Nothing else notices a broker built without it: it starts, answers --version and --help,
+  # and only refuses to let anyone join by invitation.
+  bash "$ROOT/scripts/check-crew-broker-join.sh" \
+    "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew" \
+    || die "the linux Crew broker was built without the join-by-name feature"
   log "linux backend compiled"
 }
 
@@ -370,7 +378,8 @@ GLIBC_MAX="2.31"
 assert_glibc_floor() {
   local bin found=""
   for bin in "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" \
-             "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter"; do
+             "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
+             "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew"; do
     [ -f "$bin" ] || continue
     local worst
     worst="$(strings -a "$bin" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' \

@@ -307,7 +307,7 @@ The last two rows are a **correction made after the compaction shipped**, and th
 
 **There is no "Apps" — there is Applications.** ✅ **Settled in September 2026, by removal rather than by folding.** As written, the rail shipped two adjacent rows whose names a user could not tell apart, and they were not the same list: `/applications` showed the apps you built with Agent Drafter, while a second row showed apps advertised by installed extensions. The second was already second-class — a conditional row, hidden unless some extension happened to advertise one — so it was a destination most users never saw, under a name that collided with the one they did.
 
-This section proposed folding the second list into the first as a section. What happened instead is that the whole advertised-apps feature was found to be inherited from the upstream fork, never requested, and removed; the record is filed under `docs/history/`. The outcome this section wanted — one concept, one word, **Applications** — holds, and no folding work remains. The rest of this document is unaffected.
+This section proposed folding the second list into the first as a section. What happened instead is that the whole feature for apps advertised by extensions, present since the first commit and never requested, was removed; the record is filed under `docs/history/`. The outcome this section wanted — one concept, one word, **Applications** — holds, and no folding work remains. The rest of this document is unaffected.
 
 The same 44px band is shared by the chat header and the artifact strip from one `--chrome-height` token — today it is 52px written three ways with two different hairline colours and three different grounds meeting at a seam the code comments claim is continuous.
 

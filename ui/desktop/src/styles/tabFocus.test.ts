@@ -89,6 +89,28 @@ function exemptions(): string[] {
   return match![1].split(',');
 }
 
+/**
+ * The body of the OS-requested focus-ring block: `@media (prefers-contrast:
+ * more), (forced-colors: active) { … }`, brace-matched rather than cut at the
+ * first two-space `}`. It is UNLAYERED and sits at the end of main.css (live QA
+ * 2026-09-24, P0-5 — inside `@layer base` it lost to every unlayered
+ * `outline: none`); `focusFallback.test.ts` asserts where it lives and how it
+ * wins. The tests here only ask what it still REACHES.
+ */
+function osRingBlock(): string {
+  const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const head = '@media (prefers-contrast: more), (forced-colors: active) {';
+  const start = stripped.indexOf(head);
+  expect(start, 'the prefers-contrast block is unrecognisable').toBeGreaterThan(-1);
+  let depth = 1;
+  let i = start + head.length;
+  for (; i < stripped.length && depth > 0; i++) {
+    if (stripped[i] === '{') depth++;
+    else if (stripped[i] === '}') depth--;
+  }
+  return stripped.slice(start + head.length, i - 1);
+}
+
 describe('a tab trigger takes no focus fill', () => {
   it('still exists, and still fills everything that is not a tab', () => {
     expect(d15, 'the D-15 focus-visible fill rule is no longer recognisable').toBeTruthy();
@@ -158,13 +180,21 @@ describe('a focused tab shows its underline firming instead', () => {
     expect(body(LABEL_SELECTOR)).toContain('var(--text-default)');
   });
 
-  /** D-15 forbids a ring; the ring comes back only under `prefers-contrast`. */
-  it('never draws a ring and never paints a fill', () => {
+  /**
+   * Never a fill. D-15 kept a tab's focus to the bar and an underline, but live
+   * QA round 2 (Q2-49) read the grey underline over the accent bar as "a double
+   * underline", so the label's focus mark is now a RING in the neutral focus
+   * token — a different shape from the selection bar. The bar itself draws no
+   * ring. `focusFallback.test.ts` pins the ring's geometry.
+   */
+  it('rings the label in the focus token, and never paints a fill', () => {
     for (const selector of [UNDERLINE_SELECTOR, LABEL_SELECTOR]) {
-      expect(body(selector)).not.toMatch(/box-shadow|outline:\s*\d/);
+      expect(body(selector)).not.toMatch(/box-shadow/);
       expect(body(selector)).not.toContain('--background-focus');
     }
-    expect(body(LABEL_SELECTOR)).toContain('outline: none');
+    expect(body(UNDERLINE_SELECTOR)).not.toMatch(/outline/);
+    expect(body(LABEL_SELECTOR)).toContain('outline: 2px solid var(--border-focus)');
+    expect(body(LABEL_SELECTOR)).not.toMatch(/text-decoration/);
   });
 
   /**
@@ -298,13 +328,14 @@ describe('a tab panel takes no focus fill either', () => {
    * they did not opt out of.
    */
   it('leaves the prefers-contrast ring reaching the panel', () => {
-    const block = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
-      /@media \(prefers-contrast: more\), \(forced-colors: active\) \{([\s\S]*?)\n {2}\}/
-    );
-    expect(block, 'the prefers-contrast block is unrecognisable').toBeTruthy();
-    expect(block![1]).toContain("[tabindex]:not([tabindex='-1'])");
-    expect(block![1]).not.toContain('tabpanel');
-    expect(block![1]).toMatch(/outline:\s*2px solid var\(--ring\)/);
+    const block = osRingBlock();
+    // A bare `[tabindex]` arm reaches the panel's `tabindex="0"` (and, since
+    // P0-5, a `tabindex="-1"` row too).
+    expect(block.replace(/\s+/g, '')).toContain(',[tabindex]):focus-visible');
+    // The panel may be NAMED in the block (it takes the inset offset) but never
+    // excluded from it.
+    expect(block.replace(/\s+/g, '')).not.toMatch(/:not\([^)]*tabpanel/);
+    expect(block).toMatch(/outline:\s*2px solid var\(--ring\)/);
   });
 
   /**
@@ -499,12 +530,9 @@ describe('a scroll region with no role opts out of the focus fill by class', () 
    * signal still gets the ring on the list, through the same `[tabindex]` arm.
    */
   it('leaves the prefers-contrast ring reaching the region', () => {
-    const block = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
-      /@media \(prefers-contrast: more\), \(forced-colors: active\) \{([\s\S]*?)\n {2}\}/
-    );
-    expect(block, 'the prefers-contrast block is unrecognisable').toBeTruthy();
-    expect(block![1]).toContain("[tabindex]:not([tabindex='-1'])");
-    expect(block![1]).not.toContain(HOOK);
+    const block = osRingBlock();
+    expect(block.replace(/\s+/g, '')).toContain(',[tabindex]):focus-visible');
+    expect(block).not.toContain(HOOK);
   });
 
   /** Stated as a property of the whole stylesheet: nothing paints a fill on the hook. */

@@ -3209,6 +3209,9 @@ impl ExtensionManager {
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools.
         let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
+        let crew = crate::crew::manager()?;
+        crew.authorize_session_tool(session_id, &prefixed_name)
+            .await?;
 
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
@@ -3228,6 +3231,10 @@ impl ExtensionManager {
             &client_config,
         )?;
 
+        if crew.is_scoped_session(session_id).await {
+            anyhow::ensure!(matches!(&client_config, ExtensionConfig::Platform { name, .. } if name == "crew" || name == "todo"),
+                "Crew tools must resolve to the built-in scoped extension, not an external tool with a similar name.");
+        }
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         let computer_permit = self
             .admit_computer_use(
@@ -3726,6 +3733,22 @@ impl ExtensionManager {
     ) -> Option<String> {
         // Use minute-level granularity to prevent conversation changes every second
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
+        let crew = match crate::crew::manager() {
+            Ok(crew) => crew,
+            Err(error) => {
+                tracing::warn!(
+                    "Context withheld because Crew scope could not be verified: {error}"
+                );
+                return None;
+            }
+        };
+        if crew.is_scoped_session(session_id).await {
+            // A newly granted ordinary chat can retain local platform clients.
+            // None of their workspace context is part of its remote grant.
+            return Some(format!(
+                "{MOIM_OPEN_TAG}\nIt is currently {timestamp}\nCrew scope: remote file paths are relative to the approved SSH work directory. The local task directory is not a remote file location. Omit connection_id in crew__request to use this conversation's granted connection. Use crew__connections for current scope metadata; channel IDs are not connection IDs.\n{MOIM_CLOSE_TAG}"
+            ));
+        }
         let mut content = format!(
             "{MOIM_OPEN_TAG}\nIt is currently {}\nWorking directory: {}\n",
             timestamp,
@@ -9520,6 +9543,12 @@ mod tests {
             scanned += 1;
             let src = std::fs::read_to_string(p)
                 .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
+            // A standalone module can be compiled only through a test-gated
+            // path. It is test fixture code even though it lives outside the
+            // enclosing production file's `#[cfg(test)]` module.
+            if src.trim_start().starts_with("#![cfg(test)]") {
+                continue;
+            }
             // Production only. Every `mod tests` in this tree sits below an
             // UNINDENTED `#[cfg(test)]`, and the recall / ingest gates are
             // asserted by setting the column directly from their own tests —

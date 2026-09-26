@@ -44,10 +44,11 @@ dated snapshots of fast-moving repositories, noted per report in that index.
 Three are worth knowing about before you go.
 [Claude Code](coding-agent-landscape/claude-code.md) is treated as the reference design the
 whole corpus benchmarks against, and is the only report on a closed-source product, so it dates
-fastest. [Gemini CLI](coding-agent-landscape/gemini-cli.md) covers an independent architecture
-with no shared lineage and is one of the corpus's deepest reports.
-[Goose](coding-agent-landscape/goose.md) is the odd one out: it reviews the project BioRouter
-was forked from, which makes it the repository's only record of upstream divergence.
+fastest. [Gemini CLI](coding-agent-landscape/gemini-cli.md) covers an independent TypeScript
+architecture and is one of the corpus's deepest reports.
+[Goose](coding-agent-landscape/goose.md) is the odd one out: it reviews the agent whose design
+influenced BioRouter most, and it is the repository's only detailed record of what Goose
+changed in 2025 and 2026.
 
 ## Related documentation
 

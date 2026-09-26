@@ -1,0 +1,154 @@
+{
+  "run": "crew-smoke-20260922T030933Z-8c3c8b",
+  "region": "us-west-2",
+  "started": "2026-09-22T03:09:33.238362+00:00",
+  "checks": [
+    {
+      "name": "ec2_dry_run",
+      "result": "DryRunOperation"
+    },
+    {
+      "name": "instance_controls",
+      "result": {
+        "type": "t3.micro",
+        "metadata": {
+          "State": "applied",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 1,
+          "HttpEndpoint": "enabled",
+          "HttpProtocolIpv6": "disabled",
+          "InstanceMetadataTags": "disabled"
+        },
+        "delete_on_termination": [
+          true
+        ]
+      }
+    },
+    {
+      "name": "encrypted_root_volume",
+      "result": true
+    },
+    {
+      "name": "host_key_source",
+      "result": {
+        "source": "AWS GetConsoleOutput authenticated control plane",
+        "aliases": [
+          "entry",
+          "gate-a",
+          "gate-b",
+          "target"
+        ],
+        "strict_host_key_checking": "yes"
+      }
+    },
+    {
+      "name": "ssh_versions",
+      "result": {
+        "client": "OpenSSH_10.3p1, LibreSSL 3.3.6",
+        "server": "OpenSSH_9.9p1, OpenSSL 3.5.8 25 Aug 2026"
+      }
+    },
+    {
+      "name": "distinct_unix_peer_identity_via_two_loopback_gates",
+      "result": {
+        "alice": {
+          "ok": true,
+          "uid": 1001,
+          "username": "crew_alice"
+        },
+        "bob": {
+          "ok": true,
+          "uid": 1002,
+          "username": "crew_bob"
+        },
+        "topology": "public SSH entry -> loopback gate A:2222 -> loopback gate B:2223 -> loopback target:2224 on ONE VM"
+      }
+    },
+    {
+      "name": "forged_username_rejected",
+      "result": {
+        "ok": false,
+        "uid": 1001,
+        "username": "crew_alice",
+        "error": "claimed_identity_mismatch"
+      }
+    },
+    {
+      "name": "cross_owner_agent_invocation_rejected",
+      "result": {
+        "ok": false,
+        "uid": 1002,
+        "username": "crew_bob",
+        "error": "not_agent_owner"
+      }
+    },
+    {
+      "name": "owner_agent_invocation_accepted",
+      "result": {
+        "ok": true,
+        "uid": 1001,
+        "username": "crew_alice",
+        "event": {
+          "seq": 2,
+          "action": "invoke",
+          "uid": 1001,
+          "agent": "alice-agent"
+        }
+      }
+    },
+    {
+      "name": "second_user_own_agent_accepted",
+      "result": true
+    },
+    {
+      "name": "binary_attachment_upload_download",
+      "result": {
+        "bytes": 1048599,
+        "sha256": "78a320cf15e5b4bd78bf190b6bb1bd2d5425f4ee0267e73a1819e62f2df8d7a6",
+        "download_transport": "OpenSSH scp with SFTP over same ProxyJump chain"
+      }
+    },
+    {
+      "name": "jsonl_fsync_restart_reconnect_replay",
+      "result": {
+        "events": 4,
+        "cursor_after_2": [
+          3,
+          4
+        ],
+        "ownership_survives_restart": true
+      }
+    }
+  ],
+  "resources": {
+    "key_pair": "crew-smoke-20260922T030933Z-8c3c8b",
+    "ami": "ami-075d448db8fb256af",
+    "vpc": "vpc-f7ff0c8e",
+    "subnet": "subnet-66ffc200",
+    "security_group": "sg-0fa4576002647abb1",
+    "instance": "i-09512b4886638ed75",
+    "volumes": [
+      "vol-088f7dc2fd948d213"
+    ],
+    "ingress_scope": "current-client-ipv4/32"
+  },
+  "cleanup": {
+    "instance": "terminated",
+    "security_group": "deleted",
+    "key_pair": "deleted",
+    "local_temporary_directory_removed": true
+  },
+  "outcome": "pass",
+  "finished": "2026-09-22T03:11:29.862007+00:00",
+  "post_run_teardown_verification": {
+    "time": "2026-09-22T03:13:02.064713+00:00",
+    "instance_state": "terminated",
+    "volume_lookup": "InvalidVolume.NotFound",
+    "security_group_lookup": "InvalidGroup.NotFound",
+    "key_pair_lookup": "InvalidKeyPair.NotFound"
+  },
+  "aws_authenticated": true,
+  "record_redactions": [
+    "AWS account number and client/temporary instance IP addresses omitted; cleanup resource IDs retained"
+  ]
+}

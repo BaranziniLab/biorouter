@@ -1,0 +1,530 @@
+/* Crew — the redesigned layout's stylesheet (`.crew-app`).
+
+   THE CONTRACT. It binds this file and every `crew/<area>/*.css` an area
+   package adds, and `crew/crewCss.sourceGuard.test.ts` enforces it on every
+   stylesheet under `crew/`, with no exemptions.
+
+   - Only `.crew-*` classes and `[data-*]` / `[aria-*]` state hooks. No element
+     selectors (`.crew-view input` is how the old stylesheet restyled every
+     primitive inside it and beat the global focus surface — D-15), no `*`, no
+     ids, no `@apply`, and never a primitive's own class: a Crew rule may place
+     a primitive, never re-skin it.
+   - Tokens only: no hex, `rgb()` or `hsl()` literals, no pixel font sizes. A
+     Crew colour is a `main.css` token, so every family re-skins Crew with zero
+     edits here, and `check:contrast` covers it because Crew adds no colours.
+   - Every `@keyframes` is named `crew-*` (keyframes are global), and every
+     rule that animates with one restates its resting state inside
+     `@media (prefers-reduced-motion: reduce)` under the same selector. The
+     global reset in `main.css` shortens durations; it cannot say what a loop
+     or a moving element should rest as.
+   - Load-bearing styles live here, not in newly written Tailwind utilities: a
+     new class can silently never generate under `BIOROUTER_NO_HMR`.
+
+   THE HOOKS this file provides, for `layout/CrewLayout.tsx` and the areas:
+
+     .crew-app                              the root; columns: sidebar | main
+                                            ([data-crew-sidebar='hidden']: main only;
+                                            [data-pane-still]: the pane has not moved
+                                            since the channel appeared, and must not)
+       .crew-sidebar                          the Crew sidebar column (geometry)
+       .crew-main                             container `crew-main`: channel + pane
+         .crew-stage                          the grid the pane pushes into
+           .crew-channel                      header band, bar and body (subgrid)
+             .crew-channel-bar                the connection bar's row: never covered
+             .crew-channel-body               what a covering pane covers
+           .crew-pane[data-state=open|closed] the details pane slot
+             .crew-pane-content               fixed-width inner content
+           .crew-stage-screen                 a screen that is not a channel,
+                                              beside the pane (Chat access, F2)
+     .crew-cover-only / .crew-push-only       shown only in that pane mode
+     .crew-crossfade > .crew-crossfade-item[data-state=open|closed]
+     .crew-highlight                          the one-shot task-row wash
+     .crew-setup                              a setup / onboarding column
+     .crew-access-row-line                    an access row's wrapping line:
+       .crew-access-row-text                    title + destination (>= 10rem)
+       .crew-access-row-end                     badge + actions, kept together
+         .crew-access-row-actions               Open, Revoke / Retry / Stop, ⋯
+
+   The skin of each column (the sidebar's `bg-sidebar` + hairline, a header's
+   `h-chrome` band) belongs to the component inside it. This file owns the
+   geometry, the pane's ground and hairline (a covering pane must be opaque),
+   and the motion. */
+
+.crew-app {
+  --crew-sidebar-width: 240px; /* design.md §4.11 */
+  --crew-pane-width: 360px; /* = PREVIEW_MIN_WIDTH in Layout/yieldLadder.ts */
+  --crew-push-min: 800px; /* = PREVIEW_SIDE_WIDTH = 360 + READABLE_CHAT_WIDTH 440 */
+  --crew-avatar: 32px;
+  --crew-avatar-dense: 20px;
+  --crew-setup-width: var(--dialog-md);
+
+  display: grid;
+  grid-template-columns: var(--crew-sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--background-canvas);
+}
+
+/* THE COLUMN IS 240px IN EVERY STATE (Q2-39). Round 1 widened it by the
+   titlebar reserve while the app sidebar was collapsed (T-21), to
+   `240 + 172 - 16` = 396px. At a 1048px window that left the channel 652px,
+   under `--crew-push-min`, so the details pane covered the conversation
+   instead of pushing beside it. The reserve is now paid for vertically:
+   `sidebar/crew-sidebar.css` moves the switcher into a 36px row below the band
+   while the app sidebar is collapsed, so the channel keeps 808px and the pane
+   pushes. Do not widen the column to clear the controls: even 288px leaves
+   760px, still under 800. */
+
+/* A focused text field inside Crew firms its edge to the accent (T-16): the
+   D-15 edge shift in `main.css` is layered and zero-specificity, so the field's
+   own border utility kept the resting edge on focus, and a keyboard user saw
+   no change at all. The same edge the composer card takes. `:read-write` is
+   exactly the editable fields — never a checkbox, radio or read-only field —
+   so no element selector is needed. An invalid field keeps its danger edge.
+   Accent is safe HERE and nowhere else in Crew's focus states: the shared
+   `Input` paints `bg-background-default`, which out-ranks the layered focus
+   fill, so this edge only ever touches `--background-default` / `-card` —
+   3.09:1 at worst (Roche Limit light). The sidebar's edges sit on the focus
+   fill and the sidebar grounds, where that same orange is 2.33–2.88:1, so
+   they draw `--border-focus` (`sidebar/crew-sidebar.css`).
+   The forced-colours and Increase Contrast ring is `main.css`'s, app-wide. */
+.crew-app :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}
+
+/* First run: no saved workspace, so no Crew sidebar; the empty state takes the
+   whole Crew area. */
+.crew-app[data-crew-sidebar='hidden'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.crew-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── The channel and the pane: push or cover ────────────────────────────────
+   One container query decides, on the width of the channel + pane region, and
+   JavaScript never measures layout (jsdom evaluates no container query, so the
+   tests exercise push).
+
+   PUSH (region >= 800px): the pane is a grid column beside the channel and the
+   conversation stays usable at its 440px floor. Its width tweens 0 → 360 over
+   `--dur-med` (out over `--dur-fast-max`), while the content inside is FIXED at
+   the pane width and fades in, so its text never reflows mid-tween.
+
+   COVER (region < 800px): the pane covers the channel body BELOW the channel
+   header AND the connection bar, so the channel name stays visible and so does
+   every error the bar holds. The covered body takes `visibility: hidden`,
+   which takes the timeline and composer out of the tab order while unseen and
+   keeps the draft. This is deliberately not the artifact panel's stack rung:
+   the pane holds forms, and stacking one above the conversation would push the
+   composer below the fold.
+
+   ⚠ The bar's row is load-bearing, not tidiness. The bar is where an error
+   renders when the surface that caused it is not on screen — the sidebar, a
+   menu, the observer, Stop in the pane's Access tab — so a covering pane that
+   hid it (it once sat inside `.crew-channel-body`, under a pane inset by the
+   header's height) made those errors reach no one while the pane was open.
+   The stage's three rows are the band, the bar and the body; `.crew-channel`
+   subgrids them, so the header and the bar size the rows and a covering pane
+   takes the body's row alone. An absolutely positioned grid item takes its
+   grid area as its containing block, which is what places the pane there with
+   no measured offset.
+
+   ⚠ A container query cannot read a custom property, so `800px` below is a
+   literal. The source guard pins it — and `--crew-pane-width` /
+   `--crew-push-min` above — to `yieldLadder.ts`. Change them there first.
+
+   `data-state` follows Radix's convention, so the layout can keep a closing
+   pane mounted with `Presence` until its exit animation ends. A closed pane is
+   `visibility: hidden` at rest: out of the tab order and the accessibility
+   tree even while it is still mounted. */
+.crew-main {
+  container: crew-main / inline-size;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Rows: the 44px channel band, the connection bar (0 when it holds nothing),
+   the channel body.
+
+   The channel narrows WITH the pane, frame by frame: column 2 is `auto`, so it
+   sizes to the aside's animated width on every frame of `crew-pane-push-in`
+   and `-out`. Measured in Chromium, in the running app and in
+   `sidebar/crewSidebarGeometry.browser.test.ts` (Q2-40, which read "the grid
+   snaps"; it does not). A `transition: grid-template-columns` here would never
+   run — the computed value `minmax(0, 1fr) auto` never changes — so there is
+   none. */
+.crew-stage {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* A screen that is not a channel (offline, "Can't connect", …) shares the stage
+   with the details pane, so a chat's access can be revoked while the workspace
+   is down (F2). It spans every row, as the channel does, and never the pane's
+   column. */
+.crew-stage-screen {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The header is auto-placed into the first row; the bar and the body are
+   placed by row, so an empty (`display: none`) bar leaves its row at 0 rather
+   than pulling the body up into it. */
+.crew-channel {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: subgrid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.crew-channel-bar {
+  grid-row: 2;
+  min-width: 0;
+}
+
+/* Isolated so a floating control inside (the Jump to latest pill) can never
+   paint above a covering pane. */
+.crew-channel-body {
+  grid-row: 3;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.crew-pane {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  width: var(--crew-pane-width);
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--background-canvas);
+  /* The hairline as an inset shadow, not a border: a 0-wide pane then draws
+     nothing, where a border would leave a 1px line behind a closed pane. */
+  box-shadow: inset 1px 0 0 var(--border-subtle);
+}
+
+.crew-pane[data-state='open'] {
+  animation: crew-pane-push-in var(--dur-med) var(--ease-out);
+}
+
+.crew-pane[data-state='closed'] {
+  width: 0;
+  visibility: hidden;
+  animation: crew-pane-push-out var(--dur-fast-max) var(--ease-out);
+}
+
+.crew-pane-content {
+  display: flex;
+  flex-direction: column;
+  width: var(--crew-pane-width);
+  height: 100%;
+  min-height: 0;
+}
+
+.crew-pane[data-state='open'] > .crew-pane-content {
+  animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+}
+
+/* A pane that MOUNTS does not move (live QA round 4, Q4-04). Closed — on every
+   return to Crew — it played `crew-pane-push-out` (or the cover fade) as it
+   appeared, sliding the channel 1068 → 1428px; open on the tab the person left
+   it on, it would slide in. `layout/CrewLayout.tsx` holds `data-pane-still` on
+   the root until the pane has opened or closed while the channel is on screen,
+   and drops it in the same commit as the pane's own state, so a real open or
+   close still animates. These out-rank every pane animation below, in both
+   modes and under reduced motion, whose rests are unchanged. */
+.crew-app[data-pane-still] .crew-pane[data-state='open'] {
+  animation: none;
+}
+
+.crew-app[data-pane-still] .crew-pane[data-state='closed'] {
+  animation: none;
+}
+
+.crew-app[data-pane-still] .crew-pane[data-state='open'] > .crew-pane-content {
+  animation: none;
+}
+
+@container crew-main (width < 800px) {
+  /* ⚠ The grid placement is load-bearing. An absolutely positioned GRID ITEM
+     takes its grid area as its containing block, so a covering pane left in
+     column 2 — an `auto` track it no longer contributes to — measured 0px
+     wide. Spanning every column and only the body's row makes the containing
+     block exactly what it covers: below the band and the connection bar. */
+  .crew-pane {
+    grid-column: 1 / -1;
+    grid-row: 3 / -1;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: auto;
+    box-shadow: none;
+  }
+
+  .crew-pane[data-state='open'] {
+    animation: crew-pane-cover-in var(--dur-fast-max) var(--ease-out);
+  }
+
+  .crew-pane[data-state='closed'] {
+    width: auto;
+    animation: crew-fade-out var(--dur-fast) var(--ease-out);
+  }
+
+  .crew-pane-content {
+    width: 100%;
+  }
+
+  .crew-pane[data-state='open'] > .crew-pane-content {
+    animation: none;
+  }
+
+  .crew-stage:has(> .crew-pane[data-state='open']) .crew-channel-body {
+    visibility: hidden;
+  }
+
+  .crew-push-only {
+    display: none;
+  }
+}
+
+/* The inverse is scoped the same way, so an element carries its own display
+   (a `flex` or `inline-flex` utility) in the mode it belongs to — hiding it in
+   the other mode never has to guess what to restore. */
+@container crew-main (width >= 800px) {
+  .crew-cover-only {
+    display: none;
+  }
+}
+
+@keyframes crew-pane-push-in {
+  from {
+    width: 0;
+  }
+  to {
+    width: var(--crew-pane-width);
+  }
+}
+
+@keyframes crew-pane-push-out {
+  from {
+    visibility: visible;
+    width: var(--crew-pane-width);
+  }
+  to {
+    visibility: hidden;
+    width: 0;
+  }
+}
+
+@keyframes crew-pane-cover-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Cross-fade: a host-dialog step or a setup card changing state ──────────
+   Stack the outgoing and incoming items in one grid cell; the incoming rises
+   8px and fades in over `--dur-fast-max`, the outgoing only fades, over
+   `--dur-fast`. An item keyed on its step animates in on mount with no help;
+   keep the outgoing one mounted with `Presence` to cross-fade instead of cut. */
+.crew-crossfade {
+  display: grid;
+  min-width: 0;
+}
+
+.crew-crossfade > .crew-crossfade-item {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-crossfade-item[data-state='open'] {
+  animation: crew-crossfade-in var(--dur-fast-max) var(--ease-out);
+}
+
+.crew-crossfade-item[data-state='closed'] {
+  visibility: hidden;
+  pointer-events: none;
+  animation: crew-fade-out var(--dur-fast) var(--ease-out);
+}
+
+@keyframes crew-crossfade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes crew-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Ends `visibility: hidden`, so an element leaving with it drops out of the
+   tab order at the end, never before (it stays visible mid-fade). */
+@keyframes crew-fade-out {
+  from {
+    visibility: visible;
+    opacity: 1;
+  }
+  to {
+    visibility: hidden;
+    opacity: 0;
+  }
+}
+
+/* ── The highlight wash ─────────────────────────────────────────────────────
+   A task row the person was just sent to (a new task, Show task in channel, an
+   Agents row) takes `--overlay-selected` and lets it go over three turns of
+   `--dur-slow` (1575ms) on the one curve. Add the class, remove it on
+   `animationend` — which fires under reduced motion too, because the rest
+   below is a hold, not `animation: none`. */
+.crew-highlight {
+  animation: crew-highlight-wash calc(var(--dur-slow) * 3) var(--ease-out);
+}
+
+@keyframes crew-highlight-wash {
+  from {
+    background-color: var(--overlay-selected);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes crew-highlight-hold {
+  from,
+  to {
+    background-color: var(--overlay-selected);
+  }
+}
+
+/* ── Setup and onboarding columns ────────────────────────────────────────────
+   A setup card, a trust pane or a join status card: a form-width column,
+   centred in whatever it sits in. */
+.crew-setup {
+  width: 100%;
+  max-width: var(--crew-setup-width);
+  margin-inline: auto;
+}
+
+/* ── Access rows (`access/AccessList.tsx`) ───────────────────────────────────
+   A row of the Access tab and of Workspace settings → Agent access: an icon,
+   the title over `#destination (+n)`, then the status badge and the row's
+   actions. All of it on one unwrapping line did not fit the 360px pane: the
+   title and destination were squeezed to nothing and `⋯` was clipped. So the
+   line wraps. The text keeps at least 10rem (about 160px) and takes whatever
+   is spare; when it cannot keep that much, the badge and the actions move
+   together onto a line of their own, at the end edge. The end group never
+   shrinks, and it may wrap inside itself (badge over actions) rather than
+   grow past the row, so `⋯` is never cut off. Order and names are the
+   markup's; this only places them. */
+.crew-access-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  min-width: 0;
+}
+
+.crew-access-row-text {
+  flex: 1 1 10rem;
+  min-width: min(10rem, 100%);
+}
+
+.crew-access-row-end {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.crew-access-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* ── Reduced motion: every animated rule's resting state ────────────────────
+   Push is instant; cover and the cross-fade keep only their fade (which the
+   global reset then shortens); the highlight is SHOWN and then removed with no
+   transition. That last one is a hold at its full period, and it is the one
+   place this file outranks the global reset on purpose: the reset would make
+   the wash last 0.01ms, which is not "shown", it is lost. A hold moves
+   nothing, so it is not motion the reset exists to stop. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-pane[data-state='open'] {
+    animation: none;
+  }
+
+  .crew-pane[data-state='closed'] {
+    animation: none;
+  }
+
+  .crew-pane[data-state='open'] > .crew-pane-content {
+    animation: none;
+  }
+
+  @container crew-main (width < 800px) {
+    .crew-pane[data-state='open'] {
+      animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+    }
+
+    .crew-pane[data-state='closed'] {
+      animation: crew-fade-out var(--dur-fast) var(--ease-out);
+    }
+  }
+
+  .crew-crossfade-item[data-state='open'] {
+    animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+  }
+
+  .crew-crossfade-item[data-state='closed'] {
+    animation: crew-fade-out var(--dur-fast) var(--ease-out);
+  }
+
+  .crew-highlight {
+    animation-name: crew-highlight-hold;
+    animation-duration: calc(var(--dur-slow) * 3) !important;
+  }
+}

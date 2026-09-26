@@ -24,7 +24,7 @@ DOCS = [
     ("Internal reviews", "internal-server-flow",           "subsystem-reviews/server-reply-flow-and-session-lifecycle.md",           "Server reply flow & session lifecycle"),
     ("Internal reviews", "internal-verification",          "subsystem-reviews/self-verification-and-doneness.md",          "Self-verification & quality checkpoints"),
 
-    ("External studies", "external-goose",       "../../research/coding-agent-landscape/goose.md",       "Goose (Block) — upstream fork parent"),
+    ("External studies", "external-goose",       "../../research/coding-agent-landscape/goose.md",       "Goose (Block)"),
     ("External studies", "external-cline",       "../../research/coding-agent-landscape/cline.md",       "Cline"),
     ("External studies", "external-opencode",    "../../research/coding-agent-landscape/opencode.md",    "OpenCode (sst)"),
     ("External studies", "external-pi",          "../../research/coding-agent-landscape/pi.md",          "Pi (badlogic)"),

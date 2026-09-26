@@ -84,6 +84,7 @@
       background: var(--bg-3); color: var(--text);
       font-size: 13px; font-weight: 500;
     }
+    .ack-note { font-size: 14px; line-height: 1.5; color: var(--text-2); margin-bottom: 12px; }
     .ack-oss-list { display: flex; flex-direction: column; gap: 8px; }
     .ack-oss-item { display: flex; align-items: baseline; gap: 10px; font-size: 14px; line-height: 1.5; }
     .ack-oss-item a { font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
@@ -652,23 +653,40 @@
           </div>
         </div>
         <div class="ack-group">
-          <h4>Open source inspirations</h4>
+          <h4>Inspirations</h4>
+          <p class="ack-note">Biorouter is an independent project that started from its own source code. The agents below influenced its design, Goose most of all, and it also draws on many open source libraries.</p>
           <div class="ack-oss-list">
             <div class="ack-oss-item">
               <a href="https://block.github.io/goose/" target="_blank">Goose</a>
-              <span>CLI and desktop agent for full developer workflows (Block). Biorouter's primary upstream foundation.</span>
+              <span>CLI and desktop agent for full developer workflows (Block). A major inspiration for Biorouter's design.</span>
+            </div>
+            <div class="ack-oss-item">
+              <a href="https://github.com/anthropics/claude-code" target="_blank">Claude Code</a>
+              <span>Anthropic's agentic coding tool for the terminal and IDE.</span>
+            </div>
+            <div class="ack-oss-item">
+              <a href="https://github.com/openai/codex" target="_blank">Codex CLI</a>
+              <span>OpenAI's open source coding agent that runs in the terminal.</span>
+            </div>
+            <div class="ack-oss-item">
+              <a href="https://github.com/google-gemini/gemini-cli" target="_blank">Gemini CLI</a>
+              <span>Google's open source AI agent for the terminal.</span>
+            </div>
+            <div class="ack-oss-item">
+              <a href="https://github.com/OpenHands/OpenHands" target="_blank">OpenHands</a>
+              <span>Open source platform for autonomous software development agents.</span>
             </div>
             <div class="ack-oss-item">
               <a href="https://aider.chat/" target="_blank">Aider</a>
-              <span>Open-source, Git-native CLI AI coding agent.</span>
+              <span>Open source coding agent for the terminal that works with Git.</span>
             </div>
             <div class="ack-oss-item">
               <a href="https://github.com/cline/cline" target="_blank">Cline</a>
-              <span>Open-source interactive CLI coding agent.</span>
+              <span>Open source interactive CLI coding agent.</span>
             </div>
             <div class="ack-oss-item">
               <a href="https://opencode.ai/" target="_blank">OpenCode</a>
-              <span>Open-source coding agent with multi-session and multi-provider support.</span>
+              <span>Open source coding agent that supports multiple sessions and providers.</span>
             </div>
             <div class="ack-oss-item">
               <a href="https://forgecode.dev/" target="_blank">ForgeCode</a>

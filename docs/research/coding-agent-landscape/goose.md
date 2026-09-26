@@ -1,31 +1,32 @@
 # Goose (Block / AAIF) — agentic feedback loop review
 
-> **What this is.** An external review of upstream Goose — the open-source Rust AI agent
-> originally by Block, now stewarded by the Agentic AI Foundation (AAIF, Linux Foundation)
-> — and the project BioRouter is forked from. It emphasises what upstream added or changed
-> in 2025–2026 that a mid-2025 fork is missing. One of nine tool reports in this folder,
+> **What this is.** An external review of Goose, the open source Rust AI agent originally
+> by Block and now stewarded by the Agentic AI Foundation (AAIF, Linux Foundation), and the
+> agent whose design influenced BioRouter most. It emphasises what Goose added or changed in
+> 2025 and 2026 that BioRouter may not have. One of nine tool reports in this folder,
 > each covering the same ten dimensions.
 > **Status:** Current. It describes an external project, so BioRouter's own changes do not
-> invalidate it, and it remains the repository's only record of upstream-Goose divergence.
-> It is a July 2026 snapshot of a fast-moving upstream, so every "fork gap" item needs
-> re-verification before being acted on.
+> invalidate it, and it remains the repository's only detailed record of Goose's recent
+> changes. It is a July 2026 snapshot of a fast moving project, so check every "gap compared
+> with Goose" item again before acting on it.
 > **Audience:** developers working on BioRouter's agent loop.
 
-BioRouter is a direct fork of Goose, with an identical workspace layout: `crates/goose` →
-`biorouter`, `goosed` → `biorouterd`, an `ui/desktop` Electron app, hermit, a Justfile. That
-makes this the one report in the folder describing BioRouter's own ancestry rather than a
-competitor.
+BioRouter is an independent project, but Goose was the strongest influence on its design,
+and the two have a similar shape: a Rust core agent crate, a daemon (`goosed` in Goose,
+`biorouterd` in BioRouter), a `ui/desktop` Electron app, hermit and a Justfile. That makes
+this the one report in the folder about the design BioRouter learned most from rather than
+about a competitor.
 
-> **Convention.** Sections end with a **Fork gap:** callout naming the parts of that
-> subsystem that arrived upstream in 2025–2026 and are therefore likely absent from a fork
-> branched early-to-mid 2025. The callout appears only where such a gap was identified; a
-> section without one is not a claim of parity, only that no gap was recorded.
+> **Convention.** Sections end with a **Gap compared with Goose:** callout naming the parts
+> of that subsystem that Goose added in 2025 and 2026 and that BioRouter may not have. The
+> callout appears only where such a gap was identified; a section without one is not a
+> claim of parity, only that no gap was recorded.
 
 > **Note.** Sources are primary where possible: the `block/goose` source tree (and its
 > mirror `aaif-goose/goose`) on GitHub, plus the official docs at `goose-docs.ai` /
 > `block.github.io/goose`. All URLs were fetched July 2026 — month granularity only, for a
-> project that ships continuously. Upstream file paths are cited without a commit or tag and
-> cannot be re-resolved exactly.
+> project that ships continuously. Goose file paths are cited without a commit or tag, so
+> they cannot be traced back to an exact version.
 
 ## System prompt and context injection
 
@@ -50,9 +51,9 @@ the immediate context rather than just referencing it.
 (`.goose/memory`) are tag-retrieved on demand (see Compaction and memory).
 [Memory MCP documentation](https://goose-docs.ai/docs/mcp/memory-mcp/)
 
-> **Fork gap.** Hierarchical multi-level `AGENTS.md`/`.goosehints` discovery, `@`-mention
-> inlining, and `CONTEXT_FILE_NAMES` are recent; older forks typically load a single
-> `.goosehints` at repo root only.
+> **Gap compared with Goose.** Hierarchical multi-level `AGENTS.md`/`.goosehints` discovery,
+> `@`-mention inlining, and `CONTEXT_FILE_NAMES` are recent; older Goose versions loaded a
+> single `.goosehints` at the repo root only.
 
 ## Tool loop mechanics
 
@@ -114,14 +115,14 @@ startup; locals are pulled by tag when the user's request matches. Unlike static
 `.goosehints`, memory is agent-writable ("remember that …") and read on demand.
 [Memory MCP documentation](https://goose-docs.ai/docs/mcp/memory-mcp/)
 
-> **Fork gap.** The 0.8 auto-compaction, background tool-pair summarization
+> **Gap compared with Goose.** The 0.8 auto-compaction, background tool-pair summarization
 > (`GOOSE_TOOL_CALL_CUTOFF`), and the pluggable `GOOSE_CONTEXT_STRATEGY` fallback ladder are
 > all 2025 refinements; earlier Goose truncated more bluntly.
 
 ## Hooks and extensibility
 
-Goose gained a full **lifecycle hooks** system in **May 2026** — the newest major loop
-change and almost certainly absent from a mid-2025 fork.
+Goose gained a full **lifecycle hooks** system in **May 2026**, its newest major loop
+change.
 [Goose hooks announcement](https://goose-docs.ai/blog/2026/05/14/goose-hooks/)
 
 - **Events:** `SessionStart`, `SessionEnd`, `Stop`, `UserPromptSubmit`, `PreToolUse`,
@@ -167,7 +168,7 @@ persisted in `permission.yaml` by a `PermissionManager`; extensions annotate too
 `ToolInspectionManager` of stacked inspectors before dispatch. **No OS-level sandboxing** is
 documented — the guardrail is permission gating, not process isolation.
 
-> **Fork gap.** SmartApprove plus the `PermissionJudge` LLM classifier and the
+> **Gap compared with Goose.** SmartApprove plus the `PermissionJudge` LLM classifier and the
 > annotation-driven per-tool `permission.yaml` are 2025 additions.
 
 ## Loop and stuck detection
@@ -184,8 +185,8 @@ documented — the guardrail is permission gating, not process isolation.
 - **Stop hooks** can veto ending a turn; `emit_stop_hook_blocking` is capped at
   `DEFAULT_STOP_HOOK_BLOCK_CAP = 8` so a mis-behaving stop hook cannot loop forever.
 
-> **Fork gap.** The `RepetitionInspector`, the empty-turn cap, and the stop-hook block cap
-> are relatively recent robustness additions.
+> **Gap compared with Goose.** The `RepetitionInspector`, the empty-turn cap, and the
+> stop-hook block cap are relatively recent safeguards against a stuck loop.
 
 ## Long-running tasks and background processes
 
@@ -208,8 +209,8 @@ documented — the guardrail is permission gating, not process isolation.
   [DeepWiki: scheduler and recurring tasks](https://deepwiki.com/block/goose/4.1.5-scheduler-and-recurring-tasks)
 - **Lead/Worker model.** A two-model split (cheap worker + smart lead) was shipped in
   Aug 2025 (`GOOSE_LEAD_MODEL`, `GOOSE_LEAD_PROVIDER`) but has since been **removed and
-  folded into Planning Mode / general multi-model config** — a good example of upstream
-  churn a fork may have frozen mid-evolution.
+  folded into Planning Mode / general multi-model config**, a good example of how quickly
+  Goose changes: a design modelled on one release can be out of date a few months later.
   [lead/worker blog post, now marked removed](https://raw.githubusercontent.com/block/goose/main/documentation/blog/2025-08-11-llm-tag-team-lead-worker-model/index.md) ·
   [multi-model documentation](https://goose-docs.ai/docs/guides/multi-model/)
 
@@ -247,9 +248,9 @@ opt-in through **Recipes**:
   JSON schema, forcing structured, checkable done-ness criteria.
 - Otherwise "done" = model stops emitting tool calls (bounded by max-turns and stop hooks).
 
-> **Fork gap.** Recipe `retry` / `SuccessCheck` / `response.json_schema` are the main
-> self-verification machinery and are 2025-era; a fork without them relies purely on the
-> model deciding it's finished.
+> **Gap compared with Goose.** Recipe `retry` / `SuccessCheck` / `response.json_schema` are
+> the main self-verification machinery and are 2025-era; an agent without them relies purely
+> on the model deciding it has finished.
 
 ## Ideas worth stealing
 
@@ -285,8 +286,8 @@ opt-in through **Recipes**:
    all-or-nothing autonomy.
 
 6. **Native git checkpoint / rewind — the gap to close.** Goose *lacks* this and papers
-   over it with "tell the model to commit." BioRouter could leapfrog upstream by adding a
-   shadow-repo snapshot before each edit and a `/rewind` that restores files + conversation
+   over it with "tell the model to commit." BioRouter could move ahead of Goose by adding a
+   shadow repo snapshot before each edit and a `/rewind` that restores files + conversation
    — the single biggest safety-net difference between Goose and current-generation coding
    agents.
 
@@ -316,8 +317,8 @@ pages are a generated secondary source and are labelled as such below.
 | Plan mode | [creating plans guide](https://goose-docs.ai/docs/guides/context-engineering/creating-plans/) |
 | Undo pattern | [community write-up](https://dev.to/goose_oss/how-to-stop-your-ai-agent-from-making-unwanted-code-changes-5g85) |
 
-> **Note.** Upstream file paths are cited without a commit or tag and cannot be re-resolved
-> exactly. Re-verify any "fork gap" before acting on it.
+> **Note.** Goose file paths are cited without a commit or tag, so they cannot be traced back
+> to an exact version. Check any "gap compared with Goose" item again before acting on it.
 
 ## Related documentation
 
@@ -326,4 +327,4 @@ pages are a generated secondary source and are labelled as such below.
 - [Cline report](cline.md) — the shadow-git checkpoint model, described in readable source.
 - [Agent-loop campaign](../../history/agent-loop-campaign/README.md) — the implementation campaign that acted on the gaps this report identified.
 - [Improvement proposals register](../../history/agent-loop-review/improvement-proposals.md) — the `BR-NN` index of proposals derived from this corpus.
-- [Context engineering guide](../../agent-loop/context-engineering.md) — how BioRouter's inherited context management works today.
+- [Context engineering guide](../../agent-loop/context-engineering.md) — how BioRouter's context management works today.

@@ -542,6 +542,9 @@ export type ChatRequest = {
      * the copy must already contain every message the server holds, and the
      * request is refused with 409 if it does not. See
      * [`apply_client_writeback`]. The desktop app has never sent this field.
+     *
+     * On a chat whose Crew access has ended the copy is refused with 403, and nothing is
+     * written: the turn it would seed is refused anyway.
      */
     conversation_so_far?: Array<Message> | null;
     /**
@@ -592,6 +595,8 @@ export type CheckModelResponse = {
 export type CheckProviderRequest = {
     provider: string;
 };
+
+export type ClusterMode = 'public' | 'private';
 
 /**
  * Which vendor CLI. Kept as an enum rather than a string so the match arms that
@@ -772,6 +777,12 @@ export type CredibilityResponse = {
 };
 
 export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
+
+export type CrewRequest = {
+    method: string;
+    params?: unknown;
+    request_id?: string | null;
+};
 
 /**
  * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
@@ -1045,6 +1056,13 @@ export type EditMessageResponse = {
 
 export type EditType = 'diverge' | 'edit';
 
+export type ElicitationResponseRequest = {
+    cancelled?: boolean;
+    data?: unknown;
+    id: string;
+    session_id: string;
+};
+
 export type EmbeddedResource = {
     _meta?: {
         [key: string]: unknown;
@@ -1217,6 +1235,47 @@ export type ExtensionResponse = {
     warnings?: Array<string>;
 };
 
+/**
+ * `POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on
+ * the Join screen. Every choice is optional; an absent one takes the invitation's.
+ */
+export type FromInvitationRequest = {
+    advanced?: InvitationAdvanced;
+    /**
+     * Default: the invitation's institution. Required for a Private connection.
+     */
+    institution_id?: string | null;
+    /**
+     * What the person pasted: the host's whole message, the bare `brcrew1:` line, or the JSON
+     * `biorouter-crew status` prints.
+     */
+    invitation: string;
+    mode?: ClusterMode | null;
+    /**
+     * `true`: parse and describe it, and save nothing.
+     */
+    preview?: boolean;
+    /**
+     * The joiner's account name on the server. Default: the username the host invited.
+     */
+    username?: string | null;
+};
+
+/**
+ * What `POST /crew/connections/from-invitation` answers: exactly one of the two fields.
+ */
+export type FromInvitationResponse = {
+    /**
+     * The saved connection, pinned exactly as the invitation says (or the one this computer
+     * already had for the same workspace and settings), in the shape `GET /crew/connections`
+     * lists.
+     */
+    connection?: {
+        [key: string]: unknown;
+    } | null;
+    preview?: InvitationSummary | null;
+};
+
 export type FrontendToolRequest = {
     id: string;
     toolCall: {
@@ -1227,6 +1286,14 @@ export type FrontendToolRequest = {
 export type GetToolsQuery = {
     extension_name?: string | null;
     session_id: string;
+};
+
+export type GrantSessionRequest = {
+    channel_id: string;
+    context_channels?: Array<string>;
+    expected_mode?: 'public' | 'private' | null;
+    expected_policy_epoch?: number | null;
+    expected_workspace_policy_epoch?: number | null;
 };
 
 export type Graph = {
@@ -1401,6 +1468,57 @@ export type HistoryQuery = {
     limit?: number;
 };
 
+export type HostStartError = {
+    code: string;
+    message: string;
+};
+
+/**
+ * What the person asked to host: the name, and the SSH login and route they typed.
+ */
+export type HostStartRequest = {
+    identity_file?: string | null;
+    port?: number | null;
+    /**
+     * This computer's pending hosting identity, from `POST /crew/devices/prepare`.
+     */
+    preparation_id: string;
+    proxy_jump?: string | null;
+    /**
+     * The SSH login to start Crew as: an alias or `user@host`.
+     */
+    ssh_target: string;
+    /**
+     * The workspace name, as the broker's rule allows it (`lab`, `chen-lab`).
+     */
+    workspace_name: string;
+};
+
+/**
+ * Where a run stands.
+ */
+export type HostStartState = 'running' | 'finished' | 'failed';
+
+/**
+ * A run, as `GET /crew/host/start/{id}` answers it.
+ */
+export type HostStartStatus = {
+    /**
+     * The exact command text that runs, as the dialog shows it.
+     */
+    command: string;
+    error?: HostStartError | null;
+    exit_code?: number | null;
+    job_id: string;
+    /**
+     * Everything the commands printed so far (stdout and stderr, in arrival order), without
+     * control characters, at most 64 KiB.
+     */
+    output: string;
+    result?: StartOutput | null;
+    state: HostStartState;
+};
+
 export type Icon = {
     mimeType?: string;
     sizes?: Array<string>;
@@ -1525,6 +1643,8 @@ export type IngestConversationBody = {
     session_ids: Array<string>;
 };
 
+export type Initial = 'latest' | 'all';
+
 export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
@@ -1605,6 +1725,207 @@ export type InterruptRequest = {
      * again and the text is not queued twice.
      */
     turn_id?: string | null;
+};
+
+/**
+ * The Join screen's Advanced settings. None of them can change the pinned workspace.
+ */
+export type InvitationAdvanced = {
+    identity_file?: string | null;
+    /**
+     * This computer's name for the connection. Default: the workspace's name.
+     */
+    name?: string | null;
+    port?: number | null;
+    /**
+     * A prepared hosting identity (`POST /crew/devices/prepare`), when a host saves their own
+     * workspace from what `biorouter-crew start` printed.
+     */
+    preparation_id?: string | null;
+    /**
+     * A jump route. An empty string means none, even when the invitation suggests one.
+     */
+    proxy_jump?: string | null;
+    remote_execution?: boolean;
+    remote_root?: string | null;
+    /**
+     * A server login from the person's own SSH settings (`hpc`, `bob@hpc.ucsf.edu`), used
+     * instead of `{username}@{server}`. With one, the invitation's port and jump host are not
+     * applied: the person's SSH settings for that login decide them.
+     */
+    ssh_target?: string | null;
+};
+
+/**
+ * Something saving still needs, which the invitation did not say and the person has not given.
+ */
+export type InvitationMissing = 'username' | 'server' | 'institution';
+
+/**
+ * A parsed invitation and what saving it would do. Labels are not authority: nothing here is
+ * trusted until `hello` verifies against the pinned workspace key.
+ */
+export type InvitationPreview = {
+    /**
+     * A connection on this computer that already pins this workspace.
+     */
+    existing_connection_id?: string | null;
+    /**
+     * The short form a person compares by eye (`3F2A 9C1E 77B0 D4E1`).
+     */
+    fingerprint: string;
+    host_display_name?: string | null;
+    host_username?: string | null;
+    /**
+     * Another saved connection reaches the same server under a different institution, in
+     * people's words. Saving is still allowed; connecting would be refused, because one
+     * computer can't mix institutions on one server (T-52).
+     */
+    institution_conflict?: string | null;
+    institution_id?: string | null;
+    invitee_username?: string | null;
+    /**
+     * What saving still needs; empty when it can save.
+     */
+    missing: Array<InvitationMissing>;
+    mode: ClusterMode;
+    /**
+     * The chosen mode differs from the workspace's own.
+     */
+    mode_differs: boolean;
+    /**
+     * The connection name saving would use.
+     */
+    name: string;
+    owner_uid: number;
+    port?: number | null;
+    proxy_jump?: string | null;
+    /**
+     * The server named by the invitation.
+     */
+    server?: string | null;
+    /**
+     * What to call the server on screen (D-ALIAS): the person's own SSH alias for the address
+     * saving would use, when one maps to it, else that address's host. Display only; `server`
+     * and `ssh_target` stay the invitation's resolved address. See [`super::server_label`].
+     */
+    server_label?: string | null;
+    socket_path: string;
+    source: InvitationSourceKind;
+    ssh_target?: string | null;
+    /**
+     * What saving would use: the username, the SSH login and route, and the privacy.
+     */
+    username?: string | null;
+    /**
+     * The pinned workspace: shown under Advanced only.
+     */
+    workspace_id: string;
+    workspace_institution_id?: string | null;
+    /**
+     * SHA-256 of the workspace key, lowercase hex.
+     */
+    workspace_key_fingerprint: string;
+    /**
+     * How to name the workspace: its name, else "{host}'s workspace", else "a workspace".
+     */
+    workspace_label: string;
+    workspace_mode?: ClusterMode | null;
+    workspace_name?: string | null;
+};
+
+/**
+ * Where a previewed invitation came from.
+ */
+export type InvitationSourceKind = 'invitation' | 'legacy_status';
+
+/**
+ * A previewed invitation: the daemon's summary ([`InvitationPreview`]) and the SSH hints and
+ * pinned key exactly as the invitation states them.
+ *
+ * `ssh_host` and `ssh_port` are what the invitation *says*; `server` and `port` in the summary
+ * are what saving would *use* once the person's choices are applied. Labels are not authority:
+ * nothing here is trusted until `hello` verifies against the pinned workspace key.
+ */
+export type InvitationSummary = InvitationPreview & {
+    /**
+     * The SSH server the invitation names (never a host's local alias); `null` for the legacy
+     * status JSON, which names none.
+     */
+    ssh_host?: string | null;
+    /**
+     * The SSH port the invitation names; `null` means 22.
+     */
+    ssh_port?: number | null;
+    /**
+     * The Ed25519 workspace key the invitation pins, 64 lowercase hex characters.
+     */
+    workspace_public_key: string;
+};
+
+/**
+ * The invitation a host sends: the whole message, and its `brcrew1:` line alone.
+ */
+export type InvitationText = {
+    line: string;
+    message: string;
+};
+
+/**
+ * What `POST /crew/connections/{id}/join` answers once this computer is a member.
+ */
+export type JoinClaimed = {
+    /**
+     * This computer was added to an existing member.
+     */
+    add_device: boolean;
+    inviter?: JoinPerson | null;
+    /**
+     * Always `true`: a join that did not happen is a refusal, never this answer.
+     */
+    joined: boolean;
+    status: JoinState;
+    workspace_name?: string | null;
+};
+
+/**
+ * A person named in a join status. Labels only.
+ */
+export type JoinPerson = {
+    /**
+     * The username when they set no display name of their own.
+     */
+    display_name: string;
+    username: string;
+};
+
+/**
+ * Where this computer stands in joining a workspace.
+ */
+export type JoinState = 'invited' | 'approved' | 'code_mismatch' | 'not_invited' | 'expired' | 'joined' | 'unsupported';
+
+/**
+ * The join status the Join screen shows.
+ *
+ * `code` is computed on this computer from its saved device key and the pinned workspace key.
+ * It is never read from the workspace's answer.
+ */
+export type JoinStatus = {
+    /**
+     * The invitation adds this computer to an existing member.
+     */
+    add_device: boolean;
+    /**
+     * This computer's device code (`7QK2-M9XA-3JTP-WZ4D`), while invited, approved or refused.
+     */
+    code?: string | null;
+    /**
+     * When the invitation expires (seconds since the Unix epoch).
+     */
+    expires_at?: number | null;
+    inviter?: JoinPerson | null;
+    status: JoinState;
+    workspace_name?: string | null;
 };
 
 export type JsonObject = {
@@ -2439,6 +2760,98 @@ export type ModelUsageRow = {
     turns: number;
 };
 
+export type ObserveEvent = {
+    /**
+     * What the connected broker's last verified `hello` said it supports (for example
+     * `unique_names_v1`). They decide only which requests a client offers; the broker still
+     * refuses what it does not support. Absent before the first verified hello, and from a
+     * daemon that predates it.
+     */
+    capabilities?: Array<string>;
+    connection_id: string;
+    connection_institution_id?: string | null;
+    connection_mode: 'public' | 'private';
+    connection_policy_epoch: number;
+    /**
+     * How each person the snapshot names is shown, keyed by principal ID. Absent from a
+     * daemon that predates it; clients then compute their own.
+     */
+    labels?: {
+        [key: string]: {
+            /**
+             * Another person in this workspace has a display name that is, or looks like, this one.
+             * Both are then shown with their `@username` everywhere.
+             */
+            collides: boolean;
+            /**
+             * `Display name (@username)`, or `@username` when the two are equal case-insensitively;
+             * always both when the name collides with someone else's.
+             */
+            full: string;
+            /**
+             * The display name alone, for chips and avatars; `@username` when the two are equal, and
+             * the same as `full` when the name collides.
+             */
+            short: string;
+        };
+    };
+    runs: Array<unknown>;
+    snapshot: unknown;
+    type: 'state';
+} | {
+    channel_id: string;
+    /**
+     * The names of the channels this frame's messages name, limited by the broker to the
+     * channels the viewer can read. Display only.
+     */
+    channel_names?: {
+        [key: string]: string;
+    };
+    cursor?: string | null;
+    messages: Array<unknown>;
+    /**
+     * The largest page the observer asks the broker for right now. It shrinks when the
+     * broker answers `response_too_large`, so a client must not assume a fixed size.
+     */
+    page_size?: number | null;
+    /**
+     * How the broker names each author of this frame's messages, keyed by principal ID,
+     * including a person who has since left the workspace. Display only.
+     */
+    people?: {
+        [key: string]: {
+            /**
+             * False for a person who was removed from the workspace.
+             */
+            active?: boolean | null;
+            display_name?: string | null;
+            username: string;
+        };
+    };
+    /**
+     * How many messages of the page this frame was taken from are still to come. `0` ends
+     * the page, so on the opening frames it marks the end of the channel's backlog. Absent
+     * from a daemon that predates it.
+     */
+    remaining?: number | null;
+    reset: boolean;
+    type: 'messages';
+} | {
+    cursor?: string | null;
+    type: 'reconnect';
+} | {
+    clear: boolean;
+    code: string;
+    error: string;
+    type: 'error';
+};
+
+export type ObserveRequest = {
+    after?: string | null;
+    channel_id?: string | null;
+    initial?: Initial;
+};
+
 /**
  * The part of an installed package's record the interface needs. The full
  * record lives beside the skills as `biorouter-package.json`; see
@@ -2568,6 +2981,13 @@ export type PlannedSkill = {
      * The frontmatter `name`, preserved exactly.
      */
     name: string;
+};
+
+export type Prepare = {
+    cols: number;
+    controller_id: string;
+    request_id: string;
+    rows: number;
 };
 
 export type PreviewBody = {
@@ -3031,6 +3451,130 @@ export type ResetResponse = {
     reset: Array<ResetCategory>;
 };
 
+/**
+ * `POST /crew/resolve`.
+ */
+export type ResolveRequest = {
+    /**
+     * The saved connection whose workspace the selectors are resolved in: its ID, its name
+     * (case-insensitive) or its SSH target. May be omitted when only one connection is saved.
+     */
+    connection?: string | null;
+    selectors?: Array<{
+        /**
+         * What a selector names.
+         */
+        kind?: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment' | null;
+        text: string;
+    }>;
+};
+
+/**
+ * The answer to `POST /crew/resolve`.
+ */
+export type ResolveResponse = {
+    /**
+     * The answer to one selector.
+     */
+    connection?: {
+        /**
+         * Send this to the broker. Never show it to a person.
+         */
+        id: string;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        /**
+         * What to confirm the choice with: `Bob Lee (@bob)`, `Analysis Lab`, `#methods`.
+         * Absent for an ID this workspace's snapshot does not show.
+         */
+        label?: string | null;
+        status: 'resolved';
+        /**
+         * The selector's text, as sent.
+         */
+        text: string;
+        /**
+         * A person's canonical username, to send as `expected_username`.
+         */
+        username?: string | null;
+    } | {
+        /**
+         * The one member whose username differs from the text only in letter case. It is never
+         * resolved silently; the person must type it as shown.
+         */
+        did_you_mean?: string | null;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        status: 'unknown_name';
+        text: string;
+    } | {
+        /**
+         * Labels to choose between, never IDs.
+         */
+        candidates: Array<string>;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        status: 'ambiguous_name';
+        text: string;
+    } | null;
+    /**
+     * The answer to one selector.
+     */
+    results: Array<{
+        /**
+         * Send this to the broker. Never show it to a person.
+         */
+        id: string;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        /**
+         * What to confirm the choice with: `Bob Lee (@bob)`, `Analysis Lab`, `#methods`.
+         * Absent for an ID this workspace's snapshot does not show.
+         */
+        label?: string | null;
+        status: 'resolved';
+        /**
+         * The selector's text, as sent.
+         */
+        text: string;
+        /**
+         * A person's canonical username, to send as `expected_username`.
+         */
+        username?: string | null;
+    } | {
+        /**
+         * The one member whose username differs from the text only in letter case. It is never
+         * resolved silently; the person must type it as shown.
+         */
+        did_you_mean?: string | null;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        status: 'unknown_name';
+        text: string;
+    } | {
+        /**
+         * Labels to choose between, never IDs.
+         */
+        candidates: Array<string>;
+        /**
+         * What a selector names.
+         */
+        kind: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment';
+        status: 'ambiguous_name';
+        text: string;
+    }>;
+};
+
 export type ResourceContents = {
     _meta?: {
         [key: string]: unknown;
@@ -3065,6 +3609,10 @@ export type RestoreBody = {
 
 export type RestoreResponse = {
     new_commit_sha: string;
+};
+
+export type Resume = {
+    file_capability: string;
 };
 
 export type ResumeAgentRequest = {
@@ -3121,6 +3669,20 @@ export type Role = string;
 
 export type RunNowResponse = {
     session_id: string;
+};
+
+export type RunView = {
+    channel_id: string;
+    connection_id: string;
+    error?: string | null;
+    run_id: string;
+    session_id: string;
+    /**
+     * When this device admitted the task, in Unix milliseconds. Absent from a run recorded
+     * before it was kept.
+     */
+    started_at?: number | null;
+    status: string;
 };
 
 /**
@@ -3834,10 +4396,37 @@ export type SourceProvenance = {
 
 export type StartAgentRequest = {
     extension_overrides?: Array<ExtensionConfig> | null;
+    model?: string | null;
+    provider?: string | null;
     workflow?: Workflow | null;
     workflow_deeplink?: string | null;
     workflow_id?: string | null;
     working_dir: string;
+};
+
+/**
+ * What the output says, read as the dialog reads a paste.
+ */
+export type StartOutput = {
+    kind: 'found';
+    text: string;
+} | {
+    detail?: string | null;
+    kind: 'problem';
+    problem: string;
+};
+
+export type StartRunRequest = {
+    channel_id: string;
+    context_channels?: Array<string>;
+    expected_mode?: 'public' | 'private' | null;
+    expected_policy_epoch?: number | null;
+    expected_workspace_policy_epoch?: number | null;
+    model: string;
+    posting_grant?: boolean;
+    prompt: string;
+    provider: string;
+    request_id?: string | null;
 };
 
 /**
@@ -4384,6 +4973,43 @@ export type WorkflowToYamlResponse = {
 export type WritePageBody = {
     commit_message: string;
     content: string;
+};
+
+export type RespondToElicitationData = {
+    body: ElicitationResponseRequest;
+    path?: never;
+    query?: never;
+    url: '/action-required/elicitation';
+};
+
+export type RespondToElicitationErrors = {
+    /**
+     * Invalid response shape
+     */
+    400: unknown;
+    /**
+     * Verified human authority required
+     */
+    403: unknown;
+    /**
+     * No matching live ordinary elicitation, or answer recorded after waiter ended
+     */
+    409: unknown;
+    /**
+     * Response exceeds size bound
+     */
+    413: unknown;
+    /**
+     * Persistence failed or completion outcome is unknown
+     */
+    500: unknown;
+};
+
+export type RespondToElicitationResponses = {
+    /**
+     * Delivered to the live ordinary elicitation
+     */
+    200: unknown;
 };
 
 export type SubmitSecretsData = {
@@ -5930,6 +6556,806 @@ export type ValidateConfigResponses = {
 
 export type ValidateConfigResponse = ValidateConfigResponses[keyof ValidateConfigResponses];
 
+export type CrewAuthenticationCancelData = {
+    body?: never;
+    path: {
+        /**
+         * Authentication session
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/authentication/{id}';
+};
+
+export type CrewAuthenticationCancelResponses = {
+    200: unknown;
+};
+
+export type CrewAuthenticationTerminalData = {
+    body?: never;
+    path: {
+        /**
+         * Authentication session
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/authentication/{id}/terminal';
+};
+
+export type ListConnectionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/connections';
+};
+
+export type ListConnectionsResponses = {
+    /**
+     * `connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only
+     */
+    200: unknown;
+};
+
+export type SaveConnectionData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/connections';
+};
+
+export type SaveConnectionResponses = {
+    200: unknown;
+};
+
+export type CrewConnectionFromInvitationData = {
+    body: FromInvitationRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/connections/from-invitation';
+};
+
+export type CrewConnectionFromInvitationErrors = {
+    /**
+     * `crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)
+     */
+    403: unknown;
+    /**
+     * `crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`
+     */
+    409: unknown;
+};
+
+export type CrewConnectionFromInvitationResponses = {
+    /**
+     * `preview` for a preview (nothing saved), else `connection`: the saved connection, pinned exactly as the invitation says
+     */
+    200: FromInvitationResponse;
+};
+
+export type CrewConnectionFromInvitationResponse = CrewConnectionFromInvitationResponses[keyof CrewConnectionFromInvitationResponses];
+
+export type RemoveConnectionData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}';
+};
+
+export type RemoveConnectionResponses = {
+    200: unknown;
+};
+
+export type UpdateConnectionData = {
+    body: unknown;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}';
+};
+
+export type UpdateConnectionResponses = {
+    200: unknown;
+};
+
+export type AuthenticationPlanData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/auth-plan';
+};
+
+export type AuthenticationPlanResponses = {
+    200: unknown;
+};
+
+export type CrewAuthenticationPrepareData = {
+    body: Prepare;
+    path: {
+        /**
+         * Saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/authentication';
+};
+
+export type CrewAuthenticationPrepareResponses = {
+    200: unknown;
+};
+
+export type ConnectData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/connect';
+};
+
+export type ConnectErrors = {
+    /**
+     * `code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message and `detail`, when present, OpenSSH's own bounded words for Copy details
+     */
+    400: unknown;
+};
+
+export type ConnectResponses = {
+    200: unknown;
+};
+
+export type DisconnectData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/disconnect';
+};
+
+export type DisconnectResponses = {
+    200: unknown;
+};
+
+export type CrewProfileGrantsData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/grants';
+};
+
+export type CrewProfileGrantsResponses = {
+    200: unknown;
+};
+
+export type CrewConnectionInvitationData = {
+    body?: never;
+    path: {
+        /**
+         * The host's saved Crew connection
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * The invited person's username on the server, `@bob` or `bob`. The message then names
+         * them, and prefills their username when they paste it.
+         */
+        invitee?: string | null;
+    };
+    url: '/crew/connections/{id}/invitation';
+};
+
+export type CrewConnectionInvitationErrors = {
+    /**
+     * `crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_connection_not_found`
+     */
+    404: unknown;
+    /**
+     * `crew_not_connected`: connect first
+     */
+    409: unknown;
+};
+
+export type CrewConnectionInvitationResponses = {
+    /**
+     * The message to send, and the `brcrew1:` line inside it. Built from this computer's verified connection, the workspace's own word about its name and privacy, and `ssh -G` (never a local alias or the connection's local name)
+     */
+    200: InvitationText;
+};
+
+export type CrewConnectionInvitationResponse = CrewConnectionInvitationResponses[keyof CrewConnectionInvitationResponses];
+
+export type CrewConnectionJoinStatusData = {
+    body?: never;
+    path: {
+        /**
+         * The joiner's saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/join';
+};
+
+export type CrewConnectionJoinStatusErrors = {
+    /**
+     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_connection_not_found`
+     */
+    404: unknown;
+    /**
+     * `crew_not_connected`: connect first
+     */
+    409: unknown;
+};
+
+export type CrewConnectionJoinStatusResponses = {
+    /**
+     * Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation
+     */
+    200: JoinStatus;
+};
+
+export type CrewConnectionJoinStatusResponse = CrewConnectionJoinStatusResponses[keyof CrewConnectionJoinStatusResponses];
+
+export type CrewConnectionJoinData = {
+    body?: never;
+    path: {
+        /**
+         * The joiner's saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/join';
+};
+
+export type CrewConnectionJoinErrors = {
+    /**
+     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_connection_not_found`
+     */
+    404: unknown;
+    /**
+     * `crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`
+     */
+    409: unknown;
+};
+
+export type CrewConnectionJoinResponses = {
+    /**
+     * This computer is a member. Idempotent: a member answers this without asking the workspace again
+     */
+    200: JoinClaimed;
+};
+
+export type CrewConnectionJoinResponse = CrewConnectionJoinResponses[keyof CrewConnectionJoinResponses];
+
+export type ObserveData = {
+    body: ObserveRequest;
+    path: {
+        /**
+         * Saved Crew connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/observe';
+};
+
+export type ObserveResponses = {
+    /**
+     * Bounded NDJSON room events (one schema instance per line)
+     */
+    200: ObserveEvent;
+};
+
+export type ObserveResponse = ObserveResponses[keyof ObserveResponses];
+
+export type RequestData = {
+    body: CrewRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/request';
+};
+
+export type RequestResponses = {
+    200: unknown;
+};
+
+export type ListRunsData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs';
+};
+
+export type ListRunsResponses = {
+    200: unknown;
+};
+
+export type StartRunData = {
+    body: StartRunRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs';
+};
+
+export type StartRunResponses = {
+    200: unknown;
+};
+
+export type CancelRunData = {
+    body?: never;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+        /**
+         * Crew run_id
+         */
+        run_id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/runs/{run_id}/cancel';
+};
+
+export type CancelRunResponses = {
+    200: unknown;
+};
+
+export type GrantSessionData = {
+    body: GrantSessionRequest;
+    path: {
+        /**
+         * Crew id
+         */
+        id: string;
+        /**
+         * Crew session_id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session_id}/grant';
+};
+
+export type GrantSessionResponses = {
+    200: unknown;
+};
+
+export type CrewProfileContextData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+        /**
+         * Session ID
+         */
+        session: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session}/context';
+};
+
+export type CrewProfileContextResponses = {
+    200: unknown;
+};
+
+export type CrewProfileRevokeData = {
+    body?: never;
+    path: {
+        /**
+         * Crew connection ID
+         */
+        id: string;
+        /**
+         * Session ID
+         */
+        session: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session}/revoke';
+};
+
+export type CrewProfileRevokeResponses = {
+    200: unknown;
+};
+
+export type CrewProfileCredentialsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials';
+};
+
+export type CrewProfileCredentialsResponses = {
+    200: unknown;
+};
+
+export type CrewProfileInitData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/init';
+};
+
+export type CrewProfileInitResponses = {
+    200: unknown;
+};
+
+export type CrewProfileLockData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/lock';
+};
+
+export type CrewProfileLockResponses = {
+    200: unknown;
+};
+
+export type CrewProfileUnlockData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/credentials/unlock';
+};
+
+export type CrewProfileUnlockResponses = {
+    200: unknown;
+};
+
+export type PrepareDeviceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/devices/prepare';
+};
+
+export type PrepareDeviceResponses = {
+    200: unknown;
+};
+
+export type CrewTransferRegisterFileData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/files';
+};
+
+export type CrewTransferRegisterFileResponses = {
+    200: unknown;
+};
+
+export type CrewTransferDiscardFileData = {
+    body?: never;
+    path: {
+        /**
+         * Unused file selection capability
+         */
+        capability_id: string;
+    };
+    query?: never;
+    url: '/crew/files/{capability_id}';
+};
+
+export type CrewTransferDiscardFileResponses = {
+    200: unknown;
+};
+
+export type CrewTransferConfirmFileData = {
+    body?: never;
+    path: {
+        /**
+         * Pending file selection capability
+         */
+        capability_id: string;
+    };
+    query?: never;
+    url: '/crew/files/{capability_id}/confirm';
+};
+
+export type CrewTransferConfirmFileResponses = {
+    200: unknown;
+};
+
+export type CrewHostStartData = {
+    body: HostStartRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/host/start';
+};
+
+export type CrewHostStartErrors = {
+    /**
+     * `crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)
+     */
+    403: unknown;
+    /**
+     * `crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once
+     */
+    409: unknown;
+};
+
+export type CrewHostStartResponses = {
+    /**
+     * The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs
+     */
+    200: HostStartStatus;
+};
+
+export type CrewHostStartResponse = CrewHostStartResponses[keyof CrewHostStartResponses];
+
+export type CrewHostStartCancelData = {
+    body?: never;
+    path: {
+        /**
+         * The run to stop
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/host/start/{job_id}';
+};
+
+export type CrewHostStartCancelErrors = {
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_host_start_not_found`
+     */
+    404: unknown;
+};
+
+export type CrewHostStartCancelResponses = {
+    /**
+     * `{"cancelled": true}`; stopping a finished run changes nothing
+     */
+    200: unknown;
+};
+
+export type CrewHostStartStatusData = {
+    body?: never;
+    path: {
+        /**
+         * The run `POST /crew/host/start` answered
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/host/start/{job_id}';
+};
+
+export type CrewHostStartStatusErrors = {
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * `crew_host_start_not_found`
+     */
+    404: unknown;
+};
+
+export type CrewHostStartStatusResponses = {
+    /**
+     * `state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)
+     */
+    200: HostStartStatus;
+};
+
+export type CrewHostStartStatusResponse = CrewHostStartStatusResponses[keyof CrewHostStartStatusResponses];
+
+export type ResolveData = {
+    body: ResolveRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/resolve';
+};
+
+export type ResolveErrors = {
+    /**
+     * Invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`), or no connection named while several are saved (`crew_connection_required`)
+     */
+    400: unknown;
+    /**
+     * No proof that a person asked
+     */
+    403: unknown;
+    /**
+     * The connection matches more than one saved connection (`ambiguous_name`, with `candidates`)
+     */
+    409: unknown;
+};
+
+export type ResolveResponses = {
+    /**
+     * One resolution per selector, in the order sent
+     */
+    200: ResolveResponse;
+};
+
+export type ResolveResponse2 = ResolveResponses[keyof ResolveResponses];
+
+export type CrewTransferListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers';
+};
+
+export type CrewTransferListResponses = {
+    200: unknown;
+};
+
+export type CrewTransferStartData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers';
+};
+
+export type CrewTransferStartResponses = {
+    200: unknown;
+};
+
+export type CrewTransferPreviewData = {
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/crew/transfers/preview';
+};
+
+export type CrewTransferPreviewResponses = {
+    /**
+     * Digest-verified bounded image
+     */
+    200: unknown;
+};
+
+export type CrewTransferForgetData = {
+    body?: Resume | null;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}';
+};
+
+export type CrewTransferForgetResponses = {
+    200: unknown;
+};
+
+export type CrewTransferStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}';
+};
+
+export type CrewTransferStatusResponses = {
+    200: unknown;
+};
+
+export type CrewTransferPauseData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}/pause';
+};
+
+export type CrewTransferPauseResponses = {
+    200: unknown;
+};
+
+export type CrewTransferResumeData = {
+    body: unknown;
+    path: {
+        /**
+         * Transfer ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/transfers/{id}/resume';
+};
+
+export type CrewTransferResumeResponses = {
+    200: unknown;
+};
+
 export type DiagnosticsData = {
     body?: never;
     path: {
@@ -7126,7 +8552,7 @@ export type ReplyData = {
 
 export type ReplyErrors = {
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text). Or the request carried `conversation_so_far` for a chat whose Crew access has ended: nothing was written, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**
@@ -7956,7 +9382,7 @@ export type DivergeSessionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text). Or, to a request that carried that proof, refused because the chat's Crew access has ended: no chat was created, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**
@@ -8000,7 +9426,7 @@ export type EditMessageErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text). Or refused because the chat's Crew access has ended (removed, ended by the workspace or a settings change, or run out of time): nothing was changed, and the body is the plain sentence the chat's next turn would be refused with
      */
     403: unknown;
     /**
@@ -8602,6 +10028,10 @@ export type GetUsageReportErrors = {
      */
     401: unknown;
     /**
+     * Human user-action proof required for aggregate billing data
+     */
+    403: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -8628,6 +10058,10 @@ export type GetUsageSummaryErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Human user-action proof required for aggregate billing data
+     */
+    403: unknown;
     /**
      * Internal server error
      */

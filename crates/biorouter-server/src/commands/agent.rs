@@ -5,7 +5,10 @@ use axum::middleware;
 use biorouter_server::auth::check_token;
 use http::HeaderValue;
 use tokio_util::sync::CancellationToken;
-use tower_http::compression::CompressionLayer;
+use tower_http::compression::{
+    predicate::{DefaultPredicate, NotForContentType, Predicate},
+    CompressionLayer,
+};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::info;
 
@@ -339,6 +342,14 @@ async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
     capability
 }
 
+fn response_compression() -> CompressionLayer<impl Predicate> {
+    // Keep event streams uncompressed so clients receive each frame promptly.
+    // The default predicate already excludes SSE; Crew uses NDJSON.
+    CompressionLayer::new().compress_when(
+        DefaultPredicate::new().and(NotForContentType::const_new("application/x-ndjson")),
+    )
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
@@ -405,6 +416,16 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     biorouter::pending_user_action::set_user_proof_available(user_action_digest.is_some());
     biorouter_server::auth::install_user_action_digest(user_action_digest);
 
+    let shared_runtime = if std::env::var(biorouter::daemon_runtime::SHARED_ENV).as_deref()
+        == Ok("1")
+    {
+        anyhow::ensure!(user_action_digest.is_some(), "Shared Crew daemon requires an installed human approval digest; use the trusted desktop or Crew terminal launcher");
+        let runtime = biorouter::daemon_runtime::RuntimeOwner::acquire(secret_key.clone(), true)?;
+        biorouter_server::daemon_service::install(runtime.descriptor.identity())?;
+        Some(runtime)
+    } else {
+        None
+    };
     let app_state = state::AppState::new().await?;
 
     // BR-71: publish the daemon's platform services to the `biorouter` crate so
@@ -483,11 +504,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
         None => app,
     };
 
-    // gzip large JSON payloads (config/providers/tools/session bodies), and the
-    // interface bundle when one is served. The default predicate skips small
-    // bodies and `text/event-stream`, so the streaming `/reply` SSE response is
-    // left unbuffered/uncompressed. Outermost, so it covers the interface too.
-    let app = app.layer(CompressionLayer::new());
+    let app = app.layer(response_compression());
 
     // Not `tokio::net::TcpListener::bind`: on Windows that socket is inherited by
     // every MCP extension, shell and coding agent this daemon spawns, and any one
@@ -527,15 +544,66 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // never fired — after the CLI had printed "Scheduled job added".
     app_state.agent_manager.watch_schedule_file();
 
+    serve(app, listener, shared_runtime, orphaned).await
+}
+
+async fn serve(
+    app: axum::Router,
+    listener: tokio::net::TcpListener,
+    shared_runtime: Option<biorouter::daemon_runtime::RuntimeOwner>,
+    orphaned: CancellationToken,
+) -> Result<()> {
     // `into_make_service_with_connect_info` is what puts the real peer address
     // in request extensions, so the auth throttle can key on it instead of the
     // client-supplied `x-forwarded-for` header.
-    axum::serve(
+    let stop = biorouter_server::daemon_service::shutdown_token();
+    let stop_signal = stop.clone();
+    let mut shutdown_task = tokio::spawn(async move {
+        tokio::select! {
+            _ = shutdown_signal(orphaned) => {},
+            _ = stop_signal.cancelled() => {},
+        }
+        biorouter::crew::authentication::shutdown();
+        stop_signal.cancel();
+        crate::routes::crew::shutdown_owned_runs().await;
+    });
+    #[cfg(unix)]
+    let local_server = if let Some(runtime) = &shared_runtime {
+        let local_listener = runtime.bind()?;
+        let local_app = app.clone();
+        let local_stop = stop.clone();
+        let task = tokio::spawn(async move {
+            axum::serve(local_listener, local_app)
+                .with_graceful_shutdown(local_stop.cancelled_owned())
+                .await
+        });
+        runtime.publish()?;
+        Some(task)
+    } else {
+        None
+    };
+    let tcp_server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(orphaned))
-    .await?;
+    .with_graceful_shutdown(stop.clone().cancelled_owned());
+    let tcp_server = std::future::IntoFuture::into_future(tcp_server);
+    tokio::pin!(tcp_server);
+    tokio::select! {
+        result = &mut tcp_server => { result?; stop.cancel(); },
+        _ = stop.cancelled() => {
+            if let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(10), &mut tcp_server).await { result?; }
+        }
+    }
+    #[cfg(unix)]
+    if let Some(mut task) = local_server {
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(2), &mut task).await
+        {
+            result??;
+        } else {
+            task.abort();
+        }
+    }
 
     // Take the llama-server sidecar down with us.
     //
@@ -550,10 +618,27 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // spawn is what covers SIGKILL, a panic, or a crash, and `reap_orphans`
     // still collects those on the next launch. This just stops the common case
     // — an ordinary quit — from relying on that later sweep.
-    biorouter::providers::llamacpp_sidecar::global()
-        .stop()
-        .await;
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        biorouter::providers::llamacpp_sidecar::global().stop(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("sidecar shutdown is unconfirmed; retained ownership record requires recovery on the next launch");
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(2), &mut shutdown_task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!("owned task cancellation failed during daemon shutdown: {error}")
+        }
+        Err(_) => {
+            shutdown_task.abort();
+            tracing::warn!("owned task cancellation is unconfirmed during daemon shutdown");
+        }
+    }
 
+    drop(shared_runtime);
     info!("server shutdown complete");
     Ok(())
 }
@@ -688,3 +773,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "agent_compression_tests.rs"]
+mod compression_tests;

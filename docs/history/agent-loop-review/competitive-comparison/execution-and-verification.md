@@ -43,14 +43,14 @@ The reviewed BioRouter commit was not recorded in the original document.
 
 ## Comparison across ten agents
 
-The table has one column per agent, in this order: BioRouter, Goose upstream,
+The table has one column per agent, in this order: BioRouter, Goose,
 Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
 > **Note.** The BioRouter column is superseded — see the status header. The nine
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose upstream | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Tool dispatch model | Function-calling (MCP), name-routed | Function-calling (MCP) | Function-calling + apply-patch | Function-calling (typed parts) | Function-calling, 7 built-ins | **Plain-text edit formats**, parsed locally | Function-calling (event stream) | Function-calling (Responses API) | Function-calling (scheduler) | Function-calling, named built-ins |
 | Parallel tool exec | Yes, unbounded `select_all` | Yes, `select_all` | Yes (prompt-driven batching) | Subagents run **sequential**; tools parallel | Preflight-then-concurrent | No (one edit batch/turn) | Yes, `ParallelToolExecutor` | Yes, **R/W-lock gated** | Yes, batched w/ ordering rules | Yes, batch + `PostToolBatch` |
@@ -77,7 +77,7 @@ wide and scrolls horizontally.
   cursor** so `shell_output` returns only new bytes (400KB cap), and `shell_wait`
   parks race-free on a `watch` channel with a bounded timeout that does *not* kill
   on expiry. The review explicitly notes this mirrors Claude Code and Codex. This
-  is ahead of Goose upstream (which only documents the pattern), Pi (no background
+  is ahead of Goose (which only documents the pattern), Pi (no background
   bash at all — tmux is the workaround), Aider (no background manager), and
   OpenCode (background subagents still experimental with no intermediate output
   streaming). Only Claude Code and Codex CLI clearly match it.
@@ -254,10 +254,10 @@ background subagents (`task(background=true)` + `task_status`) and Codex's
   sits mid-pack: bounded and safe but blocking and lossy.
 
 - **Checkpoints / undo.** *Best:* **Cline** (three restore axes) and **OpenCode**
-  (private git-object-DB, cleanest isolation). *Worst:* **BioRouter and Goose
-  upstream** — neither has any file snapshot/rewind; this is the single starkest
-  deficit, and every external report that covers it flags the Goose-lineage
-  absence explicitly.
+  (private git-object-DB, cleanest isolation). *Worst:* **BioRouter and
+  Goose**: neither has any file snapshot or rewind; this is the single starkest
+  deficit, and every external report that covers it flags the absence
+  explicitly.
 
 - **Git integration of edits.** *Best:* **Aider** (auto-commit per edit with
   attribution + dirty-commit isolation). *Worst:* **BioRouter, Pi** (no edit-level
@@ -285,7 +285,7 @@ proposals, not as an open work queue. The register's BR-NN number is noted where
 the mapping is one-to-one.
 
 1. **Add file checkpoints + `/rewind` — the highest-value gap** (became
-   **BR-43**). BioRouter inherits Goose's total absence of undo, and its
+   **BR-43**). BioRouter, like Goose, has no undo at all, and its
    daemon/SQLite architecture is well-suited to OpenCode's model: snapshot the
    worktree before/after each model step (or each edit) into a **private git
    object DB in the app data dir** — no commits, no branch moves, no touching the

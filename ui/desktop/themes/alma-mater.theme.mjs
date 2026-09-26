@@ -65,9 +65,13 @@ export default {
       'text-muted': '#506380',
       'text-subtle': '#586780',
       'text-inverse': '#ffffff',
-      'text-danger': '#c40d3e',
-      'text-success': '#007242',
-      'text-warning': '#8a5a00',
+      // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
+      // 22% over the ground), not just on white: a Note paints the pair, and the
+      // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
+      // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
+      'text-danger': '#a8032f',
+      'text-success': '#02653a',
+      'text-warning': '#7a5000',
       'text-info': '#0f388a',
       ring: '#5c5a55',
       'background-focus': '#e0e0dc',
@@ -88,6 +92,30 @@ export default {
       'sidebar-accent-foreground': '#052049',
       'sidebar-border': '#e7e7e3',
       'sidebar-ring': '#5c5a55',
+      // ── PERSON AVATAR HUES (D-AVATAR) ─────────────────────────────────────
+      // Eight fill + initials-ink pairs, chosen by the person's canonical
+      // @username so a display name cannot borrow a colour. SHARED across the
+      // three families, like the neutrals: one person keeps one colour on every
+      // device whatever family it runs, and `themeNeutrals.test.ts` holds the
+      // three copies together. OKLCH hues 25°–330°, about 45° apart, at one lightness
+      // (fills L 0.885, inks L 0.39) so no hue reads heavier than another; the ink
+      // measures 6.7–7.0:1 on its fill (`check-contrast.mjs` asserts 4.5).
+      'avatar-hue-1-bg': '#ffcbc5', // red
+      'avatar-hue-1-fg': '#752725',
+      'avatar-hue-2-bg': '#fccfab', // orange
+      'avatar-hue-2-fg': '#673702',
+      'avatar-hue-3-bg': '#e7d9a5', // amber
+      'avatar-hue-3-fg': '#534400',
+      'avatar-hue-4-bg': '#bde6bd', // green
+      'avatar-hue-4-fg': '#11531a',
+      'avatar-hue-5-bg': '#a3e9e3', // teal
+      'avatar-hue-5-fg': '#04504d',
+      'avatar-hue-6-bg': '#b5dfff', // blue
+      'avatar-hue-6-fg': '#034a6f',
+      'avatar-hue-7-bg': '#d4d5ff', // violet
+      'avatar-hue-7-fg': '#41397d',
+      'avatar-hue-8-bg': '#f4c9ef', // pink
+      'avatar-hue-8-fg': '#642b61',
       // Elevation and the scrim are neutral scaffolding and therefore shared.
       // Alma Mater used to cast every alpha in UCSF navy (rgba(5, 32, 73, …));
       // a full-screen navy scrim is a background, and backgrounds no longer
@@ -220,8 +248,9 @@ export default {
       'text-muted': '#b4b9bf',
       'text-subtle': '#909aa6',
       'text-inverse': '#052049',
-      'text-danger': '#f5768a',
-      'text-success': '#5fbf74',
+      // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
+      'text-danger': '#fd90a0',
+      'text-success': '#63c277',
       'text-warning': '#feb80a',
       'text-info': '#7fb3e6',
       ring: '#a5a39d',
@@ -241,6 +270,30 @@ export default {
       'sidebar-accent-foreground': '#f2f3f4',
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
+      // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and
+      // ink L 0.925, a step off every dark ground; ink 7.4–7.9:1 on its fill.
+      // Orange and amber are calmer than the rest (QA Q3-61): at full chroma
+      // they read as brown and olive beside indigo, teal and plum. They sit at
+      // chroma 0.073 / 0.058 (OKLCH 58° / 85°), which is Carol's measured pair
+      // with orange nudged 5° toward red, because her pair measured ΔE00 7.4
+      // apart and `check-contrast.mjs` holds every two fills 8 apart; this pair
+      // is 10.0. Disc on the dark canvas 1.89 and 2.01; ink 7.88 and 7.45:1.
+      'avatar-hue-1-bg': '#6b302d', // red
+      'avatar-hue-1-fg': '#feddda',
+      'avatar-hue-2-bg': '#623a19', // orange
+      'avatar-hue-2-fg': '#fbe2cc',
+      'avatar-hue-3-bg': '#564520', // amber
+      'avatar-hue-3-fg': '#f1e6c9',
+      'avatar-hue-4-bg': '#245127', // green
+      'avatar-hue-4-fg': '#d4efd4',
+      'avatar-hue-5-bg': '#01504d', // teal
+      'avatar-hue-5-fg': '#c5f0ed',
+      'avatar-hue-6-bg': '#084a6e', // blue
+      'avatar-hue-6-fg': '#d0eafe',
+      'avatar-hue-7-bg': '#413d70', // violet
+      'avatar-hue-7-fg': '#e3e3ff',
+      'avatar-hue-8-bg': '#5e335a', // pink
+      'avatar-hue-8-fg': '#f8dcf5',
       'shadow-default': '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       'shadow-composer':
         '0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3)',

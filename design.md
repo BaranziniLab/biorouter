@@ -846,7 +846,7 @@ Icon-only buttons are square at the same heights, radius `--radius-md`.
 |---|---|
 | Scrim | `rgba(32,25,15,.18)` light / `rgba(0,0,0,.48)` dark, `backdrop-filter: blur(8px)` |
 | Surface | `--background-default`, 1px `--border-subtle`, `--radius-container` (12px), `--elev-modal` |
-| Width | `min(560px, 100vw − 32px)`; `lg` variant 720px |
+| Width | `ModalShell`'s three, never wider than `100vw − 32px`: `sm` 400 (confirmations and short forms: Transfer ownership, Make private, Create team, Create channel, Rename, Share path), `md` 480 (longer forms: Keys, Connection settings, Join, Invite, Let in, Edit profile, Add people), `lg` 640 (lists, multi-step and the terminal: Workspace settings, Host, Sign in). Crew's dialogs use all three |
 | Padding | 24px |
 | Header | Title 18/26 600, description 13/18 `--text-muted`, 8px gap |
 | Footer | Right-aligned, 8px gap, `secondary` then `primary`; stacks reversed on narrow |

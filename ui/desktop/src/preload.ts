@@ -1,5 +1,6 @@
 import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
+import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -508,6 +509,32 @@ type ElectronAPI = {
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
+  crewCredentials: (
+    action: 'status' | 'init' | 'unlock' | 'lock'
+  ) => Promise<
+    | { backend: 'keyring' | 'encrypted_vault' | 'file'; initialized: boolean; locked: boolean }
+    | { cancelled: true }
+  >;
+  crewSelectTransferFile: (options: {
+    expectedMode?: 'private' | 'public';
+    direction: 'upload' | 'download';
+    purpose?: 'transfer' | 'cleanup';
+    suggestedName?: string;
+    connectionId: string;
+    channelId: string;
+    blobId?: string;
+    transferId?: string;
+  }) => Promise<{ capability_id: string; name: string; size?: number } | null>;
+  /**
+   * D-DROP: share a file the person dropped or pasted into a Crew channel. Pass the `File` from
+   * the drop or paste event, never a path: the preload resolves it with
+   * `webUtils.getPathForFile`, and the main process shows a native Share / Cancel dialog naming
+   * the file, its size, its full path and `#channelName in workspaceName`. Only Share yields
+   * the daemon file capability, the same one `crewSelectTransferFile` returns; start the upload
+   * with it as `beginTransfer` does. See `utils/crewSharePathBridge.ts`.
+   */
+  crewShareDroppedFile: import('./utils/crewSharePathBridge').CrewShareDroppedFile;
+  createCrewAuthentication?: (connectionId: string) => Promise<TerminalCreateResult>;
   createTerminalSession: (options?: {
     workingDir?: string;
     cols?: number;
@@ -832,6 +859,11 @@ const electronAPI: ElectronAPI = {
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
+  crewCredentials: (action) => ipcRenderer.invoke('crew:credentials', action),
+  crewSelectTransferFile: (options) => ipcRenderer.invoke('crew:select-transfer-file', options),
+  crewShareDroppedFile: createCrewShareDroppedFile(webUtils, ipcRenderer),
+  createCrewAuthentication: (connectionId: string) =>
+    ipcRenderer.invoke('crew:authenticate', connectionId),
   createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('terminal:create', options),
   writeTerminalSession: (sessionId: string, data: string) =>
