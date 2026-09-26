@@ -28,7 +28,7 @@
     },
     {
       "name": "mistral-medium-latest",
-      "context_limit": 128000
+      "context_limit": 262144
     },
     {
       "name": "mistral-medium-2508",
