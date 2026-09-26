@@ -41,6 +41,16 @@ use rmcp::model::Tool;
 // Responses, so a tool call is not known to work. gpt-4.1 is `mode: responses`
 // too, but it is a non-reasoning model, so the restriction does not reach it.
 //
+// Gemini 3 (gemini-3.8-flash, gemini-3.1-pro-preview) is deliberately NOT
+// listed either, although Tetrate routes it. Tetrate's public catalog backs
+// those ids with Google's OpenAI-compatible endpoint
+// (generativelanguage.googleapis.com/v1beta/openai/), where Gemini 3 function
+// calling requires the model's thought signatures to be sent back on every
+// later turn, carried in each tool call's `extra_content`. BioRouter's OpenAI
+// format (formats/openai.rs) neither keeps nor replays `extra_content`, so the
+// turn after a tool call would be rejected. List them again once that format
+// round-trips the signature.
+//
 // gemini-2.5-pro / -flash are not deprecated on the Gemini API (Google, Sep 18,
 // 2026) and Tetrate still routes them.
 pub const TETRATE_KNOWN_MODELS: &[&str] = &[
@@ -49,8 +59,6 @@ pub const TETRATE_KNOWN_MODELS: &[&str] = &[
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
-    "gemini-3.1-pro-preview",
-    "gemini-3.8-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gpt-4.1",
@@ -370,8 +378,8 @@ mod tests {
             "claude-opus-5-5",
             "claude-fable-5-1",
             "claude-sonnet-5",
-            "gemini-3.8-flash",
-            "gemini-3.1-pro-preview",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
         ] {
             let info = metadata
                 .known_models
@@ -393,5 +401,18 @@ mod tests {
             );
         }
         assert!(!TETRATE_KNOWN_MODELS.contains(&"claude-opus-4-1"));
+    }
+
+    /// Gemini 3 on Tetrate needs its thought signatures replayed through the
+    /// tool call's `extra_content`, which the OpenAI format does not carry, so
+    /// a multi-turn tool call would fail. It stays off the list until it does.
+    #[test]
+    fn gemini_3_is_not_advertised_without_thought_signature_replay() {
+        for id in TETRATE_KNOWN_MODELS {
+            assert!(
+                !id.starts_with("gemini-3"),
+                "{id} needs thought-signature replay the OpenAI format lacks"
+            );
+        }
     }
 }

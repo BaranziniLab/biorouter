@@ -13,9 +13,6 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-/// Default models for openrouter config configuration
-const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
-
 const OPENROUTER_AUTH_URL: &str = "https://openrouter.ai/auth";
 const OPENROUTER_TOKEN_URL: &str = "https://openrouter.ai/api/v1/auth/keys";
 const CALLBACK_URL: &str = "http://localhost:3000";
@@ -162,6 +159,10 @@ impl PkceAuthFlow {
 pub use self::PkceAuthFlow as OpenRouterAuth;
 
 use crate::config::Config;
+// The model a fresh OpenRouter sign-up is bound to. It is the provider's own
+// default, not a copy: a private copy here drifted to a retired Sonnet 4
+// while the provider moved on to Sonnet 5.
+use crate::providers::openrouter::OPENROUTER_DEFAULT_MODEL;
 
 pub fn configure_openrouter(config: &Config, api_key: String) -> Result<()> {
     config.set_secret("OPENROUTER_API_KEY", &api_key)?;
