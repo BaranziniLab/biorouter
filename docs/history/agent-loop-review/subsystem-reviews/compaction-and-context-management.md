@@ -18,7 +18,7 @@ The subsystem's owner files are `crates/biorouter/src/context_mgmt/mod.rs`,
 
 ## Overview
 
-BioRouter has a **single-shot, summarize-everything** compaction strategy (inherited from Goose),
+BioRouter has a **single-shot, summarize-everything** compaction strategy (the same approach Goose used),
 not a sliding-window / keep-recent-verbatim scheme. When the running conversation is projected to
 exceed a fraction of the model's context window, the entire agent-visible history is fed to an LLM
 that produces one long structured summary. The original messages are **kept in the DB but flipped

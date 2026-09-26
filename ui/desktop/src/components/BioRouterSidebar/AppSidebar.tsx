@@ -100,10 +100,10 @@ const primaryItems: NavigationItem[] = [
  * ⚠ `/applications` is labelled "Built apps", by its SOURCE rather than by a
  * bare noun. It used to read "Applications" and sit one word away from a
  * second row, "Apps" (`/apps`), which listed the UI resources installed MCP
- * extensions advertised — a wholly separate feature inherited from the
- * upstream fork and removed in September 2026. Only Agent Drafter's own
- * `GET /apps` remains, so "Built apps" now has nothing to be confused with;
- * the name is kept because it says what the list holds.
+ * extensions advertised — a wholly separate feature, present since the first
+ * commit and never requested, that was removed in September 2026. Only Agent
+ * Drafter's own `GET /apps` remains, so "Built apps" now has nothing to be
+ * confused with; the name is kept because it says what the list holds.
  */
 const componentItems: NavigationItem[] = [
   {

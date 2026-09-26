@@ -43,14 +43,14 @@ The reviewed BioRouter commit was not recorded in the original document.
 
 ## Comparison across ten agents
 
-The table has one column per agent, in this order: BioRouter, Goose upstream,
+The table has one column per agent, in this order: BioRouter, Goose,
 Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
 > **Note.** The BioRouter column is superseded — see the status header. The nine
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose upstream | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **Auto-compact trigger** | 0.8 of context limit | 0.8 (`GOOSE_AUTO_COMPACT_THRESHOLD`) | ratio of resolved `maxInputTokens` | overflow = window − reserve(32k) − buffer(20k) | `contextTokens > window − reserve(16384)` | `too_big()` vs `max_tokens` budget | `EVENTS`>80 msgs / `TOKENS` / `REQUEST` | auto when context fills + mid/pre-turn | 0.5 of window | ~83.5% of window |
 | **Reactive on overflow** | Yes, capped 2 attempts | Yes (`GOOSE_CONTEXT_STRATEGY` ladder) | rule-based fallback | `isOverflow` hard path | auto-compact + retry aborted turn | breaks, warns `/drop` | `CondensationRequest` + 5× hard-reset | escalation via lifecycle | inflation-guard discard | offloading + compact |
@@ -124,10 +124,10 @@ wide and scrolls horizontally.
   prune-first** is the best compaction-layer variant: scan newest→oldest, protect
   the last 2 turns, prune tool bodies only when total tool output >40k and ≥20k is
   reclaimable, never prune `skill` outputs. **Gemini's reverse-budget** truncates
-  old tool responses >50k tokens down to 30 lines before summarizing. **Goose
-  upstream** (BioRouter's own parent) already added background summarization of
-  tool pairs older than `GOOSE_TOOL_CALL_CUTOFF=10` — a fork-gap BioRouter is
-  missing.
+  old tool responses >50k tokens down to 30 lines before summarizing. **Goose**
+  already added background summarization of tool pairs older than
+  `GOOSE_TOOL_CALL_CUTOFF=10`, a gap compared with Goose that BioRouter has not
+  closed.
 - **Individual over-window message is a dead end.** No head/tail truncation of a
   single oversized payload; BioRouter tells the user to start a new session
   (compaction review, gap #3 — `agent.rs:1967-1975`). Pi's "split turn" (cut
@@ -224,8 +224,8 @@ the mapping is one-to-one.
    in the shell/`text_editor` tools: cap output, spill the remainder to a session
    file, return path + head preview. Complement with OpenCode-style
    prune-before-summarize (protect last N turns, prune only bodies above a token
-   floor, never prune skill/critical outputs). Goose upstream's background
-   tool-pair summarization is a ready fork-merge.
+   floor, never prune skill/critical outputs). Goose's background tool pair
+   summarization is a ready design to adopt.
 
 3. **Fix token accounting.** At minimum, include the system prompt and tool
    schemas in the cold-path estimate; ideally add per-provider tokenizers (or a

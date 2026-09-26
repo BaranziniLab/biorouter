@@ -1,10 +1,10 @@
 # Docs consolidation design
 
-> **What this is.** The design for merging BioRouter's two competing documentation trees — the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site — into a single plain-markdown `docs/` folder, dropping the Docusaurus tooling, purging upstream Goose/Block branding, and renaming `recipe` → `workflow` throughout.
+> **What this is.** The design for merging BioRouter's two competing documentation trees — the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site — into a single plain-markdown `docs/` folder, dropping the Docusaurus tooling, purging Goose/Block branding, and renaming `recipe` → `workflow` throughout.
 > **Status:** Historical record — approved 2026-05-07 and executed. `documentation/` no longer exists and the target tree (`docs/getting-started/`, `docs/guides/`, `docs/extensions/`, `docs/troubleshooting/`) was built as specified. The companion task-by-task plan is [docusaurus-to-markdown-plan.md](docusaurus-to-markdown-plan.md).
 > **Audience:** maintainers, and anyone tracing why a documentation page lives where it does.
 
-Three terms this document assumes. **Goose** is the upstream open-source agent project that BioRouter was forked from; **Block** is the company that publishes Goose. Both appear throughout the inherited pages as branding that had to be replaced. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree — its output mixes JSX components into Markdown (MDX) and ships generated HTML, CSS, feeds and media alongside the source, none of which belongs in a plain documentation folder.
+Three terms this document assumes. **Goose** is the open source agent project whose design influenced BioRouter most; **Block** is the company that publishes Goose. Both appear throughout the old pages as branding that had to be replaced. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree — its output mixes JSX components into Markdown (MDX) and ships generated HTML, CSS, feeds and media alongside the source, none of which belongs in a plain documentation folder.
 
 Despite the `-design` filename, the body below is a migration checklist: file-by-file move tables, a deletion list, the text transformations to apply, and the verification commands. The executable step-by-step version is the companion plan linked above.
 

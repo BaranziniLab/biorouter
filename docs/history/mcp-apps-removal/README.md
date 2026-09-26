@@ -1,6 +1,6 @@
 # MCP apps — removal record
 
-> **What this is.** The record of an inherited desktop feature — **MCP apps**, a sandboxed iframe in which a third-party MCP server ran its own interactive HTML inside BioRouter — and of its removal. Nothing here describes a feature that still exists; the folder is an archive.
+> **What this is.** The record of a desktop feature present since the first commit — **MCP apps**, a sandboxed iframe in which a third-party MCP server ran its own interactive HTML inside BioRouter — and of its removal. Nothing here describes a feature that still exists; the folder is an archive.
 > **Status:** Historical record — MCP apps was removed on 2026-09-08. The `/apps` route and its sidebar row, `GET /agent/list_apps`, the `/mcp-app-proxy` sandbox document, the `crates/biorouter/src/biorouter_apps/` module, the `components/McpApps/` renderer and the `launch-app` IPC handler are all deleted. Current truth about where a generated artifact is displayed lives in [Where a generated artifact is displayed](../../desktop-ui/artifact-display-surfaces.md).
 > **Audience:** maintainers tracing why the feature is gone, and anyone tempted to reintroduce it.
 
@@ -23,7 +23,7 @@ Either way the app ran in a sandboxed iframe served by `/mcp-app-proxy` — a ro
 
 ## Why it was removed
 
-**It was inherited, not chosen.** The whole feature arrived with the initial import from the upstream fork — commit `54153b8b`, 2026-01-20, "initial commit" — and was never requested, designed or scheduled by this project. It is not part of BioRouter's product story: the operator's decision on 2026-09-08 was that it does not belong to Biorouter and should be removed completely rather than maintained.
+**It was never chosen.** The whole feature was present from the first commit (`54153b8b`, 2026-01-20, "initial commit") and was never requested, designed or scheduled by this project. It is not part of BioRouter's product story: the operator's decision on 2026-09-08 was that it does not belong to Biorouter and should be removed completely rather than maintained.
 
 Two things made that cheap:
 
@@ -62,7 +62,7 @@ It also carried a second, parallel "apps" concept. The sidebar shipped two adjac
 
 Third-party MCP servers can no longer ship an interactive UI that runs inside BioRouter. A server that advertised `resources` with a `ui://` resource, or returned `_meta.ui.resourceUri` on a tool result, got a sandboxed iframe running its own HTML with a JSON-RPC bridge, its own CSP, and a standalone window. That capability is gone, and reinstating it would mean rebuilding the proxy, the bridge and the per-extension CSP rather than reverting a flag.
 
-Nothing shipped in this project used it, and no ecosystem extension did either — but a third party's server, written against the upstream fork's contract, would lose its UI and fall back to the ordinary tool-call row. A tool response that also embeds a `ui://` resource in its `content` now takes the artifact path instead, which is a better outcome than it had before.
+Nothing shipped in this project used it, and no ecosystem extension did either — but a third party's server, written against the MCP apps contract, would lose its UI and fall back to the ordinary tool-call row. A tool response that also embeds a `ui://` resource in its `content` now takes the artifact path instead, which is a better outcome than it had before.
 
 ## The follow-up, and how it closed
 

@@ -4,11 +4,11 @@ Copyright 2025-2026 The Regents of the University of California
 This product includes software developed by Block, Inc.
 Copyright 2024 Block, Inc.
 
-Biorouter is a fork of Goose (https://github.com/block/goose), Block, Inc.'s
-open-source agent, licensed under the Apache License, Version 2.0. Goose
-supplied the agent loop, the extension model and the desktop shell that
-Biorouter's biomedical work is built on. A copy of the Apache License is in
-LICENSE.
+Biorouter is an independent project whose design was strongly influenced by
+Goose (https://github.com/block/goose), Block, Inc.'s open source agent.
+Goose is licensed under the Apache License, Version 2.0. The Block, Inc.
+notice above is retained for any portions that reference or derive from
+Goose. A copy of the Apache License is in LICENSE.
 
 
 REDISTRIBUTED COMPONENTS

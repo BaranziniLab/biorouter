@@ -248,8 +248,8 @@ Claude Code has an unusually rich set of background/async primitives:
 - **Checkpoints / rewind.** Claude Code maintains automatic edit checkpoints and a **rewind**
   control that restores files + conversation to an earlier state — a documented product feature.
   Its dedicated documentation page was not fetched for this report, so the exact mechanics
-  should be treated as approximate. This is the one safety net Goose (and thus a stock
-  BioRouter fork) lacks entirely.
+  should be treated as approximate. This is the one safety net that Goose lacks entirely,
+  and that BioRouter lacked when this report was written.
 
 ## Self-verification
 
@@ -308,9 +308,10 @@ Claude Code bakes verification into the loop at several points:
    skip CLAUDE.md) show how to make delegation cheap.
 
 7. **Automatic checkpoints + one-command rewind.** Claude Code's edit checkpointing and rewind
-   (plus worktree isolation for subagents) are exactly the safety net a Goose-derived agent lacks.
-   A shadow-snapshot before each edit and a `rewind` that restores files *and* conversation would
-   leapfrog upstream Goose and materially de-risk autonomous runs on a scientist's working tree.
+   (plus worktree isolation for subagents) are exactly the safety net that Goose and BioRouter
+   lacked when this report was written. A shadow snapshot before each edit and a `rewind` that
+   restores files *and* conversation would move BioRouter ahead of Goose and make autonomous
+   runs on a scientist's working tree much safer.
 
 ## Sources
 
@@ -333,7 +334,7 @@ is third-party and marked as such in the sections above.
 
 ## Related documentation
 
-- [Goose report](goose.md) — upstream Goose, the project BioRouter forked from, and the agent whose gaps this report is measuring.
+- [Goose report](goose.md) — Goose, the agent whose design influenced BioRouter most, and the agent whose gaps this report is measuring.
 - [Gemini CLI report](gemini-cli.md) — the closest open-source analogue for hooks, policy and checkpointing, with source-level detail Claude Code cannot offer.
 - [Cline report](cline.md) — an open-source agent that explicitly mirrors Claude Code's hook event names, useful for seeing the model implemented in readable source.
 - [Safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md) — the head-to-head chapter that scores these permission modes against the rest of the field.

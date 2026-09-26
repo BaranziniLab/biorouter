@@ -6102,8 +6102,8 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
  * The one hook that stays on `defaultSession` alone, deliberately.
  *
  * It rewrites the `Origin` of every request in the session to the vite dev
- * origin. It has been here since the initial commit, inherited from upstream,
- * and it is **not** extended to the renderer's partition:
+ * origin. It has been here since the initial commit, and it is **not**
+ * extended to the renderer's partition:
  *
  * - The renderer does not need it. A packaged `file://` document sends NO
  *   `Origin` on `fetch` and Electron does not CORS-check a `file://` initiator
