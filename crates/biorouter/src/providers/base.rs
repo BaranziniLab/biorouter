@@ -1964,10 +1964,11 @@ mod tests {
                 "claude-sonnet-4-6",
                 "Tetrate Claude Sonnet 4.6",
             ),
+            // Copilot retired Claude Sonnet 4.5 and 4.6 on Sep 1, 2026.
             (
                 GithubCopilotProvider::metadata(),
-                "claude-sonnet-4.6",
-                "GitHub Copilot Claude Sonnet 4.6",
+                "claude-sonnet-5",
+                "GitHub Copilot Claude Sonnet 5",
             ),
             (XaiProvider::metadata(), "grok-4.3", "xAI Grok 4.3"),
         ];

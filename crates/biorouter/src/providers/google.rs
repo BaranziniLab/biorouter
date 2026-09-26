@@ -25,29 +25,43 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
 
 pub const GOOGLE_API_HOST: &str = "https://generativelanguage.googleapis.com";
+// gemini-3.1-pro-preview is still the only Gemini 3.x Pro (a Feb 2026 public
+// preview; no 3.5-3.8 Pro exists as of Sep 2026), so it stays the default.
 pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-3.1-pro-preview";
-pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-3.5-flash";
+// Google tells new projects to use 3.8 Flash or 3.5 Flash-Lite
+// (ai.google.dev/gemini-api/docs/models, Sep 2026); the fast slot takes the
+// cheaper of the two.
+pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-3.5-flash-lite";
 // Verified against ai.google.dev/gemini-api/docs/models + deprecations
-// (June 2026). Removed shut-down models: gemini-3-pro-preview (Mar 9, 2026),
-// the entire gemini-2.0 family (Jun 1, 2026), and the 09-2025 / image /
-// native-audio 2.5 previews. The 2.5 stable family is deprecated with an
-// Oct 16, 2026 shutdown but still live.
+// (Sep 25, 2026). Every entry here answers a chat and accepts images, because
+// `metadata()` marks all of them vision-capable. Removed:
+// - gemini-2.5-flash-image: deprecated, shuts down Oct 2, 2026.
+// - gemini-2.5-flash-preview-tts / gemini-2.5-pro-preview-tts: text in,
+//   audio out, so they cannot answer a chat (and were wrongly flagged vision).
+// Earlier removals: gemini-3-pro-preview (shut down Mar 9, 2026), the whole
+// gemini-2.0 family (Jun 1, 2026), and the 09-2025 / image / native-audio 2.5
+// previews. gemini-3-flash-preview has no shutdown date, but Google names
+// gemini-3.6-flash as its replacement.
 pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
-    // Gemini 3.x models
+    // Gemini 3.x models (all GA except the two -preview ids)
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     // Gemini 3.x image models
     "gemini-3.1-flash-image",
     "gemini-3-pro-image",
-    // Gemini 2.5 models (deprecated; shut down Oct 16, 2026)
+    // Gemini 2.5 models. On Sep 18, 2026 Google said these are NOT deprecated
+    // on the Gemini API and have no shutdown date, but only keys that used them
+    // before can call them. The Oct 2026 retirement is Vertex AI's, not this
+    // API's.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.5-flash-image",
-    "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-pro-preview-tts",
 ];
 
 pub const GOOGLE_DOC_URL: &str = "https://ai.google.dev/gemini-api/docs/models";
@@ -106,7 +120,9 @@ impl GoogleProvider {
 #[async_trait]
 impl Provider for GoogleProvider {
     fn metadata() -> ProviderMetadata {
-        // All current Gemini models (1.5+, 2.0, 2.5, 3) are multimodal.
+        // Every chat-capable Gemini model (2.5 and 3.x) accepts images. The
+        // audio-output models (TTS, Live) do not, which is why none of them is
+        // in GOOGLE_KNOWN_MODELS; the test module below holds that line.
         let models: Vec<ModelInfo> = GOOGLE_KNOWN_MODELS
             .iter()
             .map(|&name| {
@@ -221,5 +237,63 @@ impl Provider for GoogleProvider {
                 yield (message, usage, pending);
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_advertised_models() {
+        assert!(GOOGLE_KNOWN_MODELS.contains(&GOOGLE_DEFAULT_MODEL));
+        assert!(GOOGLE_KNOWN_MODELS.contains(&GOOGLE_DEFAULT_FAST_MODEL));
+        assert_eq!(
+            GoogleProvider::metadata().default_model,
+            GOOGLE_DEFAULT_MODEL
+        );
+    }
+
+    #[test]
+    fn sep_2026_flash_lineup_is_advertised_with_vision() {
+        let metadata = GoogleProvider::metadata();
+        for id in [
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            let info = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == id)
+                .unwrap_or_else(|| panic!("{id} should be advertised"));
+            assert_eq!(info.supports_vision, Some(true), "{id} accepts images");
+            assert_eq!(info.context_limit, 1_048_576, "{id} has a 1M window");
+        }
+    }
+
+    /// `metadata()` marks every entry vision-capable, so a model that cannot
+    /// take an image, or cannot answer a chat at all, must never be listed.
+    /// The 2.5 TTS previews were both (text in, audio out) and were listed
+    /// until Sep 2026; gemini-2.5-flash-image shuts down Oct 2, 2026.
+    #[test]
+    fn no_audio_output_or_retired_model_is_advertised() {
+        for id in GOOGLE_KNOWN_MODELS {
+            assert!(
+                !id.contains("-tts") && !id.contains("-live") && !id.contains("native-audio"),
+                "{id} produces audio, not a chat reply"
+            );
+        }
+        for removed in [
+            "gemini-2.5-flash-image",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
+        ] {
+            assert!(
+                !GOOGLE_KNOWN_MODELS.contains(&removed),
+                "{removed} should no longer be advertised"
+            );
+        }
     }
 }
