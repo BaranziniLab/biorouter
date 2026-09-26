@@ -242,8 +242,9 @@ fn known_models() -> Vec<ModelInfo> {
     //   * `gpt-5.4` and `gpt-5.4-mini` — **retired** 2026-08-31 per OpenAI's
     //     models page (replacements `gpt-5.6-terra` and `gpt-5.6-luna`).
     //     `codex exec -m gpt-5.4` fails with the ChatGPT-account 400.
-    //   * `gpt-5.3-codex` never existed under that name in Codex; the real id
-    //     had a `-spark` suffix.
+    //   * `gpt-5.3-codex` — refused with the ChatGPT-account 400 by 2026-09-08
+    //     and listed as deprecated by OpenAI. `gpt-5.3-codex-spark` was a
+    //     different model, not its rename.
     //
     // Ids deliberately not offered, for two different reasons, and the two
     // must not be collapsed, because only the first group is a model the
@@ -274,18 +275,21 @@ fn known_models() -> Vec<ModelInfo> {
     ]
 }
 
-/// The oldest codex-cli that runs each advertised model which has a version
-/// floor at all.
+/// The advertised models an older codex-cli refuses with the misleading
+/// ChatGPT-account sentence, each with the oldest codex-cli that runs it.
 ///
-/// From `model/list` and `codex exec` on 0.147.0 (2026-09-08), 0.153.4 and
-/// 0.157.0 (2026-09-25), cross-checked against the release notes: 0.153.4 made
-/// Astra the bundled default, 0.156.1 added Sol and Luna to the picker. The
-/// 5.6 models have no entry because every CLI measured lists them.
-const CODEX_CLI_FLOORS: &[(&str, &str)] = &[
-    ("gpt-6-astra", "0.153.4"),
-    ("gpt-6-sol", "0.156.1"),
-    ("gpt-6-luna", "0.156.1"),
-];
+/// From `model/list` and `codex exec` on 0.153.4 and 0.157.0 (2026-09-25),
+/// cross-checked against the release notes: 0.156.1 added Sol and Luna to the
+/// picker. The 5.6 models have no entry because every CLI measured lists them.
+///
+/// ⚠ `gpt-6-astra` has a floor too (0.153.4), and is deliberately **not**
+/// here. On 0.147.0 it is refused with "requires a newer version of Codex"
+/// (see `CODEX_DEFAULT_MODEL`), which already names its fix, and the hint this
+/// table drives tells the reader that an older CLI gets the ChatGPT-account
+/// sentence instead. For Astra that is not what any measured CLI did, so the
+/// hint would state something false, and on 0.153.4 or newer an Astra refusal
+/// in those words is not one a `codex` update fixes.
+const CODEX_CLI_FLOORS: &[(&str, &str)] = &[("gpt-6-sol", "0.156.1"), ("gpt-6-luna", "0.156.1")];
 
 /// The part of the backend's refusal an older CLI gets for a model that only a
 /// newer one may use, verbatim from 0.153.4 on `gpt-6-sol` and `gpt-6-luna`:
@@ -3012,6 +3016,17 @@ for line in sys.stdin:
             "",
             "no floor is recorded for a model every measured CLI lists"
         );
+        // Astra has a floor, but an older CLI names it itself ("requires a
+        // newer version of Codex"), so neither that sentence nor the
+        // ChatGPT-account one may gain a hint claiming the refusal is worded
+        // misleadingly: for Astra it was not, on any CLI measured.
+        for vendor in [
+            "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the \
+             latest app or CLI and try again.",
+            "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+        ] {
+            assert_eq!(failure_hint("gpt-6-astra", vendor), "", "{vendor}");
+        }
         // Every floor belongs to an advertised model: a floor for a model
         // nobody can pick is a stale row, and an unlisted model's failure gets
         // the typo hint instead (see `failure_hint`), so the row would never
@@ -3128,7 +3143,8 @@ for line in sys.stdin:
         //   * `gpt-5.5` retires from Codex on 2026-10-14 (its own `upgradeInfo`
         //     says so); it still runs until then and can still be typed.
         //   * `gpt-5.4` and `gpt-5.4-mini` retired on 2026-08-31.
-        //   * `gpt-5.3-codex` was never a Codex id; the real one had `-spark`.
+        //   * `gpt-5.3-codex` is deprecated and refused by the account; Spark
+        //     was a different model, not its rename.
         //   * `gpt-6-terra` does not exist; Terra is only `gpt-5.6-terra`.
         for gone in [
             "gpt-5.3-codex-spark",

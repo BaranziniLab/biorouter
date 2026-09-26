@@ -99,9 +99,11 @@ aliases are unsupported.
 > **Why the default moved from Fable 5.1 to Opus 5.5.** Opus 5.5 is what Claude Code itself defaults
 > to for Pro, Max, Team, Enterprise and API accounts from 2.1.280. Anthropic's model-configuration
 > page also says Fable is not the default on any plan, and that Fable usage can bill to usage credits
-> rather than to plan limits, depending on plan and seat tier. A provider built to use your
-> subscription should not start every new chat on the model most likely to spend credits you did
-> not choose to spend. Fable 5.1 is still in the picker.
+> rather than to plan limits, depending on plan and seat tier. Under `claude -p`, which is how
+> BioRouter drives the CLI, Claude Code never asks before billing those credits. A provider built to
+> use your subscription should not start every new chat on the model most likely to spend credits
+> you did not choose to spend. Fable 5.1 is still the most capable model in the catalogue, and it is
+> still in the picker.
 
 > **Why `claude-sonnet-4-6` is no longer advertised.** A bare `claude-sonnet-4-6` gets a
 > **200,000**-token window on a Max plan, not the 1M this table used to claim: the million needs
