@@ -1,5 +1,7 @@
 # BioRouter Crew implementation and evidence
 
+The [Crew user manual](../../crew/README.md) is the guide for people who use Crew: lab members, the host who runs a workspace, and the IT staff who support them. It covers joining and hosting a workspace, teams and channels, messages and files, agents, privacy, connections, the `biorouter crew` commands and server administration. The pages below are the design, the implementation record and the test evidence, written for developers.
+
 Start with the [comprehensive implementation plan](implementation-plan.md), revised September 22 after the user's decisions. **Section 15 makes daemon-owned native `biorouter crew`/GUI functional parity a completion requirement**, including terminal MFA/human approvals, shared transfers/tasks, CLI-only acceptance with Crew Electron clients fully closed, then mixed GUI/CLI collaboration among three real Unix users. Earlier GUI-first progress does not measure this scope. Sections 1, 3, 6, 9 and 13 define no-admin home-based deployment, 2–50-user labs, the cluster Public/Private toggle, shared MCP/SSH capabilities and real three-user dev-app acceptance testing. It incorporates the requested SSH/MFA/jump-host support, simple Linux/text storage preference, human and owned-agent collaboration, files, teams/channels and mandatory private/public boundaries.
 
 Work resumed on 2026-09-23 with two more acceptance requirements, recorded in [plan §16](implementation-plan.md#16-resumed-scope-gui-redesign-and-human-readable-identity-2026-09-23): a Slack-like desktop redesign ([UI redesign specification](ui-redesign-spec.md)) and people, teams and channels addressed by name instead of machine ID, with joining by invitation and device code ([naming design](naming-design.md)). The [resume handoff](handoff-2026-09-24.md) carries live package status and the dated decisions log; the [status ledger](implementation-status.md) records what has been measured.
@@ -8,6 +10,7 @@ Close-out, 2026-09-25: every §16 package is implemented, and acceptance ran as 
 
 | Artifact | Contents |
 |---|---|
+| [Crew user manual](../../crew/README.md) | How to use Crew, written for lab members, hosts and IT staff. Start here unless you are changing Crew's code |
 | [Implementation plan](implementation-plan.md) | Architecture, data/protocol/storage contracts, permissions, UI, deployment, phased implementation and acceptance gates |
 | [Acceptance status](implementation-status.md) | Feature-by-service/interface parity ledger, G01–G15 release gates, remaining blockers and artifact provenance |
 | [Resume handoff](handoff-2026-09-24.md) | The close-out handoff (what is done, final artifacts, gates, deferred items, human-review list, how to resume), then the campaign record (work-package progress, workstreams, decisions log) above the 2026-09-24 pause receipts it supersedes in part |

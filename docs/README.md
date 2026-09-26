@@ -26,6 +26,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | Understand a cross-institution warning you just saw | [Institutional affiliation](security/institutional-affiliation.md) |
 | Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
 | Run several conversations at once, or delegate to a subagent you can watch | [Workspace control](agent-loop/workspace-control.md) |
+| Work with your lab in Crew: chat, files and agents on a shared server | [Crew user manual](crew/README.md) |
 | Use Biorouter in a web browser, on your own machine or a shared host | [Reaching Biorouter from a browser](deployment/browser-access.md) — then [Headless Linux deployment](deployment/headless-linux.md) if it should run as a server |
 | Read or follow a **private** chat from a script, a dashboard or CI | [Reaching a private chat from a script](deployment/programmatic-session-access.md) — the `X-Caller-Provider` header, and which routes honour it |
 | Fix an error you are hitting right now | [Common problems and fixes](troubleshooting/common-problems-and-fixes.md) |
@@ -46,6 +47,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. Includes [coding-agent providers](providers/coding-agents/README.md) — the two that run on the user's own Claude or ChatGPT subscription by driving a vendor CLI, with their tool bridge, child-isolation flags and the vendor-terms and PHI compliance position. |
 | [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, which providers are acceptable for patient and other sensitive data, and the institutional affiliation check behind cross-institution warnings. |
 | [workflows](workflows/README.md) | Reusable workflow files that package instructions, extensions and model settings into one shareable session, plus the built-in cron scheduler. |
+| [crew](crew/README.md) | The Crew user manual: joining or hosting a lab workspace, teams and channels, messages and files, agent access, privacy, connections, the `biorouter crew` commands and server administration. |
 | [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |
 | [configuration](configuration/README.md) | The complete reference for both configuration forms — persistent YAML files and the environment variables that override them. |
 | [desktop-ui](desktop-ui/README.md) | Exercising the Electron desktop app as a running program: launching and driving the dev GUI, and the behavior to check once it is in front of you. |
