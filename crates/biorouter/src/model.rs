@@ -71,7 +71,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gpt-5", 400_000),
         ("gpt-5-2025-08-07", 400_000),
         ("gpt-5-mini", 400_000),
+        ("gpt-5-mini-2025-08-07", 400_000),
         ("gpt-5-nano", 400_000),
+        ("gpt-5-nano-2025-08-07", 400_000),
         ("gpt-5.1", 400_000),
         ("gpt-5.1-2025-11-13", 400_000),
         ("gpt-5.2", 400_000),
@@ -93,22 +95,42 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gpt-5.5-pro", 1_050_000),
         ("gpt-5.6", 1_050_000),
         ("gpt-5.6-luna", 1_050_000),
+        ("gpt-5.6-luna-2026-07-09", 1_050_000),
         ("gpt-5.6-sol", 1_050_000),
+        ("gpt-5.6-sol-2026-07-09", 1_050_000),
         ("gpt-5.6-terra", 1_050_000),
+        ("gpt-5.6-terra-2026-07-09", 1_050_000),
         // OpenAI's published figure for Astra (max output 128,000). Codex's
         // `model/list` carries no context-window field, so this cannot come
         // from the CLI probe that establishes the rest of that catalog.
         ("gpt-6-astra", 1_050_000),
+        // Azure's dated model version for Astra (2026-09-03), not the
+        // 2026-09-04 aggregators give: Azure deployments are named by it.
+        ("gpt-6-astra-2026-09-03", 1_050_000),
+        // GPT-6 Sol and Luna (GA 2026-09-22): 1,050,000 in / 128,000 out per
+        // OpenAI's model pages, the same window as Astra. There is no
+        // `gpt-6-terra` — Terra exists only as `gpt-5.6-terra`.
+        ("gpt-6-luna", 1_050_000),
+        ("gpt-6-luna-2026-09-22", 1_050_000),
+        ("gpt-6-sol", 1_050_000),
+        ("gpt-6-sol-2026-09-22", 1_050_000),
         ("o3", 200_000),
         ("o3-2025-04-16", 200_000),
+        ("openai/gpt-5.6-terra", 1_050_000),
+        ("openai/gpt-6-astra", 1_050_000),
+        ("openai/gpt-6-luna", 1_050_000),
+        ("openai/gpt-6-sol", 1_050_000),
         // ── Anthropic ──
+        ("anthropic/claude-fable-5.1", 1_000_000),
         ("anthropic/claude-haiku-4.5", 200_000),
         ("anthropic/claude-opus-4.8", 1_000_000),
+        ("anthropic/claude-opus-5.5", 1_000_000),
         ("anthropic/claude-sonnet-4.6", 1_000_000),
         ("anthropic/claude-sonnet-5", 1_000_000),
         ("claude-4-sonnet", 200_000),
         ("claude-fable-5", 1_000_000),
         ("claude-fable-5-1", 1_000_000),
+        ("claude-fable-5.1", 1_000_000),
         ("claude-haiku-4-5", 200_000),
         ("claude-haiku-4-5-20251001", 200_000),
         ("claude-haiku-4-5@20251001", 200_000),
@@ -122,6 +144,10 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
         ("claude-opus-5", 1_000_000),
+        // Claude Opus 5.5 (GA 2026-09-22): 1M context, 128K output. The dotted
+        // form is GitHub Copilot's spelling of the same model.
+        ("claude-opus-5-5", 1_000_000),
+        ("claude-opus-5.5", 1_000_000),
         ("claude-sonnet-4-5", 200_000),
         ("claude-sonnet-4-5-20250929", 200_000),
         ("claude-sonnet-4-5@20250929", 200_000),
@@ -132,8 +158,15 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
+        ("us.anthropic.claude-opus-4-7", 1_000_000),
         ("us.anthropic.claude-opus-4-8", 1_000_000),
         ("us.anthropic.claude-opus-4-8-v1", 1_000_000),
+        // Bedrock ids from Opus 4.7 on are un-suffixed geo inference profiles
+        // (AWS model cards); only the 4.5 generation carries `-v1:0` and Opus
+        // 4.6 alone `-v1`.
+        ("us.anthropic.claude-fable-5-1", 1_000_000),
+        ("us.anthropic.claude-opus-5", 1_000_000),
+        ("us.anthropic.claude-opus-5-5", 1_000_000),
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
         ("us.anthropic.claude-sonnet-4-6", 1_000_000),
         ("us.anthropic.claude-sonnet-5", 1_000_000),
@@ -146,12 +179,18 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gemini-2.5-pro-preview-tts", 1_048_576),
         ("gemini-3-flash-preview", 1_048_576),
         ("gemini-3-pro", 1_048_576),
-        ("gemini-3-pro-image", 1_048_576),
-        ("gemini-3.1-flash-image", 1_048_576),
+        // Image models: 65,536 / 131,072 in (Gemini model pages), not the
+        // 1,048,576 of the text models.
+        ("gemini-3-pro-image", 65_536),
+        ("gemini-3.1-flash-image", 131_072),
         ("gemini-3.1-flash-lite", 1_048_576),
         ("gemini-3.1-pro", 1_048_576),
         ("gemini-3.1-pro-preview", 1_048_576),
         ("gemini-3.5-flash", 1_048_576),
+        ("gemini-3.5-flash-lite", 1_048_576),
+        ("gemini-3.6-flash", 1_048_576),
+        ("gemini-3.7-flash", 1_048_576),
+        ("gemini-3.8-flash", 1_048_576),
         ("gemma4", 131_072),
         ("gemma4-12b", 262_144),
         ("gemma4-26b", 262_144),
@@ -164,15 +203,20 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("llama-3.3-70b-versatile", 131_072),
         // ── Qwen ──
         ("qwen/qwen3-coder-next", 262_144),
+        ("qwen/qwen3.8-27b", 131_072),
         ("qwen3.6", 262_144),
         ("qwen3.6-27b", 262_144),
         ("qwen3.6-35b-a3b", 262_144),
         // ── DeepSeek ──
         ("deepseek-chat", 1_000_000),
+        // DeepSeek-V4.1-Flash (2026-09-10); DeepSeek tells users to call it
+        // `deepseek-flash`, and routes the retired `deepseek-v4-flash` to it.
+        ("deepseek-flash", 1_000_000),
         ("deepseek-reasoner", 1_000_000),
         ("deepseek-v4-flash", 1_000_000),
         ("deepseek-v4-pro", 1_000_000),
         ("deepseek/deepseek-v4-flash", 1_000_000),
+        ("deepseek/deepseek-v4.1-flash", 1_048_576),
         ("deepseek/deepseek-v4-pro", 1_000_000),
         // ── Z.ai GLM ──
         ("glm-4.5", 131_072),
@@ -183,18 +227,25 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("glm-5-turbo", 200_000),
         ("glm-5.1", 202_752),
         ("glm-5.2", 1_048_576),
+        ("glm-5.3", 1_048_576),
+        ("glm-5.3-flash", 1_048_576),
         // ── xAI Grok ──
         ("grok-4.20-0309-non-reasoning", 1_000_000),
         ("grok-4.20-0309-reasoning", 1_000_000),
         ("grok-4.20-multi-agent-0309", 1_000_000),
         ("grok-4.3", 1_000_000),
         ("grok-4.3-latest", 1_000_000),
+        // Grok 4.5 / 4.6 / 4.7 (July-Sept 2026): 500,000 context per docs.x.ai.
+        ("grok-4.5", 500_000),
+        ("grok-4.6", 500_000),
+        ("grok-4.7", 500_000),
         ("grok-build-0.1", 256_000),
         ("grok-imagine-image", 131_072),
         ("grok-imagine-image-quality", 131_072),
         ("grok-latest", 131_072),
         ("x-ai/grok-4.20", 1_000_000),
         ("x-ai/grok-4.3", 1_000_000),
+        ("x-ai/grok-4.7", 500_000),
         ("x-ai/grok-build-0.1", 256_000),
         // ── Moonshot Kimi ──
         // Bare ids are what the direct Moonshot platform serves (the
@@ -203,25 +254,34 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("kimi-k2.5", 262_144),
         ("kimi-k2.6", 262_144),
         ("kimi-k2.7-code", 262_144),
+        ("kimi-k2.7-code-highspeed", 262_144),
+        ("kimi-k3", 1_048_576),
         ("moonshotai/kimi-k2.6", 262_144),
         ("moonshotai/kimi-k2.7-code", 262_144),
+        ("moonshotai/kimi-k3", 1_048_576),
         // ── Xiaomi MiMo ──
         ("mimo-v2-omni", 262_144),
         ("mimo-v2-pro", 262_144),
         ("mimo-v2.5", 1_000_000),
         ("mimo-v2.5-pro", 1_000_000),
+        ("mimo-v2.6-flash", 1_048_576),
+        ("mimo-v2.6-pro", 1_048_576),
         // ── Inception Mercury ──
         ("mercury-2", 128_000),
+        ("mercury-2.5", 260_000),
         ("mercury-coder", 128_000),
         // ── Mistral ──
         ("codestral-2508", 128_000),
         ("devstral-2512", 262_144),
         ("magistral-medium-2509", 128_000),
+        ("ministral-14b-2512", 262_144),
+        ("ministral-3b-2512", 262_144),
         ("ministral-8b-2512", 262_144),
         ("mistral-large-2512", 262_144),
         ("mistral-medium-2508", 128_000),
         ("mistral-medium-3-5", 262_144),
-        ("mistral-medium-latest", 128_000),
+        // Now an alias of mistral-medium-3-5 (256k).
+        ("mistral-medium-latest", 262_144),
         ("mistral-small-2603", 262_144),
         ("mistral-small-3-2-24b-instruct", 128_000),
         // ── MiniMax ──
@@ -239,28 +299,44 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("databricks-claude-opus-4-6", 1_000_000),
         ("databricks-claude-opus-4-7", 1_000_000),
         ("databricks-claude-opus-4-8", 1_000_000),
+        ("databricks-claude-opus-5", 1_000_000),
         ("databricks-claude-sonnet-4-5", 200_000),
         ("databricks-claude-sonnet-4-6", 1_000_000),
+        ("databricks-claude-sonnet-5", 1_000_000),
         ("databricks-gemini-2-5-flash", 1_048_576),
         ("databricks-gemini-2-5-pro", 1_048_576),
         ("databricks-gemini-3-1-flash-lite", 1_048_576),
         ("databricks-gemini-3-1-pro", 1_048_576),
         ("databricks-gemini-3-5-flash", 1_048_576),
+        ("databricks-gemini-3-5-flash-lite", 1_048_576),
+        ("databricks-gemini-3-6-flash", 1_048_576),
+        ("databricks-gemini-3-7-flash", 1_048_576),
+        ("databricks-gemini-3-8-flash", 1_048_576),
         ("databricks-gemini-3-flash", 1_048_576),
-        ("databricks-gpt-5-4", 400_000),
+        // GPT-5.4 and 5.5 are 1,050,000 on Databricks, as everywhere else
+        // (Databricks supported-models page); only mini/nano are 400k.
+        ("databricks-gpt-5-4", 1_050_000),
         ("databricks-gpt-5-4-mini", 400_000),
         ("databricks-gpt-5-4-nano", 400_000),
-        ("databricks-gpt-5-5", 400_000),
-        ("databricks-gpt-5-5-pro", 400_000),
+        ("databricks-gpt-5-5", 1_050_000),
+        ("databricks-gpt-5-5-pro", 1_050_000),
+        ("databricks-gpt-5-6-luna", 1_050_000),
+        ("databricks-gpt-5-6-sol", 1_050_000),
+        ("databricks-gpt-5-6-terra", 1_050_000),
+        ("databricks-gpt-6-astra", 1_050_000),
+        ("databricks-gpt-6-luna", 1_050_000),
+        ("databricks-gpt-6-sol", 1_050_000),
         ("databricks-llama-4-maverick", 128_000),
         ("databricks-meta-llama-3-3-70b-instruct", 128_000),
         // ── Other ──
         ("google/gemini-3.1-pro-preview", 1_048_576),
         ("google/gemini-3.5-flash", 1_048_576),
+        ("google/gemini-3.8-flash", 1_048_576),
         ("o4-mini-2025-04-16", 200_000),
         ("sagemaker-tgi-endpoint", 128_000),
         ("z-ai/glm-5.1", 202_752),
         ("z-ai/glm-5.2", 1_048_576),
+        ("z-ai/glm-5.3", 1_048_576),
     ])
 });
 
@@ -274,12 +350,14 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
-        // Scoped to Astra rather than to the whole `gpt-6` generation. It
-        // exists only for the dated variants a future catalog may carry
-        // (`gpt-6-astra-2026-xx-xx`), which have no exact entry; a bare
-        // `"gpt-6"` would additionally hand 1,050,000 to an unreleased
-        // `gpt-6-mini`, which is a claim nothing has measured.
+        // Scoped to the three published GPT-6 models rather than to the whole
+        // `gpt-6` generation. They exist only for dated variants a future
+        // catalog may carry (`gpt-6-sol-2026-xx-xx`), which have no exact
+        // entry; a bare `"gpt-6"` would additionally hand 1,050,000 to an
+        // unreleased `gpt-6-mini`, which is a claim nothing has measured.
         ("gpt-6-astra", 1_050_000),
+        ("gpt-6-sol", 1_050_000),
+        ("gpt-6-luna", 1_050_000),
         ("gpt-5.6", 1_050_000), // covers gpt-5.6 and its -sol/-terra/-luna variants
         ("gpt-5.5", 1_050_000), // covers gpt-5.5 and gpt-5.5-pro
         ("gpt-5.4-mini", 400_000),

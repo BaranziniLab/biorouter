@@ -77,8 +77,15 @@ async fn same_family_models_with_different_windows_stay_distinct() {
         ("gpt-5.4-pro", 1_050_000),
         ("gpt-5.4-mini", 400_000),
         ("gpt-5.4-nano", 400_000),
-        // GPT-6: Astra is 1.05M, and "gpt-5"/"gpt-5.6" must not claim it.
+        // GPT-6: Astra, Sol and Luna are 1.05M, and "gpt-5"/"gpt-5.6" must not
+        // claim them. The dated Azure spellings resolve to the same window.
         ("gpt-6-astra", 1_050_000),
+        ("gpt-6-sol", 1_050_000),
+        ("gpt-6-luna", 1_050_000),
+        ("gpt-6-sol-2026-09-22", 1_050_000),
+        // Databricks serves GPT-5.5 at its full window, not the 400k of mini.
+        ("databricks-gpt-5-5", 1_050_000),
+        ("databricks-gpt-5-4-mini", 400_000),
         // Claude: 4.6+ and the 5 series are 1M; the 4.5 tier and Haiku are 200k.
         // Fable 5.1's 1M is the same number the `claude-fable-5` pattern would
         // hand it, so this case cannot tell an exact entry from an inherited
@@ -86,6 +93,7 @@ async fn same_family_models_with_different_windows_stay_distinct() {
         // what pins the exact entry.
         ("claude-fable-5-1", 1_000_000),
         ("claude-opus-5", 1_000_000),
+        ("claude-opus-5-5", 1_000_000),
         ("claude-opus-4-6", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
         ("claude-opus-4-5", 200_000),
