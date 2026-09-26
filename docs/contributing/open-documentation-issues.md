@@ -23,11 +23,11 @@ this worktree; `file:line` references point at real current lines.
 | Severity | Meaning | Open |
 |---|---|---|
 | [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 6 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 13 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 12 |
 | [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 7 |
-| [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 7 |
+| [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 6 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
-| **Total** | | **41** |
+| **Total** | | **39** |
 
 ## Correctness risk
 
@@ -88,13 +88,14 @@ UCSF governance must rule on the tables, stamp a review date, and pick a durable
 
 ### UCSF readers are pointed at the commercial providers, not the institutional ones
 
-[Choosing a model provider](../getting-started/choosing-a-model-provider.md) and
-[Installation](../getting-started/installation.md) describe generic "Azure OpenAI" and "Amazon
-Bedrock" as the UCSF path. In code those are the *commercial* providers (`azure_openai`,
-`aws_bedrock`); the institutional ones are separate modules, `versa_azure` and
-`versa_bedrock`, in their own "Institutional Models" panel group. Neither has a documentation
-page anywhere. UCSF users following either page will configure the wrong provider.
-**Decision needed:** author the two `versa_*` sections and correct the conflation.
+[Installation](../getting-started/installation.md) describes generic "Azure OpenAI" and
+"Amazon Bedrock" as the UCSF path. In code those are the *commercial* providers
+(`azure_openai`, `aws_bedrock`); the institutional ones are separate modules, `versa_azure` and
+`versa_bedrock`, in their own "Institutional Models" panel group. UCSF users following that
+page will configure the wrong provider.
+[Choosing a model provider](../getting-started/choosing-a-model-provider.md) was corrected on
+2026-09-25 and now has sections for both `versa_*` providers.
+**Decision needed:** correct the conflation in the installation guide.
 
 ## Doc/code contradiction
 
@@ -132,17 +133,6 @@ that no longer exist — the shipping `MODEL_CATALOG` is `gemma4`, `gemma4-e2b`,
 `LLAMACPP_SURVEY_MODELS=qwen3.5-0.8b,gemma-4-e2b` selects nothing. Relatedly,
 `crates/biorouter/tests/llamacpp_survey.rs:253` hardcodes "32k ctx" into its report header.
 **Decision needed:** reconcile all three against the code, in one pass.
-
-### The Versa provider constants in the history record no longer match the code
-
-The institutional-providers documents state deployment `gpt-5.2-2025-12-11` and API version
-`2024-10-21`; `crates/biorouter/src/providers/versa_azure.rs:18-20` reads
-`gpt-5.5-2026-04-24` and `2025-01-01-preview`. Likewise the plan quotes
-`VERSA_BEDROCK_DEFAULT_MODEL = us.anthropic.claude-sonnet-4-6` against a shipping
-`us.anthropic.claude-opus-4-6-v1` and a longer model list. These are historical records, so the
-old values are arguably correct *there* — but the current values have no user-facing home.
-**Decision needed:** publish the live constants in a provider page (see the coverage gap
-above), then leave the history alone.
 
 ### The Knowledge plans put the module in the wrong crate, including in the architecture diagram
 
@@ -357,14 +347,6 @@ composite-report tool) is named there, so the page no longer omits it. The catal
 still eight of thirty-two. **Decision needed:** this needs a content pass, not a formatting
 pass.
 
-### Four providers have modules but no entry in the provider guide
-
-[Choosing a model provider](../getting-started/choosing-a-model-provider.md) omits `llamacpp`
-(Llama Server — the bundled sidecar, ranked *first* in the app's grid), `tetrate` (which the
-quickstart recommends twice as *the* quickstart path), `versa_azure` and `versa_bedrock`.
-Writing these needs real env vars, default models and setup steps.
-**Decision needed:** author four sections; see also the UCSF conflation under Correctness risk.
-
 ### The environment-variable catalogue is missing four families
 
 [Environment variables](../configuration/environment-variables.md) does not document: the
@@ -409,14 +391,8 @@ decision, then a sweep.
 ### Stale model ids in illustrative examples
 
 `gpt-4`, `gpt-4o`, `claude-3.5-sonnet`, `claude-sonnet-4-20250514` and
-`claude-3-7-sonnet-latest` appear across the configuration and workflows pages. Two internal
-contradictions sit inside
-[choosing a model provider](../getting-started/choosing-a-model-provider.md): the Azure default
-is `gpt-5.4-2026-03-05` above a list containing only `gpt-4o`/`gpt-4o-mini`/`gpt-4`, and the
-Bedrock default is `us.anthropic.claude-sonnet-4-6` above a list naming "Claude Sonnet 4.5".
-Substituting current ids would be inventing facts. Also: `zai.rs:24` pins
-`ZAI_DEFAULT_MODEL = "glm-4.6"` while `ZAI_KNOWN_MODELS` right below lists `glm-5.2`/`glm-5.1`/
-`glm-5`/`glm-5-turbo` — if that pin is deliberate, the reason belongs in a code comment.
+`claude-3-7-sonnet-latest` appear across the configuration and workflows pages. Substituting
+current ids would be inventing facts.
 
 ### Every `file.rs:line` citation in the history corpus has drifted
 
