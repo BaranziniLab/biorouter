@@ -122,13 +122,16 @@ const KIND: CodingAgentKind = CodingAgentKind::ClaudeCode;
 /// `opus[1m]`, which lands on the same model.
 ///
 /// It replaced `claude-fable-5-1`, which was the default until 2026-09-25 on
-/// the grounds that it was the flagship and the operator's choice. Neither
-/// holds any more, and a third reason now points the other way: the same
-/// model-config page says Fable is not the account-type default on any plan,
-/// and that Fable usage can bill to usage credits rather than to plan limits
-/// depending on plan and seat tier. A subscription provider should not start
-/// every new chat on the model most likely to spend credits the user did not
-/// choose to spend. Fable 5.1 stays in the picker for anyone who picks it.
+/// the grounds that it was the flagship and the operator's choice. Only the
+/// first still holds: the same page still calls the Fable models "the most
+/// capable models in Claude Code". What moved the default is cost. The page
+/// says Fable is not the account-type default on any plan, that Fable usage
+/// can bill to usage credits rather than to plan limits depending on plan and
+/// seat tier, and that under `-p` (which is how this provider drives the CLI)
+/// Claude Code never shows the consent prompt and bills those credits without
+/// asking. A subscription provider should not start every new chat on the
+/// model most likely to spend credits the user did not choose to spend.
+/// Fable 5.1 stays in the picker for anyone who picks it.
 ///
 /// ⚠ It needs **`claude` 2.1.280 or newer** ("Opus 5.5 requires Claude Code
 /// v2.1.280 or later", same page). Measured 2026-09-25: 2.1.280 knows the id,
