@@ -110,27 +110,42 @@ const KIND: CodingAgentKind = CodingAgentKind::ClaudeCode;
 /// `with_unlisted_models` still lets a user type `sonnet` by hand, and the CLI
 /// accepts both spellings — verified against `claude` 2.1.235.
 ///
-/// # Why Fable 5.1 is the default
+/// # Why Opus 5.5 is the default
 ///
-/// Measured 2026-09-08: `claude --model claude-fable-5-1 -p … --output-format
-/// json` answers on `claude` 2.1.260 (the binary the desktop app bundles) with
-/// `modelUsage["claude-fable-5-1"].contextWindow` = 1,000,000, and both the
-/// `fable` and `best` aliases resolve to it. It is Anthropic's current flagship
-/// and the operator's own default.
+/// It is Claude Code's own default. Anthropic's model-config page
+/// (https://code.claude.com/docs/en/model-config.md, read 2026-09-25) makes
+/// Opus 5.5 the default for Pro, Max, Team, Enterprise and API accounts, the
+/// 2.1.280 changelog entry is "Added Claude Opus 5.5 (claude-opus-5-5), now
+/// the default Opus model", and from 2.1.280 the CLI's baked alias map resolves
+/// `opus` to `claude-opus-5-5` (2.1.266 and 2.1.275 still resolve it to
+/// `claude-opus-5`). The operator's own `~/.claude/settings.json` says
+/// `opus[1m]`, which lands on the same model.
 ///
-/// ⚠ It needs a recent CLI. On `claude` 2.1.235 (the copy that was on this
-/// machine's PATH) the API refuses it outright:
+/// It replaced `claude-fable-5-1`, which was the default until 2026-09-25 on
+/// the grounds that it was the flagship and the operator's choice. Neither
+/// holds any more, and a third reason now points the other way: the same
+/// model-config page says Fable is not the account-type default on any plan,
+/// and that Fable usage can bill to usage credits rather than to plan limits
+/// depending on plan and seat tier. A subscription provider should not start
+/// every new chat on the model most likely to spend credits the user did not
+/// choose to spend. Fable 5.1 stays in the picker for anyone who picks it.
+///
+/// ⚠ It needs **`claude` 2.1.280 or newer** ("Opus 5.5 requires Claude Code
+/// v2.1.280 or later", same page). Measured 2026-09-25: 2.1.280 knows the id,
+/// while 2.1.266 (this machine's PATH copy) and 2.1.275 both print
+/// `[claude-code:unrecognized_model] {"model":"claude-opus-5-5",…}`. The
+/// refusal an older CLI then gets from the API could not be captured, because
+/// the probe CLI was signed out; its documented shape (error code
+/// `claude_code_version_too_old`) is the one Fable 5.1 produced on 2.1.235:
 ///
 /// > 400 Claude Code 2.1.235 does not support this model; version **2.1.251**
 /// > or newer is required. Run 'claude update', or update the Claude desktop
 /// > app, then try again.
 ///
-/// Anthropic's own model-config page says 2.1.255; the API's error is the
-/// tighter, measured floor, so both numbers are recorded rather than averaged.
 /// That failure is *actionable* — Biorouter surfaces the vendor sentence
 /// verbatim, naming the installed version and the fix — which is why a default
 /// that requires a current CLI is acceptable rather than a trap.
-pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-fable-5-1";
+pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-opus-5-5";
 
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless";
 
@@ -140,13 +155,14 @@ pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless"
 /// rather than refusing before the call.
 ///
 /// The case for it is *stronger* here than next door, and the reason is recorded
-/// at length in `known_models` above: `claude --model X -p` **accepts an unknown
-/// id and merely warns** —
+/// at length in `known_models` below: `claude --model X -p` **accepts an
+/// unknown id and merely warns** on stderr —
 ///
-///   "X" is not a model this version of Claude Code recognizes, so auto-compact
-///   will keep this session within 200k tokens
+///   [claude-code:unrecognized_model] {"model":"X","query_source":"sdk"}
 ///
-/// — so a typo neither fails loudly nor gets a pointer. When the turn does then
+/// (the shape 2.1.266, 2.1.275 and 2.1.280 print, measured 2026-09-25; older
+/// CLIs wrote a sentence instead, and nothing in Biorouter parses either) — so
+/// a typo neither fails loudly nor gets a pointer. When the turn does then
 /// end badly, nothing in the message names the model, and the frame above it
 /// invites a retry that cannot come true. Codex got this hint; the structurally
 /// identical failures here did not.
@@ -172,9 +188,9 @@ fn unknown_model_hint(model: &str) -> String {
 ///
 /// `ProviderMetadata::with_models` is used rather than `::new` because `::new`
 /// hard-codes `supports_vision: None` (see `base.rs`), and this catalog carries a
-/// per-model vision answer: all four of these take image input, and Codex's
-/// `gpt-5.3-codex-spark` next door does not — recording a known fact as unknown is
-/// its own defect.
+/// per-model vision answer: all four of these take image input, which Anthropic
+/// states for every current model — recording a known fact as unknown is its
+/// own defect.
 ///
 /// The windows are *not* the reason. These are concrete ids rather than the CLI's
 /// `sonnet`/`opus` aliases (see `CLAUDE_CODE_DEFAULT_MODEL` above on why), each
@@ -187,34 +203,62 @@ fn known_models() -> Vec<ModelInfo> {
     // `tests/context_windows.rs::provider_declared_windows_match_the_registry`
     // compares the two.
     //
-    // Anthropic's **current** lineup, and nothing else. Measured 2026-09-08
-    // against two CLIs rather than read off a changelog: `claude` 2.1.235 (the
-    // copy on this machine's PATH) for `claude-opus-5`, `claude-sonnet-5` and
-    // `claude-haiku-4-5`, and `claude` 2.1.260 (the binary the desktop app
-    // bundles) for `claude-fable-5-1`, which 2.1.235 cannot run at all. Each
-    // window below is the number the CLI itself reported in
-    // `modelUsage[<id>].contextWindow` for a real one-turn
-    // completion, and it matches
+    // Anthropic's **current** lineup, and nothing else, default first.
+    //
+    // Two rounds of evidence, and they are not the same kind:
+    //
+    //   * 2026-09-08, a real one-turn completion per id: `claude` 2.1.235 (then
+    //     the PATH copy) for `claude-sonnet-5` and `claude-haiku-4-5`, and
+    //     `claude` 2.1.260 (then the desktop-bundled binary) for
+    //     `claude-fable-5-1`. Each of those windows is the number the CLI
+    //     reported in `modelUsage[<id>].contextWindow`.
+    //   * 2026-09-25, for `claude-opus-5-5`: NOT a completion. The standalone
+    //     CLI was signed out ("OAuth session expired"), so nothing reached the
+    //     API and no `modelUsage` came back. What was measured is recognition
+    //     (see the warning below) on 2.1.266, 2.1.275 and 2.1.280, plus each
+    //     binary's baked model catalog, which gives Opus 5.5 a native
+    //     1,000,000 window and 128,000 of output. That matches
+    //     https://platform.claude.com/docs/en/models/opus-5-5/overview. Re-read
+    //     the window from `modelUsage` on a signed-in 2.1.280 when one is
+    //     available.
+    //
+    // All four windows match
     // https://platform.claude.com/docs/en/about-claude/models/overview, which
     // also states that every current model takes text *and* image input —
     // hence `with_vision()` on all four.
     //
-    // ⚠ Fable 5.1 needs a recent CLI: **2.1.251 or newer** per the API's own
-    // 400 on 2.1.235 (Anthropic's model-config page says 2.1.255). See
-    // `CLAUDE_CODE_DEFAULT_MODEL` — the refusal is surfaced verbatim, so it
-    // reads as "update the CLI", not as a Biorouter fault.
+    // ⚠ Each model has its own CLI floor, and an older CLI gets the vendor's
+    // `claude_code_version_too_old` 400, which is surfaced verbatim so it reads
+    // as "update the CLI", not as a Biorouter fault (see
+    // `CLAUDE_CODE_DEFAULT_MODEL`). From the model-config page on 2026-09-25:
+    //   claude-opus-5-5   2.1.280  (the default, so the floor that matters)
+    //   claude-fable-5-1  2.1.257  (the page said 2.1.255 on 2026-09-08, and the
+    //                               API's own 400 on 2.1.235 then named 2.1.251)
+    //   claude-sonnet-5   2.1.197
     //
     // ⚠ The probe has to be checked before it is trusted: `claude --model X -p`
-    // ACCEPTS an unknown id and merely warns —
-    //   "X" is not a model this version of Claude Code recognizes, so
-    //   auto-compact will keep this session within 200k tokens
-    // — so "it ran" proves nothing on its own. `definitely-not-a-model`,
-    // `claude-opus-99` and `gpt-4` each produce that warning; the four below
-    // produce a clean answer, which is what makes the list evidence.
+    // ACCEPTS an unknown id and merely warns. Current CLIs (2.1.266, 2.1.275
+    // and 2.1.280, measured 2026-09-25) print it to stderr as
+    //   [claude-code:unrecognized_model] {"model":"X","query_source":"sdk"}
+    // before they authenticate; older ones wrote "X is not a model this
+    // version of Claude Code recognizes, so auto-compact will keep this
+    // session within 200k tokens". Nothing in Biorouter parses either shape.
+    // So "it ran" proves nothing on its own, and "it was recognized" proves
+    // only that the CLI knows the NAME: the check is catalog-family based, and
+    // a retired id such as `claude-3-7-sonnet-latest` still passes it. The
+    // control, `claude-not-a-model-9`, draws the warning on all three.
     //
-    // Two ids that used to be here are gone, and only one of them was merely
-    // stale:
+    // Three ids that used to be here are gone. The first two were merely
+    // superseded; the third was a live defect:
     //
+    //   * `claude-opus-5` — removed 2026-09-25. Anthropic's overview now lists
+    //     it under legacy models, superseded at the same tier by Opus 5.5,
+    //     which is also cheaper ($4/$20 per MTok against $5/$25), and the CLI's
+    //     `opus` alias moved off it in 2.1.280. It is still served (retirement
+    //     not sooner than 2027-07-24) and `with_unlisted_models` still lets a
+    //     user type it. That also covers a user whose CLI is older than 2.1.280
+    //     and so cannot run the default: `claude-opus-5` answered on 2.1.235
+    //     (2026-09-08) and 2.1.266 still recognizes it.
     //   * `claude-fable-5` — legacy, superseded at the same tier by Fable 5.1.
     //     Anthropic still serves it, and `with_unlisted_models` still lets a
     //     user type it, so nothing breaks; it just is not advertised.
@@ -234,8 +278,8 @@ fn known_models() -> Vec<ModelInfo> {
     //     against a CLI serving 200k. The window is a per-provider fact, and a
     //     registry keyed on the model name alone has no way to say so.
     vec![
+        ModelInfo::new("claude-opus-5-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-fable-5-1", 1_000_000).with_vision(),
-        ModelInfo::new("claude-opus-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-sonnet-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-haiku-4-5", 200_000).with_vision(),
     ]
@@ -2523,33 +2567,50 @@ mod tests {
     ///
     /// Pinned as an exact list rather than as "contains X", because the failure
     /// this guards against is an id staying behind after it stops being
-    /// current: a legacy model in the picker is not neutral, and one of the two
-    /// removed here (`claude-sonnet-4-6`) was showing a 1,000,000 window for a
-    /// model the CLI runs at 200,000 on this plan.
+    /// current: a legacy model in the picker is not neutral, and one of the
+    /// ids removed earlier (`claude-sonnet-4-6`) was showing a 1,000,000
+    /// window for a model the CLI runs at 200,000 on this plan.
     #[test]
-    fn the_catalog_is_anthropics_current_lineup_and_defaults_to_fable_5_1() {
+    fn the_catalog_is_anthropics_current_lineup_and_defaults_to_opus_5_5() {
         let m = ClaudeCodeProvider::metadata();
         let advertised: Vec<&str> = m.known_models.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(
             advertised,
             [
+                "claude-opus-5-5",
                 "claude-fable-5-1",
-                "claude-opus-5",
                 "claude-sonnet-5",
                 "claude-haiku-4-5",
             ],
-            "measured 2026-09-08 against `claude` 2.1.235 (and 2.1.260 for \
-             Fable 5.1) plus Anthropic's model overview"
+            "Anthropic's current lineup per its model overview, re-read \
+             2026-09-25 against the baked catalogs of `claude` 2.1.266, 2.1.275 \
+             and 2.1.280"
         );
         assert_eq!(
             m.default_model, CLAUDE_CODE_DEFAULT_MODEL,
             "the picker's default is the constant, not a second opinion"
         );
-        assert_eq!(m.default_model, "claude-fable-5-1");
+        assert_eq!(
+            m.default_model, "claude-opus-5-5",
+            "Claude Code's own default for Pro/Max/Team/Enterprise and the API \
+             from 2.1.280; Fable is no plan's default and can bill usage credits"
+        );
+        assert_eq!(
+            advertised.first(),
+            Some(&CLAUDE_CODE_DEFAULT_MODEL),
+            "the default leads the list, so the picker opens on it"
+        );
 
         // Legacy ids a user may still type by hand, and which must not be
         // advertised. `with_unlisted_models` is what keeps them reachable.
-        for legacy in ["claude-fable-5", "claude-sonnet-4-6", "claude-opus-4-8"] {
+        // `claude-opus-5` joined them on 2026-09-25, when Opus 5.5 superseded
+        // it at the same tier and the CLI's `opus` alias moved to Opus 5.5.
+        for legacy in [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+        ] {
             assert!(
                 !advertised.contains(&legacy),
                 "{legacy} is a legacy model and must not be in the picker"
@@ -2560,9 +2621,10 @@ mod tests {
             "…which is only acceptable because an unlisted id can still be typed"
         );
 
-        // The window each entry declares is the one the CLI itself reported.
-        // Haiku differing from the rest is the point: a blanket 1M would be a
-        // 5x overstatement for it.
+        // The window each entry declares is the one the CLI itself reported
+        // (Opus 5.5's is its baked catalog's, since no signed-in completion
+        // was possible when it was added). Haiku differing from the rest is the
+        // point: a blanket 1M would be a 5x overstatement for it.
         let window = |id: &str| {
             m.known_models
                 .iter()
@@ -2570,8 +2632,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} is advertised"))
                 .context_limit
         };
+        assert_eq!(window("claude-opus-5-5"), 1_000_000);
         assert_eq!(window("claude-fable-5-1"), 1_000_000);
-        assert_eq!(window("claude-opus-5"), 1_000_000);
         assert_eq!(window("claude-sonnet-5"), 1_000_000);
         assert_eq!(window("claude-haiku-4-5"), 200_000);
     }

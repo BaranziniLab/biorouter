@@ -63,9 +63,17 @@ const KIND: CodingAgentKind = CodingAgentKind::Codex;
 ///
 /// Astra is the vendor's own bundled default: codex-cli 0.153.4's changelog
 /// entry is "Fixed Astra's visibility in the bundled model picker and made it
-/// the bundled default", and `model/list` on 0.153.4 returns it first with
-/// `isDefault: true` (measured 2026-09-08). It is also what the operator's own
-/// `~/.codex/config.toml` selects.
+/// the bundled default", and `model/list` returns it first with
+/// `isDefault: true` on 0.153.4 (measured 2026-09-08 and again 2026-09-25) and
+/// on 0.157.0, the npm `latest` on 2026-09-25. It is also what the operator's
+/// own `~/.codex/config.toml` selects.
+///
+/// Why not the newer `gpt-6-sol`: Sol and Luna need codex-cli **0.156.1**, and
+/// an older CLI refuses them with a sentence that does not say "upgrade" (see
+/// [`cli_floor_hint`]). Astra is the one GPT-6 model that both CLIs measured
+/// on 2026-09-25 actually ran (`codex exec` answered on 0.153.4 and 0.157.0),
+/// so a user who has not updated since early September still gets a working
+/// default.
 ///
 /// ⚠ It needs **codex-cli 0.153.4 or newer**. On 0.147.0 the request is
 /// refused with `400 The 'gpt-6-astra' model requires a newer version of Codex.
@@ -179,73 +187,111 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
 fn known_models() -> Vec<ModelInfo> {
     // Read from the CLI itself, not from a blog post: `codex app-server`
     // answers `model/list` with the catalog the signed-in account actually
-    // has. Measured against codex-cli **0.153.4** on 2026-09-08, from an
-    // isolated `CODEX_HOME` holding only `auth.json` — exactly what this
-    // provider does at runtime, so the list is the one a Biorouter turn sees:
+    // has. Measured on 2026-09-25 against codex-cli **0.157.0** (the npm
+    // `latest` that day) and **0.153.4** (this machine's Homebrew copy), each
+    // from an isolated `CODEX_HOME` holding only `auth.json` — exactly what
+    // this provider does at runtime, so the list is the one a Biorouter turn
+    // sees. In `model/list` order:
     //
-    //   gpt-6-astra          GPT-6-Astra    text+image   (bundled default)
-    //   gpt-5.6-sol          GPT-5.6-Sol    text+image
-    //   gpt-5.6-terra        GPT-5.6-Terra  text+image
-    //   gpt-5.6-luna         GPT-5.6-Luna   text+image
-    //   gpt-5.5              GPT-5.5        text+image
-    //   gpt-5.3-codex-spark  Spark          TEXT ONLY
+    //   id             inputs      0.157.0   0.153.4   notes
+    //   gpt-6-astra    text+image  listed    listed    isDefault on both
+    //   gpt-6-sol      text+image  listed    ABSENT    needs 0.156.1
+    //   gpt-6-luna     text+image  listed    ABSENT    needs 0.156.1
+    //   gpt-5.6-sol    text+image  listed    listed    now "Older …"
+    //   gpt-5.6-terra  text+image  listed    listed    now "Older …"
+    //   gpt-5.6-luna   text+image  listed    listed    now "Older …"
     //
-    // codex-cli 0.147.0 (the copy on this machine's PATH) answers with the
-    // same six **minus Astra**, and makes `gpt-5.6-sol` the default instead;
-    // `codex exec -m gpt-6-astra` there fails `400 … requires a newer version
-    // of Codex`. So Astra needs **0.153.4 or newer** — see
-    // `CODEX_DEFAULT_MODEL`.
+    // `codex exec -m <id>` answered on 0.157.0 for all three GPT-6 models, and
+    // on 0.153.4 for Astra. On 0.153.4, Sol and Luna fail with `400 The
+    // '<id>' model is not supported when using Codex with a ChatGPT account` —
+    // the same words a genuinely unavailable model gets, not the "requires a
+    // newer version" Astra got on 0.147.0. 0.156.1's release notes are the
+    // first to offer them ("Choose GPT-6 Sol or GPT-6 Luna from the model
+    // picker"). `cli_floor_hint` exists because that sentence misleads.
     //
-    // Two ids that used to be advertised here are **retired**, not merely
-    // stale: OpenAI's models page gives `gpt-5.4` and `gpt-5.4-mini` an
-    // end-of-life of 2026-08-31 (replacements `gpt-5.6-terra` and
-    // `gpt-5.6-luna`), both have left `model/list` on *both* CLI versions, and
-    // `codex exec -m gpt-5.4` now fails `400 The 'gpt-5.4' model is not
-    // supported when using Codex with a ChatGPT account`. Offering either
-    // could only ever fail.
+    // Every window is OpenAI's published API figure
+    // (developers.openai.com/api/docs/models/<id>; 1,050,000 in, 128,000 out
+    // for all six). `model/list` carries no context-window field, so the
+    // window can never come from that probe. ⚠ The Codex backend's own
+    // catalog, which 0.157.0 caches as `models_cache.json`, says something
+    // smaller for a ChatGPT sign-in: `context_window` 272,000 with
+    // `max_context_window` 872,000 and `effective_context_window_percent` 95,
+    // read for all three GPT-6 models and `gpt-5.6-sol`. So a turn that
+    // flattens more than roughly 258K tokens into one Codex prompt may exceed
+    // what Codex actually uses. Not changed here, because
+    // `MODEL_CONTEXT_WINDOWS` is keyed by bare id and shared with the OpenAI
+    // API provider (`tests/context_windows.rs` forces the two to agree), so a
+    // Codex-only 272K is a design change, not an edit to this list.
     //
-    // Facts about the surviving entries, each of which was or would have been
-    // a live defect:
+    // Ids that used to be advertised here and are gone, newest first:
     //
-    //   * `gpt-5.3-codex` DOES NOT EXIST. The real id gained a `-spark`
-    //     suffix; choosing the old one could only ever fail.
-    //   * `gpt-5.3-codex-spark` is text-only, so it must NOT be marked
-    //     `with_vision()` — the other five are.
-    //   * Astra's 1,050,000 window is OpenAI's published figure
-    //     (developers.openai.com/api/docs/models/gpt-6-astra; max output
-    //     128,000). `model/list` carries no context-window field on either CLI
-    //     version, so the window can never come from the probe.
+    //   * `gpt-5.3-codex-spark` — **retired**, removed 2026-09-25. It has left
+    //     `model/list` on 0.153.4 and 0.157.0 even with `includeHidden: true`,
+    //     and `codex exec -m gpt-5.3-codex-spark` on 0.157.0 prints `Model
+    //     metadata for gpt-5.3-codex-spark not found`, then the ChatGPT-account
+    //     400 above. OpenAI announced its retirement on 2026-09-11. It was the
+    //     only text-only model this catalog ever carried, so every entry below
+    //     is now `with_vision()`.
+    //   * `gpt-5.5` — removed 2026-09-25, **announced** shutdown rather than a
+    //     past one. Both CLIs still list it, as "Legacy coding model", with
+    //     `upgradeInfo` reading "GPT-5.5 retires on October 14, 2026. Switch to
+    //     GPT-5.6 Sol to continue working in Codex." It still runs until then,
+    //     and `with_unlisted_models` still lets a user type it; it is simply
+    //     not offered as a choice with three weeks to live. This is Codex only:
+    //     the OpenAI API has not deprecated `gpt-5.5`.
+    //   * `gpt-5.4` and `gpt-5.4-mini` — **retired** 2026-08-31 per OpenAI's
+    //     models page (replacements `gpt-5.6-terra` and `gpt-5.6-luna`).
+    //     `codex exec -m gpt-5.4` fails with the ChatGPT-account 400.
+    //   * `gpt-5.3-codex` never existed under that name in Codex; the real id
+    //     had a `-spark` suffix.
     //
-    // Four ids are deliberately not offered, for two different reasons — and
-    // the two must not be collapsed, because only the first group is a model
-    // the account cannot select:
+    // Ids deliberately not offered, for two different reasons, and the two
+    // must not be collapsed, because only the first group is a model the
+    // account cannot select:
     //
-    //   * `gpt-5.6`, `gpt-5.6-pro` and `gpt-6` are **refused by the account**.
-    //     `codex exec -m <id>` fails on both CLI versions with `400 The
-    //     '<id>' model is not supported when using Codex with a ChatGPT
-    //     account`. Putting one in the picker would only ever produce that.
-    //   * `codex-auto-review` **runs**: `codex exec -m codex-auto-review` is
-    //     accepted on both 0.147.0 and 0.153.4. It is absent from `model/list`
-    //     on both, so it is a *hidden review model* rather than an unselectable
-    //     one, and advertising a model the vendor does not list would be a
-    //     guess about a surface that can change with no notice. Its absence
-    //     from `model/list` is also why its effort ladder cannot be read — see
-    //     `CODEX_MODELS_WITH_MAX` in `coding_agent/effort.rs`.
+    //   * `gpt-6`, `gpt-5.6` and `gpt-5.6-pro` are **refused by the account**
+    //     with the ChatGPT-account 400 (0.147.0 and 0.153.4, 2026-09-08), and
+    //     so is `gpt-6-terra` (0.157.0, 2026-09-25), which does not exist
+    //     anywhere: Terra is only ever `gpt-5.6-terra`, and 0.157.0 first
+    //     prints `Model metadata for gpt-6-terra not found`.
+    //   * `codex-auto-review` and `gpt-reserve` **run**, but `model/list` marks
+    //     both hidden: they appear only with `includeHidden: true`.
+    //     `codex-auto-review` is the approval-review model and `gpt-reserve` the
+    //     metered "Luna Reserve" fallback for an exhausted plan allowance.
+    //     Advertising a model the vendor hides would be a guess about a surface
+    //     that can change with no notice, and would put a metered fallback in a
+    //     subscription picker.
     //
     // Re-derive rather than trusting this comment:
     //   codex app-server --strict-config   # then: {"id":1,"method":"model/list"}
     vec![
         ModelInfo::new("gpt-6-astra", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-6-sol", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-6-luna", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-sol", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-terra", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-luna", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.5", 1_050_000).with_vision(),
-        // ⚠ `without_vision()`, not a bare `new()`. A bare one leaves vision
-        // UNKNOWN, and `model/list` told us the answer: inputModalities is
-        // `["text"]`. Recording a known fact as unknown is its own defect.
-        ModelInfo::new("gpt-5.3-codex-spark", 400_000).without_vision(),
     ]
 }
+
+/// The oldest codex-cli that runs each advertised model which has a version
+/// floor at all.
+///
+/// From `model/list` and `codex exec` on 0.147.0 (2026-09-08), 0.153.4 and
+/// 0.157.0 (2026-09-25), cross-checked against the release notes: 0.153.4 made
+/// Astra the bundled default, 0.156.1 added Sol and Luna to the picker. The
+/// 5.6 models have no entry because every CLI measured lists them.
+const CODEX_CLI_FLOORS: &[(&str, &str)] = &[
+    ("gpt-6-astra", "0.153.4"),
+    ("gpt-6-sol", "0.156.1"),
+    ("gpt-6-luna", "0.156.1"),
+];
+
+/// The part of the backend's refusal an older CLI gets for a model that only a
+/// newer one may use, verbatim from 0.153.4 on `gpt-6-sol` and `gpt-6-luna`:
+/// `400 The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT
+/// account.`
+const CHATGPT_ACCOUNT_REFUSAL: &str = "not supported when using Codex with a ChatGPT account";
 
 /// The sentence to append to a failed turn when the model name is the likely
 /// cause.
@@ -273,6 +319,54 @@ fn unknown_model_hint(model: &str) -> String {
          offer ({}). If that name is a typo, no retry will fix it",
         names.join(", ")
     )
+}
+
+/// The sentence to append when an advertised model was refused because the
+/// installed codex-cli predates it.
+///
+/// ⚠ **The vendor's own message points the wrong way here**, which is the whole
+/// reason this exists. Astra on too old a CLI was refused with "requires a newer
+/// version of Codex", which names its fix. Sol and Luna on 0.153.4 (measured
+/// 2026-09-25) are refused with `The 'gpt-6-sol' model is not supported when
+/// using Codex with a ChatGPT account` instead: the words a model the account
+/// can never use gets, for a model that a `codex` update makes work. A reader
+/// takes it as a plan limitation and gives up.
+///
+/// Narrow on both sides, for the same reason [`unknown_model_hint`] stays
+/// silent for a listed model: it fires only for a model in
+/// [`CODEX_CLI_FLOORS`] AND only on that exact refusal, so a rate limit or an
+/// outage on `gpt-6-sol` reads exactly as it did before. It cannot see the
+/// installed version (nothing on the failure path spawns the CLI to ask), so
+/// it states the floor and how to check against it rather than asserting that
+/// this CLI is below it.
+fn cli_floor_hint(model: &str, failure: &str) -> String {
+    let Some((_, floor)) = CODEX_CLI_FLOORS.iter().find(|(id, _)| *id == model) else {
+        return String::new();
+    };
+    if !failure
+        .to_ascii_lowercase()
+        .contains(&CHATGPT_ACCOUNT_REFUSAL.to_ascii_lowercase())
+    {
+        return String::new();
+    }
+    format!(
+        " — `{model}` needs codex-cli {floor} or newer, and an older CLI is refused \
+         with exactly this sentence rather than told to upgrade. Check `codex \
+         --version`; if it is older than {floor}, update it (`{}`) and try again",
+        KIND.install_hint()
+    )
+}
+
+/// Everything this provider knows that the vendor's failure text does not: the
+/// unknown-model hint for an unlisted name, else the CLI-floor hint for a
+/// listed one. At most one applies, and for a listed model on any other
+/// failure both are empty.
+fn failure_hint(model: &str, failure: &str) -> String {
+    let unknown = unknown_model_hint(model);
+    if !unknown.is_empty() {
+        return unknown;
+    }
+    cli_floor_hint(model, failure)
 }
 
 // `Clone` so the streaming path can hand a spawner to its pump task and go
@@ -589,17 +683,17 @@ impl CodexProvider {
     /// The schema types `effort` as `ReasoningEffort`, which it declares as an
     /// open non-empty string — "a reasoning effort value advertised by the
     /// model" — rather than a closed enum, so the accepted set is per-model and
-    /// read from `model/list`. Measured against codex-cli 0.147.0, every model
-    /// it lists advertises `low` and `high`; `xhigh` is on all of them too,
-    /// `max`/`ultra` only on some. Biorouter therefore sends the same
-    /// `low`/`high` pair `provider_effort()` gives every other provider, which
-    /// is the subset no model can reject.
+    /// read from `model/list`. Which rung each `/effort` tier reaches, and why
+    /// the default sends `high` rather than nothing, is
+    /// `coding_agent::effort`'s to decide and explain; this function only
+    /// carries the answer.
     ///
-    /// ⚠ `Normal` and `None` must omit the key entirely. `Normal` is documented
-    /// as a strict no-op and is the default, so sending `"medium"` for it would
-    /// override each model's own `defaultReasoningEffort` — which is not
-    /// uniformly medium (gpt-5.6-sol defaults to `low`, gpt-5.3-codex-spark to
-    /// `high`) — on every turn of every user who never touched `/effort`.
+    /// ⚠ That default is a deliberate override of the vendor's, which is not
+    /// uniform: `model/list`'s `defaultReasoningEffort` on 2026-09-25 was
+    /// `medium` on the three GPT-6 models and `low` on `gpt-5.6-sol`. So every
+    /// turn of every user who never touched `/effort` asks for more reasoning
+    /// than the model would have chosen, and
+    /// `the_default_effort_is_high_rather_than_silence` pins that it does.
     fn turn_params(
         thread_id: &str,
         prompt: &str,
@@ -627,9 +721,9 @@ impl CodexProvider {
             "input": input,
             // Always sent, and on Codex's own per-model ladder rather than the
             // OpenAI-family low/high pair — see `coding_agent::effort`. The model
-            // is needed because that ladder differs between models: `max` exists
-            // only on part of the 5.6 family, and Biorouter's own four advertised
-            // models stop at `xhigh`.
+            // is needed because that ladder differs between models: every model
+            // Biorouter advertises has `max`, but `gpt-5.5` (listed until it
+            // retires on 2026-10-14) and any unlisted id get `xhigh`.
             "effort": crate::providers::coding_agent::effort::codex_effort(effort, model),
         })
     }
@@ -1339,10 +1433,8 @@ impl CodexProvider {
                 }
                 codex_stream::CodexEvent::Terminal(terminal) => {
                     if let Some(error) = terminal.error {
-                        return Err(ProviderError::RequestFailed(format!(
-                            "{error}{}",
-                            unknown_model_hint(model_name)
-                        )));
+                        let hint = failure_hint(model_name, &error);
+                        return Err(ProviderError::RequestFailed(format!("{error}{hint}")));
                     }
                     return Ok(StreamPumpEvent::Terminal);
                 }
@@ -1757,7 +1849,8 @@ impl Provider for CodexProvider {
             let detail = outcome
                 .failure
                 .unwrap_or_else(|| "Codex returned an empty response".to_string());
-            let detail = format!("{detail}{}", unknown_model_hint(&model_config.model_name));
+            let hint = failure_hint(&model_config.model_name, &detail);
+            let detail = format!("{detail}{hint}");
             return Err(ProviderError::RequestFailed(detail));
         }
 
@@ -2467,7 +2560,9 @@ for line in sys.stdin:
     ///
     /// The rungs are Codex's own ladder rather than the OpenAI-family `low`/`high`
     /// pair — `coding_agent::effort` owns the table and the reasoning. `Deep`
-    /// stops at `xhigh` here because `gpt-5.5` does not advertise `max`.
+    /// stops at `xhigh` here because `gpt-5.5` does not advertise `max`. It is
+    /// no longer in the picker (Codex retires it on 2026-10-14), but it still
+    /// runs and can still be typed, and it is the measured short-ladder model.
     #[test]
     fn the_effort_ladder_reaches_the_turn() {
         for (effort, expected) in [
@@ -2815,16 +2910,133 @@ for line in sys.stdin:
             .split_once('(')
             .unwrap_or_else(|| panic!("the hint must carry a parenthesised catalog: {hint}"))
             .1;
-        assert!(
-            catalog.contains("gpt-6-astra")
-                && catalog.contains("gpt-5.5")
-                && catalog.contains("gpt-5.3-codex-spark"),
-            "and the ones that exist, so the fix is in the message: {hint}"
-        );
+        for expected in known_models().iter().map(|m| m.name.clone()) {
+            assert!(
+                catalog.contains(&expected),
+                "and the ones that exist, so the fix is in the message: {expected} \
+                 is missing from {hint}"
+            );
+        }
         assert!(
             hint.contains("no retry will fix it"),
             "and must contradict the retry advice it is appended to: {hint}"
         );
+    }
+
+    /// Codex's word for "your CLI is too old for this model" is, for Sol and
+    /// Luna, the same sentence it uses for a model the account can never have.
+    /// Verbatim from codex-cli 0.153.4 on 2026-09-25; 0.157.0 ran the same
+    /// request. The failure has to say that an update fixes it, or the reader
+    /// takes a two-minute fix for a plan limitation.
+    #[test]
+    fn an_old_cli_refusing_a_new_model_is_told_to_update_codex() {
+        for (model, floor) in [("gpt-6-sol", "0.156.1"), ("gpt-6-luna", "0.156.1")] {
+            let vendor = format!(
+                "The '{model}' model is not supported when using Codex with a ChatGPT account."
+            );
+            let hint = failure_hint(model, &vendor);
+            assert!(
+                hint.contains(&format!("codex-cli {floor} or newer")),
+                "{model} must name its floor: {hint}"
+            );
+            assert!(
+                hint.contains("codex --version") && hint.contains(KIND.install_hint()),
+                "…and how to check it and how to update: {hint}"
+            );
+            assert!(
+                !hint.contains("is not one of the models"),
+                "{model} is advertised, so the typo hint must not fire: {hint}"
+            );
+        }
+
+        // Matched without regard to case: the backend's capitalisation is not a
+        // contract, and a miss here costs the one sentence that explains the
+        // failure.
+        assert!(!failure_hint(
+            "gpt-6-sol",
+            "THE 'GPT-6-SOL' MODEL IS NOT SUPPORTED WHEN USING CODEX WITH A CHATGPT ACCOUNT"
+        )
+        .is_empty());
+    }
+
+    /// The hint reaches the error a streamed turn actually ends with, not just
+    /// the helper. The failure arrives the way Codex relays an upstream 400: the
+    /// API's JSON envelope as a string, which the decoder unwraps to the
+    /// sentence before the provider appends to it.
+    #[test]
+    fn a_streamed_turn_refused_by_an_old_cli_ends_with_the_update_hint() {
+        let mut decoder = codex_stream::CodexDecoder::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut streamed_anything = false;
+        let envelope = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."}}"#;
+
+        let outcome = CodexProvider::emit_stream_notification(
+            &mut decoder,
+            "gpt-6-sol",
+            "turn/failed",
+            &json!({ "error": envelope, "turnId": "t1" }),
+            &tx,
+            &mut streamed_anything,
+            None,
+        );
+        let Err(error) = outcome else {
+            panic!("a failed turn must end the stream with an error");
+        };
+        let text = error.to_string();
+        assert!(
+            text.contains("The 'gpt-6-sol' model is not supported when using Codex"),
+            "the vendor's sentence comes first and unchanged: {text}"
+        );
+        assert!(
+            text.contains("codex-cli 0.156.1 or newer"),
+            "…followed by what it leaves out: {text}"
+        );
+    }
+
+    /// ⚠ And it must stay silent everywhere else. A rate limit on `gpt-6-sol`
+    /// is not a version problem, and the same refusal on a 5.6 model (which
+    /// every measured CLI lists) cannot be one either, so neither may gain a
+    /// paragraph sending the reader off to reinstall.
+    #[test]
+    fn the_cli_floor_hint_fires_only_on_its_own_refusal_for_its_own_models() {
+        assert_eq!(failure_hint("gpt-6-sol", "rate limited"), "");
+        assert_eq!(
+            failure_hint("gpt-6-luna", "the Codex app server reported an error"),
+            ""
+        );
+        assert_eq!(
+            failure_hint(
+                "gpt-5.6-sol",
+                "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
+            ),
+            "",
+            "no floor is recorded for a model every measured CLI lists"
+        );
+        // Every floor belongs to an advertised model: a floor for a model
+        // nobody can pick is a stale row, and an unlisted model's failure gets
+        // the typo hint instead (see `failure_hint`), so the row would never
+        // fire anyway.
+        let advertised: Vec<String> = known_models().into_iter().map(|m| m.name).collect();
+        for (model, _) in CODEX_CLI_FLOORS {
+            assert!(
+                advertised.iter().any(|m| m == model),
+                "{model} has a CLI floor but is not advertised"
+            );
+        }
+    }
+
+    /// An unlisted name gets the typo hint and only that, even on the same
+    /// refusal, because a model this build has never heard of has no floor to
+    /// name and the catalog is the more useful thing to show.
+    #[test]
+    fn an_unlisted_model_gets_the_catalog_not_a_floor() {
+        let hint = failure_hint(
+            "gpt-5.3-codex-spark",
+            "The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT \
+             account.",
+        );
+        assert!(hint.contains("is not one of the models"), "{hint}");
+        assert!(!hint.contains("or newer"), "{hint}");
     }
 
     /// ⚠ And it must stay SILENT for a model that is known, or every unrelated
@@ -2863,17 +3075,15 @@ for line in sys.stdin:
         assert!(m.config_keys[0].required);
         assert!(!m.config_keys[0].secret);
         assert_eq!(m.config_keys[0].default.as_deref(), Some("codex"));
-        // ⚠ Vision is PER MODEL, not a property of the provider. This used to
-        // assert that every advertised model took images, which was true only
-        // while the list happened to contain no text-only model. `model/list`
-        // reports `inputModalities` per entry and `gpt-5.3-codex-spark` is
-        // `["text"]` alone, so the blanket claim is now false — and asserting it
-        // would force the catalog to lie about a real model's capability.
-        //
-        // What is worth pinning is that each entry says something definite, and
-        // that the one known text-only model is not advertised as accepting
-        // images: a model wrongly marked vision-capable takes an image, sends
-        // it, and fails mid-turn.
+        // ⚠ Vision is PER MODEL, not a property of the provider. `model/list`
+        // reports `inputModalities` per entry, and while `gpt-5.3-codex-spark`
+        // was advertised it was `["text"]` alone. Since it retired, every entry
+        // reports `["text","image"]` (0.157.0, 2026-09-25) — which makes the
+        // blanket assertion below true again, not a rule: a text-only model
+        // added later belongs in the catalog as `without_vision()`, and this
+        // assertion should then grow an exception rather than force the catalog
+        // to lie about it. A model wrongly marked vision-capable takes an image,
+        // sends it, and fails mid-turn.
         assert!(
             m.known_models
                 .iter()
@@ -2881,59 +3091,88 @@ for line in sys.stdin:
             "every advertised model must state whether it takes images, rather \
              than leaving it unknown"
         );
-        let spark = m
-            .known_models
-            .iter()
-            .find(|model| model.name == "gpt-5.3-codex-spark")
-            .expect("the Spark model is advertised");
-        assert_eq!(
-            spark.supports_vision,
-            Some(false),
-            "`model/list` reports inputModalities [\"text\"] for Spark"
-        );
         assert!(
             m.known_models
                 .iter()
-                .filter(|model| model.name != "gpt-5.3-codex-spark")
                 .all(|model| model.supports_vision == Some(true)),
-            "every other advertised Codex model accepts image inputs"
+            "every advertised Codex model reports inputModalities [text, image] \
+             in `model/list` on codex-cli 0.157.0"
         );
-        assert!(
-            !m.known_models
-                .iter()
-                .any(|model| model.name == "gpt-5.3-codex"),
-            "`gpt-5.3-codex` is not a real model id any more — `model/list` \
-             reports only `gpt-5.3-codex-spark`, so offering it can only fail"
+
+        // The exact list, in `model/list` order, because what this guards
+        // against is an id outliving its model.
+        let advertised: Vec<&str> = m.known_models.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            advertised,
+            [
+                "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+            ],
+            "`model/list` on codex-cli 0.157.0, 2026-09-25"
         );
-        for id in [
-            "gpt-6-astra",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
+        for model in &m.known_models {
+            assert_eq!(
+                model.context_limit, 1_050_000,
+                "{}: OpenAI's published window for every model in this catalog",
+                model.name
+            );
+        }
+
+        // ⚠ Gone, each for a reason a picker row cannot survive:
+        //   * `gpt-5.3-codex-spark` retired: absent from `model/list` on 0.153.4
+        //     and 0.157.0 even with includeHidden, and refused by `codex exec`.
+        //   * `gpt-5.5` retires from Codex on 2026-10-14 (its own `upgradeInfo`
+        //     says so); it still runs until then and can still be typed.
+        //   * `gpt-5.4` and `gpt-5.4-mini` retired on 2026-08-31.
+        //   * `gpt-5.3-codex` was never a Codex id; the real one had `-spark`.
+        //   * `gpt-6-terra` does not exist; Terra is only `gpt-5.6-terra`.
+        for gone in [
             "gpt-5.3-codex-spark",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-6-terra",
         ] {
-            assert!(
-                m.known_models.iter().any(|model| model.name == id),
-                "{id} is in the live catalog and must be offered"
-            );
+            assert!(!advertised.contains(&gone), "{gone} must not be offered");
         }
-        // ⚠ Retired, not merely superseded. OpenAI's models page ends both on
-        // 2026-08-31; they have left `model/list` on codex-cli 0.147.0 and
-        // 0.153.4 alike, and `codex exec -m gpt-5.4` answers `400 … not
-        // supported when using Codex with a ChatGPT account`. Advertising
-        // either offers the user a choice that can only fail.
-        for retired in ["gpt-5.4", "gpt-5.4-mini"] {
-            assert!(
-                !m.known_models.iter().any(|model| model.name == retired),
-                "{retired} retired on 2026-08-31 and must not be offered"
-            );
-        }
+        assert!(
+            m.allows_unlisted_models,
+            "…which is only acceptable because an id like `gpt-5.5` can still be \
+             typed while it runs"
+        );
         assert_eq!(
             m.default_model, "gpt-6-astra",
-            "Astra is the vendor's own bundled default from codex-cli 0.153.4 \
-             (`model/list` returns it first with isDefault: true)"
+            "Astra is the vendor's own bundled default (`model/list` returns it \
+             first with isDefault: true on 0.153.4 and 0.157.0), and the one GPT-6 \
+             model that runs on a CLI older than 0.156.1"
         );
+        assert_eq!(advertised.first(), Some(&CODEX_DEFAULT_MODEL));
+    }
+
+    /// Every advertised model gets `max` for `/effort deep`, because `model/list`
+    /// on 0.157.0 advertises `max` for all six. This is the cross-check between
+    /// two lists that live in different files: a model added here without its
+    /// row in `coding_agent::effort::CODEX_MODELS_WITH_MAX` would silently get
+    /// the `xhigh` floor, one rung short of what `deep` promises.
+    #[test]
+    fn every_advertised_model_reaches_its_top_ordinary_rung() {
+        for model in known_models() {
+            assert_eq!(
+                crate::providers::coding_agent::effort::codex_effort(
+                    Some(ReasoningEffort::Deep),
+                    &model.name
+                ),
+                "max",
+                "{} advertises `max` in `model/list`; if a new model does not, list \
+                 it here as an exception with its evidence",
+                model.name
+            );
+        }
     }
 }
 

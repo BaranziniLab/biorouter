@@ -126,8 +126,10 @@ async fn codex_streams_a_real_turn() {
     // which OpenAI retired on 2026-08-31 — `codex exec -m gpt-5.4-mini` now
     // fails `400 … not supported when using Codex with a ChatGPT account`, so
     // this test could no longer pass. `gpt-5.6-luna` is OpenAI's own named
-    // replacement for it, and unlike `gpt-6-astra` it needs no particular CLI
-    // version: it is listed by codex-cli 0.147.0 and 0.153.4 alike.
+    // replacement for it, and unlike the GPT-6 models it needs no particular
+    // CLI version: it is listed by codex-cli 0.147.0, 0.153.4 and 0.157.0
+    // alike. `gpt-6-luna` is cheaper still, but a CLI older than 0.156.1
+    // refuses it, which would turn a stale install into a streaming failure.
     let provider = biorouter::providers::codex::CodexProvider::from_env(
         ModelConfig::new("gpt-5.6-luna").unwrap(),
     )
