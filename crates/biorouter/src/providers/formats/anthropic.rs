@@ -574,7 +574,14 @@ fn uses_adaptive_thinking(model_name: &str) -> bool {
 pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// Models whose thinking blocks are bound to the conversation that produced
-/// them ("preserved thinking"): Claude Opus 5.5, Fable 5.1 and Mythos 5.1.
+/// them ("preserved thinking"): Claude Opus 5.5 and Fable 5.1.
+///
+/// Mythos 5.1 is matched too, but Anthropic's preserved-thinking page says it
+/// does NOT run the prefix check (checked 2026-09-25). Keeping it here costs
+/// nothing on the Claude API — a model without the check accepts
+/// `block_binding` and reports only model-check drops — and on Bedrock /
+/// Vertex, where Mythos is not offered, stripping only costs it the replayed
+/// reasoning. Drop it from the list if Mythos 5.1 is ever advertised there.
 ///
 /// A block's signature records the prefix it was produced under — the system
 /// prompt, the tool list and every earlier message — and a replayed block

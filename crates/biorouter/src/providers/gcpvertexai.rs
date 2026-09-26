@@ -22,7 +22,7 @@ use crate::providers::base::{
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::gcpvertexai::{
     create_request, get_usage, response_to_message, response_to_streaming_message, GcpLocation,
-    ModelProvider, RequestContext, DEFAULT_MODEL, GLOBAL_LOCATION, KNOWN_MODELS,
+    ModelAvailability, ModelProvider, RequestContext, DEFAULT_MODEL, GLOBAL_LOCATION, KNOWN_MODELS,
     MULTI_REGION_LOCATIONS,
 };
 use crate::providers::gcpauth::GcpAuth;
@@ -287,10 +287,21 @@ impl GcpVertexAIProvider {
     /// fails — `None` when there is nowhere else to try. See
     /// `GcpVertexAIModel::preferred_location` for why a model can be routed
     /// away from the configured location before any request is made.
+    ///
+    /// A model served at the `us` / `eu` multi-region the user configured
+    /// gets no fallback: honouring that choice is what keeps the request in
+    /// that geography, and the fallback fires on any non-auth error (a 400 or
+    /// a 500 as much as a 404), so it would resend the same conversation to
+    /// the global endpoint. The model is served there, so a retry elsewhere
+    /// has nothing to fix.
     fn route(configured_location: &str, context: &RequestContext) -> (String, Option<String>) {
         let primary = context.model.preferred_location(configured_location);
+        let stays_in_configured_multi_region = primary == configured_location
+            && MULTI_REGION_LOCATIONS.contains(&configured_location)
+            && context.model.availability() == ModelAvailability::MultiRegion;
         let fallback = context.model.known_location().to_string();
-        let fallback = (fallback != primary).then_some(fallback);
+        let fallback =
+            (fallback != primary && !stays_in_configured_multi_region).then_some(fallback);
         (primary, fallback)
     }
 
@@ -898,6 +909,8 @@ mod tests {
             "claude-opus-5-5",
             "claude-fable-5-1",
             "claude-opus-4-8",
+            // Vertex lists Opus 4.7 at global + us/eu only, like 4.8.
+            "claude-opus-4-7",
         ] {
             assert_eq!(
                 route_for("us-central1", model),
@@ -912,7 +925,11 @@ mod tests {
     #[test]
     fn regional_models_keep_the_configured_location_and_old_fallback() {
         assert_eq!(
-            route_for("us-central1", "claude-opus-4-7"),
+            route_for("us-central1", "claude-opus-4-6"),
+            ("us-central1".to_string(), Some("us-east5".to_string()))
+        );
+        assert_eq!(
+            route_for("us-central1", "claude-sonnet-4-6"),
             ("us-central1".to_string(), Some("us-east5".to_string()))
         );
         assert_eq!(
@@ -926,16 +943,21 @@ mod tests {
     }
 
     // A user who chose a multi-region for data residency keeps it where the
-    // model is served there; a global-only preview still has to go global.
+    // model is served there, with NO fallback to global: the fallback fires on
+    // any non-auth error and would resend the conversation outside that
+    // geography. A global-only preview still has to go global, and a regional
+    // model the multi-region does not serve keeps its known-region fallback.
     #[test]
     fn a_configured_multi_region_is_honoured_where_the_model_is_served() {
         assert_eq!(
             route_for("eu", "gemini-3.8-flash"),
-            ("eu".to_string(), Some("global".to_string()))
+            ("eu".to_string(), None)
         );
+        assert_eq!(route_for("us", "claude-opus-5-5"), ("us".to_string(), None));
+        assert_eq!(route_for("eu", "claude-opus-4-7"), ("eu".to_string(), None));
         assert_eq!(
-            route_for("us", "claude-opus-5-5"),
-            ("us".to_string(), Some("global".to_string()))
+            route_for("us", "claude-sonnet-4-6"),
+            ("us".to_string(), Some("us-east5".to_string()))
         );
         assert_eq!(
             route_for("eu", "gemini-3-flash-preview"),
