@@ -39,49 +39,125 @@ pub const VERSA_AZURE_API_VERSION: &str = "2025-01-01-preview";
 pub const VERSA_AZURE_DOC_URL: &str = "http://biorouter.ucsf.edu/docs";
 
 /// Every model this provider offers, paired with the Azure deployment that
-/// serves it at the UCSF gateway. The ONE list: `metadata()` advertises exactly
-/// these models, and a request for one of them posts to exactly this deployment.
+/// serves it at the UCSF gateway. `metadata()` advertises exactly these models,
+/// and a request for one of them posts to exactly this deployment. The only
+/// other models a request can reach are the retiring ones in
+/// [`VERSA_AZURE_RETIRING_DEPLOYMENTS`], which are routed but never offered.
 ///
-/// Measured on 2026-09-11, not inferred. The gateway has no listing endpoint —
+/// Measured, not inferred. The gateway has no listing endpoint —
 /// `GET openai/deployments` and `GET openai/models` both answer 405 — so every
-/// deployment was sent a one-shot completion, and each answered 200 with its own
+/// deployment is sent a one-shot completion, and each answered 200 with its own
 /// name as `model`. The names are the full dated ids: the short aliases
-/// (`gpt-5.5`, `gpt-4.1`, `gpt-4o`) are all `DeploymentNotFound`. The same run
-/// sent each deployment a prompt just over its `MODEL_CONTEXT_WINDOWS` entry,
-/// and every refusal named that window — for the gpt-5 family as an INPUT limit,
-/// the window less the 128k reserved for output — so the registry needed no
-/// change.
+/// (`gpt-5.5`, `gpt-4.1`, `gpt-4o`) are all `DeploymentNotFound`.
+///
+///   * 2026-09-11: the first probe. Each deployment was also sent a prompt just
+///     over its `MODEL_CONTEXT_WINDOWS` entry, and every refusal named that
+///     window — for the gpt-5 family as an INPUT limit, the window less the
+///     128k reserved for output — so the registry needed no change.
+///   * 2026-09-25: all nine deployments offered until then answered 200 again,
+///     and so did `gpt-5-mini-2025-08-07` and `gpt-5-nano-2025-08-07`, which are
+///     offered from this date (400,000 tokens each, the window Azure publishes
+///     for both, echoing their own names as `model`). Every GPT-6 and GPT-5.6
+///     name answered 404
+///     `DeploymentNotFound`, dated and bare alike — `gpt-6-astra-2026-09-03` and
+///     `-09-04`, `gpt-6-sol-2026-09-22`, `gpt-6-luna-2026-09-22`,
+///     `gpt-5.6-{sol,terra,luna}-2026-07-09`, `gpt-6-{astra,sol,luna}`,
+///     `gpt-5.6-{sol,terra,luna}` — under api-versions 2025-01-01-preview,
+///     2025-04-01-preview and 2026-06-01-preview. So did `gpt-5.4-2026-03-05`
+///     and `gpt-5.1-2025-11-13`. UCSF has not deployed GPT-6 or GPT-5.6 yet;
+///     re-probe before adding one, because a mapped model the gateway does not
+///     serve fails every turn.
+///
+/// ⚠ Adding a GPT-6 or GPT-5.6 deployment takes more than a row here. This
+/// provider posts every request to Chat Completions, where neither family can
+/// combine function tools with reasoning — every tool-bearing turn would be
+/// refused. Both need the Responses route the public `azure_openai` provider
+/// takes for them (`POST openai/v1/responses`, the deployment as `model`), and
+/// the gateway serves that route: measured 2026-09-25, it answered 200 for
+/// `gpt-5.5-2026-04-24`, while the dated `openai/responses?api-version=` form
+/// answered 404.
 ///
 /// The authoritative list lives on the login-gated UCSF wiki ("Models,
 /// deployments, and API endpoints in UCSF Versa"). o1-2024-12-17 and
-/// o3-mini-2025-01-31 were removed earlier (deprecated on Azure, retiring
-/// Jul/Aug 2026) and still answered on 2026-09-11; they stay removed.
-/// `gpt-5-mini-2025-08-07` and `gpt-5-nano-2025-08-07` also answered and are
-/// not offered yet.
+/// o3-mini-2025-01-31 were removed earlier (Deprecated on Azure, now retiring
+/// 2026-11-19) and still answered on 2026-09-11; they stay removed.
 pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
     ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
     ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
     ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
     ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
     ("gpt-5-2025-08-07", "gpt-5-2025-08-07"),
-    ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14"),
-    ("gpt-4.1-mini-2025-04-14", "gpt-4.1-mini-2025-04-14"),
+    ("gpt-5-mini-2025-08-07", "gpt-5-mini-2025-08-07"),
+    ("gpt-5-nano-2025-08-07", "gpt-5-nano-2025-08-07"),
     ("gpt-4o-2024-11-20", "gpt-4o-2024-11-20"),
-    ("o4-mini-2025-04-16", "o4-mini-2025-04-16"),
 ];
 
-/// The deployment the UCSF gateway serves `model` from, if the catalog knows one.
+/// Deployments that are still ROUTED but no longer OFFERED: Azure moved each
+/// model to lifecycle "Deprecated" — no new deployments, existing ones served
+/// until the retirement date given here (Microsoft Learn, "Model retirement
+/// schedule", updated 2026-09-23). All three answered 200 at the gateway on
+/// 2026-09-25.
+///
+/// ⚠ Deleting a row here instead would break every chat already bound to it:
+/// the provider refuses a model with no deployment before sending anything
+/// (see [`no_deployment_error`]). So `metadata()` never reads this table and
+/// [`deployment_for_model`] does, until the retirement date — from that day
+/// the model is refused locally, with the list of models to switch to, rather
+/// than sent to a deployment that is gone or that Azure has auto-upgraded to
+/// a different model. Remove a row once its date has passed.
+///
+/// `(model, deployment, retires on)`, the date as `YYYY-MM-DD`.
+pub const VERSA_AZURE_RETIRING_DEPLOYMENTS: &[(&str, &str, &str)] = &[
+    // Replacement named by Azure: gpt-5.6-terra (not yet deployed at UCSF).
+    ("o4-mini-2025-04-16", "o4-mini-2025-04-16", "2026-11-19"),
+    // No replacement named yet.
+    ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14", "2027-04-14"),
+    (
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-4.1-mini-2025-04-14",
+        "2027-04-14",
+    ),
+];
+
+/// The deployment the UCSF gateway serves `model` from, if the catalog knows one
+/// — an offered model, or a retiring one before its retirement date.
 pub fn deployment_for_model(model: &str) -> Option<&'static str> {
-    VERSA_AZURE_DEPLOYMENTS
-        .iter()
-        .find(|(name, _)| *name == model)
-        .map(|(_, deployment)| *deployment)
+    deployment_for_model_on(model, chrono::Utc::now().date_naive())
 }
 
+/// [`deployment_for_model`] as of `today`, so the retirement cut-off can be
+/// tested without waiting for it.
+fn deployment_for_model_on(model: &str, today: chrono::NaiveDate) -> Option<&'static str> {
+    if let Some((_, deployment)) = VERSA_AZURE_DEPLOYMENTS
+        .iter()
+        .find(|(name, _)| *name == model)
+    {
+        return Some(deployment);
+    }
+    VERSA_AZURE_RETIRING_DEPLOYMENTS
+        .iter()
+        .find(|(name, _, _)| *name == model)
+        .filter(|(_, _, retires)| {
+            // A date that does not parse keeps routing: the table is a
+            // constant, and a test pins every row's date as parseable.
+            chrono::NaiveDate::parse_from_str(retires, "%Y-%m-%d")
+                .ok()
+                .is_none_or(|retires| today < retires)
+        })
+        .map(|(_, deployment, _)| *deployment)
+}
+
+/// Whether `value` names a deployment this catalog routes to — offered or
+/// retiring, and whatever the date. A retired deployment is still one the
+/// catalog knew, so a stored binding or a persisted setting that names it must
+/// never turn into an override that would pin every model to it.
 fn is_catalog_deployment(value: &str) -> bool {
     VERSA_AZURE_DEPLOYMENTS
         .iter()
         .any(|(_, deployment)| *deployment == value)
+        || VERSA_AZURE_RETIRING_DEPLOYMENTS
+            .iter()
+            .any(|(_, deployment, _)| *deployment == value)
 }
 
 /// What a restore binding stores in `deployment` for a model no deployment
@@ -149,21 +225,34 @@ fn stored_route(deployment_override: Option<&str>, model: &str) -> String {
 /// `ProviderError::kind` classifies as `ModelUnavailable`: not transient, so the
 /// turn stops on the first attempt instead of retrying a request that can never
 /// succeed, and the desktop titles it "Model unavailable".
+///
+/// It offers only the ADVERTISED models: a retiring one is not a choice to
+/// move a chat onto, and a model refused because its retirement date passed
+/// says so.
 fn no_deployment_error(model: &str) -> ProviderError {
     let available = VERSA_AZURE_DEPLOYMENTS
         .iter()
         .map(|(name, _)| *name)
         .collect::<Vec<_>>()
         .join(", ");
+    let retired = VERSA_AZURE_RETIRING_DEPLOYMENTS
+        .iter()
+        .find(|(name, _, _)| *name == model)
+        .map(|(_, _, retires)| format!(" Azure retired `{model}` on {retires}."))
+        .unwrap_or_default();
     ProviderError::RequestFailed(format!(
         "no Versa deployment for model `{model}` (Azure deployment not found, so nothing \
-         was sent); available: {available}. Switch this chat to one of those models."
+         was sent).{retired} Available: {available}. Switch this chat to one of those models."
     ))
 }
 
 fn versa_azure_model_supports_vision(name: &str) -> bool {
+    // `gpt-6` too, although no GPT-6 deployment exists at the gateway yet
+    // (2026-09-25): Azure lists text + image input for all three GPT-6 models,
+    // so the day one is added it is advertised correctly.
     !name.contains("codex")
-        && (name.starts_with("gpt-5")
+        && (name.starts_with("gpt-6")
+            || name.starts_with("gpt-5")
             || name.starts_with("gpt-4.1")
             || name.starts_with("gpt-4o")
             || name.starts_with("o3")
@@ -954,6 +1043,10 @@ mod tests {
     #[test]
     fn the_deployment_map_is_the_measured_snapshot() {
         assert_eq!(VERSA_AZURE_DEPLOYMENTS, super::routing_tests::MEASURED);
+        assert_eq!(
+            VERSA_AZURE_RETIRING_DEPLOYMENTS,
+            super::routing_tests::MEASURED_RETIRING
+        );
         for (model, deployment) in VERSA_AZURE_DEPLOYMENTS {
             assert_eq!(deployment_for_model(model), Some(*deployment));
         }
@@ -963,6 +1056,100 @@ mod tests {
         for alias in ["gpt-5.5", "gpt-4.1", "gpt-4o"] {
             assert_eq!(deployment_for_model(alias), None, "{alias}");
         }
+        // Nothing GPT-6 or GPT-5.6 is deployed (measured 2026-09-25: all 404).
+        for absent in [
+            "gpt-6-sol-2026-09-22",
+            "gpt-6-luna-2026-09-22",
+            "gpt-6-astra-2026-09-03",
+            "gpt-5.6-sol-2026-07-09",
+            "gpt-5.6-terra-2026-07-09",
+            "gpt-5.6-luna-2026-07-09",
+        ] {
+            assert_eq!(deployment_for_model(absent), None, "{absent}");
+        }
+    }
+
+    /// A model may not be both offered and retiring — it would be advertised
+    /// while a date silently stopped routing it — and every retirement date
+    /// must parse, or [`deployment_for_model_on`] would route it forever.
+    #[test]
+    fn the_retiring_table_is_disjoint_from_the_offered_one_and_dated() {
+        for (model, deployment, retires) in VERSA_AZURE_RETIRING_DEPLOYMENTS {
+            assert!(
+                !VERSA_AZURE_DEPLOYMENTS
+                    .iter()
+                    .any(|(name, routed)| name == model || routed == deployment),
+                "{model} is both offered and retiring"
+            );
+            assert!(
+                chrono::NaiveDate::parse_from_str(retires, "%Y-%m-%d").is_ok(),
+                "{model}: retirement date `{retires}` does not parse"
+            );
+        }
+    }
+
+    /// Both halves of a retiring deployment: routed until its retirement date,
+    /// and never advertised — not by `metadata()`, and not as a model to move a
+    /// chat onto when another one is refused.
+    #[test]
+    fn a_retiring_deployment_is_routed_but_never_offered() {
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
+        let advertised: Vec<String> = VersaAzureProvider::metadata()
+            .known_models
+            .into_iter()
+            .map(|model| model.name)
+            .collect();
+        let refusal = no_deployment_error("gpt-4.1-bogus-qa-probe").to_string();
+        for (model, deployment, _) in VERSA_AZURE_RETIRING_DEPLOYMENTS {
+            assert_eq!(
+                deployment_for_model_on(model, before),
+                Some(*deployment),
+                "a chat bound to {model} before its retirement stopped routing"
+            );
+            assert!(
+                !advertised.iter().any(|name| name == model),
+                "{model} is Deprecated on Azure and must not be offered"
+            );
+            assert!(
+                !refusal.contains(model),
+                "the refusal offered retiring {model}: {refusal}"
+            );
+            // Still a catalog deployment, so a persisted setting naming it can
+            // never become an override that pins every model to it.
+            assert_eq!(explicit_override(Some(deployment)), None, "{deployment}");
+        }
+    }
+
+    /// From its retirement date a model is refused locally, with the models to
+    /// switch to and the date it went, instead of being sent to a deployment
+    /// that is gone or that Azure auto-upgraded to a different model. The day
+    /// before, it still routes.
+    #[test]
+    fn a_retiring_deployment_stops_routing_on_its_retirement_date() {
+        for (model, deployment, retires) in VERSA_AZURE_RETIRING_DEPLOYMENTS {
+            let retires = chrono::NaiveDate::parse_from_str(retires, "%Y-%m-%d").unwrap();
+            let eve = retires.pred_opt().unwrap();
+            assert_eq!(deployment_for_model_on(model, eve), Some(*deployment));
+            assert_eq!(deployment_for_model_on(model, retires), None, "{model}");
+            assert_eq!(
+                deployment_for_model_on(model, retires.succ_opt().unwrap()),
+                None,
+                "{model}"
+            );
+
+            let refusal = no_deployment_error(model).to_string();
+            assert!(
+                refusal.contains(&format!("Azure retired `{model}` on {retires}")),
+                "{refusal}"
+            );
+            assert!(refusal.contains(VERSA_AZURE_DEFAULT_MODEL), "{refusal}");
+        }
+        // An offered model has no date and routes whatever the day.
+        let far = chrono::NaiveDate::from_ymd_opt(2099, 1, 1).unwrap();
+        assert_eq!(
+            deployment_for_model_on(VERSA_AZURE_DEFAULT_MODEL, far),
+            Some(VERSA_AZURE_DEFAULT_MODEL)
+        );
     }
 
     #[test]
@@ -1189,19 +1376,31 @@ mod routing_tests {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-    /// The catalog as measured on 2026-09-11 (see `VERSA_AZURE_DEPLOYMENTS`),
-    /// written out rather than read back from the constant, so changing the
-    /// catalog is a deliberate edit here as well — re-probe the gateway first.
+    /// The offered catalog as measured on 2026-09-25 (see
+    /// `VERSA_AZURE_DEPLOYMENTS`), written out rather than read back from the
+    /// constant, so changing the catalog is a deliberate edit here as well —
+    /// re-probe the gateway first.
     pub(super) const MEASURED: &[(&str, &str)] = &[
         ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
         ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
         ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
         ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
         ("gpt-5-2025-08-07", "gpt-5-2025-08-07"),
-        ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14"),
-        ("gpt-4.1-mini-2025-04-14", "gpt-4.1-mini-2025-04-14"),
+        ("gpt-5-mini-2025-08-07", "gpt-5-mini-2025-08-07"),
+        ("gpt-5-nano-2025-08-07", "gpt-5-nano-2025-08-07"),
         ("gpt-4o-2024-11-20", "gpt-4o-2024-11-20"),
-        ("o4-mini-2025-04-16", "o4-mini-2025-04-16"),
+    ];
+
+    /// The deployments that answered on 2026-09-25 but are Deprecated on Azure
+    /// (see `VERSA_AZURE_RETIRING_DEPLOYMENTS`), with their retirement dates.
+    pub(super) const MEASURED_RETIRING: &[(&str, &str, &str)] = &[
+        ("o4-mini-2025-04-16", "o4-mini-2025-04-16", "2026-11-19"),
+        ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14", "2027-04-14"),
+        (
+            "gpt-4.1-mini-2025-04-14",
+            "gpt-4.1-mini-2025-04-14",
+            "2027-04-14",
+        ),
     ];
 
     /// The QA run's own probe: a deployment that does not exist.
@@ -1348,6 +1547,45 @@ mod routing_tests {
         assert_eq!(requested_paths(&server).await, expected);
     }
 
+    /// A chat bound to a retiring model — live or reopened from its session row
+    /// — still reaches its own deployment until the retirement date, and is
+    /// refused without a request from that date on. Which half a row takes
+    /// depends on today's date, so the assertion follows the same clock the
+    /// provider reads: this test never starts failing on a calendar date.
+    #[tokio::test]
+    async fn a_chat_bound_to_a_retiring_model_keeps_routing_until_retirement() {
+        let today = chrono::Utc::now().date_naive();
+        for (model, deployment, retires) in MEASURED_RETIRING {
+            let server = gateway().await;
+            let routed = today < chrono::NaiveDate::parse_from_str(retires, "%Y-%m-%d").unwrap();
+            let live = aimed_at(bound(model, config("", "")).await, &server);
+            let reopened = aimed_at(restored(model, deployment).await, &server);
+            for provider in [&live, &reopened] {
+                let answered = answered_by(provider).await;
+                if routed {
+                    assert_eq!(answered.unwrap(), *model, "{model} before {retires}");
+                } else {
+                    let error = answered.expect_err("a retired model was sent");
+                    assert_eq!(error.kind(), ProviderErrorKind::ModelUnavailable);
+                }
+            }
+            let expected = if routed {
+                vec![path_of(deployment); 2]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(requested_paths(&server).await, expected, "{model}");
+            // The route a reopened chat stores is its own deployment while it
+            // routes — never another model's, and never an override.
+            if routed {
+                assert_eq!(
+                    serde_json::to_value(live.restore_binding()).unwrap()["deployment"],
+                    *deployment
+                );
+            }
+        }
+    }
+
     /// `complete_fast` hands the FAST model to `complete_with_model`, so the
     /// deployment has to follow the model a request names, not the one the chat
     /// was bound to. It used to land on the chat's deployment too.
@@ -1482,7 +1720,7 @@ mod routing_tests {
         for model in [
             "gpt-5.5-2026-04-24",
             "gpt-5.4-mini-2026-03-17",
-            "gpt-4.1-2025-04-14",
+            "gpt-4o-2024-11-20",
         ] {
             for (effort, expected) in [
                 (ReasoningEffort::Quick, "low"),
@@ -1508,7 +1746,9 @@ mod routing_tests {
                     assert_eq!(request.url.path(), path_of(model));
                     assert_eq!(body["model"], model);
                     assert_eq!(body["tools"][0]["function"]["name"], "test_tool");
-                    if model.starts_with("gpt-5") {
+                    // `gpt-6` too, so the day a GPT-6 deployment joins this
+                    // list it is held to the reasoning-model shape.
+                    if model.starts_with("gpt-5") || model.starts_with("gpt-6") {
                         assert_eq!(body["reasoning_effort"], expected);
                         assert!(body.get("temperature").is_none());
                         assert_eq!(body["messages"][0]["role"], "developer");
@@ -1605,8 +1845,8 @@ mod routing_tests {
             config("", "gpt-5.2-2025-12-11"),
             config("gpt-5.5-2026-04-24", "gpt-5.2-2025-12-11"),
         ] {
-            let provider = aimed_at(bound("gpt-4.1-2025-04-14", overrides).await, &server);
-            assert_eq!(answered_by(&provider).await.unwrap(), "gpt-4.1-2025-04-14");
+            let provider = aimed_at(bound("gpt-4o-2024-11-20", overrides).await, &server);
+            assert_eq!(answered_by(&provider).await.unwrap(), "gpt-4o-2024-11-20");
         }
         // Nor is one of them licence to answer a model no deployment serves.
         let probe = aimed_at(
@@ -1616,7 +1856,7 @@ mod routing_tests {
         assert!(answered_by(&probe).await.is_err());
         assert_eq!(
             requested_paths(&server).await,
-            vec![path_of("gpt-4.1-2025-04-14"); 3]
+            vec![path_of("gpt-4o-2024-11-20"); 3]
         );
     }
 
@@ -1639,26 +1879,28 @@ mod routing_tests {
             "gpt-4o",
             // A real UCSF deployment the catalog does not offer: the gateway
             // ANSWERS, so the wrong model replies and nothing says so — F1.
-            "gpt-5-mini-2025-08-07",
+            // (Answered on 2026-09-11. This row named gpt-5-mini until that
+            // was offered on 2026-09-25.)
+            "o3-mini-2025-01-31",
         ];
         for public_deployment in public_deployments {
             let chat = aimed_at(
-                bound("gpt-4.1-2025-04-14", config("", public_deployment)).await,
+                bound("gpt-4o-2024-11-20", config("", public_deployment)).await,
                 &server,
             );
             let answered = answered_by(&chat).await.unwrap();
             assert_eq!(
                 requested_paths(&server).await.pop().unwrap_or_default(),
-                path_of("gpt-4.1-2025-04-14"),
+                path_of("gpt-4o-2024-11-20"),
                 "the public azure_openai card's deployment `{public_deployment}` routed a \
-                 Versa request for gpt-4.1-2025-04-14"
+                 Versa request for gpt-4o-2024-11-20"
             );
-            assert_eq!(answered, "gpt-4.1-2025-04-14");
+            assert_eq!(answered, "gpt-4o-2024-11-20");
             // The route a reopened chat reuses is the model's own too, so the
             // other card's value cannot be persisted into the session row.
             assert_eq!(
                 serde_json::to_value(chat.restore_binding()).unwrap()["deployment"],
-                "gpt-4.1-2025-04-14",
+                "gpt-4o-2024-11-20",
                 "`{public_deployment}` was written into the restore binding"
             );
 
@@ -1674,7 +1916,7 @@ mod routing_tests {
         }
         assert_eq!(
             requested_paths(&server).await,
-            vec![path_of("gpt-4.1-2025-04-14"); public_deployments.len()]
+            vec![path_of("gpt-4o-2024-11-20"); public_deployments.len()]
         );
     }
 
@@ -1696,7 +1938,7 @@ mod routing_tests {
         // this key from 2026-05-30 to 2026-07-02, which is why it is this one.
         public_card.insert("AZURE_OPENAI_API_VERSION".into(), "2024-10-21".into());
 
-        let chat = bound("gpt-4.1-2025-04-14", public_card).await;
+        let chat = bound("gpt-4o-2024-11-20", public_card).await;
         let binding = serde_json::to_value(chat.restore_binding()).unwrap();
         assert_eq!(
             (&binding["endpoint"], chat.tier(), &binding["api_version"]),
@@ -1723,13 +1965,13 @@ mod routing_tests {
     async fn a_row_written_before_this_change_posts_to_its_own_models_deployment() {
         let server = gateway().await;
         let rebound = aimed_at(
-            restored("gpt-4.1-2025-04-14", "gpt-5.5-2026-04-24").await,
+            restored("gpt-4o-2024-11-20", "gpt-5.5-2026-04-24").await,
             &server,
         );
-        assert_eq!(answered_by(&rebound).await.unwrap(), "gpt-4.1-2025-04-14");
+        assert_eq!(answered_by(&rebound).await.unwrap(), "gpt-4o-2024-11-20");
         assert_eq!(
             serde_json::to_value(rebound.restore_binding()).unwrap()["deployment"],
-            "gpt-4.1-2025-04-14",
+            "gpt-4o-2024-11-20",
             "the stale route was carried into the next binding"
         );
 
@@ -1740,7 +1982,7 @@ mod routing_tests {
         );
         assert_eq!(
             requested_paths(&server).await,
-            vec![path_of("gpt-4.1-2025-04-14")]
+            vec![path_of("gpt-4o-2024-11-20")]
         );
     }
 
@@ -1752,14 +1994,14 @@ mod routing_tests {
         let custom = "ucsf-preview-deployment";
 
         let live = aimed_at(
-            bound("gpt-4.1-2025-04-14", config(custom, "")).await,
+            bound("gpt-4o-2024-11-20", config(custom, "")).await,
             &server,
         );
         assert_eq!(answered_by(&live).await.unwrap(), custom);
         // Versa's own key is the one way to set it, and the public card's key
         // naming some other deployment does not compete with it.
         let beside_public = aimed_at(
-            bound("gpt-4.1-2025-04-14", config(custom, "my-gpt4o")).await,
+            bound("gpt-4o-2024-11-20", config(custom, "my-gpt4o")).await,
             &server,
         );
         assert_eq!(answered_by(&beside_public).await.unwrap(), custom);
@@ -1770,7 +2012,7 @@ mod routing_tests {
 
         let binding = serde_json::to_value(live.restore_binding()).unwrap();
         assert_eq!(binding["deployment"], custom);
-        let restored = aimed_at(restored("gpt-4.1-2025-04-14", custom).await, &server);
+        let restored = aimed_at(restored("gpt-4o-2024-11-20", custom).await, &server);
         assert_eq!(answered_by(&restored).await.unwrap(), custom);
         assert_eq!(requested_paths(&server).await, vec![path_of(custom); 4]);
     }
@@ -1796,7 +2038,10 @@ mod routing_tests {
             !metadata.allows_unlisted_models,
             "\"Enter a model not listed...\" would offer a model that can only be refused"
         );
-        for model in measured {
+        // A retiring model is routed, so a chat bound to it still needs its own
+        // window even though no picker offers it.
+        let retiring = MEASURED_RETIRING.iter().map(|(model, _, _)| *model);
+        for model in measured.into_iter().chain(retiring) {
             assert!(
                 ModelConfig::has_declared_context_window(model),
                 "{model} has no MODEL_CONTEXT_WINDOWS entry of its own"

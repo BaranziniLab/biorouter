@@ -1019,6 +1019,16 @@ where
 /// Keep this separate from endpoint routing: GPT-4.1/4o support tools but are
 /// non-reasoning models, while some reasoning models need the Responses API to
 /// combine reasoning controls with function tools.
+///
+/// Every model this answers `true` for is also shaped as a reasoning model by
+/// both request builders: no `temperature`, `max_completion_tokens` rather than
+/// `max_tokens`, and a `developer` system role.
+///
+/// GPT-6 (Astra GA 2026-09-03, Sol and Luna GA 2026-09-22) is a reasoning
+/// family: OpenAI's model pages list `reasoning.effort`, and the family rejects
+/// `temperature`/`top_p` whenever the effort is not `none`. Astra accepts no
+/// `none` at all; BioRouter never sends it (Quick/Deep map to low/high), so the
+/// one prefix covers all three.
 pub(crate) fn model_supports_reasoning_effort(model_name: &str) -> bool {
     let model_name = model_name.to_ascii_lowercase();
     model_name.starts_with("o1")
@@ -1026,6 +1036,7 @@ pub(crate) fn model_supports_reasoning_effort(model_name: &str) -> bool {
         || model_name.starts_with("o3")
         || model_name.starts_with("o4")
         || model_name.starts_with("gpt-5")
+        || model_name.starts_with("gpt-6")
 }
 
 /// Return an effort accepted by the selected model.
@@ -1062,6 +1073,15 @@ pub(crate) fn model_reasoning_effort(
 /// `o4-mini` supports Chat Completions in isolation, but OpenAI rejects the
 /// function-tools + `reasoning_effort` combination there. Responses supports
 /// that combination and is also the preferred endpoint for reasoning models.
+///
+/// GPT-6 is in the same position, and says so on every one of its model pages
+/// (developers.openai.com/api/docs/models/gpt-6-sol, read 2026-09-25): "Use the
+/// Responses API for built-in tools and function calling. Chat Completions
+/// supports function calling only with reasoning_effort set to none." BioRouter
+/// sends tools on nearly every turn and never sends `none`, so on Chat
+/// Completions every tool-bearing GPT-6 turn would be refused.
+///
+/// Both the OpenAI and the Azure OpenAI provider route by this one predicate.
 pub(crate) fn model_uses_responses_api(model_name: &str) -> bool {
     let model_name = model_name.to_ascii_lowercase();
     model_name.starts_with("gpt-5-codex")
@@ -1070,6 +1090,7 @@ pub(crate) fn model_uses_responses_api(model_name: &str) -> bool {
         || model_name.starts_with("gpt-5.4")
         || model_name.starts_with("gpt-5.5")
         || model_name.starts_with("gpt-5.6")
+        || model_name.starts_with("gpt-6")
         || model_name.starts_with("o3-pro")
         || model_name.starts_with("o4-mini")
 }
@@ -2382,6 +2403,68 @@ data: [DONE]
             .unwrap()
             .get("reasoning_effort")
             .is_none());
+        Ok(())
+    }
+
+    /// The three GPT-6 ids, bare and in the dated spelling Azure deploys them
+    /// under. There is no `gpt-6-terra`: Terra exists only as `gpt-5.6-terra`.
+    const GPT_6_IDS: &[&str] = &[
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-6-sol-2026-09-22",
+        "gpt-6-luna-2026-09-22",
+        "gpt-6-astra-2026-09-03",
+    ];
+
+    #[test]
+    fn gpt_6_is_a_reasoning_model_routed_to_the_responses_api() {
+        for id in GPT_6_IDS {
+            assert!(
+                model_supports_reasoning_effort(id),
+                "{id} is a reasoning model"
+            );
+            assert!(
+                model_uses_responses_api(id),
+                "{id} calls tools only through /v1/responses"
+            );
+            // Quick/Deep map to low/high, both of which every GPT-6 tier
+            // accepts. Astra rejects `none`, which BioRouter never sends.
+            assert_eq!(model_reasoning_effort(id, "low"), Some("low"), "{id}");
+            assert_eq!(model_reasoning_effort(id, "high"), Some("high"), "{id}");
+        }
+        // The prefix must not reach a family that only shares the digits.
+        assert!(!model_uses_responses_api("openai/gpt-6-sol"));
+        assert!(!model_uses_responses_api("databricks-gpt-6-sol"));
+    }
+
+    /// Chat Completions is still reachable with a GPT-6 id — a custom
+    /// `OPENAI_BASE_PATH`, or a gateway that only speaks it — and there it must be
+    /// shaped as the reasoning model it is: GPT-6 refuses `temperature` whenever
+    /// the effort is not `none`, and refuses `max_tokens` outright.
+    #[test]
+    fn gpt_6_chat_completions_request_is_shaped_as_a_reasoning_model() -> anyhow::Result<()> {
+        for id in ["gpt-6-sol", "gpt-6-astra-2026-09-03"] {
+            let model_config = ModelConfig::new_or_fail(id)
+                .with_temperature(Some(0.2))
+                .with_max_tokens(Some(1024));
+            let request = create_request(
+                &model_config,
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+                false,
+            )?;
+            let obj = request.as_object().unwrap();
+            assert_eq!(obj["model"], json!(id), "the id is sent as given");
+            assert_eq!(obj["messages"][0]["role"], json!("developer"), "{id}");
+            assert_eq!(obj["max_completion_tokens"], json!(1024), "{id}");
+            assert!(obj.get("max_tokens").is_none(), "{id}");
+            assert!(obj.get("temperature").is_none(), "{id}");
+            assert!(obj.get("top_p").is_none(), "{id}");
+            assert_eq!(obj["reasoning_effort"], json!("medium"), "{id}");
+        }
         Ok(())
     }
 
