@@ -55,13 +55,25 @@ Choose **Claude Code** or **Codex** in the model picker or in provider settings,
 would any other provider. There is no key to enter. The only setting either provider has is the
 name or path of its executable, which defaults to `claude` and `codex` respectively.
 
-> **Note — which models you can pick depends on your CLI version.** The newest model in each
-> catalogue has a vendor-set version floor: `claude-fable-5-1` needs `claude` **2.1.251** or newer,
-> and `gpt-6-astra` needs `codex-cli` **0.153.4** or newer. On an older CLI the turn fails with the
-> vendor's own upgrade message, which BioRouter shows you verbatim. Each CLI has its own remedy:
-> for Claude Code, `claude update` (or updating the Claude desktop app); for Codex, `codex update`,
-> or re-running step 1's `npm install -g @openai/codex@latest`. Every other advertised model works
-> on older CLIs too. Details, including the exact messages, are on
+> **Note — which models you can pick depends on your CLI version.** The newest models in each
+> catalogue have a vendor-set version floor, and both defaults are among them:
+>
+> | Model | Needs at least |
+> | --- | --- |
+> | `claude-opus-5-5` (the Claude Code default) | `claude` **2.1.280** |
+> | `claude-fable-5-1` | `claude` **2.1.257** |
+> | `claude-sonnet-5` | `claude` **2.1.197** |
+> | `gpt-6-astra` (the Codex default) | `codex-cli` **0.153.4** |
+> | `gpt-6-sol`, `gpt-6-luna` | `codex-cli` **0.156.1** |
+>
+> On an older CLI the turn fails with the vendor's own message, which BioRouter shows you verbatim.
+> For Sol and Luna that message says the model "is not supported when using Codex with a ChatGPT
+> account", which sounds like a plan limit but is not; BioRouter adds a line saying so. Each CLI has
+> its own remedy: for Claude Code, `claude update` (or updating the Claude desktop app); for Codex,
+> `codex update`, or re-running step 1's `npm install -g @openai/codex@latest`. Check what you have
+> with `claude --version` or `codex --version`. The models not in the table (`claude-haiku-4-5` and
+> the three `gpt-5.6` models) have no floor that any CLI measured here falls below.
+> Details, including the exact messages, are on
 > [which models you can pick depends on the CLI version](how-it-works.md#which-models-you-can-pick-depends-on-the-cli-version).
 
 ## The four states a card can show
