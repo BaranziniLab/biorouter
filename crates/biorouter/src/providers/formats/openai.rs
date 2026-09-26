@@ -1020,9 +1020,12 @@ where
 /// non-reasoning models, while some reasoning models need the Responses API to
 /// combine reasoning controls with function tools.
 ///
-/// Every model this answers `true` for is also shaped as a reasoning model by
-/// both request builders: no `temperature`, `max_completion_tokens` rather than
-/// `max_tokens`, and a `developer` system role.
+/// Every model this answers `true` for is shaped as a reasoning model. The Chat
+/// Completions builder ([`create_request`]) sends no `temperature`, uses
+/// `max_completion_tokens` rather than `max_tokens`, and a `developer` system
+/// role. The Responses builder (`openai_responses::create_responses_request`)
+/// drops `temperature`; it sends `max_output_tokens` and a `system` input item
+/// for every model.
 ///
 /// GPT-6 (Astra GA 2026-09-03, Sol and Luna GA 2026-09-22) is a reasoning
 /// family: OpenAI's model pages list `reasoning.effort`, and the family rejects
@@ -2433,7 +2436,9 @@ data: [DONE]
             assert_eq!(model_reasoning_effort(id, "low"), Some("low"), "{id}");
             assert_eq!(model_reasoning_effort(id, "high"), Some("high"), "{id}");
         }
-        // The prefix must not reach a family that only shares the digits.
+        // A provider-prefixed id (OpenRouter's `openai/...`, Databricks'
+        // `databricks-...`) belongs to a provider that speaks Chat Completions,
+        // so the bare-id prefix must not reroute it.
         assert!(!model_uses_responses_api("openai/gpt-6-sol"));
         assert!(!model_uses_responses_api("databricks-gpt-6-sol"));
     }

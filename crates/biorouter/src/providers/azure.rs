@@ -77,9 +77,13 @@ const AZURE_RESPONSES_PATH: &str = "openai/v1/responses";
 //   * o1-2024-12-17 and o3-mini-2025-01-31 — retire 2026-11-19.
 //   * o3-2025-04-16 and o4-mini-2025-04-16 — retire 2026-11-19. Standard and
 //     Global Standard deployments auto-upgrade at retirement (o3 to
-//     gpt-5.6-sol, o4-mini to gpt-5.6-terra). A chat still configured with the
-//     old model name keeps working after that: both names already take the
-//     Responses route, which is what the gpt-5.6 replacement needs.
+//     gpt-5.6-sol, o4-mini to gpt-5.6-terra). A chat still configured as
+//     o4-mini keeps working after that, because o4-mini already takes the
+//     Responses route the gpt-5.6 replacement needs. A chat configured as o3
+//     does NOT (nor one configured as o1 or o3-mini, which are upgraded the
+//     same day): `model_uses_responses_api` matches only `o3-pro`, so it stays
+//     on Chat Completions, where gpt-5.6 refuses function tools combined with
+//     reasoning. Such a chat has to be switched to the gpt-5.6 id.
 //   * gpt-4.1-2025-04-14 and gpt-4.1-mini-2025-04-14 — retire 2027-04-14.
 //
 // Not offered: gpt-6-terra, which does not exist (Terra exists only as
@@ -211,8 +215,14 @@ impl AzureProvider {
     ///
     /// Until 2026-09-25 this provider posted every model to Chat Completions.
     /// Sharing the predicate moved gpt-5.4 and gpt-5.5 (and a stored o4-mini
-    /// chat) onto Responses along with GPT-6 and GPT-5.6; gpt-5.5 is the model
-    /// the live measurement on [`AZURE_RESPONSES_PATH`] used.
+    /// chat) onto Responses along with GPT-6 and GPT-5.6. Measured at the UCSF
+    /// gateway on 2026-09-25: gpt-5.5-2026-04-24 (through this provider),
+    /// and gpt-5.4-mini-2026-03-17, gpt-5.4-nano-2026-03-17 and
+    /// o4-mini-2025-04-16 (a direct POST to [`AZURE_RESPONSES_PATH`]) each
+    /// returned a function call with a function tool and reasoning effort set.
+    /// The same probe showed why the Responses builder drops `temperature`:
+    /// gpt-5.5 and gpt-5.4-mini answered 400 "Unsupported parameter:
+    /// 'temperature'" on this route.
     fn uses_responses_api(model_name: &str) -> bool {
         model_uses_responses_api(model_name)
     }
@@ -616,6 +626,23 @@ mod tests {
         assert!(AzureProvider::metadata().allows_unlisted_models);
     }
 
+    /// The route a chat configured with a removed o-series model takes once
+    /// Azure auto-upgrades its deployment to GPT-5.6 (2026-11-19), as the
+    /// removal note on `AZURE_OPENAI_KNOWN_MODELS` describes: o4-mini already
+    /// takes Responses, while o3, o1 and o3-mini stay on Chat Completions,
+    /// where GPT-5.6 refuses tools combined with reasoning. If this changes,
+    /// that note changes with it.
+    #[test]
+    fn removed_o_series_models_take_the_route_the_removal_note_describes() {
+        assert!(AzureProvider::uses_responses_api("o4-mini-2025-04-16"));
+        for id in ["o3-2025-04-16", "o1-2024-12-17", "o3-mini-2025-01-31"] {
+            assert!(
+                !AzureProvider::uses_responses_api(id),
+                "{id}: the removal note says this stays on Chat Completions"
+            );
+        }
+    }
+
     #[test]
     fn gpt_6_and_gpt_5_6_advertise_vision_and_their_full_window() {
         let meta = AzureProvider::metadata();
@@ -666,8 +693,11 @@ mod tests {
         }
 
         /// Answers a Responses body as Responses and anything else as Chat
-        /// Completions, echoing the body's `model` the way Azure echoes the
-        /// deployment (measured on the UCSF gateway, 2026-09-25).
+        /// Completions, echoing the body's `model`. Whether real Azure echoes
+        /// the deployment name or the underlying model version here is NOT
+        /// established: every UCSF gateway deployment is named after its model
+        /// version, so the 2026-09-25 probe could not tell the two apart. The
+        /// echo is a stand-in, not a measured contract.
         async fn resource() -> MockServer {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
