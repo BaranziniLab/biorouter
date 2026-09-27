@@ -1439,7 +1439,7 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
         !pasted.trim().is_empty(),
         "Paste the whole invitation your host sent, or the brcrew1: line in it."
     );
-    let request = invitation_request(&pasted, &args);
+    let request = invitation_request(&pasted, &args)?;
     let answer = from_invitation(api, &request, true).await?;
     let preview = answer
         .get("preview")
@@ -1496,15 +1496,41 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
         "connection ID",
         connection["id"].as_str().unwrap_or_default(),
     ));
-    lines.push(format!(
-        "Next: biorouter crew --connection {} join",
-        safe_text(&shell_word(name))
+    lines.extend(next_steps(
+        name,
+        args.preparation_id.is_some(),
+        connection["status"].as_str() == Some("connected"),
     ));
     Ok(api.say(saved, lines))
 }
 
+/// What to run after saving a connection (CLI-9). A host saving their own workspace
+/// (`--preparation-id`) signs in and then sets the workspace up; anyone else signs in and then
+/// joins. Signing in is skipped when the connection is already up.
+fn next_steps(name: &str, hosting: bool, connected: bool) -> Vec<String> {
+    let command = |verb: &str| {
+        format!(
+            "biorouter crew --connection {} {verb}",
+            safe_text(&shell_word(name))
+        )
+    };
+    let then = if hosting {
+        "workspace bootstrap"
+    } else {
+        "join"
+    };
+    if connected {
+        vec![format!("Next: {}", command(then))]
+    } else {
+        vec![
+            format!("Next: {}", command("auth")),
+            format!("Then: {}", command(then)),
+        ]
+    }
+}
+
 /// `POST /crew/connections/from-invitation`'s body: the pasted text and every choice made.
-fn invitation_request(pasted: &str, args: &JoinInvitationArgs) -> Value {
+fn invitation_request(pasted: &str, args: &JoinInvitationArgs) -> Result<Value> {
     let mut body = json!({"invitation": pasted});
     if let Some(username) = &args.username {
         let username = username.trim();
@@ -1517,9 +1543,18 @@ fn invitation_request(pasted: &str, args: &JoinInvitationArgs) -> Value {
         body["institution_id"] = json!(institution);
     }
     let mut advanced = serde_json::Map::new();
+    let identity_file = args
+        .identity_file
+        .as_deref()
+        .map(|path| {
+            absolute_local_path(path, etcetera::home_dir().ok(), || {
+                Ok(std::env::current_dir()?)
+            })
+        })
+        .transpose()?;
     for (key, value) in [
         ("ssh_target", &args.ssh_target),
-        ("identity_file", &args.identity_file),
+        ("identity_file", &identity_file),
         ("proxy_jump", &args.proxy_jump),
         ("name", &args.name),
         ("remote_root", &args.remote_root),
@@ -1538,7 +1573,35 @@ fn invitation_request(pasted: &str, args: &JoinInvitationArgs) -> Value {
     if !advanced.is_empty() {
         body["advanced"] = Value::Object(advanced);
     }
-    body
+    Ok(body)
+}
+
+/// A local file path as the daemon needs it, absolute (CLI-19): a leading `~/` is the home
+/// folder, since a shell leaves `--identity-file=~/.ssh/key` as it is, and a relative path is
+/// taken from the current folder, as the files commands take theirs. An empty value is left
+/// for the daemon to judge.
+fn absolute_local_path(
+    text: &str,
+    home: Option<std::path::PathBuf>,
+    current_dir: impl FnOnce() -> Result<std::path::PathBuf>,
+) -> Result<String> {
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+    let path = if text == "~" || text.starts_with("~/") {
+        let home = home.context("Biorouter couldn't find your home folder for the ~ in --identity-file; give the full path")?;
+        match text.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => home,
+        }
+    } else if Path::new(text).is_absolute() {
+        return Ok(text.to_owned());
+    } else {
+        current_dir()?.join(text)
+    };
+    path.to_str()
+        .map(str::to_owned)
+        .context("Crew local paths must be valid Unicode")
 }
 
 async fn from_invitation(api: &Api, request: &Value, preview: bool) -> Result<Value> {
@@ -4270,8 +4333,12 @@ mod tests {
         assert!(lines.contains(&"  Workspace privacy: Private · ucsf".to_owned()));
         assert!(lines.contains(&"  You'll join as Private · ucsf.".to_owned()));
         assert_eq!(
-            &lines[lines.len() - 2..],
-            ["Saved lab.", "Next: biorouter crew --connection lab join"]
+            &lines[lines.len() - 3..],
+            [
+                "Saved lab.",
+                "Next: biorouter crew --connection lab auth",
+                "Then: biorouter crew --connection lab join"
+            ]
         );
 
         // Without --yes and without a terminal to ask in, nothing is saved.
@@ -4311,6 +4378,64 @@ mod tests {
             message(&error),
             "Saving this invitation needs your username on the server (--username), an institution for a Private connection (--institution)."
         );
+    }
+
+    /// CLI-9: the next steps after saving a connection: a host signs in, then sets the
+    /// workspace up; a joiner signs in, then joins; a connection already up skips signing in.
+    #[test]
+    fn the_next_step_after_saving_depends_on_hosting_and_connecting() {
+        assert_eq!(
+            next_steps("lab", true, false),
+            [
+                "Next: biorouter crew --connection lab auth",
+                "Then: biorouter crew --connection lab workspace bootstrap"
+            ]
+        );
+        assert_eq!(
+            next_steps("UCSF HPC", false, false),
+            [
+                "Next: biorouter crew --connection 'UCSF HPC' auth",
+                "Then: biorouter crew --connection 'UCSF HPC' join"
+            ]
+        );
+        assert_eq!(
+            next_steps("lab", false, true),
+            ["Next: biorouter crew --connection lab join"]
+        );
+    }
+
+    /// CLI-19: `--identity-file` is sent absolute, whatever the shell left of it.
+    #[test]
+    fn an_identity_file_is_made_absolute_before_it_is_sent() {
+        let home = Some(std::path::PathBuf::from("/home/bob"));
+        let cwd = || Ok(std::path::PathBuf::from("/work"));
+        assert_eq!(
+            absolute_local_path("~/.ssh/lab_ed25519", home.clone(), cwd).unwrap(),
+            "/home/bob/.ssh/lab_ed25519"
+        );
+        assert_eq!(
+            absolute_local_path("./keys/lab", home.clone(), cwd).unwrap(),
+            "/work/./keys/lab"
+        );
+        assert_eq!(
+            absolute_local_path("/etc/key", home.clone(), cwd).unwrap(),
+            "/etc/key"
+        );
+        assert!(absolute_local_path("~/key", None, cwd).is_err());
+        // `~bob/key` is another user's home, which only a shell can read; it stays relative.
+        assert_eq!(
+            absolute_local_path("~bob/key", home, cwd).unwrap(),
+            "/work/~bob/key"
+        );
+
+        let mut args = join_args(Path::new("-"));
+        args.identity_file = Some("keys/lab".into());
+        let body = invitation_request("brcrew1:abc", &args).expect("request");
+        let sent = body["advanced"]["identity_file"]
+            .as_str()
+            .expect("identity file");
+        assert!(Path::new(sent).is_absolute(), "{sent}");
+        assert!(sent.ends_with("keys/lab"), "{sent}");
     }
 
     #[tokio::test]
