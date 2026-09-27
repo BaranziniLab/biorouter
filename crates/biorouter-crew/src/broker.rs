@@ -1407,8 +1407,15 @@ impl Broker {
             member: !host,
         };
         let committed = (|| -> Result<()> {
+            // A terminal projection is exempt: it is what revokes the grant, it can happen
+            // once per run, and every run was itself created within the share.
+            let terminal = method == "run.project"
+                && result["status"]
+                    .as_str()
+                    .is_some_and(|status| status != "progress");
             ensure!(
-                host || !SHARE_METHODS.contains(&req.method.as_str())
+                host || terminal
+                    || !SHARE_METHODS.contains(&method)
                     || member_state_bytes(&state, &actor.id) <= self.quotas.member_state_bytes,
                 MEMBER_STATE_QUOTA
             );
@@ -3897,23 +3904,26 @@ fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Vec<String> {
 /// keeps at most [`Quotas::dedupe_actor_entries`] in [`Quotas::dedupe_actor_bytes`] (the new
 /// result always stays), then the workspace's oldest beyond [`Quotas::dedupe_entries`]. A
 /// retry comes within seconds or minutes, long before hundreds of newer results; bounding
-/// the cache is what keeps it from ever becoming a cap on the workspace.
+/// the cache is what keeps it from ever becoming a cap on the workspace. The actor's agents'
+/// results go before the person's own, so a burst of agent projections never evicts the
+/// message the person may be about to retry.
 fn remember(s: &mut State, quotas: &Quotas, actor: &str, key: String, cached: Cached) {
     let size = |key: &str, cached: &Cached| json_len(key) + json_len(cached);
     let prefix = format!("{actor}:");
-    let mut own: Vec<(Option<u64>, String, usize)> = s
+    let human = format!("{actor}:human:");
+    let mut own: Vec<(bool, Option<u64>, String, usize)> = s
         .dedupe
         .range(prefix.clone()..)
         .take_while(|(k, _)| k.starts_with(&prefix))
-        .map(|(k, c)| (c.at, k.clone(), size(k, c)))
+        .map(|(k, c)| (k.starts_with(&human), c.at, k.clone(), size(k, c)))
         .collect();
     own.sort();
     let mut count = own.len();
     let mut bytes = own
         .iter()
-        .fold(0usize, |total, (_, _, size)| total.saturating_add(*size));
+        .fold(0usize, |total, (_, _, _, size)| total.saturating_add(*size));
     let incoming = size(&key, &cached);
-    for (_, old, size) in own {
+    for (_, _, old, size) in own {
         if count < quotas.dedupe_actor_entries
             && bytes.saturating_add(incoming) <= quotas.dedupe_actor_bytes
         {
@@ -3927,7 +3937,10 @@ fn remember(s: &mut State, quotas: &Quotas, actor: &str, key: String, cached: Ca
         let mut all: Vec<(Option<u64>, String)> =
             s.dedupe.iter().map(|(k, c)| (c.at, k.clone())).collect();
         all.sort();
-        let excess = s.dedupe.len() + 1 - quotas.dedupe_entries.max(1);
+        // Down to 99% of the limit at once, so the sort runs once per hundredth of the
+        // limit rather than on every mutation.
+        let target = quotas.dedupe_entries.max(1) - quotas.dedupe_entries / 100 - 1;
+        let excess = s.dedupe.len().saturating_sub(target);
         for (_, old) in all.into_iter().take(excess) {
             s.dedupe.remove(&old);
         }

@@ -244,6 +244,92 @@ fn the_idempotency_cache_is_bounded_per_member() {
 }
 
 #[test]
+fn an_agent_burst_never_evicts_the_persons_own_recent_result() {
+    let mut ws = Workspace::new("dedupe-agent-burst");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let (team, general) = ws.host_team("burst");
+    ws.host_adds_to_team(&mut mallory, &team);
+    let params = run_params(&ws, &general);
+    let credential = ws.call_ok(&mut mallory, "run.create", params)["credential"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let post = json!({"channel_id": general, "body": "only once", "idempotency_key": "keep"});
+    ok(signed_raw(
+        &mut ws.broker,
+        &mut mallory,
+        "message.post",
+        post.clone(),
+    ));
+    for index in 0..600 {
+        worker(
+            &mut ws,
+            MALLORY,
+            &credential,
+            "run.project",
+            json!({"body": "working", "status": "progress", "idempotency_key": format!("p{index}")}),
+        );
+    }
+    // The composer retries its unanswered post: it replays rather than posting again.
+    ok(signed_raw(
+        &mut ws.broker,
+        &mut mallory,
+        "message.post",
+        post,
+    ));
+    let posted = ws.broker.state_json()["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["body"] == "only once")
+        .count();
+    assert_eq!(posted, 1);
+}
+
+#[test]
+fn a_member_at_their_share_can_still_finish_an_agent_task() {
+    let mut ws = Workspace::new("terminal-at-share");
+    ws.broker.set_quotas(Quotas {
+        member_state_bytes: 256 * 1024,
+        ..Quotas::STANDARD
+    });
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let (team, general) = ws.host_team("finish");
+    ws.host_adds_to_team(&mut mallory, &team);
+    let params = run_params(&ws, &general);
+    let credential = ws.call_ok(&mut mallory, "run.create", params)["credential"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Fill the share to the last few bytes.
+    for size in [60_000, 2_000, 100, 1] {
+        let mut full = false;
+        for _ in 0..100 {
+            if ws
+                .call(
+                    &mut mallory,
+                    "message.post",
+                    json!({"channel_id": general, "body": "x".repeat(size)}),
+                )
+                .error
+                .is_some()
+            {
+                full = true;
+                break;
+            }
+        }
+        assert!(full, "the share fills with {size}-byte posts");
+    }
+    worker(
+        &mut ws,
+        MALLORY,
+        &credential,
+        "run.project",
+        json!({"body": "done", "status": "completed", "idempotency_key": "done"}),
+    );
+}
+
+#[test]
 fn the_idempotency_cache_ages_out() {
     let mut ws = Workspace::new("dedupe-ttl");
     let host = ws.host.principal_id.clone();
