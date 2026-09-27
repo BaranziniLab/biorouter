@@ -49,8 +49,18 @@ fn run_params(ws: &Workspace, channel: &str) -> Value {
 }
 
 fn worker(ws: &mut Workspace, uid: u32, credential: &str, method: &str, params: Value) -> Value {
+    ok(worker_call(ws, uid, credential, method, params))
+}
+
+fn worker_call(
+    ws: &mut Workspace,
+    uid: u32,
+    credential: &str,
+    method: &str,
+    params: Value,
+) -> biorouter_crew::Response {
     let mut connection = biorouter_crew::Connection::new();
-    ok(ws.broker.handle(
+    ws.broker.handle(
         uid,
         &mut connection,
         Request {
@@ -61,7 +71,29 @@ fn worker(ws: &mut Workspace, uid: u32, credential: &str, method: &str, params: 
             auth: None,
             credential: Some(credential.into()),
         },
-    ))
+    )
+}
+
+/// What `principal` holds against their share of the state, counted as the broker counts it
+/// for the records these tests make: their messages, and their runs with a grant each.
+fn share_used(ws: &Workspace, principal: &str) -> usize {
+    let state = ws.broker.state_json();
+    let size = |value: &Value| serde_json::to_vec(value).unwrap().len();
+    let messages: usize = state["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["actor_id"] == principal)
+        .map(size)
+        .sum();
+    let runs: usize = state["runs"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|run| run["owner_id"] == principal)
+        .map(|run| size(run) + 110)
+        .sum();
+    messages + runs
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -327,6 +359,88 @@ fn a_member_at_their_share_can_still_finish_an_agent_task() {
         "run.project",
         json!({"body": "done", "status": "completed", "idempotency_key": "done"}),
     );
+}
+
+#[test]
+fn terminal_projections_take_a_member_at_most_one_message_past_their_share() {
+    let mut ws = Workspace::new("terminal-share-bound");
+    // The standard limits scaled down, so the attack fits in a test: runs made while under the
+    // share, then one maximum-size result per run.
+    let share = 256 * 1024;
+    ws.broker.set_quotas(Quotas {
+        state_bytes: 2 * 1024 * 1024,
+        state_admin_headroom: 128 * 1024,
+        member_state_bytes: share,
+        ..Quotas::STANDARD
+    });
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let mut victor = ws.enroll(VICTOR, "victor", 22);
+    let (team, general) = ws.host_team("results");
+    ws.host_adds_to_team(&mut mallory, &team);
+    ws.host_adds_to_team(&mut victor, &team);
+    let params = run_params(&ws, &general);
+    let runs: Vec<(String, String)> = (0..40)
+        .map(|_| {
+            let run = ws.call_ok(&mut mallory, "run.create", params.clone());
+            (
+                run["run"]["id"].as_str().unwrap().to_owned(),
+                run["credential"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(share_used(&ws, &mallory.principal_id) < share);
+    // Quotes escape to twice their size: the largest body a message may have.
+    let body = "\"".repeat(65_536);
+    let mut posted = 0;
+    let mut stopped = Vec::new();
+    for (index, (run, credential)) in runs.iter().enumerate() {
+        let response = worker_call(
+            &mut ws,
+            MALLORY,
+            credential,
+            "run.project",
+            json!({"body": body, "status": "completed", "idempotency_key": format!("done-{index}")}),
+        );
+        match response.error {
+            None => posted += 1,
+            Some(error) => {
+                assert_eq!(error.code, "quota_exceeded", "{}", error.message);
+                assert!(error.message.contains("your share"), "{}", error.message);
+                stopped.push(run.clone());
+            }
+        }
+    }
+    assert!(
+        posted > 0,
+        "results post while the member is within the share"
+    );
+    assert!(!stopped.is_empty(), "and stop once they are past it");
+    // Never more than one message past the share.
+    let largest = ws.broker.state_json()["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["actor_id"] == json!(mallory.principal_id))
+        .map(|message| serde_json::to_vec(message).unwrap().len())
+        .max()
+        .unwrap();
+    let used = share_used(&ws, &mallory.principal_id);
+    assert!(
+        used <= share + largest,
+        "{used} bytes held against a {share}-byte share"
+    );
+    // Everyone else keeps working.
+    ws.call_ok(
+        &mut victor,
+        "message.post",
+        json!({"channel_id": general, "body": "still here"}),
+    );
+    // A refused result leaves its run live, and its owner still ends it: removing access is
+    // never refused for space.
+    for run in &stopped {
+        let revoked = ws.call_ok(&mut mallory, "run.revoke", json!({"run_id": run}));
+        assert_eq!(revoked["revoked"], true);
+    }
 }
 
 #[test]

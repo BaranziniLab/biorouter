@@ -1482,16 +1482,22 @@ impl Broker {
             member: !host,
         };
         let committed = (|| -> Result<()> {
-            // A terminal projection is exempt: it is what revokes the grant, it can happen
-            // once per run, and every run was itself created within the share.
+            let share = self.quotas.member_state_bytes;
+            // A terminal projection ends its run, and with it the grant, so a member still
+            // within their share before it may post it even when it takes them past: an agent
+            // task finishes with its result rather than failing for the last few bytes. Only
+            // from within the share, so a member is never more than one message past it,
+            // however many runs they created while under it. Past it, a terminal projection is
+            // refused like any other addition, and the run's owner still ends the run with
+            // `run.revoke`, which is never refused for space.
             let terminal = method == "run.project"
                 && result["status"]
                     .as_str()
                     .is_some_and(|status| status != "progress");
             ensure!(
-                host || terminal
-                    || !SHARE_METHODS.contains(&method)
-                    || member_state_bytes(&state, &actor.id) <= self.quotas.member_state_bytes,
+                host || !SHARE_METHODS.contains(&method)
+                    || member_state_bytes(&state, &actor.id) <= share
+                    || (terminal && member_state_bytes(&self.state, &actor.id) <= share),
                 MEMBER_STATE_QUOTA
             );
             // A message is re-projected from the stored message on replay, so its cached
