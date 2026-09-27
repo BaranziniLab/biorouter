@@ -1,7 +1,7 @@
 # BioRouter Crew: native CLI and shared desktop daemon
 
 > **What this is.** How to use `biorouter crew` from a terminal: the shared desktop daemon and its credentials, the per-account remote executable, joining a workspace, naming people, teams and channels, messages, files, agents, chat grants and recovery.
-> **Status:** Current. Describes the source on branch `codex/biorouter-crew` as of 2026-09-24, including name selection and joining by invitation (package CLI-CMD, `6abace05` and `d7296080`). It is not a release or end-to-end acceptance claim: those commands have been tested against a scripted daemon only, and joining by invitation also needs a broker built with the `join-by-name` feature, on by default since 2026-09-25 (see [Join a workspace](#join-a-workspace)). [Revoke access](#revoke-access) and the grant states describe the source as of 2026-09-25 (`dc274655`), after the automatic revocation retry landed.
+> **Status:** Current. Describes `biorouter crew` on `main` as of 2026-09-27, after that day's CLI fixes (confirmations for destructive commands, connect failures in words, the `watch` starting point and one JSON value per line for streamed commands). It is not a release or end-to-end acceptance claim: the commands are tested against a scripted daemon, and joining by invitation also needs a broker built with the `join-by-name` feature, on by default since 2026-09-25 (see [Join a workspace](#join-a-workspace)). [Revoke access](#revoke-access) and the grant states describe the source as of 2026-09-25 (`dc274655`), after the automatic revocation retry landed.
 > **Audience:** People who use Crew from a terminal, and developers and testers of the Crew CLI.
 
 The native CLI and the desktop Crew panel call the same daemon services for connections, membership, transfers, policy and owned tasks, and the same daemon resolves the names both of them accept. Crew is BioRouter's shared workspace for a lab: a small broker process runs under one member's Unix account on a Linux server, and every member reaches it over their own SSH login.
@@ -17,7 +17,7 @@ biorouter crew daemon start
 biorouter crew credentials status
 ```
 
-`daemon status` checks the discovered instance without asking for the human approval secret; it reports an error if no instance is available. Run `daemon start` only when the daemon is absent: it refuses an already running instance. Ordinary Crew commands require the approval secret and can start a missing daemon; add `--no-start` to require an existing instance. Credential commands require an existing daemon.
+`daemon status` checks the discovered instance without asking for the human approval secret. When none is running, including when a crashed daemon left its discovery files behind, it exits 1 with `No Biorouter daemon is running for this profile.` (JSON code `crew_daemon_not_running`). Run `daemon start` only when the daemon is absent: it refuses an already running instance before asking for anything. Ordinary Crew commands require the approval secret and can start a missing daemon; they say so first, and at a terminal they ask for the new secret twice and start nothing when the two differ. Add `--no-start` to require an existing instance. Credential commands require an existing daemon. A wrong secret for a running daemon fails with `That approval secret doesn't match the running Biorouter daemon.` (code `crew_approval_secret_mismatch`).
 
 The CLI and desktop must use the same BioRouter profile to share an instance. On Unix, the desktop normally discovers or starts this profile daemon and asks for its approval secret. Closing the desktop or exiting the CLI leaves the shared daemon running. Explicitly stop it with `biorouter crew daemon stop`; that affects every client attached to the instance. An explicit desktop shared-daemon opt-out or an external backend is a different deployment mode.
 
@@ -27,8 +27,8 @@ There are three separate credentials:
 
 | Credential | Purpose and input |
 | --- | --- |
-| Human approval secret | Authorizes human operations in this daemon. Choose and retain it separately when starting a new instance; supply the same secret when attaching. It must contain 32–4096 printable ASCII characters without spaces. It is not recovered from daemon discovery metadata or desktop settings. |
-| Optional encrypted-vault passphrase | Unlocks this profile's Crew device credentials. It must differ from the approval secret; the vault accepts 1–1024 UTF-8 bytes. The OS keyring is the default credential backend. |
+| Human approval secret | Authorizes human operations in this daemon. Choose and retain it separately when starting a new instance; supply the same secret when attaching. It must contain 32 to 4096 printable ASCII characters without spaces. It is not recovered from daemon discovery metadata or desktop settings. |
+| Optional encrypted-vault passphrase | Unlocks this profile's Crew device credentials. It must differ from the approval secret; the vault accepts 1 to 1024 UTF-8 bytes. The OS keyring is the default credential backend. |
 | SSH credentials and MFA responses | Enter only in the native SSH authentication terminal. They are not Crew messages, agent prompts, device codes, enrollment tokens or vault passphrases. |
 
 To use an encrypted vault, initialize it **before preparing identities or saving connections in a fresh Crew profile**. Existing keyring identities are not migrated by this command:
@@ -39,7 +39,7 @@ biorouter crew credentials lock
 biorouter crew credentials unlock
 ```
 
-The default secret prompts hide input. `--approval-key-stdin` explicitly reads exactly the first stdin line as the approval secret. For `credentials init` or `credentials unlock`, the second line supplies the distinct vault passphrase. With `send --input -`, `connections save -` or `connections join-invitation -`, the remaining stdin content is the message, the JSON descriptor or the pasted invitation. Supply such input through a trusted secret-input pipe; do not put secrets in command arguments, shell history, environment variables or connection JSON. Native `auth` still requires an interactive terminal, so use its normal hidden approval prompt.
+The default secret prompts hide input. At a terminal, `credentials init` asks for the new passphrase twice and sets up no vault when the two differ, since a vault nobody can unlock loses the device keys stored in it. `--approval-key-stdin` explicitly reads exactly the first stdin line as the approval secret. For `credentials init` or `credentials unlock`, the second line supplies the distinct vault passphrase; a script sends a new secret or passphrase once and is responsible for it. Without a terminal and without `--approval-key-stdin`, a secret prompt is refused with exit status 2. With `send --input -`, `connections save -` or `connections join-invitation -`, the remaining stdin content is the message, the JSON descriptor or the pasted invitation. Supply such input through a trusted secret-input pipe; do not put secrets in command arguments, shell history, environment variables or connection JSON. Native `auth` still requires an interactive terminal, so use its normal hidden approval prompt.
 
 For privacy-sensitive actions, add `--expected-mode private` or `--expected-mode public`, for example `biorouter crew --connection lab --expected-mode private send methods --text 'Hello'`. The daemon refuses a mismatched saved mode instead of changing it. This optional expectation applies to `send`, `tasks start`, `grants grant`, and file upload, download and resume selection; omission preserves existing behavior. It does not change the connection's privacy setting or apply to file cleanup.
 
@@ -108,11 +108,11 @@ The host starts the broker once and invites each person by their username on the
 
 ### Host a workspace
 
-Prepare this computer's hosting identity, then start the broker on the server as your own account with the public key it printed. `--name` names the workspace: 1–40 lowercase letters, digits and dashes. With `--name`, the state directory defaults to `~/.local/share/biorouter-crew/<name>`; `--state-dir PATH` still sets it explicitly.
+Prepare this computer's hosting identity, then start the broker on the server as your own account with the public key it printed. `--name` names the workspace: 1 to 40 lowercase letters, digits and dashes. With `--name`, the state directory defaults to `~/.local/share/biorouter-crew/<name>`; `--state-dir PATH` still sets it explicitly.
 
 ```bash
-biorouter crew connections prepare
-# Note preparation_id and public_key from the output.
+biorouter crew connections prepare --show-ids
+# Note the public key and the Preparation ID line; only --show-ids prints the ID.
 
 # On the server, as the hosting account:
 "$HOME/.local/bin/biorouter-crew" start --name lab --bootstrap-key 'PUBLIC_KEY_HEX'
@@ -128,7 +128,7 @@ biorouter crew --connection lab workspace bootstrap
 biorouter crew --connection lab privacy set-workspace private --institution ucsf
 ```
 
-The institution label is permanent. Confirm it after `workspace bootstrap` and before any agent task or grant. The [rootless setup checklist](protocol-contract.md#rootless-setup-checklist) lists the broker's lifecycle commands (`status`, `stop`) and what `start` checks.
+`join-invitation` with `--preparation-id` ends with the two commands that follow it here, `Next: biorouter crew --connection lab auth` and `Then: biorouter crew --connection lab workspace bootstrap`. A joiner's `join-invitation` ends with `auth`, then `join`. The institution label is permanent. Confirm it after `workspace bootstrap` and before any agent task or grant. The [rootless setup checklist](protocol-contract.md#rootless-setup-checklist) lists the broker's lifecycle commands (`status`, `stop`) and what `start` checks.
 
 ### Invite someone and let them in (host)
 
@@ -136,7 +136,7 @@ The institution label is permanent. Confirm it after `workspace bootstrap` and b
 biorouter crew --connection lab enroll invite @bob
 ```
 
-The host's broker checks that `bob` is an account on the server, looking up that one name and never listing accounts. The server's own accounts can't be invited: `root`, any account below the server's `UID_MIN` (from `/etc/login.defs`, 1000 when it doesn't say), `nobody`, and any account whose login shell is `nologin` or `false` are refused with `@root is a system account on this server and can't join a workspace.` The command prints `Invited @bob · "Bob Lee" (name on the server account).` and then the invitation message to send Bob:
+The host's broker checks that `bob` is an account on the server, looking up that one name and never listing accounts. The server's own accounts can't be invited: `root`, any account below the server's `UID_MIN` (from `/etc/login.defs`, 1000 when it doesn't say), `nobody`, and any account whose login shell is `nologin` or `false` are refused with `@root is a system account on this server and can't join a workspace.` The command prints `Invited @bob · Bob Lee (name on the server account).` and then the invitation message to send Bob:
 
 ```text
 Join lab on Crew.
@@ -169,7 +169,7 @@ biorouter crew --connection lab auth
 biorouter crew --connection lab join
 ```
 
-- **The preview is the privacy decision.** It names the workspace, the host and the server, shows the fingerprint and the workspace's privacy (`Workspace privacy: Private · ucsf`), and says how this computer will treat it (`You'll join as Private · ucsf.`). If you choose another institution than the workspace's, it says so (`lab uses ucsf; you chose foreign-lab.`). One computer can't use one server for two institutions, so when another saved connection already reaches the same server under a different institution, the preview warns before you save: `You already use this server for foreign-lab (foreign-synthetic). lab uses ucsf; one computer can't mix institutions on the same server.` Connecting such a connection is refused in the same words. Without `--yes` the command asks `Save this connection? [y/N]` before saving anything. `--mode` and `--institution` change your own choice; `--username` sets your username on the server (default: the one the host invited); `--name` names the connection on this computer (default: the workspace's name). `--ssh-target`, `--port`, `--identity-file` and `--proxy-jump` (empty for none) override the server hints.
+- **The preview is the privacy decision.** It names the workspace, the host and the server, shows the fingerprint and the workspace's privacy (`Workspace privacy: Private · ucsf`), and says how this computer will treat it (`You'll join as Private · ucsf.`). If you choose another institution than the workspace's, it says so (`lab uses ucsf; you chose foreign-lab.`). One computer can't use one server for two institutions, so when another saved connection already reaches the same server under a different institution, the preview warns before you save: `You already use this server for foreign-lab (foreign-synthetic). lab uses ucsf; one computer can't mix institutions on the same server.` Connecting such a connection is refused in the same words. Without `--yes` the command asks `Save this connection? [y/N]` before saving anything. `--mode` and `--institution` change your own choice; `--username` sets your username on the server (default: the one the host invited); `--name` names the connection on this computer (default: the workspace's name). `--ssh-target`, `--port`, `--identity-file` and `--proxy-jump` (empty for none) override the server hints; a relative `--identity-file`, or one starting with `~/`, is made absolute before it is sent, because the daemon takes only absolute paths.
 - **Pasting instead of a file:** `connections join-invitation -` reads the message from stdin (end it with Ctrl-D). Because there is then no terminal to ask in, it saves only with `--yes`; check it with `--preview` first.
 - **`crew join` prints your code and waits:** `"Alice Chen" (@alice) invited you to lab.` and `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D`. Your computer computes the code from its own device key and the workspace key in the invitation; nothing the server sends can change it. When Alice approves it, `join` finishes with `You're in lab.` Ctrl-C stops waiting and leaves the invitation open; run `join` again to continue. `--no-wait` prints the current state and returns, for scripts.
 - If Alice typed a different code, `join` says `The code @alice entered doesn't match this computer. Send it again: …` with your code. It never prints `Joining lab…` for a code that doesn't match: once Alice saves a code, `join` claims first and then reports what the claim found, and with `--no-wait` it says `Alice saved a code for you, but this computer hasn't joined lab yet. Run biorouter crew join to finish.` when the claim hasn't completed. If you were not invited, it says so and waits for an invitation; an expired invitation ends the command with status 1 and asks you to request a new one. Sign in with `auth` before the first `join`.
@@ -192,7 +192,7 @@ The authenticated remote account and the enrolled key establish identity in both
 Use a JSON descriptor to script a save, or when the host gave you the workspace details rather than an invitation. `connections prepare` and `enroll prepare` are aliases for the same operation:
 
 ```bash
-biorouter crew connections prepare
+biorouter crew connections prepare --show-ids
 biorouter crew connections save ./crew-connection.json
 biorouter crew connections list
 ```
@@ -201,7 +201,7 @@ Build `crew-connection.json` from verified workspace information supplied by its
 
 | Field | Value |
 | --- | --- |
-| `preparation_id` | The ID from `connections prepare`, to use the device public key already shared for enrollment. Use only when saving a new connection. |
+| `preparation_id` | The `Preparation ID` that `connections prepare --show-ids` prints (JSON output always carries `preparation_id`), to use the device public key already shared for enrollment. Use only when saving a new connection. |
 | `name` | A display name. |
 | `ssh_target` | Your SSH host alias or `user@host`, using your own remote account. |
 | `socket_path` | The broker's verified absolute remote socket path. |
@@ -209,7 +209,7 @@ Build `crew-connection.json` from verified workspace information supplied by its
 | `workspace_id` | The host's verified workspace UUID. |
 | `workspace_public_key` | The broker's verified 32-byte public key encoded as 64 hexadecimal characters. This is different from your prepared device public key. |
 | `mode` | `private` or `public`; omission defaults to `private`. |
-| `institution_id` | Required for private saves, optional for public. Canonical 1–64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit (for example `ucsf`). Omitting `mode` still requires this field because the default is private. |
+| `institution_id` | Required for private saves, optional for public. Canonical 1 to 64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit (for example `ucsf`). Omitting `mode` still requires this field because the default is private. |
 
 Optional fields are `port` (number), `identity_file` (absolute local path), `proxy_jump` (SSH jump route), `remote_root` (remote work directory), `remote_execution` (boolean, default `false`) and `cluster_connection_id` (existing cluster connection ID). Unknown fields are rejected. `connections show` includes read-only state, so its entire output is not a valid save or update descriptor. For updates, omit `preparation_id` and supply the complete editable descriptor.
 
@@ -231,6 +231,8 @@ biorouter crew --connection lab connections update ./crew-connection.json
 biorouter crew --connection lab disconnect
 biorouter crew --connection lab connections remove
 ```
+
+`connections remove` deletes this computer's device key for the workspace, so it asks for the connection's name to be typed again; without a terminal pass `--confirm lab`. When your snapshot shows that you host the workspace and no other computer of yours is enrolled, it refuses (code `crew_host_controls_would_end`) and names the `enroll invite @you --add-device` command that adds one, because nothing restores the host controls once the last key that holds them is gone. `--give-up-host-controls` removes it anyway.
 
 ## Create teams and channels, and invite members
 
@@ -273,10 +275,10 @@ biorouter crew --connection lab members add @bob --channel analysis-lab/methods
 ```
 
 - The first form answers `Added. @bob can now see #general and #methods.` Without `--team`, each `--channel` adds Bob to a channel you own in a team he already belongs to.
-- Only a person's own device can do this, never an agent's grant. The broker checks that you own the team (or each channel) or host the workspace, that `@bob` is still the member you named on this server, and that every channel is in that team; one wrong channel refuses the whole add. Adding someone who is already there is a success that changes nothing, and `--request-id` retries are safe.
+- Only a person's own device can do this, never an agent's grant. The broker checks that you own the team (or each channel) or host the workspace, and that `@bob` is still the member you named on this server. With `--team`, the add is one request and every channel must be in that team: one wrong channel refuses the whole add. Without `--team`, each channel is its own request, so the command first checks every channel against your view of the workspace (you own it or host the workspace, it is not archived, Bob is in its team) and adds nothing if one fails. If a later request still fails, the error says which channels were added and where it stopped, and a `--request-id` retry is offered only when the outcome is uncertain. Adding someone who is already there is a success that changes nothing.
 - An older broker answers `This workspace's server can't add people directly yet.`; use `invites create` there.
 
-The current channel owner can run `remove-member analysis-lab/methods @bob` (add `--former` for someone who has already left the workspace) or `channels archive analysis-lab/methods`. Ownership transfers require `ownership offer methods @carol` followed by Carol's `ownership accept methods`. **Acceptance removes the previous owner from that channel.**
+The current channel owner can run `remove-member analysis-lab/methods @bob` (add `--former` for someone who has already left the workspace) or `channels archive analysis-lab/methods`. Both ask first, as the desktop does; without a terminal pass `--yes`. Archiving cannot be undone. Ownership transfers require `ownership offer methods @carol` followed by Carol's `ownership accept methods`. **Acceptance removes the previous owner from that channel.**
 
 The host can remove a person from the whole workspace with `enroll revoke @bob`. It revokes their enrollment, devices and agent grants, which is different from removing someone from one channel, so it asks you to type `@bob` again. Where there is no terminal to ask in, pass `--confirm @bob`; `enroll revoke PRINCIPAL_ID` never asks.
 
@@ -292,11 +294,11 @@ biorouter crew --connection lab search analysis-lab/methods 'analysis' --limit 5
 biorouter crew --connection lab watch methods
 ```
 
-`send` prints `Posted to #methods.` History accepts `--before CURSOR` or `--after CURSOR`, and search accepts `--after CURSOR`. Use the opaque cursors returned by Crew without modifying them. `watch` starts from the oldest available messages unless given `--after CURSOR`. The daemon polls, checks channel access and streams authorized pages; the CLI renders that shared stream. Ctrl-C detaches the watcher. `channels mark-read methods` marks the channel read up to its newest message; add a cursor to stop earlier.
+`send` prints `Posted to #methods.` History accepts `--before CURSOR` or `--after CURSOR`, and search accepts `--after CURSOR`. Use the opaque cursors returned by Crew without modifying them. `watch` starts with the channel's newest page (up to 200 messages), as the desktop's channel view does, then follows new messages. `--new-only` starts after the newest message, `--from-start` replays the channel from its oldest message, and `--after CURSOR` starts after a cursor. The daemon polls, checks channel access and streams authorized pages; the CLI renders that shared stream. Ctrl-C detaches the watcher. `channels mark-read methods` marks the channel read up to its newest message; add a cursor to stop earlier.
 
-Use `--output-format json` for structured single responses. Watch commands emit one JSON value per line with either `json` or `stream-json`. Text output escapes terminal control characters. Content in messages, files and agent output remains untrusted input.
+Use `--output-format json` for structured single responses. The streamed commands (`watch`, `join`, `tasks watch`, `files watch`) emit one JSON value per line with either `json` or `stream-json`, their last value and their error included. Text output escapes terminal control characters. Content in messages, files and agent output remains untrusted input.
 
-When the daemon ends a watch, text output says why in one sentence, for example `Stopped watching #methods: You no longer have access to this channel.`, or `Stopped watching #methods: This computer isn't a member of this workspace.` when the workspace no longer knows this computer (the words `history` uses for the same refusal). The observer's code (`channel_access_changed`, `scope_changed`, …) is in the JSON error frame, never in the text.
+When the daemon ends a watch, text output says why in one sentence, for example `Stopped watching #methods: You no longer have access to this channel.`, or `Stopped watching #methods: This computer isn't a member of this workspace.` when the workspace no longer knows this computer (the words `history` uses for the same refusal). In JSON the watch ends on one error value that is both the observer's frame (`type: "error"`, its `code` such as `channel_access_changed` or `scope_changed`, and `clear`) and the command's error (`error`, `request_id`). The code never appears in the text.
 
 ## Transfer attachments or share remote references
 
@@ -447,15 +449,17 @@ biorouter crew --connection lab privacy set-personal private
 biorouter crew --connection lab privacy set-workspace private
 ```
 
+`set-personal public` and `set-workspace public` ask for the workspace's name to be typed first, as the desktop's typed confirmation does; without a terminal pass `--confirm lab`. Going private asks nothing.
+
 The accepted mode values are `private` and `public`. Workspace policy, personal mode, channel classification, provider policy and grants jointly restrict operations. A public setting or a `public-safe` channel does not override another restriction or automatically declassify private content. Connection and policy changes invalidate relevant grants and can require reconnection and renewed authorization. Each connection remains a separate workspace scope; cross-channel context is explicitly granted.
 
-For retryable broker mutations, task starts and transfer starts, retain the same `--request-id` and the same operation after an uncertain response. The ID must be 1–128 ASCII letters, digits, underscores or hyphens. Without an explicit ID the CLI generates one. When a mutation was sent and its outcome is unknown (no answer, or a server error), the error ends with a retry hint naming that ID; JSON output always carries `request_id`.
+For retryable broker mutations, task starts and transfer starts, retain the same `--request-id` and the same operation after an uncertain response. The ID must be 1 to 128 ASCII letters, digits, underscores or hyphens. `tasks cancel` sends no request ID; running it again is its retry. Without an explicit ID the CLI generates one. When a mutation was sent and its outcome is unknown (no answer, or a server error), the error ends with a retry hint naming that ID; JSON output always carries `request_id`.
 
 A refusal from the workspace is printed as a sentence, never with the broker's code in front of it: `Only the team's owner or the workspace host can add people to it.`, not `forbidden: Only the team's owner…`, and `This computer isn't a member of this workspace.` for a device the workspace no longer knows. The code stays in JSON output as `broker_code`, beside the daemon's `code`, for scripts and for support. A different intended operation needs a different ID. This is not a blanket transaction mechanism for every command.
 
 Transfer retries reapprove the selected local file and compare the saved operation and file identity. An exact accepted replay returns the existing receipt without launching a second transfer; changed selection, content identity, scope or overwrite authority can be refused. Resume an interrupted transfer using `files resume`, rather than expecting a start replay to resume it.
 
-For recovery, inspect `daemon status`; if the daemon is absent, run `daemon start` first. Unlock an encrypted vault if used, authenticate the connection, then inspect `files pending`, `tasks list` and `grants list`. Do not assume tasks or transfers automatically resumed after a restart. If a task reports interrupted setup, an unknown durable outcome or unconfirmed cancellation, inspect its conversation or channel and retry cancellation or revoke the grant as indicated before deliberately starting another task. A successful local cancellation request alone does not confirm remote process termination.
+For recovery, inspect `daemon status`; if the daemon is absent, run `daemon start` first. Unlock an encrypted vault if used, authenticate the connection, then inspect `files pending`, `tasks list` and `grants list`. Do not assume tasks or transfers automatically resumed after a restart. If a task reports interrupted setup, an unknown durable outcome or unconfirmed cancellation, inspect its conversation or channel and retry cancellation or revoke the grant as indicated before deliberately starting another task. A cancellation the daemon was still waiting on when it stopped reads as unconfirmed after the restart, and the daemon confirms it by itself at the next connect. A successful local cancellation request alone does not confirm remote process termination.
 
 If daemon identity verification, approval-secret verification, workspace key verification or SSH policy preflight fails, resolve that reported mismatch before reconnecting. Do not replace trusted descriptors, keys or runtime files merely to suppress the refusal. An existing daemon with no human approval proof must be explicitly stopped and relaunched through a trusted launcher.
 
@@ -475,9 +479,10 @@ Crew-scoped copy, diverge and edit-diverge are refused before a child is created
 
 ## Related documentation
 
-- [Naming design](naming-design.md) — the selector grammar, the resolver's rules and why joining uses an invitation and a device code
-- [Broker protocol](protocol-contract.md) — the wire methods these commands call, and the rootless setup checklist
-- [UI redesign specification](ui-redesign-spec.md) — the desktop screens that do the same things, including the four places to revoke access
-- [SSH hop policy](ssh-hop-policy.md) — host-key trust and jump-host rules for `auth` and `connect`
-- [Implementation status](implementation-status.md) — which of these commands have live evidence, and at which revision
-- [Implementation plan](implementation-plan.md) — §15 CLI and GUI parity and §16 naming requirements
+- [Naming design](naming-design.md): the selector grammar, the resolver's rules and why joining uses an invitation and a device code.
+- [Broker protocol](protocol-contract.md): the wire methods these commands call, and the rootless setup checklist.
+- [UI redesign specification](ui-redesign-spec.md): the desktop screens that do the same things, including the four places to revoke access.
+- [SSH hop policy](ssh-hop-policy.md): host-key trust and jump-host rules for `auth` and `connect`.
+- [Implementation status](implementation-status.md): which of these commands have live evidence, and at which revision.
+- [Implementation plan](implementation-plan.md): §15 CLI and GUI parity and §16 naming requirements.
+- [Crew command line](../../crew/command-line.md): the user manual for these commands.
