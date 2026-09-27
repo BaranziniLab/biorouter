@@ -489,11 +489,11 @@ mod tests {
         let parity = include_str!(
             "../../../../../docs/providers/coding-agents/streaming-and-tool-call-parity.md"
         );
-        let shipped_start = parity
-            .find("## What shipped")
+        let (_, from_shipped) = parity
+            .split_once("## What shipped")
             .expect("the parity record keeps its What shipped section");
-        let shipped_len = parity[shipped_start..]
-            .find("\n## Summary")
+        let (shipped, _) = from_shipped
+            .split_once("\n## Summary")
             .expect("What shipped is followed by the Summary");
         vec![
             (
@@ -516,10 +516,7 @@ mod tests {
                 "tool-bridge.md",
                 include_str!("../../../../../docs/providers/coding-agents/tool-bridge.md"),
             ),
-            (
-                "streaming-and-tool-call-parity.md (What shipped)",
-                &parity[shipped_start..shipped_start + shipped_len],
-            ),
+            ("streaming-and-tool-call-parity.md (What shipped)", shipped),
         ]
     }
 
@@ -564,8 +561,10 @@ mod tests {
     fn names_identifier(line: &str, name: &str) -> bool {
         let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
         line.match_indices(name).any(|(at, _)| {
-            let before = line[..at].chars().next_back();
-            let after = line[at + name.len()..].chars().next();
+            let before = line.get(..at).and_then(|head| head.chars().next_back());
+            let after = line
+                .get(at + name.len()..)
+                .and_then(|tail| tail.chars().next());
             !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
         })
     }
