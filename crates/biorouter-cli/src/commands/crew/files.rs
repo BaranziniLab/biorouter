@@ -304,7 +304,9 @@ async fn watch(api: &Api, id: &str) -> Result<Value> {
             current["state"].as_str(),
             Some("starting" | "uploading" | "downloading" | "publishing" | "pause_requested")
         ) {
-            return Ok(json!({"transfer_id":id,"state":current["state"]}));
+            return Ok(
+                json!({"transfer_id":id,"state":current["state"],"direction":current["direction"]}),
+            );
         }
         previous = current;
         tokio::select! {

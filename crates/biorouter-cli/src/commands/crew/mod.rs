@@ -48,10 +48,29 @@ pub async fn handle(mut options: CrewOptions) -> Result<()> {
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     options.request_id = Some(request_id.clone());
+    // A streamed command's failure is its last line, so it is one JSON value like the rest.
+    let format = if streams(&options.command) {
+        output::stream_format(format)
+    } else {
+        format
+    };
     let sent = Arc::new(AtomicBool::new(false));
     execute(options, Arc::clone(&sent))
         .await
         .map_err(|error| failure(&error, format, &request_id, sent.load(Ordering::SeqCst)))
+}
+
+/// The commands that print as they go, one JSON value per line in both JSON formats (the
+/// contract `docs/crew/command-line.md` states): their last value and their failure are one
+/// line too.
+fn streams(command: &CrewCommand) -> bool {
+    matches!(
+        command,
+        CrewCommand::Watch(_)
+            | CrewCommand::Join(_)
+            | CrewCommand::Tasks(TaskCommand::Watch { .. })
+            | CrewCommand::Files(FileCommand::Watch { .. })
+    )
 }
 
 /// The error a failed command exits with.
@@ -70,8 +89,8 @@ fn failure(
     sent: bool,
 ) -> anyhow::Error {
     let message = safe_lines(&error_text(error));
-    if matches!(format, OutputFormat::Json | OutputFormat::StreamJson) {
-        let _ = emit(&failure_body(error, &message, request_id), format);
+    if let Some(line) = failure_json(error, &message, request_id, format) {
+        println!("{line}");
     }
     if error.chain().any(|cause| cause.is::<NeedsTerminal>()) {
         needs_a_terminal(message)
@@ -82,7 +101,28 @@ fn failure(
     }
 }
 
-/// A failure in JSON: the message, the request ID, and the codes a script can match on.
+/// What a failure prints to standard output in a JSON format: [`failure_body`], indented for
+/// `json` and on one line for `stream-json` (the format a streamed command's failure uses).
+fn failure_json(
+    error: &anyhow::Error,
+    message: &str,
+    request_id: &str,
+    format: OutputFormat,
+) -> Option<String> {
+    if matches!(format, OutputFormat::Text) {
+        return None;
+    }
+    output::formatted(
+        &failure_body(error, message, request_id),
+        format,
+        &HumanOptions::default(),
+    )
+    .ok()
+}
+
+/// A failure in JSON: the message, the request ID, and the codes a script can match on. A
+/// watch the daemon ended is also the observer's error frame (`type`, its `code` and `clear`),
+/// so a script reading lines gets one value for it, not a frame and then a second error.
 fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value {
     let mut body = json!({"error": message, "request_id": request_id});
     if let Some(code) = error_code(error) {
@@ -93,8 +133,33 @@ fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value
     if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
         body["broker_code"] = json!(broker_code);
     }
+    if let Some(stopped) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<WatchStopped>())
+    {
+        body["type"] = json!("error");
+        body["code"] = json!(stopped.code);
+        body["clear"] = json!(stopped.clear);
+    }
     body
 }
+
+/// A watch the daemon's observer ended: the sentence for a person, and the observer's code
+/// and `clear` for JSON output.
+#[derive(Debug)]
+struct WatchStopped {
+    message: String,
+    code: String,
+    clear: bool,
+}
+
+impl std::fmt::Display for WatchStopped {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WatchStopped {}
 
 /// The JSON code of a command that needed a person at a terminal and had none.
 const NEEDS_TERMINAL_CODE: &str = "crew_needs_terminal";
@@ -502,12 +567,18 @@ enum Reply {
     Say(Value, Vec<String>),
     /// Printed as it happened (watchers, joining).
     Streamed,
+    /// The last value of a streamed command, printed like the lines before it: one JSON value
+    /// per line in both JSON formats.
+    Last(Value, Box<HumanOptions>),
 }
 
 impl Reply {
     fn print(self, format: OutputFormat) -> Result<()> {
         match self {
             Self::Show(value, options) => emit_with(&value, format, &options),
+            Self::Last(value, options) => {
+                emit_with(&value, output::stream_format(format), &options)
+            }
             Self::Say(value, lines) => match format {
                 OutputFormat::Text => print_lines(&lines),
                 OutputFormat::Json | OutputFormat::StreamJson => emit(&value, format),
@@ -2506,14 +2577,15 @@ fn watch_event(
             }
         }
         ObserveEvent::Reconnect { cursor } => return Ok(std::ops::ControlFlow::Break(cursor)),
+        // Printed once, by the failure path: a sentence in text, and in JSON one line that is
+        // both the observer's error frame and the command's error.
         ObserveEvent::Error { code, error, clear } => {
-            if !api.text() {
-                emit(
-                    &json!({"type":"error","code":code,"error":error,"clear":clear}),
-                    output::stream_format(api.format),
-                )?;
+            return Err(WatchStopped {
+                message: watch_stopped(watched, &error),
+                code: safe_text(&code),
+                clear,
             }
-            return Err(anyhow!(watch_stopped(watched, &error)));
+            .into());
         }
     }
     Ok(std::ops::ControlFlow::Continue(()))
@@ -2537,8 +2609,16 @@ async fn file_command(api: &Api, mut command: FileCommand) -> Result<Reply> {
     {
         *channel = api.target(Kind::Channel, channel).await?.id;
     }
+    let watching = matches!(command, FileCommand::Watch { .. });
     let result = files::handle(api, command).await?;
-    Ok(api.show_with(result, api.names().await))
+    let names = api.names().await;
+    Ok(if watching {
+        // The summary sentence ("Transfer Saved."), not one more transfer row.
+        let options = api.human(names).with_view(output::View::Result);
+        Reply::Last(result, Box::new(options))
+    } else {
+        api.show_with(result, names)
+    })
 }
 
 async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
@@ -3107,7 +3187,9 @@ mod tests {
     fn said(reply: Reply) -> Vec<String> {
         match reply {
             Reply::Say(_, lines) => lines,
-            Reply::Show(value, options) => vec![output::render_text(&value, &options)],
+            Reply::Show(value, options) | Reply::Last(value, options) => {
+                vec![output::render_text(&value, &options)]
+            }
             Reply::Streamed => Vec::new(),
         }
     }
@@ -4263,6 +4345,96 @@ mod tests {
             // A refusal is a definite answer: no retry line, and scripts keep the code.
             assert_eq!(error_code(&error).as_deref(), Some("crew_request_refused"));
         }
+    }
+
+    /// CLI-5: a streamed command ends on one JSON value per line, its last value and its
+    /// failure included, and a finished download ends on the word the rows used.
+    #[tokio::test]
+    async fn streamed_commands_end_on_one_json_line_and_a_download_ends_saved() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path == "/crew/transfers/t-1" {
+                return Ok(json!({
+                    "id": "t-1", "connection_id": CONNECTION, "channel_id": METHODS,
+                    "direction": "download", "state": "completed", "name": "counts.csv",
+                    "size": 10, "offset": 10
+                }));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let reply = run(
+            &api,
+            CrewCommand::Files(FileCommand::Watch {
+                transfer: "t-1".into(),
+            }),
+        )
+        .await
+        .expect("watched");
+        let Reply::Last(last, options) = reply else {
+            panic!("files watch ends on its last value: {reply:?}")
+        };
+        assert_eq!(last["direction"], "download");
+        assert_eq!(output::render_text(&last, &options), "Transfer Saved.");
+        for format in [OutputFormat::Json, OutputFormat::StreamJson] {
+            let line = output::formatted(&last, output::stream_format(format), &options)
+                .expect("formatted");
+            assert!(!line.contains('\n'), "{line}");
+        }
+
+        for command in [
+            CrewCommand::Watch(WatchArgs {
+                channel: "methods".into(),
+                after: None,
+            }),
+            CrewCommand::Join(JoinArgs { no_wait: false }),
+            CrewCommand::Tasks(TaskCommand::Watch { run: "r".into() }),
+            CrewCommand::Files(FileCommand::Watch {
+                transfer: "t".into(),
+            }),
+        ] {
+            assert!(streams(&command));
+        }
+        assert!(!streams(&CrewCommand::Status));
+        let lost = anyhow!("connection reset");
+        let line = failure_json(&lost, "connection reset", "req-1", OutputFormat::StreamJson)
+            .expect("json");
+        assert!(!line.contains('\n'), "{line}");
+        assert!(failure_json(&lost, "x", "req-1", OutputFormat::Json)
+            .expect("json")
+            .contains('\n'));
+        assert!(failure_json(&lost, "x", "req-1", OutputFormat::Text).is_none());
+    }
+
+    /// CLI-5: a watch the daemon ended prints one error value, the frame and the failure in
+    /// one, not a frame followed by a second error object.
+    #[test]
+    fn a_stopped_watch_is_one_error_value() {
+        let (api, _) = api_with(OutputFormat::StreamJson, standard);
+        let mut names = Directory::default();
+        let error = match watch_event(
+            &api,
+            &mut names,
+            "#methods",
+            ObserveEvent::Error {
+                code: "channel_access_changed".into(),
+                error: "You no longer have access to this channel".into(),
+                clear: true,
+            },
+        ) {
+            Ok(_) => panic!("an error frame ends the watch"),
+            Err(error) => error,
+        };
+        let message = safe_lines(&error_text(&error));
+        assert_eq!(
+            message,
+            "Stopped watching #methods: You no longer have access to this channel."
+        );
+        let body = failure_body(&error, &message, "req-1");
+        assert_eq!(
+            body,
+            json!({"type": "error", "code": "channel_access_changed", "clear": true,
+                   "error": message, "request_id": "req-1"})
+        );
     }
 
     #[test]

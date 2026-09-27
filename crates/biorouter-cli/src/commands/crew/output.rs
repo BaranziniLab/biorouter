@@ -102,6 +102,11 @@ pub fn emit_with(value: &Value, format: OutputFormat, options: &HumanOptions) ->
     Ok(())
 }
 
+/// `value` as [`emit_with`] prints it, without the line break.
+pub fn formatted(value: &Value, format: OutputFormat, options: &HumanOptions) -> Result<String> {
+    format_output(value, format, options)
+}
+
 fn format_output(value: &Value, format: OutputFormat, options: &HumanOptions) -> Result<String> {
     Ok(match format {
         OutputFormat::Json => json_terminal_safe(serde_json::to_string_pretty(value)?),
@@ -1713,8 +1718,14 @@ impl Ctx {
             let text = if flag("detached") == Some(true) {
                 "Stopped watching. The transfer continues.".to_owned()
             } else {
+                // The direction decides the word a finished transfer ends with: an upload is
+                // Ready to attach, a download is Saved.
                 let state = str_field(value, "state").unwrap_or("unknown");
-                format!("Transfer {}.", transfer_state_word(state, "", 0, None))
+                let direction = str_field(value, "direction").unwrap_or("");
+                format!(
+                    "Transfer {}.",
+                    transfer_state_word(state, direction, 0, None)
+                )
             };
             return vec![self.with_id(text, "transfer ID", Some(transfer))];
         }
