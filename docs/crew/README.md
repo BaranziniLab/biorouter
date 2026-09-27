@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** Lab members, workspace hosts, and their IT staff.
 
-Crew is where your lab works together in the Biorouter desktop app. Open **Crew** in the app sidebar. You chat in channels, share files, and give your AI agent tasks the whole channel can see. The `biorouter crew` [commands](command-line.md) do the same from a terminal. Crew does not work in a web browser opened with `biorouter serve`, for the reason [Getting started](getting-started.md) gives.
+Crew is where your lab works together in the Biorouter desktop app. Open **Crew** in the app sidebar. You chat in channels, share files, and give your AI agent tasks the whole channel can see. The `biorouter crew` [commands](command-line.md) do the same from a terminal. Crew does not work in a web browser opened with `biorouter serve`: it shows "Crew needs the Biorouter desktop app" there, for the reason [Getting started](getting-started.md) gives.
 
 A lab's shared space is a workspace. The host, a lab member, runs it on a Linux server. Each member connects with their own server account over SSH (the secure login lab servers use). Only people the host lets in can see it.
 

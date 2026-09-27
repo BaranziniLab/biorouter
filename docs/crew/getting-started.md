@@ -8,7 +8,7 @@ Crew is the part of the Biorouter desktop app where your lab chats, shares files
 
 One lab member, the host, runs the workspace on a shared Linux server. You connect with your own account on that server over SSH (Secure Shell, the standard way to sign in to a server), and Crew makes that connection for you. The desktop app and the `biorouter crew` [commands](command-line.md) share one background service, so they show the same workspaces.
 
-Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`: the background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so it refuses every Crew action, even listing your workspaces. Signing in again or restarting does not change that.
+Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`. There, **Crew** in the sidebar opens a page titled "Crew needs the Biorouter desktop app" in place of your workspaces. The background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so nothing you do in the browser changes that, and signing in again or restarting does not help. Open Crew in the desktop app on your own computer, or use `biorouter crew` in a terminal there.
 
 A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "Connect to lab".
 

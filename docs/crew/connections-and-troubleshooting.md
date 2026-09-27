@@ -185,18 +185,18 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | "SSH authentication is already opening." | Choose **Close**, then open the Sign in window once. |
 | "Authentication input exceeds frame limit." | Type your answer instead of pasting it. |
 | "The local daemon is not available." or "Invalid daemon authentication session." | Quit and reopen Biorouter. |
-| "Signing in needs the Biorouter desktop app." | You are in a web browser, where Crew does not work ([Getting started](getting-started.md)). Use the desktop app, or run `biorouter crew auth` in a terminal. |
 | Any other message, such as "Your input couldn’t reach the server…" | **Reconnect**. If it repeats, check **Connection settings…**. |
 
 ### Other messages
 
 | Message | What to do |
 |---|---|
+| "Crew needs the Biorouter desktop app" or "Crew isn't available in a browser opened with biorouter serve…" | You opened Crew in a web browser through `biorouter serve`, where Crew does not work. Open Crew in the desktop app on your own computer, or use `biorouter crew` in a terminal there. Signing in again or restarting `biorouter serve` does not help ([Getting started](getting-started.md)). |
 | "Choose this private SSH connection's institution…" or "…canonical institution ID…" | Enter a short ID in lowercase letters, numbers, `-` or `_`, such as `ucsf`. |
 | "Crew aliases have different institutions…", "privacy_denied: connection and workspace institutions differ" or "…one computer can't mix institutions on the same server." | Use the workspace's institution in **Connection settings…**, for every workspace on that server, or ask your host. |
 | "Identity file must be an absolute path" | Enter a path that starts with `/`, or leave the field empty. |
 | "…needs a newer Biorouter background service…" | See [Replace an old background service](#replace-an-old-background-service). |
-| "This daemon cannot verify human Crew actions…" | In a web browser opened with `biorouter serve`, Crew never works, and nothing you do there changes that. Use the desktop app, or `biorouter crew` in a terminal. In the desktop app, see [Replace an old background service](#replace-an-old-background-service). |
+| "This daemon cannot verify human Crew actions…" | See [Replace an old background service](#replace-an-old-background-service). |
 | "…that Crew couldn't read…" | Choose **Retry**. If it repeats, see [Replace an old background service](#replace-an-old-background-service). |
 | "Crew could not complete that action." | Try the action again. |
 | "Authorize this action in the Crew panel…" | Do the action yourself in Crew, or with `biorouter crew`. |
@@ -209,8 +209,6 @@ After a Biorouter update, the background service that was already running stays 
 - "This feature needs a newer Biorouter background service…"
 - "Start it for me needs a newer Biorouter background service…"
 - "This daemon cannot verify human Crew actions…"
-
-The last one also appears in every web browser opened with `biorouter serve`. That service never holds the approval secret Crew needs, so Crew never works there, and the steps below do not help. Use the desktop app or `biorouter crew` instead.
 
 To replace the service on a Mac or Linux computer:
 
