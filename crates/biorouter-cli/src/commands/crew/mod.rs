@@ -1755,12 +1755,33 @@ fn missing_choices(preview: &Value) -> Vec<&'static str> {
 /// from the daemon's `GET …/join`, computed there from this computer's own key and the pinned
 /// workspace key; nothing the workspace sends can change it.
 async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
+    join_until(api, args, tokio::signal::ctrl_c()).await
+}
+
+/// [`join`], stopped by `interrupt` (Ctrl-C). One listener serves the whole wait (CLI-18): a
+/// fresh `ctrl_c()` per sleep was not listening while the status was re-read or a claim was
+/// made (either can wait on a slow SSH connect), and tokio's handler, installed by the first
+/// one, then swallowed that press.
+async fn join_until(
+    api: &Api,
+    args: JoinArgs,
+    interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<Reply> {
+    tokio::pin!(interrupt);
+    let stopped = || {
+        eprintln!("Stopped waiting. Run biorouter crew join again to continue.");
+        Ok(Reply::Streamed)
+    };
     let path = api.path("/join").await?;
     let mut shown: Option<(String, Option<String>)> = None;
     // Whether the status is being read again right after a claim was refused.
     let mut rechecking = false;
     loop {
-        let status = join_status(api, &path).await?;
+        let status = tokio::select! {
+            biased;
+            signal = &mut interrupt => { signal?; return stopped(); }
+            status = join_status(api, &path) => status?,
+        };
         let state = status["status"].as_str().unwrap_or_default().to_owned();
         let code = status["code"].as_str().map(str::to_owned);
         let changed = shown.as_ref() != Some(&(state.clone(), code.clone()));
@@ -1775,7 +1796,12 @@ async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
                 // been announced as "Joining…". The status the refusal leaves (usually
                 // `code_mismatch`) is read once more, straight away, and that is what is said.
                 if !rechecking {
-                    if let Some(joined) = claim(api, &path).await? {
+                    let claimed = tokio::select! {
+                        biased;
+                        signal = &mut interrupt => { signal?; return stopped(); }
+                        claimed = claim(api, &path) => claimed?,
+                    };
+                    if let Some(joined) = claimed {
                         api.stream(&joined, &joined_lines(&joined))?;
                         return Ok(Reply::Streamed);
                     }
@@ -1819,12 +1845,9 @@ async fn join(api: &Api, args: JoinArgs) -> Result<Reply> {
         }
         shown = Some((state, code));
         tokio::select! {
+            biased;
+            signal = &mut interrupt => { signal?; return stopped(); }
             () = tokio::time::sleep(api.poll) => {}
-            signal = tokio::signal::ctrl_c() => {
-                signal?;
-                eprintln!("Stopped waiting. Run biorouter crew join again to continue.");
-                return Ok(Reply::Streamed);
-            }
         }
     }
 }
@@ -5142,6 +5165,43 @@ mod tests {
         )
         .to_string();
         assert!(!shown.contains("--request-id"), "{shown}");
+    }
+
+    /// CLI-18: a Ctrl-C pressed while join re-reads its status (which can wait on a slow SSH
+    /// connect) stops the wait; it used to be swallowed until the next sleep's new listener.
+    #[tokio::test]
+    async fn a_ctrl_c_during_the_status_check_stops_join() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let pressed = Arc::clone(&notify);
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "GET" && path.ends_with("/join") {
+                // The press lands while this request is in flight.
+                pressed.notify_waiters();
+                return Ok(json!({"status": "invited", "code": "7QK2-M9XA-3JTP-WZ4D",
+                                 "workspace_name": "lab"}));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::StreamJson, handler);
+        let notified = notify.notified();
+        let interrupt = async move {
+            notified.await;
+            Ok(())
+        };
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            join_until(&api, JoinArgs { no_wait: false }, interrupt),
+        )
+        .await
+        .expect("the press stops the wait")
+        .expect("stopping is not an error");
+        assert!(matches!(reply, Reply::Streamed));
+        let checks = fake
+            .sent()
+            .iter()
+            .filter(|sent| sent.method == "GET" && sent.path.ends_with("/join"))
+            .count();
+        assert_eq!(checks, 1, "no status check after the press");
     }
 
     /// A broker that predates direct add says so, and points at the invitation that works.
