@@ -1527,7 +1527,8 @@ pub(crate) mod tests {
             ),
             (
                 "venice",
-                "FALLBACK_MODELS is the offline fallback list, ordered small to large",
+                "its list is FALLBACK_MODELS, the offline fallback, which leads with the \
+                 small llama-3.2-3b",
             ),
         ]
     }

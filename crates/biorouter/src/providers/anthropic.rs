@@ -38,13 +38,14 @@ const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 // (2026-09-25): every entry below is Active. The default comes FIRST, and the
 // rest run newest → oldest. ⚠ The desktop picker preselects the first entry
 // when a user switches to this provider (SwitchModelModal
-// `findFirstAvailableModel`), not ANTHROPIC_DEFAULT_MODEL, and key auto-detect
-// hands onboarding the model it picks. So the first entry IS the default for a
-// desktop user: listing Opus 5.5 first (as this list did until 2026-09-27)
-// promoted it past the smoke test the comment above holds it back for. Promote
-// a model by changing ANTHROPIC_DEFAULT_MODEL; its position follows.
+// `findFirstAvailableModel`), not ANTHROPIC_DEFAULT_MODEL, so the first entry
+// IS the default for a desktop user: listing Opus 5.5 first (as this list did
+// until 2026-09-27) promoted it past the smoke test the comment above holds it
+// back for. Promote a model by changing ANTHROPIC_DEFAULT_MODEL; its position
+// follows. (Key auto-detect asks for the default by name; see
+// `auto_detect::preferred_served_model`.)
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude Opus 4.8 — the default, see above.
+    // Claude Opus 4.8: the default, see above.
     ANTHROPIC_DEFAULT_MODEL,
     // Claude Opus 5.5 (GA 2026-09-22 — 1M context, 128K output, $4/$20 per
     // MTok, cheaper than Opus 5). Thinking cannot be disabled and forced
