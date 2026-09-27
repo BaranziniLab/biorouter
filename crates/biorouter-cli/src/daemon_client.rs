@@ -2253,13 +2253,13 @@ mod tests {
         assert!(!text.contains("model\\'s"), "{text}");
     }
 
+    /// The prompts a scripted reader was asked, in order.
+    type Asked = Arc<Mutex<Vec<&'static str>>>;
+    /// One scripted answer.
+    type Answer = std::future::Ready<anyhow::Result<zeroize::Zeroizing<String>>>;
+
     /// A reader that answers each prompt with the next scripted line and records the prompts.
-    fn scripted(
-        answers: &[&str],
-    ) -> (
-        Arc<Mutex<Vec<&'static str>>>,
-        impl FnMut(&'static str, bool) -> std::future::Ready<anyhow::Result<zeroize::Zeroizing<String>>>,
-    ) {
+    fn scripted(answers: &[&str]) -> (Asked, impl FnMut(&'static str, bool) -> Answer) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&asked);
         let mut answers: Vec<String> = answers.iter().rev().map(|a| (*a).to_owned()).collect();
