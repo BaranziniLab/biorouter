@@ -181,7 +181,7 @@ describe('AgentTaskPane: the unknown-outcome gate', () => {
     // A legacy team name that is only a UUID, and a channel name carrying a bidi override: the
     // gate printed both as stored, and an ID where an object was missing.
     const legacyTeam = { ...team, name: '3f2c9e0a-1b2c-4d3e-8f40-5a6b7c8d9e0f' };
-    const spoofed = { ...general, name: 'gen‮lare' };
+    const spoofed = { ...general, name: 'gen\u202Elare' };
     installObserver({
       snapshot: makeSnapshot({ teams: [legacyTeam], channels: [spoofed, methods, oldNotes] }),
     });
@@ -217,7 +217,7 @@ describe('AgentTaskPane: the unknown-outcome gate', () => {
     expect(await screen.findByText(shown)).toBeInTheDocument();
     const gate = screen.getByText(unknownOutcomeCopy.title).closest('section') as HTMLElement;
     expect(gate.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
-    expect(gate.textContent).not.toContain('‮');
+    expect(gate.textContent).not.toContain('\u202E');
     expect(gate.textContent).not.toContain(connection.name);
 
     // Start over, which ends the lock for the tests after this one.
