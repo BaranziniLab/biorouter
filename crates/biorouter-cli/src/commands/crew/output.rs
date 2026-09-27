@@ -53,6 +53,41 @@ pub fn safe_text(value: &str) -> String {
         .collect()
 }
 
+/// [`safe_text`] for text the CLI already made safe once and may have isolated: a balanced
+/// U+2068 … U+2069 pair passes through, and everything else, any other isolate included, is
+/// escaped as [`safe_text`] escapes it.
+///
+/// The CLI wraps a display name in that pair (`quoted_name`, `display_text`) so right-to-left
+/// text in it cannot reorder the words around it. Such a name reaches an error sentence, and
+/// escaping the sentence again printed the pair as the literal text `\u{2068}` (CLI-4). A
+/// balanced pair can only keep what is inside it from reordering what is outside, so passing
+/// it through gives a hostile name nothing: every raw isolate inside a name was escaped when
+/// the name was made safe, and one that is not part of a pair is escaped here.
+pub fn safe_text_keeping_isolates(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut out = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\u{2068}' {
+            let rest = &chars[index + 1..];
+            let next = rest
+                .iter()
+                .position(|c| matches!(c, '\u{2066}'..='\u{2069}'));
+            if let Some(end) = next.filter(|&end| rest[end] == '\u{2069}') {
+                out.push(ch);
+                out.push_str(&safe_text(&rest[..end].iter().collect::<String>()));
+                out.push('\u{2069}');
+                index += end + 2;
+                continue;
+            }
+        }
+        out.push_str(&safe_text(ch.encode_utf8(&mut [0; 4])));
+        index += 1;
+    }
+    out
+}
+
 /// Print `value` with the default text rendering: no IDs, names from the value alone.
 pub fn emit(value: &Value, format: OutputFormat) -> Result<()> {
     emit_with(value, format, &HumanOptions::default())
@@ -2177,6 +2212,34 @@ mod tests {
         let safe = json_terminal_safe(encoded);
         assert!(safe.contains("\\u202e"));
         assert!(!safe.contains('\u{202e}'));
+    }
+
+    /// CLI-4: the CLI's own isolates around a name survive a second pass; any other isolate,
+    /// and every other control, is still escaped.
+    #[test]
+    fn a_balanced_isolate_pair_passes_through_and_nothing_else_does() {
+        let named = "Ask \"\u{2068}Alice Chen\u{2069}\" (@alice) again.";
+        assert_eq!(safe_text_keeping_isolates(named), named);
+        assert_eq!(
+            safe_text_keeping_isolates("\u{2068}#données\u{2069}: gone"),
+            "\u{2068}#données\u{2069}: gone"
+        );
+        assert_eq!(
+            safe_text_keeping_isolates("\u{2068}a\u{202e}b\u{2069}"),
+            "\u{2068}a\\u{202e}b\u{2069}"
+        );
+        for (hostile, escaped) in [
+            ("open \u{2068}forever", "open \\u{2068}forever"),
+            ("\u{2069}close", "\\u{2069}close"),
+            ("\u{2066}ltr\u{2069}", "\\u{2066}ltr\\u{2069}"),
+            (
+                "\u{2068}a\u{2068}b\u{2069}c\u{2069}",
+                "\\u{2068}a\u{2068}b\u{2069}c\\u{2069}",
+            ),
+            ("bell\u{7}", "bell\\u{7}"),
+        ] {
+            assert_eq!(safe_text_keeping_isolates(hostile), escaped, "{hostile:?}");
+        }
     }
 
     #[test]

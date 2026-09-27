@@ -140,9 +140,12 @@ fn broker_refusal<'a>(cause: &'a (dyn std::error::Error + 'static)) -> Option<(&
     None
 }
 
+/// Each line made terminal-safe on its own. The CLI's own isolates around a name survive
+/// ([`output::safe_text_keeping_isolates`]): the names in these sentences were made safe when
+/// they were written, so a second escape would print the isolates as `\u{2068}` text.
 fn safe_lines(text: &str) -> String {
     text.split('\n')
-        .map(|line| safe_text(line.strip_suffix('\r').unwrap_or(line)))
+        .map(|line| output::safe_text_keeping_isolates(line.strip_suffix('\r').unwrap_or(line)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -2518,16 +2521,13 @@ fn watch_event(
 
 /// Why `crew watch` stopped, for a person (Q2-76): the channel, then the observer's own plain
 /// sentence. The code stays in the JSON error frame; the cursor is an internal, never named.
+/// `watched` is the channel's label as [`Api::label`] made it, already safe and isolated.
 fn watch_stopped(watched: &str, error: &str) -> String {
     let sentence = error.trim().trim_end_matches(['.', '!', '?']);
     if sentence.is_empty() {
-        format!("Stopped watching {}.", safe_text(watched))
+        format!("Stopped watching {watched}.")
     } else {
-        format!(
-            "Stopped watching {}: {}.",
-            safe_text(watched),
-            safe_text(sentence)
-        )
+        format!("Stopped watching {watched}: {}.", safe_text(sentence))
     }
 }
 
@@ -3876,6 +3876,16 @@ mod tests {
             .await
             .expect_err("expired");
         assert!(message(&error).starts_with("This invitation expired. Ask "));
+
+        // CLI-4: the isolates the CLI put around the name reach the terminal as isolates, and
+        // the JSON error carries the same sentence, never the escape text.
+        let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
+        assert_eq!(
+            shown,
+            "This invitation expired. Ask \"\u{2068}Alice Chen\u{2069}\" (@alice) to invite you again."
+        );
+        let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+        assert!(!body["error"].as_str().unwrap().contains("\\u{"), "{body}");
     }
 
     #[tokio::test]
@@ -4269,6 +4279,13 @@ mod tests {
             "Stopped watching #general: Your access to a channel in this workspace changed."
         );
         assert_eq!(watch_stopped("#general", " "), "Stopped watching #general.");
+        // CLI-4: a label the CLI isolated is printed once, not escaped again.
+        let stopped = watch_stopped("\u{2068}#données\u{2069}", "Live updates stopped");
+        assert_eq!(
+            stopped,
+            "Stopped watching \u{2068}#données\u{2069}: Live updates stopped."
+        );
+        assert_eq!(safe_lines(&stopped), stopped);
         let text = watch_stopped("#general", "Live updates stopped");
         assert!(!text.contains('['), "{text}");
         assert!(!text.to_ascii_lowercase().contains("cursor"), "{text}");
