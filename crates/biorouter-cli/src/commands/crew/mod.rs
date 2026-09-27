@@ -1357,30 +1357,32 @@ fn host_standing(snapshot: &Value, own_device_id: Option<&str>) -> HostStanding 
     if !hosts {
         return HostStanding::NotHost;
     }
-    match actor["devices"].as_array() {
-        Some(devices) if devices.len() > 1 => {
-            let own = own_device_id
-                .map(fingerprint_digits)
-                .filter(|own| !own.is_empty());
-            HostStanding::HostElsewhereToo {
-                others: devices
-                    .iter()
-                    .filter(|device| {
-                        own.as_deref().is_none_or(|own| {
-                            device["fingerprint"]
-                                .as_str()
-                                .map(fingerprint_digits)
-                                .as_deref()
-                                != Some(own)
-                        })
-                    })
-                    .cloned()
-                    .collect(),
-            }
-        }
-        _ => HostStanding::OnlyHostComputer {
+    let own = own_device_id
+        .map(fingerprint_digits)
+        .filter(|own| !own.is_empty());
+    let others: Vec<Value> = match actor["devices"].as_array() {
+        // One listed computer is this one, or the only one there is.
+        Some(devices) if devices.len() > 1 => devices
+            .iter()
+            .filter(|device| {
+                own.as_deref().is_none_or(|own| {
+                    device["fingerprint"]
+                        .as_str()
+                        .map(fingerprint_digits)
+                        .as_deref()
+                        != Some(own)
+                })
+            })
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
+    if others.is_empty() {
+        HostStanding::OnlyHostComputer {
             username: actor["username"].as_str().unwrap_or_default().to_owned(),
-        },
+        }
+    } else {
+        HostStanding::HostElsewhereToo { others }
     }
 }
 
@@ -5898,6 +5900,15 @@ mod tests {
             {"fingerprint": "3F2A 9C1E 77B0 D4E1", "added_at": 1_790_200_000, "added_via": "invitation_code"}
         ]);
         let laptop = two["actor"]["devices"][1].clone();
+        // Every listed entry being this computer leaves no other one to name.
+        let mut twice = two.clone();
+        twice["actor"]["devices"][1]["fingerprint"] = json!("70dc-ffaf-1751-a59b");
+        assert_eq!(
+            host_standing(&twice, Some(HERE)),
+            HostStanding::OnlyHostComputer {
+                username: "alice".into()
+            }
+        );
         let connection = json!({"id": CONNECTION, "name": "UCSF HPC", "device_id": HERE});
         assert_eq!(own_device_id(&connection), Some(HERE));
         assert_eq!(own_device_id(&json!({"device_id": ""})), None);
