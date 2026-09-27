@@ -99,6 +99,13 @@ pub(crate) async fn handle_ingest_conversation_with_provider(
         })
         .filter(|ids: &Vec<String>| !ids.is_empty())
         .unwrap_or_else(|| vec![session.id.clone()]);
+    let crew = crate::crew::manager().map_err(internal)?;
+    let scoped = crew.scoped_session_ids().await;
+    if session_ids.iter().any(|id| scoped.contains(id)) {
+        return Err(invalid_params(
+            "A selected conversation is unavailable for knowledge ingestion",
+        ));
+    }
     let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
         .map_err(invalid_params)?;
     let curation_profile = platform_curation_profile(session_manager.as_ref(), &session.id, &kb_id)

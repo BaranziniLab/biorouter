@@ -706,12 +706,26 @@
   --text-subtle: #6e6760; /* min 5.06:1, on --background-muted */
   --text-inverse: var(--color-white);
 
-  /* Status TEXT/ICON colours — must themselves pass on the page ground.
-     Deliberately a different hue from the dark theme's stop. */
-  --text-danger: var(--color-red-600); /* 6.54:1 on white */
-  --text-success: var(--color-green-600); /* 5.37:1 */
-  --text-warning: var(--color-yellow-700); /* 5.93:1 */
-  --text-info: var(--color-blue-700); /* 6.10:1 */
+  /* Status TEXT/ICON colours — must themselves pass on the page ground AND on
+     their own wash. Deliberately a different hue from the dark theme's stop.
+
+     ⚠ **The binding pair is the ink on its WASH, not the ink on white.** A
+     `Note` (`ui/note.tsx`), a status chip and the tinted destructive button all
+     paint `--text-X` on `--wash-X` — the same hue at 22% over whatever ground
+     they sit on — and the wash darkens the ground under the text. These used to
+     be the palette stops (`red-600`, `yellow-700`, `blue-700`, `green-600`) and
+     quoted their ratio on white (6.54 / 5.93 / 6.10 / 5.37), which is why nobody
+     saw that the Crew banners measured 4.49:1 (danger) and 4.31:1 (warning) in
+     axe (live QA 2026-09-24, T-18). Each stop is now darkened in OKLCH lightness
+     at a fixed hue until the ink clears 4.5:1 on its wash over every body-text
+     ground; `check-contrast.mjs` asserts that pair for every tone, family and
+     mode. The figures below are that worst case (the wash over
+     `--background-muted`) — re-measure rather than carry them forward.
+     Mirrored in `themes/parchment.theme.mjs`; change the two together. */
+  --text-danger: #a51a14; /* 4.69:1 on its wash, 7.61:1 on white */
+  --text-success: #05662d; /* 4.60:1 on its wash */
+  --text-warning: #7a5000; /* 4.61:1 on its wash */
+  --text-info: #1053b0; /* 4.69:1 on its wash */
 
   /* Status WASHES — the translucent counterpart of the solid `--background-*`
      fills above (§2.5, §3.4). Status is a wash with tinted ink almost
@@ -754,7 +768,8 @@
      because browsers treat text inputs as always `:focus-visible`, it fired on a
      plain mouse click, not just on keyboard navigation.
      neutral-600 clears 3:1 against every ground it can appear on. It is only
-     drawn under `prefers-contrast: more` / `forced-colors` — see @layer base.
+     drawn under `prefers-contrast: more` / `forced-colors` — see the unlayered
+     "OS-requested focus ring" block at the very end of this file.
      Neutral by definition, so it is SHARED: the ring, the focus fill and the
      focused edge come from the one ramp, not from each family's ink. */
   --ring: var(--color-neutral-600);
@@ -795,6 +810,33 @@
   --sidebar-accent-foreground: var(--text-default);
   --sidebar-border: #e7e7e3;
   --sidebar-ring: var(--ring);
+
+  /* Person avatar hues (D-AVATAR, Crew live QA round 2). Eight tile-fill +
+     initials-ink pairs; an avatar picks one from the person's canonical
+     @username (`.biorouter-avatar[data-hue='N']`, below), so a self-chosen
+     display name cannot borrow another person's colour, and the @username
+     stays visible because the hue is a recognition aid, not a proof. SHARED
+     across the three families like the neutrals — one person, one colour on
+     every device — and mirrored in each `themes/*.theme.mjs`; the base
+     family's block is hand-authored here, so change the two together.
+     `check-contrast.mjs` holds each ink to 4.5:1 on its own fill (measured
+     6.7–7.0:1), each fill a step off the page, and the eight fills apart. */
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
 
   /* Elevation and the scrim are neutral scaffolding, so all three families
      share them and every alpha is cast in the same near-black #1f1e1c. They
@@ -891,10 +933,13 @@
   --text-muted: #b0a892; /* min 5.91:1, on --background-medium */
   --text-subtle: #9c937b; /* min 5.16:1, on --background-muted */
   --text-inverse: #16120c;
-  --text-danger: var(--color-red-100);
+  /* Status inks are held to 4.5:1 on their own wash (see the light block):
+     danger and info were lifted off `red-100` / `blue-100` (4.32 / 4.86 on the
+     wash over the card ground, 3.95 / 4.43 over `--background-muted`). */
+  --text-danger: #ff8f8c; /* 4.66:1 on its wash */
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
-  --text-info: var(--color-blue-100);
+  --text-info: #80b0fa; /* 4.62:1 on its wash */
 
   /* Focus (D-03, revised by D-15) — neutral, not coral, and shared. */
   --ring: #a5a39d;
@@ -918,6 +963,27 @@
   --sidebar-accent-foreground: var(--text-default);
   --sidebar-border: #2a2a27;
   --sidebar-ring: var(--ring);
+
+  /* Person avatar hues (D-AVATAR): the same hues as a deep fill under a pale
+     ink, 7.4–7.9:1. Mirrored in each `themes/*.theme.mjs`. Orange (2) and
+     amber (3) are calmer than the rest (QA Q3-61: brown and olive at full
+     chroma); the theme files record why the pair is not Carol's exact one. */
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
 
   --scrim: rgba(0, 0, 0, 0.48);
   /* The micro tier needs its own dark weight — a 7%-alpha near-black is invisible
@@ -1013,9 +1079,9 @@
   --text-muted: #506380;
   --text-subtle: #586780;
   --text-inverse: #ffffff;
-  --text-danger: #c40d3e;
-  --text-success: #007242;
-  --text-warning: #8a5a00;
+  --text-danger: #a8032f;
+  --text-success: #02653a;
+  --text-warning: #7a5000;
   --text-info: #0f388a;
   --ring: #5c5a55;
   --background-focus: #e0e0dc;
@@ -1034,6 +1100,22 @@
   --sidebar-accent-foreground: #052049;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
   --scrim: rgba(31, 30, 28, 0.18);
   --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
   --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
@@ -1076,8 +1158,8 @@
   --text-muted: #b4b9bf;
   --text-subtle: #909aa6;
   --text-inverse: #052049;
-  --text-danger: #f5768a;
-  --text-success: #5fbf74;
+  --text-danger: #fd90a0;
+  --text-success: #63c277;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
   --ring: #a5a39d;
@@ -1097,6 +1179,22 @@
   --sidebar-accent-foreground: #f2f3f4;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
   --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -1171,10 +1269,10 @@
   --text-muted: #5c5a55;
   --text-subtle: #69675f;
   --text-inverse: #ffffff;
-  --text-danger: #c4232b;
-  --text-success: #0f7150;
-  --text-warning: #6e6300;
-  --text-info: #0a69bc;
+  --text-danger: #a8061c;
+  --text-success: #026546;
+  --text-warning: #625800;
+  --text-info: #0258a2;
   --ring: #5c5a55;
   --background-focus: #e0e0dc;
   --border-focus: #6b6963;
@@ -1192,6 +1290,22 @@
   --sidebar-accent-foreground: #1f1e1c;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
   --scrim: rgba(31, 30, 28, 0.18);
   --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
   --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
@@ -1255,6 +1369,22 @@
   --sidebar-accent-foreground: #ededea;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
   --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -1474,7 +1604,32 @@
      An outline drawn around the control reads as an alarm on a surface whose
      whole thesis is calm, and because browsers treat text fields as always
      `:focus-visible`, it fired on a plain mouse click too. Instead the focused
-     control deepens its own fill by one step and firms its text.
+     control deepens its own fill by one step, firms its text, and draws a 2px
+     INSET edge in `--border-focus`.
+
+     ⚠ **The fill alone was not an indicator (live QA 2026-09-24, T-16).** The
+     a11y audit measured the focused-vs-resting change at 1.23:1 on the sidebar,
+     1.32:1 on white, 1.10:1 on the already-filled selected row and ≈1.10:1 on
+     every menu item — all under the 3:1 a state indicator owes (WCAG 1.4.11),
+     and the app nav's active "Crew" item changed by nothing at all, because its
+     `data-[active=true]:bg-*` utility out-ranks this layered fill. A fill
+     cannot reach 3:1 against its ground and still leave `--text-default`
+     readable on top, so an edge is the only shape that can. The edge is INSET
+     (D-15: nothing is drawn outside the control, nothing is clipped by an
+     ancestor's overflow, nothing moves) and NEUTRAL: `--border-focus` is the
+     token D-03 names for the focused edge, and it clears 3:1 against the focus
+     fill and every ground in all six scopes (min 4.15:1 on the fill, 4.55:1 on
+     `--sidebar-active`; asserted in `check-contrast.mjs`). `--border-accent`
+     was the audit's suggestion and fails there — Roche Limit light's is
+     `#ee6c1a`, 2.33:1 on the fill and 2.88:1 on the sidebar — and the Crew spec
+     keeps accent to six named places, none of them focus.
+
+     It is a `box-shadow`, and it stays in this layer on purpose: a component
+     that already draws its own focus ring or elevation with a `ring-*` /
+     `shadow-*` utility keeps it (every layered utility out-ranks this rule),
+     and loses nothing it had before. Text fields do not take it — their own
+     border firms instead (the rule below resets it), so a mouse click into a
+     field still draws nothing new.
 
      `:where()` keeps specificity at 0 so any component can still opt out.
 
@@ -1537,6 +1692,8 @@
         summary,
         [role='button'],
         [role='menuitem'],
+        [role='menuitemcheckbox'],
+        [role='menuitemradio'],
         [role='option'],
         input[type='checkbox'],
         input[type='radio'],
@@ -1546,6 +1703,7 @@
     outline: none;
     background-color: var(--background-focus);
     color: var(--text-default);
+    box-shadow: inset 0 0 0 2px var(--border-focus);
   }
 
   /* ⚠ **Dropping the panel from the block above drops its `outline: none` with
@@ -1576,16 +1734,18 @@
      layer; it must stay unlayered, and this rule must stay a bare
      `outline: none`, or the two halves start fighting.
 
-     The `prefers-contrast: more` / `forced-colors` block below is deliberately
-     NOT narrowed by any of this: it still reaches the panel and the region
-     through the same `[tabindex]` arm, so a user who asked their OS for a
-     stronger signal keeps the ring here as everywhere else. */
+     The `prefers-contrast: more` / `forced-colors` block at the end of this
+     file is deliberately NOT narrowed by any of this: it still reaches the
+     panel and the region through its `[tabindex]` arm, so a user who asked
+     their OS for a stronger signal keeps the ring here as everywhere else. */
   :where([role='tabpanel'], .biorouter-focus-region):focus-visible {
     outline: none;
   }
 
   /* Text fields already own a border, so they shift their fill AND firm that
-     existing edge. No new strip is introduced. */
+     existing edge. No new strip is introduced — `box-shadow: none` takes back
+     the control rule's inset edge from a field that also carries a `tabindex`,
+     because a text field is `:focus-visible` on a plain mouse click. */
   :where(
     input:not([type='checkbox']):not([type='radio']):not([type='range']),
     textarea,
@@ -1599,6 +1759,7 @@
     outline: none;
     background-color: var(--background-focus);
     border-color: var(--border-focus);
+    box-shadow: none;
   }
 
   /* A container that holds a focused field (the composer, a search shell) takes
@@ -1607,28 +1768,20 @@
     border-color: var(--border-focus);
   }
 
-  /* The colour shift is deliberately soft, which is the point — but it cannot
-     meet the 3:1 non-text contrast floor for a state indicator. Users who have
-     asked their OS for a stronger signal get the ring back. */
-  @media (prefers-contrast: more), (forced-colors: active) {
-    :where(
-      a,
-      button,
-      input,
-      textarea,
-      select,
-      summary,
-      [tabindex]:not([tabindex='-1'])
-    ):focus-visible {
-      outline: 2px solid var(--ring);
-      outline-offset: 2px;
-      border-radius: inherit;
-    }
-  }
+  /* Users who have asked their OS for a stronger signal get a ring. That rule
+     is NOT here: it is the unlayered "OS-requested focus ring" block at the very
+     end of this file, and it must stay there. Inside this layer it lost to
+     every unlayered `outline: none` in the app — `.biorouter-focus-surface`,
+     the tab label rule below, the Crew sidebar rows — so Increase Contrast and
+     Windows High Contrast users had no focus indicator at all on most Crew
+     controls (live QA 2026-09-24, P0-5). `focusFallback.test.ts`. */
 }
 
 /* D-15, amended 2026-09-08 — a TAB TRIGGER's focus indicator is its underline
- * firming, never a fill.
+ * firming, never a fill. Amended again after live QA round 2 (Q2-49): the
+ * label's focus mark is now an OUTLINE, not an underline — the reason is at
+ * the end of this comment, and the history above it is kept because it is why
+ * the fill stays gone.
  *
  * The base block above no longer paints `--background-focus` on `[role='tab']`.
  * Measured on the running app before the change (Parchment light, Settings):
@@ -1666,10 +1819,81 @@
  * `height: 3px` landing on it over-constrains the box and collapses the
  * hairline to a stub the moment a tab is both mid-drag and focused. Dropping
  * the FILL still applies to it (harmlessly — `.br-tab` writes its own
- * unlayered `background: transparent`, so the base fill never reached it). */
+ * unlayered `background: transparent`, so the base fill never reached it).
+ *
+ * ⚠ **The bar alone was not an indicator (live QA 2026-09-24, T-16).** The
+ * a11y audit captured the focused and unfocused selected tab (Crew's details
+ * pane, Workspace settings) at device scale and got PIXEL-IDENTICAL images:
+ * activation follows focus, so the focused tab is always the selected one,
+ * the bar is already painted, and one extra pixel of it plus a label colour
+ * the selected tab already had is not a change anyone can see. So the label
+ * also takes a 2px UNDERLINE in `--border-focus`, 4px below the text:
+ *   - it is not a ring and not a fill, so D-15 and the "weird shade" report
+ *     both stand, and it never touches `::after`, which is the selection bar
+ *     here and the drag hairline on a document tab;
+ *   - it sits on the label, not the box, because a Radix trigger has no
+ *     horizontal padding — an inset edge would be drawn through the glyphs;
+ *   - `--border-focus`, not `--accent-bar`: the bar is the SELECTION and
+ *     keeps the accent, focus is a separate state in the neutral focus token,
+ *     and `--accent-bar` falls to 2.86:1 on `--background-muted` in Alma Mater
+ *     light where `--border-focus` holds 4.98:1 or better on every ground.
+ * It also reaches the document tabs' inner `role="tab"` buttons (the chat,
+ * artifact and dock strips put the role on a button INSIDE `.br-tab`), which
+ * had no focus change at all.
+ *
+ * ⚠ **The underline was replaced by an OUTLINE (live QA round 2, Q2-49).** A
+ * 2px underline in grey sitting directly above the 2px accent selection bar,
+ * on a tab that is always both focused and selected, read as "a double
+ * underline" to two critics (carol N8, erin P2-1) — the eye took it for a
+ * heavier selection, not for focus. Focus is now a 2px `--border-focus`
+ * outline, 2px outside the trigger, rounded to `--radius-element`: a different
+ * SHAPE from the selection bar, so the two states can no longer be confused.
+ * It is still not a fill, and the bar underneath keeps the accent.
+ *   - `--border-focus` holds 3:1 on every ground a tablist sits on, in every
+ *     family and mode (`check-contrast.mjs`, "focus edge (border-focus) on …").
+ *   - Under `prefers-contrast` / forced colours the OS ring block at the end of
+ *     this file replaces it with `--ring` / `Highlight`, as for every control.
+ *
+ * ⚠ **A Radix trigger draws the ring on `::before`, not as an outline.** An
+ * outline is drawn around the BOX, and the box is 36px tall for a 20px label,
+ * so an outset outline stands 4px above the trigger — and Crew's details pane
+ * pins its tablist `sticky top-0` flush against the top of its own scroller,
+ * which clips that top edge off and leaves a U. The pseudo-element is the same
+ * ring (2px `--border-focus`, 2px clear of the label, `--radius-element`)
+ * sized to the LABEL: 28px tall and centred, so it sits inside the trigger's
+ * height and no scroller can reach it, and 4px past each side, where the
+ * tablist's gap-5 leaves room. The trigger is already `position: relative`
+ * for its selection bar (`ui/tabs.tsx`), and `::after` stays that bar.
+ * `[data-orientation]` is what Radix writes on every trigger and nothing else
+ * with the role carries, so a plain `role="tab"` button — which is not
+ * positioned — keeps the outline.
+ *
+ * A document tab's inner button fills its `.br-tab` pill edge to edge inside a
+ * scrolling strip, where an outset ring would be clipped and would cross the
+ * neighbouring pill, so there the outline is drawn INSET. */
 :where([role='tab']:not(.br-tab)):focus-visible {
-  outline: none;
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-element);
   color: var(--text-default);
+}
+
+:where([role='tab'][data-orientation]:not(.br-tab)):focus-visible {
+  outline: none;
+}
+
+:where([role='tab'][data-orientation]:not(.br-tab)):focus-visible::before {
+  content: '';
+  position: absolute;
+  inset-inline: -4px;
+  inset-block: calc(50% - 14px);
+  border: 2px solid var(--border-focus);
+  border-radius: var(--radius-element);
+  pointer-events: none;
+}
+
+:where(.br-tab [role='tab']):focus-visible {
+  outline-offset: -2px;
 }
 
 :where([role='tab']:not(.br-tab)):focus-visible::after {
@@ -1725,6 +1949,50 @@
  * outline through the same `[tabindex]` arm. */
 :where(.biorouter-focus-region):focus-visible {
   box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+/* A RADIO's focus is drawn on the ring you can see, not on the input that has
+ * it (live QA round 2, Q2-11).
+ *
+ * `ui/CustomRadio.tsx` hides the real `<input type="radio">` (`sr-only`, 1×1px
+ * and clipped) and paints a 22px ring and a 10px dot beside it. Every focus
+ * rule in this file lands on the INPUT, so it was drawn on an invisible pixel:
+ * erin tabbed to Connection settings' Private / Public pair, pressed ↓, and the
+ * choice silently became Public with nothing on screen having changed. The ring
+ * span carries `data-radio-ring` (the dot `data-radio-dot`) as a selector hook,
+ * and the focused input's ring takes a 2px `--ring` outline 2px outside it —
+ * `--ring` because this is the same ring the OS-requested block draws, and it
+ * clears 3:1 on every ground (`check-contrast.mjs`, "focus ring on …").
+ *
+ * ⚠ **Authored here, not as `peer-focus-visible:` utilities on the span.** A
+ * newly written Tailwind variant can silently fail to generate (CLAUDE.md,
+ * "Desktop shell geometry"), and a focus indicator that is missing looks
+ * exactly like one that was never written. Forced colours are handled in the
+ * `@media (forced-colors: active)` block at the end of this file, where the
+ * checked state also has to be re-drawn. `focusFallback.test.ts` pins both. */
+input[type='radio']:focus-visible ~ [data-radio-ring] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The ring itself (QA Q3-58). It was `--border-emphasized`, ink at 24%, which
+ * measured 1.6:1 on white — under the 3:1 a control's boundary owes (WCAG
+ * 1.4.11), so an unchecked radio read as a faint smudge beside its label. At
+ * rest it is now `--text-muted`, which `check-contrast.mjs` holds to 4.5:1 on
+ * every text ground and `focusFallback.test.ts` measures on every ground a
+ * dialog paints, in all six scopes; checked, the accent edge as before.
+ *
+ * ⚠ The rest rule is a BARE `[data-radio-ring]` (0,1,0) on purpose. The
+ * forced-colours block at the end of this file redraws the ring with the same
+ * selectors in system colours and wins by coming later; a heavier selector here
+ * (`input ~ [data-radio-ring]`) would out-rank its `CanvasText` rule and paint
+ * this token under `forced-color-adjust: none` in High Contrast. */
+[data-radio-ring] {
+  border-color: var(--text-muted);
+}
+
+input[type='radio']:checked ~ [data-radio-ring] {
+  border-color: var(--border-accent);
 }
 
 /* Motion is short and informative. Everything animated must null out here —
@@ -3465,15 +3733,27 @@
 }
 
 .biorouter-sidebar-resize-handle:hover::after,
-.biorouter-sidebar-resize-handle:focus-visible::after,
 .biorouter-sidebar-resize-handle[data-resizing]::after {
   background: var(--border-strong);
 }
 
-/* The hairline above IS the focus indication — a ring on an 8px sliver flush
-   against the window edge would be clipped rather than seen. */
+/* No ring by default — an outset one on an 8px sliver flush against the window
+   edge would be clipped rather than seen (the OS-requested ring at the end of
+   this file insets it). The hover hairline is NOT the focus indicator either:
+   it is 2px of `--border-strong`, 1.41:1 on `--sidebar` in light and 1.65:1 in
+   dark, and the audit found the focused separator indistinguishable from the
+   resting one (live QA 2026-09-24, T-16/T-58). Focus paints the whole 8px
+   target in `--border-focus`, which clears 3:1 on the sidebar in every family
+   and mode (5.12:1 light, 6.37:1 dark); the hairline takes the same colour so
+   the strip reads as one bar.
+   Keyboard only: `:focus-visible` is withheld from a mouse drag. */
 .biorouter-sidebar-resize-handle:focus-visible {
   outline: none;
+  background-color: var(--border-focus);
+}
+
+.biorouter-sidebar-resize-handle:focus-visible::after {
+  background: var(--border-focus);
 }
 
 /* A collapsed sidebar has no edge to drag: offcanvas has translated it out of
@@ -3635,6 +3915,23 @@ body.biorouter-sidebar-compact [data-slot='sidebar-inset'] {
 body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   z-index: var(--z-sticky);
   box-shadow: var(--shadow-popover);
+}
+
+/* …and it has an EDGE where it meets the page (QA Q3-60). The rule above
+   replaces the docked column's `--sidebar-border` hairline with the popover
+   shadow, and in dark a black shadow on a near-black page is nothing: the
+   overlay's right edge was barely visible, so it read as part of the page it
+   covers. A 1px `--border-subtle` border, the edge a popover wears with the
+   same shadow (`.biorouter-popover-surface`). A border rather than a second
+   shadow, because forced colours strip `box-shadow` and keep a border; and it
+   sits inside the box, so the collapsed panel, translated off-screen, leaves no
+   line at the window edge. */
+body.biorouter-sidebar-compact [data-side='left'] > [data-slot='sidebar-container'] {
+  border-right: 1px solid var(--border-subtle);
+}
+
+body.biorouter-sidebar-compact [data-side='right'] > [data-slot='sidebar-container'] {
+  border-left: 1px solid var(--border-subtle);
 }
 
 /* ============================================================================
@@ -5157,18 +5454,42 @@ code [class~='token'] {
  * solid fill is that it brightens its own token, which is what
  * `--background-accent-hover` is.
  *
- * No ring, in either case. Focus is a surface shift; the ring comes back only
- * under `prefers-contrast: more` / `forced-colors`, which the base block
- * already handles.
+ * No ring, in either case. Focus is a surface shift plus an INSET edge; the
+ * ring comes back only under `prefers-contrast: more` / `forced-colors`, in the
+ * unlayered block at the very end of this file.
+ *
+ * ⚠ **The edge is what makes it an indicator (live QA 2026-09-24, T-16).** The
+ * fill alone measured 1.23–1.44:1 against the resting control — the Crew
+ * channel header, pane and dialog buttons all ride this class — and a fill
+ * cannot reach 3:1 without making the label on it unreadable. The edge is the
+ * base block's: 2px, inset, `--border-focus`, which clears 3:1 against the
+ * focus fill and every ground in all six scopes (`check-contrast.mjs`).
+ *   - A text field does not take it (`:not(input, textarea, select)`): it firms
+ *     its own border below, and it is `:focus-visible` on a mouse click.
+ *   - The solid accent fill takes `--text-on-accent` instead, because the
+ *     neutral edge measures 1.00:1 on Parchment's `--background-accent-hover`.
+ *     The label ink is 4.62:1 or better on that hover fill in every family, so
+ *     the inner edge reads as a white (or ink) frame inside the accent.
+ *   - `var(--tw-shadow, …)` keeps a control's own drop shadow under the edge:
+ *     this rule is unlayered, so a bare `box-shadow` would erase it.
  */
 .biorouter-focus-surface:focus-visible {
   outline: none;
   background-color: var(--background-focus);
 }
 
+.biorouter-focus-surface:not(input, textarea, select):focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--border-focus),
+    var(--tw-shadow, 0 0 #0000);
+}
+
 .biorouter-focus-surface-accent:focus-visible {
   outline: none;
   background-color: var(--background-accent-hover);
+  box-shadow:
+    inset 0 0 0 2px var(--text-on-accent),
+    var(--tw-shadow, 0 0 #0000);
 }
 
 /* A text field owns a border, so it firms that edge as well rather than
@@ -5263,4 +5584,747 @@ code [class~='token'] {
 
 .br-preview-measure-strip {
   padding-inline: max(14px, calc((100% - var(--measure-chat)) / 2));
+}
+
+/* ── Shared primitives: CopyField, StatusDot, Disclosure, Avatar ──────────
+   Four `components/ui/` primitives the Crew redesign needed and the app did
+   not have. Every rule below is AUTHORED rather than written as utilities at
+   the call site, for the reason the blocks above give: a newly written class
+   can silently fail to generate under `BIOROUTER_NO_HMR` (`watch: { ignored:
+   ['**'] }` is the same signal Tailwind's scanner uses), and each of these
+   needs a pseudo-element, `@keyframes`, a reduced-motion rest or a descendant
+   rule that a utility cannot express anyway. Tokens only; no family forks —
+   each rule reads the family's own tokens, so Alma Mater and Roche Limit
+   re-skin all four with zero edits here. */
+
+/* CopyField (`components/ui/copy-field.tsx`) — the one box for everything a
+   person hands to someone else.
+
+   Ground: `--background-well` in BOTH forms, single-line and multi-line.
+   Never `--background-code`: in dark mode it equals the page, so the box
+   vanished inside a dialog, and `--background-muted` is the lightest step in
+   dark. The well reads as an inset in every family and mode.
+
+   Geometry: a 32px single-line box (1px border + 1px inset + the 28px `sm`
+   Copy button + 1px + 1px), the value inset 12px like an input's text, the
+   Copy button hugging the right edge. The value carries 4px block padding so
+   one 20px line centres against the 28px button, which is also what lets the
+   multi-line form keep its first line level with a top-right Copy. */
+.biorouter-copy-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 1px;
+  padding-inline: 12px 1px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-well);
+}
+
+.biorouter-copy-field[data-multiline='true'] {
+  align-items: flex-start;
+}
+
+.biorouter-copy-field-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-block: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+  font-weight: var(--text-code--font-weight);
+  color: var(--text-default);
+  /* One click selects the whole value, so a manual ⌘C takes all of it. */
+  user-select: all;
+  /* An untruncated single-line value WRAPS rather than overflowing: a long
+     token must never push the Copy button out of the box, and nothing may be
+     hidden that the caller did not ask to truncate. */
+  overflow-wrap: anywhere;
+}
+
+.biorouter-copy-field[data-multiline='true'] .biorouter-copy-field-value {
+  white-space: pre-wrap;
+}
+
+/* A device code someone reads aloud: 20/28 mono. */
+.biorouter-copy-field[data-size='code'] .biorouter-copy-field-value {
+  font-size: var(--text-heading);
+  line-height: var(--text-heading--line-height);
+}
+
+.biorouter-copy-field-value[data-truncate='end'] {
+  overflow: hidden;
+  overflow-wrap: normal;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Middle truncation keeps a path's file name. Two spans, head and tail; only
+   the head gives way. The full value is still both spans' text, so selecting
+   and copying take all of it — the ellipsis is paint, not content. `pre` keeps
+   a space at the seam from collapsing. */
+.biorouter-copy-field-value[data-truncate='middle'] {
+  display: flex;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.biorouter-copy-field-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.biorouter-copy-field-tail {
+  flex: none;
+}
+
+/* The mask is not the value: a drag-select must not take the bullets. */
+.biorouter-copy-field-value[data-masked='true'] {
+  user-select: none;
+}
+
+.biorouter-copy-field-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* SIDEWAYS OVERFLOW (QA Q3-18). A caller that shows commands one per line lets
+   the value scroll sideways (`white-space: pre` in `onboarding.css` and
+   `dialogs.css`), and macOS hides an idle scrollbar: the host's start commands
+   ended mid-path ("--state-dir "$HOME/.") with nothing to say there was more,
+   beside a line promising Biorouter runs exactly these commands. The component
+   measures the value and writes `data-overflow` — `true` while more lies to the
+   right, `end` once it is scrolled there. Two cues follow from it:
+
+   - A fade at the right edge, as a MASK so it is correct on the well in every
+     family and mode without naming a colour (the `.biorouter-scroll-fade-top`
+     reasoning). It goes at the end, where there is nothing left to hint at.
+   - A thin scrollbar that stays visible. The app's `*` rule sets the standard
+     `scrollbar-color`, and a scroller with a non-`auto` `scrollbar-color` or
+     `scrollbar-width` gets Chromium's native scrollbar — an overlay one on macOS,
+     invisible at rest — and ignores every `::-webkit-scrollbar` rule. Both are
+     put back to `auto` here, so the pseudo-elements below draw a real,
+     always-present 6px bar. */
+.biorouter-copy-field[data-multiline='true'][data-overflow] .biorouter-copy-field-value {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow] .biorouter-copy-field-value::-webkit-scrollbar {
+  height: 6px;
+  background-color: transparent;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow]
+  .biorouter-copy-field-value::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border: 0;
+  border-radius: var(--radius-full);
+  min-width: 32px;
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow]
+  .biorouter-copy-field-value::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-subtle);
+}
+
+.biorouter-copy-field[data-multiline='true'][data-overflow='true'] .biorouter-copy-field-value {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+
+/* A LONG MULTI-LINE VALUE FOLDS (QA Q3-37). Past `COPY_FIELD_CLAMP_CHARS` the
+   value shows four lines — 4 × the code line plus the value's 4px block
+   padding — with its last line fading out, and a footer row beneath it inside
+   the well: a muted "The whole message is copied." and "Show all". The whole
+   value is still in the DOM under `overflow: hidden`, so Copy, a click-select
+   (`user-select: all`) and ⌘C take all of it, and a screen reader reads it.
+
+   The folded form is a GRID, so the footer can take a full row under the value
+   and the Copy button without either moving: in the flex row the value's basis
+   is its max-content width, and wrapping would push Copy down a line.
+   `overflow-y` only — a caller's `overflow-x: auto` (the command boxes) keeps
+   scrolling sideways. */
+.biorouter-copy-field[data-clamp] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 4px;
+}
+
+.biorouter-copy-field[data-clamp='collapsed'] .biorouter-copy-field-value {
+  max-height: calc(4 * var(--text-code--line-height) + 8px);
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--text-code--line-height) - 4px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--text-code--line-height) - 4px),
+    transparent
+  );
+}
+
+/* Folded AND wider than the box: both fades, intersected. */
+.biorouter-copy-field[data-clamp='collapsed'][data-overflow='true'] .biorouter-copy-field-value {
+  -webkit-mask-image:
+    linear-gradient(to right, #000 calc(100% - 32px), transparent),
+    linear-gradient(to bottom, #000 calc(100% - var(--text-code--line-height) - 4px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, #000 calc(100% - 32px), transparent),
+    linear-gradient(to bottom, #000 calc(100% - var(--text-code--line-height) - 4px), transparent);
+  mask-composite: intersect;
+}
+
+.biorouter-copy-field-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  padding-block: 0 6px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.biorouter-copy-field-note {
+  color: var(--text-muted);
+}
+
+/* "Show all" is a link in a line of supporting text: no control height, no
+   padding, the line's own type. Authored, not `h-auto p-0` at the call site,
+   for the reason every rule in this block is. */
+.biorouter-copy-field-footer [data-slot='button'] {
+  height: auto;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* The clipboard's last resort (Q3-41) selects the value in a textarea that
+   exists for one call. Inside the field, so a dialog's focus trap keeps it;
+   out of the flow and unseen, so nothing moves while it is there. */
+.biorouter-copy-field-fallback {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* StatusDot (`components/ui/status-dot.tsx`) — design.md §4.16: an 8px circle
+   whose fill is a status token, and for a LIVE dot a 2px halo that pulses on
+   a slow period.
+
+   The halo is a hollow ring (a 2px border on a pseudo-element set 2px outside
+   the dot), not a filled disc: a disc painted above the dot would tint the
+   dot itself. Its period is four turns of `--dur-slow` — 2.1s, the scale's
+   ambient-loop tier, the same period the composer's working edge uses —
+   rather than a literal 2s that exists nowhere on the scale. */
+.biorouter-status-dot {
+  --status-dot-fill: var(--background-strong);
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background-color: var(--status-dot-fill);
+  vertical-align: middle;
+}
+
+.biorouter-status-dot[data-tone='success'] {
+  --status-dot-fill: var(--background-success);
+}
+
+.biorouter-status-dot[data-tone='warning'] {
+  --status-dot-fill: var(--background-warning);
+}
+
+.biorouter-status-dot[data-tone='danger'] {
+  --status-dot-fill: var(--background-danger);
+}
+
+.biorouter-status-dot[data-tone='neutral'] {
+  --status-dot-fill: var(--text-subtle);
+}
+
+.biorouter-status-dot[data-tone='idle'] {
+  --status-dot-fill: var(--background-strong);
+}
+
+.biorouter-status-dot[data-live='true']::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--status-dot-fill);
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  animation: biorouter-status-halo calc(var(--dur-slow) * 4) var(--ease-out) infinite;
+}
+
+@keyframes biorouter-status-halo {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* StatusDot reduced-motion rest */
+/* The global reset clamps an infinite loop to one near-instant iteration,
+   which would leave the halo at whatever its first frame is — invisible here —
+   and erase the difference between a live dot and a still one. The rest is a
+   STILL halo: the distinction survives, the motion does not. */
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-status-dot[data-live='true']::after {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
+/* Disclosure (`components/ui/disclosure.tsx`) — the one Advanced control.
+
+   The trigger is a ghost `sm` Button, so its label sits 12px inside its own
+   box; the negative start margin lets the chevron share the left edge of the
+   fields above it, with the hover tint bleeding into the gutter the way a
+   list row's does. The chevron turns 90° over `--dur-fast-max` and returns
+   over `--dur-fast` (exits are shorter): the open-state rule carries the
+   longer duration because a transition runs with the duration of the state it
+   is going TO.
+
+   The body's height animation is authored because the `collapsible-down/up`
+   keyframes tw-animate-css ships are not emitted by this build. Radix exposes
+   the measured height as `--radix-collapsible-content-height` and waits for
+   the closing animation before it unmounts the content. `overflow-y: clip`
+   (not `hidden`) is what lets the horizontal axis stay visible, so a field's
+   own inset edge is never shaved during or after the tween. */
+.biorouter-disclosure-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.biorouter-disclosure-trigger {
+  margin-inline-start: -12px;
+}
+
+.biorouter-disclosure-summary {
+  min-width: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.biorouter-disclosure-chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[data-state='open'] > .biorouter-disclosure-chevron {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+.biorouter-disclosure-panel {
+  overflow-x: visible;
+  overflow-y: clip;
+}
+
+.biorouter-disclosure-panel[data-state='open'] {
+  animation: biorouter-disclosure-open var(--dur-med) var(--ease-out);
+}
+
+.biorouter-disclosure-panel[data-state='closed'] {
+  animation: biorouter-disclosure-close var(--dur-fast) var(--ease-out);
+}
+
+@keyframes biorouter-disclosure-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes biorouter-disclosure-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+.biorouter-disclosure-body {
+  padding-top: 12px;
+}
+
+/* Disclosure reduced-motion rest */
+/* Instant both ways. `animation: none` also tells Radix's presence there is no
+   exit animation to wait for, so the body unmounts on the same frame. */
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-disclosure-panel[data-state] {
+    animation: none;
+  }
+
+  .biorouter-disclosure-chevron {
+    transition: none;
+  }
+}
+
+/* Avatar (`components/ui/avatar.tsx`) — the one identity tile: 20, 24 or 32px,
+   a circle for people and a square for agents and objects, initials in muted
+   ink on the medium step. `--radius-full` is sanctioned here by name (see its
+   declaration: status dots, the switch knob and avatars). A square takes the
+   ladder: `--radius-inner` at 20 and 24, `--radius-element` at 32, because an
+   8px corner on a 20px tile is already most of a circle.
+
+   Initials never go below 11px ("nothing below 11px exists"): 20px takes the
+   caps size, 24 the chip size, 32 the dense-control size, all at 500.
+
+   `ring` separates avatars that overlap in a stack. It paints
+   `--biorouter-avatar-ring`, which the stack sets to its OWN ground (a member
+   stack in a 44px band on `--sidebar` sets `--sidebar`); an avatar cannot know
+   what it sits on, so the canvas is only the default. A box-shadow ring is
+   outside the border box, so the tile's own `overflow: hidden` never clips
+   it. */
+.biorouter-avatar {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  width: 32px;
+  height: 32px;
+  background-color: var(--background-medium);
+  color: var(--text-muted);
+  font-weight: var(--text-label--font-weight);
+  vertical-align: middle;
+  user-select: none;
+}
+
+.biorouter-avatar[data-size='20'] {
+  width: 20px;
+  height: 20px;
+  font-size: var(--text-caps);
+  line-height: var(--text-caps--line-height);
+}
+
+.biorouter-avatar[data-size='24'] {
+  width: 24px;
+  height: 24px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+}
+
+.biorouter-avatar[data-size='32'] {
+  width: 32px;
+  height: 32px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.biorouter-avatar[data-shape='circle'] {
+  border-radius: var(--radius-full);
+}
+
+.biorouter-avatar[data-shape='square'] {
+  border-radius: var(--radius-inner);
+}
+
+.biorouter-avatar[data-shape='square'][data-size='32'] {
+  border-radius: var(--radius-element);
+}
+
+.biorouter-avatar[data-ring='true'] {
+  box-shadow: 0 0 0 2px var(--biorouter-avatar-ring, var(--background-canvas));
+}
+
+/* A person's hue (D-AVATAR). `data-hue` is 1–8, chosen by the component from
+   the canonical @username — never the display name, so a name cannot borrow a
+   colour — and it paints the fill and the initials ink as one pair, the pair
+   `check-contrast.mjs` measures. An avatar with no `data-hue` (an agent, an
+   object, a person whose username is not known yet) keeps the neutral tile
+   above. Forced colours replace both with the system pair, which is right: the
+   hue is a recognition aid and the @username beside it is the identity. */
+.biorouter-avatar[data-hue='1'] {
+  background-color: var(--avatar-hue-1-bg);
+  color: var(--avatar-hue-1-fg);
+}
+
+.biorouter-avatar[data-hue='2'] {
+  background-color: var(--avatar-hue-2-bg);
+  color: var(--avatar-hue-2-fg);
+}
+
+.biorouter-avatar[data-hue='3'] {
+  background-color: var(--avatar-hue-3-bg);
+  color: var(--avatar-hue-3-fg);
+}
+
+.biorouter-avatar[data-hue='4'] {
+  background-color: var(--avatar-hue-4-bg);
+  color: var(--avatar-hue-4-fg);
+}
+
+.biorouter-avatar[data-hue='5'] {
+  background-color: var(--avatar-hue-5-bg);
+  color: var(--avatar-hue-5-fg);
+}
+
+.biorouter-avatar[data-hue='6'] {
+  background-color: var(--avatar-hue-6-bg);
+  color: var(--avatar-hue-6-fg);
+}
+
+.biorouter-avatar[data-hue='7'] {
+  background-color: var(--avatar-hue-7-bg);
+  color: var(--avatar-hue-7-fg);
+}
+
+.biorouter-avatar[data-hue='8'] {
+  background-color: var(--avatar-hue-8-bg);
+  color: var(--avatar-hue-8-fg);
+}
+
+.biorouter-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.biorouter-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* The avatar sizes its glyph, whatever the caller passed: 14px at 20 and 24,
+   the 16px row size at 32. Unlayered, so it outranks a `size-*` utility. */
+.biorouter-avatar-fallback svg {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+.biorouter-avatar[data-size='32'] .biorouter-avatar-fallback svg {
+  width: var(--icon-row);
+  height: var(--icon-row);
+}
+
+/*
+ * THE OS-REQUESTED FOCUS RING — D-15's escape hatch. KEEP THIS BLOCK LAST, AND
+ * KEEP IT UNLAYERED.
+ *
+ * Focus is a quiet surface shift plus an inset edge (the base block, the tab
+ * label rule and `.biorouter-focus-surface` above). A user who has asked the OS
+ * for a stronger signal — macOS Increase Contrast (`prefers-contrast: more`),
+ * Windows High Contrast (`forced-colors: active`) — gets a real 2px ring on
+ * every focusable thing, whatever any component says.
+ *
+ * ⚠ **This used to live inside `@layer base`, and there it could never win
+ * (live QA 2026-09-24, P0-5).** Every unlayered declaration beats every layered
+ * one whatever the specificity, and the quiet-focus rules that write
+ * `outline: none` are unlayered on purpose — `.biorouter-focus-surface`, the
+ * tab label rule, the Crew sidebar rows and timeline (`crew/**.css`). Measured
+ * with a Tab walk: under `prefers-contrast: more` 12 of 14 Crew stops showed no
+ * ring; under `forced-colors: active` no Crew button, tab or menu item did, and
+ * forced colours also strip the fill and the box-shadow edge, so focus was
+ * simply invisible. Menu items (`div[role=menuitem][tabindex=-1]`) were never
+ * matched at all by the old `[tabindex]:not([tabindex='-1'])` arm.
+ *
+ * Why each part is shaped the way it is:
+ *   - UNLAYERED + `!important`. Crew's stylesheets are imported after this file
+ *     and their `:focus-visible { outline: none }` rules tie on specificity, so
+ *     source order alone would lose. An important declaration beats every
+ *     normal one in the author origin. (A layered `!important` — Tailwind's
+ *     `outline-none!` — would still beat this; `focusFallback.test.ts` asserts
+ *     none exists in `src/`.)
+ *   - BARE `[tabindex]`, not `[tabindex]:not([tabindex='-1'])`: a roving-
+ *     tabindex row, a menu item or a heading focused programmatically is
+ *     exactly where a keyboard user is, and it carries `tabindex="-1"`.
+ *   - `[data-highlighted]` on menu rows and options, as the audit asked: it is
+ *     the row Radix treats as current, and ringing a hovered row costs nothing
+ *     to a user who asked the OS for more signal.
+ *   - INSET (`-2px`) for rows, regions and separators: they sit inside a
+ *     scroller or flush against a window edge, where an outset ring is clipped.
+ *   - `Highlight` in forced colours: a non-system colour there is replaced, so
+ *     the ring names the user's own focus colour explicitly.
+ *   - No `border-radius` here: the old block wrote `border-radius: inherit`,
+ *     which re-shaped the focused control to its PARENT's radius.
+ */
+@media (prefers-contrast: more), (forced-colors: active) {
+  :is(
+      a,
+      button,
+      input,
+      textarea,
+      select,
+      summary,
+      [contenteditable],
+      [role='button'],
+      [role='menuitem'],
+      [role='menuitemcheckbox'],
+      [role='menuitemradio'],
+      [role='option'],
+      [role='tab'],
+      [role='log'],
+      [role='region'],
+      [role='separator'],
+      [tabindex]
+    ):focus-visible,
+  [role='menuitem'][data-highlighted],
+  [role='menuitemcheckbox'][data-highlighted],
+  [role='menuitemradio'][data-highlighted],
+  [role='option'][data-highlighted] {
+    outline: 2px solid var(--ring) !important;
+    outline-offset: 2px !important;
+  }
+
+  :is(
+      [role='menuitem'],
+      [role='menuitemcheckbox'],
+      [role='menuitemradio'],
+      [role='option'],
+      [role='log'],
+      [role='region'],
+      [role='tabpanel'],
+      [role='separator']
+    ):is(:focus-visible, [data-highlighted]) {
+    outline-offset: -2px !important;
+  }
+
+  /* A Radix tab trigger's default focus mark is a ring drawn on `::before`
+     (see the tab rules above). This block gives the trigger the OS ring as an
+     outline instead, so the pseudo ring stands down: one ring, not two. */
+  [role='tab'][data-orientation]:focus-visible::before {
+    content: none;
+  }
+}
+
+/* FORCED COLOURS: the shapes that were only ever painted (live QA round 2,
+   Q2-11 and Q2-48). Forced colours replace every background colour with
+   Canvas, so anything whose SHAPE or STATE was a fill disappears: the checked
+   radio's dot, the selected tab's bar, a filled button's box, the tooltip's
+   box, a menu separator. Each is given back here in a system colour — a system
+   colour is kept as written, and `forced-color-adjust: none` is set where the
+   UA would otherwise still repaint a fill. Measured in Chromium's forced-colours
+   emulation by the round-2 critics (a11y P2-3/P2-16, erin R2-2/P2-17). */
+@media (forced-colors: active) {
+  :focus-visible,
+  [role='menuitem'][data-highlighted],
+  [role='menuitemcheckbox'][data-highlighted],
+  [role='menuitemradio'][data-highlighted],
+  [role='option'][data-highlighted] {
+    outline-color: Highlight !important;
+  }
+
+  /* Radios: both options rendered as two identical empty circles, because the
+     dot is a background colour and the ring's border was forced to one value in
+     both states. The ring is drawn in system colours by hand — CanvasText at
+     rest, Highlight when checked, GrayText when disabled — and the dot is a
+     Highlight fill the UA may not repaint. Focus is the Highlight ring the
+     user chose, like every other control. */
+  [data-radio-ring] {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
+
+  input[type='radio']:checked ~ [data-radio-ring] {
+    border-color: Highlight;
+  }
+
+  input[type='radio']:disabled ~ [data-radio-ring] {
+    border-color: GrayText;
+  }
+
+  input[type='radio']:focus-visible ~ [data-radio-ring] {
+    outline-color: Highlight;
+  }
+
+  [data-radio-dot] {
+    forced-color-adjust: none;
+    background-color: Highlight;
+  }
+
+  input[type='radio']:disabled ~ [data-radio-dot] {
+    background-color: GrayText;
+  }
+
+  /* The selected tab was a 2px notch in the tablist's rule: its accent bar is
+     a background colour, repainted as Canvas over the black line. `.br-tab`
+     owns its `::after` (the drag hairline), so it is left alone. */
+  [role='tab'][data-state='active']:not(.br-tab)::after {
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
+
+  /* A filled button's box is its fill, so Save, Done and every destructive
+     action rendered as plain text while Cancel — which has a border — kept its
+     shape. Every button gets the system button edge. */
+  [data-slot='button'] {
+    border: 1px solid ButtonText;
+  }
+
+  /* …except a LINK-style button, which has no box to give back (QA Q3-59).
+     Its call sites write `h-auto p-0` so it sits in a line of text, and the
+     edge above then ran straight through its glyphs: the privacy popover's
+     "Make my connection public…" and "Privacy…" lost their first and last
+     letters. So it is drawn the way forced colours draw a link — LinkText,
+     underlined, no border — and its focus stays the Highlight outline every
+     control gets from the blocks above, 2px outside the text.
+
+     The hook is the link variant's own class token: `Button` writes no
+     variant attribute, and `underline-offset-4` appears in the link variant
+     and in no other (`focusFallback.test.ts` pins both). */
+  [data-slot='button'][class~='underline-offset-4'] {
+    border: 0 none;
+    color: LinkText;
+    text-decoration-line: underline;
+  }
+
+  [data-slot='button'][class~='underline-offset-4']:disabled {
+    color: GrayText;
+  }
+
+  /* A tooltip is an inverse fill with no border: its text floated over the
+     page. */
+  [data-slot='tooltip-content'] {
+    border: 1px solid CanvasText;
+  }
+
+  /* Menu and panel separators are 1px FILLS, not borders, so they vanished. */
+  :is(
+      [data-slot='dropdown-menu-separator'],
+      [data-slot='context-menu-separator'],
+      [data-slot='separator-root'],
+      [data-slot='sidebar-separator']
+    ) {
+    background-color: CanvasText;
+    forced-color-adjust: none;
+  }
 }

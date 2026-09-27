@@ -1,7 +1,7 @@
 # Common problems and fixes
 
 > **What this is.** A reference of the problems users hit most often with biorouter, each with the symptom, the cause where it is known, and the fix. Roughly twenty independent entries, grouped by the part of the system they affect.
-> **Status:** Current — with one exception noted in place: the stack trace under [API errors](#api-errors) predates the Rust rewrite and cannot be produced by the current binary.
+> **Status:** Current, with one exception noted in place: the stack trace under [API errors](#api-errors) comes from an older Python agent and cannot be produced by Biorouter.
 > **Audience:** end users
 
 biorouter, like any system, may run into occasional issues. Use the contents below to jump to the entry that matches your symptom; entries are independent, so you do not need to read the page in order. If nothing here matches, generate a diagnostics bundle and open an issue — see [Getting further help](#getting-further-help).
@@ -116,11 +116,11 @@ You may run into an error like the one below when there are issues with your LLM
 
 ```text
 Traceback (most recent call last):
-  File "/Users/admin/.local/pipx/venvs/biorouter-ai/lib/python3.13/site-packages/exchange/providers/utils.py",
+  File "/Users/admin/.local/pipx/venvs/example-agent/lib/python3.13/site-packages/exchange/providers/utils.py",
 line 30, in raise_for_status
     response.raise_for_status()
     ~~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/admin/.local/pipx/venvs/biorouter-ai/lib/python3.13/site-packages/httpx/_models.py",
+  File "/Users/admin/.local/pipx/venvs/example-agent/lib/python3.13/site-packages/httpx/_models.py",
 line 829, in raise_for_status
     raise HTTPStatusError(message, request=request, response=self)
 httpx.HTTPStatusError: Client error '404 Not Found' for url
@@ -129,7 +129,7 @@ httpx.HTTPStatusError: Client error '404 Not Found' for url
 ...
 ```
 
-> **Warning.** This Python traceback is inherited from the pre-Rust release of biorouter, which shipped as a pipx package. The current binary is Rust and cannot emit a `pipx`/`httpx` trace, so do not try to match your error against it — the surrounding advice still applies to the equivalent Rust-side credential and credit errors.
+> **Warning.** This Python traceback is an old example from a Python agent installed with pipx, not output from Biorouter. Biorouter is a Rust program and cannot emit a `pipx`/`httpx` trace, so do not try to match your error against it. The surrounding advice still applies to the equivalent credential and credit errors in Biorouter.
 
 This error typically occurs when LLM API credits are exhausted or your API key is invalid. To resolve this issue:
 

@@ -16,7 +16,7 @@ index lives in [the improvement proposals register](../../history/agent-loop-rev
 
 Cline recently refactored into a monorepo whose runtime lives in `sdk/packages/core`, shared
 by the VS Code app, the `cline` CLI and the standalone SDK; citations point at that tree
-where possible. The comparison target throughout is BioRouter's Goose-fork agent. All claims
+where possible. The comparison target throughout is BioRouter's agent. All claims
 are cited; where docs were thin the source was fetched via `gh api repos/cline/cline`.
 
 ## System prompt and context injection

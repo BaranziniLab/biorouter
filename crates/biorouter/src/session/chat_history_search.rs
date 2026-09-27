@@ -333,6 +333,7 @@ impl<'a> ChatHistorySearch<'a> {
         if let Some((clause, _)) = self.affiliation_clause() {
             sql.push_str(&clause);
         }
+        sql.push_str(" AND s.id NOT IN (SELECT value FROM json_each(?))");
         sql.push_str(&format!(" ORDER BY {authored} DESC LIMIT ?"));
 
         let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql);
@@ -348,6 +349,8 @@ impl<'a> ChatHistorySearch<'a> {
         if let Some((_, Some(institution))) = self.affiliation_clause() {
             query_builder = query_builder.bind(institution);
         }
+        let crew_ids = crate::crew::manager()?.scoped_session_ids().await;
+        query_builder = query_builder.bind(serde_json::to_string(&crew_ids)?);
         query_builder = query_builder.bind(self.limit as i64);
 
         Ok(query_builder.fetch_all(self.pool).await?)
@@ -446,6 +449,7 @@ impl<'a> ChatHistorySearch<'a> {
             sql.push_str(&clause);
         }
 
+        sql.push_str(" AND s.id NOT IN (SELECT value FROM json_each(?))");
         sql.push_str(" ORDER BY bm25(messages_fts) ASC LIMIT ?");
 
         let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql).bind(match_expr);
@@ -471,6 +475,8 @@ impl<'a> ChatHistorySearch<'a> {
         if let Some((_, Some(institution))) = self.affiliation_clause() {
             query_builder = query_builder.bind(institution);
         }
+        let crew_ids = crate::crew::manager()?.scoped_session_ids().await;
+        query_builder = query_builder.bind(serde_json::to_string(&crew_ids)?);
         query_builder = query_builder.bind(self.limit as i64);
 
         Ok(query_builder.fetch_all(self.pool).await?)
@@ -505,6 +511,8 @@ impl<'a> ChatHistorySearch<'a> {
             query_builder = query_builder.bind(institution);
         }
 
+        let crew_ids = crate::crew::manager()?.scoped_session_ids().await;
+        query_builder = query_builder.bind(serde_json::to_string(&crew_ids)?);
         query_builder = query_builder.bind(self.limit as i64);
 
         Ok(query_builder.fetch_all(self.pool).await?)
@@ -597,6 +605,7 @@ impl<'a> ChatHistorySearch<'a> {
             sql.push_str(&clause);
         }
 
+        sql.push_str(" AND s.id NOT IN (SELECT value FROM json_each(?))");
         sql.push_str(" ORDER BY COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) DESC LIMIT ?");
 
         sql

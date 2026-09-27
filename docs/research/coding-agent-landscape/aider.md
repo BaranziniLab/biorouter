@@ -242,6 +242,6 @@ claim above carries an inline citation.
 
 - [Claude Code report](claude-code.md) — the reference design this corpus benchmarks against, and the contrast case for Aider's minimalism.
 - [Gemini CLI report](gemini-cli.md) — the deepest report in this folder, useful when a dimension here is covered in a single paragraph.
-- [Goose report](goose.md) — upstream Goose, the project BioRouter forked from, reviewed on the same ten dimensions.
+- [Goose report](goose.md) — Goose, the agent whose design influenced BioRouter most, reviewed on the same ten dimensions.
 - [Execution and verification comparison](../../history/agent-loop-review/competitive-comparison/execution-and-verification.md) — the head-to-head chapter where Aider's lint/test reflection loop is scored against the other agents.
 - [Improvement proposals register](../../history/agent-loop-review/improvement-proposals.md) — the `BR-NN` index, including BR-1 (repo map) and BR-47 (post-edit reflection).

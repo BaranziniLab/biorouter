@@ -1,6 +1,6 @@
 # Competitive comparison chapters
 
-This folder holds the four comparison chapters of the 2026-07 agentic-loop review: BioRouter's agent loop measured against nine other open-source coding agents — Goose upstream, Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI and Claude Code. All four chapters were written on 2026-07-12 and are kept for the record, not as current guidance.
+This folder holds the four comparison chapters of the 2026-07 agentic-loop review: BioRouter's agent loop measured against nine other open-source coding agents — Goose, Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI and Claude Code. All four chapters were written on 2026-07-12 and are kept for the record, not as current guidance.
 
 The review did happen, and its findings became the `BR-1`…`BR-67` fix campaign, which has since been implemented and merged — so every chapter here is marked **Superseded**: the BioRouter column no longer describes the system. The nine competitor columns remain a 2026-07 snapshot and have not been re-verified since. For what actually shipped, and therefore the current truth, read [the agent-loop campaign outcome report](../../agent-loop-campaign/outcome-report.md) and the per-wave reports it links.
 

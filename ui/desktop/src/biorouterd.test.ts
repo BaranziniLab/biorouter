@@ -72,10 +72,14 @@ describe('startBiorouterd logging', () => {
   const serverSecret = 'server-secret-sentinel';
   const userActionKeyForTest = 'user-action-key-sentinel';
   const previousInheritedValue = process.env[inheritedKey];
+  const previousSharedDaemon = process.env.BIOROUTER_SHARED_DAEMON;
   let stdinWrites: string[] = [];
   let stdinEnded = false;
 
   beforeEach(() => {
+    // These tests exercise the historical per-window spawn contract. The
+    // default shared-daemon path has its own approval-key regressions.
+    process.env.BIOROUTER_SHARED_DAEMON = '0';
     process.env[inheritedKey] = inheritedValue;
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
@@ -127,7 +131,7 @@ describe('startBiorouterd logging', () => {
         env: Record<string, string>;
       },
     };
-    expect(spawnArgs.options.stdio[0]).toBe('pipe'); // was 'ignore'
+    expect(spawnArgs.options.stdio).toEqual(['pipe', 'pipe', 'pipe']); // legacy captures output
     expect(spawnArgs.args).toEqual(['agent']); // not on argv either
     const env = spawnArgs.options.env;
     // SD-12 added ONE user-action-shaped variable, and it is not a secret: it is
@@ -175,6 +179,8 @@ describe('startBiorouterd logging', () => {
     } else {
       process.env[inheritedKey] = previousInheritedValue;
     }
+    if (previousSharedDaemon === undefined) delete process.env.BIOROUTER_SHARED_DAEMON;
+    else process.env.BIOROUTER_SHARED_DAEMON = previousSharedDaemon;
   });
 
   it('passes environment values to the child without writing them to logs', async () => {

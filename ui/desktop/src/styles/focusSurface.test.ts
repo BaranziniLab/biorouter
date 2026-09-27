@@ -99,7 +99,13 @@ describe('the focus surface', () => {
     expect(accent).not.toContain('--background-focus');
   });
 
-  /** Focus is a surface shift. The ring belongs to the `prefers-contrast` block. */
+  /**
+   * Focus is a surface shift plus an INSET edge. The ring belongs to the
+   * `prefers-contrast` block, and an outset shadow would be a ring by another
+   * name — so every shadow layer here is `inset`, or the pass-through of the
+   * control's own `--tw-shadow` (live QA 2026-09-24, T-16: the fill alone
+   * measured 1.23–1.44:1; `focusFallback.test.ts` pins the edge itself).
+   */
   it('never draws a ring', () => {
     for (const selector of [
       '.biorouter-focus-surface:focus-visible',
@@ -107,7 +113,18 @@ describe('the focus surface', () => {
     ]) {
       const body = ruleBody(selector);
       expect(body).toContain('outline: none');
-      expect(body).not.toMatch(/box-shadow|outline:\s*\d/);
+      expect(body).not.toMatch(/outline:\s*\d/);
+    }
+    for (const selector of [
+      '.biorouter-focus-surface:not(input, textarea, select):focus-visible',
+      '.biorouter-focus-surface-accent:focus-visible',
+    ]) {
+      const shadow = ruleBody(selector).match(/box-shadow:([^;]*);/)?.[1] ?? '';
+      expect(shadow, selector).toMatch(/inset 0 0 0 2px/);
+      const layers = shadow.split(/,(?![^(]*\))/).map((layer) => layer.trim());
+      for (const layer of layers) {
+        expect(layer.startsWith('inset ') || layer.startsWith('var(--tw-shadow'), layer).toBe(true);
+      }
     }
   });
 

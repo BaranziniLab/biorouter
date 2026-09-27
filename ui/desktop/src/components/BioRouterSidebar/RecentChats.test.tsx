@@ -128,6 +128,17 @@ describe('formatTimeSinceLastWorked', () => {
   });
 });
 
+/**
+ * A keyboard user arriving on a row. The shared tooltip opens on focus only when
+ * the Tab key moved it (Q2-56) — a focus a program restores opens nothing — so
+ * the summary is reached the way a person reaches it: Tab down, focus, Tab up.
+ */
+function focusWithTab(element: HTMLElement) {
+  fireEvent.keyDown(document.body, { key: 'Tab' });
+  fireEvent.focus(element);
+  fireEvent.keyUp(document.body, { key: 'Tab' });
+}
+
 describe('RecentChats', () => {
   it('opens individual chats, marks an ongoing chat, and exposes a compact summary on focus', async () => {
     const onOpen = vi.fn();
@@ -169,7 +180,7 @@ describe('RecentChats', () => {
     fireEvent.doubleClick(currentChat);
     expect(onOpen.mock.calls.every((call) => call[0] === 'session-0')).toBe(true);
 
-    fireEvent.focus(currentChat);
+    focusWithTab(currentChat);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
     expect(summary).toHaveTextContent('Chat 0');
     expect(summary).toHaveTextContent('/workspace/project-0');
@@ -200,7 +211,7 @@ describe('RecentChats', () => {
     expect(row).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-hidden');
     expect(title).toHaveClass('min-w-0', 'flex-1', 'truncate');
 
-    fireEvent.focus(row);
+    focusWithTab(row);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
     expect(summary).toHaveTextContent(longTitle);
   });

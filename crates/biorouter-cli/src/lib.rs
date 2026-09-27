@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod commands;
+pub mod daemon_client;
 pub mod logging;
 pub mod project_tracker;
 pub mod scenario_tests;

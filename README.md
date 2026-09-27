@@ -103,7 +103,19 @@ Biorouter uses a shared Rust agent core, an Electron and React desktop app, and 
 
 Developed by **Wanjun Gu** at UCSF's [Baranzini Lab](https://baranzinilab.ucsf.edu/), with support from UCSF IT and Information Commons.
 
-Biorouter is a fork of Block's [Goose](https://github.com/block/goose), licensed under [Apache 2.0](LICENSE). It builds on open-source projects including [Open Computer Use](https://github.com/iFurySt/open-codex-computer-use), [llama.cpp](https://github.com/ggml-org/llama.cpp), and the visualization libraries listed in [NOTICE](NOTICE). See [acceptable use](ACCEPTABLE_USAGE.md) and [project governance](GOVERNANCE.md).
+Biorouter is an independent project, licensed under [Apache 2.0](LICENSE). It is not a fork of Goose. It started from its own source code, written with reference to many open source libraries. Its design was inspired by the agents below, and Block's Goose was a major influence.
+
+- [Goose](https://github.com/block/goose) (Block): a command line and desktop agent for developer workflows.
+- [Claude Code](https://github.com/anthropics/claude-code) (Anthropic): a coding agent for the terminal and the IDE.
+- [Codex CLI](https://github.com/openai/codex) (OpenAI): an open source coding agent that runs in the terminal.
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (Google): an open source AI agent for the terminal.
+- [OpenHands](https://github.com/OpenHands/OpenHands): an open source platform for software development agents.
+- [Aider](https://aider.chat/): an open source coding agent for the terminal that works with Git.
+- [Cline](https://github.com/cline/cline): an open source coding agent for the code editor and the terminal.
+- [OpenCode](https://opencode.ai/): an open source coding agent that supports multiple sessions and providers.
+- [ForgeCode](https://forgecode.dev/): a terminal coding assistant for planning tasks and generating code.
+
+Biorouter's packages also include components from other open source projects, among them [Open Computer Use](https://github.com/iFurySt/open-codex-computer-use), [llama.cpp](https://github.com/ggml-org/llama.cpp), and the visualization libraries listed in [NOTICE](NOTICE). See [acceptable use](ACCEPTABLE_USAGE.md) and [project governance](GOVERNANCE.md).
 
 If you use Biorouter in your research, please cite:
 

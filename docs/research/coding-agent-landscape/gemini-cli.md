@@ -15,13 +15,13 @@
 index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
 Gemini CLI is a TypeScript/Node monorepo — `packages/core` is the agent engine,
-`packages/cli` the Ink/React terminal UI. BioRouter is a Rust Goose fork, so Gemini CLI is an
-*independent* architecture with no shared lineage: the cleanest "how would a from-scratch
-competitor solve the same loop problems" reference in this corpus. Several of its subsystems
-— the layered `LoopDetectionService`, the declarative TOML policy engine, shadow-git
-checkpointing and rewind, and an unusually deep hooks surface — are more mature than their
-counterparts in the Goose base BioRouter inherited. That cross-project judgement is developed
-properly in the
+`packages/cli` the Ink/React terminal UI. BioRouter is a Rust agent whose design drew heavily
+on Goose, while Gemini CLI is an *independent* TypeScript architecture: the cleanest "how would
+a from-scratch competitor solve the same loop problems" reference in this corpus. Several of its
+subsystems were more mature than their counterparts in Goose and in BioRouter at the time of
+this report: the layered `LoopDetectionService`, the declarative TOML policy engine, shadow-git
+checkpointing and rewind, and an unusually deep hooks surface. That cross-project
+judgement is developed properly in the
 [competitive comparison chapters](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md);
 this report records the mechanics.
 
@@ -292,8 +292,8 @@ self-verification as a hook/skill responsibility rather than a built-in agent be
 
 6. **Native `write_todos` with a live pinned indicator.** A first-class, agent-authored todo
    tool (one `in_progress`, five states, rendered above the prompt) gives users legible progress
-   on long multi-step tasks. Goose (and thus BioRouter) has no equivalent; it is a small, high-
-   UX-leverage addition, especially paired with plan mode.
+   on long multi-step tasks. Neither Goose nor BioRouter had an equivalent at the time of this
+   report; it is a small addition with a large payoff for users, especially paired with plan mode.
 
 ## Sources
 
@@ -322,7 +322,7 @@ with the defining file named at each mention.
 
 ## Related documentation
 
-- [Goose report](goose.md) — upstream Goose, whose `RepetitionInspector` and missing checkpoint story this report is measured against.
+- [Goose report](goose.md) — Goose, whose `RepetitionInspector` and missing checkpoint story this report is measured against.
 - [Cline report](cline.md) — the other shadow-git checkpointing design in this corpus, with a different restore-axis split.
 - [Codex CLI report](codex-cli.md) — the other declarative command-policy engine, for comparison against the TOML tiers here.
 - [Safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md) — where the cross-project maturity judgements in this report are argued in full.

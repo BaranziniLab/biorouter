@@ -1,0 +1,484 @@
+/* Crew onboarding — first run, joining, hosting, the join states, the trust
+   and "not set up" panes and the empty states outside a channel.
+
+   Bound by the contract in `crew/crew-app.css` (enforced by
+   `crew/crewCss.sourceGuard.test.ts`): only `.crew-*` classes and data/aria
+   hooks, tokens only, and every animated rule restates its rest under
+   reduced motion. Type roles and ink stay Tailwind utilities that already
+   exist in the app (`text-subheading`, `text-text-muted`, …); the geometry a
+   layout depends on is authored here, because a newly written utility can
+   silently never generate under `BIOROUTER_NO_HMR`. */
+
+/* A main-area screen: one setup card or empty state, centred in the channel
+   column, scrolling on its own when the window is short. */
+.crew-onboard-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 100%;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+/* A card that grows while it is read (the join states: "Having trouble
+   joining?" opens under the code) sits at the top of the column, so it
+   grows downward and the code stays under the pointer (Q3-48). Centred, it
+   moved up by half of every section that opened. The top inset keeps it
+   off the channel header without re-centring it. */
+.crew-onboard-screen[data-anchor='top'] {
+  justify-content: flex-start;
+  padding-top: 48px;
+}
+
+/* The setup card: a form-width column on the card ground, one step up from
+   the canvas. */
+.crew-onboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--dialog-md);
+  margin-inline: auto;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-card);
+}
+
+.crew-onboard-card[data-tone='danger'] {
+  border-color: var(--border-danger);
+}
+
+.crew-onboard-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.crew-onboard-card-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+  color: var(--text-muted);
+}
+
+.crew-onboard-card[data-tone='danger'] .crew-onboard-card-icon {
+  background-color: var(--wash-danger);
+  color: var(--text-danger);
+}
+
+.crew-onboard-card[data-tone='danger'] .crew-onboard-title {
+  color: var(--text-danger);
+}
+
+/* A focus hold (`useFocusHold`): the connecting card's title, or whatever else
+   states a wait, holds keyboard focus while the Connect that started it is gone
+   (Q4-09), so a key pressed then starts from there, not from the top of the
+   page. It is only a place to stand (`tabindex="-1"`, never a Tab stop), so it
+   draws no ring: nothing here can be activated. */
+.crew-onboard-focus-hold:focus,
+.crew-onboard-focus-hold:focus-visible {
+  outline: none;
+}
+
+/* The offline screen's Connect with, under it after a failed attempt, when it
+   last tried and why (Q4-07): one centred column inside the empty state's
+   action row, as wide as its description. */
+.crew-onboard-offline-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 384px;
+  min-width: 0;
+}
+
+.crew-onboard-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-onboard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.crew-onboard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* A field's label, and "Required" beside it (outside the label, so the
+   control's accessible name stays the label's words). */
+.crew-onboard-label-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+/* The Join and Host dialogs' form: the same 12px under the header hairline
+   and above the footer's that every other Biorouter dialog keeps, so the
+   first label never touches the divider (T-43). */
+.crew-onboard-dialog-form {
+  padding-block: 12px;
+}
+
+/* A placeholder is an example, never a value (T-42, T-43): body weight in
+   the body face, even in a monospace box, so "e.g. lab" can't be mistaken
+   for something already typed. */
+.crew-onboard-form ::placeholder {
+  font-family: var(--font-sans);
+  font-weight: var(--text-body--font-weight);
+}
+
+.crew-onboard-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-onboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The Join dialog's invitation box and the Host dialog's paste box: at least
+   four lines, growing with what is in them up to a height where they scroll
+   inside themselves. They size themselves, so they offer no native resize grip
+   (Q2-30): a grip on a field that already grows is a second, competing size.
+   14px is the padding and border (`py-1.5`, a 1px border). */
+.crew-onboard-textarea {
+  field-sizing: content;
+  min-height: calc(4lh + 14px);
+  max-height: calc(12lh + 14px);
+  resize: none;
+}
+
+/* A focused text field in the Join or Host dialog firms its edge to the
+   accent, as it does inside the Crew area (`crew-app.css`, T-16). Both portal
+   to <body>, outside `.crew-app`, so that rule never reached them and a
+   keyboard user saw no change at all (Q2-25); they carry `crew-dialog`
+   themselves, because `CrewDialogs` (which gives its dialogs the class) does
+   not mount them. `:read-write` is exactly the editable fields, and an invalid
+   field keeps its danger edge. */
+.crew-dialog :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}
+
+/* "Start it for me" while it runs: it keeps focus and says it is busy with
+   `aria-disabled` rather than `disabled`, which would drop focus to the page. */
+.crew-onboard-waiting[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* What the start commands print, as it arrives (D-HOST): a terminal-like box
+   that keeps its lines and scrolls inside itself, newest at the bottom. */
+.crew-onboard-output {
+  max-height: calc(10lh + 16px);
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The invitation box once the daemon read it: "✓ Invitation read · Edit",
+   in the box's place, instead of the base64 wall. */
+.crew-onboard-invitation-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-card);
+}
+
+/* "Found lab on hpc.ucsf.edu ✓" under the Start step's paste. */
+.crew-onboard-found {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The start commands: one command per line, scrolling sideways instead of
+   wrapping mid-flag (T-42). The copy field's own rule wraps every value so a
+   long token never pushes Copy out; here the box scrolls instead. */
+.crew-onboard-command[data-slot='copy-field'][data-multiline='true'] > :first-child {
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+/* The invitation summary inside the Join dialog. */
+.crew-onboard-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-card);
+}
+
+/* The invitation's privacy as ONE chip, `🔒 Private · UCSF` (Q4-28): the
+   institution inside the badge's own fill, exactly as Settings → Privacy and
+   the sidebar draw it (`.crew-settings-privacy-badge`). The inner
+   `PrivacyBadge` keeps its geometry and fill (the same token), so the two read
+   as one pill; this box supplies the fill under the institution and the end
+   inset. Security state: never animated. */
+.crew-onboard-privacy-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-onboard-privacy-chip-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* "Waiting for Alice to let you in…" beside a still clock (Q4-46): a wait on a
+   person, which can take hours, never a bar that sweeps as if the computer
+   were working. Nothing here animates. */
+.crew-onboard-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crew-onboard-wait-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.crew-onboard-radios {
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+/* The host dialog's stepper, one numbered row in the header (T-42):
+   1 Name — 2 Start — 3 Create. Done steps carry a tick, the current one the
+   accent. */
+.crew-onboard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.crew-onboard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crew-onboard-step:not(:first-child)::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 1px;
+  margin-inline-end: 2px;
+  background-color: var(--border-emphasized);
+}
+
+.crew-onboard-step-number {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-emphasized);
+  border-radius: var(--radius-full);
+  font-variant-numeric: tabular-nums;
+}
+
+.crew-onboard-step[data-state='current'] {
+  color: var(--text-default);
+  font-weight: var(--text-label--font-weight);
+}
+
+.crew-onboard-step[data-state='current'] .crew-onboard-step-number {
+  border-color: var(--border-accent);
+  background-color: var(--background-accent);
+  color: var(--text-on-accent);
+}
+
+.crew-onboard-step[data-state='done'] .crew-onboard-step-number {
+  border-color: transparent;
+  background-color: var(--wash-success);
+  color: var(--text-success);
+}
+
+.crew-onboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-inline-start: 20px;
+  list-style: decimal;
+}
+
+/* The setup checklist: one row per step, a tick when it is done. */
+.crew-onboard-checklist {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew-onboard-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 40px;
+  padding-block: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-onboard-check-row:first-child {
+  border-top: 0;
+}
+
+.crew-onboard-check-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-emphasized);
+  border-radius: var(--radius-full);
+  color: var(--text-success);
+}
+
+.crew-onboard-check-row[data-done='true'] .crew-onboard-check-mark {
+  border-color: transparent;
+  background-color: var(--wash-success);
+}
+
+.crew-onboard-check-text {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.crew-onboard-check-row[data-done='true'] .crew-onboard-check-text {
+  color: var(--text-muted);
+}
+
+/* A step's buttons, kept together when the row wraps (the name row has two:
+   Use and Edit…, Q3-51). */
+.crew-onboard-check-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The compact invite line a channel keeps while the host is still alone in
+   the workspace (SetupChecklist compact, T-22). It closes the channel intro,
+   set 8px apart from the lines above it the way the intro's Add people is. */
+.crew-onboard-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.crew-onboard-nudge-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* The embedded terminal (InAppTerminalDock). The dock sizes itself for a chat
+   pane and reserves 200px of its parent for a transcript that does not exist
+   here, so the mount box is that much taller and the outer box clips the
+   difference — the accommodation `onboarding/codingAgentControls.tsx` makes. */
+.crew-onboard-terminal {
+  height: 240px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background-color: var(--background-muted);
+}
+
+.crew-onboard-terminal-mount {
+  height: 440px;
+}
+
+/* The one spinner: a 700ms linear turn; a still arc under reduced motion. */
+.crew-onboard-spinner {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-emphasized);
+  border-top-color: var(--text-muted);
+  border-radius: var(--radius-full);
+  animation: crew-onboard-spin 700ms linear infinite;
+}
+
+@keyframes crew-onboard-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-onboard-spinner {
+    animation: none;
+  }
+}

@@ -142,3 +142,5 @@ pub use subagent_task_config::TaskConfig;
 pub use turn_abort::{exit, TurnAbortCode};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};
 pub use vault_refs::VaultRefs;
+
+pub mod crew_extension;

@@ -1,7 +1,13 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { MODAL_SIZE, ModalShell, type ModalPurpose } from './ModalShell';
+import {
+  MODAL_ANCHOR_TOP_STYLE,
+  MODAL_SIZE,
+  ModalShell,
+  ModalShellDefaultsContext,
+  type ModalPurpose,
+} from './ModalShell';
 
 afterEach(cleanup);
 
@@ -133,5 +139,123 @@ describe('ModalShell — the description contract', () => {
     // and it is what Radix warns about.
     expect(surface().hasAttribute('aria-describedby')).toBe(false);
     expect(warned()).toBe(false);
+  });
+
+  // QA Q2-28: a dialog whose body is only a message was announced by its title alone.
+  it('names a message body as the description when asked, without a warning', () => {
+    render(
+      <ModalShell open onOpenChange={vi.fn()} title="Add people to #general" describedBy="note-1">
+        <p id="note-1">Everyone in Analysis Lab is already here.</p>
+      </ModalShell>
+    );
+    expect(surface()).toHaveAttribute('aria-describedby', 'note-1');
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(
+      'Everyone in Analysis Lab is already here.'
+    );
+    expect(warned()).toBe(false);
+  });
+
+  it('keeps the subtitle as the description when both are given', () => {
+    open({ subtitle: 'in Analysis Lab', describedBy: 'note-1' });
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription('in Analysis Lab');
+  });
+});
+
+describe('ModalShell — defaults an area gives its dialogs', () => {
+  const header = () => surface().firstElementChild as HTMLElement;
+
+  // QA Q2-25: a dialog portals outside the area that mounts it, so the area's stylesheet reaches
+  // it only through a class on the dialog itself.
+  it('adds the area’s class to the content, beside the shell’s own', () => {
+    render(
+      <ModalShellDefaultsContext.Provider value={{ className: 'crew-dialog' }}>
+        <ModalShell open onOpenChange={vi.fn()} title="Inside Crew" className="extra" />
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).toHaveClass('crew-dialog', 'extra');
+  });
+
+  // QA Q2-26: one header rule for every dialog of an area, not only the scrolling ones.
+  it('draws the header hairline from a default, a prop winning, and gives the body its gutter', () => {
+    render(
+      <ModalShellDefaultsContext.Provider value={{ headerRule: true }}>
+        <ModalShell open onOpenChange={vi.fn()} title="Inside Crew">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(header()).toHaveClass('border-b', 'border-border-subtle');
+    expect(screen.getByText('body').parentElement).toHaveClass('pt-3');
+    cleanup();
+
+    render(
+      <ModalShellDefaultsContext.Provider value={{ headerRule: true }}>
+        <ModalShell open onOpenChange={vi.fn()} title="Its own choice" headerRule={false} />
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(header()).not.toHaveClass('border-b');
+    cleanup();
+
+    open();
+    expect(header()).not.toHaveClass('border-b');
+  });
+});
+
+/**
+ * The anchor axis (QA T-30). The primitive centres a dialog with `top: 50%` and a -50% Y translate,
+ * so a dialog whose height changes while it is open re-centres and jumps under the pointer. `top`
+ * pins the top edge instead. The default stays `center`, so no caller outside Crew moves.
+ *
+ * jsdom drops `max()` from an inline `top`, so the geometry is asserted on the one exported style
+ * (what a real browser receives) and the rendered surface is asserted by its marker and translate.
+ */
+describe('ModalShell — the anchor axis', () => {
+  it('stays centred by default, with no inline geometry', () => {
+    open();
+    expect(surface()).not.toHaveAttribute('data-anchor');
+    expect(surface().getAttribute('style') ?? '').not.toContain('translate');
+    expect(surface()).toHaveClass('top-[50%]', 'translate-y-[-50%]');
+  });
+
+  it('pins the top edge and drops the Y translate for `top`', () => {
+    open({ anchor: 'top' });
+    expect(surface()).toHaveAttribute('data-anchor', 'top');
+    expect((surface() as HTMLElement).style.getPropertyValue('translate')).toBe('-50% 0');
+    expect(MODAL_ANCHOR_TOP_STYLE).toEqual({
+      top: 'max(10vh, 48px)',
+      translate: '-50% 0',
+      maxHeight: 'min(85vh, calc(100vh - max(10vh, 48px) - 16px))',
+    });
+  });
+
+  it('takes the anchor and close handler from a surrounding default, a prop winning', async () => {
+    const user = userEvent.setup();
+    const onCloseAutoFocus = vi.fn((event: Event) => event.preventDefault());
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top', onCloseAutoFocus }}>
+        <ModalShell open onOpenChange={onOpenChange} title="Inside Crew">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).toHaveAttribute('data-anchor', 'top');
+    await user.keyboard('{Escape}');
+    rerender(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top', onCloseAutoFocus }}>
+        <ModalShell open={false} onOpenChange={onOpenChange} title="Inside Crew">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    await vi.waitFor(() => expect(onCloseAutoFocus).toHaveBeenCalled());
+    cleanup();
+
+    render(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'top' }}>
+        <ModalShell open onOpenChange={vi.fn()} anchor="center" title="Its own choice" />
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).not.toHaveAttribute('data-anchor');
   });
 });

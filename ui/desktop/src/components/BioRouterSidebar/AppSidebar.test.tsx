@@ -1,11 +1,18 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../../api';
 import { ChatProvider } from '../../contexts/ChatContext';
 import type { ChatType } from '../../types/chat';
-import { SidebarProvider } from '../ui/sidebar';
+import {
+  SIDEBAR_OVERLAY_BODY_CLASS,
+  Sidebar,
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from '../ui/sidebar';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
@@ -378,5 +385,99 @@ describe('clicking the sidebar item you are already on', () => {
     } finally {
       window.removeEventListener(SAME_ROUTE_RESET_EVENT, listener);
     }
+  });
+});
+
+/**
+ * The real rail in the overlay a narrow window gets, driven by the keyboard the way Erin drove
+ * it in live QA round 4. The toggle sits before the panel, as the titlebar's does.
+ */
+function OverlayHarness() {
+  const location = useLocation();
+  const [chat, setChat] = useState<ChatType>({
+    sessionId: 'previous-session',
+    name: 'Existing chat',
+    messages: [],
+    workflow: null,
+  });
+
+  return (
+    <ChatProvider chat={chat} setChat={setChat}>
+      <SidebarProvider defaultOpen={false}>
+        <SidebarTrigger />
+        <Sidebar variant="inset" collapsible="offcanvas">
+          <AppSidebar currentPath={location.pathname} onSelectSession={vi.fn()} />
+        </Sidebar>
+        <SidebarInset>
+          <main>
+            <p>{`Page ${location.pathname}`}</p>
+          </main>
+        </SidebarInset>
+      </SidebarProvider>
+    </ChatProvider>
+  );
+}
+
+describe('AppSidebar in the overlay, by keyboard', () => {
+  beforeEach(() => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+  const sidebarState = () =>
+    document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state');
+
+  const openOverlayFromToggle = async (user: ReturnType<typeof userEvent.setup>) => {
+    toggle().focus();
+    await user.keyboard('{Enter}');
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+  };
+
+  // Q4-53: each row's tooltip ("Go back to the main chat screen") is for the collapsed icon rail.
+  // In the overlay it was hidden but still opened on focus, and took the first Escape.
+  it('closes with one Escape after tabbing onto Home, and hands focus to the toggle', async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={['/crew']}>
+        <OverlayHarness />
+      </MemoryRouter>
+    );
+    await openOverlayFromToggle(user);
+
+    await user.tab();
+    expect(screen.getByTestId('sidebar-home-button')).toHaveFocus();
+    expect(document.querySelectorAll('[data-slot="tooltip-content"]')).toHaveLength(0);
+
+    await user.keyboard('{Escape}');
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // Q4-54: choosing Crew used to hand focus back to the toggle, so Erin arrived in Crew with
+  // her place up in the titlebar. The page takes it now.
+  it('hands focus to the page, not the toggle, when Crew is chosen', async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <OverlayHarness />
+      </MemoryRouter>
+    );
+    await openOverlayFromToggle(user);
+
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    expect(screen.getByTestId('sidebar-crew-button')).toHaveFocus();
+
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('Page /crew')).toBeInTheDocument();
+    expect(sidebarState()).toBe('collapsed');
+    expect(screen.getByRole('main')).toHaveFocus();
+    expect(toggle()).not.toHaveFocus();
   });
 });

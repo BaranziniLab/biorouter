@@ -430,6 +430,9 @@ pub async fn check_token(
     // `biorouterd` mints its own, and whatever an operator chose when they set
     // `BIOROUTER_SERVER__SECRET_KEY` by hand (`just debug-server` uses `test`).
     if secret_key.is_some_and(|key| secret_matches(key, &state)) {
+        if !crate::daemon_service::instance_matches(request.headers()) {
+            return Err(StatusCode::CONFLICT);
+        }
         return Ok(next.run(request).await);
     }
 

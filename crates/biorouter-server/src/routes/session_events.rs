@@ -253,7 +253,7 @@ pub async fn observe_session_events(
     }
 
     // Subscribe BEFORE the snapshot so no event falls in the gap between them.
-    let mut rx = session_events::subscribe(&session_id);
+    let rx = session_events::subscribe(&session_id);
     // Read immediately after subscribing, before the first await. If the same
     // turn is still active at the later snapshot, terminals already queued on
     // this receiver can be attributed to it. If the identities differ, a turn
@@ -273,7 +273,7 @@ pub async fn observe_session_events(
     // than leaving a quiet observer permanently idle.
     let active_turn_id = state.active_turn_id(&session_id);
     let initial_event_turn_id = stable_active_turn_id(&turn_id_after_subscribe, &active_turn_id);
-    let mut token_state = get_token_state(state.session_manager(), &session_id).await;
+    let token_state = get_token_state(state.session_manager(), &session_id).await;
     let (tx, rx_out) = mpsc::channel::<String>(64);
 
     // Claimed HERE, in the handler, rather than inside the task below: the slot
@@ -282,32 +282,29 @@ pub async fn observe_session_events(
     // under budget, and all be admitted.
     let slot = state.try_admit_observer_stream();
 
-    let manager_session_id = session_id.clone();
-    let state_for_task = state.clone();
+    let sender = ObserverSender {
+        tx,
+        state,
+        session_id,
+        headers,
+    };
     tokio::spawn(async move {
-        let mut event_turn_id = initial_event_turn_id;
-        let send = |tx: &mpsc::Sender<String>, ev: &MessageEvent| {
-            let frame = format!(
-                "data: {}\n\n",
-                serde_json::to_string(ev).unwrap_or_default()
-            );
-            let tx = tx.clone();
-            async move { tx.send(frame).await.is_ok() }
-        };
-
         // Join-mid-turn snapshot: the observer starts from the full stored
         // conversation, then applies live events (BR-71 §4.2).
         let snapshot = MessageEvent::UpdateConversation {
             conversation: session.conversation.unwrap_or_default(),
             token_state: token_state.clone(),
         };
-        if !send(&tx, &snapshot).await {
+        if !sender.send(&snapshot).await {
             return;
         }
         // Unlike a positive-only `TurnStarted`, this snapshot also carries an
         // authoritative idle edge. An observer that missed Finish while its
         // socket was down can therefore retire stale running state on reconnect.
-        if !send(&tx, &MessageEvent::TurnState { active_turn_id }).await {
+        if !sender
+            .send(&MessageEvent::TurnState { active_turn_id })
+            .await
+        {
             return;
         }
 
@@ -324,7 +321,7 @@ pub async fn observe_session_events(
         // capacity limit into missing content.
         let Some(slot) = slot else {
             tracing::debug!(
-                session_id = %manager_session_id,
+                session_id = %sender.session_id,
                 "observer over budget; answered with the snapshot and closed",
             );
             return;
@@ -334,52 +331,88 @@ pub async fn observe_session_events(
         // up mid-`send` and the bus closing underneath it.
         let _slot = slot;
 
-        let mut heartbeat = tokio::time::interval(Duration::from_millis(500));
-        loop {
-            tokio::select! {
-                _ = heartbeat.tick() => {
-                    if !send(&tx, &MessageEvent::Ping).await { return; }
-                }
-                received = rx.recv() => match received {
-                    Ok(event) => {
-                        if let SessionBusEvent::TurnStarted { turn_id } = &event {
-                            event_turn_id = Some(turn_id.clone());
-                        }
-                        let terminal = is_terminal_bus_event(&event);
-                        if let Some(mapped) = map_bus_event_for_turn(
-                            event,
-                            &mut token_state,
-                            event_turn_id.as_deref(),
-                        ) {
-                            if !send(&tx, &mapped).await { return; }
-                        }
-                        if terminal {
-                            event_turn_id = None;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // §8.4: resync from storage instead of dropping frames
-                        // silently. Shared with /reply (Task 8).
-                        if let Some((resync, lifecycle, next_event_turn_id)) =
-                            observer_lag_resync_frames(
-                            &state_for_task,
-                            &manager_session_id,
-                            &token_state,
-                        )
-                        .await
-                        {
-                            if !send(&tx, &resync).await { return; }
-                            if !send(&tx, &lifecycle).await { return; }
-                            event_turn_id = next_event_turn_id;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                },
-            }
-        }
+        follow_session_events(&sender, rx, token_state, initial_event_turn_id).await;
     });
 
     SseResponse::from_rx(rx_out).into_response()
+}
+
+struct ObserverSender {
+    tx: mpsc::Sender<String>,
+    state: Arc<AppState>,
+    session_id: String,
+    headers: axum::http::HeaderMap,
+}
+
+impl ObserverSender {
+    async fn send(&self, event: &MessageEvent) -> bool {
+        if crate::routes::session_reach::session_reach(
+            self.state.session_manager(),
+            &self.session_id,
+            &self.headers,
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+        let frame = format!(
+            "data: {}\n\n",
+            serde_json::to_string(event).unwrap_or_default()
+        );
+        self.tx.send(frame).await.is_ok()
+    }
+}
+
+async fn follow_session_events(
+    sender: &ObserverSender,
+    mut rx: biorouter::session_events::Subscription,
+    mut token_state: biorouter::conversation::message::TokenState,
+    mut event_turn_id: Option<String>,
+) {
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(500));
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if !sender.send(&MessageEvent::Ping).await { return; }
+            }
+            received = rx.recv() => match received {
+                Ok(event) => {
+                    if let SessionBusEvent::TurnStarted { turn_id } = &event {
+                        event_turn_id = Some(turn_id.clone());
+                    }
+                    let terminal = is_terminal_bus_event(&event);
+                    if let Some(mapped) = map_bus_event_for_turn(
+                        event,
+                        &mut token_state,
+                        event_turn_id.as_deref(),
+                    ) {
+                        if !sender.send(&mapped).await { return; }
+                    }
+                    if terminal {
+                        event_turn_id = None;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // §8.4: resync from storage instead of dropping frames
+                    // silently. Shared with /reply (Task 8).
+                    if let Some((resync, lifecycle, next_event_turn_id)) =
+                        observer_lag_resync_frames(
+                        &sender.state,
+                        &sender.session_id,
+                        &token_state,
+                    )
+                    .await
+                    {
+                        if !sender.send(&resync).await { return; }
+                        if !sender.send(&lifecycle).await { return; }
+                        event_turn_id = next_event_turn_id;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            },
+        }
+    }
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

@@ -1,0 +1,193 @@
+import * as React from 'react';
+import { ModalShell } from '../../ModalShell';
+import { Button } from '../../ui/button';
+import { isRecord, optionalText } from '../api/parse';
+import { unexpectedCrewResponse } from '../api/errors';
+import { teamName } from '../identity';
+import { useFormValidation } from '../onboarding/fields';
+import type { ErrorSource } from '../state/types';
+import { createChannelCopy as copy, nameRuleCopy } from './copy';
+import {
+  AdornedInput,
+  DebouncedAnnouncement,
+  ErrorNote,
+  Field,
+  helpId,
+  RadioRows,
+  useCustomValidity,
+  useDialogError,
+} from './fields';
+import { channelSlugPreview, channelSlugProblem } from './nameRules';
+import { isNameRefusal, nameRefusalText, refusalText } from './refusals';
+import { useCloseWhenMissing } from './useCloseWhenMissing';
+import { useDialogView } from './workspace';
+
+const SOURCE: ErrorSource = 'dialog:create-channel';
+const KEY = 'mutate:channel.create';
+
+type Classification = 'restricted' | 'public_safe';
+
+/**
+ * The name field's example: never the name of a channel this team already has, which read as a
+ * suggestion to make a duplicate ("e.g. methods" beside #methods, QA Q2-31).
+ */
+export function examplePlaceholder(
+  channels: readonly { team_id: string; name?: string | null; handle?: string | null }[],
+  teamId: string
+): string {
+  const example = copy.placeholder.replace(/^e\.g\. /, '');
+  const taken = channels.some(
+    (channel) =>
+      channel.team_id === teamId &&
+      [channel.name, channel.handle].some(
+        (name) => typeof name === 'string' && name.toLowerCase() === example
+      )
+  );
+  return taken ? copy.placeholderTaken : copy.placeholder;
+}
+
+/**
+ * What the field keeps of what was typed or pasted: without any leading `#`, because the field
+ * already shows one, and "#data" read as "# #data" (QA Q3-38) — the same as Invite people does
+ * with `@` (`withoutLeadingAt`). A fullwidth `＃` is a `#` to the name rules too.
+ */
+export function withoutLeadingHash(value: string): string {
+  return value.replace(/^\s*[#＃]+/u, '');
+}
+
+export interface CreateChannelDialogProps {
+  teamId: string;
+  onClose(): void;
+}
+
+/**
+ * Create channel (ui-redesign-spec, "Dialog inventory", "Progressive disclosure").
+ *
+ * - Every open starts clean — name empty, content Restricted — because the dialog's state is its
+ *   own and it is mounted per open (L14: the old panel kept the last channel's classification).
+ * - The name previews the exact slug the broker will store ("Will be created as #…").
+ * - Content is visible, not behind Advanced: it cannot be changed after the channel exists.
+ * - A taken name is refused in the broker's one wording (S2), and the consequence line says that
+ *   the refusal itself tells team members a name exists.
+ * - The form validates itself (`noValidate`, the onboarding forms' `useFormValidation`), so an
+ *   empty or refused name is said under the field, like Join and Host, never in the browser's
+ *   bubble (QA Q3-38).
+ */
+export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProps) {
+  const { crew, snapshot } = useDialogView();
+  const formId = React.useId();
+  const nameId = `${formId}-name`;
+  const [name, setName] = React.useState('');
+  const [classification, setClassification] = React.useState<Classification>('restricted');
+  const [touched, setTouched] = React.useState(false);
+  const { errors, validate, formProps } = useFormValidation();
+  const error = useDialogError(SOURCE);
+  const team = snapshot?.teams.find((item) => item.id === teamId) ?? null;
+  const slug = channelSlugPreview(name);
+  // Anything typed at all is judged, so a name of only spaces is "can't be empty" on submit rather
+  // than a request the broker refuses.
+  const problem = name ? channelSlugProblem(slug) : null;
+  const nameRef = useCustomValidity<HTMLInputElement>(problem);
+  const creating = crew.isPending(KEY);
+  const placeholder = examplePlaceholder(snapshot?.channels ?? [], teamId);
+  useCloseWhenMissing(snapshot !== null && team === null, onClose);
+
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!validate()) return;
+    void crew
+      .act(SOURCE, KEY, async () => {
+        const created = await crew.request(
+          'channel.create',
+          { team_id: teamId, name: slug, classification },
+          { mutation: true }
+        );
+        const id = isRecord(created) ? optionalText(created.id) : undefined;
+        if (!id) throw unexpectedCrewResponse('a new channel');
+        return id;
+      })
+      .then((channelId) => {
+        if (!channelId) return;
+        if (teamId !== crew.teamId) crew.selectTeam(teamId);
+        crew.selectChannel(channelId);
+        onClose();
+      });
+  };
+
+  const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'channel') : null;
+  // Once a Create press has put a message under the field, the message follows the name as typed
+  // — an empty name is `channelEmpty` too — rather than repeating what `useFormValidation`
+  // recorded. That record is stale by one keystroke: the form's `onInput` reads `validity` before
+  // this keystroke's problem reaches the input (`useCustomValidity` sets it in an effect, after
+  // the render), so the keystroke that makes the name valid kept the old message (QA Q3-38).
+  const submittedError = nameId in errors ? channelSlugProblem(slug) : null;
+  const fieldError = nameError ?? submittedError ?? (touched ? problem : null);
+  const helper = slug && !problem ? copy.preview(slug) : undefined;
+  const consequenceId = `${formId}-consequence`;
+  // The preview or the error, then the consequence line — both describe the name (QA T-72).
+  const describedBy = [helper || fieldError ? helpId(nameId) : null, consequenceId]
+    .filter(Boolean)
+    .join(' ');
+  // Announced as typing pauses: while typing, the problem shows before the field is left.
+  const spokenProblem = nameError ?? problem;
+
+  return (
+    <ModalShell
+      open
+      onOpenChange={(open) => !open && onClose()}
+      size="sm"
+      purpose={creating ? 'required' : 'form'}
+      title={copy.title}
+      subtitle={team ? copy.inTeam(teamName(team)) : undefined}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={creating}>
+            {copy.cancel}
+          </Button>
+          <Button type="submit" form={formId} disabled={creating}>
+            {copy.submit}
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} {...formProps} onSubmit={submit} className="flex flex-col gap-4 pb-1">
+        <Field id={nameId} label={copy.name} helper={helper} error={fieldError ?? undefined}>
+          <AdornedInput
+            adornment="#"
+            id={nameId}
+            ref={nameRef}
+            required
+            data-required-message={nameRuleCopy.channelEmpty}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={placeholder}
+            aria-invalid={fieldError ? true : undefined}
+            aria-describedby={describedBy}
+            value={name}
+            onBlur={() => setTouched(name.trim().length > 0)}
+            onInvalid={() => setTouched(true)}
+            onChange={(event) => {
+              setName(withoutLeadingHash(event.target.value));
+              if (error) crew.dismissError();
+            }}
+          />
+        </Field>
+        <RadioRows<Classification>
+          label={copy.content}
+          name={`${formId}-content`}
+          value={classification}
+          onChange={setClassification}
+          options={[
+            { value: 'restricted', label: copy.restricted, detail: copy.restrictedDetail },
+            { value: 'public_safe', label: copy.publicSafe, detail: copy.publicSafeDetail },
+          ]}
+        />
+        <DebouncedAnnouncement text={spokenProblem} />
+        <p id={consequenceId} className="text-supporting text-text-muted">
+          {nameRuleCopy.consequence}
+        </p>
+        {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
+      </form>
+    </ModalShell>
+  );
+}

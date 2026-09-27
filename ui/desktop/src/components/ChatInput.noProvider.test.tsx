@@ -91,7 +91,7 @@ beforeEach(() => {
 const setView = vi.fn();
 const handleSubmit = vi.fn();
 
-function renderComposer() {
+function renderComposer(effectiveModel?: { provider: string; model: string }) {
   return render(
     <ChatInput
       sessionId="chat-a"
@@ -109,6 +109,7 @@ function renderComposer() {
       disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
+      effectiveModel={effectiveModel}
     />
   );
 }
@@ -120,6 +121,11 @@ describe('the composer with no model configured', () => {
     expect(hint).toHaveTextContent('No model yet');
     fireEvent.click(screen.getByTestId('composer-no-model-action'));
     expect(setView).toHaveBeenCalledWith('ConfigureProviders');
+  });
+
+  it('does not reject a persisted chat model when the global provider is unset', () => {
+    renderComposer({ provider: 'ollama', model: 'qwen3:8b' });
+    expect(screen.queryByTestId('composer-no-model-hint')).toBeNull();
   });
 
   /**

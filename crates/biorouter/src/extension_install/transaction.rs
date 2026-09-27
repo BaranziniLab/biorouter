@@ -458,7 +458,7 @@ impl ExtensionInstallTransaction {
         let unmet: Vec<BrxtEnvVar> = manifest
             .env_vars
             .iter()
-            .filter(|v| values.is_unmet(&v.key))
+            .filter(|v| values.is_unmet(v))
             .cloned()
             .collect();
         let unmet_required: Vec<String> = unmet
@@ -531,7 +531,7 @@ impl ExtensionInstallTransaction {
         // shell install report success for something permanently broken.
         let still_missing: Vec<String> = manifest
             .required_vars()
-            .filter(|v| values.is_unmet(&v.key))
+            .filter(|v| values.is_unmet(v))
             .map(|v| v.key.clone())
             .collect();
         if !still_missing.is_empty() {
@@ -949,13 +949,13 @@ struct ResolvedValues {
 }
 
 impl ResolvedValues {
-    /// Whether `key` still has to come from somewhere. A value already in the
+    /// Whether the variable still has to come from somewhere. A secret already in the
     /// credential store counts as met — an install that re-asks for a passcode
     /// the machine already holds trains the user to paste ones they need not.
-    fn is_unmet(&self, key: &str) -> bool {
-        !self.envs.contains_key(key)
-            && !self.env_keys.iter().any(|k| k == key)
-            && !secret_already_stored(key)
+    fn is_unmet(&self, var: &BrxtEnvVar) -> bool {
+        !(self.envs.contains_key(&var.key)
+            || (var.secret && self.env_keys.iter().any(|k| k == &var.key))
+            || var.has_stored_secret())
     }
 }
 
@@ -1165,6 +1165,47 @@ mod tests {
         let mut already_written = vec!["SPOKEAGENT_PASSCODE".to_string()];
         adopt_stored_secrets_with(&manifest, &mut already_written, |_| true);
         assert_eq!(already_written.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stored_secret_satisfies_only_a_secret_variable() {
+        let secret = BrxtEnvVar {
+            key: "SHARED_NAME".to_string(),
+            required: true,
+            auto_propagate: false,
+            default: None,
+            description: String::new(),
+            secret: true,
+        };
+        let ordinary = BrxtEnvVar {
+            secret: false,
+            ..secret.clone()
+        };
+        let values = ResolvedValues::default();
+
+        crate::config::with_config_overrides(
+            HashMap::from([(String::from("SHARED_NAME"), String::from("stored-secret"))]),
+            async {
+                assert!(!values.is_unmet(&secret));
+                assert!(values.is_unmet(&ordinary));
+
+                let values_with_secret_key = ResolvedValues {
+                    env_keys: vec!["SHARED_NAME".to_string()],
+                    ..ResolvedValues::default()
+                };
+                assert!(values_with_secret_key.is_unmet(&ordinary));
+
+                let values_with_setting = ResolvedValues {
+                    envs: HashMap::from([(
+                        "SHARED_NAME".to_string(),
+                        "ordinary-setting".to_string(),
+                    )]),
+                    ..ResolvedValues::default()
+                };
+                assert!(!values_with_setting.is_unmet(&ordinary));
+            },
+        )
+        .await;
     }
 
     /// Issue #42's operator switch, on the install door — in **both**

@@ -314,6 +314,41 @@ fn allocate_store_prefix(session_dir: &Path) -> String {
     format!("s{index:07x}")
 }
 
+/// The first byte of every id an ephemeral store mints. Neither kind of prefix a store
+/// that keeps chats uses can start with it: a date starts with a digit, an allocated
+/// prefix with `s`.
+const EPHEMERAL_ID_MARKER: u8 = b'e';
+
+/// The 8-character prefix of one [`SessionManager::new_ephemeral`] store: `e` followed by
+/// seven random base-36 digits, drawn once when the store is built.
+///
+/// ⚠ **Neither the date nor [`allocate_store_prefix`], and the difference is the fix.** A
+/// `--no-session` run's store was usually the first its process minted from, so it took
+/// the date and minted `<date>_1`, the id the desktop's first chat of the day already held
+/// in the shared store. Anything keyed by a session id outside a `sessions.db` — Crew's
+/// grants, the per-chat knowledge-base selection, checkpoint repositories — then read that
+/// chat's state as the run's (SCOPE-BIND). An allocated `s` prefix would not help: it is
+/// only unique within one process, and another process's shared store may carry the same
+/// one.
+///
+/// Random rather than counted, so two runs at once, or one after another, never share an
+/// id either. Seven base-36 digits is 78 billion prefixes, and within one prefix the
+/// store's own counter keeps its ids apart. Still exactly 8 characters, because the
+/// counter is read back with `SUBSTR(id, 10)`.
+fn ephemeral_store_prefix() -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    // The low 36 bits of a v4 UUID are all random: its fixed version and variant bits sit
+    // at bits 76-79 and 62-63.
+    let mut entropy = uuid::Uuid::new_v4().as_u128();
+    let mut prefix = String::with_capacity(8);
+    prefix.push(char::from(EPHEMERAL_ID_MARKER));
+    for _ in 0..7 {
+        prefix.push(char::from(DIGITS[(entropy % 36) as usize]));
+        entropy /= 36;
+    }
+    prefix
+}
+
 /// Raise every prefix's mark to the largest `N` on disk under it.
 ///
 /// Run from the reconcile on every startup, and idempotent because it only ever
@@ -1766,6 +1801,51 @@ impl SessionManager {
         }
     }
 
+    /// A store for chats that outlive nothing — `biorouter run --no-session`'s private,
+    /// per-run store (#31) — whose ids can never name a chat a store that keeps chats has
+    /// minted, in this process or any other.
+    ///
+    /// ⚠ **Security-relevant (SCOPE-BIND).** A session id is the key of stores that live
+    /// OUTSIDE any one `sessions.db`: Crew's grants in `connections.json`, the knowledge
+    /// bases' per-chat selection, checkpoint repositories. Built with [`Self::new`], this
+    /// store was usually the process's first and so minted `<date>_1` — the id the
+    /// desktop's first chat of the day already held — and the run inherited that chat's
+    /// expired Crew grant ("Crew run was revoked"). Had the grant been live, it would have
+    /// acted under a grant nobody gave it. Its ids now carry a namespace of their own (see
+    /// [`ephemeral_store_prefix`]), and [`Self::is_ephemeral_session_id`] recognizes them.
+    pub fn new_ephemeral(data_dir: PathBuf) -> Self {
+        Self {
+            storage: Arc::new(SessionStorage::new_ephemeral(data_dir)),
+        }
+    }
+
+    /// Whether `id` has the shape only [`Self::new_ephemeral`]'s stores mint: `e`, seven
+    /// base-36 digits, `_`, the counter. No store that keeps chats mints it — theirs lead
+    /// with a date's digit or with `s`.
+    pub fn is_ephemeral_session_id(id: &str) -> bool {
+        let bytes = id.as_bytes();
+        bytes.len() > 9
+            && bytes[0] == EPHEMERAL_ID_MARKER
+            && bytes[1..8]
+                .iter()
+                .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+            && bytes[8] == b'_'
+            && bytes[9..].iter().all(u8::is_ascii_digit)
+    }
+
+    /// The identity of the chat now holding `id`: its `sessions.incarnation`, a random token
+    /// minted with the row and never handed to a later row under the same id (#51 W3).
+    /// `Ok(None)` when no chat holds the id.
+    ///
+    /// Crew binds each grant to this at grant time (SCOPE-BIND), because the id alone is
+    /// not one chat: a restored backup, a reset database or an older build sharing the file
+    /// can hand it to another chat. A row that somehow still carries the legacy `0`
+    /// ("unknown", which the reconcile replaces on every open) is an error rather than an
+    /// identity, so a caller can never bind to it or be matched by it.
+    pub async fn session_incarnation(&self, id: &str) -> Result<Option<i64>> {
+        self.storage.session_incarnation(id).await
+    }
+
     pub fn instance() -> Self {
         Self {
             storage: Arc::clone(&SESSION_STORAGE),
@@ -1853,6 +1933,24 @@ impl SessionManager {
         self.storage
             .record_session_affiliation(session_id, institution.as_str())
             .await
+    }
+
+    /// Persist mandatory provenance for Crew and derived conversations, independently
+    /// of the optional extension privacy toggle.
+    pub async fn record_required_session_affiliation(
+        &self,
+        session_id: &str,
+        institution: crate::privacy::affiliation::InstitutionId,
+    ) -> Result<()> {
+        let updated = self
+            .storage
+            .record_affiliation(session_id, institution.as_str())
+            .await?;
+        anyhow::ensure!(
+            updated == 1,
+            "Session unavailable while recording institution provenance"
+        );
+        Ok(())
     }
 
     /// The institutions whose extensions this chat has touched.
@@ -2234,6 +2332,26 @@ impl SessionManager {
         include_empty: bool,
         public_only: bool,
     ) -> Result<Vec<SidebarRow>> {
+        self.list_session_summaries_page_excluding(
+            limit,
+            after,
+            include_subagents,
+            include_empty,
+            public_only,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn list_session_summaries_page_excluding(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SidebarRow>> {
         self.storage
             .list_session_summaries_page(
                 limit,
@@ -2241,6 +2359,7 @@ impl SessionManager {
                 include_subagents,
                 include_empty,
                 public_only,
+                excluded_ids,
             )
             .await
     }
@@ -2322,13 +2441,25 @@ impl SessionManager {
         self.storage.count_all_sessions().await
     }
 
+    pub async fn get_insights_excluding(&self, excluded_ids: &[String]) -> Result<SessionInsights> {
+        self.storage.get_insights(excluded_ids).await
+    }
+
+    pub async fn get_activity_excluding(
+        &self,
+        days: i64,
+        excluded_ids: &[String],
+    ) -> Result<ActivityWindow> {
+        self.storage.get_activity(days, excluded_ids).await
+    }
+
     pub async fn get_insights(&self) -> Result<SessionInsights> {
-        self.storage.get_insights().await
+        self.storage.get_insights(&[]).await
     }
 
     /// Per-day usage for the Home heatmap, over the last `days` calendar days.
     pub async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
-        self.storage.get_activity(days).await
+        self.storage.get_activity(days, &[]).await
     }
 
     /// Append one turn's usage to the per-turn token ledger.
@@ -2396,6 +2527,8 @@ impl SessionManager {
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(id).await,
+            "Crew context cannot be exported without its channel permissions. Share an authorized message or attachment from Crew instead.");
         self.storage.export_session(id).await
     }
 
@@ -2700,6 +2833,9 @@ impl SessionManager {
     }
 
     pub async fn copy_session(&self, session_id: &str, new_name: String) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage.copy_session(self, session_id, new_name).await
     }
 
@@ -2711,6 +2847,9 @@ impl SessionManager {
         session_id: &str,
         timestamp: i64,
     ) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage
             .diverge_session_for_edit(self, session_id, timestamp)
             .await
@@ -2760,6 +2899,9 @@ impl SessionManager {
         anchor_ms: Option<i64>,
         anchor_uid: Option<String>,
     ) -> Result<Session> {
+        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
+            "Crew context cannot be copied into an unscoped conversation. Start a new task from the authorized Crew channel.");
+
         self.storage
             .diverge_session(self, session_id, custom_name, anchor_ms, anchor_uid)
             .await
@@ -2963,6 +3105,9 @@ pub struct SessionStorage {
     pool: Pool<Sqlite>,
     initialized: tokio::sync::OnceCell<()>,
     session_dir: PathBuf,
+    /// The id prefix of a store built by [`SessionManager::new_ephemeral`], and `None` for
+    /// every store that keeps chats. See [`ephemeral_store_prefix`].
+    ephemeral_prefix: Option<String>,
 }
 
 /// How `replace_conversation_inner` treats concurrent writers.
@@ -3468,7 +3613,6 @@ impl SessionStorage {
     /// concurrent recorder cannot lose an institution between a read and a
     /// write.
     async fn record_session_affiliation(&self, session_id: &str, institution: &str) -> Result<()> {
-        let pool = self.pool().await?;
         // DR-15 / AR-7: with the master opt-out off nothing is recorded, for the
         // reason the tier ratchet stops — this column is monotone and
         // re-enabling never revisits a row, so a ratchet that kept firing would
@@ -3476,13 +3620,19 @@ impl SessionStorage {
         if !crate::privacy::privacy_tiers_enabled() {
             return Ok(());
         }
+        self.record_affiliation(session_id, institution).await?;
+        Ok(())
+    }
+
+    async fn record_affiliation(&self, session_id: &str, institution: &str) -> Result<u64> {
+        let pool = self.pool().await?;
         // The `ORDER BY` is cosmetic and nothing may come to depend on it:
         // SQLite does not formally guarantee that an aggregate consumes an
         // ordered subquery in that order. It is here so the stored JSON is
         // stable for a human reading the row; every reader
         // (`SessionStorage::session_affiliations`) collects into a `BTreeSet`,
         // so the set is the value and the sequence is not.
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE sessions
                SET session_affiliations = (
@@ -3501,7 +3651,7 @@ impl SessionStorage {
         .bind(institution)
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     /// See [`SessionManager::session_affiliations`].
@@ -3731,13 +3881,30 @@ impl SessionStorage {
     }
 
     pub fn new(data_dir: PathBuf) -> Self {
+        Self::with_id_namespace(data_dir, None)
+    }
+
+    /// A store whose ids can never name a chat any store that keeps chats has minted. See
+    /// [`SessionManager::new_ephemeral`].
+    pub(crate) fn new_ephemeral(data_dir: PathBuf) -> Self {
+        Self::with_id_namespace(data_dir, Some(ephemeral_store_prefix()))
+    }
+
+    fn with_id_namespace(data_dir: PathBuf, ephemeral_prefix: Option<String>) -> Self {
         let session_dir = data_dir.join(SESSIONS_FOLDER);
         let db_path = session_dir.join(DB_NAME);
         Self {
             pool: Self::create_pool(&db_path),
             initialized: tokio::sync::OnceCell::new(),
             session_dir,
+            ephemeral_prefix,
         }
+    }
+
+    /// The directory this store keeps `sessions.db` in: its identity, as far as anything
+    /// outside the database can tell two stores apart.
+    pub(crate) fn session_dir(&self) -> &Path {
+        &self.session_dir
     }
 
     /// Close the SQLite pool (see [`SessionManager::close`]). Safe to call
@@ -5725,6 +5892,9 @@ impl SessionStorage {
     /// crate's own unit tests.
     #[cfg(test)]
     fn id_prefix(&self) -> String {
+        if let Some(prefix) = &self.ephemeral_prefix {
+            return prefix.clone();
+        }
         // Never the date, not even for the first store: which store is first in a
         // test binary depends on the order the harness happens to schedule its
         // threads, so a date branch here would make one arbitrary store's ids
@@ -5734,6 +5904,11 @@ impl SessionStorage {
 
     #[cfg(not(test))]
     fn id_prefix(&self) -> String {
+        // An ephemeral store never takes an index, so it can neither claim the date
+        // nor move the shared store off it (SCOPE-BIND; see `ephemeral_store_prefix`).
+        if let Some(prefix) = &self.ephemeral_prefix {
+            return prefix.clone();
+        }
         if store_index(&self.session_dir) == 0 {
             chrono::Utc::now().format("%Y%m%d").to_string()
         } else {
@@ -7298,6 +7473,7 @@ impl SessionStorage {
         include_subagents: bool,
         include_empty: bool,
         public_only: bool,
+        excluded_ids: &[String],
     ) -> Result<Vec<SidebarRow>> {
         let type_filter = if include_subagents {
             "('user', 'scheduled', 'sub_agent')"
@@ -7340,6 +7516,7 @@ impl SessionStorage {
             {join}
             WHERE s.session_type IN {type_filter}
             {tier_filter}
+            AND s.id NOT IN (SELECT value FROM json_each(?))
             {keyset}
             GROUP BY s.id
             ORDER BY s.updated_at DESC, s.id ASC
@@ -7347,7 +7524,8 @@ impl SessionStorage {
             "#
         );
 
-        let mut q = sqlx::query_as::<_, SidebarRow>(&query);
+        let mut q =
+            sqlx::query_as::<_, SidebarRow>(&query).bind(serde_json::to_string(excluded_ids)?);
         if let Some(cursor) = after {
             q = q
                 .bind(cursor.updated_at.clone())
@@ -7417,20 +7595,84 @@ impl SessionStorage {
         // cross-institution flows the user accepted in it.
         Self::delete_chat_side_rows(&mut tx, session_id).await?;
 
-        let removed = sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        // `RETURNING` the row's incarnation: which chat this was, for the one store keyed
+        // by its id that lives outside this file (SCOPE-BIND, below).
+        let removed: Option<i64> = sqlx::query_scalar(
+            "DELETE FROM sessions WHERE id = ? RETURNING IFNULL(incarnation, 0)",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
 
-        if removed.rows_affected() == 0 {
+        let Some(incarnation) = removed else {
             // Dropping `tx` rolls back, so the deletes above are undone and an
             // unknown id still writes nothing — same contract as before.
             return Err(anyhow::anyhow!("Session not found"));
-        }
+        };
 
         tx.commit().await?;
         self.remove_checkpoint_repository(session_id).await;
+        self.retire_crew_grants(vec![(session_id.to_string(), incarnation)])
+            .await;
         Ok(())
+    }
+
+    /// The incarnation of the row holding `id`; see [`SessionManager::session_incarnation`].
+    async fn session_incarnation(&self, id: &str) -> Result<Option<i64>> {
+        let pool = self.pool().await?;
+        let incarnation: Option<i64> =
+            sqlx::query_scalar("SELECT IFNULL(incarnation, 0) FROM sessions WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+        anyhow::ensure!(
+            incarnation != Some(0),
+            "session {id} has no incarnation recorded, so it cannot be told apart from another \
+             chat under the same id"
+        );
+        Ok(incarnation)
+    }
+
+    /// Tell Crew which chats were just deleted, so the grants they held are bound to them
+    /// for good (SCOPE-BIND).
+    ///
+    /// ⚠ **Security-relevant; needs human review.** Crew keeps its grants in
+    /// `connections.json`, keyed by session id, outside this database — so, like the
+    /// checkpoint repository above, no statement in this transaction can reach them. Each
+    /// deleted row is named with its incarnation, so a grant made to some OTHER chat under
+    /// the same id (another store's) is never the one touched — see
+    /// `crate::crew::CrewManager::retire_deleted_sessions`.
+    ///
+    /// ⚠ **The grants are KEPT, not cleared.** A deleted chat's grant is the one record of
+    /// a run the workspace still honors: cleared, the run could no longer be revoked, and a
+    /// deleted Crew task's cancel failed on every retry. And the route that deletes a chat
+    /// only signals its turn to stop, so a turn still unwinding with Crew context in hand
+    /// would have lost its restriction to Crew tools mid-flight. Kept and bound to the
+    /// deleted chat, a grant restricts that turn, stays revocable and authorizes nothing;
+    /// Crew prunes it once a later chat holds the id.
+    ///
+    /// After the commit and best-effort, for the reason
+    /// [`Self::remove_checkpoint_repository`] gives: the chat is gone either way, so a
+    /// failure is logged rather than returned as a failed delete. A grant already bound to
+    /// its chat is safe without this call; what it binds is a grant recorded before grants
+    /// were bound.
+    async fn retire_crew_grants(&self, deleted: Vec<(String, i64)>) {
+        if deleted.is_empty() {
+            return;
+        }
+        let crew = match crate::crew::manager() {
+            Ok(crew) => crew,
+            Err(error) => {
+                warn!(%error, "could not open the Crew registry to retire a deleted chat's grant");
+                return;
+            }
+        };
+        if let Err(error) = crew
+            .retire_deleted_sessions(&deleted, self.session_dir())
+            .await
+        {
+            warn!(%error, "could not retire the Crew grant of a deleted chat");
+        }
     }
 
     /// Delete every row of one chat outside `messages`, `message_blobs` and
@@ -7548,12 +7790,17 @@ impl SessionStorage {
             "token_events",
             "deleted_chat_usage",
             "cross_affiliation_grants",
-            "sessions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&mut *tx)
                 .await?;
         }
+        // Last, as before, and naming every chat it deletes: Crew's grants are keyed by
+        // these ids outside this file (SCOPE-BIND; see `delete_session`).
+        let deleted: Vec<(String, i64)> =
+            sqlx::query_as("DELETE FROM sessions RETURNING id, IFNULL(incarnation, 0)")
+                .fetch_all(&mut *tx)
+                .await?;
         // The AUTOINCREMENT high-water marks are deliberately LEFT ALONE
         // (#51 W3). `messages.id` is what [`ConversationRevision`] is built
         // from, and its whole value is that a rowid is never minted twice for
@@ -7573,10 +7820,11 @@ impl SessionStorage {
         // `neither_a_history_reset_nor_a_reopen_restarts_the_ids` is what fails
         // if it is ever added here.
         tx.commit().await?;
+        self.retire_crew_grants(deleted).await;
         Ok(count as u64)
     }
 
-    async fn get_insights(&self) -> Result<SessionInsights> {
+    async fn get_insights(&self, excluded_ids: &[String]) -> Result<SessionInsights> {
         let pool = self.pool().await?;
 
         // Sessions: totals plus 7d/30d windows.
@@ -7593,8 +7841,10 @@ impl SessionStorage {
               COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS sessions_30d
             FROM sessions
             WHERE session_type IN ('user', 'scheduled')
+              AND id NOT IN (SELECT value FROM json_each(?))
             "#,
         )
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_one(pool)
         .await?;
 
@@ -7637,8 +7887,10 @@ impl SessionStorage {
             FROM token_events te
             JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?))
             "#,
         )
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_one(pool)
         .await?;
 
@@ -7923,7 +8175,7 @@ impl SessionStorage {
         })
     }
 
-    async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
+    async fn get_activity(&self, days: i64, excluded_ids: &[String]) -> Result<ActivityWindow> {
         let pool = self.pool().await?;
         let days = days.clamp(1, 371);
         // SQLite's `-N days` modifier takes a literal, so build it once.
@@ -7936,11 +8188,13 @@ impl SessionStorage {
             SELECT date(created_at, 'localtime') AS day, COUNT(*) AS n
             FROM sessions
             WHERE session_type IN ('user', 'scheduled')
+              AND id NOT IN (SELECT value FROM json_each(?2))
               AND created_at >= datetime('now', ?1)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 
@@ -7957,11 +8211,13 @@ impl SessionStorage {
             FROM token_events te
             JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?2))
               AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 
@@ -7973,11 +8229,13 @@ impl SessionStorage {
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
             WHERE s.session_type IN ('user', 'scheduled')
+              AND s.id NOT IN (SELECT value FROM json_each(?2))
               AND m.created_timestamp >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
             "#,
         )
         .bind(&window)
+        .bind(serde_json::to_string(excluded_ids)?)
         .fetch_all(pool)
         .await?;
 
@@ -8110,9 +8368,19 @@ impl SessionStorage {
         new_name: String,
         reason: &str,
     ) -> Result<Session> {
+        anyhow::ensure!(
+            !crate::crew::manager()?.is_scoped_session(&source.id).await,
+            "Crew conversations cannot be copied or diverged; start a new conversation and grant the desired Crew context."
+        );
+        let institutions = self.session_affiliations(&source.id).await?;
         let new_session = self
             .create_session(source.working_dir.clone(), new_name, source.session_type)
             .await?;
+        for institution in institutions {
+            session_manager
+                .record_required_session_affiliation(&new_session.id, institution)
+                .await?;
+        }
         let mut update = session_manager
             .update(&new_session.id)
             .extension_data(source.extension_data.clone())
@@ -9141,6 +9409,9 @@ mod blob_tests {
     }
 }
 
+#[path = "session_manager_required_affiliation_tests.rs"]
+mod required_affiliation_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9185,6 +9456,7 @@ mod tests {
             pool,
             initialized: tokio::sync::OnceCell::new(),
             session_dir: dir.path().to_path_buf(),
+            ephemeral_prefix: None,
         };
         assert_eq!(storage.pool.size(), 1);
         let close = storage.close();
@@ -19120,6 +19392,12 @@ mod deleted_chat_side_rows_tests {
             "biorouter/tests/conversation_writeback_stress.rs",
             // the terminal's shell-history cut is refused on a recycled id
             "biorouter-cli/src/commands/term.rs",
+            // SCOPE-BIND: a deleted chat's Crew grant is not the next chat's under the
+            // id — `CrewManager::standing`
+            "biorouter/src/crew/scope_binding_tests.rs",
+            // F3: a deleted chat's unconfirmed Crew revocation survives the id being
+            // reissued — `Registry::keep_replaced` from `prune_stale_grant`
+            "biorouter/src/crew/keepalive_tests.rs",
         ];
         let seam = "forget_minted_session_ids_for_test";
         let mut offenders = Vec::new();

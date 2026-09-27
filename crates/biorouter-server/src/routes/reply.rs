@@ -92,6 +92,9 @@ pub struct ChatRequest {
     /// the copy must already contain every message the server holds, and the
     /// request is refused with 409 if it does not. See
     /// [`apply_client_writeback`]. The desktop app has never sent this field.
+    ///
+    /// On a chat whose Crew access has ended the copy is refused with 403, and nothing is
+    /// written: the turn it would seed is refused anyway.
     #[serde(default)]
     conversation_so_far: Option<Vec<Message>>,
     session_id: String,
@@ -1467,7 +1470,10 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
-                                      proof it came from the user (body = plain text)"),
+                                      proof it came from the user (body = plain text). Or the \
+                                      request carried `conversation_so_far` for a chat whose Crew \
+                                      access has ended: nothing was written, and the body is the \
+                                      plain sentence the chat's next turn would be refused with"),
         (status = 409, description = "A DIFFERENT turn is already in flight for this session, or \
                                       the supplied `conversation_so_far` is missing messages the \
                                       server holds (nothing was written; re-read the session \
@@ -1632,6 +1638,12 @@ pub async fn reply(
     // `turn_guard`, so the session is free again.
     let client_conversation = match request.conversation_so_far.take() {
         Some(history) => {
+            // Revoke F1, defense in depth: the write-back replaces the stored history for a turn
+            // that a chat whose Crew access has ended cannot run, so it is refused first and
+            // nothing is written. Without a copy to write back, the turn itself says why.
+            if let Some(refusal) = crate::routes::session::crew_history_hold(&session_id).await {
+                return refusal;
+            }
             match apply_client_writeback(state.session_manager(), &session_id, history).await {
                 Ok(conversation) => Some(conversation),
                 Err(conflict) => {

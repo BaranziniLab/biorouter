@@ -2,7 +2,7 @@
 
 import type { App } from 'electron';
 import type { PathLike, Stats } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   logInfo: vi.fn(),
@@ -240,6 +240,7 @@ describe('biorouterd stderr routing', () => {
   // stderr stream chunk by chunk and close the child, exactly as Node would.
   const stderrHandlers: Record<string, (arg?: unknown) => void> = {};
   const childHandlers: Record<string, (arg?: unknown) => void> = {};
+  const previousSharedDaemon = process.env.BIOROUTER_SHARED_DAEMON;
 
   const mockChild = () => {
     for (const k of Object.keys(stderrHandlers)) delete stderrHandlers[k];
@@ -262,12 +263,20 @@ describe('biorouterd stderr routing', () => {
   const write = (s: string) => stderrHandlers['data']?.(Buffer.from(s, 'utf8'));
 
   beforeEach(() => {
+    // This suite drives the legacy stderr reader through a directly spawned
+    // child. Default shared-daemon approval admission is covered separately.
+    process.env.BIOROUTER_SHARED_DAEMON = '0';
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
     mocks.logWarn.mockClear();
     mocks.logDebug.mockClear();
     mocks.spawn.mockReset();
     mockChild();
+  });
+
+  afterAll(() => {
+    if (previousSharedDaemon === undefined) delete process.env.BIOROUTER_SHARED_DAEMON;
+    else process.env.BIOROUTER_SHARED_DAEMON = previousSharedDaemon;
   });
 
   const joined = (calls: unknown[][]) => calls.map((c) => String(c[0])).join('\n');

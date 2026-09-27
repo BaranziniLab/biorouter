@@ -1,26 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  toast: vi.fn(),
   success: vi.fn(),
   error: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
+  loading: vi.fn(),
+  update: vi.fn(),
+  isActive: vi.fn(() => false),
 }));
 
 // react-toastify is the only thing `toastService.success` actually reaches; stub
 // the whole module so the assertions are about the options we hand it.
 vi.mock('react-toastify', () => ({
-  toast: Object.assign(vi.fn(), {
+  toast: Object.assign(mocks.toast, {
     success: mocks.success,
     error: mocks.error,
-    info: vi.fn(),
-    warning: vi.fn(),
-    loading: vi.fn(),
-    update: vi.fn(),
+    info: mocks.info,
+    warning: mocks.warning,
+    loading: mocks.loading,
+    update: mocks.update,
     dismiss: vi.fn(),
-    isActive: vi.fn(() => false),
+    isActive: mocks.isActive,
   }),
 }));
 
-import { toastError, toastService } from './toasts';
+import {
+  toastError,
+  toastInfo,
+  toastLoading,
+  toastService,
+  toastSuccess,
+  toastWarning,
+} from './toasts';
 
 describe('toastService.success', () => {
   beforeEach(() => {
@@ -83,5 +96,71 @@ describe('toastError', () => {
     // Unscoped callers keep the content key they always had.
     expect(ids[3]).toBe('error:The chat store was busy:Try again in a moment.');
     expect(ids[3]).not.toBe(ids[0]);
+  });
+});
+
+/**
+ * T-57 (a11y P2-8). react-toastify defaults EVERY toast to `role="alert"`, an
+ * assertive live region, so "@crew_x joined chen-lab" cut across whatever the
+ * screen reader was reading. The role is now chosen per entry point, and each one
+ * is pinned here: the options object is what reaches the DOM (`Toastify__toast`
+ * renders `role={role}`), so asserting it is asserting the announced role.
+ */
+describe('which toasts interrupt a screen reader', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isActive.mockReturnValue(false);
+    toastService.configure({ silent: false });
+  });
+
+  const optionsOf = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[0][1];
+
+  it('reads confirmations politely: success is a status, not an alert', () => {
+    toastSuccess({ title: 'Joined', msg: '@crew_x joined chen-lab' });
+    expect(optionsOf(mocks.success)).toMatchObject({ role: 'status' });
+
+    // The service path is the same function, so it inherits the role.
+    vi.clearAllMocks();
+    toastService.success({ title: 'Saved', msg: 'All good' });
+    expect(optionsOf(mocks.success)).toMatchObject({ role: 'status' });
+  });
+
+  it('reads information politely', () => {
+    toastInfo({ title: 'Heads up', msg: 'Nothing is wrong' });
+    expect(optionsOf(mocks.info)).toMatchObject({ role: 'status' });
+  });
+
+  it('reads progress politely', () => {
+    toastLoading({ title: 'Installing', msg: 'One moment' });
+    expect(optionsOf(mocks.loading)).toMatchObject({ role: 'status' });
+  });
+
+  // The other half of the rule, and the half that must not regress: a failure
+  // exists to interrupt, so it keeps the assertive role.
+  it('keeps failures assertive', () => {
+    toastError({ title: 'Failed', msg: 'The chat store was busy' });
+    expect(optionsOf(mocks.error)).toMatchObject({ role: 'alert' });
+  });
+
+  it('keeps warnings assertive', () => {
+    toastWarning({ title: 'Careful', msg: 'This model cannot see images' });
+    expect(optionsOf(mocks.warning)).toMatchObject({ role: 'alert' });
+  });
+
+  it('lets the grouped extension report interrupt only when something failed', () => {
+    const loading = [{ name: 'developer', status: 'loading' as const }];
+    toastService.extensionLoading(loading, 1, false);
+    expect(mocks.toast.mock.calls[0][1]).toMatchObject({ role: 'status' });
+
+    // Once the toast exists, the report is UPDATED in place; the role travels
+    // with the update so a failure turns the same toast assertive.
+    mocks.isActive.mockReturnValue(true);
+    const failed = [{ name: 'developer', status: 'error' as const, error: 'boom' }];
+    toastService.extensionLoading(failed, 1, true);
+    expect(mocks.update.mock.calls[0][1]).toMatchObject({ type: 'error', role: 'alert' });
+
+    const loaded = [{ name: 'developer', status: 'success' as const }];
+    toastService.extensionLoading(loaded, 1, true);
+    expect(mocks.update.mock.calls[1][1]).toMatchObject({ type: 'success', role: 'status' });
   });
 });

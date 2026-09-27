@@ -1,0 +1,282 @@
+/* Crew dialogs — the few load-bearing styles the dialogs area authors itself.
+
+   Bound by the contract in `crew/crew-app.css` (enforced by `crewCss.sourceGuard.test.ts`):
+   `.crew-*` classes only, tokens only, no element selectors. */
+
+/* The person picker's list is exactly as wide as the field that opened it, whatever the dialog's
+   width: a list narrower than its field reads as a different control. Radix publishes the
+   trigger's width on the popover content. */
+.crew-person-picker-list {
+  width: var(--radix-popover-trigger-width);
+  max-width: var(--radix-popover-content-available-width);
+}
+
+/* Add people's checklist scrolls inside the dialog once a lab outgrows it, so the search box, Select
+   all and the footer stay in view (QA Q2-05). */
+.crew-person-checklist {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+/* Workspace settings: every tab of the dialog's own sits in one grid cell, so the dialog is as tall
+   as the tallest of them whichever is selected, and switching tabs never moves the footer (QA
+   T-30). The unselected panels stay laid out but unseen; `WorkspaceSettingsDialog` also takes them
+   out of the tab order and the accessibility tree (`inert`, `aria-hidden`). */
+.crew-settings-panels {
+  display: grid;
+}
+
+/* Switching tabs never paints two panels at once (QA Q3-40). The shared `TabsContent` carries an
+   enter animation and a duration utility, and with `transition-property` left at its initial `all`
+   that duration also delayed `visibility`: the outgoing panel stayed visible and opaque for 175ms
+   over the incoming one. Here the outgoing panel hides at once and the incoming one fades in over
+   `--dur-fast`; the transition list names only what is meant to move.
+
+   The padding is the room for the panel's own focus ring (a panel takes a Tab stop): drawn inset,
+   so it never touches the text inside. */
+.crew-settings-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  padding: 6px;
+  animation: none;
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.crew-settings-panel[data-state='inactive'] {
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    visibility 0s,
+    opacity 0s;
+}
+
+/* A panel mounted as it is selected (Agent access) fades in like the others. */
+@starting-style {
+  .crew-settings-panel[data-state='active'] {
+    opacity: 0;
+  }
+}
+
+.crew-settings-panel:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-settings-panel {
+    transition: none;
+  }
+}
+
+/* Workspace settings' rows divide with a straight hairline (QA Q4-25). The shared
+   `biorouter-settings-row` draws its divider as a bottom BORDER on a box with rounded corners, so
+   the line curled up at both ends — faintly on a normal screen, and plainly in forced colours, which
+   paint every border in the system's text colour. Here the border goes (its 1px of room kept as a
+   margin, so no row moves) and the divider is a straight line drawn under the row, inset by the
+   corner radius so it ends where the rounded hover wash begins to curve. It is itself a border, not
+   a background, so forced colours still draw it: they drop background colours. The last row of a
+   list has none, as before, and a row holding focus firms its line as the shared rule firmed the
+   border. */
+.crew-settings-panel .crew-settings-row {
+  position: relative;
+  border-bottom-width: 0;
+  margin-bottom: 1px;
+}
+
+.crew-settings-panel .crew-settings-row::after {
+  content: '';
+  position: absolute;
+  inset-inline: var(--radius-md);
+  bottom: -1px;
+  height: 1px;
+  border-top: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.crew-settings-panel .crew-settings-row:focus-within::after {
+  border-top-color: var(--border-focus);
+}
+
+.crew-settings-panel .crew-settings-row:last-child::after {
+  content: none;
+}
+
+/* People's Host badge takes a Tab stop for its tooltip (QA Q2-69). The shared focus rule marks a
+   tab stop with an INSET ring, which the chip's own fill painted over, so the badge showed no focus
+   at all (QA Q4-40). Its ring is an outline outside the chip instead. Forced colours keep an outline
+   (they drop the fill and the box-shadow), and the OS-requested ring in `main.css` draws the same
+   one there. */
+.crew-settings-host-badge:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* A member row's ⋯ is hidden at rest and shown on the row's hover and focus, and while its menu is
+   open (design.md §4.14; QA Q3-33). The hook is a wrapper around the button, so the button's own
+   transitions stay its own. A device with no hover keeps it shown: nothing would reveal it. */
+.crew-settings-member [data-row-action] {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.crew-settings-member:is(:hover, :focus-within) [data-row-action],
+.crew-settings-member [data-row-action]:has([data-state='open']) {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .crew-settings-member [data-row-action] {
+    opacity: 1;
+  }
+}
+
+/* Settings → Privacy's own connection, as ONE badge, `🔒 Private · UCSF` (QA Q2-45, Q3-40): the
+   sidebar chip's shape. The inner `PrivacyBadge` keeps its geometry and fill (the same token), so
+   the two read as one pill; this box supplies the fill under the institution and the end inset. */
+.crew-settings-privacy-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-settings-privacy-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A focused text field in a Crew dialog firms its edge to the accent, exactly as it does inside the
+   Crew area (`crew-app.css`, T-16). A dialog portals to <body>, outside `.crew-app`, so that rule
+   never reached it and a keyboard user saw no change at all (QA Q2-25); `CrewDialogs` gives every
+   dialog it mounts the `crew-dialog` class instead. `:read-write` is exactly the editable fields —
+   never a checkbox, radio or read-only field — so no element selector is needed, and an invalid
+   field keeps its danger edge. The accent is safe on a dialog's ground for the same reason it is in
+   the Crew area: the shared `Input` paints `--background-default`. */
+.crew-dialog :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}
+
+/* The same edge for a confirmation's typed-name field (Make public, Allow Public, Remove from the
+   workspace). A confirmation renders the app's shared `DangerousConfirmDialog`, not a `ModalShell`,
+   so it never carries `crew-dialog`; it does hold `confirmations.tsx`'s hidden `crew-confirmation`
+   mark, which `:has()` finds without anything writing a class onto the primitive (QA Q2-25). The
+   primitive's `Input` paints `--background-default`, the ground the accent is measured on above. */
+[data-slot='dialog-content']:has(.crew-confirmation)
+  :read-write:focus-visible:not([aria-invalid='true']) {
+  border-color: var(--border-accent);
+}
+
+/* Commands someone runs as written (Invite people's install help): each keeps its own line and the
+   block scrolls sideways, rather than wrapping mid-word — "biorouter–" / "crew" read as a hyphen to
+   type (QA Q2-24). Out-ranks the copy field's multi-line `pre-wrap` in `main.css`. */
+.crew-dialog [data-slot='copy-field'][data-multiline='true'] .crew-command-lines {
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+/* Workspace settings → Agent access, like every tab, opens with no label repeating its name (QA
+   Q3-40). The access area's content brings a heading of its own that does (QA Q2-66): hidden here,
+   where the tab already names it. It stays the section's accessible name — `aria-labelledby` reads a
+   hidden node — and it still shows wherever else that content mounts. */
+.crew-settings-panel[data-crew-tab='agent-access'] > [aria-labelledby] > :first-child {
+  display: none;
+}
+
+/* An action that holds focus while it cannot act yet (Let in's "Add to {team}" before the joiner's
+   Crew checks in): `aria-disabled` rather than `disabled`, so the next state frame enables it where
+   focus already is (QA Q2-03). It reads as disabled all the same. */
+.crew-waiting-action[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Let in keeps its shape when the joiner arrives (QA Q3-35). The host's pointer is on the footer,
+   waiting for "Add to {team}" to enable, so nothing above it may get shorter when "joined" lands.
+   Each block that changes its words then is laid out as tall as the tallest of them, in both
+   views.
+
+   `crew-steady` stacks the live element with an unseen copy of its tallest form
+   (`crew-steady-sizer`) in one grid cell, for the status note, whose tone changes its border as
+   well as its words. `crew-reserve` lays out the sentences it may show (`data-reserve-a`,
+   `data-reserve-b`) as unseen generated text in the cell under the one it shows
+   (`crew-reserve-shown`). Generated, so no second copy of a sentence reaches the accessibility
+   tree, a live region, or a search of the page. */
+.crew-steady {
+  display: grid;
+  min-width: 0;
+}
+
+.crew-steady > .crew-steady-item {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-steady-sizer {
+  visibility: hidden;
+}
+
+/* The live status note, stretched to its tallest form's room: a one-line sentence sits in the
+   middle of it, not on the first line over a blank second one ("Jack joined wong-lab", QA Q4-38).
+   The two-line sentence fills the room either way.
+
+   What is centred is the icon and the words TOGETHER, as one row: the Note's grid track, not
+   each child. Centring the children (the round-4 `align-items: center` on the Note's flex row)
+   dropped the check icon between the two lines of "Code saved…", about 7px under where every
+   other Note puts it. In the row the icon keeps the Note's own place, beside the first line; the
+   words are centred on it, so a one-line sentence still has as much room above as below. */
+.crew-steady > .crew-steady-live {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+}
+
+/* The Note's icon, its one `aria-hidden` child. */
+.crew-steady > .crew-steady-live > [aria-hidden='true'] {
+  align-self: start;
+}
+
+/* Text a sizer lays out and nobody reads: generated, so no copy of a sentence reaches the
+   accessibility tree, a live region or a search of the page (Let in's code view reserving the
+   saved view's room, QA Q4-38). Inline, so it wraps exactly as the sentence it stands for. */
+.crew-say::before {
+  content: attr(data-say);
+}
+
+.crew-reserve {
+  display: grid;
+  min-width: 0;
+}
+
+.crew-reserve > .crew-reserve-shown,
+.crew-reserve::before,
+.crew-reserve::after {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.crew-reserve::before {
+  content: attr(data-reserve-a);
+  visibility: hidden;
+}
+
+.crew-reserve::after {
+  content: attr(data-reserve-b);
+  visibility: hidden;
+}

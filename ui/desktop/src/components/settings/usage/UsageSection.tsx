@@ -1,3 +1,4 @@
+import { userActionHeaders } from '../../../utils/userAction';
 import { useEffect, useState } from 'react';
 import {
   getUsageReport,
@@ -35,10 +36,19 @@ export default function UsageSection() {
         const from = Math.floor(
           new Date(currentTime.getFullYear(), currentTime.getMonth(), 1).getTime() / 1000
         );
+        const headers = await userActionHeaders();
         const [summaryRes, dayRes, modelRes] = await Promise.all([
-          getUsageSummary<true>({ throwOnError: true }),
-          getUsageReport<true>({ query: { from, to: now, group: 'day' }, throwOnError: true }),
-          getUsageReport<true>({ query: { from, to: now, group: 'model' }, throwOnError: true }),
+          getUsageSummary<true>({ headers, throwOnError: true }),
+          getUsageReport<true>({
+            headers,
+            query: { from, to: now, group: 'day' },
+            throwOnError: true,
+          }),
+          getUsageReport<true>({
+            headers,
+            query: { from, to: now, group: 'model' },
+            throwOnError: true,
+          }),
         ]);
         if (cancelled) return;
         setSummary(summaryRes.data);

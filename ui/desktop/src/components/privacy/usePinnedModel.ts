@@ -85,7 +85,7 @@ export function usePinnedModel(
   reportedByTurn: PinnedModelView | undefined
 ): PinnedModelPresentation {
   const { getProviders } = useConfig();
-  const { currentModel, currentProvider } = useModelAndProvider();
+  const { currentModel, currentProvider, modelConfigStatus } = useModelAndProvider();
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [selectedTier, setSelectedTier] = useState<ProviderTier | undefined>(undefined);
 
@@ -139,6 +139,10 @@ export function usePinnedModel(
   // A chat that has never named a provider genuinely has no binding of its own
   // and correctly runs on — and states — the app-wide selection.
   if (!binding) return { notice: null };
+
+  if (modelConfigStatus === 'ready' && (!currentProvider || !currentModel)) {
+    return { effectiveModel: binding, notice: null };
+  }
 
   // Rule 1. `bindingDiffersFromSelection` is also `false` on the first render of
   // every chat, where the config has not landed and `currentProvider` /

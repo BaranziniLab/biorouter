@@ -397,6 +397,17 @@ impl AgentManager {
         }
     }
 
+    pub fn new_scoped_agent(&self) -> Arc<Agent> {
+        let config = AgentConfig::new(
+            Arc::clone(&self.session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        )
+        .with_project_hooks(false);
+        Arc::new(Agent::with_config(config))
+    }
+
     pub async fn get_or_create_agent(&self, session_id: String) -> Result<Arc<Agent>> {
         // BR-71: a pinned (running, externally-built) agent always wins — it is
         // the instance whose loop drains the soft-interrupt queue.

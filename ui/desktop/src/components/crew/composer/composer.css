@@ -1,0 +1,140 @@
+/* Crew — the composer (`composer/Composer.tsx`).
+
+   Bound by the stylesheet contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and data/aria
+   hooks, tokens only, no pixel font sizes, and a reduced-motion rest for any
+   `crew-*` keyframes (this file declares none).
+
+   The card itself is the chat composer's: `.biorouter-composer-card` (and its
+   authored `:has(textarea:focus)` accent edge) plus the same utilities
+   `ChatInput.tsx` writes. This file only places things around and inside it,
+   and never re-skins it. Nothing here animates: the spec lists composer
+   auto-grow among what must not move.
+
+   **The family is `crew-compose-*`.** It was chosen while the old layout's
+   global `crew/crew.css` still styled `.crew-composer` (and every `textarea`
+   inside one, as a resizable box that beat this file's one-row auto-grow).
+   That stylesheet is deleted, and `integration/legacyStylesheet.test.ts` keeps
+   it deleted. A class styled here must still not be one another Crew area's
+   stylesheet also styles; `files/stylesheets.sourceGuard.test.ts` holds that. */
+
+/* The bar the card sits in: the canvas, 12px above, 24px below, 16px gutters,
+   and the 760px chat measure. */
+.crew-compose {
+  /* The card at rest: its 10px + 10px padding, a 32px text row, the 32px
+     control row and the 1px + 1px border. The Verifying bar takes the same
+     height, so swapping one for the other moves nothing above it. */
+  --crew-compose-rest-height: calc(20px + 2 * var(--control-md) + 2px);
+
+  flex: 0 0 auto;
+  padding: 12px 16px 24px;
+  background-color: var(--background-canvas);
+}
+
+.crew-compose-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: var(--measure-chat);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.crew-compose-note {
+  min-width: 0;
+}
+
+.crew-compose-card {
+  min-height: var(--crew-compose-rest-height);
+}
+
+/* One row at rest; `Composer.tsx` sets the height to the content, and this is
+   the ceiling past which it scrolls. */
+.crew-compose-input {
+  min-height: var(--control-md);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.crew-compose-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  /* Pull the paperclip's own inset back to the card's text edge. */
+  margin-left: -8px;
+}
+
+.crew-compose-spacer {
+  flex: 1 1 auto;
+}
+
+.crew-compose-send {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* The stand-ins for the card: archived is the spec's 44px bar; Verifying takes
+   the card's resting height so the view does not jump when access returns. */
+.crew-compose-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-muted);
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.crew-compose-bar-archived {
+  min-height: var(--chrome-height);
+}
+
+.crew-compose-bar-verifying {
+  min-height: var(--crew-compose-rest-height);
+}
+
+/* The chips row and the lines under it: only rendered when there is
+   something in it. */
+.crew-compose-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0 0 6px;
+}
+
+.crew-compose-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* "Press Send to share it." and a file already in the channel (Q3-13,
+   Q3-14): quiet lines under the chips, never a banner, and never blocking. */
+.crew-compose-chip-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
+}
+
+.crew-compose-chip-item {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The composer's own drop zone, used only when the layout gives none wider. */
+.crew-compose-drop {
+  flex: 0 0 auto;
+}

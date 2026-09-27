@@ -1,0 +1,847 @@
+/* Crew timeline — the message list's stylesheet.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: only `.crew-*` classes and `[data-*]` /
+   `[aria-*]` hooks (never an element selector — markdown elements get their
+   class from `MessageBody`'s component map), tokens only, `crew-*` keyframes
+   with a reduced-motion rest each. Load-bearing layout lives here rather than
+   in newly written Tailwind utilities, which can silently fail to generate
+   under `BIOROUTER_NO_HMR`.
+
+   What animates, and nothing else (ui-redesign-spec, "Motion"):
+   - a live arrival while following the bottom: `biorouter-tool-enter`, 160ms;
+   - the jump and history pills: opacity + 4px rise over `--dur-fast-max`;
+   - a running task's word: the tool-call text pulse;
+   - row hover, the gutter time and the row actions: `--dur-fast-min` fades;
+   - the re-verification dim: `--dur-fast`;
+   - a pending post's spinner (the app's one spinner, `animate-spin`).
+   History pages, day dividers, the New line and status words do not move. */
+
+.crew-timeline {
+  /* The avatar column plus its gap: 32 + 12 = 44px, the gutter a continuation
+     row shows its time in. */
+  --crew-message-gutter: calc(var(--crew-avatar, 32px) + 12px);
+  /* The day band's line: the 28px that carries the day's name. The band and the
+     scroller's scroll padding both read it, so the stop can never drift from
+     the band it clears. */
+  --crew-day-band-line: 28px;
+  /* How far a row's hover cluster rises above the row's top edge. The cluster
+     and the row's scroll margin both read it. */
+  --crew-row-actions-rise: 12px;
+
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+/* Re-verification: the last verified view, dimmed and acting on nothing. */
+.crew-timeline[data-readonly='true'] {
+  opacity: 0.6;
+}
+
+.crew-timeline-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Where a scroll into view stops: under the day band, not under the fade alone
+   (Q3-19, WCAG 2.2 2.4.11). The band is opaque and covers the viewport's top
+   `--scroll-fade-top + --crew-day-band-line + 1px` (its padding, its line and
+   its hairline). The shared `.biorouter-scroll-fade-top` rule stops only the
+   fade's 10px short, so a one-line row arrowed or tabbed to at the top landed
+   at y=10–34, wholly behind the band, and `block: 'nearest'` counted a row
+   already under the band as in view and did not scroll at all. The same held
+   for a row's Save and ⋯ buttons. The arrow keys' `scrollIntoView`, focus
+   scrolling and the highlight's `block: 'center'` all read this padding; the
+   sticky band itself does not (it still rides at `top: 0`). One more class than
+   the shared rule, so it wins whichever stylesheet loads last. */
+.crew-timeline > .crew-timeline-scroll > [data-radix-scroll-area-viewport] {
+  scroll-padding-top: calc(var(--scroll-fade-top) + var(--crew-day-band-line) + 1px);
+}
+
+.crew-timeline-column {
+  padding-inline: 16px;
+}
+
+.crew-timeline-log {
+  display: flex;
+  flex-direction: column;
+  padding-block: 8px 24px;
+}
+
+/* ── Days ────────────────────────────────────────────────────────────────────
+   Each day is its own section, so its sticky band rides only while the day is
+   on screen.
+
+   The band (Q3-19): the whole column wide — the column's own 16px gutters
+   included — on the page's ground, with a hairline under it and the day's name
+   in the middle. A pill riding over a line covered only the middle of it
+   ("colum[Today]ies"); the band hides a line scrolling under it whole. It rides
+   at the very top of the viewport, and its top `--scroll-fade-top` is padding
+   that the scroller's top fade may take (`.biorouter-scroll-fade-top`), so the
+   28px that carries the name is never faded. It does not move by itself.
+
+   The ground is `--background-canvas`, the one `.crew-app` paints under the
+   conversation (`crew-app.css`) and nothing between repaints. Not
+   `--background-default`: the two are equal in light, but in dark default is a
+   step lighter (neutral-900 on neutral-950, #1b1b19 on #131312), which drew
+   the band as a lighter 760px stripe instead of the page it stands for.
+
+   It takes the pointer. It hides what scrolls under it, so a click on it must
+   land on it and never on a link, a card's Save or "Your agent · {chat title}"
+   hidden beneath. */
+.crew-day {
+  position: relative;
+}
+
+/* Above a row's hover actions (z-index 3), so a row sliding under the band
+   never draws its toolbar over it. */
+.crew-day-label {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  height: var(--crew-day-band-line);
+  margin: 10px -16px 4px;
+  padding: var(--scroll-fade-top) 16px 0;
+  box-sizing: content-box;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--background-canvas);
+}
+
+.crew-day-pill {
+  grid-column: 2;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* The New line on the day's own band (Q2-53): the first unread message is the
+   day's first, so the hairline turns the accent and carries "New" at its end.
+   Everything of the day under the band is new, so it may ride with it. */
+.crew-day-label[data-new='true'] {
+  border-bottom-color: var(--accent-bar);
+}
+
+.crew-day-new {
+  grid-column: 3;
+  justify-self: end;
+}
+
+/* ── The New line ────────────────────────────────────────────────────────── */
+.crew-new-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block: 12px 4px;
+}
+
+.crew-new-divider::before {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background-color: var(--accent-bar);
+}
+
+/* ── Message groups and rows ─────────────────────────────────────────────── */
+.crew-message-group {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.crew-message-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr);
+  margin-inline: -8px;
+  padding: 2px 8px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+  /* A focused row shows its hover cluster, which rises above the row's top. A
+     row scrolled in under the day band stops that much lower, so the cluster
+     it reveals is not cut by the band either. */
+  scroll-margin-top: var(--crew-row-actions-rise);
+}
+
+.crew-message-row[data-head='true'] {
+  padding-top: 6px;
+}
+
+.crew-message-row:hover,
+.crew-message-row:focus-within {
+  background-color: var(--overlay-hover);
+}
+
+/* A row is focused by the arrow keys. The focus fill alone measured 1.3:1
+   (light) and 1.4:1 (dark) against the page, under the 3:1 a focus indicator
+   needs, so the focused row also takes a 2px ring inside its edge (Q3-21). */
+.crew-message-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  background-color: var(--background-focus);
+}
+
+.crew-message-row[data-arriving='true'] {
+  animation: biorouter-tool-enter 160ms var(--ease-out) both;
+}
+
+.crew-message-gutter {
+  display: flex;
+  align-items: flex-start;
+}
+
+/* Every message body sits on the 14/21 reading line (design.md's body role),
+   a person's short messages as much as an agent's prose — lists, tables,
+   several paragraphs (Q2-58). The gutter times keep level with it. */
+.crew-md,
+.crew-message-gutter-time {
+  line-height: 21px;
+}
+
+.crew-message-gutter-time {
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-message-row:hover .crew-message-gutter-time,
+.crew-message-row:focus-within .crew-message-gutter-time {
+  opacity: 1;
+}
+
+.crew-message-main {
+  min-width: 0;
+}
+
+.crew-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.crew-message-author {
+  min-width: 0;
+}
+
+/* The author's name reads as the head of the group: 600 against the 400 body.
+   500 was barely heavier than the words under it (Q3-24). Only the name — the
+   muted @handle beside it stays the body's weight. */
+.crew-message-author [data-person-part='name'],
+.crew-message-author-lead {
+  font-weight: 600;
+}
+
+/* "Your agent · {chat title}" (Q3-22): the title opens the chat that posted.
+   Link-like, in the default ink, so it reads as part of the head and not as an
+   accent call to action. A raw button, so the focus fill is restated here: this
+   unlayered ink would otherwise beat the base layer's. */
+.crew-message-agent-chat {
+  min-width: 0;
+  padding: 0 2px;
+  margin-inline: -2px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background-color: transparent;
+  color: var(--text-default);
+  font-weight: 500;
+  text-align: start;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.crew-message-agent-chat:hover {
+  text-decoration-color: var(--text-default);
+}
+
+.crew-message-agent-chat:focus-visible {
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+.crew-message-agent-chat:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
+.crew-message-body {
+  overflow-wrap: anywhere;
+}
+
+/* The long-message fold: clipped to the chat's height, the cut faded by a
+   mask. A mask paints nothing — `black` here is alpha, not a colour — so the
+   fade is right on any ground, a hovered row included. */
+.crew-message-body[data-clamped='true'] {
+  max-height: var(--crew-clamp-height);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black calc(100% - 56px), transparent);
+}
+
+.crew-message-fold {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* ── Row actions ─────────────────────────────────────────────────────────────
+   A floating cluster on the popover surface at the row's top right, revealed
+   on hover and focus-within (and while its menu is open). Without a hover
+   pointer it sits in the flow, always shown. */
+.crew-row-actions {
+  position: absolute;
+  top: calc(-1 * var(--crew-row-actions-rise));
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-message-row:hover > .crew-row-actions,
+.crew-message-row:focus-within > .crew-row-actions,
+.crew-row-actions[data-open='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Right under the New line, the cluster would sit on its "New" label: it
+   drops inside the row instead. The same right under a day's band, which it
+   would otherwise poke into. */
+.crew-new-divider + .crew-message-group > .crew-message-row:first-child > .crew-row-actions,
+.crew-day-label + .crew-message-group > .crew-message-row:first-child > .crew-row-actions {
+  top: 4px;
+}
+
+/* Without a hover pointer the cluster sits in the flow, under the message. It
+   comes BEFORE the message in the DOM (so Tab reaches it before the file cards,
+   Q4-22); `order` places it after the message all the same. */
+@media (hover: none) {
+  .crew-row-actions {
+    position: static;
+    order: 1;
+    grid-column: 2;
+    justify-self: end;
+    background-color: transparent;
+    box-shadow: none;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ── An agent's folded tool updates ─────────────────────────────────────── */
+/* The Disclosure trigger already pulls itself left by its own inset, so its
+   chevron starts on the text edge; the lines it reveals start there too. */
+.crew-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.crew-trace-line {
+  overflow-wrap: anywhere;
+}
+
+/* ── Markdown ────────────────────────────────────────────────────────────── */
+.crew-md-p,
+.crew-md-heading,
+.crew-md-list,
+.crew-md-quote,
+.crew-md-code,
+.crew-md-table-scroll {
+  margin: 0 0 8px;
+}
+
+.crew-md-p:last-child,
+.crew-md-heading:last-child,
+.crew-md-list:last-child,
+.crew-md-quote:last-child,
+.crew-md-code:last-child,
+.crew-md-table-scroll:last-child {
+  margin-bottom: 0;
+}
+
+.crew-md-heading {
+  font-weight: 600;
+}
+
+.crew-md-link {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-accent) 40%, transparent);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--dur-fast) var(--ease-out);
+}
+
+.crew-md-link:hover {
+  text-decoration-color: var(--text-accent);
+}
+
+.crew-md-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.crew-md-image-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.crew-md-code-inline {
+  padding: 1px 4px;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-medium);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  overflow-wrap: anywhere;
+}
+
+/* A fenced block sits in the well, never on `--background-code`, which in
+   dark mode is the page itself. */
+.crew-md-code {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-well);
+}
+
+.crew-md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 2px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.crew-md-code-lang {
+  font-family: var(--font-mono);
+}
+
+.crew-md-code-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* Only a box that scrolls is focusable (MessageBody), so only it ever shows this. */
+.crew-md-code-body:focus-visible,
+.crew-md-table-scroll:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+/* A table or code block with more to its right fades out at its right edge
+   (Q3-18): macOS hides overlay scrollbars, so a clipped column gave no sign
+   that the box scrolls. `data-overflow` is set while there is more to the
+   right and dropped at the scroll end, so the last column is never dimmed. A
+   mask paints nothing — `black` is alpha — so the fade is right on any ground. */
+.crew-md-code-body[data-overflow='true'],
+.crew-md-table-scroll[data-overflow='true'] {
+  mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
+}
+
+/* A table's body rows are on the page's ground, so a fade over right-aligned
+   numbers that sit wholly past the edge fades nothing: only the header's fill
+   showed it (Q4-26). The box also draws a hairline at its right edge, kept out
+   of the fade — the mask stops 1px short and the border's pixel stays opaque —
+   so the cut reads as an edge on every row. The code block keeps its fade
+   alone: its well has a border of its own. */
+.crew-md-table-scroll[data-overflow='true'] {
+  border-right: 1px solid var(--border-subtle);
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - 41px),
+    transparent calc(100% - 1px),
+    black calc(100% - 1px)
+  );
+}
+
+/* Focused from the keyboard, the box drops its fade: the mask takes alpha from
+   everything it covers, the inset focus edge included, so the ring's right side
+   faded out with the last column. The whole ring is the sign it scrolls now. */
+.crew-md-code-body[data-overflow='true']:focus-visible,
+.crew-md-table-scroll[data-overflow='true']:focus-visible {
+  mask-image: none;
+}
+
+.crew-md-list {
+  padding-left: 1.5em;
+  list-style: disc outside;
+}
+
+.crew-md-list[data-ordered='true'] {
+  list-style-type: decimal;
+}
+
+.crew-md-list[data-tasks='true'] {
+  padding-left: 0.25em;
+  list-style: none;
+}
+
+.crew-md-list .crew-md-list {
+  margin: 2px 0;
+}
+
+.crew-md-item {
+  margin: 2px 0;
+}
+
+.crew-md-task-box {
+  margin-inline-end: 6px;
+  vertical-align: middle;
+}
+
+.crew-md-quote {
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.crew-md-rule {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.crew-md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Numbers line up in columns (design.md: tables are tabular), and the corners
+   are rounded like a code block's. Rounded corners need the separate border
+   model — a collapsed table ignores its radius — so each body cell draws only
+   its top edge, and the table draws the outside. Horizontal rules only, 11×16
+   cells, and a code span in a cell is plain mono, not a chip (design.md
+   §4.17, Q2-52). */
+.crew-md-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.crew-md-cell {
+  padding: 11px 16px;
+  border: 0;
+  border-block-start: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+  /* Never inherit the body's `overflow-wrap: anywhere`: it split "Sample" into
+     "Sampl / e" once the pane narrowed the column. A table that is too wide
+     scrolls in its own region instead. */
+  overflow-wrap: normal;
+}
+
+/* Headers and every column after the first stay on one line — a number or a
+   short label is never broken to squeeze it in; the first column (names) may
+   still wrap between words. */
+.crew-md-cell[data-head='true'],
+.crew-md-cell:not(:first-child) {
+  white-space: nowrap;
+}
+
+.crew-md-cell .crew-md-code-inline {
+  padding: 0;
+  background-color: transparent;
+  overflow-wrap: normal;
+}
+
+/* A GFM table has exactly one header row, and it is the first. */
+.crew-md-cell[data-head='true'] {
+  border-block-start: 0;
+  font-weight: 600;
+  background-color: var(--background-muted);
+}
+
+/* ── A post on its way ───────────────────────────────────────────────────────
+   The words and files dimmed, "Sending…" at full muted ink: on a head row where
+   the time will be, on a continuation on a line under the words. Inert, so it
+   takes no hover and no focus. */
+.crew-pending-row .crew-message-body,
+.crew-pending-files {
+  opacity: 0.6;
+}
+
+.crew-pending-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crew-pending-status-line {
+  display: flex;
+  margin: 2px 0 0;
+}
+
+.crew-pending-spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* ── The viewer's task rows ──────────────────────────────────────────────── */
+.crew-task-row {
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr) auto;
+  align-items: center;
+  margin: 8px -8px 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-element);
+}
+
+.crew-task-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  background-color: var(--background-focus);
+}
+
+.crew-task-main {
+  min-width: 0;
+}
+
+.crew-task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-task-badge {
+  vertical-align: middle;
+}
+
+.crew-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+/* The running word pulses gently, like a running tool call (design.md §4.19). */
+.crew-task-running {
+  animation: crew-task-pulse 2.4s var(--ease-out) infinite;
+}
+
+@keyframes crew-task-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* ── The channel's start ─────────────────────────────────────────────────── */
+.crew-channel-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding-block: 24px 8px;
+}
+
+/* Its place kept while the live tail streams in (Timeline): laid out, never
+   seen. It appears in place, without motion, once the start is known loaded. */
+.crew-channel-intro[data-pending='true'] {
+  visibility: hidden;
+}
+
+.crew-channel-intro-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+
+.crew-channel-intro-action {
+  margin-top: 8px;
+}
+
+.crew-channel-intro-hint {
+  margin: 4px 0 0;
+}
+
+.crew-history-sentinel {
+  display: flex;
+  justify-content: center;
+  padding-block: 8px;
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.crew-timeline-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 24px;
+}
+
+.crew-skeleton-row {
+  display: grid;
+  grid-template-columns: var(--crew-message-gutter) minmax(0, 1fr);
+}
+
+.crew-skeleton-avatar {
+  width: var(--crew-avatar, 32px);
+  height: var(--crew-avatar, 32px);
+  border-radius: var(--radius-full);
+}
+
+.crew-skeleton-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.crew-skeleton-name-short,
+.crew-skeleton-name-long,
+.crew-skeleton-line-long,
+.crew-skeleton-line-mid,
+.crew-skeleton-line-short {
+  height: 12px;
+}
+
+.crew-skeleton-name-short {
+  width: 96px;
+}
+
+.crew-skeleton-name-long {
+  width: 144px;
+}
+
+.crew-skeleton-line-long {
+  width: 80%;
+}
+
+.crew-skeleton-line-mid {
+  width: 60%;
+}
+
+.crew-skeleton-line-short {
+  width: 36%;
+}
+
+/* ── The pill above the composer ─────────────────────────────────────────── */
+.crew-timeline-pill-slot {
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.crew-jump-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: var(--radius-container);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  pointer-events: auto;
+  animation: crew-pill-enter var(--dur-fast-max) var(--ease-out);
+}
+
+.crew-jump-pill-text {
+  padding-inline-start: 10px;
+}
+
+@keyframes crew-pill-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Forced colours ─────────────────────────────────────────────────────────
+   The day band keeps its ground and its line, so it still hides the text under
+   it and still reads as a divider (Q3-19); the table's fade would only hide
+   ink there, so it goes. */
+@media (forced-colors: active) {
+  .crew-day-label {
+    border-bottom: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  /* The New line is a 1px fill, which forced colours repaint as Canvas: only
+     the word "New" was left (Q4-25). It keeps its line in the text colour. */
+  .crew-new-divider::before {
+    background-color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  /* The hover toolbar's Copy and ⋯ had no button box: a tooltip trigger's slot
+     replaces the Button's own, so the app's button edge never reached them
+     (Q4-25). They get the system button edge every other button has. */
+  .crew-row-action {
+    border: 1px solid ButtonText;
+  }
+
+  .crew-md-code-body[data-overflow='true'],
+  .crew-md-table-scroll[data-overflow='true'] {
+    mask-image: none;
+  }
+}
+
+/* ── Reduced motion: every animated rule's rest ──────────────────────────────
+   An arrival appears in place, the running word holds still, the pills keep
+   only their fade, and fades and the dim are instant. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-timeline,
+  .crew-message-row,
+  .crew-message-gutter-time,
+  .crew-row-actions,
+  .crew-md-link {
+    transition: none;
+  }
+
+  .crew-message-row[data-arriving='true'] {
+    animation: none;
+  }
+
+  .crew-task-running {
+    animation: none;
+  }
+
+  .crew-jump-pill {
+    animation: crew-fade-in var(--dur-fast-max) var(--ease-out);
+  }
+}

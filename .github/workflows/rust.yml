@@ -452,10 +452,15 @@ jobs:
         run: |
           set -euo pipefail
           . scripts/cross-env.sh
-          cross_linux   "cargo build --release --bin biorouterd --bin biorouter"
+          cross_linux   "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew"
           cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
       - name: Assert the glibc floor (2.31 / bullseye) is not raised
         run: ./scripts/check-glibc-floor.sh
+
+      # `join-by-name` is a default feature of the broker (naming design D17). A broker built
+      # without it boots, passes the step below and refuses every join by invitation.
+      - name: The Crew broker lets people join by invitation
+        run: ./scripts/check-crew-broker-join.sh
 
       # The glibc floor check covers the libraries the binaries need from libc.
       # This covers the ones they need from everywhere ELSE — today exactly one,
@@ -496,7 +501,7 @@ jobs:
       # scripts/cross-env.sh). Its apt mirrors are what make the install step
       # work; when Debian 11 finally leaves them, this image moves forward
       # together with that pin, not on its own.
-      - name: Boot both Linux binaries on the oldest supported distro
+      - name: Boot all Linux binaries on the oldest supported distro
         env:
           DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
         run: |
@@ -506,6 +511,10 @@ jobs:
             apt-get install -y --no-install-recommends $DEB_PACKAGES
             /w/target/x86_64-unknown-linux-gnu/release/biorouter --version
             /w/target/x86_64-unknown-linux-gnu/release/biorouterd --version
+            test -x /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew
+            crew_version=$(/w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --version)
+            case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
+            /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --help
           '
 
   # `biorouter serve` end to end: the daemon serving the interface, the token

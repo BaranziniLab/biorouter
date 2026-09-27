@@ -1,0 +1,197 @@
+import * as React from 'react';
+import { ModalShell } from '../../ModalShell';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { avatarInitials } from '../../ui/avatar';
+import { isRecord } from '../api/parse';
+import { displayNameIsUsername, usableName } from '../identity';
+import { useInitialFocus } from '../onboarding/fields';
+import { connectionServerLabel } from '../onboarding/joinText';
+import type { ErrorSource } from '../state/types';
+import { profileCopy as copy } from './copy';
+import { DialogErrorNote, Field, helpId, useCustomValidity } from './fields';
+import { useDialogView } from './workspace';
+
+const SOURCE: ErrorSource = 'dialog:edit-profile';
+const KEY = 'mutate:profile.update';
+
+/** A display name may not carry `@` or `#`, nor anything whose compatibility form is one. */
+function displayNameProblem(name: string): string | null {
+  return Array.from(name).some((char) => /[@#]/.test(char.normalize('NFKC')))
+    ? copy.handleMark
+    : null;
+}
+
+export interface EditProfileDialogProps {
+  onClose(): void;
+}
+
+/**
+ * Edit profile (ui-redesign-spec, "Dialog inventory"; naming design, "Where display names come
+ * from"). The name on the server account comes from `profile.suggest` and is OFFERED — prefilled
+ * only while the person has never chosen a name, otherwise one click away — never applied without
+ * **Save profile**. The username is shown read-only: it is the account, not a preference.
+ *
+ * While Display name holds that suggestion unsaved, a line under it says so — "Filled in from your
+ * account on {server}. Save to use it." — so a prefilled name never reads as one already in use,
+ * and Initials shows the initial the avatar will derive from it until the person types their own
+ * (QA Q3-43). The dialog is the forms' width, 480, like Keys, Connection settings and Join (Q3-42).
+ *
+ * It opens with the caret at the end of the name, as Connection settings does, not the whole name
+ * selected — the first key typed then added to the name instead of replacing it — and the name
+ * keeps that focus while the menu that opened the dialog finishes closing (QA Q4-41, Q4-33).
+ * Initials, like the name, is not a word to spell-check (QA Q4-41).
+ */
+export function EditProfileDialog({ onClose }: EditProfileDialogProps) {
+  const { crew, dir } = useDialogView();
+  const me = dir.me;
+  const saved = crew.connections.find((item) => item.id === crew.connectionId) ?? null;
+  const formId = React.useId();
+  const nameId = `${formId}-name`;
+  const initialsId = `${formId}-initials`;
+  const chosen = me && !displayNameIsUsername(me.displayName, me.username) ? me.displayName : '';
+  const [name, setName] = React.useState(chosen || me?.username || '');
+  const [initials, setInitials] = React.useState(me?.avatar ?? '');
+  const [edited, setEdited] = React.useState(false);
+  const [suggestion, setSuggestion] = React.useState<string | null>(null);
+  const problem = displayNameProblem(name);
+  const nameRef = useCustomValidity<HTMLInputElement>(problem);
+  useInitialFocus(nameRef, true);
+  // Once, as the dialog opens: the caret at the end of the name (QA Q4-41). The dialog's own
+  // first-field focus selected the whole name, which the first key typed then replaced.
+  const caretPlaced = React.useRef(false);
+  const placeCaretAtEnd = (event: React.FocusEvent<HTMLInputElement>) => {
+    if (caretPlaced.current) return;
+    caretPlaced.current = true;
+    const input = event.currentTarget;
+    input.setSelectionRange(input.value.length, input.value.length);
+  };
+  const saving = crew.isPending(KEY);
+  const request = crew.request;
+
+  // One lookup when the dialog opens. A broker without `profile.suggest` simply offers nothing.
+  React.useEffect(() => {
+    let live = true;
+    request<unknown>('profile.suggest', {})
+      .then((answer) => {
+        const offered = isRecord(answer) ? usableName(answer.full_name) : '';
+        if (live && offered) setSuggestion(offered);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [request]);
+
+  // Never chosen a name and not typing: the name on the server account is the natural prefill.
+  React.useEffect(() => {
+    if (suggestion && !chosen && !edited) setName(suggestion);
+  }, [suggestion, chosen, edited]);
+
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void crew
+      .act(SOURCE, KEY, async () => {
+        await crew.mutate('profile.update', {
+          nickname: name.trim(),
+          avatar: initials.trim() || null,
+        });
+        return true as const;
+      })
+      .then((done) => done === true && onClose());
+  };
+
+  const offer = suggestion && suggestion !== name.trim() ? suggestion : null;
+  // The server account's name is in the field, and it is not the name already saved.
+  const unsavedSuggestion =
+    suggestion !== null && name.trim() === suggestion && suggestion !== chosen;
+  const nameHelper = unsavedSuggestion ? copy.prefilled(connectionServerLabel(saved)) : undefined;
+  // What the avatar shows when Initials is left empty, from the name as it stands.
+  const derivedInitials = me ? avatarInitials(name.trim() || me.username, me.username) : '';
+
+  return (
+    <ModalShell
+      open
+      onOpenChange={(open) => !open && onClose()}
+      size="md"
+      purpose={saving ? 'required' : 'form'}
+      title={copy.title}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
+            {copy.cancel}
+          </Button>
+          <Button type="submit" form={formId} disabled={saving || !me}>
+            {copy.submit}
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={submit} className="flex flex-col gap-4 pb-1">
+        <Field
+          id={nameId}
+          label={copy.displayName}
+          helper={nameHelper}
+          error={problem ?? undefined}
+        >
+          <Input
+            id={nameId}
+            ref={nameRef}
+            // Focused by React as it mounts, before the dialog's focus scope would focus the first
+            // field and select it, so the caret goes where `placeCaretAtEnd` puts it.
+            autoFocus
+            onFocus={placeCaretAtEnd}
+            required
+            autoComplete="name"
+            // A name is not a word to correct: "crew_erin" drew a red squiggle (QA Q2-30).
+            spellCheck={false}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem || nameHelper ? helpId(nameId) : undefined}
+            value={name}
+            onChange={(event) => {
+              setEdited(true);
+              setName(event.target.value);
+            }}
+          />
+          {offer ? (
+            <p className="flex flex-wrap items-center gap-1.5 text-supporting text-text-muted">
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto p-0 text-supporting"
+                onClick={() => {
+                  setEdited(true);
+                  setName(offer);
+                }}
+              >
+                {copy.suggestion(offer)}
+              </Button>
+              <span>· {copy.suggestionDetail}</span>
+            </p>
+          ) : null}
+        </Field>
+        <Field id={initialsId} label={copy.initials}>
+          <Input
+            id={initialsId}
+            maxLength={12}
+            autoComplete="off"
+            // Initials are not a word to correct: "AC" drew a red squiggle (QA Q4-41).
+            spellCheck={false}
+            placeholder={derivedInitials || undefined}
+            value={initials}
+            onChange={(event) => setInitials(event.target.value)}
+          />
+        </Field>
+        {me ? (
+          <p className="text-supporting text-text-muted">
+            {copy.usernameLead}{' '}
+            <bdi className="font-mono" translate="no">
+              @{me.username}
+            </bdi>
+          </p>
+        ) : null}
+        <DialogErrorNote source={SOURCE} />
+      </form>
+    </ModalShell>
+  );
+}

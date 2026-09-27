@@ -12,9 +12,9 @@
 `BR-NN` identifiers name proposals in the agent-loop review's improvement register; the
 index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
-Codex CLI is architecturally a close cousin of BioRouter's Goose lineage: a turn loop over
-the Responses API with a small native tool set plus MCP (the Model Context Protocol). That
-makes it the most directly
+Codex CLI is architecturally a close cousin of BioRouter and of Goose, the agent whose design
+influenced BioRouter most: a turn loop over the Responses API with a small native tool set plus
+MCP (the Model Context Protocol). That makes it the most directly
 transferable design in this folder, and the one whose crate layout maps onto BioRouter's own.
 
 > **Note.** Researched July 2026 — month granularity only, for a repository that ships
@@ -279,7 +279,7 @@ were thin the Rust source was read directly.
 
 - [Gemini CLI report](gemini-cli.md) — the other declarative policy engine in this corpus, for comparison against `execpolicy`.
 - [Claude Code report](claude-code.md) — the hook event model Codex's `hooks` crate follows.
-- [Goose report](goose.md) — upstream Goose, the closest lineage relative to Codex's crate-per-concern Rust layout.
+- [Goose report](goose.md) — Goose, the other Rust agent in this folder, whose workspace is the closest match to Codex's layout of one crate per concern.
 - [Command policy engine design](../../agent-loop/designs/command-policy-engine.md) — BR-21, the BioRouter design this report fed into.
 - [macOS Seatbelt sandbox design](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md) — the BioRouter counterpart to Codex's Seatbelt profile.
 - [Improvement proposals register](../../history/agent-loop-review/improvement-proposals.md) — the `BR-NN` index, including BR-2, BR-3, BR-19 and BR-21.

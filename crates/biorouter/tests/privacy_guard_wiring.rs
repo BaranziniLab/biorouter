@@ -356,7 +356,7 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
-                counts: c(6, 6, 0),
+                counts: c(7, 7, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
                        /agent/update_working_dir`, plus the shared `authorize_agent_control` \
@@ -366,18 +366,29 @@ const REGISTRY: &[Guard] = &[
                        `add_extension` on the same chat refused) and `GET \
                        /agent/callable_tool_count`, both of which mint an agent for the chat \
                        they name. \
-                       ⚠ The count went 4 → 6, and BOTH justifications are routes that had no \
+                       ⚠ The count went 4 → 7. The first two additions were routes that had no \
                        gate at all rather than second gates on guarded ones: `/agent/tools` \
                        answered any caller that could name a chat, and the SD-8 review of #260 \
                        found `callable_tool_count` doing the same through `get_or_create_agent`, \
                        which CREATES an agent for a session that has none — so each fix is the \
                        same reach gate, placed before the fetch for the reason \
                        `agent_add_extension` states at its own. \
+                       `POST /agent/call_tool` also asks this gate before authorizing a \
+                       Crew-scoped tool call, so a private session cannot be used to discover \
+                       or invoke its bound tool. \
                        On a daemon that holds no user-action key `authorize_agent_control` is \
                        also the turn-control gate of `/agent/cancel` and the two continuation \
                        routes (SD-11), reached from `routes::reply`'s `authorize_turn_control` \
                        by name — so SD-11 added no call here. `/interrupt` keeps the proof on \
                        every daemon and reaches neither gate",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/crew.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /crew/connections/{id}/sessions/{session_id}/grant` (`grant_session`), \
+                       which requires human proof and checks session reach before attaching \
+                       conversation authority to the Crew connection",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
@@ -435,7 +446,7 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(8, 11, 0),
+                counts: c(8, 13, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}` (the transcript) and `GET /sessions/{id}/export` \
                        (the same transcript, `to_string_pretty`), and — QA 2026-09-10 F0 and \
@@ -443,13 +454,15 @@ const REGISTRY: &[Guard] = &[
                        /sessions/{id}` (measured deleting a private chat the read refused, four \
                        of four), `PUT …/name`, `PUT …/user_workflow_values`, the in-place arm \
                        of `POST …/edit_message` (it truncates), `GET …/extensions` and `GET \
-                       …/usage`. ELEVEN refs and still EIGHT calls: the module qualifier on \
+                       …/usage`. THIRTEEN refs and still EIGHT calls: the module qualifier on \
                        each of the eight calls, and on `http_caller` for the THREE listings — \
                        `GET /sessions`, `GET /sessions/sidebar`, and, since the 2026-09-12 serve \
-                       sweep, `GET /sessions/running`. ⚠ The eleventh ref is a LISTING and not \
-                       a ninth reach decision, which is why `calls` did not move: a listing asks \
-                       `HttpCaller` whether to SHOW a row and drops it silently, where a call \
-                       here refuses the request outright",
+                       sweep, `GET /sessions/running`. The two new refs are `http_caller` on \
+                       `GET /sessions/insights` and `GET /sessions/activity`, which omit Crew-owned \
+                       rows as metadata listings rather than refusing a named chat. ⚠ The refs \
+                       are LISTINGS and not additional reach decisions, which is why `calls` did \
+                       not move: a listing asks `HttpCaller` whether to SHOW a row and drops it \
+                       silently, where a call here refuses the request outright",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/skills.rs",
@@ -480,10 +493,11 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_events.rs",
-                counts: c(1, 1, 0),
+                counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /sessions/{id}/events`, which opens with a full-conversation \
-                       snapshot frame and then tails it live, ungated until this sweep",
+                what: "`GET /sessions/{id}/events`, which gates before opening the \
+                       full-conversation snapshot and rechecks reach before each live event \
+                       frame, so a revocation closes both sides of the stream",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/status.rs",
@@ -518,6 +532,32 @@ const REGISTRY: &[Guard] = &[
                        invoke the same reach gate; and `work_reach`, which asks it for the chat a \
                        piece of running work belongs to, so stopping a chat's work is gated by \
                        the very call that gates reading it",
+            },
+        ],
+    },
+    Guard {
+        ident: "excluded_crew_sessions",
+        defined_in: SESSION_REACH,
+        decides: "which Crew-owned sessions an HTTP caller must have omitted from listings and metadata feeds",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /schedule/{id}/sessions`, filtering Crew-owned sessions before the response is built",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/sidebar`, `GET /sessions/insights` and `GET /sessions/activity`, each omitting Crew-owned rows before serialization",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_meta.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/changes`, excluding Crew-owned sessions from the long-poll metadata feed",
             },
         ],
     },
@@ -615,12 +655,13 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(3, 0, 0),
+                counts: c(5, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions` and `GET /sessions/sidebar` — QA 2026-09-10 M1, every \
                        chat on the machine, titled, to a secret-only caller — and, since the \
-                       2026-09-12 serve sweep, `GET /sessions/running`, which named every chat \
-                       holding a turn to that same caller and, polled, timed each one",
+                       2026-09-12 serve sweep, `GET /sessions/running`, `GET /sessions/insights` \
+                       and `GET /sessions/activity`, which each resolve one caller before \
+                       filtering the rows they expose",
             },
             Site {
                 file: SESSION_REACH,

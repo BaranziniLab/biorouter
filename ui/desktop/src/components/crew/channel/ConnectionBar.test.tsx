@@ -1,0 +1,789 @@
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CrewHttpError } from '../crewApi';
+import { MEMBERSHIP_ENDED_CODE } from '../state/connectFailure';
+import { useCrewErrorSlot } from '../state/CrewControllerContext';
+import { crewObservationCopy } from '../state/copy';
+import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
+import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBar';
+import { connectionBarCopy } from './copy';
+import {
+  alice,
+  connection,
+  currentCrew,
+  general,
+  installDaemon,
+  installObserver,
+  makeSnapshot,
+  methods,
+  renderCrew,
+} from './crewTestHarness';
+import { seenDevicesKey } from './useNewDeviceNotice';
+
+const mocks = vi.hoisted(() => ({
+  crewHttp: vi.fn(),
+  crewRequest: vi.fn(),
+  observeCrew: vi.fn(),
+}));
+
+vi.mock('../crewApi', async () => {
+  const actual = await vi.importActual<typeof import('../crewApi')>('../crewApi');
+  return {
+    ...actual,
+    crewHttp: mocks.crewHttp,
+    crewRequest: mocks.crewRequest,
+    observeCrew: mocks.observeCrew,
+  };
+});
+
+function AgentSlot() {
+  const mine = useCrewErrorSlot('pane:agent');
+  const crew = currentCrew();
+  return <div data-testid="agent-slot">{mine ? crew.error?.message : ''}</div>;
+}
+
+function Layout() {
+  const [paneMounted, setPaneMounted] = useState(true);
+  return (
+    <>
+      {/* The sidebar's first control: where focus goes when a bar button leaves with its note. */}
+      <nav aria-label="Crew">
+        <button type="button">lab</button>
+      </nav>
+      <ConnectionBar />
+      <button onClick={() => setPaneMounted(false)}>Close agent pane</button>
+      {paneMounted && <AgentSlot />}
+    </>
+  );
+}
+
+function bar() {
+  return screen.getByTestId('crew-connection-bar');
+}
+
+async function verified() {
+  await waitFor(() => expect(currentCrew().status).toBe('connected'));
+}
+
+/** The daemon's message for every SSH failure: its transport record, never for a person. */
+const TRANSPORT_TEXT =
+  'Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: SSH connection closed; reconnect. Submitted operation outcome may be unknown; inspect history before retrying';
+const RAW_TRANSPORT = /Crew SSH failure|ssh_eof|child_before_cleanup|Submitted operation/;
+
+/** The daemon's one sentence for every observer error: it must never reach the bar. */
+const DAEMON_SENTENCE =
+  'Room observation ended. Clear cached room content and refresh authorized access; a stale cursor requires an explicit fresh history selection.';
+
+function observationFailure(message = DAEMON_SENTENCE, code = 'temporary_observer_error') {
+  mocks.observeCrew.mockImplementation(
+    async (
+      _connection: string,
+      _channel: string | undefined,
+      _after: string | null,
+      _signal: AbortSignal,
+      receive: (frame: unknown) => void
+    ) => {
+      receive({ type: 'error', code, error: message });
+      return 'terminal';
+    }
+  );
+}
+
+let electron: unknown;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  window.localStorage.clear();
+  electron = (window as { electron?: unknown }).electron;
+  installDaemon();
+  installObserver();
+});
+
+afterEach(() => {
+  (window as { electron?: unknown }).electron = electron;
+  vi.useRealTimers();
+});
+
+describe('ConnectionBar', () => {
+  it('is empty while everything is healthy', async () => {
+    renderCrew(Layout);
+    await verified();
+    expect(bar()).toBeEmptyDOMElement();
+  });
+
+  it('renders an observation error once, in plain words, with Retry named "Retry Crew updates"', async () => {
+    renderCrew(Layout);
+    await verified();
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const stopped = crewObservationCopy.updatesStopped('lab');
+    await waitFor(() => expect(screen.getAllByText(stopped)).toHaveLength(1));
+    expect(screen.getByRole('alert')).toHaveTextContent(stopped);
+    // Nothing of the daemon's wording, and nothing about a draft the composer never held.
+    expect(bar()).not.toHaveTextContent(/observation|cursor|draft/i);
+
+    installObserver();
+    const before = mocks.observeCrew.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.retryName }));
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(before));
+    await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+  });
+
+  it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
+    // The offline screen offers Connect; a note here would repeat it with a Retry that can only
+    // fail the same way (T-09).
+    installDaemon([{ ...connection, status: 'disconnected' }]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(Layout);
+    await waitFor(() => expect(currentCrew().refreshError).not.toBeNull());
+    expect(currentCrew().status).toBe('offline');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/Crew connection is not connected/)).toBeNull();
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+  });
+
+  it('shows no observation note, and no Retry, to a person not let in yet (T-06)', async () => {
+    // Never verified in this app session: the workspace does not know this computer *yet*.
+    observationFailure(DAEMON_SENTENCE, 'unauthorized');
+    renderCrew(Layout);
+    await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('unauthorized'));
+    // Until the join probe answers, the bar may say the workspace does not know this computer…
+    // (by its saved name: nothing verified has told the workspace's own)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      crewObservationCopy.unknownComputer('Fixture')
+    );
+    // …and once it does, the join card speaks, and the bar says nothing.
+    act(() => currentCrew().setJoinStatus('invited'));
+    expect(currentCrew().status).toBe('not-joined');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    // The error stays in the controller, where the probe reads its code.
+    expect(currentCrew().refreshError).not.toBeNull();
+  });
+
+  it.each([
+    ['unauthorized', crewObservationCopy.removedHere('lab')],
+    ['unknown_device', crewObservationCopy.removedHere('lab')],
+    ['principal_revoked', crewObservationCopy.noLongerMember('lab')],
+  ])(
+    'tells a person removed from the workspace so, with no Retry to wait on (Q2-18, %s)',
+    async (code, words) => {
+      renderCrew(Layout);
+      await verified();
+      observationFailure(DAEMON_SENTENCE, code);
+      await act(async () => {
+        await currentCrew().refresh();
+      });
+      await waitFor(() => expect(currentCrew().refreshErrorCode).toBe(code));
+      expect(screen.getByRole('alert')).toHaveTextContent(words);
+      expect(bar()).not.toHaveTextContent(/yet/);
+      expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+      expect(currentCrew().refreshErrorRetryable).toBe(false);
+      // It is the workspace's answer, not a dropped connection: nothing connects by itself.
+      expect(
+        mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/connect')
+      ).toHaveLength(0);
+    }
+  );
+
+  it('connects at once from Retry when the daemon has since called the connection disconnected (Q2-01)', async () => {
+    renderCrew(Layout);
+    await verified();
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const retry = await screen.findByRole('button', { name: connectionBarCopy.retryName });
+
+    // Meanwhile the daemon noticed its SSH bridge had closed.
+    let status = 'disconnected';
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [{ ...connection, status }] };
+      if (path === '/connections/conn-1/connect' && method === 'POST') {
+        status = 'connected';
+        return {};
+      }
+      return {};
+    });
+    installObserver();
+    const start = mocks.crewHttp.mock.calls.length;
+    fireEvent.click(retry);
+
+    await verified();
+    const paths = mocks.crewHttp.mock.calls.slice(start).map(([path]) => path as string);
+    expect(paths.filter((path) => path === '/connections/conn-1/connect')).toHaveLength(1);
+    // Read first, then connect in the same press: never "Offline" as a second step.
+    expect(paths.indexOf('/connections')).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf('/connections')).toBeLessThan(
+      paths.indexOf('/connections/conn-1/connect')
+    );
+    await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+  });
+
+  it('shows a closed channel’s note only over a workspace view, not while reconnecting (Q2-19)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const lost = crewObservationCopy.channelAccessLostNamed('#bob-probe');
+    act(() => currentCrew().reportError(lost, 'observer', CHANNEL_LOST_ERROR_CODE));
+    expect(await within(bar()).findByText(lost)).toBeInTheDocument();
+
+    // The connection drops and is being connected again: the note is stale there. (The
+    // refresh reads the list; the reconnect's own reading of it never answers.)
+    let reads = 0;
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections')
+        return reads++ === 0 ? { connections: [connection] } : new Promise(() => undefined);
+      return {};
+    });
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connection: string,
+        _channel: string | undefined,
+        _after: string | null,
+        _signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        receive({ type: 'error', code: 'observation_refused', error: DAEMON_SENTENCE });
+        return 'terminal';
+      }
+    );
+    act(() => {
+      void currentCrew().refresh();
+    });
+    await waitFor(() => expect(currentCrew().status).toBe('reconnecting'));
+    expect(within(bar()).queryByText(lost)).toBeNull();
+    // Still the controller's error: only the screen decides whether it is shown.
+    expect(currentCrew().error?.message).toBe(lost);
+  });
+
+  it('dismisses a closed channel’s note when the person picks another channel (Q2-19)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const lost = crewObservationCopy.channelAccessLostNamed('#bob-probe');
+    act(() => currentCrew().reportError(lost, 'observer', CHANNEL_LOST_ERROR_CODE));
+    expect(await within(bar()).findByText(lost)).toBeInTheDocument();
+    act(() => currentCrew().selectChannel(methods.id));
+    expect(within(bar()).queryByText(lost)).toBeNull();
+    expect(currentCrew().error).toBeNull();
+
+    // Any other error stays through a selection.
+    act(() => currentCrew().reportError('mark read failed', 'global'));
+    act(() => currentCrew().selectChannel(general.id));
+    expect(within(bar()).getByText('mark read failed')).toBeInTheDocument();
+  });
+
+  describe('keeps keyboard focus when a button leaves with its note (Q2-20)', () => {
+    const sidebarFirst = () => screen.getByRole('button', { name: 'lab' });
+
+    it('after Retry', async () => {
+      renderCrew(Layout);
+      await verified();
+      observationFailure();
+      await act(async () => {
+        await currentCrew().refresh();
+      });
+      const retry = await screen.findByRole('button', { name: connectionBarCopy.retryName });
+      installObserver();
+      retry.focus();
+      fireEvent.click(retry);
+      await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('after Dismiss', async () => {
+      renderCrew(Layout);
+      await verified();
+      act(() => currentCrew().reportError('mark read failed', 'global'));
+      const dismiss = screen.getByRole('button', { name: connectionBarCopy.dismiss });
+      dismiss.focus();
+      fireEvent.click(dismiss);
+      expect(screen.queryByText('mark read failed')).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('after Try again', async () => {
+      renderCrew(Layout);
+      await verified();
+      let fail = true;
+      mocks.crewHttp.mockImplementation(async (path: string) => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === '/connections/conn-1/connect' && fail)
+          throw new CrewHttpError('ssh failed for a reason', 502, 'crew_ssh_failed');
+        return {};
+      });
+      await act(async () => {
+        await currentCrew().connect({ userInitiated: true });
+      });
+      const tryAgain = await screen.findByRole('button', { name: connectionBarCopy.tryAgain });
+      fail = false;
+      tryAgain.focus();
+      fireEvent.click(tryAgain);
+      await waitFor(() => expect(screen.queryByText('ssh failed for a reason')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(sidebarFirst()));
+    });
+
+    it('leaves focus the person put somewhere else alone', async () => {
+      renderCrew(Layout);
+      await verified();
+      act(() => currentCrew().reportError('mark read failed', 'global'));
+      const elsewhere = screen.getByRole('button', { name: 'Close agent pane' });
+      fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.dismiss }));
+      elsewhere.focus();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(document.activeElement).toBe(elsewhere);
+    });
+  });
+
+  it('shows a refusal without its code prefix once the dialog that caused it has closed (T-08)', async () => {
+    renderCrew(Layout);
+    await verified();
+    const taken =
+      'A team with this name, or one that looks like it, already exists in this workspace. Choose a different name.';
+    act(() => currentCrew().reportError(`name_taken: ${taken}`, 'dialog:create-team'));
+    expect(await screen.findByText(taken)).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent('name_taken');
+    // A refusal whose words are not a sentence still loses its code.
+    expect(actionErrorText('forbidden: team owner required')).toBe('Team owner required');
+    // A plain message is left as it is.
+    expect(actionErrorText('mark read failed')).toBe('mark read failed');
+  });
+
+  it('shows a global action error once, with Dismiss', async () => {
+    renderCrew(Layout);
+    await verified();
+    act(() => currentCrew().reportError('mark read failed', 'global'));
+    expect(screen.getAllByText('mark read failed')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.dismiss }));
+    expect(screen.queryByText('mark read failed')).toBeNull();
+  });
+
+  it('leaves a surface’s own error to that surface while it is mounted, then takes it', async () => {
+    renderCrew(Layout);
+    await verified();
+    await act(async () => {
+      await currentCrew().act('pane:agent', 'run.start', async () => {
+        throw new Error('start failed');
+      });
+    });
+    expect(screen.getByTestId('agent-slot')).toHaveTextContent('start failed');
+    expect(bar()).not.toHaveTextContent('start failed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close agent pane' }));
+    await waitFor(() => expect(bar()).toHaveTextContent('start failed'));
+    expect(screen.getAllByText('start failed')).toHaveLength(1);
+  });
+
+  it('names an unreachable server once, in its own words, with Try again', async () => {
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError('ssh: connect to host timed out', 502, 'crew_ssh_unreachable');
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    const note = await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
+    expect(note.closest('[role="alert"]')).not.toBeNull();
+    expect(screen.queryByText(/timed out/)).toBeNull();
+    expect(screen.getAllByText(connectionBarCopy.unreachable('hpc.example.edu'))).toHaveLength(1);
+
+    // Connection settings… lives in the note.
+    fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.connectionSettings }));
+    expect(currentCrew().ui.dialog).toEqual({
+      kind: 'connection-settings',
+      connectionId: 'conn-1',
+    });
+
+    const connects = () =>
+      mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/connect').length;
+    const before = connects();
+    fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.tryAgain }));
+    await waitFor(() => expect(connects()).toBe(before + 1));
+  });
+
+  it('keeps naming the unreachable server as the one need after the error is dismissed elsewhere', async () => {
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError('no route', 502, 'crew_ssh_unreachable');
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    act(() => currentCrew().dismissError());
+    const note = await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
+    expect(note.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByText(connectionBarCopy.unreachable('hpc.example.edu'))).toHaveLength(1);
+  });
+
+  it('says any other SSH failure plainly — never the transport’s words — with Try again (NEW-1)', async () => {
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError(TRANSPORT_TEXT, 502, 'crew_ssh_failed');
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(
+      await screen.findByText(connectionBarCopy.cantConnect('hpc.example.edu'))
+    ).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent(RAW_TRANSPORT);
+    expect(screen.getByRole('button', { name: connectionBarCopy.tryAgain })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: connectionBarCopy.dismiss })).toBeNull();
+  });
+
+  describe('one button for one action on the offline screen (Q3-07)', () => {
+    const offline = { ...connection, status: 'disconnected' };
+    function failConnectWith(error: Error) {
+      mocks.crewHttp.mockImplementation(async (path: string) => {
+        if (path === '/connections') return { connections: [offline] };
+        if (path === '/connections/conn-1/connect') throw error;
+        return {};
+      });
+    }
+    async function offlineScreen() {
+      installDaemon([offline]);
+      observationFailure('Crew connection is not connected', 'observation_refused');
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    }
+
+    it('names an unreachable server with Connection settings… and no Try again', async () => {
+      await offlineScreen();
+      failConnectWith(new CrewHttpError('no route', 502, 'crew_ssh_unreachable'));
+      await act(async () => {
+        await currentCrew().connect({ userInitiated: true });
+      });
+      const note = await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
+      expect(note.closest('[role="alert"]')).not.toBeNull();
+      expect(currentCrew().screen).toBe('offline');
+      expect(
+        screen.getByRole('button', { name: connectionBarCopy.connectionSettings })
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+
+      // Once the error is dismissed, the standing need says the same, still without Try again.
+      act(() => currentCrew().dismissError());
+      const need = await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
+      expect(need.closest('[role="status"]')).not.toBeNull();
+      expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+    });
+
+    it('shows any other connect failure with Connection settings… and no Try again', async () => {
+      await offlineScreen();
+      failConnectWith(new CrewHttpError(TRANSPORT_TEXT, 502, 'crew_ssh_failed'));
+      await act(async () => {
+        await currentCrew().connect({ userInitiated: true });
+      });
+      expect(
+        await screen.findByText(connectionBarCopy.cantConnect('hpc.example.edu'))
+      ).toBeInTheDocument();
+      expect(bar()).not.toHaveTextContent(RAW_TRANSPORT);
+      expect(
+        screen.getByRole('button', { name: connectionBarCopy.connectionSettings })
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+    });
+
+    it('keeps Try again where no Connect is on screen: a connection the daemon calls connected', async () => {
+      renderCrew(Layout);
+      await verified();
+      mocks.crewHttp.mockImplementation(async (path: string) => {
+        if (path === '/connections') return { connections: [connection] };
+        if (path === '/connections/conn-1/connect')
+          throw new CrewHttpError('no route', 502, 'crew_ssh_unreachable');
+        return {};
+      });
+      await act(async () => {
+        await currentCrew().connect({ userInitiated: true });
+      });
+      await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
+      expect(currentCrew().screen).not.toBe('offline');
+      expect(screen.getByRole('button', { name: connectionBarCopy.tryAgain })).toBeEnabled();
+    });
+  });
+
+  describe('a membership the workspace ended (Q3-12, Q3-50)', () => {
+    const ended = {
+      ...connection,
+      status: 'disconnected',
+      last_error: 'This computer is no longer a member of lab.',
+      last_error_code: MEMBERSHIP_ENDED_CODE,
+    };
+
+    it('says so once, with no Retry and no Try again, on the offline screen', async () => {
+      installDaemon([ended]);
+      observationFailure('Crew connection is not connected', 'observation_refused');
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+      const words = crewObservationCopy.noLongerMember('Fixture');
+      await waitFor(() => expect(screen.getAllByText(words)).toHaveLength(1));
+      expect(screen.getByRole('alert')).toHaveTextContent(words);
+      expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+      expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+      expect(bar()).not.toHaveTextContent(/Crew connection is not connected|yet/);
+      expect(
+        mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/connect')
+      ).toHaveLength(0);
+    });
+
+    it('replaces an observation error, offering no Retry, while the daemon still calls it connected', async () => {
+      renderCrew(Layout);
+      await verified();
+      installDaemon([{ ...ended, status: 'connected' }]);
+      observationFailure(DAEMON_SENTENCE, 'access_denied');
+      await act(async () => {
+        await currentCrew().refresh();
+      });
+      await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('access_denied'));
+      // Nothing verified is left on screen to name it: the saved connection's name does.
+      const words = crewObservationCopy.noLongerMember('Fixture');
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(words));
+      expect(screen.getAllByRole('alert')).toHaveLength(1);
+      expect(bar()).not.toHaveTextContent(crewObservationCopy.accessChanged('lab'));
+      expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+      expect(currentCrew().refreshErrorRetryable).toBe(false);
+    });
+
+    it('leaves the join screen’s card to say it', async () => {
+      installDaemon([ended]);
+      observationFailure('Crew connection is not connected', 'observation_refused');
+      renderCrew(Layout);
+      await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+      act(() => currentCrew().setJoinStatus('invited'));
+      await waitFor(() => expect(currentCrew().screen).toBe('join'));
+      expect(screen.queryByText(crewObservationCopy.noLongerMember('Fixture'))).toBeNull();
+    });
+  });
+
+  it('asks to unlock a locked vault and refreshes once it is unlocked', async () => {
+    const crewCredentials = vi.fn(async (action: string) =>
+      action === 'unlock'
+        ? { backend: 'encrypted_vault', initialized: true, locked: false }
+        : { backend: 'encrypted_vault', initialized: true, locked: true }
+    );
+    (window as { electron?: unknown }).electron = { crewCredentials };
+    renderCrew(Layout);
+    await verified();
+    const unlock = await screen.findByRole('button', { name: connectionBarCopy.unlock });
+    expect(screen.getByText(connectionBarCopy.vaultLocked)).toBeInTheDocument();
+    const before = mocks.observeCrew.mock.calls.length;
+    fireEvent.click(unlock);
+    await waitFor(() => expect(crewCredentials).toHaveBeenCalledWith('unlock'));
+    await waitFor(() => expect(screen.queryByText(connectionBarCopy.vaultLocked)).toBeNull());
+    await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it('never reports the keychain as locked', async () => {
+    const crewCredentials = vi.fn(async () => ({
+      backend: 'keyring',
+      initialized: true,
+      locked: true,
+    }));
+    (window as { electron?: unknown }).electron = { crewCredentials };
+    renderCrew(Layout);
+    await verified();
+    await waitFor(() => expect(crewCredentials).toHaveBeenCalledWith('status'));
+    expect(screen.queryByText(connectionBarCopy.vaultLocked)).toBeNull();
+  });
+
+  it('says it is reconnecting only after a connect has taken over a second', async () => {
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === '/connections/conn-1/connect') return new Promise(() => undefined);
+      return {};
+    });
+    vi.useFakeTimers();
+    act(() => {
+      void currentCrew().connect({ userInitiated: true });
+    });
+    act(() => vi.advanceTimersByTime(900));
+    expect(screen.queryByText(connectionBarCopy.reconnecting('lab'))).toBeNull();
+    act(() => vi.advanceTimersByTime(200));
+    expect(
+      screen.getByText(connectionBarCopy.reconnecting('lab')).closest('[role="status"]')
+    ).not.toBeNull();
+  });
+
+  it('renders its notes in the specified order', async () => {
+    const crewCredentials = vi.fn(async () => ({
+      backend: 'encrypted_vault',
+      initialized: true,
+      locked: true,
+    }));
+    (window as { electron?: unknown }).electron = { crewCredentials };
+    window.localStorage.setItem(seenDevicesKey('conn-1', alice.id), JSON.stringify(['AAAA']));
+    installObserver({
+      snapshot: makeSnapshot({
+        actor: {
+          ...alice,
+          devices: [
+            { fingerprint: 'AAAA', added_at: 1_700_000_000 },
+            { fingerprint: 'BBBB', added_at: 1_700_000_500 },
+          ],
+        },
+      }),
+    });
+    renderCrew(Layout);
+    await verified();
+    await screen.findByText(connectionBarCopy.vaultLocked);
+    await screen.findByRole('button', { name: connectionBarCopy.reviewName });
+    act(() => currentCrew().reportError('global failure', 'global'));
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    act(() => currentCrew().reportError('global failure', 'global'));
+
+    const stopped = crewObservationCopy.updatesStopped('lab');
+    await screen.findByText(stopped);
+    const text = bar().textContent ?? '';
+    const order = [stopped, 'global failure', connectionBarCopy.vaultLocked].map((part) =>
+      text.indexOf(part)
+    );
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+});
+
+describe('the new-device notice', () => {
+  const devices = (fingerprints: [string, number | undefined][]) =>
+    fingerprints.map(([fingerprint, added_at]) => ({
+      fingerprint,
+      ...(added_at === undefined ? {} : { added_at }),
+    }));
+  let current = devices([['AAAA', 1_700_000_000]]);
+
+  beforeEach(() => {
+    current = devices([['AAAA', 1_700_000_000]]);
+    installObserver(() => ({
+      snapshot: makeSnapshot({ actor: { ...alice, devices: current } }),
+    }));
+  });
+
+  it('records the first list silently, then announces a device this computer has not seen', async () => {
+    renderCrew(Layout);
+    await verified();
+    expect(bar()).toBeEmptyDOMElement();
+    expect(
+      JSON.parse(window.localStorage.getItem(seenDevicesKey('conn-1', alice.id)) ?? '[]')
+    ).toEqual(['AAAA']);
+
+    // 2023-11-14T22:13:20Z, a Tuesday in another year.
+    current = devices([
+      ['AAAA', 1_700_000_000],
+      ['BBBB', 1_700_000_000],
+    ]);
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const notice = await screen.findByText(/A new device was added to your account on/);
+    expect(notice).toHaveTextContent(/November 1[45], 2023\.$/);
+    expect(notice.closest('[role="status"]')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.reviewName }));
+    expect(currentCrew().ui.dialog).toEqual({ kind: 'keys' });
+    expect(screen.queryByText(/A new device was added/)).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem(seenDevicesKey('conn-1', alice.id)) ?? '[]')
+    ).toEqual(['AAAA', 'BBBB']);
+  });
+
+  it('says so without a date when the broker gave none', async () => {
+    window.localStorage.setItem(seenDevicesKey('conn-1', alice.id), JSON.stringify(['AAAA']));
+    current = devices([
+      ['AAAA', 1_700_000_000],
+      ['BBBB', undefined],
+    ]);
+    renderCrew(Layout);
+    expect(await screen.findByText(connectionBarCopy.newDeviceUndated)).toBeInTheDocument();
+  });
+
+  it('still renders when storage refuses every access', async () => {
+    const local = window.localStorage;
+    const spies = [
+      vi.spyOn(local, 'getItem').mockImplementation(() => {
+        throw new Error('blocked');
+      }),
+      vi.spyOn(local, 'setItem').mockImplementation(() => {
+        throw new Error('blocked');
+      }),
+    ];
+    try {
+      renderCrew(Layout);
+      await verified();
+      // Nothing recorded means nothing to compare against: no notice, and no crash.
+      expect(bar()).toBeEmptyDOMElement();
+      expect(spies[0]).toHaveBeenCalled();
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+});
+
+describe('connectErrorText (NEW-1)', () => {
+  const host = 'lab-server';
+
+  it('reads every classified failure as its kind, whatever the daemon’s message says', () => {
+    expect(connectErrorText('unreachable', TRANSPORT_TEXT, host)).toBe(
+      connectionBarCopy.unreachable(host)
+    );
+    expect(connectErrorText('auth_required', TRANSPORT_TEXT, host)).toBe(
+      connectionBarCopy.signInNeeded(host)
+    );
+    for (const kind of [
+      'host_key_unknown',
+      'host_key_changed',
+      'workspace_identity_mismatch',
+    ] as const)
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(connectionBarCopy.cantVerify(host));
+    for (const kind of ['bridge_missing', 'handoff_failed'] as const)
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(connectionBarCopy.notRunning(host));
+    expect(connectErrorText('ssh_failed', 'ssh failed for a reason', host)).toBe(
+      connectionBarCopy.cantConnect(host)
+    );
+  });
+
+  it('never passes machine text through, classified or not', () => {
+    for (const kind of [undefined, 'unknown'] as const) {
+      expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(
+        connectionBarCopy.cantConnect(host)
+      );
+      expect(
+        connectErrorText(
+          kind,
+          'Crew broker refused request: {"code":"forbidden","message":"forbidden: nope"}',
+          host
+        )
+      ).toBe(connectionBarCopy.cantConnect(host));
+      expect(connectErrorText(kind, 'bridge ended [state=exit_1]', host)).toBe(
+        connectionBarCopy.cantConnect(host)
+      );
+    }
+  });
+
+  it('keeps a daemon answer written for a person, and names no server it does not know', () => {
+    const sentence =
+      'This feature needs a newer Biorouter background service. Quit and reopen Biorouter.';
+    expect(connectErrorText(undefined, sentence, host)).toBe(sentence);
+    expect(connectErrorText('ssh_failed', TRANSPORT_TEXT, '')).toBe(
+      connectionBarCopy.cantConnect('')
+    );
+    expect(connectionBarCopy.cantConnect('')).toBe('Crew can’t connect.');
+  });
+});

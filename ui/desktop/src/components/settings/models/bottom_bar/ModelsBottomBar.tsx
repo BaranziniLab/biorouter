@@ -494,7 +494,7 @@ export default function ModelsBottomBar({
    * "Change model" and "Lead/worker settings", both of which read as adjustments
    * to a model that does not exist. One control, one meaning.
    */
-  if (hasNoModelConfigured(modelConfigStatus, currentProvider)) {
+  if (hasNoModelConfigured(modelConfigStatus, effectiveModel?.provider ?? currentProvider)) {
     return (
       <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
         {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}

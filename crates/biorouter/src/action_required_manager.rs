@@ -56,6 +56,55 @@ impl ScopeState {
     }
 }
 
+enum ElicitationSender {
+    Legacy(tokio::sync::oneshot::Sender<Option<Value>>),
+    Pending(tokio::sync::oneshot::Sender<crate::pending_user_action::UserActionOutcome>),
+}
+
+/// Exclusive ownership of an exact-session ordinary input waiter. Dropping it
+/// interrupts the waiter; it cannot resolve an approval or a credential ask.
+pub struct OrdinaryElicitationClaim {
+    session_id: String,
+    sender: ElicitationSender,
+}
+impl OrdinaryElicitationClaim {
+    pub(crate) fn pending(
+        session_id: String,
+        sender: tokio::sync::oneshot::Sender<crate::pending_user_action::UserActionOutcome>,
+    ) -> Self {
+        Self {
+            session_id,
+            sender: ElicitationSender::Pending(sender),
+        }
+    }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn is_closed(&self) -> bool {
+        match &self.sender {
+            ElicitationSender::Legacy(sender) => sender.is_closed(),
+            ElicitationSender::Pending(sender) => sender.is_closed(),
+        }
+    }
+    pub fn deliver(self, data: Option<Value>) -> crate::pending_user_action::ResolveOutcome {
+        use crate::pending_user_action::{ResolveOutcome, UserActionOutcome};
+        let delivered = match self.sender {
+            ElicitationSender::Legacy(sender) => sender.send(data).is_ok(),
+            ElicitationSender::Pending(sender) => sender
+                .send(match data {
+                    Some(data) => UserActionOutcome::Provided { data },
+                    None => UserActionOutcome::Cancelled,
+                })
+                .is_ok(),
+        };
+        if delivered {
+            ResolveOutcome::Delivered
+        } else {
+            ResolveOutcome::Unknown
+        }
+    }
+}
+
 pub struct ActionRequiredManager {
     pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
     /// Request queues keyed by the originating session id. The manager is
@@ -255,6 +304,46 @@ impl ActionRequiredManager {
                     )
                 })
             })
+    }
+
+    /// Claim exactly once before persisting an answer, without holding a mutex
+    /// during persistence or acquiring the agent's active-turn lock.
+    pub fn claim_ordinary_elicitation(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Option<OrdinaryElicitationClaim> {
+        let sender = {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            match pending.get_mut(request_id) {
+                Some(request) if request.session_id.as_deref() == Some(session_id) => {
+                    Some(request.response_tx.take()?)
+                }
+                Some(_) => return None,
+                None => None,
+            }
+        };
+        match sender {
+            Some(sender) => Some(OrdinaryElicitationClaim {
+                session_id: session_id.into(),
+                sender: ElicitationSender::Legacy(sender),
+            }),
+            None => crate::pending_user_action::PendingUserActions::global()
+                .claim_elicitation_in_session(session_id, request_id),
+        }
+    }
+
+    pub fn resolve_ordinary_elicitation(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        data: Option<Value>,
+    ) -> crate::pending_user_action::ResolveOutcome {
+        self.claim_ordinary_elicitation(session_id, request_id)
+            .map_or(
+                crate::pending_user_action::ResolveOutcome::Unknown,
+                |claim| claim.deliver(data),
+            )
     }
 
     pub async fn submit_response(

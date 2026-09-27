@@ -55,6 +55,7 @@ import {
   FileText as _FileText,
   FileX as _FileX,
   Filter as _Filter,
+  Fingerprint as _Fingerprint,
   Flag as _Flag,
   FlaskConical as _FlaskConical,
   Folder as _Folder,
@@ -69,12 +70,14 @@ import {
   Github as _Github,
   Globe as _Globe,
   GripVertical as _GripVertical,
+  Hash as _Hash,
   HeartPulse as _HeartPulse,
   History as _History,
   Home as _Home,
   Image as _Image,
   Inbox as _Inbox,
   Info as _Info,
+  KeyRound as _KeyRound,
   Landmark as _Landmark,
   Laptop as _Laptop,
   Layers as _Layers,
@@ -82,6 +85,7 @@ import {
   Loader2 as _Loader2,
   LoaderCircle as _LoaderCircle,
   Lock as _Lock,
+  LogOut as _LogOut,
   Maximize2 as _Maximize2,
   MessageSquare as _MessageSquare,
   MessageSquareLock as _MessageSquareLock,
@@ -94,6 +98,8 @@ import {
   Package as _Package,
   Palette as _Palette,
   PanelLeftIcon as _PanelLeftIcon,
+  PanelRight as _PanelRight,
+  Paperclip as _Paperclip,
   Pause as _Pause,
   PauseCircle as _PauseCircle,
   Pencil as _Pencil,
@@ -111,6 +117,7 @@ import {
   Search as _Search,
   SearchCode as _SearchCode,
   Send as _Send,
+  Server as _Server,
   Settings as _Settings,
   Share2 as _Share2,
   Sliders as _Sliders,
@@ -124,6 +131,7 @@ import {
   Tornado as _Tornado,
   Trash2 as _Trash2,
   Upload as _Upload,
+  UserPlus as _UserPlus,
   Users as _Users,
   Video as _Video,
   Workflow as _Workflow,
@@ -212,6 +220,9 @@ export const FileSpreadsheet = light(_FileSpreadsheet);
 export const FileStack = light(_FileStack);
 export const FileText = light(_FileText);
 export const FileX = light(_FileX);
+/** A key fingerprint a person compares out of band before trusting it (Crew's
+ * host-key and join screens). Not a sign-in or a biometric. */
+export const Fingerprint = light(_Fingerprint);
 export const FlaskConical = light(_FlaskConical);
 export const Folder = light(_Folder);
 export const FolderDot = light(_FolderDot);
@@ -234,10 +245,16 @@ export const GitBranch = light(_GitBranch);
 export const Github = light(_Github);
 export const Globe = light(_Globe);
 export const GripVertical = light(_GripVertical);
+/** A Crew channel (`# methods`). The channel glyph and nothing else. */
+export const Hash = light(_Hash);
 export const HeartPulse = light(_HeartPulse);
 export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
+/** A device key a person holds (Crew's Keys dialog). Deliberately not `Key`
+ * (`icons/Key.tsx`, the provider API-key mark) and not `Lock`, which is the
+ * privacy tier and nothing else. */
+export const KeyRound = light(_KeyRound);
 // The three affiliation marks (`AffiliationBadge`); the tier mark is `Lock`,
 // below. They live here for the reason every other glyph does —
 // `light()` pins strokeWidth 1.5 and `currentColor` (§3.8b) — and they were the
@@ -279,6 +296,8 @@ export const LoaderCircle = light(_LoaderCircle);
  * the glyph reads correctly here in the first place.
  */
 export const Lock = light(_Lock);
+/** Disconnect / sign out of a connection. */
+export const LogOut = light(_LogOut);
 export const Maximize2 = light(_Maximize2);
 export const MessageSquare = light(_MessageSquare);
 export const MessageSquareLock = light(_MessageSquareLock);
@@ -291,6 +310,11 @@ export const Music = light(_Music);
 export const Package = light(_Package);
 export const Palette = light(_Palette);
 export const PanelLeftIcon = light(_PanelLeftIcon);
+/** Toggles a right-hand details pane (Crew's channel details). The mirror of
+ * `PanelLeftIcon`, which toggles the app sidebar. */
+export const PanelRight = light(_PanelRight);
+/** Attach a file to a message (Crew's composer Attach menu). */
+export const Paperclip = light(_Paperclip);
 export const Pause = light(_Pause);
 export const PauseCircle = light(_PauseCircle);
 export const Pencil = light(_Pencil);
@@ -310,6 +334,8 @@ export const ScrollText = light(_ScrollText);
 export const Search = light(_Search);
 export const SearchIcon = Search;
 export const Send = light(_Send);
+/** A server path or a remote machine (Crew's server-path rows and hosting). */
+export const Server = light(_Server);
 export const Settings = light(_Settings);
 export const Share2 = light(_Share2);
 // `Shield` / `ShieldIcon` were the Private-tier mark and have been REMOVED
@@ -346,6 +372,9 @@ export const Terminal = light(_Terminal);
 export const Tornado = light(_Tornado);
 export const Trash2 = light(_Trash2);
 export const Upload = light(_Upload);
+/** Invite or add a person. Deliberately not `Plus`, which means *new session*
+ * (DR-53: one glyph, one meaning). */
+export const UserPlus = light(_UserPlus);
 export const Users = light(_Users);
 export const Video = light(_Video);
 // No direct 'Pipeline' in lucide; Workflow is the closest visual match.

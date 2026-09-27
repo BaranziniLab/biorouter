@@ -202,7 +202,7 @@ We believe this balance enables Biorouter to remain innovative while building a 
 
 # General Project Policies
 
-Biorouter is developed and maintained by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco. It builds on the open-source [Goose](https://github.com/block/goose) project from Block, which provided the foundation for this work.
+Biorouter is developed and maintained by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco. It is an independent project, not a fork of Goose. Its design was strongly influenced by Block's open source [Goose](https://github.com/block/goose) agent, and it also draws on the other agents listed in the [README](README.md#credits-and-citation) and on many open source libraries.
 
 Biorouter participants acknowledge that the copyright in all new contributions will be retained by the copyright holder as independent works of authorship and that no contributor or copyright holder will be required to assign copyrights to the project.
 Except as described below, all code and specification contributions to the project must be made using the Apache License, Version 2.0, available at https://www.apache.org/licenses/LICENSE-2.0 (the “Project License”).

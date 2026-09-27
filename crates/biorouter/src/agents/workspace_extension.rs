@@ -392,6 +392,8 @@ fn panel_moim_from_reply(reply: &serde_json::Value) -> Option<String> {
     ))
 }
 
+const WORKSPACE_LIST_MAX_SCAN_ROWS: usize = 20_000;
+
 /// `Default` is derived so `handle_list` can fall back to it when the call
 /// carries no arguments at all. Constructing the struct field-by-field there
 /// breaks every time this struct gains a field — which it has already done
@@ -2012,7 +2014,6 @@ impl WorkspaceClient {
             None => WorkspaceListParams::default(),
         };
         let scope = args.scope.as_deref().unwrap_or("open");
-        let include_subagents = args.include_subagents.unwrap_or(true);
         // Decision 17: real paging, not a silent 200-row truncation. The page is
         // applied AFTER scope filtering, so `offset` walks the rows the model
         // actually sees.
@@ -2023,6 +2024,50 @@ impl WorkspaceClient {
         let gui_attached = services.as_ref().is_some_and(|s| s.gui_attached());
         let layout = services.as_ref().and_then(|s| s.layout_snapshot());
 
+        let (rows, matched, scan_truncated) = self
+            .list_workspace_page(&args, cap, services.as_ref(), layout.as_ref())
+            .await?;
+
+        let mut payload = json!({
+            "gui_attached": gui_attached,
+            "scope": scope,
+            // Paging metadata, so the model can walk the list instead of
+            // guessing whether it saw everything (decision 17).
+            "offset": offset,
+            "limit": limit,
+            "returned": rows.len(),
+            "total_matching": matched,
+            "has_more": matched > offset + rows.len(),
+            "sessions": rows,
+        });
+        if scan_truncated {
+            // The one case where `total_matching` is a lower bound. Say so in
+            // the payload rather than letting the model believe a floor is a
+            // total — the failure decision 17 exists to prevent.
+            payload["scan_truncated"] = json!(true);
+            payload["scanned"] = json!(WORKSPACE_LIST_MAX_SCAN_ROWS);
+            payload["note"] = json!(format!(
+                "Stopped after scanning {WORKSPACE_LIST_MAX_SCAN_ROWS} conversations; \
+                 total_matching is a lower bound. Narrow the query with \
+                 scope, parent_session_id or only_subagents."
+            ));
+        }
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&payload).unwrap(),
+        )])
+    }
+
+    async fn list_workspace_page(
+        &self,
+        args: &WorkspaceListParams,
+        cap: crate::privacy::CallCapability,
+        services: Option<&std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
+        layout: Option<&serde_json::Value>,
+    ) -> Result<(Vec<serde_json::Value>, usize, bool), String> {
+        let scope = args.scope.as_deref().unwrap_or("open");
+        let include_subagents = args.include_subagents.unwrap_or(true);
+        let offset = args.offset.unwrap_or(0) as usize;
+        let limit = (args.limit.unwrap_or(50) as usize).clamp(1, 200);
         // SCAN the store in chunks rather than reading one fixed window.
         //
         // Decision 17 rejected a silent cap, and a single
@@ -2035,10 +2080,9 @@ impl WorkspaceClient {
         // yields short, ragged tool pages.
         //
         // So: walk the store `SCAN_CHUNK` rows at a time, filter, and stop at
-        // `MAX_SCAN_ROWS`. If the ceiling is ever hit the payload says so
+        // `WORKSPACE_LIST_MAX_SCAN_ROWS`. If the ceiling is ever hit the payload says so
         // explicitly (`scan_truncated`) instead of quietly under-reporting.
         const SCAN_CHUNK: u32 = 500;
-        const MAX_SCAN_ROWS: usize = 20_000;
 
         // NOTE for the unit tests: `AgentManager::instance()` resolves
         // `Paths::data_dir()` and the process-global `SessionManager::instance()`,
@@ -2054,6 +2098,10 @@ impl WorkspaceClient {
             .await
             .map_err(|e| format!("agent manager unavailable: {e}"))?;
 
+        let excluded_crew = crate::crew::manager()
+            .map_err(|e| e.to_string())?
+            .scoped_session_ids()
+            .await;
         let mut rows = Vec::new();
         let mut matched = 0usize;
         let mut scanned = 0usize;
@@ -2075,8 +2123,11 @@ impl WorkspaceClient {
             }
             db_offset += summaries.len() as u32;
             for s in summaries {
+                if excluded_crew.contains(&s.id) {
+                    continue;
+                }
                 scanned += 1;
-                if scanned > MAX_SCAN_ROWS {
+                if scanned > WORKSPACE_LIST_MAX_SCAN_ROWS {
                     scan_truncated = true;
                     break 'scan;
                 }
@@ -2103,11 +2154,9 @@ impl WorkspaceClient {
                 {
                     continue;
                 }
-                let running = services
-                    .as_ref()
-                    .is_some_and(|svc| svc.is_turn_active(&s.id));
+                let running = services.is_some_and(|svc| svc.is_turn_active(&s.id));
                 let live = agent_manager.has_session(&s.id).await;
-                let gui_placement = gui_tab_for(layout.as_ref(), &s.id);
+                let gui_placement = gui_tab_for(layout, &s.id);
                 let in_scope = match scope {
                     "running" => running,
                     "all" => true,
@@ -2142,39 +2191,13 @@ impl WorkspaceClient {
                     continue;
                 }
                 rows.push(
-                    self.list_session_row(&s, running, gui_placement, services.as_ref())
+                    self.list_session_row(&s, running, gui_placement, services)
                         .await,
                 );
             }
         }
 
-        let mut payload = json!({
-            "gui_attached": gui_attached,
-            "scope": scope,
-            // Paging metadata, so the model can walk the list instead of
-            // guessing whether it saw everything (decision 17).
-            "offset": offset,
-            "limit": limit,
-            "returned": rows.len(),
-            "total_matching": matched,
-            "has_more": matched > offset + rows.len(),
-            "sessions": rows,
-        });
-        if scan_truncated {
-            // The one case where `total_matching` is a lower bound. Say so in
-            // the payload rather than letting the model believe a floor is a
-            // total — the failure decision 17 exists to prevent.
-            payload["scan_truncated"] = json!(true);
-            payload["scanned"] = json!(MAX_SCAN_ROWS);
-            payload["note"] = json!(format!(
-                "Stopped after scanning {MAX_SCAN_ROWS} conversations; \
-                 total_matching is a lower bound. Narrow the query with \
-                 scope, parent_session_id or only_subagents."
-            ));
-        }
-        Ok(vec![Content::text(
-            serde_json::to_string_pretty(&payload).unwrap(),
-        )])
+        Ok((rows, matched, scan_truncated))
     }
 
     /// One row of the `workspace_list` payload.

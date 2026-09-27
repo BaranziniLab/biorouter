@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { createPortal } from 'react-dom';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useEffect, useRef, useState } from 'react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -16,7 +20,40 @@ vi.mock('../../hooks/use-mobile', () => ({
   useIsMobile: () => isMobile.value,
 }));
 
-import { Sidebar, SidebarProvider, SidebarTrigger } from './sidebar';
+// The REAL app layout is rendered below (T-61, T-66), with its heavy children
+// stood in for exactly as `AppLayout.test.tsx` does. The stand-in rail offers
+// one destination and one disclosure: the two kinds of control T-66 must tell
+// apart.
+vi.mock('../BioRouterSidebar/AppSidebar', () => ({
+  default: function StandInRail() {
+    const navigate = useNavigate();
+    return (
+      <div>
+        <button type="button" onClick={() => navigate('/settings')}>
+          Settings
+        </button>
+        <button type="button" aria-expanded={false}>
+          Components
+        </button>
+      </div>
+    );
+  },
+}));
+vi.mock('../DependencySetupModal', () => ({ default: () => null }));
+vi.mock('../ExtensionUpdateReporter', () => ({ default: () => null }));
+vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
+
+import { AppLayout } from '../Layout/AppLayout';
+import {
+  SIDEBAR_OVERLAY_BODY_CLASS,
+  Sidebar,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from './sidebar';
 
 beforeEach(() => {
   localStorage.clear();
@@ -292,5 +329,908 @@ describe('the resize handle is styled by authored CSS, not a generated utility',
   it('kills the width transition for the duration of a drag', () => {
     expect(CSS).toContain("body.biorouter-sidebar-resizing [data-slot='sidebar-gap']");
     expect(SOURCE).toContain("'biorouter-sidebar-resizing'");
+  });
+});
+
+const panel = () => {
+  const element = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]');
+  if (!element) throw new Error('the sidebar panel did not render');
+  return element;
+};
+const sidebarState = () =>
+  document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state');
+const toggleWithShortcut = () =>
+  act(() => {
+    fireEvent.keyDown(window, { key: 'b', metaKey: true });
+  });
+
+/**
+ * T-20. The collapsed off-canvas panel is only TRANSLATED off-screen, so its
+ * seven rows stayed Tab stops at x = -272: focus disappeared for seven presses,
+ * and Erin opened Settings by pressing Enter on a row she could not see.
+ *
+ * jsdom implements no inert behaviour (focus, pointer, a11y tree), so what is
+ * decidable here is the attribute; that the browser honours it is the platform's
+ * contract. The attribute being present exactly when the panel is away — and
+ * never while it is on screen — is the whole bug.
+ */
+describe('the off-canvas panel leaves the tab order while it is away', () => {
+  it('is inert while collapsed and live again once opened', () => {
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+      </SidebarProvider>
+    );
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(panel()).not.toHaveAttribute('inert');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle sidebar' }));
+    expect(panel()).toHaveAttribute('inert');
+  });
+
+  it('is never inert while expanded', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(panel()).not.toHaveAttribute('inert');
+  });
+
+  // An `icon` sidebar collapses to a rail that is still ON screen and still
+  // operable; making it inert would take working controls away.
+  it('leaves a collapsed icon rail operable', () => {
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar collapsible="icon">
+          <button type="button">Settings</button>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).not.toHaveAttribute('inert');
+  });
+
+  // Collapsing with focus inside would strand focus on <body>. It goes to the
+  // toggle that brings the panel back instead.
+  it('hands focus to the toggle when the panel leaves while holding it', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+      </SidebarProvider>
+    );
+    const row = screen.getByRole('button', { name: 'Settings' });
+    act(() => row.focus());
+
+    toggleWithShortcut();
+    expect(panel()).toHaveAttribute('inert');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Toggle sidebar' }));
+  });
+
+  it('leaves focus alone when it was elsewhere', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <textarea aria-label="Composer" />
+      </SidebarProvider>
+    );
+    const composer = screen.getByRole('textbox', { name: 'Composer' });
+    act(() => composer.focus());
+
+    toggleWithShortcut();
+    expect(document.activeElement).toBe(composer);
+  });
+});
+
+/**
+ * Q2-51 (live QA round 2). The toggle is a disclosure and never said whether the
+ * sidebar was showing, and ⌘B opened the OVERLAY with focus left underneath it:
+ * erin's focus stayed on a control now hidden behind the panel, and her next
+ * Tabs walked controls she could not see.
+ */
+describe('the sidebar toggle and ⌘B, for a keyboard user', () => {
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+
+  const renderSidebar = (defaultOpen = false) =>
+    render(
+      <SidebarProvider defaultOpen={defaultOpen}>
+        <Sidebar>
+          <button type="button">New chat</button>
+          <button type="button">Settings</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <button type="button">Add channel</button>
+      </SidebarProvider>
+    );
+
+  it('says whether the sidebar is expanded', () => {
+    renderSidebar(false);
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+
+    toggleWithShortcut();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('says whether the mobile drawer is open', () => {
+    isMobile.value = true;
+    renderSidebar(true);
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle());
+    expect(screen.getByRole('button', { name: 'Toggle sidebar', hidden: true })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+  });
+
+  it('moves focus into an overlay ⌘B opens, and back where it was when ⌘B closes it', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar(false);
+    const underneath = screen.getByRole('button', { name: 'Add channel' });
+    act(() => underneath.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+
+    // Moving around inside the overlay does not change where focus goes back to.
+    act(() => screen.getByRole('button', { name: 'Settings' }).focus());
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('collapsed');
+    expect(underneath).toHaveFocus();
+  });
+
+  it('falls back to the toggle when what had focus is gone by the time ⌘B closes it', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    const { container } = renderSidebar(false);
+    const transient = document.createElement('button');
+    transient.textContent = 'Transient';
+    container.appendChild(transient);
+    act(() => transient.focus());
+
+    toggleWithShortcut();
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+    transient.remove();
+
+    toggleWithShortcut();
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('leaves focus alone when ⌘B opens a docked column, which covers nothing', () => {
+    renderSidebar(false);
+    const composer = screen.getByRole('button', { name: 'Add channel' });
+    act(() => composer.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(composer).toHaveFocus();
+  });
+
+  it('leaves focus on the toggle when a pointer opens the overlay', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar(false);
+    act(() => toggle().focus());
+
+    fireEvent.click(toggle());
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // A shortcut that toggled nothing (here a controlled parent that refused it) must not steer a
+  // later open that something else caused.
+  it('forgets a ⌘B the panel never acted on', async () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    const Controlled = ({ open }: { open: boolean }) => (
+      <SidebarProvider open={open} onOpenChange={() => {}}>
+        <Sidebar>
+          <button type="button">New chat</button>
+        </Sidebar>
+        <SidebarTrigger />
+        <button type="button">Add channel</button>
+      </SidebarProvider>
+    );
+    const { rerender } = render(<Controlled open={false} />);
+    const outside = screen.getByRole('button', { name: 'Add channel' });
+    act(() => outside.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('collapsed');
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    rerender(<Controlled open />);
+    expect(sidebarState()).toBe('expanded');
+    expect(outside).toHaveFocus();
+  });
+});
+
+const pressEscape = (target: Element = document.activeElement ?? document.body) =>
+  act(() => {
+    fireEvent.keyDown(target, { key: 'Escape' });
+  });
+
+/**
+ * Q3-60 (live QA round 3). The overlay is a floating surface, and every other one in the app
+ * steps aside on Escape. This one ignored it: Erin opened it with the titlebar toggle (focus
+ * rightly stays on the toggle), pressed Escape, and it went on covering Crew's rail until she
+ * found the toggle again. Escape now closes it however it was opened, and focus lands on the
+ * toggle.
+ */
+describe('Escape closes the overlay sidebar', () => {
+  beforeEach(() => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+
+  const renderSidebar = (extra?: React.ReactNode) =>
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar>
+          <button type="button">New chat</button>
+          <button type="button">Settings</button>
+          {extra}
+        </Sidebar>
+        <SidebarTrigger />
+        <input aria-label="Page field" />
+      </SidebarProvider>
+    );
+
+  it('closes an overlay the toggle opened, from the toggle, and keeps focus there', () => {
+    renderSidebar();
+    act(() => toggle().focus());
+    fireEvent.click(toggle());
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+
+    pressEscape();
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(toggle()).toHaveFocus();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('closes an overlay ⌘B opened, from inside it, and hands focus to the toggle', () => {
+    renderSidebar();
+    act(() => screen.getByRole('textbox', { name: 'Page field' }).focus());
+    toggleWithShortcut();
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+
+    pressEscape();
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('closes it with nothing focused, and puts focus on the toggle', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+
+    pressEscape(document.body);
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // A menu or dialog opened from a row answers its own Escape first (Radix prevents the default
+  // when it dismisses); only the next Escape reaches the panel.
+  it('leaves it open when something else already answered the Escape', () => {
+    renderSidebar(
+      <button
+        type="button"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') event.preventDefault();
+        }}
+      >
+        Row menu
+      </button>
+    );
+    fireEvent.click(toggle());
+    const row = screen.getByRole('button', { name: 'Row menu' });
+    act(() => row.focus());
+
+    pressEscape(row);
+    expect(sidebarState()).toBe('expanded');
+
+    // Something that stops the event before it reaches the window, the same.
+    const stop = (event: KeyboardEvent) => event.stopPropagation();
+    document.addEventListener('keydown', stop);
+    try {
+      pressEscape(screen.getByRole('button', { name: 'Settings' }));
+      expect(sidebarState()).toBe('expanded');
+    } finally {
+      document.removeEventListener('keydown', stop);
+    }
+
+    pressEscape(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('collapsed');
+  });
+
+  // The page behind the overlay keeps its own Escape (clear a field, cancel an edit).
+  it('leaves it open for an Escape pressed on the page behind it', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    const field = screen.getByRole('textbox', { name: 'Page field' });
+    act(() => field.focus());
+
+    pressEscape(field);
+    expect(sidebarState()).toBe('expanded');
+    expect(field).toHaveFocus();
+  });
+
+  it('leaves a docked column alone, which covers nothing', () => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderSidebar();
+    fireEvent.click(toggle());
+    act(() => toggle().focus());
+
+    pressEscape();
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  it('stops listening once the overlay is closed', () => {
+    renderSidebar();
+    fireEvent.click(toggle());
+    pressEscape(toggle());
+    expect(sidebarState()).toBe('collapsed');
+
+    // A later Escape on the toggle must not reopen, re-close or steal anything.
+    const field = screen.getByRole('textbox', { name: 'Page field' });
+    act(() => field.focus());
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => {
+      field.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(false);
+    expect(field).toHaveFocus();
+  });
+});
+
+/**
+ * Q4-53 (live QA round 4), what was left of Q3-60. A row's tooltip is only for the collapsed
+ * icon rail, so an expanded sidebar drew it `hidden` — hidden, but still OPENED on focus. After
+ * Erin tabbed onto Home in the overlay, that invisible tooltip was the top dismissable layer and
+ * took her first Escape; only the second closed the overlay (3 of 3 tries). A tooltip that could
+ * never be seen now never opens, so nothing invisible stands between Escape and the overlay.
+ */
+describe('a sidebar row carries no invisible tooltip', () => {
+  beforeEach(() => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+  const home = () => screen.getByRole('button', { name: 'Home' });
+  const tooltipLayers = () => document.querySelectorAll('[data-slot="tooltip-content"]');
+
+  // The toggle sits BEFORE the panel, as the titlebar's does in the real shell, so Tab from the
+  // toggle walks into the overlay exactly the way Erin did.
+  const renderRail = (collapsible: 'offcanvas' | 'icon' = 'offcanvas') =>
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <SidebarTrigger />
+        <Sidebar collapsible={collapsible}>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton tooltip="Go back to the main chat screen">
+                <span>Home</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton tooltip="Start a new chat">
+                <span>New chat</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </Sidebar>
+        <button type="button">Page control</button>
+      </SidebarProvider>
+    );
+
+  it('closes the overlay with ONE Escape after tabbing onto a row, and hands focus to the toggle', async () => {
+    const user = userEvent.setup();
+    renderRail();
+    act(() => toggle().focus());
+
+    await user.keyboard('{Enter}');
+    expect(sidebarState()).toBe('expanded');
+    expect(toggle()).toHaveFocus();
+
+    await user.tab();
+    expect(home()).toHaveFocus();
+    // The measurement Erin took: before the fix this was 1 (hidden, 0×0, still open).
+    expect(tooltipLayers()).toHaveLength(0);
+
+    await user.keyboard('{Escape}');
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('does the same from the second row, and for an overlay ⌘B opened', async () => {
+    const user = userEvent.setup();
+    renderRail();
+    act(() => screen.getByRole('button', { name: 'Page control' }).focus());
+
+    toggleWithShortcut();
+    expect(home()).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus();
+    expect(tooltipLayers()).toHaveLength(0);
+
+    await user.keyboard('{Escape}');
+    expect(sidebarState()).toBe('collapsed');
+  });
+
+  // The tooltip exists for the collapsed icon rail, where the row shows no label. It must
+  // still open there.
+  it('still shows its tooltip on a collapsed icon rail', async () => {
+    const user = userEvent.setup();
+    renderRail('icon');
+    expect(sidebarState()).toBe('collapsed');
+    act(() => toggle().focus());
+
+    await user.tab();
+    expect(home()).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Go back to the main chat screen');
+  });
+
+  // Why the row keeps its Tooltip wrapper rather than dropping it while expanded: swapping the
+  // wrapper in and out changes the element type at the row's position, so React would REMOUNT
+  // the button whenever the sidebar changes state, and a row holding focus would drop it on
+  // <body>. Measured with the unwrap: the Escape test above lands on <body>, not the toggle.
+  it('keeps the same focused row across a state change', () => {
+    // A docked icon rail, so nothing but the row itself decides where focus is.
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderRail('icon');
+    const row = home();
+    act(() => row.focus());
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(home()).toBe(row);
+    expect(row).toHaveFocus();
+
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('collapsed');
+    expect(home()).toBe(row);
+    expect(row).toHaveFocus();
+  });
+});
+
+/**
+ * T-66. Below rung 1 an open sidebar floats OVER the page (AppLayout puts
+ * SIDEBAR_OVERLAY_BODY_CLASS on <body> and main.css draws the overlay from it),
+ * so an overlay left open after a choice kept covering the page the user had
+ * just asked for.
+ */
+describe('an overlay sidebar steps aside once something is chosen', () => {
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const renderOpenSidebar = (extra?: React.ReactNode) =>
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <button type="button">Settings</button>
+          <button type="button" aria-expanded={false}>
+            Components
+          </button>
+          <button type="button" aria-haspopup="menu">
+            More
+          </button>
+          {extra}
+        </Sidebar>
+      </SidebarProvider>
+    );
+
+  it('closes after a destination is chosen in the overlay', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+  });
+
+  // A disclosure or a menu opener changes what the rail SHOWS. The user is
+  // still choosing, so closing then would take the menu they just opened away.
+  it('stays open for a disclosure or a menu opener', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Components' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  // A row's context menu or confirmation is portalled to <body>, but React
+  // still bubbles its clicks through the row. Acting there is not choosing a
+  // destination in the rail.
+  it('ignores clicks that only bubble in from a portal', () => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+    renderOpenSidebar(createPortal(<button type="button">Delete chat</button>, document.body));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+
+  // A docked column sits beside the content, not over it: it stays as the user
+  // left it, which is what it has always done.
+  it('leaves a docked sidebar open', () => {
+    renderOpenSidebar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(sidebarState()).toBe('expanded');
+  });
+});
+
+/** A destination that focuses its own field when it arrives, as a composer does. */
+function FocusesOnArrival({ label }: { label: string }) {
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => field.current?.focus(), []);
+  return <input ref={field} aria-label={label} />;
+}
+
+/**
+ * Q4-54 (live QA round 4). A choice made in the overlay closed it and handed focus back to the
+ * titlebar toggle, like any other close. Erin picked Crew and arrived with focus up in the
+ * titlebar: one extra Tab, and her place lost on arrival. The person asked for the page, so the
+ * page's content region takes focus, and a destination that focuses something itself keeps it.
+ */
+describe('a choice made in the overlay hands focus to the page', () => {
+  beforeEach(() => {
+    document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  afterEach(() => {
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  const toggle = () => screen.getByRole('button', { name: 'Toggle sidebar' });
+  const crew = () => screen.getByRole('button', { name: 'Crew' });
+
+  /** A page that swaps in `destination` when Crew is chosen, as a route would. */
+  function Shell({
+    destination = <p>Crew page</p>,
+    mainTabIndex,
+    withRegion = true,
+  }: {
+    destination?: React.ReactNode;
+    mainTabIndex?: number;
+    withRegion?: boolean;
+  }) {
+    const [page, setPage] = useState<React.ReactNode>(<button type="button">Page control</button>);
+    return (
+      <SidebarProvider>
+        <SidebarTrigger />
+        <Sidebar>
+          <button type="button" onClick={() => setPage(destination)}>
+            Crew
+          </button>
+        </Sidebar>
+        {withRegion ? (
+          <SidebarInset>
+            <main tabIndex={mainTabIndex}>{page}</main>
+          </SidebarInset>
+        ) : (
+          page
+        )}
+      </SidebarProvider>
+    );
+  }
+
+  const chooseCrewByKeyboard = () => {
+    act(() => crew().focus());
+    act(() => {
+      fireEvent.click(crew(), { detail: 0 });
+    });
+  };
+
+  it('focuses the main region, not the toggle, when the chosen row held focus', () => {
+    render(<Shell />);
+    chooseCrewByKeyboard();
+
+    expect(sidebarState()).toBe('collapsed');
+    expect(screen.getByText('Crew page')).toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveFocus();
+    expect(toggle()).not.toHaveFocus();
+  });
+
+  it('lets a destination that focuses something itself keep it', () => {
+    render(<Shell destination={<FocusesOnArrival label="Message #general" />} />);
+    chooseCrewByKeyboard();
+
+    expect(sidebarState()).toBe('collapsed');
+    expect(screen.getByRole('textbox', { name: 'Message #general' })).toHaveFocus();
+  });
+
+  // A lasting tabindex would make every click on the page's blank space focus the whole region.
+  it('lends main a tabindex only while it holds that focus, and draws it no ring meanwhile', () => {
+    render(<Shell destination={<button type="button">First page control</button>} />);
+    chooseCrewByKeyboard();
+    const main = screen.getByRole('main');
+    expect(main).toHaveFocus();
+    expect(main).toHaveAttribute('tabindex', '-1');
+    expect(main.style.getPropertyValue('outline')).toBe('none');
+
+    // The window losing focus blurs it too, but focus comes back here: keep the loan.
+    act(() => {
+      fireEvent.blur(main);
+    });
+    expect(main).toHaveAttribute('tabindex', '-1');
+
+    act(() => screen.getByRole('button', { name: 'First page control' }).focus());
+    expect(main).not.toHaveAttribute('tabindex');
+    expect(main.style.getPropertyValue('outline')).toBe('');
+  });
+
+  it('leaves a region that was already focusable exactly as it was', () => {
+    render(<Shell mainTabIndex={-1} destination={<button type="button">Next</button>} />);
+    chooseCrewByKeyboard();
+    const main = screen.getByRole('main');
+    expect(main).toHaveFocus();
+    expect(main.style.getPropertyValue('outline')).toBe('');
+
+    act(() => screen.getByRole('button', { name: 'Next' }).focus());
+    expect(main).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('falls back to the toggle when the layout has no content region', () => {
+    render(<Shell withRegion={false} />);
+    chooseCrewByKeyboard();
+
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // Only a close the choice caused goes to the page: every other close still hands focus to the
+  // toggle (Escape from inside the panel, the toggle itself).
+  it('leaves the other closes as they were', async () => {
+    const user = userEvent.setup();
+    render(<Shell />);
+    act(() => crew().focus());
+
+    await user.keyboard('{Escape}');
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+
+  // A choice a controlled parent refused must not steer a later close that something else caused.
+  it('forgets a choice whose close never happened', async () => {
+    const Controlled = ({ open }: { open: boolean }) => (
+      <SidebarProvider open={open} onOpenChange={() => {}}>
+        <SidebarTrigger />
+        <Sidebar>
+          <button type="button">Crew</button>
+        </Sidebar>
+        <SidebarInset>
+          <main>page</main>
+        </SidebarInset>
+      </SidebarProvider>
+    );
+    const { rerender } = render(<Controlled open />);
+    chooseCrewByKeyboard();
+    expect(sidebarState()).toBe('expanded');
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    rerender(<Controlled open={false} />);
+    expect(sidebarState()).toBe('collapsed');
+    expect(toggle()).toHaveFocus();
+  });
+});
+
+/**
+ * The same three fixes, measured on the REAL app shell rather than on the
+ * primitive alone: the body class comes from AppLayout's own width watcher, the
+ * toggle from its own titlebar, and the landmarks from its own route container.
+ *
+ * jsdom's window is 1024 px wide, which is below rung 1 (1120 px), so the shell
+ * starts exactly where Erin did: sidebar auto-collapsed, overlay on demand.
+ */
+describe('the app shell, as a keyboard and screen-reader user meets it', () => {
+  let innerWidth: PropertyDescriptor | undefined;
+
+  const setWindowWidth = (width: number) =>
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+
+  beforeEach(() => {
+    innerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+  });
+
+  afterEach(() => {
+    if (innerWidth) Object.defineProperty(window, 'innerWidth', innerWidth);
+  });
+
+  const renderShell = (settingsPage: React.ReactNode = <p>Settings page</p>) =>
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<p>Home page</p>} />
+            <Route path="/settings" element={settingsPage} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+
+  // T-61: SidebarInset rendered a <main> around the route container's own
+  // <main>, so the landmark list offered "main" twice for one page. The inset
+  // is a layout box and contributes no landmark; the route supplies the one.
+  it('lets the inset add no landmark of its own', () => {
+    render(
+      <SidebarProvider>
+        <SidebarInset>
+          <p>page</p>
+        </SidebarInset>
+      </SidebarProvider>
+    );
+    expect(screen.queryByRole('main')).toBeNull();
+  });
+
+  it('has exactly one main landmark, and it holds the route', () => {
+    setWindowWidth(1400);
+    renderShell();
+
+    const mains = screen.getAllByRole('main');
+    expect(mains).toHaveLength(1);
+    expect(mains[0]).toHaveTextContent('Home page');
+    expect(document.querySelector('[data-slot="sidebar-inset"]')?.tagName).toBe('DIV');
+  });
+
+  it('keeps the auto-collapsed rail out of the tab order, and closes the overlay after a choice', () => {
+    setWindowWidth(1024);
+    renderShell();
+
+    expect(document.body).toHaveClass(SIDEBAR_OVERLAY_BODY_CLASS);
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+
+    // ⌘B opens it as an overlay, and an overlay is operable — and holds focus (Q2-51).
+    toggleWithShortcut();
+    expect(sidebarState()).toBe('expanded');
+    expect(panel()).not.toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveFocus();
+    expect(screen.getByTestId('titlebar-sidebar-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+    // Opening the disclosure is not a choice: the overlay stays.
+    fireEvent.click(screen.getByRole('button', { name: 'Components' }));
+    expect(sidebarState()).toBe('expanded');
+
+    // Choosing a destination by keyboard: Settings opens AND the overlay gets
+    // out of its way, handing focus to the page's one main landmark — not the
+    // titlebar toggle (Q4-54), and not <body>.
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    act(() => settings.focus());
+    act(() => {
+      fireEvent.click(settings);
+    });
+    expect(screen.getByText('Settings page')).toBeInTheDocument();
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(screen.getByRole('main')).toHaveFocus();
+    expect(screen.getByTestId('titlebar-sidebar-toggle')).not.toHaveFocus();
+  });
+
+  // Q4-54 in the real shell: a destination that puts focus somewhere itself keeps it.
+  it('leaves focus to a destination that takes it, after a choice in the overlay', () => {
+    setWindowWidth(1024);
+    renderShell(<FocusesOnArrival label="Search settings" />);
+    toggleWithShortcut();
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    expect(settings).toHaveFocus();
+
+    act(() => {
+      fireEvent.click(settings);
+    });
+    expect(sidebarState()).toBe('collapsed');
+    expect(screen.getByRole('textbox', { name: 'Search settings' })).toHaveFocus();
+    // The main region lent itself a tabindex for the hand-off and has taken it back.
+    expect(screen.getByRole('main')).not.toHaveAttribute('tabindex');
+  });
+
+  // Q3-60 in the real shell: the titlebar toggle opens the overlay, Escape closes it.
+  it('closes the overlay the titlebar toggle opened on Escape', () => {
+    setWindowWidth(1024);
+    renderShell();
+    const titlebarToggle = screen.getByTestId('titlebar-sidebar-toggle');
+    act(() => titlebarToggle.focus());
+    fireEvent.click(titlebarToggle);
+    expect(sidebarState()).toBe('expanded');
+
+    pressEscape(titlebarToggle);
+    expect(sidebarState()).toBe('collapsed');
+    expect(panel()).toHaveAttribute('inert');
+    expect(titlebarToggle).toHaveFocus();
+  });
+
+  it('leaves the docked sidebar open after a choice on a wide window', () => {
+    setWindowWidth(1400);
+    renderShell();
+
+    expect(document.body).not.toHaveClass(SIDEBAR_OVERLAY_BODY_CLASS);
+    expect(sidebarState()).toBe('expanded');
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    });
+    expect(screen.getByText('Settings page')).toBeInTheDocument();
+    expect(sidebarState()).toBe('expanded');
+  });
+});
+
+/**
+ * ⚠ The overlay is ONE class in three files, and nothing but this ties them.
+ * `AppLayout` sets it, `main.css` draws the overlay from it, and the sidebar
+ * asks it whether a choice should close the panel. A rename in any one of them
+ * would leave the overlay drawn but never dismissed — or dismissed while docked.
+ */
+describe('the overlay class is shared, not re-spelled', () => {
+  const CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+  const LAYOUT = readFileSync(join(__dirname, '../Layout/AppLayout.tsx'), 'utf8');
+
+  it('is the class AppLayout toggles on <body> and main.css draws the overlay from', () => {
+    expect(LAYOUT).toContain(`classList.toggle('${SIDEBAR_OVERLAY_BODY_CLASS}'`);
+    expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-container']`);
+    expect(CSS).toContain(`body.${SIDEBAR_OVERLAY_BODY_CLASS} [data-slot='sidebar-inset']`);
+  });
+
+  /**
+   * Q3-60. The overlay's rule swaps the docked hairline for the popover shadow, and a black
+   * shadow on a near-black page is no edge. A 1px `--border-subtle` border on the side that meets
+   * the page — a border, because forced colours keep it and strip the shadow.
+   */
+  it('draws the overlay’s edge as a --border-subtle border on the side facing the page', () => {
+    const rule = (selector: string) => {
+      const at = CSS.indexOf(`${selector} {`);
+      expect(at, selector).toBeGreaterThanOrEqual(0);
+      return CSS.slice(at, CSS.indexOf('}', at)).replace(/\s+/g, ' ');
+    };
+    const body = `body.${SIDEBAR_OVERLAY_BODY_CLASS}`;
+    expect(rule(`${body} [data-side='left'] > [data-slot='sidebar-container']`)).toContain(
+      'border-right: 1px solid var(--border-subtle)'
+    );
+    expect(rule(`${body} [data-side='right'] > [data-slot='sidebar-container']`)).toContain(
+      'border-left: 1px solid var(--border-subtle)'
+    );
+  });
+
+  it('keys that edge on the attribute and nesting the panel really renders', () => {
+    render(
+      <SidebarProvider>
+        <Sidebar>
+          <p>rail</p>
+        </Sidebar>
+      </SidebarProvider>
+    );
+    expect(panel().parentElement).toHaveAttribute('data-side', 'left');
   });
 });

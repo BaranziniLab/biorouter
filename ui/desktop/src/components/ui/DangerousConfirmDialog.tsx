@@ -55,6 +55,12 @@ export interface DangerousConfirmDialogProps {
   busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /**
+   * Hears every edit of the typed field. For a caller that must check the phrase more strictly
+   * than this component's trimmed, case-folded comparison — a Unix username is case-sensitive —
+   * at confirm time, on top of the gate here, never instead of it.
+   */
+  onPhraseChange?: (typed: string) => void;
 }
 
 /**
@@ -76,6 +82,7 @@ export function DangerousConfirmDialog({
   busy = false,
   onConfirm,
   onCancel,
+  onPhraseChange,
 }: DangerousConfirmDialogProps) {
   const fieldId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -125,7 +132,10 @@ export function DangerousConfirmDialog({
                 autoComplete="off"
                 spellCheck={false}
                 disabled={busy}
-                onChange={(event) => setTyped(event.target.value)}
+                onChange={(event) => {
+                  setTyped(event.target.value);
+                  onPhraseChange?.(event.target.value);
+                }}
                 // (3) above. With no surrounding `<form>` this is already inert,
                 // and it is written down anyway: the day someone wraps this in a
                 // form for the layout, the destructive action must not acquire a

@@ -154,6 +154,20 @@ const EXEMPT: &[(&str, &str)] = &[
         "crates/biorouter/src/providers/bedrock_namespace_tests.rs",
         "test scaffolding that re-execs the test binary itself, not a child of the running app",
     ),
+    (
+        "crates/biorouter/src/session/session_manager_required_affiliation_tests.rs",
+        "test code: the file opens with `#![cfg(test)]` and session_manager.rs includes it only \
+         as a `#[path]` test module; its two spawns re-exec the test binary itself so each \
+         privacy-toggle case runs in a process of its own",
+    ),
+    (
+        "crates/biorouter-crew/src/broker.rs",
+        "the file is included only by `#[cfg(unix)] mod broker` in biorouter-crew/src/lib.rs; its broker child therefore cannot compile on Windows",
+    ),
+    (
+        "crates/biorouter-crew/src/remote.rs",
+        "the file is included only by `#[cfg(unix)] pub mod remote` in biorouter-crew/src/lib.rs; its Linux remote helper child cannot compile on Windows",
+    ),
 ];
 
 fn repo_root() -> PathBuf {

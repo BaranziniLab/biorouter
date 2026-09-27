@@ -18,6 +18,7 @@ import { ToastContainer } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ProviderGuard from './components/ProviderGuard';
+import CrewApp from './components/crew/CrewApp';
 import { createSession } from './sessions';
 
 import { ChatType } from './types/chat';
@@ -734,6 +735,7 @@ export function AppInner() {
                 <Route path="workflows" element={<WorkflowsRoute />} />
                 <Route path="skills" element={<SkillsRoute />} />
                 <Route path="knowledge" element={<KnowledgeRoute />} />
+                <Route path="crew" element={<CrewApp />} />
                 <Route
                   path="shared-session"
                   element={

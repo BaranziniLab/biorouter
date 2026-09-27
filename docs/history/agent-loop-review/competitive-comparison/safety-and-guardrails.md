@@ -53,7 +53,7 @@ Four conventions used throughout:
 
 ## Comparison across ten agents
 
-The table has one column per agent, in this order: BioRouter, Goose upstream,
+The table has one column per agent, in this order: BioRouter, Goose,
 Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
@@ -63,7 +63,7 @@ wide and scrolls horizontally.
 > best-in-class implementation, sometimes a BioRouter gap. Which is which is
 > settled by the prose sections below, not by the formatting.
 
-| Aspect | BioRouter | Goose upstream | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Lifecycle hook events | 13 (all wired) | 11 | ~11 | broad plugin bus | huge typed bus | none | 6 | 7 | 11 | ~30 |
 | Hook can block | yes (4 events) | yes (PreTool/Stop) | yes | yes (throw) | yes | no | yes | yes | yes (exit 2) | yes |

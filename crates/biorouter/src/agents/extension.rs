@@ -41,8 +41,8 @@ impl ProcessExit {
     }
 }
 
-pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>> =
-    Lazy::new(|| {
+pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>> = Lazy::new(
+    || {
         let mut map = HashMap::new();
 
         map.insert(
@@ -141,8 +141,15 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             },
         );
 
+        map.insert("crew", PlatformExtensionDef {
+            name: crate::agents::crew_extension::EXTENSION_NAME,
+            description: "Use saved Crew connections and human-approved channel context and agent posting",
+            default_enabled: true,
+            client_factory: |ctx| Box::new(crate::agents::crew_extension::CrewClient::new(ctx)),
+        });
         map
-    });
+    },
+);
 
 #[derive(Clone)]
 pub struct PlatformExtensionContext {
@@ -933,7 +940,7 @@ mod tests {
     /// be made on purpose rather than noticed later.
     #[test]
     fn workspace_is_a_default_on_capability_granting_its_whole_surface() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 6);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 7);
         assert!(
             PLATFORM_EXTENSIONS["workspace"].default_enabled,
             "workspace is a capability now, so it ships on"
@@ -942,7 +949,7 @@ mod tests {
 
     #[test]
     fn platform_extension_defaults_match_capabilities() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 6);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 7);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);

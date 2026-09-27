@@ -4,7 +4,7 @@
 > **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gaps #1 and #3 (no PID-file reaping, a dead-coded `list()`) were fixed by BR-37, BR-38 and BR-42 plus the `shell_list` surfacing proposal; scheduler reconciliation by BR-39 and BR-40; and blocking subagents by BR-41 (`agents/subagent_handle.rs`). Its praise for the background-job design still reads true.
 > **Audience:** developers working on background execution, subagents, or the scheduler.
 
-The subsystem question is how BioRouter (a Goose fork: CLI, the `biorouterd` daemon, and the Electron GUI) handles work that does not finish inside one blocking tool call. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `long-running.md gap #N` (the file's former name).
+The subsystem question is how BioRouter (CLI, the `biorouterd` daemon, and the Electron GUI) handles work that does not finish inside one blocking tool call. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `long-running.md gap #N` (the file's former name).
 
 > **Note.** The review recorded no commit or branch, and line numbers in the citations below have drifted since; all paths are repository-relative and should be treated as pointers to the right function, not exact locations.
 

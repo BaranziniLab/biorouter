@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
 import { BioRouterMark } from './icons/BioRouterMark';
 import { BioRouterWordmark } from './icons/BioRouterWordmark';
@@ -33,6 +33,7 @@ interface ProviderGuardProps {
 export default function ProviderGuard({ didSelectProvider, children }: ProviderGuardProps) {
   const { read, upsert, getProviders } = useConfig();
   const navigate = useNavigate();
+  const location = useLocation();
   const [isChecking, setIsChecking] = useState(true);
   const [hasProvider, setHasProvider] = useState(false);
   const [showFirstTimeSetup, setShowFirstTimeSetup] = useState(false);
@@ -154,6 +155,11 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     };
   }, [needsCatalog, getProviders]);
 
+  const resumingSession =
+    location.pathname === '/pair' &&
+    Boolean(new URLSearchParams(location.search).get('resumeSessionId')?.trim());
+  if (location.pathname === '/crew' || resumingSession) return <>{children}</>;
+
   if (isChecking) {
     return (
       <div className="h-screen w-full bg-background-muted flex items-center justify-center">
@@ -219,7 +225,18 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                 ? `Biorouter is being served to this browser by ${HOST_SERVE_COMMAND}. One more step is needed on that machine before you can start a chat.`
                 : 'An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.'}
             </p>
-            {!hostManaged && <div className="mt-4">{skipAction('header')}</div>}
+            {!hostManaged && (
+              <div className="mt-4 flex gap-5">
+                {skipAction('header')}
+                <button
+                  type="button"
+                  className="text-sm text-text-default"
+                  onClick={() => navigate('/crew')}
+                >
+                  Open Crew →
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

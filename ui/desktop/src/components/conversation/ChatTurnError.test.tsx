@@ -196,6 +196,101 @@ describe('ChatTurnError', () => {
     ).toBe('Model turn ended unexpectedly');
   });
 
+  /**
+   * Q2-08 (live QA round 2): a chat with Crew access whose connection was down failed as "Model
+   * request failed · Crew connection is disconnected; authenticate and connect in Crew" — the model
+   * blamed for Crew's outage. The daemon's words are `crates/biorouter/src/crew/mod.rs`'s.
+   */
+  it('names a Crew connection that is down instead of blaming the model', () => {
+    const daemon = 'Crew connection is disconnected; authenticate and connect in Crew';
+    for (const failure of [
+      error({ message: daemon, code: 'provider_failure', scope: 'provider' }),
+      error({ message: `Stream error: ${daemon}`, code: 'stream_error', scope: 'internal' }),
+      error({ message: 'Tool call failed', technicalDetails: `crew: ${daemon}` }),
+      error({ message: daemon, providerKind: 'server' }),
+    ]) {
+      const presentation = presentChatTurnError(failure);
+      expect(presentation.title).toBe('Crew is offline');
+      expect(presentation.message).toBe(
+        "This chat's Crew connection is offline. Open Crew and connect, then retry."
+      );
+      expect(presentation.title).not.toMatch(/Model/);
+    }
+
+    render(<ChatTurnError error={error({ message: daemon })} />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Crew is offline');
+    expect(alert).not.toHaveTextContent('Model request failed');
+  });
+
+  it('does not take any other Crew failure for a disconnected connection', () => {
+    expect(
+      presentChatTurnError(error({ message: 'Crew run was revoked; request a fresh human grant' }))
+        .title
+    ).toBe('Model request failed');
+  });
+
+  /**
+   * Final acceptance D-1: a chat whose grant a workspace policy change ended showed "Model request
+   * failed" with the workspace's JSON envelope. The daemon now says a sentence; an older daemon's
+   * envelope is read as the same sentence. Never the model's title, never the JSON, no Retry.
+   */
+  describe('a turn refused for its Crew access (D-1)', () => {
+    const ENVELOPE =
+      'Crew broker refused request: {"code":"grant_expired","message":"grant_expired: run revoked, expired or policy changed"}';
+    const SETTINGS =
+      'Crew settings changed since access was granted. Grant access again from Crew.';
+
+    it.each([
+      ['the workspace’s envelope (a daemon from before D-1)', ENVELOPE],
+      ['the daemon’s sentence', SETTINGS],
+    ])('reads %s as the settings sentence', (_what, message) => {
+      const refused = error({
+        message,
+        technicalDetails: ENVELOPE,
+        code: 'inference_start_failed',
+        scope: 'inference',
+      });
+      expect(presentChatTurnError(refused)).toEqual({
+        title: 'Crew access ended',
+        message: SETTINGS,
+      });
+      render(<ChatTurnError error={{ ...refused, retryable: true }} onRetry={vi.fn()} />);
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('Crew access ended');
+      expect(alert).toHaveTextContent(SETTINGS);
+      expect(alert).not.toHaveTextContent('Model request failed');
+      expect(alert).not.toHaveTextContent(/grant_expired|\{|"code"/);
+      expect(screen.queryByText('Technical details')).toBeNull();
+      // Retrying would be refused the same way: the chat's Crew bar is the way on.
+      expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
+    });
+
+    it('names a revoke as removed access, in the daemon’s words', () => {
+      const message =
+        "This chat's Crew access was removed. Start a new chat, or grant access again from Crew.";
+      expect(presentChatTurnError(error({ message, scope: 'inference' }))).toEqual({
+        title: 'Crew access removed',
+        message,
+      });
+    });
+
+    it('names a grant that ran out as ended', () => {
+      const message =
+        "This chat's Crew access has ended. Grant access again from Crew to continue.";
+      expect(presentChatTurnError(error({ message, scope: 'inference' }))).toEqual({
+        title: 'Crew access ended',
+        message,
+      });
+    });
+
+    it('leaves every other broker refusal to the ordinary presentation', () => {
+      const other =
+        'Crew broker refused request: {"code":"forbidden","message":"forbidden: channel unavailable"}';
+      expect(presentChatTurnError(error({ message: other })).title).toBe('Model request failed');
+    });
+  });
+
   it('does not duplicate a backend error message that is already in the transcript', () => {
     const turnError = error({ message: 'Authentication failed. Status: 401 Unauthorized' });
     const messages = [

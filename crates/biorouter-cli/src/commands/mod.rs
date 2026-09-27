@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod bench;
 pub mod configure;
+pub mod crew;
 pub mod doctor;
 pub mod exe_path;
 pub mod extension;
@@ -14,6 +15,7 @@ pub mod serve;
 pub mod session;
 pub mod session_grouping;
 pub mod session_watch;
+pub mod shared_conversation;
 pub mod skill;
 pub mod term;
 pub mod usage;

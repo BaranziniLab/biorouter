@@ -126,6 +126,9 @@ class ToastService {
       : hasErrors
         ? 'error'
         : 'success';
+    // Progress and a clean run are FYI; only a failure interrupts. See
+    // TOAST_ROLE_POLITE for why the role is never left to the library.
+    const role = type === 'error' ? TOAST_ROLE_ASSERTIVE : TOAST_ROLE_POLITE;
 
     if (toast.isActive(toastId)) {
       // Update existing toast
@@ -140,6 +143,7 @@ class ToastService {
         ),
         isLoading: !isComplete,
         type,
+        role,
         icon: false,
         // A clean run expires like any other confirmation; a FAILURE report
         // persists, because its "View details" action opens a dialog and a 5s
@@ -163,6 +167,7 @@ class ToastService {
           toastId,
           isLoading: !isComplete,
           type,
+          role,
           icon: false,
           autoClose: isComplete && !hasErrors ? TOAST_AUTO_CLOSE_MS : false,
           closeButton: true,
@@ -216,6 +221,24 @@ export type { ExtensionLoadingStatus };
  */
 export const TOAST_AUTO_CLOSE_MS = 5000;
 
+/**
+ * WHO A TOAST INTERRUPTS (a11y P2-8, triage T-57). react-toastify gives every
+ * toast `role="alert"` unless told otherwise, and `alert` is an ASSERTIVE live
+ * region: a screen reader drops whatever it was saying to read it. That is right
+ * for a failure and wrong for "@crew_x joined chen-lab", "Saved" or a progress
+ * note, which then cut across the user's own reading several times a minute.
+ *
+ * So the role is chosen by what the toast REPORTS, never left to the library:
+ *   · `status` (polite) — confirmations, information and progress. Read at the
+ *     next pause, never over the user.
+ *   · `alert` (assertive) — failures and warnings, the notices that exist to
+ *     interrupt. An error must not wait behind the user's own reading.
+ *
+ * `toasts.test.tsx` pins every entry point to one of the two.
+ */
+export const TOAST_ROLE_POLITE = 'status';
+export const TOAST_ROLE_ASSERTIVE = 'alert';
+
 const commonToastOptions: ToastOptions = {
   position: 'top-right',
   closeButton: true,
@@ -252,6 +275,7 @@ export function toastSuccess({ title, msg, toastOptions = {} }: ToastSuccessProp
     {
       ...commonToastOptions,
       icon: false,
+      role: TOAST_ROLE_POLITE,
       autoClose: TOAST_AUTO_CLOSE_MS,
       toastId: dedupeKey('success', title, msg),
       ...toastOptions,
@@ -265,6 +289,7 @@ export function toastInfo({ title, msg, toastOptions = {} }: ToastSuccessProps) 
     {
       ...commonToastOptions,
       icon: false,
+      role: TOAST_ROLE_POLITE,
       autoClose: TOAST_AUTO_CLOSE_MS,
       toastId: dedupeKey('info', title, msg),
       ...toastOptions,
@@ -278,6 +303,7 @@ export function toastWarning({ title, msg, toastOptions = {} }: ToastSuccessProp
     {
       ...commonToastOptions,
       icon: false,
+      role: TOAST_ROLE_ASSERTIVE,
       autoClose: TOAST_AUTO_CLOSE_MS,
       toastId: dedupeKey('warning', title, msg),
       ...toastOptions,
@@ -404,6 +430,7 @@ export function toastError({
     {
       ...commonToastOptions,
       icon: false,
+      role: TOAST_ROLE_ASSERTIVE,
       // Errors persist. A failure that expires unread is a failure that was
       // never reported.
       autoClose: false,
@@ -425,6 +452,7 @@ export function toastLoading({ title, msg, toastOptions }: ToastLoadingProps) {
     {
       ...commonToastOptions,
       icon: false,
+      role: TOAST_ROLE_POLITE,
       autoClose: false,
       ...toastOptions,
     }

@@ -1,0 +1,231 @@
+/* Crew — the details pane's inside: its header band, scrolling body and the
+   Ask my agent footer. The pane's geometry, hairline and push/cover motion
+   live in `crew/crew-app.css` (`.crew-pane`, `.crew-pane-content`);
+   `DetailsPane` renders those hooks.
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and data/aria hooks
+   only, tokens only, a reduced-motion rest for anything that moves. */
+
+/* The pane's ground is one step up from the conversation's (T-62): in dark
+   `--background-default` sits a step above the canvas the timeline paints,
+   and in light the two are the same white. On `.crew-pane` itself, never a
+   child: a child's ground would paint over the pane's inset-shadow hairline.
+   `[data-state]` outranks `crew-app.css`'s `.crew-pane` whatever order the two
+   stylesheets load in. */
+.crew-pane[data-state] {
+  background-color: var(--background-default);
+}
+
+/* One left edge for everything in the pane (T-62). Carol measured five — the
+   header title, the tabs, About's rows, a ghost button's words and the Files
+   empty state each sat on its own x — so the inset is one custom property,
+   and each part says how it reaches it. */
+.crew-pane-content {
+  --crew-pane-inset: 16px;
+}
+
+/* The pane header meets the channel header and the sidebar's band at one top
+   edge: a 44px band while the pane is pushed beside the channel. Its title
+   carries 8px of its own padding, so the band supplies the rest of the inset. */
+.crew-pane-header {
+  height: var(--chrome-height);
+  padding-inline: calc(var(--crew-pane-inset) - 8px);
+}
+
+/* Covering, the pane sits BELOW the channel header, so its own header is a
+   40px row rather than a second band. */
+@container crew-main (width < 800px) {
+  .crew-pane-header {
+    height: 40px;
+  }
+}
+
+/* The mode's content: header, then a body that scrolls, then (Ask my agent)
+   the footer holding the one Start button, which never scrolls away. */
+.crew-pane-mode {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.crew-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-inline: var(--crew-pane-inset);
+}
+
+.crew-pane-footer {
+  flex: 0 0 auto;
+  padding-inline: var(--crew-pane-inset);
+  border-top: 1px solid var(--border-subtle);
+  background-color: var(--background-default);
+}
+
+/* A details tab panel is a tab stop (Radix), and draws a focus edge when it
+   takes focus (Q2-68). It is the edge Workspace settings' panels draw
+   (`.crew-settings-panel:focus-visible` in `dialogs/dialogs.css`): a 2px
+   `--ring` outline drawn inside the box (Q4-30). It used to be the 1px orange
+   inset shadow of `.biorouter-focus-region`, so the app's two tabbed panels
+   answered focus in two styles. Unlayered, so it outranks the layered
+   `[role='tabpanel']:focus-visible { outline: none }` in `main.css`; under
+   forced colours the OS-requested block there still draws its own ring.
+
+   With the words flush to the panel's box an edge sat ON them — the "A" of
+   "Ask @crew_alice…" and the "6" of "6 MEMBERS" (Q3-33). The panel steps out
+   by 8px and pads back in by 8px, so its words stay on the pane's one inset
+   and the 2px edge runs 6px clear of them on every side. The 4px top margin
+   plus the 8px padding keep the 12px gap under the tabs. */
+.crew-pane-panel {
+  margin-block-start: 4px;
+  margin-inline: -8px;
+  padding: 8px;
+  border-radius: var(--radius-element);
+}
+
+.crew-pane-panel:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* A member's name wraps rather than truncating (Q3-33): "Henry Ito
+   @crew_henr…" beside the Channel owner badge hid the handle, which is the
+   part an authority point owes in full. The badge has its own line below. */
+.crew-member-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* A member row's ⋯ fades in on the row's hover and focus, and stays while its
+   menu is open (design.md §4.14; Q3-33 counted one on every row at rest).
+   Opacity only: it stays in the tab order and the accessibility tree, so a
+   keyboard reaches it and reveals it by reaching it. Without a hover pointer
+   it is always shown. */
+.crew-member-actions {
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-member-row:hover .crew-member-actions,
+.crew-member-row:focus-within .crew-member-actions,
+.crew-member-actions[data-state='open'] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .crew-member-actions {
+    opacity: 1;
+  }
+}
+
+/* A list of settings rows keeps each row's 4px hover inset, and steps out by
+   it so the rows' words sit on the pane inset. */
+.crew-pane-rows {
+  margin-inline: -4px;
+}
+
+/* A ghost `sm` button whose words start a line: step out by its own 12px
+   padding, as `.biorouter-disclosure-trigger` does, so the words sit on the
+   inset and only its hover wash reaches past it. */
+.crew-pane-flush {
+  margin-inline-start: -12px;
+}
+
+/* Ask my agent's Task: at least six lines, growing with what is written, up
+   to a height where it scrolls inside itself (T-47). 14px is its padding and
+   border (`py-1.5`, a 1px border), which `border-box` counts in the height.
+   It sizes itself, so it offers no native resize grip (Q2-30): a grip on a
+   field that already grows is a second, competing size. */
+.crew-agent-task {
+  field-sizing: content;
+  min-height: calc(6lh + 14px);
+  max-height: calc(20lh + 14px);
+  resize: none;
+}
+
+/* Start's spinner while the task starts (Q2-67). The words beside it say
+   "Starting…", so under reduced motion it rests as a still ring. */
+.crew-agent-start-spinner {
+  flex: none;
+  animation: crew-pane-spin 700ms linear infinite;
+}
+
+@keyframes crew-pane-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Focus turns the Task's border to the accent edge, the chat composer's
+   (`.biorouter-composer-card:has(textarea:focus)` in `main.css`). The field
+   used to REMOVE its hover ring on focus, which left focus invisible (T-16).
+   Authored here, not as a Tailwind variant, so it cannot fail to generate. */
+.crew-agent-task:focus-visible {
+  border-color: var(--border-accent);
+}
+
+/* A model's tier as ONE chip, `🔒 Private · UCSF` (`ModelTierMarks`, Q4-28):
+   the institution sits inside the badge's own fill, never beside it as a
+   second span, exactly as the sidebar's privacy chip and Settings → Privacy
+   draw it (`.crew-sidebar-chip-badge`, `.crew-settings-privacy-badge`). The
+   inner `PrivacyBadge` keeps its geometry and fill (the same token), so the
+   two read as one pill; this box supplies the fill under the institution and
+   the end inset. Ask my agent's Change is a separate link after it. */
+.crew-model-tier {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-model-tier-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* The model picker's list: tall enough for three provider groups, then it
+   scrolls inside the popover. */
+.crew-model-list {
+  max-height: 20rem;
+}
+
+.crew-model-chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.crew-model-trigger[data-state='open'] .crew-model-chevron {
+  transform: rotate(180deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-model-chevron,
+  .crew-model-trigger[data-state='open'] .crew-model-chevron {
+    transition: none;
+  }
+
+  .crew-agent-start-spinner {
+    animation: none;
+  }
+
+  .crew-member-actions {
+    transition: none;
+  }
+}

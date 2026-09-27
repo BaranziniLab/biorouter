@@ -75,9 +75,21 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       return distanceFromBottom <= BOTTOM_SCROLL_THRESHOLD;
     }, []);
 
+    // The bottom edge the resize anchor (below) keeps in place, in content
+    // coordinates; null while no anchor is installed.
+    const anchorBottomRef = React.useRef<number | null>(null);
+
     const scrollToBottom = React.useCallback(
       (behavior: ScrollBehavior = 'smooth') => {
         if (viewportRef.current) {
+          // An explicit scroll to the bottom is where the reader's bottom edge now
+          // is, even when it lands mid-reflow: the anchor's scroll listener skips
+          // a scroll that arrives before the resize observer has seen a new
+          // height, and would otherwise put the viewport back at the bottom edge
+          // it remembered before this scroll (measured: a channel opening while
+          // a note above its composer grew landed 12px from the TOP).
+          if (anchorBottomRef.current !== null)
+            anchorBottomRef.current = viewportRef.current.scrollHeight;
           viewportRef.current.scrollTo({
             top: viewportRef.current.scrollHeight,
             behavior,
@@ -247,13 +259,13 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       if (!autoScroll || !hasBottomAnchor || !viewport) return;
       if (typeof ResizeObserver === 'undefined') return;
       let lastHeight = viewport.clientHeight;
-      let bottom = viewport.scrollTop + lastHeight;
+      anchorBottomRef.current = viewport.scrollTop + lastHeight;
       anchoredHeightRef.current = lastHeight;
       const remember = () => {
         // Mid-reflow the height is already new and the observer has not run: the
         // bottom edge it would record is the one being moved, not the reader's.
         if (viewport.clientHeight !== lastHeight) return;
-        bottom = viewport.scrollTop + viewport.clientHeight;
+        anchorBottomRef.current = viewport.scrollTop + viewport.clientHeight;
       };
       const observer = new ResizeObserver(() => {
         const height = viewport.clientHeight;
@@ -264,16 +276,18 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         lastHeight = height;
         anchoredHeightRef.current = height;
         if (anchor) {
+          const bottom = anchorBottomRef.current ?? viewport.scrollTop + height;
           viewport.scrollTop = Math.max(0, bottom - height);
           lastScrollTopRef.current = viewport.scrollTop;
         }
-        bottom = viewport.scrollTop + height;
+        anchorBottomRef.current = viewport.scrollTop + height;
       });
       viewport.addEventListener('scroll', remember, { passive: true });
       observer.observe(viewport);
       return () => {
         observer.disconnect();
         viewport.removeEventListener('scroll', remember);
+        anchorBottomRef.current = null;
         anchoredHeightRef.current = null;
         anchorEngagedRef.current = false;
       };

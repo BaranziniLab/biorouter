@@ -1,0 +1,61 @@
+[package]
+name = "biorouter-crew"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64 = "=0.22.1"
+ed25519-dalek = "2.2.0"
+hex = "0.4.3"
+libc = "=0.2.186"
+serde = { version = "=1.0.228", features = ["derive"] }
+# `preserve_order` is load-bearing: a journal record's checksum is verified by re-serializing the
+# parsed record, so the parse must keep the key order the writer produced. The shipped broker used
+# to get this feature only through workspace feature unification (biorouter-server builds in the
+# same cargo invocation), so a broker built on its own rejected every existing journal as
+# `journal_corrupt: checksum mismatch`. See tests/journal_key_order.rs.
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2 = "0.10.9"
+unicode-normalization = "=0.1.25"
+unicode-properties = "=0.1.4"
+unicode-script = "=0.5.8"
+unicode-security = "=0.1.2"
+uuid = { version = "=1.19.0", features = ["v4", "serde"] }
+
+[features]
+# Join a workspace by invitation and device code (S3a) is ON BY DEFAULT since 2026-09-25, after
+# the adversarial security reviews of the broker, daemon and route halves (and of every later
+# fix) and four live multi-account QA rounds on a disposable AWS fixture passed (naming design
+# D17). Every build that ships the broker (`scripts/release.sh` `cmd_linux-backend`,
+# `scripts/build-computer-use-package-cross.sh`, `just build-cross`) passes no feature flags, so
+# it compiles this in. Human security review of the enabling change is still required before
+# merge (CLAUDE.md, auth code).
+default = ["join-by-name"]
+# Kept as a feature so a broker can still be built without it:
+# `cargo build -p biorouter-crew --bin biorouter-crew --no-default-features` drops
+# `join_by_name_v1` from `hello`, and `enrollment.pending` / `auth.join` then fail closed. Build
+# it on its own: `biorouter` and `biorouter-server` take this crate with its default features, so
+# in the same cargo invocation feature unification turns `join-by-name` back on.
+# `scripts/check-crew-broker-join.sh` asserts a shipped broker carries it.
+join-by-name = []
+# Test-only seams (the broker's injectable account directory). Never enabled by the shipped
+# binary; integration tests get it through the dev-dependency self-reference below.
+test-seams = []
+
+[dev-dependencies]
+# `default-features = false` so this self-reference adds only `test-seams`: without it,
+# `cargo test -p biorouter-crew --no-default-features` would silently turn `join-by-name` back on
+# for every test target and the build without the feature could not be tested at all.
+biorouter-crew = { path = ".", default-features = false, features = ["test-seams"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"

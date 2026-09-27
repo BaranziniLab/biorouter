@@ -106,13 +106,19 @@ Then visit `http://localhost:8080`.
 - Rick Larson
 - Oksana Gologorskaya
 
-### Open Source Inspirations
+### Inspirations
 
-- **[Goose](https://block.github.io/goose/)** — CLI/Desktop agent for full developer workflows (Block) — Biorouter's primary upstream foundation
-- **[Aider](https://aider.chat/)** — Open-source, Git-native CLI AI coding agent
-- **[Cline](https://github.com/cline/cline)** — Open-source interactive CLI coding agent
-- **[OpenCode](https://opencode.ai/)** — Open-source coding agent with multi-session and multi-provider support
-- **[ForgeCode](https://forgecode.dev/)** — Terminal AI coding assistant for task planning and code generation
+Biorouter is an independent project that started from its own source code. The agents below influenced its design, Goose most of all, and it also draws on many open source libraries.
+
+- **[Goose](https://block.github.io/goose/)**: CLI and desktop agent for full developer workflows (Block), and a major inspiration for Biorouter's design
+- **[Claude Code](https://github.com/anthropics/claude-code)**: Anthropic's agentic coding tool for the terminal and IDE
+- **[Codex CLI](https://github.com/openai/codex)**: OpenAI's open source coding agent that runs in the terminal
+- **[Gemini CLI](https://github.com/google-gemini/gemini-cli)**: Google's open source AI agent for the terminal
+- **[OpenHands](https://github.com/OpenHands/OpenHands)**: Open source platform for autonomous software development agents
+- **[Aider](https://aider.chat/)**: Open source coding agent for the terminal that works with Git
+- **[Cline](https://github.com/cline/cline)**: Open source interactive CLI coding agent
+- **[OpenCode](https://opencode.ai/)**: Open source coding agent that supports multiple sessions and providers
+- **[ForgeCode](https://forgecode.dev/)**: Terminal AI coding assistant for task planning and code generation
 
 ---
 

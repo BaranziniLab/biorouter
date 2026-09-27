@@ -41,16 +41,118 @@ function TooltipProvider({
   );
 }
 
-function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+/**
+ * Whether the focus happening now was moved by the Tab key (Q2-56).
+ *
+ * Radix opens a trigger's tooltip on ANY focus that did not start with a pointer press, and the
+ * app restores focus programmatically all the time — a dialog or menu closing hands it back to
+ * its opener, a pane closing to its toggle. So "More actions", "Attach" and "Analysis Lab
+ * options" popped their tooltips over the New label every time something closed (carol, dave,
+ * frank, a11y). A focus the person moved with Tab still shows it, and hover is unchanged.
+ *
+ * One tracker for the whole document, installed once when this module loads, rather than a
+ * listener per trigger. It is the channel header's rule (`useTooltipOnTabFocusOnly` in
+ * `crew/channel/ChannelHeader.tsx`), moved here so every tooltip has it:
+ *   - a Tab keydown marks the next focus as the person's — the focus move is that keydown's
+ *     default action, so it lands while the mark is set, and a focus trap or menu that moves
+ *     focus itself on Tab lands inside it too;
+ *   - any keyup, pointer press or the window losing focus clears it, so a focus that arrives
+ *     later (a restore after Escape or a click, the window coming back) is a program's.
+ * Capture phase, so nothing that stops propagation can hide a Tab from it.
+ */
+let focusMovedByTab = false;
+
+function installTabFocusTracker() {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return;
+  const settle = () => {
+    focusMovedByTab = false;
+  };
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Tab') focusMovedByTab = true;
+    },
+    true
+  );
+  document.addEventListener('keyup', settle, true);
+  document.addEventListener('pointerdown', settle, true);
+  window.addEventListener('blur', settle);
+}
+
+installTabFocusTracker();
+
+/** For tests and callers that need the same verdict: was the focus in progress moved by Tab? */
+export function isFocusFromTabKey(): boolean {
+  return focusMovedByTab;
+}
+
+/**
+ * Set by a trigger's focus handler, just before Radix's own asks to open, when that focus was not
+ * a Tab. `Tooltip` reads it in `onOpenChange` and declines that one open. It is cleared on the
+ * next microtask, so it can only ever refuse the open the same focus event asked for.
+ */
+const TooltipFocusGateContext = React.createContext<React.RefObject<boolean> | null>(null);
+
+/**
+ * The tooltip root, holding its own open state (controlled or not, as before) so it can decline
+ * an open that a programmatic focus asked for. The trigger's focus event is deliberately NOT
+ * cancelled to achieve this: a cancelled focus event skips every handler Radix composes after
+ * the caller's, and a tooltip wraps triggers that act on focus themselves — a tab activates, a
+ * roving toolbar item records its stop.
+ */
+function Tooltip({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : uncontrolledOpen;
+  const programmaticFocus = React.useRef(false);
+
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      if (next && programmaticFocus.current) {
+        programmaticFocus.current = false;
+        return;
+      }
+      if (!controlled) setUncontrolledOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlled, onOpenChange]
+  );
+
   return (
     <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+      <TooltipFocusGateContext.Provider value={programmaticFocus}>
+        <TooltipPrimitive.Root
+          data-slot="tooltip"
+          open={open}
+          onOpenChange={handleOpenChange}
+          {...props}
+        />
+      </TooltipFocusGateContext.Provider>
     </TooltipProvider>
   );
 }
 
-function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
+function TooltipTrigger({
+  onFocus,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  const programmaticFocus = React.useContext(TooltipFocusGateContext);
+  // Runs before Radix's own focus handler (Radix composes the caller's first), so the gate is
+  // set by the time Radix asks the root to open.
+  const handleFocus = (event: React.FocusEvent<HTMLButtonElement>) => {
+    onFocus?.(event);
+    if (!programmaticFocus || isFocusFromTabKey()) return;
+    programmaticFocus.current = true;
+    queueMicrotask(() => {
+      programmaticFocus.current = false;
+    });
+  };
+  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" onFocus={handleFocus} {...props} />;
 }
 
 function TooltipContent({

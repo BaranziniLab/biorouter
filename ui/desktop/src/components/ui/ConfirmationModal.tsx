@@ -1,3 +1,4 @@
+import type * as React from 'react';
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,7 @@ export function ConfirmationModal({
   cancelLabel = 'No',
   isSubmitting = false,
   confirmVariant = 'default',
+  children,
 }: {
   isOpen: boolean;
   title: string;
@@ -28,6 +30,12 @@ export function ConfirmationModal({
   cancelLabel?: string;
   isSubmitting?: boolean; // To handle debounce state
   confirmVariant?: 'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link';
+  /**
+   * Rendered between the message and the buttons — for the one line a caller must show in place,
+   * such as the refusal of the action being confirmed, so it lands in the dialog rather than
+   * behind it.
+   */
+  children?: React.ReactNode;
 }) {
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && onCancel()}>
@@ -36,6 +44,8 @@ export function ConfirmationModal({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{message}</DialogDescription>
         </DialogHeader>
+
+        {children}
 
         <DialogFooter className="pt-2">
           <Button variant="outline" onClick={onCancel} disabled={isSubmitting}>

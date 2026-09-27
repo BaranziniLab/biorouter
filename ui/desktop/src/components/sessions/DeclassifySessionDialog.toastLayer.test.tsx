@@ -149,13 +149,23 @@ async function attemptOnce(session: Session) {
   dialog.close();
 }
 
-/** Every report on screen, as the text a person reads. */
+const readable = (toast: HTMLElement) => (toast.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Every report on screen, as the text a person reads. A failure is an `alert`
+ * and a confirmation a polite `status` (`toasts.tsx`, T-57), and a person sees
+ * both, so both count.
+ */
 function reports(): string[] {
-  return screen
-    .queryAllByRole('alert')
-    .map((alert) => (alert.textContent ?? '').replace(/\s+/g, ' ').trim());
+  return [...screen.queryAllByRole('alert'), ...screen.queryAllByRole('status')].map(readable);
 }
-const busyReports = () => reports().filter((text) => text.includes('Try again in a moment'));
+// Read from the ALERTS only: a failure that stopped interrupting would vanish
+// from this list and fail the counts below.
+const busyReports = () =>
+  screen
+    .queryAllByRole('alert')
+    .map(readable)
+    .filter((text) => text.includes('Try again in a moment'));
 
 beforeEach(() => {
   vi.clearAllMocks();

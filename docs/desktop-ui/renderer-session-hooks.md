@@ -93,7 +93,7 @@ separate change, with its own measurement.
 ## The one hook that stays on the default session
 
 `onBeforeSendHeaders`, which rewrites every request's `Origin` to the vite dev origin.
-It has been there since the initial commit, inherited from upstream, and it is
+It has been there since the initial commit, and it is
 deliberately **not** extended to the renderer's partition:
 
 - **The renderer does not need it.** A packaged `file://` document sends no `Origin` on

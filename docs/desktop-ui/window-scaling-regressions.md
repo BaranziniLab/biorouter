@@ -224,7 +224,7 @@ make sure that you're also applying the 760 pixels redesign"*.
 A sixth view, MCP apps, joined at the same time and had no reading column at all
 — only a `px-8` div — so at 1440 its title started at **x = 320** while its
 siblings started at **x = 336** and Settings at **x = 508**: three different left
-edges across one family of pages. That view was an inherited feature and was
+edges across one family of pages. That view, present since the first commit, was
 removed in September 2026 (see the record under `docs/history/`), but the reason
 it is recorded here outlives it — every remaining page is 508 now, which is also
 what made a single `PageHeader` primitive possible (rule 10 of the settings

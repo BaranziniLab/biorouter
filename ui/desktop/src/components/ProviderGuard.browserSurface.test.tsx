@@ -28,6 +28,7 @@ vi.mock('./ConfigContext', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
+  useLocation: () => ({ pathname: '/' }),
 }));
 
 // The catalog gets a distinguishable marker, because the assertion that matters

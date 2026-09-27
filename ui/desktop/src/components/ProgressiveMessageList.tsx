@@ -40,7 +40,12 @@ interface ProgressiveMessageListProps {
   // Custom render function for messages
   renderMessage?: (message: Message, index: number) => React.ReactNode | null;
   isStreamingMessage?: boolean; // Whether messages are currently being streamed
-  onMessageUpdate?: (messageId: string, newContent: string) => void;
+  /** An edit's save; `false` refuses it before anything changed (a chat held for Crew, F1). */
+  onMessageUpdate?: (
+    messageId: string,
+    newContent: string,
+    editType?: 'diverge' | 'edit'
+  ) => unknown;
   onRenderingComplete?: () => void; // Callback when all messages are rendered
   submitElicitationResponse?: (
     elicitationId: string,

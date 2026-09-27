@@ -424,6 +424,16 @@ impl HooksManager {
     /// Run all hooks matching (event, matcher_key) concurrently and merge
     /// their outcomes. Never returns an error: hook failures are recorded in
     /// the aggregate and treated as non-blocking.
+    pub fn ensure_crew_compatible(&self) -> anyhow::Result<()> {
+        self.managed.ensure_crew_compatible()
+    }
+
+    async fn crew_hooks_allowed(session_id: &str) -> Result<bool, String> {
+        let manager = crate::crew::manager()
+            .map_err(|_| "Hooks withheld because Crew scope could not be verified".to_string())?;
+        Ok(!manager.is_scoped_session(session_id).await)
+    }
+
     pub async fn dispatch(
         &self,
         event: HookEvent,
@@ -431,6 +441,28 @@ impl HooksManager {
         payload: &HookPayload,
         working_dir: &Path,
     ) -> HookAggregate {
+        // Existing agents retain their hook configuration after a human grants
+        // Crew access, so construction-time project-hook settings are insufficient.
+        match Self::crew_hooks_allowed(&payload.session_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return match self.ensure_crew_compatible() {
+                    Ok(()) => HookAggregate::default(),
+                    Err(error) => HookAggregate {
+                        decision: Some(outcome::HookDecision::Deny {
+                            reason: error.to_string(),
+                        }),
+                        ..Default::default()
+                    },
+                };
+            }
+            Err(error) => {
+                return HookAggregate {
+                    errors: vec![error],
+                    ..Default::default()
+                }
+            }
+        }
         let groups = self.resolved_groups(event, working_dir).await;
         let tool_input = payload.tool_input.as_ref();
         let mut definitions: Vec<HookDefinition> = groups
@@ -786,6 +818,16 @@ impl HooksManager {
         payload: &HookPayload,
         working_dir: &Path,
     ) -> HookOutcome {
+        match Self::crew_hooks_allowed(&payload.session_id).await {
+            Ok(true) => {}
+            Ok(false) => return HookOutcome::default(),
+            Err(error) => {
+                return HookOutcome {
+                    error: Some(error),
+                    ..Default::default()
+                }
+            }
+        }
         match definition {
             HookDefinition::Command { command, timeout } => {
                 let timeout =
@@ -888,6 +930,9 @@ impl HooksManager {
         provider_name: Option<String>,
         model: Option<String>,
     ) -> Result<Arc<dyn Provider>, String> {
+        if !Self::crew_hooks_allowed(session_id).await? {
+            return Err("User hooks are unavailable for Crew-scoped sessions".to_string());
+        }
         let Some((name, model)) = provider_name.zip(model) else {
             return self
                 .provider

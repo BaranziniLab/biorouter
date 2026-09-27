@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
 use biorouter::config::{percent_of, UsageLimits};
@@ -23,6 +23,18 @@ use crate::state::AppState;
 /// A day of usage report if `from`/`to` are omitted defaults to the last 30
 /// days, ending now.
 const DEFAULT_REPORT_WINDOW_SECS: i64 = 30 * 86_400;
+
+fn require_billing_user(headers: &HeaderMap) -> Result<(), StatusCode> {
+    // Billing retains anonymous totals after deletion; source ACLs cannot be
+    // reconstructed from that aggregate, so only the human surface receives it.
+    if biorouter_server::auth::user_action_proof(headers)
+        == biorouter_server::auth::UserActionProof::Proven
+    {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
 
 /// Query for `GET /usage/report`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -57,6 +69,7 @@ pub struct UsageReportResponse {
     responses(
         (status = 200, description = "Usage report", body = UsageReportResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Human user-action proof required for aggregate billing data"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = [])),
@@ -65,7 +78,9 @@ pub struct UsageReportResponse {
 pub async fn get_usage_report(
     State(state): State<Arc<AppState>>,
     Query(query): Query<UsageReportQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<UsageReportResponse>, StatusCode> {
+    require_billing_user(&headers)?;
     let now = chrono::Utc::now().timestamp();
     let to = query.to.unwrap_or(now);
     let from = query.from.unwrap_or(to - DEFAULT_REPORT_WINDOW_SECS);
@@ -136,6 +151,7 @@ fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSu
     responses(
         (status = 200, description = "Month-to-date usage vs the configured budget", body = UsageSummaryResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Human user-action proof required for aggregate billing data"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = [])),
@@ -143,7 +159,9 @@ fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSu
 )]
 pub async fn get_usage_summary(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<UsageSummaryResponse>, StatusCode> {
+    require_billing_user(&headers)?;
     let summary = state
         .session_manager()
         .get_usage_summary()

@@ -1,0 +1,669 @@
+/* The Crew sidebar (`crew/sidebar/`).
+
+   Bound by the contract in `crew/crew-app.css` and enforced by
+   `crew/crewCss.sourceGuard.test.ts`: `.crew-*` classes and `[data-*]` /
+   `[aria-*]` hooks only, tokens only, and every `crew-*` keyframes restates a
+   rest under `prefers-reduced-motion`. `crew-app.css` owns the column's
+   geometry (`.crew-sidebar`, 240px); this file owns the skin inside it.
+
+   Why authored rather than utilities at the call sites: a newly written
+   Tailwind class can silently fail to generate under `BIOROUTER_NO_HMR`, and
+   several of these need a pseudo-element (the active bar), a descendant state
+   (hover-revealed team actions) or a rest under reduced motion.
+
+   ⚠ **Focus.** These rules are unlayered, so a background set here beats the
+   D-15 focus fill in `@layer base`. Every rule that paints a row's ground at
+   rest therefore restates the focus fill for `:focus-visible` itself, or a
+   keyboard user would lose focus on the active row.
+
+   ⚠ **A fill alone is not a focus indicator (T-16).** Measured, the focus fill
+   differs from the sidebar ground by 1.23:1 (light) and from the selected
+   row's ground by 1.10:1 — invisible in practice. So every focusable row here
+   also draws the app's neutral focus EDGE, `inset 0 0 0 2px
+   var(--border-focus)` — the same edge `main.css`'s D-15 base rule and
+   `.biorouter-focus-surface` draw everywhere else. Measured against every
+   ground it touches here (`--background-focus`, `--sidebar`, `--sidebar-hover`,
+   `--sidebar-active`, `--background-medium`) it is 4.15:1 at its lowest, in
+   all six family/mode scopes; `check-contrast.mjs` asserts the same pairs.
+   ⚠ Never `--border-accent`: Roche Limit light's is `#ee6c1a`, 2.33:1 on the
+   focus fill and 2.88:1 on `--sidebar`, under SC 1.4.11's 3:1 — and this
+   block drew exactly that until the round-2 review measured it. The fill
+   stays the hover signal. Rings for Increase Contrast and forced colours are
+   `main.css`'s app-wide block, not restated here.
+
+   ⚠ **No drag region.** Nothing here declares `-webkit-app-region: drag` (issue
+   #74): the band's controls carry `no-drag`, and `/crew` is a chat route in
+   `AppLayout.tsx`, so the 32px drag strip stops taking pointer events here. */
+
+.crew-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--sidebar);
+  color: var(--sidebar-foreground);
+  border-inline-end: 1px solid var(--sidebar-border);
+}
+
+/* ── The switcher band: one continuous top edge at y=44 ──────────────────── */
+.crew-sidebar-band {
+  display: grid;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  justify-items: start;
+  height: var(--chrome-height);
+  min-width: 0;
+  padding-inline: 8px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+/* The `subject` look (the KBSelectorTrigger recipe): borderless at rest, the
+   band's label type, chrome on hover. Content-sized up to the band. */
+.crew-sidebar-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--control-md);
+  padding-inline: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  font-weight: 500;
+  color: var(--text-default);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* THE TITLEBAR RESERVE (issue #74, Q2-39). When the app sidebar is collapsed —
+   the default at a 1048px window — the floating titlebar controls (and on
+   macOS the traffic lights, 172px in all) sit over this band's left end. The
+   switcher then leaves the band for a 36px row of its own below it, and the
+   band keeps only the reserve: nothing of Crew's sits under those controls, so
+   a click aimed at them can never land on the switcher.
+
+   ⚠ **The column stays 240px.** Round 1 paid for the reserve by widening the
+   column (`240 + 172 - 16` = 396px, T-21), which left the channel 652px at a
+   1048px window — under `--crew-push-min` (800px), so the details pane covered
+   the conversation (Q2-39). A 288px column would still leave 760px. With the
+   switcher in its own row the column keeps 240px, the channel gets 808px, and
+   the pane pushes again. The switcher is never pushed right by a margin
+   either, so the name keeps the band's whole width (and 10ch at the least).
+
+   The band's hairline stays at y=44, where the channel header's is: one
+   continuous top edge. It is drawn at the foot of the band's first row rather
+   than as the box's border, which now sits under the switcher's row.
+
+   Keyed on the app sidebar's own `data-state`, the same peer relationship
+   `ui/sidebar.tsx`'s `SidebarInset` margins use, so it follows a collapse on
+   the same frame with no React read of the sidebar. A compact window with the
+   sidebar opened by hand needs none: the sidebar then overlays this band. */
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-band {
+  grid-template-rows: var(--chrome-height) 36px;
+  height: calc(var(--chrome-height) + 36px);
+  border-block-end: none;
+  background-image: linear-gradient(var(--border-subtle), var(--border-subtle));
+  background-repeat: no-repeat;
+  background-position: 0 calc(var(--chrome-height) - 1px);
+  background-size: 100% 1px;
+}
+
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] .crew-sidebar-switcher {
+  grid-row: 2;
+}
+
+.crew-sidebar-switcher:hover {
+  border-color: var(--border-subtle);
+  background-color: var(--background-medium);
+}
+
+.crew-sidebar-switcher:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.crew-sidebar-switcher-name {
+  min-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Chevrons: only real menus and disclosures carry one, and only it moves ──
+   A menu chevron turns 180°, a team or group chevron 90°. In over
+   `--dur-fast-max`, back over `--dur-fast`: a transition runs with the
+   duration of the state it is going TO. */
+.crew-sidebar-chevron {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[data-state='open'] > .crew-sidebar-chevron[data-turn='half'] {
+  transform: rotate(180deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+[aria-expanded='true'] > .crew-sidebar-chevron[data-turn='quarter'] {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+/* ── The status row: dot + word on the left, the privacy chip on the right ── */
+.crew-sidebar-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: var(--row-height-rail);
+  min-width: 0;
+  padding-inline: 12px;
+  border-block-end: 1px solid var(--sidebar-border);
+}
+
+/* The status word keeps its width before the chip does (T-68): "Updates
+   unavailable" is the state; the chip truncates first, and both carry a
+   `title` with their full words. */
+.crew-sidebar-status-word {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 75%;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.crew-sidebar-status-button {
+  min-width: 0;
+  padding: 0 4px;
+  margin-inline: -4px;
+  border-radius: var(--radius-inner);
+  font: inherit;
+  color: var(--text-default);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The one spinner: a 700ms linear turn, and a still arc under reduced motion. */
+.crew-sidebar-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  animation: crew-sidebar-spin 700ms linear infinite;
+}
+
+@keyframes crew-sidebar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.crew-sidebar-chip-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Security state never animates (ui-redesign-spec, "Motion"): the chip takes
+   no press scale, so a click never shows the mode mid-tween. */
+.crew-sidebar-chip:active {
+  scale: none;
+}
+
+/* ONE badge, `🔒 Private · UCSF` (Q2-45): the institution sits inside the
+   badge's own fill, never beside it as a second, unfilled chip. The inner
+   `PrivacyBadge` keeps its geometry and fill (the same token), so the two read
+   as one pill; this box supplies the fill under the institution and the end
+   inset. The institution takes the badge's ink and truncates first. */
+.crew-sidebar-chip-badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-muted);
+  color: var(--text-default);
+}
+
+.crew-sidebar-chip-institution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-inline-end: 6px;
+  font-size: var(--text-chip);
+  line-height: var(--text-chip--line-height);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A joiner the host has not let in yet: what the empty column will hold, in
+   the column's own words (Q2-43). Not a row, not focusable. */
+.crew-sidebar-pending {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--text-muted);
+}
+
+/* The privacy popover's facts: two columns, label and value. */
+.crew-sidebar-privacy-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 0;
+}
+
+/* ── The scrolling middle: sections and team lists ───────────────────────── */
+.crew-sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-block: 8px;
+}
+
+.crew-sidebar-section + .crew-sidebar-section {
+  margin-block-start: 12px;
+}
+
+/* The app sidebar's section label: 11px caps at 600 (T-62). */
+.crew-sidebar-section-label {
+  padding: 4px 16px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* The app sidebar's rhythm (T-62): an 8px inset and a 2px gap between rows.
+   The two sidebars sit side by side on one ground, so a different rhythm
+   reads as a bug. */
+.crew-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 8px;
+  list-style: none;
+}
+
+/* A sidebar row: 32px, the app sidebar's type (14px, 500 when selected), its
+   hover and active grounds, and the 2px accent bar on the active one.
+   `aria-current` is the selection. */
+.crew-sidebar-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--row-height-rail);
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  color: var(--text-muted);
+  text-align: start;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-row:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-row[aria-current='page'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+  font-weight: 500;
+}
+
+.crew-sidebar-row[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 8px;
+  inset-inline-start: 0;
+  width: 2px;
+  background-color: var(--accent-bar);
+}
+
+.crew-sidebar-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* Forced colours drop the active ground and the bar's background (T-58), so
+   the selected channel read exactly like its neighbours. The bar is kept in
+   the system's own highlight colour.
+
+   They paint the status row's dot away too, leaving only its word (Q4-52).
+   It keeps its own fill, with a CanvasText edge that holds against any system
+   ground; the word still says the state, so the dot is never the only signal. */
+@media (forced-colors: active) {
+  .crew-sidebar-row[aria-current='page']::before {
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
+
+  .crew-sidebar-status-dot {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+}
+
+/* Unread is weight and ink, never a hue; the count is a neutral badge. */
+.crew-sidebar-row[data-unread='true'] {
+  font-weight: 600;
+  color: var(--text-default);
+}
+
+.crew-sidebar-row[data-archived='true'] {
+  color: var(--text-subtle);
+}
+
+/* A quiet row: + Add channel, + Add team, Archived (n). */
+.crew-sidebar-row[data-quiet='true'] {
+  color: var(--text-subtle);
+}
+
+.crew-sidebar-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-sidebar-row-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+}
+
+/* A member's quiet note at the end of a team (T-28): not a row, not
+   focusable, aligned with the row text. */
+.crew-sidebar-hint {
+  padding: 4px 8px 4px 32px;
+  color: var(--text-subtle);
+}
+
+/* ── Team sections ──────────────────────────────────────────────────────────
+   Collapse is instant: the rows appear and disappear with no tween, and only
+   the chevron turns. Team names render as typed, never upper-cased. */
+.crew-sidebar-team {
+  margin-block-start: 8px;
+}
+
+/* The hover tint covers the WHOLE header, its + and ⋯ included (T-62): on
+   the toggle alone it stopped short of them and read as broken. */
+.crew-sidebar-team-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-inline: 8px;
+  padding-inline-end: 4px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-team-header:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-team-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--row-height-rail);
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: start;
+}
+
+.crew-sidebar-team-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* "· 2 invited" beside the team's name, for its owner (P0-2). Quiet, and it
+   keeps its words while the name truncates. */
+.crew-sidebar-team-invited {
+  flex: none;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The header's + and ⋯ appear on hover and on focus within, and stay while
+   their menu is open. Opacity only: they remain in the accessibility tree and
+   reachable with Tab from the header. */
+.crew-sidebar-team-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-team-header:hover .crew-sidebar-team-actions,
+.crew-sidebar-team-header:focus-within .crew-sidebar-team-actions,
+.crew-sidebar-team-actions:has([data-state='open']) {
+  opacity: 1;
+}
+
+/* ── The You row: the pinned 48px footer ────────────────────────────────── */
+.crew-sidebar-you {
+  flex: none;
+  padding: 4px;
+  border-block-start: 1px solid var(--sidebar-border);
+}
+
+.crew-sidebar-you-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--row-height);
+  padding: 4px 8px;
+  border-radius: var(--radius-element);
+  text-align: start;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.crew-sidebar-you-trigger:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.crew-sidebar-you-trigger:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.crew-sidebar-you-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.crew-sidebar-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A Waiting to join row's head (Q3-53): `@username` with its button beside
+   it, then the full name and the row's state ("invited", "Code entered",
+   "Invitation expired") across a line of their own.
+
+   Flex with wrapping, not a grid. The username's basis is its whole width, so
+   when it and the button don't fit side by side the button drops to the next
+   line rather than squeezing the username: a `minmax(0, 1fr) auto` grid gave
+   "@crew_gina" a column one letter wide beside "Invitation expired · Invite
+   again…" (which is why only a button sits there now, never a sentence). Only
+   a username wider than the whole row wraps, and then it has the row.
+
+   `order` keeps the DOM in speaking order (username, name and state, button)
+   while the button sits beside the username. The button never shrinks: Let
+   in… is never truncated. */
+.crew-sidebar-waiting-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+}
+
+.crew-sidebar-waiting-handle {
+  flex: 0 1 auto;
+}
+
+.crew-sidebar-waiting-action {
+  display: flex;
+  flex: none;
+  order: 1;
+  align-items: center;
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+
+.crew-sidebar-waiting-name {
+  flex: 1 1 100%;
+  order: 2;
+  margin: 0;
+}
+
+/* Text that must never be cut off — a joiner's username and the full name
+   beside it at a host's decision (Q3-53): it wraps, anywhere if it has to,
+   instead of ending in an ellipsis with nothing to reveal the rest. */
+.crew-sidebar-wrap {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A workspace or channel name inside a sentence (Q4-51, `keepNamesWhole`): it
+   moves to the next line whole instead of breaking at its hyphen ("…can see
+   chen-" / "lab."). The effect of `white-space: nowrap`, as an inline block: a
+   box as wide as its own text whenever that fits the line, so a name that fits
+   never breaks. Measured in Chromium at 12px across 14 line offsets: a bare
+   span broke `chen-lab` at 11 of them, this at none. Unlike bare `nowrap` it
+   cannot run out of its box: a name wider than the whole line (a slug runs to
+   40 characters) wraps inside itself, where `nowrap` overflowed a 180px
+   measure at every offset. `keepNamesWhole` puts the full stop after a name
+   inside the span, so it moves with the name. */
+.crew-sidebar-name {
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* The workspace menu's header: not a row, not focusable. */
+.crew-sidebar-menu-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+/* The fingerprint line, with its small Copy at the end (Q4-49): the digits
+   truncate before the Copy does. */
+.crew-sidebar-menu-fingerprint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The Copy itself: a menu item (so the arrow keys reach it) drawn as a compact
+   control on the fingerprint's line rather than as a full-width row. These
+   rules are unlayered, so they win over the row utilities the shared item
+   carries. */
+.crew-sidebar-menu-copy {
+  flex: none;
+  gap: 4px;
+  min-height: 20px;
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border-radius: var(--radius-inner);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-default);
+}
+
+.crew-sidebar-menu-copy-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Why a menu's items are disabled: one note above them, not a row. */
+.crew-sidebar-menu-note {
+  margin: 0;
+  padding: 4px 12px;
+}
+
+/* The last connection error, at most two lines. */
+.crew-sidebar-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────────
+   The spinner rests as a still arc; chevrons and hover tints change
+   instantly. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-sidebar-spinner {
+    animation: none;
+  }
+
+  .crew-sidebar-chevron,
+  .crew-sidebar-switcher,
+  .crew-sidebar-row,
+  .crew-sidebar-team-header,
+  .crew-sidebar-team-actions,
+  .crew-sidebar-you-trigger {
+    transition: none;
+  }
+}

@@ -3,6 +3,7 @@ import { Workflow } from '../api/types.gen';
 import type { UserAttachment } from '../types/message';
 
 export type View =
+  | 'crew'
   | 'welcome'
   | 'chat'
   | 'pair'
@@ -52,6 +53,15 @@ export const navigateWithViewTransition = (
 export const createNavigationHandler = (navigate: NavigateFunction) => {
   return (view: View, options?: ViewOptions) => {
     switch (view) {
+      case 'crew':
+        navigateWithViewTransition(
+          navigate,
+          options?.resumeSessionId
+            ? `/crew?sessionId=${encodeURIComponent(options.resumeSessionId)}`
+            : '/crew',
+          options
+        );
+        break;
       case 'chat':
         navigateWithViewTransition(navigate, '/', options);
         break;

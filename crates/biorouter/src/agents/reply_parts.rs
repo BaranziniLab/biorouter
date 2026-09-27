@@ -506,16 +506,20 @@ impl Agent {
             Some(plan) => plan.delegation_available,
             None => self.subagents_enabled(session_id).await,
         };
-        let mut system_prompt = prompt_manager
+        let crew_scoped = crate::crew::manager()?.is_scoped_session(session_id).await;
+        let builder = prompt_manager
             .builder()
             .with_extensions(extensions_info.into_iter())
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_code_execution_mode(code_execution_active)
             .with_checklist_enforcement(checklist_enforcement)
-            .with_hints(working_dir)
             .with_enable_subagents(enable_subagents)
-            .with_prompt_variant(prompt_variant)
-            .build();
+            .with_prompt_variant(prompt_variant);
+        let mut system_prompt = if crew_scoped {
+            builder.build()
+        } else {
+            builder.with_hints(working_dir).build()
+        };
 
         if is_subagent {
             system_prompt.push_str("\n\n");
@@ -903,6 +907,67 @@ mod tests {
                 ProviderUsage::new("mock".to_string(), Usage::default()),
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn crew_prompt_omits_local_hints_while_ordinary_prompt_keeps_them() -> anyhow::Result<()>
+    {
+        let working_dir = tempfile::tempdir()?;
+        let canary = format!("prompt-local-context-canary-{}", uuid::Uuid::new_v4());
+        std::fs::write(working_dir.path().join("AGENTS.md"), &canary)?;
+        let store = tempfile::tempdir()?;
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            store.path().to_path_buf(),
+        ));
+        let crew_session = session_manager
+            .create_session(
+                working_dir.path().to_path_buf(),
+                "crew-prompt-context".into(),
+                SessionType::User,
+            )
+            .await?;
+        let ordinary_session = session_manager
+            .create_session(
+                working_dir.path().to_path_buf(),
+                "ordinary-prompt-context".into(),
+                SessionType::User,
+            )
+            .await?;
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider {
+            model_config: ModelConfig::new("test-model")?,
+        });
+        let manager =
+            crate::crew::install_test_scope(&crew_session.id, Some(provider.as_ref())).await;
+        let agent = Agent::with_config(crate::agents::AgentConfig::new(
+            session_manager,
+            Arc::new(crate::config::permission::PermissionManager::new(
+                store.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        let (_tools, _toolshim_tools, crew_prompt, _bridge_plan) = agent
+            .prepare_tools_and_prompt_for_provider(&crew_session.id, working_dir.path(), &provider)
+            .await?;
+        assert!(
+            !crew_prompt.contains(&canary),
+            "Crew prompt leaked AGENTS.md: {crew_prompt}"
+        );
+
+        crate::crew::remove_test_scope(&manager, &crew_session.id).await;
+        let (_tools, _toolshim_tools, ordinary_prompt, _bridge_plan) = agent
+            .prepare_tools_and_prompt_for_provider(
+                &ordinary_session.id,
+                working_dir.path(),
+                &provider,
+            )
+            .await?;
+        assert!(
+            ordinary_prompt.contains(&canary),
+            "ordinary prompt lost AGENTS.md: {ordinary_prompt}"
+        );
+        Ok(())
     }
 
     #[test]

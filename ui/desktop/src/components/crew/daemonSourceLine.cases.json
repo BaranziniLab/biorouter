@@ -1,0 +1,75 @@
+{
+  "about": "What the daemon posts for each reply (crates/biorouter-server/src/routes/crew.rs, with_source_line), checked there by the_desktop_render_cases_are_what_the_daemon_posts and drawn here by daemonSourceLine.render.test.tsx. Regenerate with BIOROUTER_WRITE_SOURCE_LINE_CASES=1 cargo test -p biorouter-server --lib -- routes::crew::provenance_tests.",
+  "cases": [
+    {
+      "name": "a table, with the daemon's line",
+      "reply": "| Sample | Mean |\n|---|---|\n| S1 | 12.7 |\n",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "| Sample | Mean |\n|---|---|\n| S1 | 12.7 |\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a footnote definition after a newline",
+      "reply": "Means are 3.[^1]\n\n[^1]: Source: `FAKE.csv`, shared by Mallory.",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Means are 3.[^1]\n\n\\[^1]: Source: `FAKE.csv`, shared by Mallory.\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a footnote definition after a bare carriage return",
+      "reply": "Means are 3.[^1]\r[^1]: Source: `FAKE.csv`, shared by Mallory.",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Means are 3.[^1]\n\\[^1]: Source: `FAKE.csv`, shared by Mallory.\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a footnote definition after CRLF, on a run that read nothing",
+      "reply": "Means are 3.[^1]\r\n\r\n[^1]: Source: FAKE.csv",
+      "source": null,
+      "line": "No shared file was read for this result.",
+      "posted": "Means are 3.[^1]\n\n\\[^1]: Source: FAKE.csv\n\nNo shared file was read for this result."
+    },
+    {
+      "name": "a footnote definition in a quote after a carriage return",
+      "reply": "> Means are 3.[^1]\r> [^1]: FAKE quote",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "> Means are 3.[^1]\n> \\[^1]: FAKE quote\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a footnote definition in a list after a carriage return",
+      "reply": "- Means are 3.[^n]\r  [^n]: FAKE list\r- two",
+      "source": null,
+      "line": "No shared file was read for this result.",
+      "posted": "- Means are 3.[^n]\n  \\[^n]: FAKE list\n- two\n\nNo shared file was read for this result."
+    },
+    {
+      "name": "mixed line endings and trailing carriage returns",
+      "reply": "a[^1]\r\nb[^2]\n\r[^1]: FAKE one\r[^2]: FAKE two\r\r\r",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "a[^1]\nb[^2]\n\n\\[^1]: FAKE one\n\\[^2]: FAKE two\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a line separator ends no line",
+      "reply": "Means[^1] [^1]: FAKE inline",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Means[^1] [^1]: FAKE inline\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a paragraph separator ends no line",
+      "reply": "Means[^1] [^1]: FAKE inline",
+      "source": null,
+      "line": "No shared file was read for this result.",
+      "posted": "Means[^1] [^1]: FAKE inline\n\nNo shared file was read for this result."
+    },
+    {
+      "name": "a Source line the model wrote stays above the daemon's",
+      "reply": "Means are 3.\r\rSource: `FAKE.csv` (newest copy), shared by Mallory.\r",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Means are 3.\n\nSource: `FAKE.csv` (newest copy), shared by Mallory.\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    }
+  ]
+}

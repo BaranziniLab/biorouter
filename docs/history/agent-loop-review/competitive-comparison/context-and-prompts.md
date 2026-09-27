@@ -45,7 +45,7 @@ Four conventions used throughout:
 The reviewed BioRouter commit was not recorded in the original document.
 
 > **Note on column confidence.** The original scope note claimed that no report
-> files existed for Goose upstream, Cline, OpenCode, Aider, or Gemini CLI, and
+> files existed for Goose, Cline, OpenCode, Aider, or Gemini CLI, and
 > hedged those five columns as secondary to a primary BioRouter-vs-Pi/OpenHands/
 > Codex comparison. That claim is contradicted by the review's own research
 > folder: [goose](../../../research/coding-agent-landscape/goose.md),
@@ -59,16 +59,16 @@ The reviewed BioRouter commit was not recorded in the original document.
 
 ## Comparison across ten agents
 
-The table has one column per agent, in this order: BioRouter, Goose upstream,
+The table has one column per agent, in this order: BioRouter, Goose,
 Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
 > **Note.** The BioRouter column is superseded — see the status header. The nine
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose upstream | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
 |---|---|---|---|---|---|---|---|---|---|---|
-| System prompt source | Embedded `system.md`, MiniJinja-rendered | Embedded template (Goose lineage) | Large hardcoded prompt | Templated prompt | ~1000-token minimal prompt | Compact prompt | Jinja `.j2` preset registry | Checked-in Markdown per model | Templated prompt | Hardcoded prompt |
+| System prompt source | Embedded `system.md`, MiniJinja-rendered | Embedded template | Large hardcoded prompt | Templated prompt | ~1000-token minimal prompt | Compact prompt | Jinja `.j2` preset registry | Checked-in Markdown per model | Templated prompt | Hardcoded prompt |
 | Per-model prompt variants | None except toolshim JSON rewrite | None | None | None | None | None | Presets (DEFAULT/PLANNING), not per-model | **Yes — per-model files** (`gpt-5.2-codex_prompt.md`, etc.) | None | None |
 | Project context file | `.biorouterhints` + `AGENTS.md` (configurable, `CLAUDE.md` works) | `.goosehints` | `.clinerules` | `AGENTS.md` | `AGENTS.md`/`CLAUDE.md` | `CONVENTIONS.md` | `AGENTS.md` (+`CLAUDE.md`/`GEMINI.md` variants) | `AGENTS.md` (+`.override.md`) | `AGENTS.md`/`CLAUDE.md` | `CLAUDE.md` |
 | Hierarchy / precedence | Global + git-root→cwd walk, deeper appended | Global + project | Project + global | Dir walk | Global→parents→cwd, most-specific last | Repo-level | Repo skill always-loaded | Global override→root→cwd, deeper overrides (32 KiB cap) | Global→hierarchical `GEMINI.md` | Hierarchical enterprise→project→user |
@@ -79,7 +79,7 @@ wide and scrolls horizontally.
 | Mid-conversation dynamic injection | MOIM re-injected **every action**; explicit-resource-context; skill inlining | No | env_details each msg | LSP diagnostics | `before_agent_start`/`context` extension hooks rewrite prompt/msgs | repo-map refresh | Path-triggered rules on file ops; condensation | `context-fragments`, `@`-mention, memories layer | context refresh | Reminders, `@`-mention |
 | Transclusion / imports | **`@import`** with boundary+depth(3)+cycle+gitignore guards | No | No | No | No | No | No | `@`-mention file expansion | `@`-mention imports | `@`-mention imports |
 | Total context budget | **None** — 128 KB per-file *parse* cap only, no aggregate | None | Window-managed | Window-managed | Window-managed | Repo-map token budget | Condenser (`max_size`, `keep_first`) | `project_doc_max_bytes` 32 KiB + compaction | Window-managed | Window-managed |
-| MCP/extension instructions → prompt | Each server's `instructions` rendered verbatim under `## <name>` (Unicode-sanitized) | Same (Goose lineage) | MCP instructions | MCP | MCP omitted by design (skills instead) | n/a | MCP tools + skills | MCP instructions | MCP | MCP + skills |
+| MCP/extension instructions → prompt | Each server's `instructions` rendered verbatim under `## <name>` (Unicode-sanitized) | Same as BioRouter | MCP instructions | MCP | MCP omitted by design (skills instead) | n/a | MCP tools + skills | MCP instructions | MCP | MCP + skills |
 | Cross-session durable memory into prompt | Opt-in KB/"Soul", not auto-injected | No | Memory-bank (user pattern) | No | File-based (`TODO.md`) | No | Persisted event store | **Self-maintained ranked `~/.codex/memories/`** | No | Memory files |
 
 ## Where BioRouter was ahead
