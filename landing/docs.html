@@ -1332,6 +1332,7 @@ biorouter serve --host 0.0.0.0 --port 8765</code></pre>
     <tr><td>Knowledge bases and ingest</td><td>Yes</td></tr>
     <tr><td>Agent Drafter apps, including their live agent sockets</td><td>Yes</td></tr>
     <tr><td>Changing the model or provider</td><td>No, by design, see above</td></tr>
+    <tr><td>Crew</td><td>No. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal.</td></tr>
     <tr><td>Dragging a file in from your own computer</td><td>No. The agent runs on the server, which cannot see your local disk. Images are the exception: they are uploaded with the message. Reference other files by their path <em>on the server</em>.</td></tr>
     <tr><td>Shell features only the desktop app has (tray, dock, native terminal dock)</td><td>No</td></tr>
     <tr><td>Biorouter Copilot (desktop observation and control)</td><td>Only with <code>--computer-use-approval</code>, which sets the approval key a browser must enter. It controls the serving host's desktop, not the device the browser is running on.</td></tr>
@@ -1909,7 +1910,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>You need</th><th>Details</th></tr></thead>
   <tbody>
-    <tr><td>The Biorouter desktop app</td><td>Tested on macOS. The <code>biorouter crew</code> commands also work in a terminal.</td></tr>
+    <tr><td>The Biorouter desktop app</td><td>Tested on macOS. The <code>biorouter crew</code> commands also work in a terminal. Crew does not work in a web browser opened with <code>biorouter serve</code>, because the service it starts never holds the approval secret Crew needs.</td></tr>
     <tr><td>An account on the lab's Linux server</td><td>Your own login, with an SSH key, a password or a verification code. Your IT team provides it.</td></tr>
     <tr><td><code>biorouter-crew</code> in your server account</td><td>Every account that connects, the host's included, needs its own copy. You install it in your own account, or IT does. See <a href="#crew-administrators">Server setup for administrators</a>.</td></tr>
     <tr><td>The server already verified</td><td>Crew connects only to a server whose SSH host key is in your known hosts file. Check the server's fingerprint with your IT team once.</td></tr>
@@ -1920,11 +1921,11 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 <h3>The approval secret</h3>
 <p>On a Mac or a Linux computer, the background service that the app and the command line share acts for you only with your approval secret. The first time Biorouter starts the service, it asks you to choose one.</p>
 <ol>
-  <li>In the window "Set approval secret for shared BioRouter daemon", enter 32 to 4096 letters, numbers and punctuation marks, with no spaces. You can paste it.</li>
+  <li>In the window "Set approval secret for shared Biorouter daemon", enter 32 to 4096 letters, numbers and punctuation marks, with no spaces. You can paste it.</li>
   <li>Save the secret in your password manager. Biorouter does not save it.</li>
   <li>Enter it again in "Confirm shared daemon approval secret". Biorouter opens.</li>
 </ol>
-<p>When the service is already running, the app asks for the secret in "Connect to existing BioRouter daemon". Closing the app leaves the service running.</p>
+<p>When the service is already running, the app asks for the secret in "Connect to existing Biorouter daemon". Closing the app leaves the service running.</p>
 <p>If you forget the secret, restart your computer. Biorouter then asks you to set a new one. Open Crew and choose <strong>Connect to chen-lab</strong>.</p>
 <p>Windows has no approval secret. There, closing the app stops the service, and the <code>biorouter crew</code> commands do not work.</p>
 
@@ -1985,7 +1986,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>Create a team</td><td>Anyone in the workspace</td><td>Choose <strong>Add team</strong> at the end of the team list, type a <strong>Name</strong>, and choose <strong>Create team</strong>. The team opens on its new <code>#general</code> channel.</td></tr>
     <tr><td>Rename a team</td><td>The person who created it</td><td>Choose <strong>⋯</strong> beside the team, then <strong>Rename team…</strong>.</td></tr>
     <tr><td>Create a channel</td><td>Anyone in the team</td><td>Point at a team, choose <strong>+</strong>, type a <strong>Name</strong>, pick <strong>Restricted</strong> or <strong>Public-safe</strong>, and choose <strong>Create channel</strong>. You cannot change the label later.</td></tr>
-    <tr><td>Add people</td><td>The team's creator or the channel owner, and the host</td><td>Choose <strong>⋯</strong> beside a team, then <strong>Add people to {team}…</strong>. Tick people, tick channels under <strong>Also add to</strong>, and choose <strong>Add</strong>. <strong>Add people…</strong> in a channel menu appears only for the channel's owner, so the host adds people to other channels from the team's dialog.</td></tr>
+    <tr><td>Add people</td><td>The team's creator or the channel owner, and the host in a team or channel the host is in</td><td>Choose <strong>⋯</strong> beside a team, then <strong>Add people to {team}…</strong>. Tick people, tick channels under <strong>Also add to</strong>, and choose <strong>Add</strong>. <strong>Add people…</strong> in a channel menu appears only for the channel's owner, so the host adds people to other channels the host is in from the team's dialog. The host sees only the teams and channels the host is in, so for any other, ask its owner.</td></tr>
     <tr><td>Rename, archive or hand over a channel, or remove its members</td><td>The channel owner</td><td>The channel menu, opened from the channel name, has <strong>Rename…</strong>, <strong>Transfer ownership…</strong> and <strong>Archive channel…</strong>. Archiving cannot be undone. Remove people in the <strong>Members</strong> tab.</td></tr>
     <tr><td>Remove someone from the workspace</td><td>The host</td><td><strong>People…</strong> in the workspace menu</td></tr>
     <tr><td>Set your display name</td><td>You</td><td>Choose the You row, then <strong>Edit profile…</strong>. Type a <strong>Display name</strong> and choose <strong>Save profile</strong>.</td></tr>

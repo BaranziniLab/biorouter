@@ -95,7 +95,7 @@ When Crew refuses an agent or a setting for privacy, the message names the rule.
 
 You send your code, such as `7QK2-M9XA-3JTP-WZ4D`, to the host to be let in. Your computer makes it, so the server cannot change it. The workspace fingerprint, such as `3F2A 9C1E 77B0 D4E1`, is never sent. To check an invitation, open **Check this invitation (optional)** when you join, and join only if your host reads the same fingerprint from Crew.
 
-Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account. If Biorouter asks you to "Set approval secret for shared BioRouter daemon", keep your own copy. You need it to reconnect.
+Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account. If Biorouter asks you to "Set approval secret for shared Biorouter daemon", keep your own copy. You need it to reconnect.
 
 ### New device notice
 

@@ -4,9 +4,11 @@
 > **Status:** Current. Checked against the Crew code on 2026-09-25.
 > **Audience:** Lab members who are new to Crew, including people who have never used SSH or a terminal.
 
-Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. To get into another one, ask its owner or the host.
+Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. To get into another one, ask its owner. The host can also add you, but only to a team or channel the host is in.
 
 One lab member, the host, runs the workspace on a shared Linux server. You connect with your own account on that server over SSH (Secure Shell, the standard way to sign in to a server), and Crew makes that connection for you. The desktop app and the `biorouter crew` [commands](command-line.md) share one background service, so they show the same workspaces.
+
+Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`: the background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so it refuses every Crew action, even listing your workspaces. Signing in again or restarting does not change that.
 
 A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "Connect to lab".
 
@@ -23,7 +25,7 @@ A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "C
 
 ### Signing in to the server
 
-When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a web browser (`biorouter serve`), sign in from the desktop app or with `biorouter crew auth` instead.
+When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a terminal, `biorouter crew auth` signs you in instead ([Sign in and stay connected](command-line.md#sign-in-and-stay-connected)).
 
 ### Jump hosts
 
@@ -33,8 +35,8 @@ Use a jump host, a server you pass through to reach the lab server, only if IT g
 
 Biorouter's background service (the daemon) accepts actions that need a person's approval only with your approval secret. The secret is not your login password, SSH password or vault passphrase. On macOS and Linux, Biorouter asks for it each time you open it:
 
-- The first time, and after your computer restarts, the service is not running. You set a secret in "Set approval secret for shared BioRouter daemon" and repeat it in "Confirm shared daemon approval secret".
-- At other times the service is still running, even after you quit Biorouter. You type its secret in "Connect to existing BioRouter daemon".
+- The first time, and after your computer restarts, the service is not running. You set a secret in "Set approval secret for shared Biorouter daemon" and repeat it in "Confirm shared daemon approval secret".
+- At other times the service is still running, even after you quit Biorouter. You type its secret in "Connect to existing Biorouter daemon".
 
 To set a secret:
 

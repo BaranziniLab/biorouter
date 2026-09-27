@@ -34,7 +34,7 @@ The status row shows "Connected", and your channels appear. A failed attempt add
 
 ### When you reopen Biorouter
 
-On a Mac or a Linux computer, quitting Biorouter leaves the background service running and the workspace connected. When you reopen Biorouter, type your approval secret in the window "Connect to existing BioRouter daemon". See [The approval secret](getting-started.md#the-approval-secret). A pending join shows the same code, or finishes by itself.
+On a Mac or a Linux computer, quitting Biorouter leaves the background service running and the workspace connected. When you reopen Biorouter, type your approval secret in the window "Connect to existing Biorouter daemon". See [The approval secret](getting-started.md#the-approval-secret). A pending join shows the same code, or finishes by itself.
 
 After your computer restarts, and on Windows after every quit, the service stops. To connect again:
 
@@ -185,7 +185,7 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | "SSH authentication is already opening." | Choose **Close**, then open the Sign in window once. |
 | "Authentication input exceeds frame limit." | Type your answer instead of pasting it. |
 | "The local daemon is not available." or "Invalid daemon authentication session." | Quit and reopen Biorouter. |
-| "Signing in needs the Biorouter desktop app." | Use the desktop app, or run `biorouter crew auth`. |
+| "Signing in needs the Biorouter desktop app." | You are in a web browser, where Crew does not work ([Getting started](getting-started.md)). Use the desktop app, or run `biorouter crew auth` in a terminal. |
 | Any other message, such as "Your input couldn’t reach the server…" | **Reconnect**. If it repeats, check **Connection settings…**. |
 
 ### Other messages
@@ -195,7 +195,8 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | "Choose this private SSH connection's institution…" or "…canonical institution ID…" | Enter a short ID in lowercase letters, numbers, `-` or `_`, such as `ucsf`. |
 | "Crew aliases have different institutions…", "privacy_denied: connection and workspace institutions differ" or "…one computer can't mix institutions on the same server." | Use the workspace's institution in **Connection settings…**, for every workspace on that server, or ask your host. |
 | "Identity file must be an absolute path" | Enter a path that starts with `/`, or leave the field empty. |
-| "…needs a newer Biorouter background service…" or "This daemon cannot verify human Crew actions…" | See [Replace an old background service](#replace-an-old-background-service). |
+| "…needs a newer Biorouter background service…" | See [Replace an old background service](#replace-an-old-background-service). |
+| "This daemon cannot verify human Crew actions…" | In a web browser opened with `biorouter serve`, Crew never works, and nothing you do there changes that. Use the desktop app, or `biorouter crew` in a terminal. In the desktop app, see [Replace an old background service](#replace-an-old-background-service). |
 | "…that Crew couldn't read…" | Choose **Retry**. If it repeats, see [Replace an old background service](#replace-an-old-background-service). |
 | "Crew could not complete that action." | Try the action again. |
 | "Authorize this action in the Crew panel…" | Do the action yourself in Crew, or with `biorouter crew`. |
@@ -208,6 +209,8 @@ After a Biorouter update, the background service that was already running stays 
 - "This feature needs a newer Biorouter background service…"
 - "Start it for me needs a newer Biorouter background service…"
 - "This daemon cannot verify human Crew actions…"
+
+The last one also appears in every web browser opened with `biorouter serve`. That service never holds the approval secret Crew needs, so Crew never works there, and the steps below do not help. Use the desktop app or `biorouter crew` instead.
 
 To replace the service on a Mac or Linux computer:
 
