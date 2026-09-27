@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -135,5 +137,38 @@ describe('native shared-daemon approval prompt', () => {
     expect(child.kill).toHaveBeenCalledOnce();
     child.emit('close', 1);
     await expect(pending).rejects.toThrow('exceeds the allowed length');
+  });
+});
+
+/**
+ * DOCS-6: the brand is "Biorouter", lowercase r. The approval-secret prompts said "BioRouter", so
+ * the manual had to quote a spelling it uses nowhere else, in the one dialog it tells people to
+ * trust with a secret. Read at the source: the prompts are native dialogs no test renders.
+ */
+describe('native approval prompts spell the brand "Biorouter"', () => {
+  const source = (name: string) => readFileSync(join(__dirname, name), 'utf8');
+  /** Every string literal in `code`, comments left out. */
+  const literals = (code: string) =>
+    [
+      ...code
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g),
+    ].map((match) => match[0]);
+
+  it('in every title and message main.ts passes to promptNativeSecret', () => {
+    const calls = [...source('main.ts').matchAll(/promptNativeSecret\(([\s\S]*?)\);/g)].map(
+      (match) => match[1]
+    );
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    const texts = calls.flatMap(literals);
+    expect(texts.filter((text) => text.includes('BioRouter'))).toEqual([]);
+    expect(texts.filter((text) => text.includes('Biorouter')).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('in every sentence nativeSecretPrompt.ts shows', () => {
+    const texts = literals(source('nativeSecretPrompt.ts'));
+    expect(texts.length).toBeGreaterThan(5);
+    expect(texts.filter((text) => text.includes('BioRouter'))).toEqual([]);
   });
 });

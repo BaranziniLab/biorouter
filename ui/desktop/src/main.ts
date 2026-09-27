@@ -1370,7 +1370,7 @@ let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
 const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
   if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
   const secret = await promptNativeSecret(
-    'Set approval secret for shared BioRouter daemon',
+    'Set approval secret for shared Biorouter daemon',
     'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
   );
   if (secret === undefined)
@@ -1380,7 +1380,7 @@ const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => 
   validateDaemonApprovalSecret(secret);
   const confirmation = await promptNativeSecret(
     'Confirm shared daemon approval secret',
-    'Enter the same independently held approval secret again. BioRouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
+    'Enter the same independently held approval secret again. Biorouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
   );
   if (confirmation === undefined)
     throw new Error('Shared daemon startup cancelled. No daemon was started.');
@@ -1454,7 +1454,7 @@ const createChat = async (
             );
           if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
           const key = await promptNativeSecret(
-            'Connect to existing BioRouter daemon',
+            'Connect to existing Biorouter daemon',
             `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
           );
           if (!key)
@@ -1480,7 +1480,7 @@ const createChat = async (
             );
           if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
           const key = await promptNativeSecret(
-            'Connect to existing BioRouter daemon',
+            'Connect to existing Biorouter daemon',
             `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
           );
           if (!key)
